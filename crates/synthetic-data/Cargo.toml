@@ -1,0 +1,21 @@
+[package]
+name = "synthetic-data"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Deterministic synthetic household data generator for DohFlow (personal-cfo-9ujs, ADR 0026 §7): (persona, seed) -> reproducible transactions / income / bills / balances, for developing + validating forecast and learning models on non-real data (local-only privacy model)."
+
+# Pure, deterministic, database-free (CI-enforced). A small inline SplitMix64 PRNG
+# (no `rand`) keeps output byte-identical across platforms and toolchains — the
+# headline invariant. Amounts are calendar-date keyed (NaiveDate), so DST never
+# enters this crate.
+[dependencies]
+core-money = { path = "../core-money" }
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

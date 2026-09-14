@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(.claude/**)",
+      "Bash(gh pr merge *)",
+      "Bash(gh api *)",
+      "Bash(\\bd close *)",
+      "Bash(bd close *)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean *)",
+      "Bash(rm -rf *)"
+    ]
+  }
+}

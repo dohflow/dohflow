@@ -1,0 +1,20 @@
+[package]
+name = "ofx-importer"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "OFX/QFX ImporterPlugin for DohFlow (personal-cfo-fr79): parses OFX 1.x (SGML) and 2.x (XML) bank/card statements — FITID-anchored dedupe fingerprints, CURDEF currency, NAME/PAYEE/MEMO mapping — into typed staged candidates. Pure (no DB/network/IPC); registered at compile time via importer-core, run behind the bounded host (ADR 0022)."
+
+# Pure parsing crate — no database, async runtime, or Tauri (CI-enforced for
+# crates/importers/*). Untrusted bytes in, typed ParsedBatch out. The OFX
+# scanner is hand-rolled (no XML/SGML dependency): real-world OFX 1.x is not
+# valid XML anyway, so both eras are read with the same tag scan.
+[dependencies]
+importer-core = { path = "../importer-core" }
+core-money = { path = "../../core-money" }
+chrono = { workspace = true }
+semver = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in DohFlow isn't working the way it should.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. DohFlow is local-first —
+        your vault never leaves your machine — but a bug report itself can
+        still leak real financial details if you paste real values into it.
+        **Please redact anything real before submitting** (see the checkbox
+        at the end). If the bug involves a security or privacy issue rather
+        than ordinary broken behavior, use **private** reporting instead —
+        see [SECURITY.md](https://github.com/dohflow/dohflow/blob/main/SECURITY.md)
+        — not this public form.
+  - type: input
+    id: version
+    attributes:
+      label: DohFlow version
+      description: >-
+        Settings → About → "Version X.X.X". If you're on a development
+        build, also include the commit shown there.
+      placeholder: e.g. 0.1.0 (Release build) or 0.1.0-dev, commit abc1234
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Apple menu → About This Mac.
+      placeholder: e.g. macOS 15.1 (Sequoia)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, in order, right before the bug appeared?
+      placeholder: |
+        1. Open Accounts
+        2. Click "Add account"
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include the exact error text if there was one.
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+      description: Screenshots, logs, or other context — redacted, per the checkbox below.
+    validations:
+      required: false
+  - type: checkboxes
+    id: redaction-confirmation
+    attributes:
+      label: Privacy check
+      options:
+        - label: >-
+            I removed real balances, account numbers, institution logins, and
+            any other real financial data from this report (including any
+            screenshots or pasted logs above).
+          required: true

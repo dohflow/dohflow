@@ -1,0 +1,44 @@
+[package]
+name = "connector-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "ConnectorAdapter contract + compile-time (inventory) connector registry for DohFlow bank-sync adapters (personal-cfo-x6dr, ADR 0004 / ADR 0060). Adapters emit only staged candidates that enter the same ingestion pipeline as file-importer output (ADR 0008); no provider concept leaks into the core schema (plan §8.3). Concrete adapters live in sibling crates."
+
+# COMPILE BARRIER (personal-cfo-x6dr AC): this crate must never depend on
+# db-worker — an adapter cannot write ledger rows even by accident (CI:
+# "Enforce connector-core compile barrier"). It reuses importer-core's
+# staged-candidate types so connector output is indistinguishable from
+# importer output at the staging boundary.
+[dependencies]
+importer-core = { path = "../importers/importer-core" }
+core-money = { path = "../core-money", optional = true }
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+inventory = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+[features]
+# The deterministic mock connector (personal-cfo-1s2b). NOT a default feature:
+# production crates never enable it — test builds opt in via dev-dependencies
+# (see the self-dev-dependency below), and CI greps that no [dependencies]
+# section in the workspace enables it. This gate + the never-registered-with-
+# inventory rule stand in for the AC's cargo-deny rule / clippy lint (the
+# workspace has neither tool configured) — renegotiation recorded on beads
+# personal-cfo-x6dr and personal-cfo-1s2b.
+mock = ["dep:core-money"]
+
+[dev-dependencies]
+# Self-reference enabling `mock` for this crate's own integration tests only —
+# the standard cargo pattern for test-only modules that tests/*.rs must see.
+connector-core = { path = ".", features = ["mock"] }
+semver = { workspace = true }
+serde_json = { workspace = true }
+# Compile-time pins that Credential never gains Serialize/Display (§6.6).
+static_assertions = "1.1"

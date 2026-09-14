@@ -1,0 +1,30 @@
+[package]
+name = "importer-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "ImporterPlugin contract + compile-time (inventory) plugin registry for DohFlow importers (personal-cfo-eay). Untrusted bytes in, typed staged candidates out (ADR 0008 / ADR 0022); a plugin holds no keys, DB handles, network, or IPC. Concrete importers live in sibling crates under crates/importers/."
+
+# Parsing-logic crate: turns untrusted bytes into typed staged candidates. No
+# database, async runtime, or Tauri shell (CI-enforced in ci.yml, ADR 0022) and
+# no runtime dynamic loading — plugins register at compile time via `inventory`.
+[dependencies]
+core-money = { path = "../../core-money" }
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+semver = { workspace = true }
+inventory = { workspace = true }
+thiserror = { workspace = true }
+# Whole-file content fingerprint for file-level dedupe (ADR 0014 §3). Pure hashing
+# — keeps the no-DB/async/Tauri boundary.
+sha2 = { workspace = true }
+
+[dev-dependencies]
+# Integration tests are a separate crate, so they re-declare the deps they name
+# directly (semver for `Version`, inventory only as a fallback to the macro).
+semver = { workspace = true }
+inventory = { workspace = true }
+serde_json = { workspace = true }

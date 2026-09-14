@@ -1,0 +1,21 @@
+[package]
+name = "core-ledger"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Pure double-entry ledger primitives (Posting, LedgerTransaction, LedgerAccount, OperationId) for DohFlow. Types + invariants only — no DB, no async, no Tauri."
+
+[dependencies]
+core-ids = { path = "../core-ids" }
+core-money = { path = "../core-money" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
+chrono = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = "1"

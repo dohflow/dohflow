@@ -1,0 +1,73 @@
+name: Importer / bank format request
+description: Ask for support for a bank, brokerage, or export format DohFlow doesn't parse yet.
+title: "[Importer]: "
+labels: ["importer", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        DohFlow's importers work from the actual **shape** of an export file
+        (column names, date fields, how amounts are signed) — not from
+        knowing the name of your bank. The most useful thing you can give us
+        is a **redacted sample**: the header row plus one or two data rows,
+        with every real value replaced. See below for exactly what to keep
+        and what to blank out.
+  - type: input
+    id: institution
+    attributes:
+      label: Institution / brokerage name
+      description: The bank, credit union, or brokerage this export comes from.
+      placeholder: e.g. Example Credit Union
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: File format
+      options:
+        - CSV
+        - OFX
+        - QFX
+        - Other (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Redacted sample (header row + 1-2 data rows)
+      description: >-
+        Copy the file's header row, then one or two representative data rows,
+        with every real value replaced but the SHAPE preserved: keep column
+        names as-is; replace real amounts with round fake numbers (e.g.
+        12.34); replace real merchant/payee text with a generic placeholder
+        (e.g. "Coffee Shop", "Employer Inc"); replace any real account
+        number, card number, or routing number entirely — do not truncate or
+        partially mask a real one, since even a partial real number is a
+        real value. If you're not sure a value counts as "real," redact it.
+      placeholder: |
+        Transaction Date,Posted Date,Description,Category,Debit,Credit
+        2026-01-15,2026-01-16,Coffee Shop,Dining,4.50,
+        2026-01-15,2026-01-16,Employer Inc,Income,,1500.00
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: quirks
+    attributes:
+      label: Anything unusual about this export?
+      description: >-
+        E.g. amounts always positive with a separate debit/credit column
+        (like the sample above), a date format that isn't ISO, transfers
+        between your own accounts appearing twice, pending vs. posted rows.
+    validations:
+      required: false
+  - type: checkboxes
+    id: redaction-confirmation
+    attributes:
+      label: Privacy check
+      options:
+        - label: >-
+            The sample above contains no real account numbers, card numbers,
+            balances, merchant names, or other real financial data — only
+            the column shape and placeholder values.
+          required: true

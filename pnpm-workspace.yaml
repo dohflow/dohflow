@@ -1,0 +1,13 @@
+# pnpm is the single JavaScript package manager for this repo (see
+# docs/agent/PROJECT_PROFILE.md). Do not introduce a second lockfile.
+packages:
+  - "apps/*"
+  - "packages/*" # future shared TypeScript packages, added by their owning beads
+
+# pnpm 11 blocks dependency install scripts by default. Approve only the ones
+# we need: esbuild fetches its platform binary (Vite needs it); @tailwindcss/oxide
+# is Tailwind v4's native engine and builds its platform binary on install
+# (personal-cfo-x99h).
+allowBuilds:
+  esbuild: true
+  "@tailwindcss/oxide": true

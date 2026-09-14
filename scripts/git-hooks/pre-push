@@ -1,0 +1,194 @@
+#!/usr/bin/env sh
+# TRACKED git-workflow tooling (personal-cfo-apesm) — this is NOT bead
+# tooling and is not managed by `bd`. It exists here, rather than in
+# .beads/hooks/pre-push, because .beads/ is untracked (ADR 0064): a file that
+# only lives there has no git history, no off-machine copy except whatever
+# backs up this machine, and is absent from a public clone. This file ships
+# with every clone, including the public one.
+#
+# core.hooksPath is set to this directory (scripts/git-hooks — a RELATIVE
+# path, `git config core.hooksPath scripts/git-hooks`), so git runs this
+# script for every push in every worktree and every clone that has run that
+# one-liner (documented in CONTRIBUTING.md and
+# docs/agent/WORKFLOW_ROLES.md).
+#
+# This script invokes bd's own hook logic DIRECTLY (`bd hooks run pre-push`,
+# below) — it does NOT chain to a file under .beads/hooks/. It used to
+# (personal-cfo-apesm's original design), and that was the root cause of
+# personal-cfo-bb96v: `bd hooks install --beads` copies whatever file
+# core.hooksPath currently resolves to (this file) into its own generated
+# .beads/hooks/pre-push, ahead of its own managed section — which made the
+# old chain-to-file step resolve to ITSELF and recurse forever, forking a
+# new process every level, on every push, permanently, even after
+# core.hooksPath was corrected back. Inlining bd's own invocation here
+# removes the file reference entirely, so there is nothing left for that
+# merge behavior to make self-referential — `bd hooks install --beads` can
+# still reset core.hooksPath (harmless once re-set: `git config
+# core.hooksPath scripts/git-hooks` fully repairs it, since this file never
+# points back at .beads/hooks/), but it can no longer corrupt this file's
+# own behavior.
+
+# --- BEGIN LOCAL: recursion guard (personal-cfo-bb96v, defense in depth) ---
+# Belt-and-braces alongside removing the file-chain above: if this exact
+# hook is somehow already running in an ancestor process (a future chaining
+# mistake, not today's bb96v — that path is gone — but cheap insurance
+# against the next one), exit promptly instead of re-running everything
+# below, including the mirror-backup call, a second time.
+if [ "${DOHFLOW_GIT_HOOK_ACTIVE:-}" = "pre-push" ]; then
+  echo >&2 "beads: pre-push hook already running in an ancestor process — skipping to avoid recursion"
+  exit 0
+fi
+export DOHFLOW_GIT_HOOK_ACTIVE=pre-push
+# --- END LOCAL: recursion guard ---
+
+# --- BEGIN LOCAL: capture pre-push refs (workflow pilot) ---
+# git feeds "<local ref> <local sha> <remote ref> <remote sha>" lines on stdin.
+# The protect-default-branch guard below reads that ref list, and `bd hooks
+# run pre-push` (invoked directly near the end of this script) may or may
+# not consume it too. A downstream consumer reading an already-drained
+# stdin would see an EMPTY ref list and allow every push — a guard that
+# fails open is worse than no guard. Capturing here, before any consumer,
+# makes every guard correct regardless of read order.
+#
+# `mktemp -t NAME` is a BSD/macOS-ism: BSD mktemp appends its own random
+# suffix to a bare `-t` prefix, but GNU coreutils' `-t` requires the caller to
+# supply the `XXXXXX` placeholders itself and errors out ("too few X's in
+# template") when they are missing — which is exactly what happens on every
+# Linux contributor's machine and in the (`ubuntu-latest`) CI job this bead
+# unblocks, refusing every push, not just to `main`. An explicit template
+# with `XXXXXX` is understood identically by BSD, GNU, and busybox mktemp —
+# same portable idiom `scripts/tests/*.test.sh` already use for their WORKDIR.
+_pp_refs="$(mktemp "${TMPDIR:-/tmp}/prepush-refs.XXXXXX")" || exit 1
+trap 'rm -f "$_pp_refs"' EXIT
+cat > "$_pp_refs"
+exec < "$_pp_refs"
+# --- END LOCAL: capture pre-push refs ---
+
+# --- BEGIN LOCAL: protect default branch (workflow pilot, AGENTS.md §16) ---
+# Refuses a DIRECT push to the repository's default branch, including a delete
+# of it, on ANY remote. Feature branches, `agent/**`, and tags are untouched.
+# `gh pr merge` merges server-side and never runs a local hook, so the review
+# path is unaffected.
+#
+# Placed BEFORE the mirror-backup block so a refused push does not trigger a
+# backup run.
+#
+# THIS IS A SAFETY BUMPER, NOT A SECURITY BOUNDARY. It runs only on this
+# machine and is deliberately easy to bypass. GitHub-side branch protection is
+# unavailable on this plan (private repo, free tier) — the API returns 403.
+#
+# HUMAN-AUTHORIZED EMERGENCY OVERRIDE — one push, skips this guard only, and
+# leaves the beads hook and the mirror backup running:
+#     ALLOW_PUSH_TO_MAIN=1 git push origin main
+# BYPASS EVERY pre-push hook (also skips beads + mirror backup — prefer the
+# override above):
+#     git push --no-verify origin main
+# PERMANENT REMOVAL: delete this BEGIN/END block, or revert the setup commit.
+#
+# `refs/remotes/origin/HEAD` is NOT set in this clone, so detection falls back
+# to `main`. To make it track the real default: git remote set-head origin -a
+_pp_protected="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+[ -n "$_pp_protected" ] || _pp_protected=main
+
+if [ -z "${ALLOW_PUSH_TO_MAIN:-}" ]; then
+  while read -r _pp_lref _pp_lsha _pp_rref _pp_rsha; do
+    [ -n "$_pp_rref" ] || continue
+    if [ "$_pp_rref" = "refs/heads/$_pp_protected" ]; then
+      echo >&2 ""
+      echo >&2 "  BLOCKED: direct push to '$_pp_protected' (AGENTS.md §16)."
+      echo >&2 ""
+      echo >&2 "  Substantive work goes through a PR from an"
+      echo >&2 "  agent/<bead-id>-<slug> branch, reviewed at a candidate SHA."
+      echo >&2 ""
+      echo >&2 "  Human-authorized override for this one push:"
+      echo >&2 "      ALLOW_PUSH_TO_MAIN=1 git push origin $_pp_protected"
+      echo >&2 ""
+      exit 1
+    fi
+  done < "$_pp_refs"
+fi
+# --- END LOCAL: protect default branch ---
+
+# --- BEGIN LOCAL: bead-graph mirror backup (ADR 0064) ---
+# Pushes the bead graph to the private mirror on every git push, so the backup
+# cannot silently fall behind the repo. This is a BACKUP, not a sync — nothing
+# pulls from it. Cross-machine drift is prevented by `bd dolt push/pull`, which
+# is a separate mechanism and is still blocked on SSH (bead es9ew).
+#
+# Never fails the push: a backup problem must not block shipping code. It warns
+# loudly instead, because a silent backup failure is the failure mode that
+# matters.
+#
+# Only stdout is silenced here (the chatty success-path lines: "cloning mirror
+# into...", "exported fresh from bd", "backed up N rows to..."). stderr is left
+# to flow straight to the terminal, because that is where backup-beads.sh puts
+# every diagnostic that actually matters — its "REFUSING TO BACK UP" guard
+# (personal-cfo-au76q) and its other warnings are already `echo ... >&2`, not
+# something this hook needs to parse or re-emit (personal-cfo-f8wn7).
+#
+# Silent no-op (not even the warning) when the script is missing or not
+# executable, OR when there is no .beads/ (database) to back up at all — a
+# fresh clone before `bd init`, or the public clone, which never has .beads/
+# in the first place. `./scripts/backup-beads.sh` is a TRACKED file, so it
+# alone is not a reliable signal that this repo's beads tooling is actually
+# set up here; without the `-d ./.beads` check, a public contributor with no
+# bead database would see backup-beads.sh's own "no .beads/ at ..." refusal
+# (exit 1) turn into this hook's generic warning on every single push,
+# purely from having cloned the repo — which is exactly the noise this bead
+# exists to keep out of a public clone. This is a decision about WHEN to
+# call backup-beads.sh, not a change to what it does when called (that stays
+# out of scope).
+if [ -z "${BEADS_SKIP_MIRROR:-}" ] && [ -x "./scripts/backup-beads.sh" ] && [ -d "./.beads" ]; then
+  if ! ./scripts/backup-beads.sh >/dev/null; then
+    echo >&2 "beads: WARNING — mirror backup failed. Run ./scripts/backup-beads.sh by hand."
+  fi
+fi
+# --- END LOCAL: bead-graph mirror backup ---
+
+# --- BEGIN LOCAL: invoke bd directly (personal-cfo-bb96v) ---
+# Runs bd's own pre-push hook logic DIRECTLY — never by chaining to a file
+# under .beads/hooks/, which is what made personal-cfo-bb96v possible (see
+# the file header). This inlines exactly what bd's own generated
+# `BEGIN/END BEADS INTEGRATION` block does (verified against bd 1.2.2,
+# `bd hooks install --beads` in a throwaway workspace with no pre-existing
+# hook to preserve): run `bd hooks run pre-push` under a timeout, treat
+# exit 124 (timed out) and exit 3 (no database) as "continue without
+# beads," and propagate any other non-zero exit. `timeout` falls back to
+# `gtimeout` (Homebrew coreutils on macOS without GNU coreutils) and then to
+# a `perl alarm`, matching bd's own fallback chain; with none available, run
+# without a timeout rather than fail closed.
+#
+# Silent no-op — not even a warning — when `bd` is not on PATH (a public
+# clone, or a machine without it installed): the guards above already ran
+# either way.
+if command -v bd >/dev/null 2>&1; then
+  BD_GIT_HOOK=1
+  export BD_GIT_HOOK
+  _bd_timeout=${BEADS_HOOK_TIMEOUT:-300}
+  _bd_used_perl=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$_bd_timeout" bd hooks run pre-push "$@"
+    _bd_exit=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$_bd_timeout" bd hooks run pre-push "$@"
+    _bd_exit=$?
+  elif command -v perl >/dev/null 2>&1; then
+    _bd_used_perl=1
+    perl -e 'alarm shift; exec @ARGV' "$_bd_timeout" bd hooks run pre-push "$@"
+    _bd_exit=$?
+  else
+    echo >&2 "beads: hook 'pre-push' running without timeout; install coreutils or perl to enable BEADS_HOOK_TIMEOUT"
+    bd hooks run pre-push "$@"
+    _bd_exit=$?
+  fi
+  if [ "$_bd_exit" -eq 124 ] || { [ "$_bd_used_perl" -eq 1 ] && [ "$_bd_exit" -eq 142 ]; }; then
+    echo >&2 "beads: hook 'pre-push' timed out after ${_bd_timeout}s — continuing without beads"
+    _bd_exit=0
+  fi
+  if [ "$_bd_exit" -eq 3 ]; then
+    echo >&2 "beads: database not initialized — skipping hook 'pre-push'"
+    _bd_exit=0
+  fi
+  if [ "$_bd_exit" -ne 0 ]; then exit "$_bd_exit"; fi
+fi
+# --- END LOCAL: invoke bd directly ---

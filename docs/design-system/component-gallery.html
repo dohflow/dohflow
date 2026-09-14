@@ -1,0 +1,417 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DohFlow — Component Gallery</title>
+<link rel="preconnect" href="https://rsms.me/" />
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+<style>
+  /* ---- DohFlow design tokens (mirror of apps/desktop/src/styles/globals.css) ---- */
+  :root {
+    --background:#faf8f6; --foreground:#1c1815;
+    --card:#ffffff; --card-foreground:#1c1815;
+    --popover:#ffffff; --popover-foreground:#1c1815;
+    --primary:#006341; --primary-foreground:#f7fbf9;
+    --secondary:#efebe6; --secondary-foreground:#36302a;
+    --muted:#efebe6; --muted-foreground:#6b6259;
+    --accent:#f1ebe4; --accent-foreground:#36302a;
+    --destructive:#c23b2e; --destructive-foreground:#ffffff;
+    --border:#e3ddd5; --input:#e3ddd5; --ring:#2e9470; --radius:0.5rem;
+    --terracotta:#db8f6b; --gain:#0f7a54; --loss:#c23b2e; --warning:#c98a12; --info:#3a6fa5;
+    --chart-1:#006945; --chart-2:#d38058; --chart-3:#3a6fa5; --chart-4:#8e492e;
+  }
+  .dark {
+    --background:#0e1411; --foreground:#eef2ef;
+    --card:#151c18; --card-foreground:#eef2ef;
+    --popover:#151c18; --popover-foreground:#eef2ef;
+    --primary:#12a06b; --primary-foreground:#06140e;
+    --secondary:#26302a; --secondary-foreground:#d6ddd8;
+    --muted:#1e2620; --muted-foreground:#9aa39d;
+    --accent:#232c26; --accent-foreground:#eef2ef;
+    --destructive:#e06a5e; --destructive-foreground:#2a0e0b;
+    --border:#26302a; --input:#2a352e; --ring:#12a06b;
+    --terracotta:#db8f6b; --gain:#2fb37e; --loss:#e06a5e; --warning:#e0a82e; --info:#6ba0d8;
+    --chart-1:#11a06b; --chart-2:#e46c29; --chart-3:#6499d2; --chart-4:#c87450;
+  }
+
+  * { box-sizing:border-box; border-color:var(--border); }
+  body {
+    margin:0; background:var(--background); color:var(--foreground);
+    font-family:"Inter var","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased;
+    font-size:14px; line-height:1.5;
+  }
+  .num { font-variant-numeric:tabular-nums; }
+
+  .wrap { max-width:1080px; margin:0 auto; padding:32px 24px 80px; }
+  header.top { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:8px; }
+  header.top h1 { font-size:1.5rem; font-weight:600; letter-spacing:-0.01em; margin:0; }
+  .sub { color:var(--muted-foreground); margin:4px 0 28px; }
+
+  h2.section { font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--muted-foreground); font-weight:600; margin:40px 0 14px; }
+
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  .grid { display:grid; gap:16px; }
+  .grid-3 { grid-template-columns:repeat(3,1fr); }
+  .grid-2 { grid-template-columns:repeat(2,1fr); }
+  @media (max-width:760px){ .grid-3,.grid-2{ grid-template-columns:1fr; } }
+
+  /* Button */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    height:40px; padding:0 16px; border-radius:calc(var(--radius) - 2px);
+    font-size:14px; font-weight:500; border:1px solid transparent; cursor:pointer;
+    transition:background .15s,color .15s,border-color .15s; white-space:nowrap; }
+  .btn:focus-visible { outline:none; box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--ring); }
+  .btn-default { background:var(--primary); color:var(--primary-foreground); }
+  .btn-default:hover { background:color-mix(in srgb,var(--primary) 90%,black); }
+  .btn-secondary { background:var(--secondary); color:var(--secondary-foreground); }
+  .btn-outline { background:var(--background); color:var(--foreground); border-color:var(--input); }
+  .btn-outline:hover { background:var(--accent); color:var(--accent-foreground); }
+  .btn-ghost { background:transparent; color:var(--foreground); }
+  .btn-ghost:hover { background:var(--accent); color:var(--accent-foreground); }
+  .btn-destructive { background:var(--destructive); color:var(--destructive-foreground); }
+  .btn-link { background:transparent; color:var(--primary); text-decoration-line:underline; text-underline-offset:4px; padding:0; height:auto; }
+  .btn-sm { height:36px; padding:0 12px; }
+  .btn-lg { height:44px; padding:0 24px; font-size:16px; }
+
+  /* Card */
+  .card { background:var(--card); color:var(--card-foreground); border:1px solid var(--border);
+    border-radius:var(--radius); box-shadow:0 1px 2px rgba(0,0,0,.05); }
+  .card-h { padding:24px 24px 0; }
+  .card-title { font-weight:600; letter-spacing:-0.01em; line-height:1.1; }
+  .card-desc { font-size:13px; color:var(--muted-foreground); margin-top:6px; }
+  .card-c { padding:24px; }
+  .card-f { padding:0 24px 24px; display:flex; gap:8px; align-items:center; }
+
+  /* KPI */
+  .kpi-label { font-size:13px; color:var(--muted-foreground); }
+  .kpi-value { font-size:1.875rem; font-weight:600; letter-spacing:-0.02em; margin-top:6px; }
+  .delta { font-size:13px; font-weight:500; margin-top:6px; display:inline-flex; gap:4px; }
+
+  /* text helpers */
+  .gain { color:var(--gain); } .loss { color:var(--loss); }
+  .warning { color:var(--warning); } .info { color:var(--info); }
+  .muted { color:var(--muted-foreground); }
+
+  /* Input + label */
+  .field { display:flex; flex-direction:column; gap:8px; }
+  label.lbl { font-size:14px; font-weight:500; }
+  .input { height:40px; border-radius:calc(var(--radius) - 2px); border:1px solid var(--input);
+    background:var(--background); color:var(--foreground); padding:0 12px; font-size:14px; font-family:inherit; }
+  .input::placeholder { color:var(--muted-foreground); }
+  .input:focus-visible { outline:none; box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--ring); border-color:var(--ring); }
+
+  /* Badge */
+  .badge { display:inline-flex; align-items:center; gap:6px; border-radius:9999px;
+    padding:2px 10px; font-size:12px; font-weight:500; line-height:1.4; }
+  .badge-primary { background:color-mix(in srgb,var(--primary) 14%,transparent); color:var(--primary); }
+  .badge-gain { background:color-mix(in srgb,var(--gain) 16%,transparent); color:var(--gain); }
+  .badge-loss { background:color-mix(in srgb,var(--loss) 16%,transparent); color:var(--loss); }
+  .badge-warning { background:color-mix(in srgb,var(--warning) 18%,transparent); color:var(--warning); }
+  .badge-info { background:color-mix(in srgb,var(--info) 16%,transparent); color:var(--info); }
+  .badge-muted { background:var(--muted); color:var(--muted-foreground); }
+  .dot { width:7px; height:7px; border-radius:9999px; background:currentColor; }
+
+  /* Table */
+  table.tbl { width:100%; border-collapse:collapse; font-size:14px; }
+  table.tbl th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.05em;
+    color:var(--muted-foreground); font-weight:600; padding:0 0 10px; border-bottom:1px solid var(--border); }
+  table.tbl td { padding:12px 0; border-bottom:1px solid var(--border); }
+  table.tbl td.amt, table.tbl th.amt { text-align:right; font-variant-numeric:tabular-nums; }
+  table.tbl tr:last-child td { border-bottom:none; }
+
+  /* Tabs */
+  .tabs { display:inline-flex; gap:2px; background:var(--muted); padding:4px; border-radius:calc(var(--radius) - 2px); }
+  .tab { padding:6px 14px; border-radius:calc(var(--radius) - 4px); font-size:13px; font-weight:500;
+    color:var(--muted-foreground); cursor:pointer; border:none; background:transparent; }
+  .tab.active { background:var(--card); color:var(--foreground); box-shadow:0 1px 2px rgba(0,0,0,.06); }
+
+  /* Alerts / toast */
+  .alert { display:flex; gap:12px; padding:14px 16px; border-radius:calc(var(--radius) - 2px);
+    border:1px solid var(--border); background:var(--card); align-items:flex-start; }
+  .alert .bar { width:3px; align-self:stretch; border-radius:2px; }
+  .alert-info .bar{ background:var(--info);} .alert-warning .bar{ background:var(--warning);}
+  .alert-gain .bar{ background:var(--gain);} .alert-loss .bar{ background:var(--destructive);}
+  .alert-title { font-weight:600; font-size:13px; }
+  .alert-body { font-size:13px; color:var(--muted-foreground); margin-top:2px; }
+
+  /* Switch / checkbox */
+  .switch { width:40px; height:22px; border-radius:9999px; background:var(--input); position:relative; cursor:pointer; }
+  .switch.on { background:var(--primary); }
+  .switch::after { content:""; position:absolute; top:2px; left:2px; width:18px; height:18px;
+    border-radius:9999px; background:#fff; transition:left .15s; }
+  .switch.on::after { left:20px; }
+  .check { width:18px; height:18px; border-radius:5px; border:1px solid var(--input); display:inline-flex;
+    align-items:center; justify-content:center; }
+  .check.on { background:var(--primary); border-color:var(--primary); color:var(--primary-foreground); font-size:12px; }
+
+  /* Modal */
+  .overlay { position:relative; background:color-mix(in srgb,var(--foreground) 45%,transparent);
+    border-radius:var(--radius); padding:40px; display:flex; justify-content:center; }
+  .modal { width:100%; max-width:440px; background:var(--popover); color:var(--popover-foreground);
+    border:1px solid var(--border); border-radius:var(--radius); box-shadow:0 16px 40px rgba(0,0,0,.25); }
+  .modal-h { padding:24px 24px 0; }
+  .modal-title { font-size:1.125rem; font-weight:600; }
+  .modal-desc { font-size:13px; color:var(--muted-foreground); margin-top:6px; }
+  .modal-c { padding:20px 24px; display:flex; flex-direction:column; gap:14px; }
+  .modal-f { padding:0 24px 24px; display:flex; justify-content:flex-end; gap:8px; }
+
+  /* Bars (mini chart) */
+  .bars { display:flex; align-items:flex-end; gap:10px; height:120px; }
+  .bar-col { flex:1; display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .bar-fill { width:100%; border-radius:6px 6px 0 0; }
+  .bar-x { font-size:11px; color:var(--muted-foreground); }
+
+  /* swatches */
+  .sw { display:flex; flex-direction:column; gap:6px; }
+  .sw .chip { height:48px; border-radius:8px; border:1px solid var(--border); }
+  .sw .nm { font-size:12px; font-weight:500; }
+  .sw .hx { font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
+
+  /* skeleton */
+  .sk { background:var(--muted); border-radius:6px; height:14px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .sk { animation:pulse 1.6s ease-in-out infinite; }
+</style>
+
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>DohFlow — Component Gallery</h1>
+      <div class="sub">shadcn/ui themed with the DohFlow tokens · Inter · tabular-nums</div>
+    </div>
+    <button class="btn btn-outline" onclick="document.body.classList.toggle('dark')">Toggle light / dark</button>
+  </header>
+
+  <!-- BUTTONS -->
+  <h2 class="section">Buttons</h2>
+  <div class="row">
+    <button class="btn btn-default">Primary</button>
+    <button class="btn btn-secondary">Secondary</button>
+    <button class="btn btn-outline">Outline</button>
+    <button class="btn btn-ghost">Ghost</button>
+    <button class="btn btn-destructive">Delete</button>
+    <button class="btn btn-link">Link</button>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button class="btn btn-default btn-sm">Small</button>
+    <button class="btn btn-default">Default</button>
+    <button class="btn btn-default btn-lg">Large</button>
+    <button class="btn btn-default" disabled style="opacity:.5;cursor:not-allowed">Disabled</button>
+  </div>
+
+  <!-- KPI CARDS -->
+  <h2 class="section">KPI cards (Dashboard)</h2>
+  <div class="grid grid-3">
+    <div class="card"><div class="card-c">
+      <div class="kpi-label">Net worth</div>
+      <div class="kpi-value num">$184,920</div>
+      <div class="delta gain">▲ $2,140 this month</div>
+    </div></div>
+    <div class="card"><div class="card-c">
+      <div class="kpi-label">Cash on hand</div>
+      <div class="kpi-value num">$12,408</div>
+      <div class="delta muted">Across 3 accounts</div>
+    </div></div>
+    <div class="card"><div class="card-c">
+      <div class="kpi-label">Net cash flow · June</div>
+      <div class="kpi-value num loss">−$640</div>
+      <div class="delta loss">▼ over budget</div>
+    </div></div>
+  </div>
+
+  <!-- CHART CARD -->
+  <h2 class="section">Card with chart + tabs</h2>
+  <div class="card">
+    <div class="card-h" style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div>
+        <div class="card-title">Spending by month</div>
+        <div class="card-desc">Last 6 months</div>
+      </div>
+      <div class="tabs">
+        <button class="tab active">6M</button>
+        <button class="tab">1Y</button>
+        <button class="tab">All</button>
+      </div>
+    </div>
+    <div class="card-c">
+      <div class="bars">
+        <div class="bar-col"><div class="bar-fill" style="height:55%;background:var(--chart-1)"></div><div class="bar-x">Jan</div></div>
+        <div class="bar-col"><div class="bar-fill" style="height:72%;background:var(--chart-1)"></div><div class="bar-x">Feb</div></div>
+        <div class="bar-col"><div class="bar-fill" style="height:48%;background:var(--chart-1)"></div><div class="bar-x">Mar</div></div>
+        <div class="bar-col"><div class="bar-fill" style="height:88%;background:var(--chart-2)"></div><div class="bar-x">Apr</div></div>
+        <div class="bar-col"><div class="bar-fill" style="height:63%;background:var(--chart-1)"></div><div class="bar-x">May</div></div>
+        <div class="bar-col"><div class="bar-fill" style="height:78%;background:var(--chart-1)"></div><div class="bar-x">Jun</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRANSACTIONS TABLE -->
+  <h2 class="section">Transactions table</h2>
+  <div class="card"><div class="card-c">
+    <table class="tbl">
+      <thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="amt">Amount</th></tr></thead>
+      <tbody>
+        <tr><td class="num">Jun 24</td><td>Whole Foods Market</td><td><span class="badge badge-muted">Groceries</span></td><td class="amt loss num">−$84.21</td></tr>
+        <tr><td class="num">Jun 23</td><td>Payroll — Acme Co</td><td><span class="badge badge-gain"><span class="dot"></span>Income</span></td><td class="amt gain num">+$3,200.00</td></tr>
+        <tr><td class="num">Jun 22</td><td>Transfer to Savings</td><td><span class="badge badge-info">Transfer</span></td><td class="amt num">−$500.00</td></tr>
+        <tr><td class="num">Jun 21</td><td>Pacific Gas &amp; Electric</td><td><span class="badge badge-muted">Utilities</span></td><td class="amt loss num">−$132.50</td></tr>
+        <tr><td class="num">Jun 20</td><td>Refund — Amazon</td><td><span class="badge badge-muted">Shopping</span></td><td class="amt gain num">+$26.99</td></tr>
+      </tbody>
+    </table>
+  </div></div>
+
+  <!-- DATATABLE STATES -->
+  <h2 class="section">DataTable &mdash; the four states</h2>
+  <p class="muted" style="margin:-4px 0 10px">
+    <code>components/ui/data-table.tsx</code>. Every collection surface renders these same
+    four states, in the real column layout, so loading never reflows into data and an
+    empty table is never mistaken for a broken one. Sorting is opt-in per column
+    (ADR 0053 &sect;4); the expander row&rsquo;s span comes from the column list, not a
+    hand-kept literal (&sect;5).
+  </p>
+  <div class="card"><div class="card-c">
+    <p class="muted" style="margin:0 0 6px"><strong>Populated</strong>, with an expanded row</p>
+    <table class="tbl">
+      <thead><tr><th>Activity</th><th>Date</th><th>Accounts</th><th class="amt">Amount</th></tr></thead>
+      <tbody>
+        <tr><td>Whole Foods Market</td><td class="num">Jun 24</td><td>Checking</td><td class="amt loss num">&minus;$84.21</td></tr>
+        <tr><td>Costco</td><td class="num">Jun 23</td><td>Venture X</td><td class="amt loss num">&minus;$212.40</td></tr>
+        <tr><td colspan="4" style="background:var(--muted);padding:10px 12px">
+          <span class="muted">Split &mdash; Groceries $150.00 &middot; Household $62.40</span>
+        </td></tr>
+        <tr><td>Transfer to Savings</td><td class="num">Jun 22</td><td>Checking &rarr; Savings</td><td class="amt num">&minus;$500.00</td></tr>
+      </tbody>
+    </table>
+  </div></div>
+  <div class="card" style="margin-top:10px"><div class="card-c">
+    <p class="muted" style="margin:0 0 6px"><strong>Loading</strong> &mdash; skeletons in the real columns</p>
+    <table class="tbl">
+      <thead><tr><th>Activity</th><th>Date</th><th>Accounts</th><th class="amt">Amount</th></tr></thead>
+      <tbody>
+        <tr><td><span class="sk"></span></td><td><span class="sk"></span></td><td><span class="sk"></span></td><td><span class="sk"></span></td></tr>
+        <tr><td><span class="sk"></span></td><td><span class="sk"></span></td><td><span class="sk"></span></td><td><span class="sk"></span></td></tr>
+        <tr><td><span class="sk"></span></td><td><span class="sk"></span></td><td><span class="sk"></span></td><td><span class="sk"></span></td></tr>
+      </tbody>
+    </table>
+  </div></div>
+  <div class="card" style="margin-top:10px"><div class="card-c">
+    <p class="muted" style="margin:0 0 6px"><strong>Empty</strong> &mdash; the shared empty state, inside the table</p>
+    <table class="tbl">
+      <thead><tr><th>Activity</th><th>Date</th><th>Accounts</th><th class="amt">Amount</th></tr></thead>
+      <tbody><tr><td colspan="4" style="text-align:center;padding:28px 12px">
+        <div style="font-weight:600;font-size:13px">No transactions yet</div>
+        <div class="muted" style="font-size:12px">Import a statement or add one by hand.</div>
+      </td></tr></tbody>
+    </table>
+  </div></div>
+  <div class="card" style="margin-top:10px"><div class="card-c">
+    <p class="muted" style="margin:0 0 6px"><strong>Error</strong> &mdash; replaces the rows, keeps the header</p>
+    <table class="tbl">
+      <thead><tr><th>Activity</th><th>Date</th><th>Accounts</th><th class="amt">Amount</th></tr></thead>
+      <tbody><tr><td colspan="4" style="text-align:center;padding:24px 12px" class="loss">
+        Could not load your transactions.
+      </td></tr></tbody>
+    </table>
+  </div></div>
+
+  <!-- FORM + MODAL -->
+  <h2 class="section">Form fields &amp; modal (Add bill)</h2>
+  <div class="grid grid-2">
+    <div class="card"><div class="card-c" style="display:flex;flex-direction:column;gap:16px">
+      <div class="field"><label class="lbl">Bill name</label><input class="input" placeholder="e.g. Internet" value="Comcast Xfinity"></div>
+      <div class="field"><label class="lbl">Amount</label><input class="input num" placeholder="$0.00" value="$89.99"></div>
+      <div class="field"><label class="lbl">Due date</label><input class="input num" value="2026-07-01"></div>
+      <div class="row" style="justify-content:flex-end;margin-top:4px">
+        <button class="btn btn-ghost">Cancel</button>
+        <button class="btn btn-default">Add bill</button>
+      </div>
+    </div></div>
+
+    <div class="overlay">
+      <div class="modal">
+        <div class="modal-h">
+          <div class="modal-title">Delete this account?</div>
+          <div class="modal-desc">This removes “Chase Checking” and its 1,204 transactions. This action cannot be undone.</div>
+        </div>
+        <div class="modal-c">
+          <div class="alert alert-loss"><div class="bar"></div><div><div class="alert-title loss">Irreversible</div><div class="alert-body">Export a backup first if you’re unsure.</div></div></div>
+        </div>
+        <div class="modal-f">
+          <button class="btn btn-outline">Cancel</button>
+          <button class="btn btn-destructive">Delete account</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BADGES / ALERTS / CONTROLS -->
+  <h2 class="section">Badges</h2>
+  <div class="row">
+    <span class="badge badge-primary"><span class="dot"></span>Active</span>
+    <span class="badge badge-gain"><span class="dot"></span>Paid</span>
+    <span class="badge badge-warning"><span class="dot"></span>Due soon</span>
+    <span class="badge badge-loss"><span class="dot"></span>Overdue</span>
+    <span class="badge badge-info">Pending</span>
+    <span class="badge badge-muted">Uncategorized</span>
+  </div>
+
+  <h2 class="section">Inline alerts / toasts</h2>
+  <div class="grid grid-2">
+    <div class="alert alert-info"><div class="bar"></div><div><div class="alert-title info">Heads up</div><div class="alert-body">3 transactions need a category in the Money Inbox.</div></div></div>
+    <div class="alert alert-warning"><div class="bar"></div><div><div class="alert-title warning">Bill due in 2 days</div><div class="alert-body">Comcast Xfinity — $89.99 on Jul 1.</div></div></div>
+    <div class="alert alert-gain"><div class="bar"></div><div><div class="alert-title gain">Backup complete</div><div class="alert-body">Encrypted backup saved and verified.</div></div></div>
+    <div class="alert alert-loss"><div class="bar"></div><div><div class="alert-title loss">Reconciliation off by $12.40</div><div class="alert-body">Review the unexplained difference.</div></div></div>
+  </div>
+
+  <h2 class="section">Controls &amp; states</h2>
+  <div class="grid grid-2">
+    <div class="card"><div class="card-c" style="display:flex;flex-direction:column;gap:14px">
+      <div class="row" style="justify-content:space-between"><span>Dark mode</span><span class="switch on"></span></div>
+      <div class="row" style="justify-content:space-between"><span>Auto-categorize imports</span><span class="switch"></span></div>
+      <div class="row"><span class="check on">✓</span><span>Include pending transactions</span></div>
+      <div class="row"><span class="check"></span><span>Group by merchant</span></div>
+    </div></div>
+
+    <div class="card"><div class="card-c">
+      <div class="card-desc" style="margin-bottom:12px">Loading state (skeleton)</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="sk" style="width:60%"></div>
+        <div class="sk" style="width:90%"></div>
+        <div class="sk" style="width:75%"></div>
+        <div class="sk" style="width:40%"></div>
+      </div>
+    </div></div>
+  </div>
+
+  <!-- EMPTY STATE -->
+  <h2 class="section">Empty state</h2>
+  <div class="card"><div class="card-c" style="text-align:center;padding:48px 24px">
+    <div style="font-size:1.125rem;font-weight:600">No transactions yet</div>
+    <div class="card-desc" style="margin:6px auto 18px;max-width:380px">Import a statement or add your first transaction to see your activity here.</div>
+    <button class="btn btn-default">Import transactions</button>
+  </div></div>
+
+  <!-- SWATCHES -->
+  <h2 class="section">Token swatches (current mode)</h2>
+  <div class="grid grid-3" id="swatches"></div>
+</div>
+
+<script>
+  const toks = ["background","foreground","card","primary","primary-foreground","secondary",
+    "muted","muted-foreground","accent","destructive","border","ring",
+    "terracotta","gain","loss","warning","info","chart-1","chart-2","chart-3","chart-4"];
+  const host = document.getElementById("swatches");
+  function paint(){
+    const cs = getComputedStyle(document.body);
+    host.innerHTML = toks.map(t=>{
+      const v = cs.getPropertyValue("--"+t).trim();
+      return `<div class="sw"><div class="chip" style="background:var(--${t})"></div>
+        <div class="nm">${t}</div><div class="hx">${v}</div></div>`;
+    }).join("");
+  }
+  paint();
+  new MutationObserver(paint).observe(document.body,{attributes:true,attributeFilter:["class"]});
+</script>
+</body>

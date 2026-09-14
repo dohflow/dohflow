@@ -1,0 +1,709 @@
+name: CI
+
+# Public-repo triggers, shipped now but inert until the repo is public
+# (personal-cfo-fkt5.7, owner decision G option 2). This file lands inside
+# the go-live snapshot (docs/operations/public-launch-snapshot.md), so it
+# must already be correct on day one — the alternative (adding triggers only
+# after the flip) would mean the very first public PR is untested. Two
+# independent guards keep it free while this repo is still private:
+#
+#   1. VISIBILITY GUARD (every job): `if: github.event_name ==
+#      'workflow_dispatch' || github.event.repository.private == false`.
+#      While private, only a manual dispatch runs anything — push/pull_request
+#      events are no-ops (the job still gets a run, but every step is
+#      skipped, which GitHub reports as Success, not "Expected — waiting").
+#      Once public, the guard is always true and every job runs normally.
+#      `schedule` events are a DELIBERATE EXCEPTION to this guard, not an
+#      oversight — see security-scan's own comment for why `github.event.
+#      repository` doesn't exist on a schedule trigger, which makes this
+#      exact boolean form silently always-true for it, and how that job
+#      re-checks visibility for real instead.
+#   2. IN-JOB PATH FILTERING (rust/frontend/ipc-codegen only, not a
+#      workflow-level `paths-ignore`): a `dorny/paths-filter` step is each of
+#      those jobs' own first real step; their expensive compile/test steps run
+#      only `if: steps.filter.outputs.code == 'true' || github.event_name ==
+#      'workflow_dispatch'` (the dispatch escape hatch is what makes the
+#      verification run below actually exercise every step, not just prove
+#      the filter itself works). A workflow-level `paths-ignore` on the
+#      trigger would make the whole workflow run NOT EXIST for a docs-only
+#      push — and personal-cfo-fkt5.9 makes these job names required checks,
+#      which would then sit at "Expected — waiting for status" forever. A job
+#      that runs but skips its expensive steps reports real Success instead.
+#      security-scan and Shell scripts run unconditionally (visibility guard
+#      only) — they're either already fast (Shell scripts) or need to run on
+#      every change regardless of which files changed (security-scan).
+#
+# Manual dispatch still works exactly as before, for a pre-flip hosted check:
+#   - the Actions tab → "CI" → "Run workflow", or
+#   - gh workflow run ci.yml --ref <branch>
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekly, security-scan only — every other job explicitly excludes
+    # `schedule` events (see each job's `if:`), so this cron doesn't burn
+    # minutes re-running the compile/test jobs with nothing new to check.
+    - cron: '0 6 * * 1' # Monday 06:00 UTC
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # dorny/paths-filter needs this to list changed files via the GitHub API
+  # on pull_request events (it uses git diff instead for push events, which
+  # needs no extra permission — but PRs are the common case here).
+  pull-requests: read
+
+jobs:
+  rust:
+    name: Rust (workspace)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # dorny/paths-filter needs at least the previous commit reachable
+          # for a push event's "diff against the prior commit on this branch"
+          # comparison; the default shallow depth of 1 has only HEAD.
+          fetch-depth: 2
+
+      # In-job path filtering (personal-cfo-fkt5.7) — see the workflow-level
+      # comment at the top of this file for why this is a step-level filter
+      # and not a workflow-level `paths-ignore`.
+      - name: Detect changed files
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          base: main
+          filters: |
+            code:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
+
+      # The pinned toolchain (channel + rustfmt/clippy) comes from
+      # rust-toolchain.toml, which rustup honors automatically.
+      - name: Show toolchain
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+
+      # During the bootstrap phase the root workspace has zero member crates,
+      # and cargo cannot build/test/clippy/fmt a virtual manifest with no
+      # members. So we validate the manifest with `cargo metadata` until the
+      # first crate lands (core-money, personal-cfo-klr.1), at which point the
+      # full gates activate automatically — no workflow edit required.
+      - name: Rust gates (auto-activate with first crate)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          members=$(cargo metadata --format-version 1 --no-deps | jq '.packages | length')
+          echo "Workspace member crates: $members"
+          if [ "$members" -eq 0 ]; then
+            echo "Bootstrap phase: no member crates yet — validating manifest only."
+            cargo metadata --format-version 1 --no-deps > /dev/null
+          else
+            cargo fmt --all -- --check
+            cargo clippy --workspace --all-targets -- -D warnings
+            cargo test --workspace
+          fi
+
+      # Monetary amounts must use integer minor units, never floating point
+      # (plan §9.1). Forbid f32/f64 in money-critical crates' non-test source.
+      #
+      # personal-cfo-fkt5.7: this step has never actually run before now —
+      # like security-scan's gitleaks step above, it only ever existed on a
+      # workflow_dispatch-only trigger that (per this branch's own dispatch
+      # history) was never manually fired after it was added — and it found
+      # two real, pre-existing gaps in the check itself on its first run,
+      # neither of which is an actual money-as-float bug:
+      #
+      #   1. A bare `grep` can't tell code from comments, so a doc comment
+      #      literally ASSERTING "no f64" (crates/forecast-engine/src/
+      #      payoff.rs:3, revolving.rs:4: "Pure + deterministic... integer-
+      #      cent math, no `f64` / clock / IO.") tripped the same rule it was
+      #      describing compliance with. Fixed the same way the "Enforce
+      #      importer isolation boundaries" step below already does it:
+      #      strip `//`-comments with sed before grepping.
+      #   2. crates/forecast-engine/src/layer2.rs (ADR 0026 §7's statistical
+      #      spend-band model) genuinely uses f64 — verified by reading the
+      #      actual code (same discipline as this repo's other narrow,
+      #      documented exceptions, e.g. scripts/value-scan.sh's CapitalOne
+      #      carve-out) before excepting it: every public function boundary
+      #      in that file is i64 cents in, i64 cents out (`quantile`,
+      #      `prediction_half_width`, `band_of` and its `SpendBand` fields)
+      #      — f64 is used ONLY as statistical-computation scratch space
+      #      (quantile interpolation fraction, mean/variance/stddev, a
+      #      Student's-t lookup table), never to store, compare, or
+      #      serialize a money value. The one f64 use that ISN'T
+      #      pure-statistics scratch (a relative-error ratio at line ~447)
+      #      is inside `#[cfg(test)] mod tests` — genuinely test code the
+      #      rule's own rationale already exempts, just not reachable by
+      #      this find command's directory-only (`-not -path '*/tests/*'`)
+      #      test exclusion, which cannot see an inline test module inside
+      #      a src/ file. The file is excepted ENTIRELY below (round-2
+      #      review finding: an earlier version of this comment claimed a
+      #      future edit outside the verified scratch-math usage would
+      #      still be caught, which was false — the whole file is skipped,
+      #      so a NEW money-as-float bug landing directly in layer2.rs
+      #      would not be). The separate "layer2.rs public API boundaries"
+      #      step below is the real backstop for that: it specifically
+      #      re-checks this one file's `pub` surface (the actual invariant
+      #      to preserve — internal scratch math may keep using f64
+      #      freely, but nothing PUBLIC may return, take, or store one) —
+      #      confirmed to catch a synthetic `pub fn ... -> f64` planted in
+      #      this exact file, not just in an unrelated one.
+      - name: Forbid floating-point in money-critical crates
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          files=$(find crates/core-* crates/forecast-engine -name '*.rs' \
+            -not -path '*/tests/*' \
+            -not -name 'layer2.rs' \
+            2>/dev/null || true)
+          found=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            hits=$(sed 's://.*::' "$f" | grep -nE '\bf(32|64)\b' || true)
+            if [ -n "$hits" ]; then
+              while IFS= read -r hit; do
+                echo "$f:$hit"
+              done <<< "$hits"
+              found=1
+            fi
+          done <<< "$files"
+          if [ "$found" -eq 1 ]; then
+            echo "::error::floating-point types are forbidden in money-critical crates (use integer minor units)"
+            exit 1
+          fi
+          echo "No floating-point types in money-critical crate source."
+
+      # personal-cfo-fkt5.7 round-2 review finding 3: layer2.rs is excepted
+      # ENTIRELY from the check above (it's excluded by filename, not by a
+      # more surgical per-line rule), so that check alone would miss a real
+      # money-as-float bug landing directly in this one file. This step is
+      # the actual backstop for that: it re-checks ONLY layer2.rs, and only
+      # its `pub` surface — a `pub fn`/`pub <field>` line naming f32/f64
+      # anywhere on it (return type, parameter, or field type) fails, while
+      # non-`pub` lines (the file's genuine, already-verified scratch-math
+      # use — quantile interpolation, mean/variance/stddev, the Student's-t
+      # table) are left alone. Comment-stripped the same way as the check
+      # above, for the same reason (a doc comment naming "f64" isn't code).
+      - name: layer2.rs public API boundaries stay integer-cent
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          f=crates/forecast-engine/src/layer2.rs
+          if [ -f "$f" ]; then
+            hits=$(sed 's://.*::' "$f" | grep -nE '^\s*pub\b.*\bf(32|64)\b' || true)
+            if [ -n "$hits" ]; then
+              echo "$hits" | while IFS= read -r hit; do echo "$f:$hit"; done
+              echo "::error::layer2.rs's public API must stay integer-cent — f32/f64 is only allowed as internal scratch space, never on a pub boundary"
+              exit 1
+            fi
+          fi
+          echo "layer2.rs public API boundaries OK."
+
+      # The pure-types crates (core-ids, core-ledger, core-money), the pure
+      # crypto crate (vault-crypto), the pay-schedule engine, and the
+      # deterministic Future Cash forecast engine (forecast-engine) must not pull
+      # in a database, async runtime, or the Tauri shell — they are domain value
+      # types / a database-free KDF / pure functions only (plan §9.4, §13.3;
+      # vault-crypto per personal-cfo-j0o; forecast-engine per personal-cfo-164u).
+      # Checks the resolved dependency tree, so transitive leaks are caught too.
+      - name: Enforce pure-types crate boundaries
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          for crate in core-ids core-money core-ledger vault-crypto pay-schedule forecast-engine; do
+            if [ -d "crates/$crate" ]; then
+              if cargo tree -e normal -p "$crate" 2>/dev/null | grep -iE '\b(tokio|tauri|rusqlite)\b'; then
+                echo "::error::$crate must not depend on tokio/tauri/rusqlite (pure-types crate)"
+                exit 1
+              fi
+            fi
+          done
+          echo "Pure-types crate boundaries OK."
+
+      # The transaction-display read model is derived: only the projection module
+      # may write it. Command code (lib.rs) must never INSERT/UPDATE/DELETE it
+      # (plan beads personal-cfo-9x4 + lxj).
+      - name: Read model is written only by the projection module
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          if [ -f crates/db-worker/src/lib.rs ]; then
+            if grep -nE '(INSERT|UPDATE|DELETE)[^;]*transaction_display_rows_read_model' crates/db-worker/src/lib.rs; then
+              echo "::error::command code must not write the transaction-display read model (use the projection module)"
+              exit 1
+            fi
+          fi
+          echo "Read model write-boundary OK."
+
+      # db-worker is the single owner of the SQLCipher connection: it must be the
+      # only crate that declares a dependency on rusqlite (plan §2.6, klr.3).
+      - name: Only db-worker may depend on rusqlite
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          offenders=$(grep -rl '^rusqlite' crates/*/Cargo.toml 2>/dev/null \
+            | grep -v '^crates/db-worker/Cargo.toml' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::only db-worker may depend on rusqlite; found: $offenders"
+            exit 1
+          fi
+          echo "rusqlite is owned solely by db-worker."
+
+      # The connector contract crate (personal-cfo-x6dr, ADR 0004/0060): an
+      # adapter can never write the ledger, so connector-core must not depend
+      # on db-worker — and stays a pure contract crate (no DB/async/Tauri).
+      # The plain assignment makes a cargo-tree failure fail the step (set -e)
+      # instead of an empty grep input silently passing.
+      - name: Enforce connector-core compile barrier
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          tree=$(cargo tree -e normal -p connector-core)
+          if grep -iE '\b(db-worker|rusqlite|tokio|tauri)\b' <<<"$tree"; then
+            echo "::error::connector-core must not depend on db-worker/rusqlite/tokio/tauri (personal-cfo-x6dr compile barrier)"
+            exit 1
+          fi
+          # Adapter crates handle money-shaped network data and inherit the
+          # same barrier: staged output only, no ledger access, no async shell.
+          for manifest in crates/connectors/*/Cargo.toml; do
+            [ -f "$manifest" ] || continue
+            crate=$(basename "$(dirname "$manifest")")
+            tree=$(cargo tree -e normal -p "$crate")
+            if grep -iE '\b(db-worker|rusqlite|tokio|tauri)\b' <<<"$tree"; then
+              echo "::error::$crate must not depend on db-worker/rusqlite/tokio/tauri (ADR 0004 / personal-cfo-x6dr barrier)"
+              exit 1
+            fi
+          done
+          echo "connector compile barriers OK."
+
+      # The mock connector (personal-cfo-1s2b) is test-only: the non-default
+      # `mock` feature may be enabled from [dev-dependencies] only. This grep
+      # stands in for the cargo-deny rule the bead AC named (the workspace has
+      # no cargo-deny); it scans each manifest's [dependencies] section for a
+      # connector-core entry enabling the feature.
+      - name: Forbid the connector mock in production dependencies
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          offenders=""
+          while IFS= read -r manifest; do
+            if awk '
+              /^\[dependencies\]$/                 {mode="deps"; next}
+              /^\[dependencies\.connector-core\]/  {mode="cc";   next}
+              /^\[/                                {mode=""}
+              mode=="deps" && /connector-core.*mock/ {found=1}
+              mode=="cc"   && /features.*mock/       {found=1}
+              END {exit !found}
+            ' "$manifest"; then
+              offenders="$offenders $manifest"
+            fi
+          done < <(find crates apps -name Cargo.toml -not -path '*/target/*')
+          if [ -n "$offenders" ]; then
+            echo "::error::connector-core's mock feature is test-only; remove it from [dependencies] in:$offenders (personal-cfo-1s2b)"
+            exit 1
+          fi
+          echo "connector mock stays out of production dependencies."
+
+      # Importer plugins register at COMPILE TIME (personal-cfo-eay) and parse
+      # untrusted bytes behind the isolation boundary (ADR 0022): no runtime
+      # dynamic loading, and no database / async runtime / Tauri shell in the
+      # parsing crates (a plugin holds no keys, DB, network, or IPC).
+      - name: Enforce importer isolation boundaries
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          if [ -d crates/importers ]; then
+            # (a) No dynamic-loading crate as a dependency (the realistic vector).
+            if grep -rniE '^[[:space:]]*(libloading|dlopen2?)[[:space:]]*=' \
+                 crates/importers --include=Cargo.toml 2>/dev/null; then
+              echo "::error::dynamic-loading crates (libloading/dlopen) are forbidden in importer crates (ADR 0022)"
+              exit 1
+            fi
+            # (b) No raw loader FFI in source. Comments are stripped first so prose
+            #     that NAMES the ban (these crates' own docs) does not trip it.
+            if find crates/importers -name '*.rs' -exec sed 's://.*::' {} + 2>/dev/null \
+                 | grep -nE '\b(libloading|dl(open|sym|mopen|close|fcn))\b' >/dev/null; then
+              echo "::error::dynamic-loading symbols are forbidden in importer source (ADR 0022; use compile-time inventory registration)"
+              exit 1
+            fi
+            # (c) No database / async runtime / Tauri shell in the parsing crates.
+            for manifest in crates/importers/*/Cargo.toml; do
+              [ -f "$manifest" ] || continue
+              crate=$(basename "$(dirname "$manifest")")
+              if cargo tree -e normal -p "$crate" 2>/dev/null | grep -iE '\b(tokio|tauri|rusqlite|ureq|reqwest|hyper|curl)\b'; then
+                echo "::error::$crate must not depend on tokio/tauri/rusqlite or an HTTP client (parsers have no DB/async/Tauri/network; ADR 0022)"
+                exit 1
+              fi
+            done
+          fi
+          echo "Importer isolation boundaries OK."
+
+  frontend:
+    name: Frontend (apps/desktop)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed files
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          base: main
+          filters: |
+            code:
+              - 'apps/desktop/**'
+              - '!apps/desktop/src-tauri/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.github/workflows/ci.yml'
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: pnpm typecheck
+
+      - name: Lint
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: pnpm lint
+
+      - name: Test
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: pnpm test
+
+      - name: Build
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: pnpm -r build
+
+  # The IPC command surface (personal-cfo-40t): compile the standalone desktop
+  # crate, run its Rust gates, and prove the generated TypeScript bindings are
+  # in sync with the Rust types. The standalone crate is excluded from the root
+  # `rust` job's `cargo --workspace`, so it gets its own gates here.
+  ipc-codegen:
+    name: IPC codegen (apps/desktop/src-tauri)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      # personal-cfo-fkt5.7 round-2 review finding: the desktop crate isn't a
+      # self-contained Rust workspace — apps/desktop/src-tauri/Cargo.toml has
+      # six `path = "../../../crates/..."` dependencies (finance-kernel,
+      # csv-importer, ofx-importer, connector-core, simplefin-adapter,
+      # observability), so this job's own compile/test/bindings-sync gates
+      # only mean anything if a change to any of THOSE crates also runs
+      # them. `crates/**` is included below for exactly that reason — not
+      # narrowed to the six specific paths, since a new path dependency
+      # added later shouldn't also require remembering to widen this list.
+      # apps/desktop/src/bindings.ts is included too: it's the generated
+      # file the "TypeScript bindings are in sync" step below compares
+      # against, and sits outside apps/desktop/src-tauri/** entirely, so a
+      # hand-edit to the generated file itself needs to trigger that check
+      # as well, not just a source-side regeneration.
+      - name: Detect changed files
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          base: main
+          filters: |
+            code:
+              - 'apps/desktop/src-tauri/**'
+              - 'apps/desktop/src/bindings.ts'
+              - 'crates/**'
+              - '.github/workflows/ci.yml'
+
+      # ADR 0010: the WebView must always have a Content Security Policy. Fail
+      # fast if app.security.csp regresses to null (the gap this ADR closed).
+      - name: Content Security Policy is configured (ADR 0010)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys
+          sec = json.load(open("apps/desktop/src-tauri/tauri.conf.json"))["app"]["security"]
+          if not sec.get("csp"):
+              print("::error::app.security.csp must not be null (ADR 0010 — the WebView needs a Content Security Policy)")
+              sys.exit(1)
+          print("CSP present.")
+          PY
+
+      # Tauri 2 Linux build dependencies (webkit2gtk, gtk, …). SQLCipher and
+      # OpenSSL are compiled from vendored sources by rusqlite, so no database
+      # system libraries are required.
+      - name: Install Tauri system dependencies
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev
+
+      # The pinned toolchain comes from rust-toolchain.toml (rustup honors it).
+      - name: Show toolchain
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      # A dev-profile build serves assets from the dev URL and does not embed
+      # the frontend, so a placeholder `dist/` is all `tauri-build` needs. The
+      # real bundle is built by the frontend job (and, later, personal-cfo-rhci).
+      - name: Placeholder frontend dist
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p apps/desktop/dist
+          echo '<!doctype html><title>codegen</title>' > apps/desktop/dist/index.html
+
+      - name: Rust gates (desktop crate)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      # Regenerate the bindings and fail if the committed file is stale. This is
+      # the enforced Rust↔TS schema-sync gate (personal-cfo-40t / rs1v).
+      - name: TypeScript bindings are in sync
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          set -euo pipefail
+          cargo run --quiet --bin export_bindings
+          if ! git diff --exit-code ../src/bindings.ts; then
+            echo "::error::apps/desktop/src/bindings.ts is stale — run 'cargo run --bin export_bindings' in apps/desktop/src-tauri and commit the result."
+            exit 1
+          fi
+
+  # Secret + dependency scanning (personal-cfo-6r6 / -7t7). Runs unconditionally
+  # (visibility guard only, no path filter — see the workflow-level comment) on
+  # every trigger including the weekly schedule; the same commands run locally
+  # too (see docs/security/scanning.md).
+  security-scan:
+    name: Security scanning (secrets + dependencies)
+    runs-on: ubuntu-latest
+    # `schedule` is deliberately let PAST the job-level guard here (unlike
+    # every other job, which excludes it outright) and re-checked for real by
+    # this job's own first step below — see that step's comment for why the
+    # ordinary `github.event.repository.private == false` form cannot
+    # distinguish public from private for a scheduled run.
+    if: github.event_name == 'workflow_dispatch' || github.event.repository.private == false || github.event_name == 'schedule'
+    steps:
+      # personal-cfo-fkt5.7 round-2 review finding: a `schedule` event's
+      # payload has NO `repository` object at all (confirmed:
+      # https://github.com/orgs/community/discussions/12269), so
+      # `github.event.repository.private == false` — this job's own guard,
+      # same as every other job's — silently evaluates to TRUE for a
+      # scheduled run regardless of the repo's real visibility. GitHub's
+      # expression language coerces both `null` and `false` to `0` for an
+      # equality comparison, so `null == false` is `true`: the guard that
+      # correctly reads "still private, do nothing" for push/pull_request
+      # instead reads "go ahead" for schedule. There is no purely
+      # expression-language fix — `schedule` payloads carry no visibility
+      # signal to check at all — so this step asks the REST API directly,
+      # in-job-filtering style (the same pattern `steps.filter.outputs.code`
+      # uses for paths elsewhere in this file, applied to visibility
+      # instead): every step below is gated on this step's `run` output,
+      # which is unconditionally `true` for every non-schedule event (their
+      # job-level guard already handled visibility correctly) and reflects
+      # the real, current API-queried visibility only when the trigger
+      # actually is `schedule`.
+      - name: Resolve visibility (schedule events only)
+        id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            is_private=$(gh api "repos/${{ github.repository }}" --jq .private)
+            if [ "$is_private" = "false" ]; then
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "Repository is still private; skipping this scheduled run."
+            fi
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: steps.visibility.outputs.run == 'true'
+        with:
+          fetch-depth: 0 # gitleaks scans the full commit history
+
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        if: steps.visibility.outputs.run == 'true'
+        with:
+          tool: cargo-audit,cargo-deny
+
+      # taiki-e/install-action has no gitleaks manifest at all (confirmed:
+      # no manifests/gitleaks.json in that repo) and its cargo-binstall
+      # fallback can never work for it either — gitleaks is a Go binary,
+      # never published to crates.io. This went undetected for months
+      # because this whole workflow was workflow_dispatch-only and, per
+      # this branch's own real run history, was never actually dispatched
+      # after gitleaks was added to this job — personal-cfo-fkt5.7's own
+      # required verification run is what caught it for the first time.
+      # Installed directly from gitleaks' own GitHub releases instead,
+      # checksum-verified against that release's published SHA256SUMS
+      # (the direct-binary equivalent of the SHA-pinning every Action in
+      # this file gets — there's no source to pin a commit of here, only a
+      # released binary, so a checksum is the trust mechanism instead).
+      - name: Install gitleaks
+        if: steps.visibility.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          checksum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          asset="gitleaks_${version}_linux_x64.tar.gz"
+          curl -sSLO "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}"
+          echo "${checksum}  ${asset}" | sha256sum -c -
+          tar -xzf "$asset" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # Secret scanning (6r6): fail on any committed credential. The .gitleaks.toml
+      # allowlist excludes generated bead data + the redaction-test fixtures, which
+      # embed secret-shaped strings by design (personal-cfo-zobt).
+      - name: Secret scan (gitleaks)
+        if: steps.visibility.outputs.run == 'true'
+        run: gitleaks detect --config .gitleaks.toml --no-banner --redact
+
+      # Real-value scan (personal-cfo-o1nxk item 10) — a different,
+      # complementary risk from gitleaks above: real bank/brokerage names,
+      # SSN-shaped strings, card-number-shaped strings — none of which are
+      # "secrets," but all of which would be a privacy incident. Runs
+      # against the COMMITTED tree (this is exactly why this step exists:
+      # two real bugs in this script — see its own header comment — were
+      # each caught only by a reviewer running it against a tree the
+      # implementer's own working copy hadn't yet committed; a CI step
+      # against the actual pushed tree closes that gap structurally rather
+      # than relying on remembering to re-run it by hand).
+      - name: Real-value scan (bank names, SSN/card shapes)
+        if: steps.visibility.outputs.run == 'true'
+        run: ./scripts/value-scan.sh
+
+      # Dependency scanning (7t7) — both Cargo workspaces (root + the standalone
+      # desktop crate). Fails on a known-vulnerable crate; unmaintained-advisory
+      # warnings (e.g. Tauri's Linux-only GTK3 deps) are informational by default.
+      - name: Dependency scan — Rust (cargo audit)
+        if: steps.visibility.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          cargo audit
+          cargo audit -f apps/desktop/src-tauri/Cargo.lock
+
+      # AGPL-3.0-only dependency LICENSE audit (personal-cfo-o1nxk item 3) —
+      # two separate Cargo workspaces, two deny.toml files (see either for the
+      # full allowlist + rationale for every non-obvious entry).
+      - name: Dependency license scan — Rust (cargo deny)
+        if: steps.visibility.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          cargo deny check licenses
+          cargo deny --manifest-path apps/desktop/src-tauri/Cargo.toml check licenses
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        if: steps.visibility.outputs.run == 'true'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.visibility.outputs.run == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Dependency scanning (7t7) — the frontend dependency tree.
+      - name: Dependency scan — frontend (pnpm audit)
+        if: steps.visibility.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm audit --prod
+
+      # AGPL-3.0-only dependency LICENSE audit (personal-cfo-o1nxk item 3) —
+      # frontend equivalent of the cargo-deny steps above; no frontend
+      # cargo-deny analogue exists, so this is a small hand-rolled script
+      # against `pnpm licenses list --json` (see the script's own header for
+      # why, and docs/security/scanning.md).
+      - name: Dependency license scan — frontend
+        if: steps.visibility.outputs.run == 'true'
+        run: node scripts/check-frontend-licenses.mjs --prod
+
+  # Shell script checks (personal-cfo-fkt5.7, folds in personal-cfo-2yncn):
+  # every scripts/tests/*.test.sh file is CI-safe by construction — no
+  # network, no real bead database (each stubs `bd` on PATH), no real
+  # credentials — see each test's own header comment for details. Without
+  # this job, a regression the tests exist to catch (e.g. the au76q
+  # GIT_DIR incident) only gets caught when someone remembers to run them by
+  # hand. Runs unconditionally (visibility guard only, no path filter — it's
+  # already fast, a few seconds total, so there's nothing worth skipping).
+  # shellcheck is deliberately NOT added here: not installed on the dev
+  # machine, and would flag pre-existing style across all these scripts —
+  # a separate question from "do the tests the repo already has actually run."
+  shell-scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Syntax check (bash -n)
+        run: |
+          set -euo pipefail
+          for f in scripts/*.sh scripts/tests/*.test.sh; do
+            bash -n "$f"
+          done
+          echo "All scripts/*.sh and scripts/tests/*.test.sh pass bash -n."
+
+      - name: Run shell tests
+        run: |
+          set -euo pipefail
+          for f in scripts/tests/*.test.sh; do
+            echo "::group::$f"
+            bash "$f"
+            echo "::endgroup::"
+          done
+
+  # NOTE: Building the macOS release binary (with capability/CSP hardening and a
+  # launch smoke test) is owned by bead personal-cfo-rhci and will be added as a
+  # macOS job there.

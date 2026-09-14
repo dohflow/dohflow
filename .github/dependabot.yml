@@ -1,0 +1,74 @@
+# Dependabot version updates (personal-cfo-fkt5.7). Ships inside the go-live
+# snapshot alongside ci.yml's visibility guard (see that file's top comment).
+#
+# PAUSED (personal-cfo-kzx9a, owner decision, 2026-09-10): every ecosystem
+# below carries open-pull-requests-limit: 0. fkt5.7's own PR body assumed
+# Dependabot was inert on a private repo until the flip — wrong: the feature
+# is already enabled on chrisbustos/personal-cfo, and the moment fkt5.7
+# merged, four Dependabot runs fired within 15 minutes and opened 18 PRs
+# (#421-#438), including major bumps to sha2/hmac/hkdf/aes-gcm — crates
+# vault-crypto's KDF/envelope path depends on (ADR 0002) — and a major ureq
+# bump in the SimpleFIN adapter. None of those merit merging casually in
+# launch week, and CI's visibility guard means none of them get verified
+# anyway while the repo stays private. open-pull-requests-limit: 0 stops
+# Dependabot from opening any MORE PRs; the 18 already open (#421-#438) are
+# closed separately, once this change has merged (gh pr close, branches
+# left alone — closing is reversible, deleting is not part of this; closing
+# before this merges risks Dependabot recreating them on its next run).
+#
+# RE-ENABLE PLAN (personal-cfo-867.1.4, first week after go-live): restore
+# open-pull-requests-limit: 5 one ecosystem at a time; every major-version
+# bump gets its own bead and a review with the relevant ADR open before
+# merging (crypto crates against ADR 0002, ureq 3 against the SimpleFIN
+# adapter's request/response shape, recharts 3 against the chart components
+# that consume it). Do not bulk-restore all four ecosystems at once — that
+# would just reopen dependabot the same way it opened 18 PRs in 15 minutes.
+#
+# Two separate Cargo workspaces exist in this repo (root, and the standalone
+# apps/desktop/src-tauri crate — see ci.yml's `rust` vs `ipc-codegen` jobs),
+# so both get their own `cargo` entry.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "cargo"
+    directory: "/apps/desktop/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"

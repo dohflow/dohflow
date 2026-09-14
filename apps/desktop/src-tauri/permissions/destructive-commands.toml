@@ -1,0 +1,20 @@
+# Destructive / exfiltration-capable application commands (personal-cfo-3fdd.6,
+# ADR 0010 addendum 2026-07-04). Kept OUT of allow-app-commands so the grant can be
+# withheld from future isolated windows (personal-cfo-2no/vrng/z6pn) while the
+# trusted main window keeps it via capabilities/destructive.json.
+# See app-commands.toml for how this directory drives the app ACL and for the
+# maintenance rule that every src/lib.rs command must appear in exactly one file.
+
+[[permission]]
+identifier = "allow-destructive-commands"
+description = "Commands that can destroy vault data (delete_vault, restore_backup), move it out of the vault (export_backup), or swap/restart the binary (apply_update, relaunch_app). Granted only by capabilities/destructive.json (main window today)."
+commands.allow = [
+  "delete_vault",
+  "export_backup",
+  "export_transactions_csv",
+  "restore_backup",
+  "apply_update",
+  "relaunch_app",
+  # Hard-deletes a stored connector credential (personal-cfo-gglk).
+  "connector_forget",
+]

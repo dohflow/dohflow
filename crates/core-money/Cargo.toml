@@ -1,0 +1,17 @@
+[package]
+name = "core-money"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Decimal-precise money type (integer minor units), currency tagging, and rounding for DohFlow. Single source of truth for monetary math across the workspace."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = "1"

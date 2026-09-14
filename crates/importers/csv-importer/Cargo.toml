@@ -1,0 +1,19 @@
+[package]
+name = "csv-importer"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Generic CSV ImporterPlugin for DohFlow (personal-cfo-cu8): column mapping + locale-aware amount parsing + ambiguous-date confidence, turning a CSV export into typed staged candidates. Pure (no DB/network/IPC); registered at compile time via importer-core, run behind the bounded host (ADR 0022)."
+
+# Pure parsing crate — no database, async runtime, or Tauri (CI-enforced for
+# crates/importers/*). Untrusted bytes in, typed ParsedBatch out.
+[dependencies]
+importer-core = { path = "../importer-core" }
+core-money = { path = "../../core-money" }
+chrono = { workspace = true }
+csv = { workspace = true }
+semver = { workspace = true }
+serde_json = { workspace = true }

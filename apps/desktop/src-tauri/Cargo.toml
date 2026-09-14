@@ -1,0 +1,125 @@
+# The Tauri desktop crate is a STANDALONE workspace (note the empty [workspace]
+# table below), intentionally detached from the repo-root Cargo workspace. This
+# keeps the root workspace build fast and free of native bundling/webview deps;
+# the Tauri app is built via its own tooling (`pnpm tauri ...`). Security
+# hardening (capabilities, CSP, devtools-off-in-release) and the release-binary
+# CI build are owned by bead personal-cfo-rhci.
+[workspace]
+
+[package]
+name = "personal-cfo-desktop"
+version = "0.1.0"
+# The crate ships two binaries (the app + the `export_bindings` codegen tool from
+# personal-cfo-40t), so `cargo run` / `tauri dev` need to be told which one is the
+# app — without this they fail with "could not determine which binary to run".
+default-run = "personal-cfo-desktop"
+description = "DohFlow — local-first household finance desktop app"
+authors = ["Chris Bustos"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/dohflow/dohflow"
+edition = "2021"
+rust-version = "1.82"
+# Never meant to reach crates.io — also lets cargo-deny's `[licenses.private]`
+# correctly skip this crate's license field (personal-cfo-o1nxk).
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2.11.2", features = [] }
+# Not used directly by this crate — declared only to force Cargo's resolver
+# to a newer version than tauri/tauri-utils's own (looser) constraint would
+# otherwise pick. RUSTSEC-2026-0195/-0194 (both 7.5/high): plist 1.9.0 (what
+# tauri pulls in on its own, for Apple .plist / Info.plist parsing — not
+# user-facing input) depends on a quick-xml with an unbounded-allocation DoS
+# and a quadratic-time parse on attacker-controlled XML; plist >=1.10 depends
+# on a fixed quick-xml. personal-cfo-o1nxk item 3; owner-approved (HIGH
+# finding, this bead's own escalation rule). Revisit/remove once a Tauri
+# release bumps its own plist dependency past this version naturally.
+plist = "1.10.1"
+# Native file dialogs for backup export (Save) / restore (Open) — personal-cfo-dvxm.
+# Scoped to open/save only in capabilities/default.json (ADR 0010).
+tauri-plugin-dialog = "2"
+# System-browser opener for the About card / Support row (personal-cfo-n76x.18).
+# The main window is granted ONLY `opener:allow-open-url` scoped to
+# `https://dohflow.app/*` in capabilities/default.json — never `opener:default`,
+# no path/reveal commands (ADR 0010 addendum 2026-09-06). Pinned exactly (`=`,
+# like the specta pair below) so a routine `cargo update` cannot move it off the
+# npm `@tauri-apps/plugin-opener` exact pin (same version) — the two halves stay
+# in lockstep by requirement, not just by the lockfile.
+tauri-plugin-opener = "=2.5.5"
+# The real signed-artifact update channel (personal-cfo-867.1.2, ADR 0068) — release
+# builds only (`PCFO_BUILD_CHANNEL == dev` keeps the from-source updater, `update.rs`).
+# Pinned exactly, like the opener pair above: the Rust plugin verifies a minisign
+# signature and the JS half (`@tauri-apps/plugin-updater`) drives the same check/
+# download/install flow, so a routine `cargo update` moving one without the other
+# would leave mismatched signing/verification expectations between the two halves.
+tauri-plugin-updater = "=2.11.0"
+# Restarts the app after an update installs (`process:allow-restart` only —
+# capabilities/destructive.json). No lockstep-pin need: this plugin has no signing
+# semantics to keep in sync with its JS half, so it follows the looser convention
+# `tauri-plugin-dialog` above already uses.
+tauri-plugin-process = "2"
+
+# personal-cfo-40t: typed IPC command pattern + serde→TS codegen.
+#
+# The Finance Kernel is the only path to financial state. This standalone
+# desktop crate takes a path dependency on it across the workspace boundary;
+# the kernel's public API exposes no `rusqlite` types, so no database type
+# leaks into the IPC surface. Wire DTOs (the `ipc` module) keep `specta` out of
+# the pure domain crates. Versions are pinned exactly: tauri-specta/specta are
+# pre-1.0 release candidates whose patch releases can break.
+finance-kernel = { path = "../../../crates/finance-kernel" }
+# Linking the CSV importer registers its `GenericCsv` plugin in the compile-time
+# inventory (personal-cfo-cu8); the import IPC resolves plugins from that registry.
+# Per-format importers are linked here as they land.
+csv-importer = { path = "../../../crates/importers/csv-importer" }
+# OFX/QFX importer (personal-cfo-fr79): registers `OfxImporter` the same way.
+ofx-importer = { path = "../../../crates/importers/ofx-importer" }
+# Connector contract + the SimpleFIN adapter (personal-cfo-gglk, ADR 0060):
+# linking the adapter registers it in the compile-time connector registry the
+# same way importers register. The adapter's ureq/rustls stack enters this
+# lockfile and is scanned by cargo audit.
+connector-core = { path = "../../../crates/connector-core" }
+simplefin-adapter = { path = "../../../crates/connectors/simplefin-adapter" }
+# Redacting tracing subscriber (personal-cfo-2vs): scrubs logs before any sink.
+observability = { path = "../../../crates/observability" }
+# App-layer log events (e.g. the best-effort daily forecast persist on open,
+# personal-cfo-5ie.3) flow through the redacting subscriber above.
+tracing = "0.1"
+uuid = { version = "1", features = ["v5", "v7"] }
+thiserror = "2"
+# Parse RFC 3339 transaction timestamps from the wire (personal-cfo-6wgi); the
+# `clock` feature stamps backup `created_at` at export (personal-cfo-dvxm).
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Scrub the transient plaintext password copy in the vault commands
+# (personal-cfo-8v2) once it has been handed to the kernel.
+zeroize = "1"
+# Capture the machine's IANA timezone as a new vault's initial household_timezone
+# (personal-cfo-q329, ADR 0021 addendum) — an impure-boundary read only, never in an
+# engine. Already present transitively (a `tauri`/`chrono` dependency); pinned directly
+# here since this crate now calls it.
+iana-time-zone = "0.1"
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+specta-typescript = "=0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
+
+[dev-dependencies]
+# The deterministic mock connector (personal-cfo-1s2b) drives the connector
+# IPC tests without network — test-only by CI decree (mock feature grep).
+connector-core = { path = "../../../crates/connector-core", features = ["mock"] }
+# Pins ConnectorLinkInput's no-Serialize guarantee at compile time.
+static_assertions = "1.1"
+# Integration tests drive the command impls against a real temp-vault kernel.
+finance-kernel = { path = "../../../crates/finance-kernel" }
+tempfile = "3"
+

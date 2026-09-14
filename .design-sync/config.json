@@ -1,0 +1,51 @@
+{
+  "pkg": "@personal-cfo/desktop",
+  "globalName": "PersonalCFO",
+  "projectId": "524b33d1-d783-4657-b3b3-d6e99c9b5e59",
+  "shape": "package",
+  "buildCmd": "node .design-sync/build.mjs",
+  "entry": "apps/desktop/.design-sync-entry.tsx",
+  "tsconfig": "tsconfig.json",
+  "cssEntry": ".design-sync-dist/ds.css",
+  "readmeHeader": ".design-sync/conventions.md",
+  "guidelinesGlob": ["../../docs/design-system/design-system.md", "../../docs/design-system/recipes.md", "../../docs/design-system/README.md"],
+  "overrides": {
+    "ChartContainer": { "cardMode": "single", "viewport": "620x440" },
+    "Table": { "cardMode": "column" },
+    "EmptyState": { "cardMode": "column" },
+    "Input": { "cardMode": "column" },
+    "Label": { "cardMode": "column" },
+    "NativeSelect": { "cardMode": "column" },
+    "PageHeader": { "cardMode": "column" },
+    "PaginationControls": { "cardMode": "column" },
+    "Skeleton": { "cardMode": "column" }
+  },
+  "componentSrcMap": {
+    "Badge": "src/components/ui/badge.tsx",
+    "Button": "src/components/ui/button.tsx",
+    "Card": "src/components/ui/card.tsx",
+    "ChartContainer": "src/components/ui/chart.tsx",
+    "EmptyState": "src/components/ui/empty-state.tsx",
+    "Input": "src/components/ui/input.tsx",
+    "Label": "src/components/ui/label.tsx",
+    "NativeSelect": "src/components/ui/native-select.tsx",
+    "PaginationControls": "src/components/ui/pagination.tsx",
+    "Skeleton": "src/components/ui/skeleton.tsx",
+    "Table": "src/components/ui/table.tsx",
+    "PageHeader": "src/components/PageHeader.tsx"
+  },
+  "dtsPropsFor": {
+    "Badge": "  /** Semantic color variant. `default`/`secondary`/`outline` are neutral; `gain`/`loss`/`warning`/`info` tint with the matching finance color at low opacity. */\n  variant?: \"default\" | \"secondary\" | \"outline\" | \"gain\" | \"warning\" | \"info\" | \"loss\";\n  children?: React.ReactNode;\n  className?: string;\n  /** Any other standard <span> attribute is forwarded to the element. */\n  [key: string]: unknown;",
+    "Button": "  /** Visual style. */\n  variant?: \"default\" | \"secondary\" | \"outline\" | \"ghost\" | \"destructive\" | \"link\";\n  /** Control size. `icon` is a square icon-only button. */\n  size?: \"default\" | \"sm\" | \"lg\" | \"icon\";\n  /** Render as the single child element instead of a <button> (Radix Slot) — e.g. to wrap an <a>. */\n  asChild?: boolean;\n  children?: React.ReactNode;\n  className?: string;\n  disabled?: boolean;\n  type?: \"button\" | \"submit\" | \"reset\";\n  onClick?: React.MouseEventHandler<HTMLButtonElement>;\n  /** Any other standard <button> attribute is forwarded. */\n  [key: string]: unknown;",
+    "Card": "  /** Compose with the sub-components: CardHeader, CardTitle, CardDescription, CardContent, CardFooter (each accepts standard <div> props). */\n  children?: React.ReactNode;\n  className?: string;\n  [key: string]: unknown;",
+    "ChartContainer": "  /** Series config keyed by dataKey, e.g. { revenue: { label: \"Revenue\", color: \"var(--chart-1)\" } }. Chart tokens are full hex — reference them as `var(--chart-N)`, never `hsl(var(--chart-N))`. */\n  config: Record<string, { label: string; color?: string }>;\n  /** A single Recharts chart element (e.g. <LineChart>, <BarChart>). Set an explicit height on className (e.g. \"h-72\") — the chart fills its container. */\n  children: React.ReactElement;\n  className?: string;",
+    "EmptyState": "  /** A lucide-react icon component (e.g. `Inbox` from \"lucide-react\"). */\n  icon: React.ComponentType<{ className?: string }>;\n  title: string;\n  description?: string;\n  /** Optional call-to-action, e.g. a <Button>. */\n  action?: React.ReactNode;\n  className?: string;",
+    "Input": "  type?: React.HTMLInputTypeAttribute;\n  value?: string | number;\n  defaultValue?: string | number;\n  placeholder?: string;\n  disabled?: boolean;\n  onChange?: React.ChangeEventHandler<HTMLInputElement>;\n  className?: string;\n  /** Any other standard <input> attribute is forwarded. */\n  [key: string]: unknown;",
+    "Label": "  /** Associates the label with a form control's id. */\n  htmlFor?: string;\n  children?: React.ReactNode;\n  className?: string;\n  [key: string]: unknown;",
+    "NativeSelect": "  /** `sm` for inline/row controls; `default` for forms. */\n  size?: \"sm\" | \"default\";\n  value?: string | number;\n  defaultValue?: string | number;\n  disabled?: boolean;\n  onChange?: React.ChangeEventHandler<HTMLSelectElement>;\n  /** <option> / <optgroup> elements. */\n  children?: React.ReactNode;\n  className?: string;\n  /** Any other standard <select> attribute is forwarded. */\n  [key: string]: unknown;",
+    "PaginationControls": "  /** Pagination state, typically from the `usePagination` hook. */\n  pagination: {\n    page: number;\n    pageCount: number;\n    pageSize: 10 | 25 | 50 | 100;\n    total: number;\n    rangeStart: number;\n    rangeEnd: number;\n    setPage: (page: number) => void;\n    setPageSize: (size: 10 | 25 | 50 | 100) => void;\n  };\n  /** Noun for the row count, e.g. \"transactions\". Defaults to \"rows\". */\n  noun?: string;\n  className?: string;",
+    "Skeleton": "  /** Size and shape come from utility classes, e.g. className=\"h-4 w-32 rounded\". */\n  children?: React.ReactNode;\n  className?: string;\n  [key: string]: unknown;",
+    "Table": "  /** Compose with the sub-components: TableHeader, TableBody, TableFooter, TableRow, TableHead, TableCell, TableCaption. Table wraps its content in an overflow-x-auto container so wide tables scroll. */\n  children?: React.ReactNode;\n  className?: string;\n  [key: string]: unknown;",
+    "PageHeader": "  title: string;\n  subtitle?: string;\n  /** Right-aligned actions slot (e.g. <Button>s). */\n  actions?: React.ReactNode;\n  className?: string;"
+  }
+}

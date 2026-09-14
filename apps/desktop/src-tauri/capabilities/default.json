@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Trusted main window: Tauri's curated core:default baseline (excludes the fs/shell/http capability plugins), core:window:allow-set-theme (personal-cfo-17u1) so the dark-mode toggle can sync the native title bar to an explicit Light/Dark override — core:default already grants the READ half (core:window:allow-theme) but not the write — the dialog plugin scoped to open/save ONLY (not dialog:default) for backup export (Save) and restore (Open) — personal-cfo-dvxm — the opener plugin scoped to open-url ONLY (not opener:default — no path/reveal commands) with a URL scope of exactly https://dohflow.app/* for the About card links and the Support row (personal-cfo-n76x.18, ADR 0010 addendum 2026-09-06), the updater plugin (updater:default — check + download_and_install against the single signed endpoint in tauri.conf.json's plugins.updater, personal-cfo-867.1.2, ADR 0068) for release builds, plus allow-app-commands, the NON-destructive Finance-Kernel command surface (permissions/app-commands.toml). Since permissions/ exists, the app ACL manifest is active and every custom command is deny-by-default (ADR 0010 addendum 2026-07-04, personal-cfo-3fdd.6); destructive/exfiltration commands are granted separately via capabilities/destructive.json so future isolated windows (document_preview/agent_report — see ADR 0010) can be given neither, or this surface only.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://dohflow.app/*"
+        }
+      ]
+    },
+    "updater:default",
+    "allow-app-commands"
+  ]
+}

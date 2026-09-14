@@ -1,0 +1,105 @@
+# DohFlow — Rust workspace root.
+#
+# Per docs/agent/PROJECT_PROFILE.md ("Repository structure target") and the
+# scaffolding decision recorded on bead personal-cfo-pcks, this workspace
+# intentionally starts with ZERO member crates. Each crate is added to
+# `members` by the feature bead that owns it (e.g. core-money -> personal-cfo-klr.1,
+# core-ledger -> personal-cfo-klr.2, db-worker -> personal-cfo-klr.3,
+# vault-crypto -> personal-cfo-vhv, finance-kernel -> personal-cfo-jh6).
+#
+# NOTE: cargo cannot `build`/`test`/`clippy`/`fmt` a virtual workspace that has
+# zero members — it errors with "manifest is virtual, and the workspace has no
+# members". During this bootstrap phase the manifest's validity is checked with
+# `cargo metadata` instead; the full Rust gates activate automatically in CI as
+# soon as the first member crate lands (core-money, personal-cfo-klr.1). See
+# .github/workflows/ci.yml.
+#
+# Note: apps/desktop/src-tauri is a STANDALONE crate (its own [workspace])
+# and is deliberately NOT a member here — the Tauri app is built via its own
+# tooling (see personal-cfo-rhci), keeping the root workspace build fast and
+# free of native bundling concerns.
+
+[workspace]
+resolver = "2"
+members = ["crates/categorization", "crates/connector-core", "crates/connectors/simplefin-adapter", "crates/core-ids", "crates/core-money", "crates/core-ledger", "crates/forecast-engine", "crates/db-worker", "crates/finance-kernel", "crates/importers/importer-core", "crates/importers/csv-importer", "crates/importers/ofx-importer", "crates/observability", "crates/pay-schedule", "crates/synthetic-data", "crates/vault-crypto"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.82" # MSRV — do not raise without a deliberate decision.
+license = "AGPL-3.0-only" # ADR 0043; personal-cfo-fkt5.4.
+repository = "https://github.com/dohflow/dohflow"
+# None of these crates are meant to reach crates.io — internal-only, path
+# dependencies. Also lets cargo-deny's `[licenses.private]` correctly treat
+# them as private and skip their license field when auditing THIRD-PARTY
+# dependency licenses (personal-cfo-o1nxk).
+publish = false
+
+# Shared version registry. Feature beads add entries here as they introduce
+# crates, so versions stay aligned across the workspace. A crate then opts in
+# with e.g. `serde = { workspace = true }`. Seeded with the dependencies the
+# canonical-data-model design notes (klr.1/klr.2/klr.3) already reference.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+# Logging redaction layer (personal-cfo-2vs).
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry", "env-filter"] }
+regex = "1"
+uuid = { version = "1", features = ["v5", "v7"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# IANA timezone database for the Future Cash forecast engine (personal-cfo-164u):
+# resolves the household-tz horizon boundary ("today" follows the household zone,
+# not the laptop's) per personal-cfo-rp1r. Pure compile-time data — no IO/runtime.
+chrono-tz = "0.10"
+# SQLCipher-encrypted SQLite. `bundled-sqlcipher-vendored-openssl` compiles
+# SQLCipher + OpenSSL from vendored source (no system libs needed), which pins
+# the SQLCipher version reproducibly. Only db-worker (personal-cfo-klr.3) may
+# depend on this long-term; the sqlcipher-spike crate is a temporary exception.
+#
+# Pinned EXACT (personal-cfo-7igv, risk personal-cfo-aia0): `=0.32.1` locks the
+# bundled SQLCipher/SQLite versions recorded in docs/architecture/stack.md
+# (SQLCipher 4.5.7 community / SQLite 3.45.3). The cross-version vault test
+# (crates/finance-kernel/tests/cross_version_vault.rs) asserts the *linked*
+# versions match that record, so any bump fails CI until the pin + stack.md +
+# release notes are updated and the outgoing vault is captured as a fixture.
+rusqlite = { version = "=0.32.1", features = ["bundled-sqlcipher-vendored-openssl", "uuid"] }
+# Vault-crypto KDF (personal-cfo-j0o): Argon2id key derivation, key-buffer
+# zeroization, and a CSPRNG salt source. Only vault-crypto depends on these.
+argon2 = "0.5"
+zeroize = { version = "1", features = ["derive"] }
+getrandom = "0.2"
+# Best-effort mlock/munlock for protected key buffers (personal-cfo-1t0).
+libc = "0.2"
+# AEAD for the DEK envelope — wrap/unwrap the data key with the KEK
+# (personal-cfo-vhv, ADR 0002). AES-256-GCM, random 96-bit nonce per wrap.
+aes-gcm = "0.10"
+# Attachment store (personal-cfo-bcj, ADR 0023): HKDF-SHA256 derives a content-
+# addressing subkey from the DEK; HMAC-SHA256 produces keyed storage IDs over
+# attachment plaintext (dedup without a plaintext-guessable on-disk name). Pure
+# RustCrypto — keeps vault-crypto's no-DB/no-async boundary. Only vault-crypto.
+sha2 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+# Importer plugin registry (personal-cfo-eay): `inventory` registers importer
+# plugins at COMPILE TIME (no runtime dynamic loading — ADR 0022 forbids
+# libloading/dlopen); `semver` types the plugin version recorded on every
+# parser_run. Used only by the importer crates under `crates/importers/`.
+inventory = "0.3"
+semver = "1"
+# Robust CSV tokenizer for the generic CSV importer (personal-cfo-cu8). Handles
+# quoting/escaping; cells are parsed as data, never formulas (ADR 0022). Used only
+# by the importer crates under `crates/importers/`.
+csv = "1"
+
+# The SimpleFIN adapter (personal-cfo-w3gh, ADR 0060) is the app's FIRST and
+# only networked path: a small blocking HTTP client (rustls TLS, no OpenSSL,
+# no tokio — the connector tier stays sync) plus base64 for the setup-token
+# decode. Used only by connector adapter crates; the desktop app itself still
+# makes no direct network calls (ADR 0004 boundary).
+ureq = "2"
+base64 = "0.22"
+
+# Lint posture is enforced in CI via `cargo clippy --workspace --all-targets -- -D warnings`.
+# Crate-specific lint config (e.g. forbidding `f64` in money crates per klr.1)
+# lives in each crate as it is created.

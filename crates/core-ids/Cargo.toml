@@ -1,0 +1,24 @@
+[package]
+name = "core-ids"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Shared identifier strategy for DohFlow: monotonic UUIDv7 newtypes (the uuid_id! macro), 16-byte storage codec, and Crockford-base32 display IDs. The single source of truth for entity identity across the workspace."
+
+# The uuid_id! macro emits a #[serde(transparent)] newtype over uuid::Uuid, so
+# any crate that instantiates it (including this crate's doctests/tests) needs
+# uuid's `serde` feature.
+[dependencies]
+uuid = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Integration tests instantiate the macro, so they need uuid/serde as named
+# crates in the test crate too.
+uuid = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security or privacy vulnerability (private)
+    url: https://github.com/dohflow/dohflow/security/advisories/new
+    about: >-
+      For anything security- or privacy-sensitive, use GitHub's private
+      vulnerability reporting instead of a public issue. See SECURITY.md.
+  - name: Questions and general discussion
+    url: https://github.com/dohflow/dohflow/discussions
+    about: Ask a question, share how you're using DohFlow, or start a discussion that isn't a bug or feature request.
+  - name: Help and documentation
+    url: https://dohflow.app/help
+    about: General help, FAQs, and getting-started guidance.

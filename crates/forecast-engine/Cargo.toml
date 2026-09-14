@@ -1,0 +1,40 @@
+[package]
+name = "forecast-engine"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Deterministic Future Cash ledger (Layer 1): a pure, IO-free fold from a sorted cash-event stream to a per-day balance series. DohFlow's forecasting wedge (personal-cfo-164u)."
+
+# Purity boundary (plan §13.3, personal-cfo-164u): this crate is a pure function
+# over value types. It must NOT depend on db-worker / rusqlite / tokio / tauri /
+# serde_json or any IO/RNG/clock crate — enforced in CI by the "pure-types crate
+# boundaries" check (.github/workflows/ci.yml). Keep this dependency list minimal.
+[dependencies]
+core-money = { path = "../core-money" }
+# Pure value crate (same purity tier — it is itself on the CI pure list): carries the
+# typed Frequency on AssumptionBasis so cadence tokens are rendered only at the edges
+# (ADR 0048).
+pay-schedule = { path = "../pay-schedule" }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Snapshot determinism (byte-identical output for a fixed fixture).
+insta = "1"
+# Property tests: running-sum invariant, same-day commutativity, non-negativity.
+proptest = "1"
+# Layer-2 is validated against deterministic synthetic households, never real data
+# (ADR 0026 §7). A pure, dev-only fixture crate — keeps the prod purity boundary intact.
+synthetic-data = { path = "../synthetic-data" }
+
+# Layer-1 performance baseline (personal-cfo-164u AC: <50ms for 1yr × 200 bills ×
+# 26 paychecks on M1 dev). Hand-rolled timing harness — no criterion dependency,
+# keeping the bench dependency-free. Run with `cargo bench -p forecast-engine`.
+[[bench]]
+name = "layer1"
+harness = false

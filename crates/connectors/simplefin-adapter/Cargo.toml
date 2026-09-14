@@ -1,0 +1,28 @@
+[package]
+name = "simplefin-adapter"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "SimpleFIN connector adapter for DohFlow (personal-cfo-w3gh, ADR 0060): setup-token claim + /accounts sync against a SimpleFIN Bridge, emitting staged candidates through the connector-core contract. Clean-room from the SimpleFIN protocol spec (docs/research/simplefin-feasibility.md) — no third-party code."
+
+# The app's first networked crate (ADR 0060 §1: user-token tier, direct to the
+# Bridge, no relay, no project secrets). All HTTP goes through the Transport
+# trait so every test runs on fixtures; `ureq` (blocking, rustls) is the sole
+# real transport. LEAK RULE: for this provider the request URL IS the
+# credential — no URL may appear in any error message or log (connector-core
+# ConnectorError docs; enforced by tests).
+[dependencies]
+connector-core = { path = "../../connector-core" }
+importer-core = { path = "../../importers/importer-core" }
+core-money = { path = "../../core-money" }
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+thiserror = { workspace = true }
+ureq = { workspace = true }
+base64 = { workspace = true }
+zeroize = { workspace = true }

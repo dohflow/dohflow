@@ -1,0 +1,7 @@
+# Pin the toolchain so local builds and CI agree byte-for-byte.
+# This is the build toolchain, distinct from the crates' MSRV (1.82, declared
+# in Cargo.toml [workspace.package].rust-version). Bump deliberately.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

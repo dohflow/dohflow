@@ -1,0 +1,186 @@
+@import "tailwindcss";
+
+/* DohFlow design tokens (personal-cfo-x99h). User-approved direction:
+   emerald primary anchored on #006341, Saltillo terracotta accent #DB8F6B,
+   warm-neutral grays, finance semantics (gain/loss/warning/info). Dark mode is
+   a token swap — the green brightens for contrast on dark surfaces. */
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Follow whichever theme is actually APPLIED, not the system preference
+     (personal-cfo-17u1) — an explicit Light/Dark override in Settings can
+     disagree with macOS, and native controls (scrollbars, form controls)
+     must match this app's own surfaces either way. `.dark` below re-declares
+     this to `dark` when that class is present, which is what actually flips
+     it; declaring `light dark` here instead would let the UA pick by system
+     preference alone, ignoring the override entirely. */
+  color-scheme: light;
+
+  --background: #faf8f6;
+  --foreground: #1c1815;
+  --card: #ffffff;
+  --card-foreground: #1c1815;
+  --popover: #ffffff;
+  --popover-foreground: #1c1815;
+
+  --primary: #006341;
+  --primary-foreground: #f7fbf9;
+  --secondary: #efebe6;
+  --secondary-foreground: #36302a;
+  --muted: #efebe6;
+  --muted-foreground: #6b6259;
+  --accent: #f1ebe4;
+  --accent-foreground: #36302a;
+
+  --destructive: #c23b2e;
+  --destructive-foreground: #ffffff;
+
+  --border: #e3ddd5;
+  --input: #e3ddd5;
+  --ring: #2e9470;
+  --radius: 0.5rem;
+
+  /* Finance + chart palette. --gain ties to the brand; --loss is kept clearly
+     redder than the terracotta accent so a negative never reads as a highlight. */
+  --terracotta: #db8f6b;
+  /* Ink for text sitting ON a brand fill (the terracotta build badge). Deliberately does
+     NOT flip with the theme: the fill is the same colour in both, so flipping the ink to
+     light would destroy the contrast that makes the badge readable. Kept a token rather
+     than a literal so the design-token audit (personal-cfo-4d8.27.4.7) stays honest —
+     "no raw hex" only means something if the exceptions are named. */
+  --on-brand-fill: #1c1815;
+  /* The white band of the brand mark (apps/desktop/src/brand). Like --on-brand-fill it
+     deliberately does NOT flip with the theme: the mark's bands are the artwork, not
+     surface styling, and the theme only lightens its emerald (via --primary). */
+  --brand-white: #ffffff;
+  --gain: #0f7a54;
+  --loss: #c23b2e;
+  /* personal-cfo-2qonl: was #c98a12 (2.9463:1 against --card, below the 3:1
+     chart/semantic floor). #b3780a keeps the same amber hue (H 39.1 vs 39.3,
+     computed — not eyeballed) while clearing 3.5:1 against BOTH --card
+     (3.7448:1) and --background (3.5349:1). */
+  --warning: #b3780a;
+  --info: #3a6fa5;
+  /* Categorical chart slots — ADR 0054. FOUR slots, assigned in order and NEVER
+     cycled; past four, a chart folds the tail into "Other" or facets. The steps are
+     the brand hues re-stepped so every ADJACENT pair clears CVD ΔE 8 in both modes —
+     the shipped set collapsed to ΔE 1.6 between emerald and terracotta in dark mode.
+     Changing any of these fails `styles/chart-palette.test.ts`. */
+  --chart-1: #006945; /* emerald — the brand's money colour, always series 1 */
+  --chart-2: #d38058; /* terracotta */
+  --chart-3: #3a6fa5; /* blue */
+  --chart-4: #8e492e; /* clay */
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: #0e1411;
+  --foreground: #eef2ef;
+  --card: #151c18;
+  --card-foreground: #eef2ef;
+  --popover: #151c18;
+  --popover-foreground: #eef2ef;
+
+  --primary: #12a06b;
+  --primary-foreground: #06140e;
+  --secondary: #26302a;
+  --secondary-foreground: #d6ddd8;
+  --muted: #1e2620;
+  --muted-foreground: #9aa39d;
+  --accent: #232c26;
+  --accent-foreground: #eef2ef;
+
+  --destructive: #e06a5e;
+  --destructive-foreground: #2a0e0b;
+
+  --border: #26302a;
+  --input: #2a352e;
+  --ring: #12a06b;
+
+  --terracotta: #db8f6b;
+  --gain: #2fb37e;
+  --loss: #e06a5e;
+  --warning: #e0a82e;
+  --info: #6ba0d8;
+  /* Dark is SELECTED against the dark card surface, not flipped from light (ADR 0054). */
+  --chart-1: #11a06b; /* emerald */
+  --chart-2: #e46c29; /* terracotta */
+  --chart-3: #6499d2; /* blue */
+  --chart-4: #c87450; /* clay */
+}
+
+/* Expose the tokens as Tailwind theme colors so utilities like `bg-primary`,
+   `text-muted-foreground`, `ring-ring`, and `text-gain` resolve. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-terracotta: var(--terracotta);
+  --color-gain: var(--gain);
+  --color-loss: var(--loss);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
+  /* ADR 0063 — two families. IBM Plex Sans is the DEFAULT (and is what
+     Tailwind's `font-sans` utility resolves to); Nunito is strictly opt-in via
+     `font-display`. Defaulting to the data face is deliberate: a surface that
+     forgets to opt in still renders sober, aligned numerals, whereas the
+     reverse fails silently with rounded digits in a money column. */
+  /* The family name MUST be "IBM Plex Sans Variable" — that is what the
+     @fontsource-variable package declares in its @font-face. Using the plain
+     name falls back to system sans SILENTLY, with no error anywhere. */
+  --font-ui: "IBM Plex Sans Variable", "IBM Plex Sans", ui-sans-serif, system-ui,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: var(--font-ui);
+  --font-display: "Nunito Variable", "Nunito", "IBM Plex Sans Variable",
+    ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-ui);
+    /* Tabular numerals everywhere by default so money columns align.
+       NOTE: alignment here does NOT come from the `tnum` feature — the
+       shipped @fontsource-variable woff2 has no `tnum` at all. It comes from
+       IBM Plex Sans's digits being uniform-width (600 units) by default, so
+       this declaration is belt-and-braces rather than load-bearing.
+       `slashed-zero` was tried and REMOVED: the shipped woff2 has no `zero`
+       feature either (fontsource's subsetting strips it), so it rendered
+       nothing. See ADR 0063's correction note. */
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+}

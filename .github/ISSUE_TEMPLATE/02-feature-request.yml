@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest something DohFlow doesn't do yet.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, a quick sanity check against DohFlow's own
+        non-negotiables (`README.md`'s "Non-negotiables" section) — a
+        request that needs a connected account as a *requirement*, or that
+        has AI take a financial action directly, is out of scope by design,
+        not an oversight.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: >-
+        Describe the situation you're in, not just the feature you have in
+        mind — the "why" often points to a simpler fix than the literal ask.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+      description: Your best guess at how this could work. Rough is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Any workarounds you're using today, or other approaches you thought about.
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+    validations:
+      required: false

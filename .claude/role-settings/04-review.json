@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "Bash(git push *)",
+      "Bash(git commit *)",
+      "Bash(git add *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh api *)",
+      "Bash(gh pr review *)",
+      "Bash(git reset *)",
+      "Bash(git clean *)",
+      "Bash(rm -rf *)"
+    ]
+  }
+}

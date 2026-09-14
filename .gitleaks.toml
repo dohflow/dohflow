@@ -1,0 +1,32 @@
+# gitleaks configuration (personal-cfo-6r6).
+#
+# Secret scanning catches real credentials committed by mistake. This repo also
+# contains material that *looks* like secrets but is intentional — generated bead
+# data and the log-redaction test fixtures — so the default ruleset is extended
+# with a narrow allowlist. Keep the allowlist tight: prefer fixing a finding over
+# widening it.
+
+title = "personal-cfo gitleaks config"
+
+[extend]
+# Start from gitleaks' built-in rules (AWS keys, private keys, tokens, etc.).
+useDefault = true
+
+[allowlist]
+description = "Generated bead data + intentional redaction-test fixtures are not real secrets."
+paths = [
+  # The Beads issue database export and its tooling data — generated, not authored
+  # source; long IDs/hashes/description text trip the broad generic-api-key rule.
+  '''\.beads/''',
+  '''scripts/beads/''',
+  # The redaction layer and its release-blocking test corpus deliberately embed
+  # secret-shaped strings (fake account numbers, tokens, key=value pairs) to prove
+  # they are scrubbed from logs (personal-cfo-zobt). They are fixtures, not secrets.
+  '''crates/observability/src/lib\.rs''',
+  '''crates/finance-kernel/tests/log_redaction\.rs''',
+]
+regexes = [
+  # The connector-arc leak-canary strings (personal-cfo-x6dr/-gglk): fixtures
+  # that exist to PROVE credentials never serialize into output. Never real.
+  '''CFO-CANARY-[0-9a-f]{8}''',
+]

@@ -1,0 +1,16 @@
+[package]
+name = "categorization"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Transaction categorization logic for DohFlow (personal-cfo-5n4, plan §11). v1: pure, deterministic merchant normalization (personal-cfo-7yh0) — raw bank/card descriptions to a canonical merchant key that auto-categorization (merchant memory, rules, classifier) builds on."
+
+# Pure logic crate: deterministic transforms only — no DB / IO / tokio / clock / RNG.
+# `regex` and `chrono` are pure, deterministic dependencies (chrono is used only for
+# calendar arithmetic on caller-supplied dates — never for the wall clock).
+[dependencies]
+chrono = { workspace = true }
+regex = { workspace = true }

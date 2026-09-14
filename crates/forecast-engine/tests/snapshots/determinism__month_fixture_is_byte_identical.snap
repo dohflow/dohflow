@@ -1,0 +1,351 @@
+---
+source: crates/forecast-engine/tests/determinism.rs
+expression: rows
+---
+[
+    DailyBalance {
+        date: 2026-06-01,
+        closing: Band {
+            p10: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [
+            DayEvent {
+                source_event_id: 00000000-0000-0000-0000-000000000001,
+                kind: RecurringBill,
+                amount: Money {
+                    minor_units: -120000,
+                    currency: Usd,
+                    currency_exponent: 2,
+                },
+                assumption_basis: RecurringSchedule {
+                    frequency: Monthly,
+                },
+            },
+        ],
+    },
+    DailyBalance {
+        date: 2026-06-02,
+        closing: Band {
+            p10: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-03,
+        closing: Band {
+            p10: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-04,
+        closing: Band {
+            p10: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 80000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-05,
+        closing: Band {
+            p10: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [
+            DayEvent {
+                source_event_id: 00000000-0000-0000-0000-000000000004,
+                kind: Income,
+                amount: Money {
+                    minor_units: 150000,
+                    currency: Usd,
+                    currency_exponent: 2,
+                },
+                assumption_basis: RecurringSchedule {
+                    frequency: Biweekly,
+                },
+            },
+        ],
+    },
+    DailyBalance {
+        date: 2026-06-06,
+        closing: Band {
+            p10: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-07,
+        closing: Band {
+            p10: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-08,
+        closing: Band {
+            p10: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-09,
+        closing: Band {
+            p10: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 230000,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-10,
+        closing: Band {
+            p10: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [
+            DayEvent {
+                source_event_id: 00000000-0000-0000-0000-000000000002,
+                kind: RecurringBill,
+                amount: Money {
+                    minor_units: -1599,
+                    currency: Usd,
+                    currency_exponent: 2,
+                },
+                assumption_basis: RecurringSchedule {
+                    frequency: Monthly,
+                },
+            },
+            DayEvent {
+                source_event_id: 00000000-0000-0000-0000-000000000003,
+                kind: RecurringBill,
+                amount: Money {
+                    minor_units: -4500,
+                    currency: Usd,
+                    currency_exponent: 2,
+                },
+                assumption_basis: RecurringSchedule {
+                    frequency: Monthly,
+                },
+            },
+        ],
+    },
+    DailyBalance {
+        date: 2026-06-11,
+        closing: Band {
+            p10: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-12,
+        closing: Band {
+            p10: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-13,
+        closing: Band {
+            p10: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+    DailyBalance {
+        date: 2026-06-14,
+        closing: Band {
+            p10: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p50: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+            p90: Money {
+                minor_units: 223901,
+                currency: Usd,
+                currency_exponent: 2,
+            },
+        },
+        events: [],
+    },
+]

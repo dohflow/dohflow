@@ -1,0 +1,20 @@
+[package]
+name = "pay-schedule"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Pay-schedule recurrence engine for DohFlow: turns a (frequency, anchor date) into the calendar pay dates in a horizon. Pure, database-free; consumed by income sources and the Future Cash forecast (personal-cfo-82q9)."
+
+# Pure calendar-date logic — no DB, async runtime, or Tauri (CI-enforced). Pay
+# dates are NaiveDate (calendar dates), so DST never enters this crate.
+[dependencies]
+# `serde` feature gives NaiveDate its Serialize/Deserialize so a PaySchedule can
+# be persisted by the income source (personal-cfo-j8of).
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,0 +1,47 @@
+[package]
+name = "db-worker"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Sole owner of the SQLCipher connection for DohFlow. Serializes writes, persists the operation log atomically with each mutation, and exposes typed read-only queries."
+
+[dependencies]
+rusqlite = { workspace = true }
+core-money = { path = "../core-money" }
+core-ledger = { path = "../core-ledger" }
+# Merchant normalization for merchant-memory auto-categorization (personal-cfo-7yh0).
+# Pure string crate; db-worker supplies the DB reads + the apply write.
+categorization = { path = "../categorization" }
+# Recurrence engine for income-source next-pay-date computation (personal-cfo-le79).
+pay-schedule = { path = "../pay-schedule" }
+# Deterministic Future Cash fold consumed by the forecast input adapter
+# (personal-cfo-164u). Pure crate; db-worker provides the impure DB reads + clock.
+forecast-engine = { path = "../forecast-engine" }
+# The ImporterPlugin output type (`ParsedBatch`) the ingestion pipeline bulk-stages
+# (personal-cfo-cmx). importer-core is a pure parsing-types crate (no DB), so no cycle.
+importer-core = { path = "../importers/importer-core" }
+# Raw-key vault open: db-worker keys SQLCipher from the DEK that vault-crypto
+# unwraps (personal-cfo-vhv). vault-crypto is pure (no rusqlite), so no cycle.
+vault-crypto = { path = "../vault-crypto" }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+zeroize = { workspace = true }
+# Read-path JSON parsing for forecast assumption-event params (manual entries,
+# personal-cfo-q6gh). The write path still hand-builds JSON (content-addressing
+# stays serde_json-free); serde_json is only used to PARSE on read.
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"
+# db-worker is the sole rusqlite owner; its own tests may drive raw SQL to
+# exercise DB-side constraints (e.g. the ledger balance trigger).
+rusqlite = { workspace = true }
+# Attachment-store integration tests (personal-cfo-bcj): open a raw-key vault and
+# construct entity ids through the public API.
+vault-crypto = { path = "../vault-crypto" }
+uuid = { workspace = true }

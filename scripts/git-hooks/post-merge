@@ -1,0 +1,57 @@
+#!/usr/bin/env sh
+# TRACKED passthrough (personal-cfo-apesm). No hand-written logic of its own
+# — invokes bd's own post-merge hook logic DIRECTLY. It exists here purely
+# so bd's automation keeps firing once core.hooksPath points at this
+# tracked directory instead of directly at .beads/hooks/: with no file
+# named "post-merge" here, git would simply never invoke this hook type
+# again.
+#
+# Does NOT chain to a file under .beads/hooks/ — personal-cfo-bb96v found
+# that `bd hooks install --beads` copies whatever file core.hooksPath
+# currently resolves to into its own generated .beads/hooks/*, which made
+# the old chain-to-file design resolve to itself and recurse forever.
+# Inlining bd's own invocation here (verified against bd 1.2.2) removes the
+# file reference entirely. See scripts/git-hooks/pre-push for the full
+# rationale (that one also carries this repo's hand-written guards).
+
+# --- BEGIN LOCAL: recursion guard (personal-cfo-bb96v, defense in depth) ---
+if [ "${DOHFLOW_GIT_HOOK_ACTIVE:-}" = "post-merge" ]; then
+  echo >&2 "beads: post-merge hook already running in an ancestor process — skipping to avoid recursion"
+  exit 0
+fi
+export DOHFLOW_GIT_HOOK_ACTIVE=post-merge
+# --- END LOCAL: recursion guard ---
+
+# Silent, successful no-op when `bd` is not on PATH (a public clone, or a
+# machine without it installed) or the database is not initialized yet.
+if command -v bd >/dev/null 2>&1; then
+  BD_GIT_HOOK=1
+  export BD_GIT_HOOK
+  _bd_timeout=${BEADS_HOOK_TIMEOUT:-300}
+  _bd_used_perl=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$_bd_timeout" bd hooks run post-merge "$@"
+    _bd_exit=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$_bd_timeout" bd hooks run post-merge "$@"
+    _bd_exit=$?
+  elif command -v perl >/dev/null 2>&1; then
+    _bd_used_perl=1
+    perl -e 'alarm shift; exec @ARGV' "$_bd_timeout" bd hooks run post-merge "$@"
+    _bd_exit=$?
+  else
+    echo >&2 "beads: hook 'post-merge' running without timeout; install coreutils or perl to enable BEADS_HOOK_TIMEOUT"
+    bd hooks run post-merge "$@"
+    _bd_exit=$?
+  fi
+  if [ "$_bd_exit" -eq 124 ] || { [ "$_bd_used_perl" -eq 1 ] && [ "$_bd_exit" -eq 142 ]; }; then
+    echo >&2 "beads: hook 'post-merge' timed out after ${_bd_timeout}s — continuing without beads"
+    _bd_exit=0
+  fi
+  if [ "$_bd_exit" -eq 3 ]; then
+    echo >&2 "beads: database not initialized — skipping hook 'post-merge'"
+    _bd_exit=0
+  fi
+  if [ "$_bd_exit" -ne 0 ]; then exit "$_bd_exit"; fi
+fi
+exit 0

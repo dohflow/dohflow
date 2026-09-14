@@ -1,0 +1,83 @@
+# cargo-deny configuration for the root workspace (personal-cfo-o1nxk item 3).
+#
+# Scope: THIRD-PARTY dependency licenses only. Every first-party crate in this
+# workspace carries `license = "AGPL-3.0-only"` (ADR 0043; personal-cfo-fkt5.4)
+# but is unpublished (`publish = false`) — `[licenses.private]` below tells
+# cargo-deny to skip unpublished workspace members entirely, so this file
+# audits what we DEPEND ON, not our own crates' license field.
+#
+# Run: `cargo deny check licenses` from the repo root.
+# Companion file: apps/desktop/src-tauri/deny.toml (a separate Cargo
+# workspace, checked separately — see that file's own header comment).
+
+[graph]
+all-features = false
+no-default-features = false
+
+[licenses]
+version = 2
+# AGPL-3.0-only compatible allowlist (personal-cfo-o1nxk's exact list) —
+# every one of these can be combined into (or alongside) an AGPL-3.0-only
+# work without a licensing conflict. Copyleft licenses (MPL/LGPL/GPL/AGPL)
+# are deliberately ALLOWED here, not flagged — this project is itself
+# AGPL-3.0-only-bound (ADR 0043), so a dependency under a copyleft license
+# compatible with AGPL is not a problem the way it would be for a
+# permissively-licensed or proprietary product.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "BSL-1.0",
+  "OpenSSL",
+  "LGPL-2.1-or-later",
+  "LGPL-3.0-or-later",
+  "GPL-2.0-or-later",
+  "GPL-3.0-or-later",
+  "AGPL-3.0",
+  "AGPL-3.0-only",
+  # Found by the first real audit run, NOT on personal-cfo-o1nxk's original
+  # list — added here with rationale, not silently passed. Governs the
+  # bundled Mozilla root-CA certificate DATA in `webpki-roots` (a transitive
+  # dependency via `ureq`, used by the SimpleFIN connector), not source code.
+  # Permissive: recipients may use/modify/share freely (§1.1), the only
+  # condition is including the agreement text alongside shared DATA (§2.1),
+  # and it explicitly imposes no restriction on "Results" of using the data
+  # (§3.1) — no copyleft, no source-disclosure obligation, nothing that
+  # conflicts with AGPL-3.0-only. Same category as CC0-1.0/Unicode-3.0 above:
+  # a permissive license attached to bundled data, not a copyleft code
+  # license. See docs/security/release-review-v0.1.md item 3 for the
+  # decision record.
+  "CDLA-Permissive-2.0",
+]
+# Anything not on the allowlist above — including no-license-detected — is a
+# hard failure, not a warning. A finding here is a HUMAN_DECISION per
+# personal-cfo-o1nxk's own escalation rule: stop and ask the owner
+# (replace the dependency, document an explicit exception, or block),
+# never silently added to `exceptions` by an agent.
+confidence-threshold = 0.8
+# No [[licenses.exceptions]] entries exist at review time — see the review
+# doc (docs/security/release-review-v0.1.md, item 3) for whether any were
+# needed. Do not add one here without an owner decision recorded in that doc.
+
+[licenses.private]
+ignore = true
+registries = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

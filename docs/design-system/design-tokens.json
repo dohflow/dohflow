@@ -1,0 +1,160 @@
+{
+  "$schema": "https://design-tokens.org/draft",
+  "meta": {
+    "name": "DohFlow Design System",
+    "source": "apps/desktop/src/styles/globals.css",
+    "bead": "personal-cfo-x99h",
+    "concept": "Emerald-green primary anchored on #006341 with a warm Saltillo-terracotta accent and warm-neutral grays. Finance semantics (gain/loss/warning/info). Dark mode is a token swap; the green brightens for contrast on dark surfaces. Type is a two-family pairing (ADR 0063): IBM Plex Sans is the DEFAULT and holds all numerals; Nunito is opt-in for display.",
+    "modes": [
+      "light",
+      "dark"
+    ]
+  },
+  "font": {
+    "ui": {
+      "$type": "fontFamily",
+      "$value": "\"IBM Plex Sans Variable\", \"IBM Plex Sans\", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "$description": "DEFAULT face (ADR 0063). Body, tables, forecasts, balances, forms and ALL numerals. Digits are uniform-width by default and it has a slashed zero, which is why it holds the money. Self-hosted via @fontsource-variable/ibm-plex-sans. NOTE: the @fontsource-variable package declares the family as 'IBM Plex Sans Variable' — the non-Variable name is kept as a fallback only. Getting this wrong falls back to system sans SILENTLY."
+    },
+    "display": {
+      "$type": "fontFamily",
+      "$value": "\"Nunito Variable\", \"Nunito\", \"IBM Plex Sans Variable\", ui-sans-serif, system-ui, sans-serif",
+      "$description": "OPT-IN face (ADR 0063). Wordmark, headings, hero and marketing copy. Rounded terminals pair with the claymation/pottery language. Variable default weight is 200 (ExtraLight) — always set a weight explicitly. Falls back to the UI face so a missing display font never lands on a system serif."
+    },
+    "features": {
+      "numeric": {
+        "$type": "string",
+        "$value": "tabular-nums",
+        "$description": "Applied globally so money columns align. Use on every numeric/currency value."
+      },
+      "smoothing": {
+        "$type": "string",
+        "$value": "antialiased"
+      }
+    },
+    "scale": {
+      "xs": {
+        "size": "0.75rem",
+        "lineHeight": "1rem"
+      },
+      "sm": {
+        "size": "0.875rem",
+        "lineHeight": "1.25rem"
+      },
+      "base": {
+        "size": "1rem",
+        "lineHeight": "1.5rem"
+      },
+      "lg": {
+        "size": "1.125rem",
+        "lineHeight": "1.75rem"
+      },
+      "xl": {
+        "size": "1.25rem",
+        "lineHeight": "1.75rem"
+      },
+      "2xl": {
+        "size": "1.5rem",
+        "lineHeight": "2rem"
+      },
+      "3xl": {
+        "size": "1.875rem",
+        "lineHeight": "2.25rem"
+      }
+    },
+    "weights": {
+      "normal": 400,
+      "medium": 500,
+      "semibold": 600,
+      "bold": 700
+    }
+  },
+  "radius": {
+    "base": {
+      "$type": "dimension",
+      "$value": "0.5rem"
+    },
+    "sm": {
+      "$type": "dimension",
+      "$value": "calc(0.5rem - 4px)"
+    },
+    "md": {
+      "$type": "dimension",
+      "$value": "calc(0.5rem - 2px)"
+    },
+    "lg": {
+      "$type": "dimension",
+      "$value": "0.5rem"
+    }
+  },
+  "color": {
+    "light": {
+      "background": "#faf8f6",
+      "foreground": "#1c1815",
+      "card": "#ffffff",
+      "card-foreground": "#1c1815",
+      "popover": "#ffffff",
+      "popover-foreground": "#1c1815",
+      "primary": "#006341",
+      "primary-foreground": "#f7fbf9",
+      "secondary": "#efebe6",
+      "secondary-foreground": "#36302a",
+      "muted": "#efebe6",
+      "muted-foreground": "#6b6259",
+      "accent": "#f1ebe4",
+      "accent-foreground": "#36302a",
+      "destructive": "#c23b2e",
+      "destructive-foreground": "#ffffff",
+      "border": "#e3ddd5",
+      "input": "#e3ddd5",
+      "ring": "#2e9470",
+      "terracotta": "#db8f6b",
+      "gain": "#0f7a54",
+      "loss": "#c23b2e",
+      "warning": "#b3780a",
+      "info": "#3a6fa5",
+      "chart-1": "#006945",
+      "chart-2": "#d38058",
+      "chart-3": "#3a6fa5",
+      "chart-4": "#8e492e"
+    },
+    "dark": {
+      "background": "#0e1411",
+      "foreground": "#eef2ef",
+      "card": "#151c18",
+      "card-foreground": "#eef2ef",
+      "popover": "#151c18",
+      "popover-foreground": "#eef2ef",
+      "primary": "#12a06b",
+      "primary-foreground": "#06140e",
+      "secondary": "#26302a",
+      "secondary-foreground": "#d6ddd8",
+      "muted": "#1e2620",
+      "muted-foreground": "#9aa39d",
+      "accent": "#232c26",
+      "accent-foreground": "#eef2ef",
+      "destructive": "#e06a5e",
+      "destructive-foreground": "#2a0e0b",
+      "border": "#26302a",
+      "input": "#2a352e",
+      "ring": "#12a06b",
+      "terracotta": "#db8f6b",
+      "gain": "#2fb37e",
+      "loss": "#e06a5e",
+      "warning": "#e0a82e",
+      "info": "#6ba0d8",
+      "chart-1": "#11a06b",
+      "chart-2": "#e46c29",
+      "chart-3": "#6499d2",
+      "chart-4": "#c87450"
+    }
+  },
+  "semantics": {
+    "gain": "Positive money (deposits, surplus, gains). Ties to brand green.",
+    "loss": "Negative money. Kept clearly redder than terracotta so a negative never reads as a highlight.",
+    "warning": "Caution / attention-needed states.",
+    "info": "Informational, neutral emphasis.",
+    "terracotta": "Brand accent — illustrations, highlights, secondary chart series. NOT for negative money.",
+    "destructive": "Dangerous actions (delete, irreversible). Same hue family as loss."
+  }
+}

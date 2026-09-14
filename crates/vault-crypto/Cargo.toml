@@ -1,0 +1,31 @@
+[package]
+name = "vault-crypto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Vault cryptography for DohFlow: Argon2id key derivation (calibrated profiles) turning a vault password into a zeroizing Key Encryption Key. The pure, database-free crypto foundation of the secure-vault chain (personal-cfo-j0o)."
+
+# vault-crypto is a PURE crypto crate: it must never depend on rusqlite, a DB, an
+# async runtime, or the Tauri shell. The KDF takes salt + params as arguments;
+# persisting them (vault_metadata) and the DEK envelope / unlock lifecycle live
+# in db-worker / the vault module (personal-cfo-vhv). CI enforces the no-rusqlite
+# and no-tokio/tauri boundary.
+[dependencies]
+argon2 = { workspace = true }
+aes-gcm = { workspace = true }
+# Attachment store (personal-cfo-bcj, ADR 0023): HKDF content-addressing subkey +
+# HMAC-SHA256 keyed storage IDs. Pure RustCrypto — no DB/async.
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+zeroize = { workspace = true }
+getrandom = { workspace = true }
+thiserror = { workspace = true }
+
+# Best-effort page-locking of secret buffers (personal-cfo-1t0). Unix-only;
+# on other targets the lock is a documented no-op.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

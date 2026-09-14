@@ -1,0 +1,18 @@
+{
+  "name": "personal-cfo",
+  "version": "0.0.0",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -C apps/desktop dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "update-app": "./scripts/update-app.sh"
+  }
+}

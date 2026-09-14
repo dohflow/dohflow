@@ -1,0 +1,47 @@
+[package]
+name = "finance-kernel"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "The Finance Kernel: the single internal boundary for all financial state changes. Typed, sealed commands lowered onto the db-worker; no raw database types in its public API."
+
+[dependencies]
+core-ledger = { path = "../core-ledger" }
+core-money = { path = "../core-money" }
+db-worker = { path = "../db-worker" }
+# The ImporterPlugin contract + bounded host the ingestion pipeline runs
+# (personal-cfo-cmx). Pure parsing crate; the kernel orchestrates it + the worker.
+importer-core = { path = "../importers/importer-core" }
+# Income source schedule type (personal-cfo-le79). Pure date logic, no DB/runtime.
+pay-schedule = { path = "../pay-schedule" }
+# Vault lifecycle (personal-cfo-vhv): KEK derivation + DEK envelope wrap/unwrap.
+# Pure crypto crate (no rusqlite), so it stays out of the persistence boundary.
+vault-crypto = { path = "../vault-crypto" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+# Transaction timestamps (personal-cfo-6wgi). Pure date/time, no DB/runtime deps.
+chrono = { workspace = true }
+# Encrypted backup container (personal-cfo-ef3, ADR 0024): JSON manifest + SHA-256
+# ciphertext content-hashes over the bundled vault files.
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tracing-test = "0.2"
+# Build a test ImporterPlugin's version in the ingest-pipeline e2e (personal-cfo-cmx).
+semver = { workspace = true }
+# End-to-end backup export test (personal-cfo-ef3): construct a backup id. The
+# restore drill (personal-cfo-7pfu) also seeds dated transactions.
+uuid = { workspace = true }
+chrono = { workspace = true }
+# Logging-redaction gate (personal-cfo-zobt): capture the kernel's tracing spans
+# through the production redacting subscriber and assert no §6.6 value leaks.
+observability = { path = "../observability" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

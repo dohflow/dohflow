@@ -1,0 +1,19 @@
+# CODEOWNERS — personal-cfo-fkt5.8.
+#
+# GitHub matches top-to-bottom; the LAST matching pattern wins. The blanket
+# rule goes first so every more specific line below it can override where it
+# matters, not the other way around.
+
+# Default: everything needs the maintainer's review.
+* @chrisbustos
+
+# Governance and legal — changes here are deliberate, not routine.
+/.github/CODEOWNERS @chrisbustos
+/LICENSE @chrisbustos
+/CLA.md @chrisbustos
+/SECURITY.md @chrisbustos
+
+# Security-sensitive surfaces: the Tauri capability/ACL manifests (what the
+# WebView is allowed to call — ADR 0010) and the vault's own crypto crate.
+/apps/desktop/src-tauri/capabilities/ @chrisbustos
+/crates/vault-crypto/ @chrisbustos

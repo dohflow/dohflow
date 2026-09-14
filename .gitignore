@@ -1,0 +1,65 @@
+
+# Beads task tracker (ADR 0064): the whole directory leaves git tracking, not
+# just the generated JSONL — the local Dolt database is the source of truth,
+# backed up by two independent, off-machine mechanisms instead
+# (docs/operations/beads-backup-and-restore.md): the JSONL mirror
+# (scripts/backup-beads.sh, automatic on every push, working) and the Dolt
+# remote (blocked — bd dolt push does not reach it, personal-cfo-es9ew — a
+# file:// mirror of .beads/embeddeddolt/ is the practical stand-in today).
+.beads/
+.dolt/
+*.db
+.beads-credential-key
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# macOS
+.DS_Store
+
+# Local agent runtime state
+.claude/scheduled_tasks.lock
+
+# Rust
+/target/
+**/target/
+# Note: Cargo.lock IS committed (this workspace ships a binary app via src-tauri).
+# proptest persists a seed file on a *failing* case; we keep these local (none are
+# tracked) — a genuine regression seed gets added deliberately, not auto-committed.
+**/proptest-regressions/
+
+# Node / pnpm
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+*.tsbuildinfo
+
+# Tauri generated artifacts
+apps/desktop/src-tauri/gen/
+
+# Test fixtures must never be committed (real or synthetic financial data).
+# *.db is already ignored above; these cover other generated vault artifacts.
+tests/fixtures/**/*.vault
+tests/synthetic-data/**/*.jsonl
+tests/forecast-backtests/**/*.csv
+
+# Environment
+.env
+.env.local
+
+# Session-handoff scratch (agent artifact; never committed, must not block the from-source updater — personal-cfo-1ik.5)
+SESSION_HANDOFF.md
+
+# design-sync (claude.ai/design) — staged scripts, build output, machine state,
+# and the regenerated bundle entry / compiled-CSS artifacts. Durable inputs
+# under .design-sync/ (config.json, NOTES.md, conventions.md, previews/,
+# overrides/, build.mjs) are committed; everything below is regenerated.
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+apps/desktop/.design-sync-entry.tsx
+apps/desktop/.design-sync-dist/
+.mirrors/
