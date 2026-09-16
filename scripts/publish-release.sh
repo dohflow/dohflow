@@ -384,8 +384,15 @@ cmd_verify() {
   local t v; t="$(tag_name)"; v="$(version)"
 
   echo "── Checking releases/latest/download/latest.json ────────────────"
+  # -L is load-bearing, not cosmetic: `releases/latest/download/<file>` is
+  # ALWAYS a redirect by GitHub's own design (it resolves the "latest" alias
+  # to the tag-specific path) — a HEAD without -L reports 302 for every
+  # genuinely healthy release, not just a broken one, so this check could
+  # never pass as written before. Confirmed against the real, live v0.1.0
+  # release (personal-cfo-uxev1's actual go-live run, 2026-09-14): 302
+  # without -L, 200 with it, identical URL either way.
   local status
-  status="$(curl -sI -o /dev/null -w '%{http_code}' "https://github.com/$repo/releases/latest/download/latest.json")"
+  status="$(curl -sI -L -o /dev/null -w '%{http_code}' "https://github.com/$repo/releases/latest/download/latest.json")"
   if [[ "$status" == "200" ]]; then
     ok "latest.json is live (HTTP $status)"
   else
@@ -403,39 +410,75 @@ cmd_verify() {
   fi
 }
 
-# ── verify_asset_url: GitHub gives a DRAFT release's assets a temporary
-# "releases/download/untagged-<hash>/<file>" URL, not the tag-based one —
-# confirmed against a real draft during personal-cfo-867.1.3's go-live run,
-# and it is genuinely unclear (unresolved even in upstream `gh`/GitHub issues)
-# whether publishing rewrites it to the tag-based path automatically. So
-# `package`'s "deterministic URL" was only ever a prediction of what the
-# asset URL WILL be once published — verify it for real now that it's
-# public, and correct latest.json (re-uploading it) if the prediction was
-# wrong, rather than shipping an updater manifest on faith.
-verify_asset_url() {
-  local t="$1" expected actual
+# ── verify_manifest_url: the url field INSIDE latest.json is what the
+# updater actually reads — that is a SEPARATE fact from where the
+# DohFlow.app.tar.gz asset itself happens to live on GitHub, and the two
+# can diverge independently. The original check (personal-cfo-xvj0k, found
+# during the actual 2026-09-14 go-live run) compared the asset's own
+# location against the predicted tag URL — on that run the asset genuinely
+# sat at the tag path (publishing DOES move assets off the temporary
+# "untagged-<hash>" draft path), so the check reported "confirmed" and
+# returned, while latest.json's OWN url field still carried the stale
+# untagged- path baked in at package time. The manifest shipped wrong and
+# the guard reported success. This function checks the right thing
+# instead: it downloads the manifest FRESH from the release — never trusts
+# the local $assets_dir/latest.json, which could already differ from
+# what's actually live, in either direction — reads ITS OWN url field, and
+# compares THAT against the expected tag path.
+#
+# When they differ: corrects the manifest, regenerates SHA256SUMS.txt's
+# latest.json line (changing the manifest invalidates its old checksum —
+# the original bug's manual fix had to do this by hand; this one does it
+# in the same step), re-uploads BOTH together, then downloads the manifest
+# ONE MORE TIME to confirm the correction actually took — never trusting
+# what was just uploaded either, since that trust is exactly what let the
+# original bug ship.
+verify_manifest_url() {
+  local t="$1" expected actual dl_dir
   expected="https://github.com/$repo/releases/download/$t/DohFlow.app.tar.gz"
-  actual="$(gh release view "$t" --repo "$repo" --json assets \
-    --jq '.assets[] | select(.name == "DohFlow.app.tar.gz") | .url')"
-  if [[ -z "$actual" ]]; then
-    fail "could not find the DohFlow.app.tar.gz asset on the published release to verify its URL."
+
+  dl_dir="$(mktemp -d)"
+  if ! gh release download "$t" --repo "$repo" --pattern latest.json --dir "$dl_dir" --clobber >/dev/null; then
+    rm -rf "$dl_dir"
+    fail "could not download latest.json from the published release $t to verify it — is the asset actually there?"
   fi
+  actual="$(python3 -c "import json; print(json.load(open('$dl_dir/latest.json'))['platforms']['darwin-aarch64']['url'])")"
+
   if [[ "$actual" == "$expected" ]]; then
-    ok "asset URL confirmed: $actual"
+    ok "manifest URL confirmed: $actual"
+    rm -rf "$dl_dir"
     return
   fi
-  echo "note: asset URL is '$actual', not the predicted '$expected' — GitHub's" >&2
-  echo "  untagged-release URL did not resolve to the tag path on publish. Correcting" >&2
-  echo "  latest.json and re-uploading." >&2
+
+  echo "note: latest.json's own url field is '$actual', not the predicted" >&2
+  echo "  '$expected' — the asset's location and what the manifest itself" >&2
+  echo "  claims can diverge independently (personal-cfo-xvj0k). Correcting" >&2
+  echo "  the manifest and its checksum, then re-uploading both." >&2
+
   python3 -c "
 import json
-path = '$assets_dir/latest.json'
-manifest = json.load(open(path))
-manifest['platforms']['darwin-aarch64']['url'] = '$actual'
-json.dump(manifest, open(path, 'w'), indent=2)
+manifest = json.load(open('$dl_dir/latest.json'))
+manifest['platforms']['darwin-aarch64']['url'] = '$expected'
+json.dump(manifest, open('$assets_dir/latest.json', 'w'), indent=2)
 "
-  gh release upload "$t" --repo "$repo" --clobber "$assets_dir/latest.json"
-  ok "latest.json corrected and re-uploaded with the real asset URL."
+  # The other three staged files are untouched since `package` wrote them;
+  # only latest.json's line actually changes, but the whole file is
+  # regenerated so it stays a complete, accurate manifest of everything
+  # about to be (re-)uploaded.
+  ( cd "$assets_dir" && shasum -a 256 DohFlow.dmg DohFlow.app.tar.gz DohFlow.app.tar.gz.sig latest.json > SHA256SUMS.txt )
+
+  gh release upload "$t" --repo "$repo" --clobber "$assets_dir/latest.json" "$assets_dir/SHA256SUMS.txt"
+
+  rm -f "$dl_dir/latest.json"
+  if ! gh release download "$t" --repo "$repo" --pattern latest.json --dir "$dl_dir" --clobber >/dev/null; then
+    rm -rf "$dl_dir"
+    fail "uploaded the corrected latest.json, but could not download it back to re-verify — stop and investigate before proceeding."
+  fi
+  actual="$(python3 -c "import json; print(json.load(open('$dl_dir/latest.json'))['platforms']['darwin-aarch64']['url'])")"
+  rm -rf "$dl_dir"
+  [[ "$actual" == "$expected" ]] || fail "corrected and re-uploaded latest.json, but re-downloading it still shows '$actual' — stop and investigate before proceeding."
+
+  ok "manifest corrected, re-uploaded, and re-verified by downloading it back fresh: $actual"
 }
 
 # ── publish: flip the draft public, then rebuild the site, then verify ────────
@@ -446,8 +489,8 @@ cmd_publish() {
   gh release edit "$t" --repo "$repo" --draft=false
   ok "$t is now public."
   echo
-  echo "── Verifying the updater asset URL ───────────────────────────────"
-  verify_asset_url "$t"
+  echo "── Verifying the updater manifest URL ─────────────────────────────"
+  verify_manifest_url "$t"
   echo
   echo "Reminder — the roll-forward rule: releases are immutable once"
   echo "published. Never delete or unpublish a release; a bad release is"

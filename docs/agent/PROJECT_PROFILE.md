@@ -31,6 +31,8 @@ This file is the project-specific contract that extends the repository-level `AG
 
 Do not load the full planning document into every routine coding session. Use Beads as executable task memory after plan-to-beads conversion. Reopen the full plan for architecture review, bead coverage checks, major scope decisions, or when a bead lacks required context.
 
+Internal strategy drafts (monetization, pricing, legal-posture analysis) live outside the repo in `~/Downloads/` (owner's working copies) and never enter the tree; `.gitignore` blocks `docs/planning/*.DRAFT.md` as a backstop (`personal-cfo-o7xlf`).
+
 ## Product principles
 
 Rank these in order when making tradeoffs:

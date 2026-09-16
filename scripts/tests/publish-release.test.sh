@@ -75,24 +75,60 @@ cat > "$FAKE_BIN/gh" <<'GH_EOF'
 #!/usr/bin/env bash
 [ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 prev=""
-last=""
 for a in "$@"; do
   if [ "$prev" = "--notes-file" ] && [ -n "${FAKE_GH_NOTES_CAPTURE:-}" ]; then
     cp "$a" "$FAKE_GH_NOTES_CAPTURE" 2>/dev/null || true
   fi
   prev="$a"
-  last="$a"
 done
-# `release view ... --json assets --jq ...` — echoes the configured asset
-# URL (personal-cfo-867.1.3's verify_asset_url check).
-if [ "$1" = "release" ] && [ "$2" = "view" ]; then
-  printf '%s' "${FAKE_GH_ASSET_URL:-}"
-  exit "${FAKE_GH_EXIT:-0}"
+# `release download <tag> --repo <repo> --pattern latest.json --dir <dir>
+# --clobber` (personal-cfo-xvj0k's verify_manifest_url, called twice: once
+# to read the manifest as it currently is, once more after a correction to
+# prove the correction actually took). Models a real GitHub release's
+# server-side state with a plain file: FAKE_GH_DOWNLOAD_STATE, if it
+# already exists, IS what the release currently serves (an upload
+# overwrites it, below) — falling back to FAKE_GH_DOWNLOAD_SEED for the
+# very first download of a test case that never uploaded anything yet.
+if [ "$1" = "release" ] && [ "$2" = "download" ]; then
+  dir="."
+  prevarg=""
+  for a in "$@"; do
+    [ "$prevarg" = "--dir" ] && dir="$a"
+    prevarg="$a"
+  done
+  mkdir -p "$dir"
+  if [ -n "${FAKE_GH_DOWNLOAD_STATE:-}" ] && [ -f "$FAKE_GH_DOWNLOAD_STATE" ]; then
+    cp "$FAKE_GH_DOWNLOAD_STATE" "$dir/latest.json"
+  elif [ -n "${FAKE_GH_DOWNLOAD_SEED:-}" ]; then
+    cp "$FAKE_GH_DOWNLOAD_SEED" "$dir/latest.json"
+  fi
+  # FAKE_GH_DOWNLOAD_EXIT, when set, fails ONLY this subcommand (e.g. "gh
+  # couldn't find latest.json on the release at all") without also failing
+  # the `release edit --draft=false` call that always runs first in
+  # `publish` — falls back to the general FAKE_GH_EXIT otherwise.
+  exit "${FAKE_GH_DOWNLOAD_EXIT:-${FAKE_GH_EXIT:-0}}"
 fi
-# `release upload ... --clobber <file>` — captures the re-uploaded file
-# (the corrected latest.json) so a test can inspect its content.
-if [ "$1" = "release" ] && [ "$2" = "upload" ] && [ -n "${FAKE_GH_UPLOAD_CAPTURE:-}" ]; then
-  cp "$last" "$FAKE_GH_UPLOAD_CAPTURE" 2>/dev/null || true
+# `release upload <tag> --repo <repo> --clobber <file>...` — one or more
+# files in one call (verify_manifest_url always uploads latest.json and
+# SHA256SUMS.txt together, since correcting the manifest invalidates its
+# checksum line). Captures each by its own basename, not "whichever arg
+# came last", since a multi-file upload has no single "last" file that
+# means anything. Uploading a file named latest.json also becomes the new
+# FAKE_GH_DOWNLOAD_STATE, so a subsequent `release download` in the same
+# test case sees the correction for real, the same way a real release
+# would.
+if [ "$1" = "release" ] && [ "$2" = "upload" ]; then
+  for a in "$@"; do
+    case "$a" in
+      */latest.json)
+        [ -n "${FAKE_GH_UPLOAD_CAPTURE:-}" ] && cp "$a" "$FAKE_GH_UPLOAD_CAPTURE" 2>/dev/null || true
+        [ -n "${FAKE_GH_DOWNLOAD_STATE:-}" ] && cp "$a" "$FAKE_GH_DOWNLOAD_STATE" 2>/dev/null || true
+        ;;
+      */SHA256SUMS.txt)
+        [ -n "${FAKE_GH_UPLOAD_SUMS_CAPTURE:-}" ] && cp "$a" "$FAKE_GH_UPLOAD_SUMS_CAPTURE" 2>/dev/null || true
+        ;;
+    esac
+  done
 fi
 exit "${FAKE_GH_EXIT:-0}"
 GH_EOF
@@ -309,6 +345,34 @@ run_script() {  # <repo> <args...>  — runs with fake PATH, captures stdout+std
   CODE=$?
 }
 
+# Writes a minimal, valid latest.json-shaped file at <path> with the given
+# darwin-aarch64 url. Used to seed what a stubbed `release download`
+# returns (personal-cfo-xvj0k's verify_manifest_url) — deliberately
+# separate from `place_build_artifacts`' local $assets_dir copy, since the
+# whole point of the fix is that those two can independently disagree.
+#
+# pub_date is DELIBERATELY different from place_build_artifacts' fixture
+# (2026-09-12) — review round 1 (F1) found that when the only field that
+# ever differed between the two fixtures was the url itself, a corrected
+# manifest built from the downloaded copy came out byte-identical to what
+# `package` had already hashed, so skipping the SHA256SUMS.txt
+# regeneration entirely was undetectable (all 25 cases stayed green).
+# Verified: with this date change, deleting the regeneration at
+# publish-release.sh's verify_manifest_url turns exactly the checksum
+# assertion in the xvj0k regression test red, with a real hash mismatch —
+# not just "stays green" as a fluke of identical fixtures.
+write_manifest() {  # <path> <url>
+  python3 -c "
+import json
+json.dump({
+    'version': '0.1.0',
+    'notes': 'fixture',
+    'pub_date': '2026-09-10T00:00:00Z',
+    'platforms': {'darwin-aarch64': {'url': '$2', 'signature': 'irrelevant-for-these-tests'}},
+}, open('$1', 'w'), indent=2)
+"
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # preflight
 # ══════════════════════════════════════════════════════════════════════════
@@ -512,64 +576,86 @@ CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "0"
 
-case_start "publish runs gh edit, verifies the asset URL, POSTs the rebuild hook, then verify, in that order"
+case_start "verify's latest.json check follows redirects (personal-cfo-uxev1: releases/latest/download/* is always a 302 by GitHub's own design; a HEAD without -L would report 302 for every genuinely healthy release, never 200)"
+new_case_repo
+CURL_LOG="$CASE/curl.log"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_LOG="$CURL_LOG" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+CODE=$?
+assert_eq "exit code" "$CODE" "0"
+LATEST_JSON_CALL="$(grep 'latest.json' "$CURL_LOG")"
+assert_contains "the latest.json HEAD request passes -L" "$LATEST_JSON_CALL" "-L"
+
+case_start "publish runs gh edit, verifies the manifest URL, POSTs the rebuild hook, then verify, in that order"
 new_case_repo
 place_build_artifacts "$REPO" good
 run_script "$REPO" package
 assert_eq "package precondition exit code" "$CODE" "0"
 GH_LOG="$CASE/gh.log"; CURL_LOG="$CASE/curl.log"
+SEED="$CASE/seed-manifest.json"
+write_manifest "$SEED" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
 ( cd "$REPO" \
   && DOHFLOW_SITE_DEPLOY_HOOK_URL="https://example.com/hook" \
      FAKE_GH_LOG="$GH_LOG" FAKE_CURL_LOG="$CURL_LOG" \
-     FAKE_GH_ASSET_URL="https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz" \
+     FAKE_GH_DOWNLOAD_SEED="$SEED" \
      FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="DohFlow 0.1.0" \
      PATH="$TEST_PATH" bash scripts/publish-release.sh publish > "$CASE/out.txt" 2>&1 )
 CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "0"
 assert_contains "gh edit --draft=false was called" "$(cat "$GH_LOG")" "--draft=false"
-assert_contains "output confirms the asset URL" "$OUT" "asset URL confirmed"
-assert_eq "gh was called exactly twice (edit + view, no upload needed)" "$(wc -l < "$GH_LOG" | tr -d ' ')" "2"
+assert_contains "output confirms the manifest URL" "$OUT" "manifest URL confirmed"
+assert_eq "gh was called exactly twice (edit + download, no correction/upload needed)" "$(wc -l < "$GH_LOG" | tr -d ' ')" "2"
 # Both the hook POST and the verify checks ran (3 curl calls: POST, status
 # check, page fetch) — confirms publish drove rebuild-site AND verify, not
 # just the gh edit.
 assert_eq "curl was called three times (POST + status + page)" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "3"
 assert_contains "one curl call POSTed the hook" "$(cat "$CURL_LOG")" "POST https://example.com/hook"
 
-case_start "publish corrects and re-uploads latest.json when the real asset URL isn't the predicted one (GitHub's draft untagged- URL)"
+case_start "personal-cfo-xvj0k: verify_manifest_url corrects latest.json AND regenerates SHA256SUMS.txt when the manifest's own url is stale (reproduces the 2026-09-14 go-live case: the manifest still names an untagged- draft url even though the asset itself already sits at the tag path — a fact this check no longer even looks at)"
 new_case_repo
 place_build_artifacts "$REPO" good
 run_script "$REPO" package
 assert_eq "package precondition exit code" "$CODE" "0"
-GH_LOG="$CASE/gh.log"; UPLOAD_CAP="$CASE/reuploaded-latest.json"
-UNTAGGED_URL="https://github.com/dohflow/dohflow/releases/download/untagged-abc123/DohFlow.app.tar.gz"
+GH_LOG="$CASE/gh.log"
+UPLOAD_CAP="$CASE/reuploaded-latest.json"
+SUMS_CAP="$CASE/reuploaded-sums.txt"
+SEED="$CASE/seed-manifest.json"
+STATE="$CASE/server-state.json"
+STALE_URL="https://github.com/dohflow/dohflow/releases/download/untagged-abc123/DohFlow.app.tar.gz"
+EXPECTED_URL="https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
+write_manifest "$SEED" "$STALE_URL"
 ( cd "$REPO" \
   && DOHFLOW_SITE_DEPLOY_HOOK_URL="https://example.com/hook" \
      FAKE_GH_LOG="$GH_LOG" FAKE_GH_UPLOAD_CAPTURE="$UPLOAD_CAP" \
-     FAKE_GH_ASSET_URL="$UNTAGGED_URL" \
+     FAKE_GH_UPLOAD_SUMS_CAPTURE="$SUMS_CAP" \
+     FAKE_GH_DOWNLOAD_SEED="$SEED" FAKE_GH_DOWNLOAD_STATE="$STATE" \
      FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="DohFlow 0.1.0" \
      PATH="$TEST_PATH" bash scripts/publish-release.sh publish > "$CASE/out.txt" 2>&1 )
 CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "0"
-assert_contains "output explains the correction" "$OUT" "Correcting"
-assert_contains "gh re-uploaded latest.json" "$(cat "$GH_LOG")" "upload"
+assert_contains "output explains the correction, naming the bead" "$OUT" "personal-cfo-xvj0k"
+assert_contains "output confirms the re-download re-check passed, not just that an upload happened" "$OUT" "re-verified by downloading it back"
 CORRECTED_URL="$(python3 -c "import json; print(json.load(open('$UPLOAD_CAP'))['platforms']['darwin-aarch64']['url'])" 2>/dev/null || echo MISSING)"
-assert_eq "re-uploaded latest.json carries the real (untagged-) URL" "$CORRECTED_URL" "$UNTAGGED_URL"
+assert_eq "the re-uploaded latest.json carries the CORRECT tag-path URL, not the stale untagged- one it started with" "$CORRECTED_URL" "$EXPECTED_URL"
+assert_eq "SHA256SUMS.txt was re-uploaded too (the manifest edit invalidated its old checksum line)" "$([ -f "$SUMS_CAP" ] && echo yes || echo no)" "yes"
+RECOMPUTED_HASH="$(shasum -a 256 "$UPLOAD_CAP" | awk '{print $1}')"
+SUMS_HASH="$(grep 'latest.json' "$SUMS_CAP" | awk '{print $1}')"
+assert_eq "the re-uploaded SHA256SUMS.txt's latest.json line matches a fresh recomputation of the corrected file" "$SUMS_HASH" "$RECOMPUTED_HASH"
 
-case_start "publish fails clearly if the asset can't be found at all on the published release"
+case_start "publish fails clearly if latest.json can't be downloaded from the published release to verify"
 new_case_repo
 place_build_artifacts "$REPO" good
 run_script "$REPO" package
 assert_eq "package precondition exit code" "$CODE" "0"
 ( cd "$REPO" \
   && DOHFLOW_SITE_DEPLOY_HOOK_URL="https://example.com/hook" \
-     FAKE_GH_ASSET_URL="" \
+     FAKE_GH_DOWNLOAD_EXIT="1" \
      PATH="$TEST_PATH" bash scripts/publish-release.sh publish > "$CASE/out.txt" 2>&1 )
 CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "1"
-assert_contains "output" "$OUT" "could not find the DohFlow.app.tar.gz asset"
+assert_contains "output" "$OUT" "could not download latest.json"
 
 # ══════════════════════════════════════════════════════════════════════════
 echo

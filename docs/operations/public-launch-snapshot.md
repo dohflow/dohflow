@@ -17,6 +17,10 @@
   visibility are all outward-facing, largely irreversible actions
   (`AGENTS.md` §1) — this is a sitting-with-the-owner procedure, not
   something to run unattended.
+- This file also covers the **catch-up** variant of this procedure — see
+  "Catch-up snapshot — bringing an existing public repo current" below —
+  for the case where `dohflow/dohflow` already exists and has fallen behind
+  private `main`. That section is what `personal-cfo-qvn0x` runs.
 
 ## Before you start — preconditions
 
@@ -85,36 +89,47 @@ git add -A
 # .beads/ must be completely absent from what's about to be committed.
 [ "$(git ls-files | grep -c '^\.beads/')" = "0" ] || echo "FAIL: .beads/ present"
 
-# The six ADR 0062 §6 / personal-cfo-o1nxk item 8 files must be completely
+# EVERY export-ignore'd path (not a hardcoded list) must be completely
 # absent too — this is what the private repo's .gitattributes export-ignore
 # entries are FOR (step 3's `git archive` already excluded them; this just
 # proves it, the same way the .beads/ check above proves that exclusion).
-for f in docs/agent/HANDOFF.md docs/agent/HANDOFF-2026-08-01.md \
-         docs/agent/HANDOFF-2026-08-02.md docs/agent/SESSION_KICKOFF.md \
-         docs/agent/PLAN_KICKOFF.md docs/agent/BEAD_REVIEW_KICKOFF.md; do
-  [ -f "$f" ] && echo "FAIL: $f present (check the private repo's .gitattributes)"
-done
+# Read the list live from .gitattributes so this loop can never silently
+# fall behind as entries are added (personal-cfo-9isk4 — a hardcoded
+# six-file list here once missed the eight more export-ignore'd paths
+# personal-cfo-7d6k9 added):
+grep -E 'export-ignore$' "<private repo checkout>/.gitattributes" | awk '{print $1}' \
+  | while IFS= read -r f; do
+      [ -e "$f" ] && echo "FAIL: $f present (check the private repo's .gitattributes)"
+    done
 
 # Nothing unexpected staged.
 git status --short
 
-# The new clone's tree matches the private checkout's TRACKED tree exactly.
-# Comparing working directories with `diff -r` here would be wrong: the
-# private checkout also has gitignored build output (target/, node_modules/,
-# dist/, .dolt/) and untracked local directories (.agents/, .codex/) that
-# `git archive` never carries into the snapshot in the first place — a
-# working-directory diff reports dozens of "Only in <private>" lines that
-# have nothing to do with whether the snapshot is correct. Compare by BLOB
-# HASH over each tree's tracked paths instead, which is exactly what "the
-# tree matches" means and is immune to either side's untracked/ignored
-# clutter:
-diff <(git -C "<private repo checkout>" ls-tree -r <recorded-sha>) \
+# The new clone's tree matches the private checkout's TRACKED tree exactly,
+# MINUS every export-ignore'd path — the archive (right side) naturally
+# excludes those via `git archive`, so the private side must be filtered
+# the same way before comparing, or every export-ignore'd path produces a
+# spurious mismatch line by construction (personal-cfo-9isk4: 7 at this
+# doc's original writing, growing every time export-ignore gains an
+# entry — not a real discrepancy, but indistinguishable from one without
+# this filter). Comparing working directories with `diff -r` would ALSO be
+# wrong, separately: the private checkout has gitignored build output
+# (target/, node_modules/, dist/, .dolt/) and untracked local directories
+# (.agents/, .codex/) that `git archive` never carries into the snapshot in
+# the first place. Compare by BLOB HASH over each tree's tracked paths
+# instead, which is exactly what "the tree matches" means and is immune to
+# both problems:
+grep -E 'export-ignore$' "<private repo checkout>/.gitattributes" | awk '{print $1}' \
+  > /tmp/export-ignored-paths.txt
+diff <(awk -F'\t' 'NR==FNR{skip[$1]=1; next} !($2 in skip)' \
+         /tmp/export-ignored-paths.txt \
+         <(git -C "<private repo checkout>" ls-tree -r <recorded-sha>)) \
      <(git -C /tmp/dohflow-launch ls-tree -r "$(git -C /tmp/dohflow-launch write-tree)")
 ```
 
-The `diff` must be empty — every tracked path in both trees names the
-identical blob. If it is not, stop — do not commit a tree that doesn't
-match what was reviewed.
+The `diff` must be empty — every tracked, non-export-ignore'd path in both
+trees names the identical blob. If it is not, stop — do not commit a tree
+that doesn't match what was reviewed.
 
 Then run the two content scans the public tree must pass:
 
@@ -164,3 +179,121 @@ particular commit has no ancestry.
   the public repository as part of this procedure — that migration (and
   eventually archiving the private repository read-only) is a separate,
   future bead.
+
+## Catch-up snapshot — bringing an existing public repo current
+
+- Bead: `personal-cfo-qvn0x` runs this section.
+- **When this applies:** any time `dohflow/dohflow`'s tracked tree has fallen
+  behind private `main` — i.e. commits merged privately after the go-live
+  snapshot (or after a previous catch-up run) never reached the public repo.
+  `personal-cfo-r36ck` (moving development to the public repo) depends on
+  the public tree being current at the moment it clones; this section is
+  how that precondition gets satisfied.
+- **Obsolete after `r36ck`.** Once development happens directly in
+  `dohflow/dohflow`, ordinary PRs keep its tree current on their own — there
+  is nothing left to "catch up." Do not run this section after `r36ck` has
+  completed.
+- Differs from the go-live procedure above in four ways: the target repo
+  already exists (and is already Public, not new-and-private); its tracked
+  tree must be cleared before the archive lands, rather than starting from
+  empty; the resulting commit is built **on top of** the existing head
+  rather than being the repository's first commit; and step 5's push lands
+  directly on an already-public, already-protected `main`, with no
+  visibility-flip safety net between a mistake and public exposure. Step 4's
+  verification gate is otherwise identical — reuse it verbatim.
+
+### Before you start — preconditions
+
+1. **Zero open PRs** against `chrisbustos/personal-cfo` — `gh pr list --repo
+   chrisbustos/personal-cfo --state open` returns nothing, or every open PR
+   has been deliberately deferred with the owner's sign-off.
+2. `git status --short` is clean in the private repository's `main`
+   worktree.
+3. `.beads/` is untracked (`git ls-files .beads/` returns nothing).
+4. Nothing unmerged that the owner wants reflected in the public tree —
+   resolve first, do not snapshot a tree with in-flight work.
+5. The pushing account can bypass the public repo's branch ruleset —
+   confirm before anything else, since §5 below relies on it and has no
+   visibility-flip safety net if it turns out to be wrong:
+   ```sh
+   gh api "repos/dohflow/dohflow/rulesets/$(gh api repos/dohflow/dohflow/rulesets --jq '.[0].id')" \
+     --jq '.current_user_can_bypass'
+   # must print "always"
+   ```
+
+### 1. Record the source commit
+
+```sh
+git rev-parse HEAD
+```
+
+Same mechanic as go-live step 1, but record the SHA on **whichever bead is
+running this catch-up** (e.g. `qvn0x`), not on `uxev1` — that bead belongs to
+the original go-live run only.
+
+### 2. Clone the existing public repo into a scratch directory
+
+```sh
+git clone --quiet git@github.com:dohflow/dohflow.git /tmp/dohflow-catchup
+cd /tmp/dohflow-catchup
+```
+
+Unlike go-live's step 2, there is no repository to create — `dohflow/dohflow`
+already exists and is already Public. All verification below still happens
+in this scratch clone first; nothing touches the real repository until
+step 5's push.
+
+### 3. Clear the tracked tree, then archive the private tree over it
+
+The scratch clone starts out with the previous snapshot's files still
+checked out. Remove every tracked path first, so anything deleted on
+private `main` since the last snapshot actually disappears from the public
+tree instead of lingering as a stale leftover:
+
+```sh
+git ls-files -z | xargs -0 git rm -q --
+```
+
+Then archive the private tree at the recorded SHA exactly as go-live's
+step 3 does:
+
+```sh
+git -C "<private repo checkout>" archive <recorded-sha> | tar -x -C /tmp/dohflow-catchup
+git add -A
+```
+
+### 4. Verify the tree before committing anything
+
+Unchanged from go-live's step 4 — run it verbatim against
+`/tmp/dohflow-catchup`: the `.beads/` absence check, the export-ignore-aware
+`ls-tree` blob-hash diff read live from `.gitattributes` (17 entries at this
+writing), `gitleaks detect --source /tmp/dohflow-catchup --no-git`, and
+`./scripts/value-scan.sh /tmp/dohflow-catchup`. All must report zero
+findings before proceeding. If anything fails, fix it in the **private
+repository first**, re-run step 1's SHA, and redo steps 3–4.
+
+### 5. Commit on top of the existing head and push
+
+```sh
+git commit -m "Catch-up snapshot of the private repository at <recorded-sha> (<PR range, e.g. #459-#462>)
+
+Brings the public tree current with the commits merged to
+chrisbustos/personal-cfo's main since the last snapshot. See
+docs/operations/public-launch-snapshot.md, \"Catch-up snapshot\"."
+git push origin main
+```
+
+This is a **direct push to an already-public, already-protected `main`** —
+there is no new-repo safety net and no visibility flip standing between a
+mistake and public exposure this time, so step 4's gate is the only thing
+that matters. Precondition 5 above already confirmed the pushing account
+can bypass the branch ruleset before any of steps 1–4 ran.
+
+### 6. Re-run rule
+
+If private `main` advances again before the bead consuming this snapshot
+(e.g. `r36ck`) reaches its own clone step, re-run steps 3–4 — they are
+idempotent, since clearing an already-cleared tree and re-archiving a newer
+SHA is harmless — and re-verify before that bead proceeds. The consuming
+bead's precondition is **tree equality at the moment it clones**, not the
+mere existence of a past catch-up commit.

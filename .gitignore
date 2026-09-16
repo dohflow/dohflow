@@ -63,3 +63,14 @@ ds-bundle/
 apps/desktop/.design-sync-entry.tsx
 apps/desktop/.design-sync-dist/
 .mirrors/
+
+# Internal strategy drafts (personal-cfo-o7xlf): these carry monetization,
+# pricing, and legal-posture analysis ahead of the repo becoming world-readable
+# (r36ck). They never enter the tree — see docs/agent/PROJECT_PROFILE.md for
+# where they actually live.
+docs/planning/*.DRAFT.md
+
+# Local coding-agent tool state (Codex CLI config/hooks, mirrored Claude
+# skills). Machine-local, not project source (personal-cfo-o7xlf).
+.agents/
+.codex/

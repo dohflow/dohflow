@@ -1,5 +1,10 @@
 # [Codename TBD] / Personal CFO: Personal Finance Desktop App Project Plan
 
+> **Superseded (2026-09-16):** This is the May 2026 planning document. It is
+> retained for history only. Current direction lives in the bead graph
+> (`\bd ready`, `\bd show <id>`) and `docs/adr/`, not here. See
+> `personal-cfo-o7xlf` for context.
+
 **Working codename:** [TBD — run trademark/namespace check before committing]  
 **Product description:** A local-first personal CFO for households  
 **Platform target:** macOS desktop first, with a codebase structured for future Linux and Windows support  

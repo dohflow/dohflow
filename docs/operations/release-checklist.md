@@ -165,11 +165,25 @@ anything already tagged — a tag is never reused).
 ./scripts/publish-release.sh publish
 ```
 
-In order: `gh release edit vX.Y.Z --draft=false` (the release goes public),
-then a `POST` to `$DOHFLOW_SITE_DEPLOY_HOOK_URL` (the dohflow-site Workers
-Builds deploy hook, `personal-cfo-z5ag4` — set this from
-`~/.config/personal-cfo/release.env`), then the same two checks as
-`./scripts/publish-release.sh verify`:
+In order:
+
+1. `gh release edit vX.Y.Z --draft=false` (the release goes public).
+2. **The manifest-URL check** (`personal-cfo-xvj0k`): downloads
+   `latest.json` fresh from the just-published release and compares the
+   `url` field *inside it* against the expected tag path — a separate
+   fact from where the `DohFlow.app.tar.gz` asset itself happens to live,
+   which is *not* what this checks. If they differ (GitHub's draft
+   `untagged-<hash>` path didn't get rewritten to the tag path on
+   publish), it corrects the manifest, regenerates `SHA256SUMS.txt`'s
+   `latest.json` line, re-uploads both, and re-downloads the manifest one
+   more time to confirm the correction actually took before proceeding.
+   **This must run, and pass, before Immutable releases is ever enabled**
+   (`personal-cfo-fkt5.9`) — once that's on, the correction's re-upload
+   step can no longer run at all.
+3. A `POST` to `$DOHFLOW_SITE_DEPLOY_HOOK_URL` (the dohflow-site Workers
+   Builds deploy hook, `personal-cfo-z5ag4` — set this from
+   `~/.config/personal-cfo/release.env`).
+4. The same two checks as `./scripts/publish-release.sh verify`:
 
 - `curl -sI https://github.com/dohflow/dohflow/releases/latest/download/latest.json`
   → `200`.
