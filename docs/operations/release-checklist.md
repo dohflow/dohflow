@@ -73,8 +73,13 @@ Release.
 
 This signs, notarizes, staples, and verifies (`codesign`, `stapler`,
 `spctl`) — see `release-signing.md` for what each step means and how to
-read a failure. It ends with the `.dmg`, `.app.tar.gz`, `.sig`, and a
-`latest.json` with a **placeholder** asset URL, all under
+read a failure. It builds a **universal binary** (`--target
+universal-apple-darwin`, ADR 0072) and verifies both architecture slices
+are present (`lipo -archs` reports `arm64` and `x86_64`) before
+continuing. It ends with the `.dmg`, `.app.tar.gz`, `.sig`, and a
+`latest.json` with a **placeholder** asset URL under both
+`platforms.darwin-aarch64` and `platforms.darwin-x86_64` (identical once
+patched — one archive, one asset), all under
 `apps/desktop/src-tauri/target/release/bundle/{macos,dmg}/`.
 
 ## 2. Preflight (either session)
@@ -154,6 +159,13 @@ confirmed above ADR 0065's 14.0 floor):
 - [ ] Publish a small follow-up release afterward and confirm Settings →
   Software update finds it, installs, and relaunches — proving the update
   path against a *real*, non-smoke release once one exists.
+- [ ] **Intel smoke (DIST-4, `personal-cfo-0wfrr`):** the CI Intel
+  build-and-launch smoke job (`personal-cfo-rr0lm`, `runs-on:
+  macos-15-intel`) passes on this release's commit — confirm the workflow
+  run before proceeding. Also run the Gatekeeper leg on real Intel
+  hardware when it's available (DIST-4 documents the exact procedure);
+  record in this release's bead whether that hardware leg ran or is
+  unavailable.
 
 If anything here fails, **do not proceed to step 6.** Fix it, rebuild
 (step 1), and re-run from step 2 (a fresh version/tag if the fix touches
@@ -183,11 +195,14 @@ In order:
 3. A `POST` to `$DOHFLOW_SITE_DEPLOY_HOOK_URL` (the dohflow-site Workers
    Builds deploy hook, `personal-cfo-z5ag4` — set this from
    `~/.config/personal-cfo/release.env`).
-4. The same two checks as `./scripts/publish-release.sh verify`:
+4. The same checks as `./scripts/publish-release.sh verify`:
 
 - `curl -sI https://github.com/dohflow/dohflow/releases/latest/download/latest.json`
   → `200`.
 - `curl -s https://dohflow.app/download` mentions `vX.Y.Z`.
+- `platforms.darwin-aarch64` and `platforms.darwin-x86_64` in the live
+  manifest carry the same `url` and `signature` (ADR 0072), and that
+  `url` resolves `200`.
 
 Run `verify` again on its own a minute later if the site rebuild is still
 in flight when `publish` finishes — `dohflow-site` → Deployments shows the

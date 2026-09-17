@@ -264,17 +264,21 @@ open('$sig_tmp', 'w').write(base64.b64decode(open('$updater_sig').read().strip()
 patch_latest_json_url() {
   local t="$1" placeholder="REPLACE_WITH_THE_UPLOADED_APP_TAR_GZ_ASSET_URL"
   local url="https://github.com/$repo/releases/download/$t/DohFlow.app.tar.gz"
+  # Universal binary (ADR 0072): both platform keys get the SAME url — one
+  # archive, one asset, no second file to point to.
   python3 -c "
 import json, sys
 path, placeholder, url = sys.argv[1], sys.argv[2], sys.argv[3]
 manifest = json.load(open(path))
-current = manifest['platforms']['darwin-aarch64']['url']
-if current != placeholder:
-    sys.exit(f'latest.json url is \'{current}\', expected the placeholder \'{placeholder}\' — refusing to overwrite an already-filled-in value. Was package already run?')
-manifest['platforms']['darwin-aarch64']['url'] = url
+for plat in ('darwin-aarch64', 'darwin-x86_64'):
+    current = manifest['platforms'][plat]['url']
+    if current != placeholder:
+        sys.exit(f'latest.json {plat}.url is \'{current}\', expected the placeholder \'{placeholder}\' — refusing to overwrite an already-filled-in value. Was package already run?')
+for plat in ('darwin-aarch64', 'darwin-x86_64'):
+    manifest['platforms'][plat]['url'] = url
 json.dump(manifest, open(path, 'w'), indent=2)
 " "$assets_dir/latest.json" "$placeholder" "$url"
-  ok "latest.json url set to $url"
+  ok "latest.json url set to $url (both platform keys)"
 }
 
 cmd_package() {
@@ -408,6 +412,44 @@ cmd_verify() {
     echo "✗ dohflow.app/download does not (yet) mention $v — the site rebuild may still be in progress; re-check in a minute." >&2
     fail "verify failed."
   fi
+
+  echo
+  echo "── Checking both platform keys share one url + signature (ADR 0072) ──"
+  # A universal binary serves ONE archive under both platforms.darwin-aarch64
+  # and platforms.darwin-x86_64 — fetched fresh from the live manifest, never
+  # trusted from a local copy (same discipline as verify_manifest_url).
+  local manifest_json url_a url_x sig_a sig_x
+  manifest_json="$(curl -fsSL "https://github.com/$repo/releases/latest/download/latest.json")" \
+    || fail "could not download latest.json to check its platform keys."
+  url_a="$(printf '%s' "$manifest_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['darwin-aarch64']['url'])")"
+  url_x="$(printf '%s' "$manifest_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['darwin-x86_64']['url'])")"
+  sig_a="$(printf '%s' "$manifest_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['darwin-aarch64']['signature'])")"
+  sig_x="$(printf '%s' "$manifest_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['platforms']['darwin-x86_64']['signature'])")"
+
+  if [[ "$url_a" != "$url_x" ]]; then
+    echo "✗ darwin-aarch64 and darwin-x86_64 urls differ: '$url_a' vs '$url_x'" >&2
+    fail "verify failed — a universal build must serve the same url under both platform keys."
+  fi
+  if [[ "$sig_a" != "$sig_x" ]]; then
+    echo "✗ darwin-aarch64 and darwin-x86_64 signatures differ" >&2
+    fail "verify failed — a universal build must serve the same signature under both platform keys."
+  fi
+  ok "darwin-aarch64 and darwin-x86_64 share the same url and signature"
+
+  # bash 3.2 (macOS system bash) has no associative arrays — "key:value"
+  # pairs plus parameter expansion instead.
+  local entry plat asset_url asset_status
+  for entry in "darwin-aarch64:$url_a" "darwin-x86_64:$url_x"; do
+    plat="${entry%%:*}"
+    asset_url="${entry#*:}"
+    asset_status="$(curl -sI -L -o /dev/null -w '%{http_code}' "$asset_url")"
+    if [[ "$asset_status" == "200" ]]; then
+      ok "$plat asset resolves (HTTP $asset_status)"
+    else
+      echo "✗ $plat asset url returned HTTP $asset_status, expected 200: $asset_url" >&2
+      fail "verify failed."
+    fi
+  done
 }
 
 # ── verify_manifest_url: the url field INSIDE latest.json is what the
@@ -433,8 +475,20 @@ cmd_verify() {
 # ONE MORE TIME to confirm the correction actually took — never trusting
 # what was just uploaded either, since that trust is exactly what let the
 # original bug ship.
+manifest_urls_match_expected() {  # <manifest-path> <expected-url>
+  # Prints nothing; exit 0 iff BOTH platform keys equal expected (ADR 0072 —
+  # universal binary, one archive, both keys must carry the same url).
+  python3 -c "
+import json, sys
+path, expected = sys.argv[1], sys.argv[2]
+manifest = json.load(open(path))
+mismatched = [p for p in ('darwin-aarch64', 'darwin-x86_64') if manifest['platforms'][p]['url'] != expected]
+sys.exit(1 if mismatched else 0)
+" "$1" "$2"
+}
+
 verify_manifest_url() {
-  local t="$1" expected actual dl_dir
+  local t="$1" expected dl_dir
   expected="https://github.com/$repo/releases/download/$t/DohFlow.app.tar.gz"
 
   dl_dir="$(mktemp -d)"
@@ -442,27 +496,27 @@ verify_manifest_url() {
     rm -rf "$dl_dir"
     fail "could not download latest.json from the published release $t to verify it — is the asset actually there?"
   fi
-  actual="$(python3 -c "import json; print(json.load(open('$dl_dir/latest.json'))['platforms']['darwin-aarch64']['url'])")"
 
-  if [[ "$actual" == "$expected" ]]; then
-    ok "manifest URL confirmed: $actual"
+  if manifest_urls_match_expected "$dl_dir/latest.json" "$expected"; then
+    ok "manifest URL confirmed on both platform keys: $expected"
     rm -rf "$dl_dir"
     return
   fi
 
-  echo "note: latest.json's own url field is '$actual', not the predicted" >&2
+  echo "note: latest.json's own url field(s) do not all match the predicted" >&2
   echo "  '$expected' — the asset's location and what the manifest itself" >&2
   echo "  claims can diverge independently (personal-cfo-xvj0k). Correcting" >&2
-  echo "  the manifest and its checksum, then re-uploading both." >&2
+  echo "  both platform keys and the manifest's checksum, then re-uploading both." >&2
 
   python3 -c "
 import json
 manifest = json.load(open('$dl_dir/latest.json'))
-manifest['platforms']['darwin-aarch64']['url'] = '$expected'
+for plat in ('darwin-aarch64', 'darwin-x86_64'):
+    manifest['platforms'][plat]['url'] = '$expected'
 json.dump(manifest, open('$assets_dir/latest.json', 'w'), indent=2)
 "
   # The other three staged files are untouched since `package` wrote them;
-  # only latest.json's line actually changes, but the whole file is
+  # only latest.json's lines actually change, but the whole file is
   # regenerated so it stays a complete, accurate manifest of everything
   # about to be (re-)uploaded.
   ( cd "$assets_dir" && shasum -a 256 DohFlow.dmg DohFlow.app.tar.gz DohFlow.app.tar.gz.sig latest.json > SHA256SUMS.txt )
@@ -474,11 +528,13 @@ json.dump(manifest, open('$assets_dir/latest.json', 'w'), indent=2)
     rm -rf "$dl_dir"
     fail "uploaded the corrected latest.json, but could not download it back to re-verify — stop and investigate before proceeding."
   fi
-  actual="$(python3 -c "import json; print(json.load(open('$dl_dir/latest.json'))['platforms']['darwin-aarch64']['url'])")"
+  if ! manifest_urls_match_expected "$dl_dir/latest.json" "$expected"; then
+    rm -rf "$dl_dir"
+    fail "corrected and re-uploaded latest.json, but re-downloading it still shows a mismatched platform key — stop and investigate before proceeding."
+  fi
   rm -rf "$dl_dir"
-  [[ "$actual" == "$expected" ]] || fail "corrected and re-uploaded latest.json, but re-downloading it still shows '$actual' — stop and investigate before proceeding."
 
-  ok "manifest corrected, re-uploaded, and re-verified by downloading it back fresh: $actual"
+  ok "manifest corrected, re-uploaded, and re-verified by downloading it back fresh (both platform keys): $expected"
 }
 
 # ── publish: flip the draft public, then rebuild the site, then verify ────────
