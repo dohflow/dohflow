@@ -5,7 +5,12 @@
 
 ## Bead
 
-- **Bead ID:** personal-cfo-
+<!-- Outside contributor? Skip this section — you don't need a bead ID, and
+     no CI check requires one. Cite the GitHub issue you're addressing in
+     the Summary below instead. This section is for this project's own
+     agent/owner sessions, which track work as beads (ADR 0082). -->
+
+- **Bead ID:** personal-cfo- <!-- agent/owner only; never the bead's TITLE — see ADR 0082 decision 5 -->
 - **Candidate SHA:**
 - **Process level:** full / lightweight / user-authorized exception
 - **Owning session:** 02-implementation / 03-escalation (takeover authorized: )
@@ -24,8 +29,11 @@ appears.
 
 ## Acceptance criteria
 
-<!-- Quote each criterion from the bead's acceptance_criteria field and state
-     how it is satisfied. One line per criterion. -->
+<!-- Describe how each criterion is satisfied, one line each — but do NOT
+     paste the bead's acceptance-criteria text or notes verbatim into this
+     PUBLIC PR body if this repo is dohflow/dohflow (ADR 0082, decision 5):
+     summarize the outcome in your own words instead. This restriction does
+     not apply to a private-repo PR. -->
 
 - [ ]
 

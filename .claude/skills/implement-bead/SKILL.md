@@ -82,7 +82,13 @@ Then **stop.** Do not keep editing while an escalation is open.
 3. Open or update the PR using the repository template. Fill the
    implementation-agent sections completely: commands, results, gates not run
    and why, demo instructions, limitations, risks. The PR body is yours; the
-   reviewer replies in a separate comment and will not edit it.
+   reviewer replies in a separate comment and will not edit it. **If the
+   target repo is the public `dohflow/dohflow`** (ADR 0082): the PR title is
+   the bead ID plus a description of the change, never the bead's title
+   verbatim if it names an unshipped product or price; do not paste
+   acceptance-criteria text or bead notes into the PR body — summarize the
+   outcome in your own words instead. This restriction does not apply to a
+   private-repo PR.
 4. Record the candidate SHA with `git rev-parse HEAD`.
 5. Add a bead note carrying the PR number and the candidate SHA, and say the
    bead is awaiting review.

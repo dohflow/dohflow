@@ -91,6 +91,15 @@ If a feature plausibly affects one of these surfaces and the suite passes, that'
 
 ---
 
+## 4.5 ADR tier decided before writing
+
+Before writing a new ADR (or an ADR-bead's acceptance criteria), decide and
+record its tier — Public or Internal (ADR 0082). An internal-tier ADR is
+written in the private `dohflow/internal` repository, never in this one; its
+number is still recorded in this repo's `docs/adr/README.md` index (title
+omitted). `scripts/adr-tier-check.sh` is a backstop, not a substitute for
+deciding tier up front.
+
 ## 5. CI gates (release-blocking)
 
 Every PR runs:
@@ -104,6 +113,7 @@ Every PR runs:
 - Tauri release build on macOS runner
 - Logging redaction CI test (`personal-cfo-zobt`) — release-blocking
 - WAL/SHM/temp-file plaintext-leak test (`personal-cfo-zxvl`) — release-blocking
+- ADR tier tripwire (`scripts/adr-tier-check.sh`, ADR 0082) — release-blocking
 
 All gates must be green before merge to `main`.
 

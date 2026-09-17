@@ -624,6 +624,15 @@ jobs:
         if: steps.visibility.outputs.run == 'true'
         run: ./scripts/value-scan.sh
 
+      # ADR 0082 disclosure-boundary tripwire (personal-cfo-0uxwt) — rides on
+      # this already-required job rather than adding a new required check to
+      # the branch-protection ruleset. Business-tier phrases in docs/adr/ or
+      # docs/research/ mean a business decision was written into the public
+      # repo instead of dohflow/internal.
+      - name: ADR tier check (business phrases in docs/adr, docs/research)
+        if: steps.visibility.outputs.run == 'true'
+        run: ./scripts/adr-tier-check.sh
+
       # Dependency scanning (7t7) — both Cargo workspaces (root + the standalone
       # desktop crate). Fails on a known-vulnerable crate; unmaintained-advisory
       # warnings (e.g. Tauri's Linux-only GTK3 deps) are informational by default.

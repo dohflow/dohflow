@@ -109,7 +109,7 @@ if [ -z "${ALLOW_PUSH_TO_MAIN:-}" ]; then
 fi
 # --- END LOCAL: protect default branch ---
 
-# --- BEGIN LOCAL: bead-graph mirror backup (ADR 0064) ---
+# --- BEGIN LOCAL: bead-graph mirror backup (ADR 0064, ADR 0082) ---
 # Pushes the bead graph to the private mirror on every git push, so the backup
 # cannot silently fall behind the repo. This is a BACKUP, not a sync — nothing
 # pulls from it. Cross-machine drift is prevented by `bd dolt push/pull`, which
@@ -119,28 +119,61 @@ fi
 # loudly instead, because a silent backup failure is the failure mode that
 # matters.
 #
-# Only stdout is silenced here (the chatty success-path lines: "cloning mirror
-# into...", "exported fresh from bd", "backed up N rows to..."). stderr is left
-# to flow straight to the terminal, because that is where backup-beads.sh puts
-# every diagnostic that actually matters — its "REFUSING TO BACK UP" guard
-# (personal-cfo-au76q) and its other warnings are already `echo ... >&2`, not
-# something this hook needs to parse or re-emit (personal-cfo-f8wn7).
+# backup-beads.sh itself relocates to the private dohflow/internal repository
+# during personal-cfo-r36ck (ADR 0082, decision 6) — it is one of the
+# seventeen export-ignore'd paths. Until that relocation actually happens,
+# though, this repo IS the only place the script lives, and it is still the
+# only working off-machine backup for the bead graph (bd dolt push has never
+# reached its remote — es9ew). A version of this hook that looked ONLY at the
+# external checkout would silently stop backing up the graph on every push
+# from the moment this change merges until someone runs r36ck, with no fixed
+# date — caught in review (personal-cfo-0uxwt, finding F2) before it shipped.
+# So this hook tries, in order: the configurable external checkout
+# ($DOHFLOW_INTERNAL_DIR if set, else the documented sibling directory
+# `../dohflow-internal` — see CONTRIBUTING.md's maintainers note); then the
+# in-tree copy, IF it's still here (pre-r36ck); only then does it warn. r36ck
+# deletes the in-tree copy, which retires that branch on its own — nothing to
+# clean up here later. Only stdout is silenced (the chatty success-path
+# lines: "cloning mirror into...", "exported fresh from bd", "backed up N
+# rows to..."). stderr is left to flow straight to the terminal, because that
+# is where backup-beads.sh puts every diagnostic that actually matters — its
+# "REFUSING TO BACK UP" guard (personal-cfo-au76q) and its other warnings are
+# already `echo ... >&2`, not something this hook needs to parse or re-emit
+# (personal-cfo-f8wn7).
 #
-# Silent no-op (not even the warning) when the script is missing or not
-# executable, OR when there is no .beads/ (database) to back up at all — a
-# fresh clone before `bd init`, or the public clone, which never has .beads/
-# in the first place. `./scripts/backup-beads.sh` is a TRACKED file, so it
-# alone is not a reliable signal that this repo's beads tooling is actually
-# set up here; without the `-d ./.beads` check, a public contributor with no
-# bead database would see backup-beads.sh's own "no .beads/ at ..." refusal
-# (exit 1) turn into this hook's generic warning on every single push,
-# purely from having cloned the repo — which is exactly the noise this bead
-# exists to keep out of a public clone. This is a decision about WHEN to
-# call backup-beads.sh, not a change to what it does when called (that stays
-# out of scope).
-if [ -z "${BEADS_SKIP_MIRROR:-}" ] && [ -x "./scripts/backup-beads.sh" ] && [ -d "./.beads" ]; then
-  if ! ./scripts/backup-beads.sh >/dev/null; then
-    echo >&2 "beads: WARNING — mirror backup failed. Run ./scripts/backup-beads.sh by hand."
+# Silent no-op (not even a warning) when there is no .beads/ (database) to
+# back up at all — a fresh clone before `bd init`, or a contributor's public
+# clone, which never has .beads/ in the first place. That check runs FIRST,
+# before ever looking for either script location, so a contributor who has
+# neither sees nothing at all.
+#
+# ONE warning line (not silent) when .beads/ DOES exist here — this machine
+# has beads tooling set up — but NEITHER location has the script: post-r36ck
+# with no external checkout configured. That combination only happens on a
+# maintainer's own machine (a contributor never has .beads/ to begin with, so
+# never reaches this branch), and it means the path is misconfigured — worth
+# surfacing once per push rather than staying silent forever, but still
+# never blocking the push itself.
+_dohflow_internal_backup="${DOHFLOW_INTERNAL_DIR:-../dohflow-internal}/scripts/backup-beads.sh"
+if [ -z "${BEADS_SKIP_MIRROR:-}" ] && [ -d "./.beads" ]; then
+  if [ -x "$_dohflow_internal_backup" ]; then
+    _backup_script="$_dohflow_internal_backup"
+  elif [ -x "./scripts/backup-beads.sh" ]; then
+    _backup_script="./scripts/backup-beads.sh"
+  else
+    _backup_script=""
+  fi
+
+  if [ -n "$_backup_script" ]; then
+    # `$PWD` is this repo's root (git runs pre-push with the working
+    # directory set there) — whichever copy runs, PRODUCT_REPO is the same
+    # answer, and it's a no-op for the in-tree copy (identical to what it
+    # would infer on its own).
+    if ! BEADS_PRODUCT_REPO="$PWD" "$_backup_script" >/dev/null; then
+      echo >&2 "beads: WARNING — mirror backup failed. Run $_backup_script by hand."
+    fi
+  else
+    echo >&2 "beads: mirror backup script not found at $_dohflow_internal_backup or ./scripts/backup-beads.sh — set DOHFLOW_INTERNAL_DIR to your dohflow/internal checkout, or clone it at ../dohflow-internal. Skipping backup for this push."
   fi
 fi
 # --- END LOCAL: bead-graph mirror backup ---

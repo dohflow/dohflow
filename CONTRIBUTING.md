@@ -25,19 +25,28 @@ a shared operating contract. The authoritative process docs are:
 
 ## Workflow at a glance
 
-1. **Tasks are tracked in [beads](https://github.com/steveyegge/beads)** under
-   `.beads/`, not in markdown TODOs. Find work with `bd ready`; claim it with
-   `bd update <id> --claim`. `.beads/` will not exist in your clone (it's a
-   private, untracked, backed-up-elsewhere directory, `ADR 0064`) — that's
-   expected; only maintainers with access to the private backups need to set
-   it up (`docs/operations/beads-backup-and-restore.md`, "Bootstrap"), and
-   contributors don't need any of it.
-2. **Branch first** — never commit substantive work directly to `main`. Use
-   `agent/<bead-id>-<short-slug>`.
-3. **Small, coherent commits** that reference the bead ID.
+1. **Cite the GitHub issue** your PR addresses (see the note above) — you do
+   not need a bead ID, and no CI check requires one. Bead IDs (`personal-cfo-
+   xxxxx` in some PR titles) are this project's own internal task-tracking
+   convention for its AI coding agents and maintainer; they mean nothing to
+   an outside contributor and you can ignore them entirely.
+2. **Branch first** — never commit substantive work directly to `main`.
+3. **Small, coherent commits.**
 4. **Run the quality gates before pushing** (see below).
-5. **Open a PR** with a summary, verification results, risks, and the linked
-   bead ID.
+5. **Open a PR** with a summary, verification results, and risks, citing the
+   issue it addresses.
+
+### For maintainers
+
+This project's AI coding agents track their own work as **beads** — under
+`.beads/`, private and untracked (`ADR 0064`) — which is why none of the
+above mentions `bd ready` or a bead ID; that tooling is irrelevant to an
+outside contributor and none of this repo's CI checks it. If you're a
+maintainer setting up a second checkout, task/bead tooling setup currently
+lives in `docs/operations/beads-backup-and-restore.md`; per ADR 0082 it is
+relocating to the private `dohflow/internal` repository as part of
+`personal-cfo-r36ck` — check whether that move has already happened before
+following a stale reference here.
 
 ## Local setup
 

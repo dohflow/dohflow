@@ -58,6 +58,12 @@ Do not write a temporary file, and do not use Python, Node, or shell
 redirection to produce one. Do not edit the PR body — that belongs to the
 implementation agent.
 
+**If the target repo is the public `dohflow/dohflow`** (ADR 0082): cite the
+bead by ID only — never paste its title (if it names an unshipped product or
+price), its acceptance criteria, or its notes into this public comment.
+Describe findings and verdict in your own words. This restriction does not
+apply to a private-repo PR.
+
 The comment contains, in order:
 
 - PR number

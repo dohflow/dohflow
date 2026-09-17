@@ -160,6 +160,8 @@ Architectural decisions live in `docs/adr/` as numbered Markdown files (`00NN-sl
 - "Revisit if..." trigger conditions.
 - Linked beads.
 
+If the project has a public/private disclosure boundary for its ADRs (this project's is ADR 0082): tier decided and recorded **before** the file is written — an ADR bead's own acceptance criteria must say which tier it is, since that decides which repository the file gets written into.
+
 The corpus tracks ADRs as `decision`-type beads. As of bootstrap completion:
 
 **Written and merged** (8): 0001 Tauri+Rust+React, 0002 vault, 0003 trust boundary, 0006 Finance Kernel, 0007 ledger/posting, 0009 read-model strategy, 0011 hybrid ledger/op-log, 0012 idempotency.

@@ -77,6 +77,7 @@ If any check fails, **fix the foundation first** — as its own ADR / bead / con
 - PRs must include: summary, test/verification results, risks, follow-up work, and linked bead/task IDs.
 - Prefer small PRs over large mixed changes.
 - Do not merge PRs unless the user explicitly asks you to merge.
+- Once a project has a public/private disclosure boundary (this project's is ADR 0082): a PR against the public repo cites the bead by ID only — never its title or acceptance criteria verbatim if they'd disclose unshipped, business-sensitive detail.
 
 ### Commit discipline
 
@@ -241,6 +242,7 @@ merging, permissions, or release. Durable context lives in the bead and the PR.
 
 - Update docs when behavior, setup, commands, architecture, or user-facing workflows change.
 - For major architectural decisions, create or update an ADR under `docs/adr/`.
+- If the project defines a public/private disclosure tier for its ADRs (this project's is ADR 0082), decide and record an ADR's tier before writing it — a business-sensitive decision belongs in the private tier, never in the repo a contributor can read.
 - Keep `README.md` useful for humans; keep `AGENTS.md` useful for agents.
 - Keep project-specific rules out of the universal scaffold unless they apply to nearly every project.
 

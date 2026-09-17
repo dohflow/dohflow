@@ -253,13 +253,18 @@ case_start "(c) mirror-backup: fails-loud when set up, fully silent when not"
 # ===========================================================================
 CASE="$WORKDIR/case-c"; mkdir -p "$CASE"
 make_clone "$CASE"
-mkdir -p "$CLONE/scripts"
-cat > "$CLONE/scripts/backup-beads.sh" <<'BACKUP_EOF'
+# ADR 0082: the hook looks for backup-beads.sh in a configurable EXTERNAL
+# checkout (DOHFLOW_INTERNAL_DIR, default sibling ../dohflow-internal), not
+# in-tree — placed at $CASE/dohflow-internal here, which IS "../dohflow-
+# internal" relative to $CLONE ($CASE/clone), so the default resolves
+# without needing to set the env var explicitly.
+mkdir -p "$CASE/dohflow-internal/scripts"
+cat > "$CASE/dohflow-internal/scripts/backup-beads.sh" <<'BACKUP_EOF'
 #!/usr/bin/env sh
 echo "some diagnostic on stderr" >&2
 exit 1
 BACKUP_EOF
-chmod +x "$CLONE/scripts/backup-beads.sh"
+chmod +x "$CASE/dohflow-internal/scripts/backup-beads.sh"
 
 # Script present but NO .beads/ at all (a fresh clone, or the public clone,
 # before any bead database exists here) — completely silent, not even the
@@ -294,6 +299,77 @@ SKIP_RC=$?
 assert_eq "push succeeds with BEADS_SKIP_MIRROR=1" "$SKIP_RC" "0"
 assert_not_contains "no mirror-backup warning when skipped" \
   "$(cat "$CASE/skip-stderr.txt")" "mirror backup failed"
+
+# ===========================================================================
+case_start "(c2) mirror-backup: ADR 0082's configurable external path — found vs. not found"
+# ===========================================================================
+CASE="$WORKDIR/case-c2"; mkdir -p "$CASE"
+make_clone "$CASE"
+mkdir -p "$CLONE/.beads"
+
+# .beads/ present, but NEITHER DOHFLOW_INTERNAL_DIR NOR the default sibling
+# ../dohflow-internal exists anywhere — the maintainer-misconfiguration case
+# this bead's "skip with one warning line" design exists for. Not silent
+# (unlike the no-.beads/ case above), but still never blocks the push.
+push_change "$CLONE" "$CASE" no-internal-checkout no-internal-checkout
+assert_eq "push still exits 0 (not found is advisory, not blocking)" "$PUSH_RC" "0"
+assert_contains "names the expected default path" \
+  "$(cat "$STDERR_LOG")" "dohflow-internal/scripts/backup-beads.sh"
+assert_contains "tells the operator how to fix it" \
+  "$(cat "$STDERR_LOG")" "DOHFLOW_INTERNAL_DIR"
+assert_not_contains "does not print the generic 'mirror backup failed' wording (different message, different cause)" \
+  "$(cat "$STDERR_LOG")" "mirror backup failed"
+
+# Transitional fallback (review finding F2): no external checkout anywhere,
+# but the in-tree copy IS still here — pre-r36ck reality on every machine
+# today. Must be used, not skipped, or every push silently stops backing up
+# the bead graph from the moment this bead merges until r36ck relocates the
+# script, with no fixed date.
+mkdir -p "$CLONE/scripts"
+cat > "$CLONE/scripts/backup-beads.sh" <<'INTREE_BACKUP_EOF'
+#!/usr/bin/env sh
+echo "in-tree stub invoked with PRODUCT=$BEADS_PRODUCT_REPO" >&2
+exit 0
+INTREE_BACKUP_EOF
+chmod +x "$CLONE/scripts/backup-beads.sh"
+
+push_change "$CLONE" "$CASE" in-tree-fallback in-tree-fallback
+assert_eq "push exits 0 using the in-tree fallback" "$PUSH_RC" "0"
+assert_not_contains "no 'not found' warning — the in-tree copy was used" \
+  "$(cat "$STDERR_LOG")" "script not found at"
+assert_contains "the in-tree script was actually invoked (stub's own stderr line)" \
+  "$(cat "$STDERR_LOG")" "in-tree stub invoked"
+# Squeeze repeated slashes on both sides — $CLONE (from mktemp -d, whose
+# $TMPDIR base can itself end in "/") and the hook's actual $PWD normalize
+# differently, which is a path-representation quirk, not a behavior bug.
+assert_contains "BEADS_PRODUCT_REPO was passed even to the in-tree copy" \
+  "$(cat "$STDERR_LOG" | tr -s '/')" "PRODUCT=$(printf '%s' "$CLONE" | tr -s '/')"
+
+# DOHFLOW_INTERNAL_DIR set to a checkout that DOES have a working script —
+# found, invoked, succeeds silently (stdout only, per the script's own
+# chatty-success-line contract).
+EXTERNAL="$CASE/external-internal-checkout"
+mkdir -p "$EXTERNAL/scripts"
+cat > "$EXTERNAL/scripts/backup-beads.sh" <<'BACKUP_OK_EOF'
+#!/usr/bin/env sh
+echo "backed up 0 rows to nowhere (test stub)"
+exit 0
+BACKUP_OK_EOF
+chmod +x "$EXTERNAL/scripts/backup-beads.sh"
+
+git -C "$CLONE" checkout --quiet -b found-via-env-var
+echo x > "$CLONE/f2.txt"
+git -C "$CLONE" add -A
+git -C "$CLONE" commit --quiet -m x
+DOHFLOW_INTERNAL_DIR="$EXTERNAL" sh -c \
+  "cd '$CLONE' && git push origin found-via-env-var:found-via-env-var" \
+  >"$CASE/env-stdout.txt" 2>"$CASE/env-stderr.txt"
+ENV_RC=$?
+assert_eq "push exits 0 with a working external script found via DOHFLOW_INTERNAL_DIR" "$ENV_RC" "0"
+assert_not_contains "no 'not found' warning once the env var points at a real checkout" \
+  "$(cat "$CASE/env-stderr.txt")" "not found at"
+assert_not_contains "no generic failure warning either — the stub script succeeds" \
+  "$(cat "$CASE/env-stderr.txt")" "mirror backup failed"
 
 # ===========================================================================
 case_start "(d) the hook works from a linked worktree"
