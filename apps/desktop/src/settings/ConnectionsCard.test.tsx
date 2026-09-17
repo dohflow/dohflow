@@ -85,11 +85,11 @@ describe("ConnectionsCard", () => {
     );
   });
 
-  it("renders a healthy connection with its sync stamp and links", async () => {
+  it("renders a healthy connection with its refresh stamp and links", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection()]));
     const { findByText, getByText } = renderWithClient(<ConnectionsCard />);
     expect(await findByText("SimpleFIN Bridge connection")).toBeInTheDocument();
-    expect(getByText(/^Synced /)).toBeInTheDocument();
+    expect(getByText(/^Refreshed /)).toBeInTheDocument();
     expect(getByText("Demo Checking")).toBeInTheDocument();
     expect(
       getByText(
@@ -105,7 +105,7 @@ describe("ConnectionsCard", () => {
     const { findByText, getByRole } = renderWithClient(<ConnectionsCard />);
     expect(await findByText("Needs attention")).toBeInTheDocument();
     expect(getByRole("alert")).toHaveTextContent(
-      "Last sync failed: access revoked — re-link required",
+      "Last refresh failed: access revoked — re-link required",
     );
   });
 
@@ -170,10 +170,10 @@ describe("ConnectionsCard", () => {
       }),
     );
     const { findByText, findByRole } = renderWithClient(<ConnectionsCard />);
-    fireEvent.click(await findByText("Sync now"));
+    fireEvent.click(await findByText("Refresh now"));
     const status = await findByRole("status");
     expect(status).toHaveTextContent(
-      "The provider is pacing requests — this connection will sync later.",
+      "The provider is pacing requests — this connection will refresh later.",
     );
   });
 
@@ -188,14 +188,14 @@ describe("ConnectionsCard", () => {
         flagged: 0,
         skipped_unmapped: 0,
         warnings: [],
-        message: "Found 2 account(s) — map them in Settings, then sync.",
+        message: "Found 2 account(s) — map them in Settings, then refresh.",
       }),
     );
     const { findByText, findByRole } = renderWithClient(<ConnectionsCard />);
-    fireEvent.click(await findByText("Sync now"));
+    fireEvent.click(await findByText("Refresh now"));
     const status = await findByRole("status");
     expect(status).toHaveTextContent(
-      "Found 2 account(s) — map them in Settings, then sync.",
+      "Found 2 account(s) — map them in Settings, then refresh.",
     );
   });
 
@@ -215,7 +215,7 @@ describe("ConnectionsCard", () => {
       }),
     );
     const { findByText, findByRole } = renderWithClient(<ConnectionsCard />);
-    fireEvent.click(await findByText("Sync now"));
+    fireEvent.click(await findByText("Refresh now"));
     const status = await findByRole("status");
     expect(status).toHaveTextContent(/reported no accounts yet/);
   });
@@ -235,9 +235,9 @@ describe("ConnectionsCard", () => {
       }),
     );
     const { findByText, findByRole } = renderWithClient(<ConnectionsCard />);
-    fireEvent.click(await findByText("Sync now"));
+    fireEvent.click(await findByText("Refresh now"));
     const alert = await findByRole("alert");
-    expect(alert).toHaveTextContent("The sync did not complete.");
+    expect(alert).toHaveTextContent("The refresh did not complete.");
   });
 
   it("forgets a connection only after the inline confirm", async () => {
@@ -248,7 +248,7 @@ describe("ConnectionsCard", () => {
     );
     fireEvent.click(await findByText("Forget connection…"));
     expect(
-      getByText(/Transactions already synced stay in the ledger/),
+      getByText(/Transactions already refreshed stay in the ledger/),
     ).toBeInTheDocument();
     expect(mocks.connectorForget).not.toHaveBeenCalled();
     fireEvent.click(getByText("Forget"));

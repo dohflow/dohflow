@@ -36,29 +36,29 @@ export function syncOutcomeCopy(
     case "synced":
       // The backend may report work done alongside the success (e.g. an
       // auto-categorized count, kz88).
-      return message ? `Synced — ${message}.` : "Synced.";
+      return message ? `Refreshed — ${message}.` : "Refreshed.";
     case "partially_committed":
       // Keep the kz88 auto-categorized note even when rows also flagged.
       return message
-        ? `Synced — some rows are waiting in the Money Inbox. ${capitalize(message)}.`
-        : "Synced — some rows are waiting in the Money Inbox.";
+        ? `Refreshed — some rows are waiting in the Money Inbox. ${capitalize(message)}.`
+        : "Refreshed — some rows are waiting in the Money Inbox.";
     case "rate_limited":
-      return "The provider is pacing requests — this connection will sync later.";
+      return "The provider is pacing requests — this connection will refresh later.";
     case "sync_in_progress":
-      return "A sync is already running for this connection.";
+      return "A refresh is already running for this connection.";
     case "skipped_debounced":
-      return "Recently synced — skipped.";
+      return "Recently refreshed — skipped.";
     case "discovered_accounts":
-      return message ?? "Found new accounts — map them in Settings, then sync.";
+      return message ?? "Found new accounts — map them in Settings, then refresh.";
     case "no_mapped_accounts":
       // The backend message says whether the provider has no accounts yet;
       // the fallback covers older payloads.
-      return message ?? "Map at least one account in Settings, then sync.";
+      return message ?? "Map at least one account in Settings, then refresh.";
     case "expired":
       return "The connection expired — re-link it with a fresh setup token.";
     case "needs_user_action":
       return message ?? "The provider needs attention at the Bridge.";
     default:
-      return message ?? "The sync did not complete.";
+      return message ?? "The refresh did not complete.";
   }
 }

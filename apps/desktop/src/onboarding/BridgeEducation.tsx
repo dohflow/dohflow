@@ -48,7 +48,7 @@ export function BridgeEducation() {
             <span aria-hidden>·</span>
             <span>
               <b>Data refreshes about daily.</b> The Bridge pulls from your
-              banks roughly once a day; this app syncs it on open and on
+              banks roughly once a day; this app refreshes it on open and on
               demand.
             </span>
           </li>

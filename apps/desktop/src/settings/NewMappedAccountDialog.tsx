@@ -1,6 +1,6 @@
 // Create a brand-new account straight from the connection mapping step
 // (personal-cfo-07bn): the NewLoanDialog idiom, prefilled from the provider's
-// account name. No opening balance is asked for — the next sync brings the
+// account name. No opening balance is asked for — the next refresh brings the
 // provider's balance (yl53), so the user maps and moves on.
 
 import { useEffect, useState } from "react";
@@ -68,7 +68,7 @@ export function NewMappedAccountDialog({
       subtype: subtype || null,
       currency,
       flags: null,
-      // The provider's balance arrives with the next sync (yl53).
+      // The provider's balance arrives with the next refresh (yl53).
       opening_balance: null,
       idempotency_key: mintIdempotencyKey(),
     });
@@ -109,7 +109,7 @@ export function NewMappedAccountDialog({
         <p className="text-sm text-muted-foreground">
           Tracks the provider&rsquo;s &ldquo;{externalName}&rdquo;, created in{" "}
           {currency} (your base currency). Its balance and history arrive with
-          the next sync.
+          the next refresh.
         </p>
 
         <div className="flex flex-col gap-1.5">

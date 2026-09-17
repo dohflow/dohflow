@@ -649,15 +649,15 @@ describe("connector_error items", () => {
     mocks.moneyInboxList.mockResolvedValue(ok([connectorErrorItem()]));
     const view = renderWithClient(<MoneyInboxView />);
     expect(
-      await view.findByText("SimpleFIN Bridge connection could not sync"),
+      await view.findByText("SimpleFIN Bridge connection could not refresh"),
     ).toBeInTheDocument();
-    expect(view.getByText("Retry sync")).toBeInTheDocument();
+    expect(view.getByText("Retry refresh")).toBeInTheDocument();
     // The fallthrough guard: no import actions on a connection problem.
     expect(view.queryByText("Import anyway")).not.toBeInTheDocument();
     expect(view.queryByText("Skip")).not.toBeInTheDocument();
   });
 
-  it("retries the sync against the connection id", async () => {
+  it("retries the refresh against the connection id", async () => {
     mocks.moneyInboxList.mockResolvedValue(ok([connectorErrorItem()]));
     mocks.connectorSync.mockResolvedValue(
       ok({
@@ -672,7 +672,7 @@ describe("connector_error items", () => {
       }),
     );
     const view = renderWithClient(<MoneyInboxView />);
-    fireEvent.click(await view.findByText("Retry sync"));
+    fireEvent.click(await view.findByText("Retry refresh"));
     await waitFor(() =>
       expect(mocks.connectorSync).toHaveBeenCalledWith(
         expect.objectContaining({
