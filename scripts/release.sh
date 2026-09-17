@@ -76,6 +76,11 @@ preflight() {
   command -v cargo >/dev/null 2>&1 || fail "'cargo' not on PATH — install Rust (https://rustup.rs)."
   command -v xcrun >/dev/null 2>&1 || fail "'xcrun' not found — install the Xcode Command Line Tools: xcode-select --install"
 
+  # Universal binary (ADR 0072): the x86_64 slice needs its target installed.
+  # Idempotent — a no-op if it already is, so this is safe to always run.
+  rustup target add x86_64-apple-darwin >/dev/null
+
+
   : "${APPLE_SIGNING_IDENTITY:?set it (source ~/.config/personal-cfo/release.env) — see docs/operations/release-signing.md}"
 
   # The identity must be a VALID codesigning identity in the keychain (chain + private key).
@@ -190,9 +195,9 @@ json.dump(conf, open(out, 'w'))
 # ~/.appstoreconnect/private_keys/, it can't construct or use a request without them.
 if [[ "$skip_notarize" == "1" ]]; then
   env -u APPLE_API_KEY -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH -u APPLE_ID -u APPLE_PASSWORD \
-    pnpm tauri build --bundles app,dmg --config "$cfg"
+    pnpm tauri build --target universal-apple-darwin --bundles app,dmg --config "$cfg"
 else
-  pnpm tauri build --bundles app,dmg --config "$cfg"
+  pnpm tauri build --target universal-apple-darwin --bundles app,dmg --config "$cfg"
 fi
 
 # ── Verify (never skip): a build that "succeeded" but didn't actually sign is worse
@@ -204,6 +209,23 @@ dmgs=("$repo_root"/apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg)
 shopt -u nullglob
 [[ ${#dmgs[@]} -ge 1 ]] || fail "build finished but no .dmg was produced."
 dmg="${dmgs[0]}"
+
+# ADR 0072: prove the shipped binary is actually universal, not just that the
+# build succeeded — `--target universal-apple-darwin` invokes `lipo` under the
+# hood, but a "succeeded" build that silently dropped a slice would still pass
+# every check above.
+binary="$app/Contents/MacOS/personal-cfo-desktop"
+[[ -f "$binary" ]] || fail "build finished but the expected executable is missing: $binary"
+archs="$(lipo -archs "$binary")"
+case " $archs " in
+  *' arm64 '*) ;;
+  *) fail "universal binary is missing the arm64 slice — lipo -archs reported: $archs" ;;
+esac
+case " $archs " in
+  *' x86_64 '*) ;;
+  *) fail "universal binary is missing the x86_64 slice — lipo -archs reported: $archs" ;;
+esac
+echo "✓ universal binary confirmed — lipo -archs: $archs"
 
 # createUpdaterArtifacts (tauri.conf.json) makes `tauri build` emit the signed updater
 # sidecar files alongside the .app — VERIFY-ON-BUILD: confirmed the exact naming/location
@@ -258,9 +280,11 @@ fi
 
 echo
 echo "── Writing latest.json ──────────────────────────────────────────"
-# Apple-silicon-only for v0.1.0 (ADR 0068 point 2) — only platforms.darwin-aarch64.
-# If/when a universal or Intel build ships, add its own platforms.darwin-x86_64 entry
-# here rather than guessing a value for a build this script didn't just produce.
+# Universal binary (ADR 0072): the SAME archive serves both architectures, so
+# platforms.darwin-aarch64 and platforms.darwin-x86_64 carry IDENTICAL url +
+# signature — there is no second file to point to. The pinned
+# tauri-plugin-updater=2.11.0 selects its entry by the running binary's
+# cfg!(target_arch), so this one manifest correctly serves both.
 latest_json="$repo_root/apps/desktop/src-tauri/target/release/bundle/macos/latest.json"
 python3 -c "
 import json, sys
@@ -277,14 +301,19 @@ manifest = {
         'darwin-aarch64': {
             'url': 'REPLACE_WITH_THE_UPLOADED_APP_TAR_GZ_ASSET_URL',
             'signature': open(sig_path).read(),
-        }
+        },
+        'darwin-x86_64': {
+            'url': 'REPLACE_WITH_THE_UPLOADED_APP_TAR_GZ_ASSET_URL',
+            'signature': open(sig_path).read(),
+        },
     },
 }
 json.dump(manifest, open(out, 'w'), indent=2)
 " "$version" "$notes" "$updater_sig" "$latest_json"
 echo "  wrote: $latest_json"
-echo "  ⚠  its platforms.darwin-aarch64.url is a placeholder — fill in the real GitHub"
-echo "     release asset URL before publishing (release-checklist.md, 867.1.3)."
+echo "  ⚠  its platforms.darwin-aarch64.url and platforms.darwin-x86_64.url are"
+echo "     placeholders — fill in the real GitHub release asset URL before"
+echo "     publishing (release-checklist.md, 867.1.3)."
 
 echo
 echo "✓ Release artifacts ready:"

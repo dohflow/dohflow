@@ -139,15 +139,31 @@ cat > "$FAKE_BIN/curl" <<'CURL_EOF'
 [ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_CURL_LOG"
 has_post=0
 has_w=0
+is_manifest=0
 for a in "$@"; do
   [ "$a" = "POST" ] && has_post=1
   [ "$a" = "-w" ] && has_w=1
+  case "$a" in *latest.json*) is_manifest=1 ;; esac
 done
 if [ "$has_post" = "1" ]; then
   exit "${FAKE_CURL_POST_EXIT:-0}"
-elif [ "$has_w" = "1" ]; then
+elif [ "$has_w" = "1" ] && [ "$is_manifest" = "1" ]; then
+  # The top-level "latest.json is live" status check.
   printf '%s' "${FAKE_CURL_STATUS:-200}"
   exit 0
+elif [ "$has_w" = "1" ]; then
+  # cmd_verify's per-platform-key asset-url status check (ADR 0072) — a
+  # DIFFERENT url from the manifest alias above, so it gets its own
+  # status var: a test can fail one independently of the other.
+  printf '%s' "${FAKE_CURL_ASSET_STATUS:-200}"
+  exit 0
+elif [ "$is_manifest" = "1" ]; then
+  # cmd_verify's own platform-key check (ADR 0072): a plain GET of the
+  # manifest body, distinct from the -w status check above and from the
+  # dohflow.app/download page fetch below — same URL substring
+  # ("latest.json"), different flags, so it needs its own branch.
+  printf '%s' "${FAKE_CURL_MANIFEST_BODY:-}"
+  exit "${FAKE_CURL_MANIFEST_EXIT:-0}"
 else
   printf '%s' "${FAKE_CURL_PAGE_BODY:-}"
   exit "${FAKE_CURL_PAGE_EXIT:-0}"
@@ -325,16 +341,21 @@ place_build_artifacts() {  # <repo> [sig_mode=good] [latest_json_url=placeholder
   local dmg_dir="$repo/apps/desktop/src-tauri/target/release/bundle/dmg"
   mkdir -p "$macos_dir" "$dmg_dir"
   mkdir -p "$macos_dir/DohFlow.app"
-  echo "fake dmg" > "$dmg_dir/DohFlow_0.1.0_aarch64.dmg"
+  echo "fake dmg" > "$dmg_dir/DohFlow_0.1.0_universal.dmg"
   echo "fake app archive" > "$macos_dir/DohFlow.app.tar.gz"
   make_sig "$macos_dir/DohFlow.app.tar.gz.sig" "$sig_mode" "$macos_dir/DohFlow.app.tar.gz"
+  # ADR 0072: release.sh writes BOTH platform keys with an identical
+  # url+signature — the fixture matches that shape (same $url for both).
   python3 -c "
 import json
 json.dump({
     'version': '0.1.0',
     'notes': 'fixture',
     'pub_date': '2026-09-12T00:00:00Z',
-    'platforms': {'darwin-aarch64': {'url': '$url', 'signature': 'irrelevant-for-these-tests'}},
+    'platforms': {
+        'darwin-aarch64': {'url': '$url', 'signature': 'irrelevant-for-these-tests'},
+        'darwin-x86_64': {'url': '$url', 'signature': 'irrelevant-for-these-tests'},
+    },
 }, open('$macos_dir/latest.json', 'w'), indent=2)
 "
 }
@@ -361,16 +382,40 @@ run_script() {  # <repo> <args...>  — runs with fake PATH, captures stdout+std
 # publish-release.sh's verify_manifest_url turns exactly the checksum
 # assertion in the xvj0k regression test red, with a real hash mismatch —
 # not just "stays green" as a fluke of identical fixtures.
-write_manifest() {  # <path> <url>
+write_manifest() {  # <path> <url_aarch64> [url_x86_64=same] [sig_aarch64=irrelevant-for-these-tests] [sig_x86_64=same as sig_aarch64]
+  # Defaults produce a symmetric, ADR-0072-shaped manifest (both keys
+  # identical) — callers exercising the F1-class mismatch checks pass the
+  # third/fourth args explicitly to build an asymmetric one on purpose.
+  # Split across separate `local` statements deliberately — `local a=1
+  # b=$a` does NOT see `a` under `set -u` (all word expansions in one
+  # `local` command happen before any of its assignments take effect).
+  local url_a="$2"
+  local url_x="${3:-$2}"
+  local sig_a="${4:-irrelevant-for-these-tests}"
+  local sig_x="${5:-$sig_a}"
   python3 -c "
 import json
 json.dump({
     'version': '0.1.0',
     'notes': 'fixture',
     'pub_date': '2026-09-10T00:00:00Z',
-    'platforms': {'darwin-aarch64': {'url': '$2', 'signature': 'irrelevant-for-these-tests'}},
+    'platforms': {
+        'darwin-aarch64': {'url': '$url_a', 'signature': '$sig_a'},
+        'darwin-x86_64': {'url': '$url_x', 'signature': '$sig_x'},
+    },
 }, open('$1', 'w'), indent=2)
 "
+}
+
+# JSON body for FAKE_CURL_MANIFEST_BODY: cmd_verify's own platform-key check
+# (ADR 0072) fetches the manifest via a plain curl GET, not `gh` — separate
+# from write_manifest's file output, which feeds the `gh`-based fixtures
+# instead. Same shape, same defaults, reused via write_manifest itself.
+manifest_body_for_verify() {  # same args as write_manifest, minus <path>
+  local tmp; tmp="$(mktemp)"
+  write_manifest "$tmp" "$@"
+  cat "$tmp"
+  rm -f "$tmp"
 }
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -474,7 +519,9 @@ SUMS="$REPO/apps/desktop/src-tauri/target/release/bundle/release-assets/SHA256SU
 [ -f "$SUMS" ] && LINES="$(wc -l < "$SUMS" | tr -d ' ')" || LINES="missing"
 assert_eq "SHA256SUMS.txt line count" "$LINES" "4"
 PATCHED_URL="$(python3 -c "import json; print(json.load(open('$REPO/apps/desktop/src-tauri/target/release/bundle/release-assets/latest.json'))['platforms']['darwin-aarch64']['url'])")"
-assert_eq "latest.json url patched" "$PATCHED_URL" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
+assert_eq "latest.json url patched (darwin-aarch64)" "$PATCHED_URL" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
+PATCHED_URL_X86="$(python3 -c "import json; print(json.load(open('$REPO/apps/desktop/src-tauri/target/release/bundle/release-assets/latest.json'))['platforms']['darwin-x86_64']['url'])")"
+assert_eq "latest.json url patched (darwin-x86_64, ADR 0072: same url as aarch64)" "$PATCHED_URL_X86" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
 
 case_start "package fails when the signature's key id doesn't match tauri.conf.json's pubkey"
 new_case_repo
@@ -571,18 +618,52 @@ assert_contains "output" "$OUT" "does not (yet) mention"
 
 case_start "verify passes when both checks succeed"
 new_case_repo
-( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz")"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
 CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "0"
+assert_contains "output confirms both platform keys match (ADR 0072)" "$OUT" "share the same url and signature"
+
+case_start "verify fails when the two platform keys' signatures differ (ADR 0072)"
+new_case_repo
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz" "" "sig-a" "sig-x")"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+CODE=$?
+OUT="$(cat "$CASE/out.txt")"
+assert_eq "exit code" "$CODE" "1"
+assert_contains "output" "$OUT" "signatures differ"
+
+case_start "verify fails when the two platform keys' urls differ (ADR 0072)"
+new_case_repo
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/some-other-file.tar.gz")"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+CODE=$?
+OUT="$(cat "$CASE/out.txt")"
+assert_eq "exit code" "$CODE" "1"
+assert_contains "output" "$OUT" "urls differ"
+
+case_start "verify fails when a platform key's asset url does not resolve 200 (ADR 0072)"
+new_case_repo
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz")"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" FAKE_CURL_ASSET_STATUS="404" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+CODE=$?
+OUT="$(cat "$CASE/out.txt")"
+assert_eq "exit code" "$CODE" "1"
+# The manifest-alias check (FAKE_CURL_STATUS=200) and the download-page
+# check both pass — only the per-key asset url (FAKE_CURL_ASSET_STATUS)
+# fails, proving this is the NEW check catching it, not the pre-existing
+# top-level "latest.json is live" check.
+assert_contains "output" "$OUT" "asset url returned HTTP 404"
 
 case_start "verify's latest.json check follows redirects (personal-cfo-uxev1: releases/latest/download/* is always a 302 by GitHub's own design; a HEAD without -L would report 302 for every genuinely healthy release, never 200)"
 new_case_repo
 CURL_LOG="$CASE/curl.log"
-( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_LOG="$CURL_LOG" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz")"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" FAKE_CURL_LOG="$CURL_LOG" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
 CODE=$?
 assert_eq "exit code" "$CODE" "0"
-LATEST_JSON_CALL="$(grep 'latest.json' "$CURL_LOG")"
+LATEST_JSON_CALL="$(grep 'latest.json' "$CURL_LOG" | head -1)"
 assert_contains "the latest.json HEAD request passes -L" "$LATEST_JSON_CALL" "-L"
 
 case_start "publish runs gh edit, verifies the manifest URL, POSTs the rebuild hook, then verify, in that order"
@@ -593,11 +674,13 @@ assert_eq "package precondition exit code" "$CODE" "0"
 GH_LOG="$CASE/gh.log"; CURL_LOG="$CASE/curl.log"
 SEED="$CASE/seed-manifest.json"
 write_manifest "$SEED" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz")"
 ( cd "$REPO" \
   && DOHFLOW_SITE_DEPLOY_HOOK_URL="https://example.com/hook" \
      FAKE_GH_LOG="$GH_LOG" FAKE_CURL_LOG="$CURL_LOG" \
      FAKE_GH_DOWNLOAD_SEED="$SEED" \
      FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="DohFlow 0.1.0" \
+     FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" \
      PATH="$TEST_PATH" bash scripts/publish-release.sh publish > "$CASE/out.txt" 2>&1 )
 CODE=$?
 OUT="$(cat "$CASE/out.txt")"
@@ -605,10 +688,12 @@ assert_eq "exit code" "$CODE" "0"
 assert_contains "gh edit --draft=false was called" "$(cat "$GH_LOG")" "--draft=false"
 assert_contains "output confirms the manifest URL" "$OUT" "manifest URL confirmed"
 assert_eq "gh was called exactly twice (edit + download, no correction/upload needed)" "$(wc -l < "$GH_LOG" | tr -d ' ')" "2"
-# Both the hook POST and the verify checks ran (3 curl calls: POST, status
-# check, page fetch) — confirms publish drove rebuild-site AND verify, not
+# Both the hook POST and every verify check ran (6 curl calls: POST, the
+# manifest-alias status check, the download-page fetch, the ADR-0072
+# manifest-body fetch, and one asset-url status check per platform key) —
+# confirms publish drove rebuild-site AND the full verify sequence, not
 # just the gh edit.
-assert_eq "curl was called three times (POST + status + page)" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "3"
+assert_eq "curl was called six times (POST + status + page + manifest body + 2 asset checks)" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "6"
 assert_contains "one curl call POSTed the hook" "$(cat "$CURL_LOG")" "POST https://example.com/hook"
 
 case_start "personal-cfo-xvj0k: verify_manifest_url corrects latest.json AND regenerates SHA256SUMS.txt when the manifest's own url is stale (reproduces the 2026-09-14 go-live case: the manifest still names an untagged- draft url even though the asset itself already sits at the tag path — a fact this check no longer even looks at)"
@@ -624,12 +709,14 @@ STATE="$CASE/server-state.json"
 STALE_URL="https://github.com/dohflow/dohflow/releases/download/untagged-abc123/DohFlow.app.tar.gz"
 EXPECTED_URL="https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
 write_manifest "$SEED" "$STALE_URL"
+MANIFEST_BODY="$(manifest_body_for_verify "$EXPECTED_URL")"
 ( cd "$REPO" \
   && DOHFLOW_SITE_DEPLOY_HOOK_URL="https://example.com/hook" \
      FAKE_GH_LOG="$GH_LOG" FAKE_GH_UPLOAD_CAPTURE="$UPLOAD_CAP" \
      FAKE_GH_UPLOAD_SUMS_CAPTURE="$SUMS_CAP" \
      FAKE_GH_DOWNLOAD_SEED="$SEED" FAKE_GH_DOWNLOAD_STATE="$STATE" \
      FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="DohFlow 0.1.0" \
+     FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" \
      PATH="$TEST_PATH" bash scripts/publish-release.sh publish > "$CASE/out.txt" 2>&1 )
 CODE=$?
 OUT="$(cat "$CASE/out.txt")"
@@ -637,11 +724,40 @@ assert_eq "exit code" "$CODE" "0"
 assert_contains "output explains the correction, naming the bead" "$OUT" "personal-cfo-xvj0k"
 assert_contains "output confirms the re-download re-check passed, not just that an upload happened" "$OUT" "re-verified by downloading it back"
 CORRECTED_URL="$(python3 -c "import json; print(json.load(open('$UPLOAD_CAP'))['platforms']['darwin-aarch64']['url'])" 2>/dev/null || echo MISSING)"
-assert_eq "the re-uploaded latest.json carries the CORRECT tag-path URL, not the stale untagged- one it started with" "$CORRECTED_URL" "$EXPECTED_URL"
+assert_eq "the re-uploaded latest.json carries the CORRECT tag-path URL, not the stale untagged- one it started with (darwin-aarch64)" "$CORRECTED_URL" "$EXPECTED_URL"
+CORRECTED_URL_X86="$(python3 -c "import json; print(json.load(open('$UPLOAD_CAP'))['platforms']['darwin-x86_64']['url'])" 2>/dev/null || echo MISSING)"
+assert_eq "the re-uploaded latest.json carries the CORRECT tag-path URL on darwin-x86_64 too (ADR 0072: both keys, not just aarch64)" "$CORRECTED_URL_X86" "$EXPECTED_URL"
 assert_eq "SHA256SUMS.txt was re-uploaded too (the manifest edit invalidated its old checksum line)" "$([ -f "$SUMS_CAP" ] && echo yes || echo no)" "yes"
 RECOMPUTED_HASH="$(shasum -a 256 "$UPLOAD_CAP" | awk '{print $1}')"
 SUMS_HASH="$(grep 'latest.json' "$SUMS_CAP" | awk '{print $1}')"
 assert_eq "the re-uploaded SHA256SUMS.txt's latest.json line matches a fresh recomputation of the corrected file" "$SUMS_HASH" "$RECOMPUTED_HASH"
+
+case_start "verify_manifest_url corrects even when ONLY darwin-x86_64 is stale (darwin-aarch64 already correct) — proves both keys are checked independently, not just together"
+new_case_repo
+place_build_artifacts "$REPO" good
+run_script "$REPO" package
+assert_eq "package precondition exit code" "$CODE" "0"
+GH_LOG="$CASE/gh.log"
+UPLOAD_CAP="$CASE/reuploaded-latest.json"
+SEED="$CASE/seed-manifest.json"
+STATE="$CASE/server-state.json"
+STALE_URL="https://github.com/dohflow/dohflow/releases/download/untagged-abc123/DohFlow.app.tar.gz"
+EXPECTED_URL="https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
+write_manifest "$SEED" "$EXPECTED_URL" "$STALE_URL"
+MANIFEST_BODY="$(manifest_body_for_verify "$EXPECTED_URL")"
+( cd "$REPO" \
+  && DOHFLOW_SITE_DEPLOY_HOOK_URL="https://example.com/hook" \
+     FAKE_GH_LOG="$GH_LOG" FAKE_GH_UPLOAD_CAPTURE="$UPLOAD_CAP" \
+     FAKE_GH_DOWNLOAD_SEED="$SEED" FAKE_GH_DOWNLOAD_STATE="$STATE" \
+     FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="DohFlow 0.1.0" \
+     FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" \
+     PATH="$TEST_PATH" bash scripts/publish-release.sh publish > "$CASE/out.txt" 2>&1 )
+CODE=$?
+OUT="$(cat "$CASE/out.txt")"
+assert_eq "exit code" "$CODE" "0"
+assert_contains "output explains the correction" "$OUT" "personal-cfo-xvj0k"
+CORRECTED_URL_X86="$(python3 -c "import json; print(json.load(open('$UPLOAD_CAP'))['platforms']['darwin-x86_64']['url'])" 2>/dev/null || echo MISSING)"
+assert_eq "the lone-stale darwin-x86_64 key got corrected" "$CORRECTED_URL_X86" "$EXPECTED_URL"
 
 case_start "publish fails clearly if latest.json can't be downloaded from the published release to verify"
 new_case_repo
