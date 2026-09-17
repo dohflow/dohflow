@@ -259,7 +259,9 @@ pub fn run() {
             let data_dir = data_dir::resolve_data_dir(
                 update::BUILD_CHANNEL,
                 app.path().app_data_dir()?,
-                std::env::var("PCFO_DATA_DIR").ok().map(std::path::PathBuf::from),
+                std::env::var("PCFO_DATA_DIR")
+                    .ok()
+                    .map(std::path::PathBuf::from),
             );
             std::fs::create_dir_all(&data_dir)?;
             // Multi-vault registry (ADR 0042): register the pre-existing single vault in place and

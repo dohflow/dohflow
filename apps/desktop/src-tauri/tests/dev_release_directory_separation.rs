@@ -39,7 +39,11 @@ fn dev_channel_setup_never_touches_the_release_directory() {
     let dev_dir = resolve_data_dir("dev", release_dir.clone(), None);
     fs::create_dir_all(&dev_dir).unwrap();
     // And exactly what opening/creating a fresh vault there would do.
-    fs::write(dev_dir.join("vault.db"), b"a-completely-different-dev-vault").unwrap();
+    fs::write(
+        dev_dir.join("vault.db"),
+        b"a-completely-different-dev-vault",
+    )
+    .unwrap();
 
     let after = fingerprint(&release_vault);
     assert_eq!(before, after, "the release vault's bytes must be untouched");

@@ -112,9 +112,13 @@ today.
 
 ## Consequences
 
-- **Positive.** A dev build can never again write to the owner's real vault,
-  closing the gap that caused `h93wf` and that has not yet caused a more
-  expensive incident.
+- **Positive.** An ordinary dev run — `pnpm tauri dev` or a debug `cargo
+  build` with no `PCFO_BUILD_CHANNEL` override, which is every dev workflow
+  in `docs/development/desktop-app.md` today — can never again write to the
+  owner's real vault, closing the gap that caused `h93wf` and that has not
+  yet caused a more expensive incident. This guarantee is scoped to the
+  `channel` label, not to the underlying Cargo profile: see the accepted
+  residual risk below.
 - **Positive.** No change to the frozen bundle identifier, no new signing or
   TCC surface, no change to the release build's behavior or code path.
 - **Positive.** The mechanism is a pure, injectable function — testable
@@ -126,6 +130,24 @@ today.
 - **Negative / accepted.** Nothing stops two `tauri dev` processes from
   colliding with each other inside the dev directory; only the dev-vs-release
   boundary is closed here. Tracked as a follow-up (decision 4).
+- **Negative / accepted (found in review).** The property depends on the
+  `PCFO_BUILD_CHANNEL` *label*, not on the actual Cargo profile. `build.rs`
+  lets an explicit `PCFO_BUILD_CHANNEL` win over its `PROFILE`-derived
+  default so a beta/pre-release pipeline can label itself (see `update.rs`'s
+  doc comment) — so `PCFO_BUILD_CHANNEL=beta pnpm tauri dev` compiles a debug
+  binary with `channel == "beta"`, which is not `"dev"`, which
+  `resolve_data_dir` therefore treats as release and points at the real
+  vault directory. `data_dir`'s own `unknown_channel_is_treated_as_release`
+  test documents this deliberately. In practice this requires deliberately
+  combining an explicit non-`"dev"` channel override with the interactive
+  dev server, which is not how `PCFO_BUILD_CHANNEL` is described or used
+  anywhere in this repo today (`build.rs`'s stated purpose for the override
+  is labeling a **release**-lineage build, not the dev server) — but it is
+  possible, and the safety property is conditional on that label rather than
+  unconditional. Hardening the property so it does not depend on a label at
+  all (for example, keying off the Cargo profile directly, or narrowing what
+  counts as a "release" channel to an allow-list) is a design change and the
+  owner's call, not made in this PR.
 - **Follow-up beads to file once this ADR is Accepted:** auto-seed the dev
   directory with the Polish Demo vault fixture; concurrent-instance
   detection/locking for the dev profile.
