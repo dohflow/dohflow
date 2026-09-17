@@ -130,10 +130,10 @@ function parseConnectorErrorPayload(json: string): ConnectorErrorPayload | null 
   }
 }
 
-/// A bank connection whose last sync recorded an error (personal-cfo-zfyo,
+/// A bank connection whose last refresh recorded an error (personal-cfo-zfyo,
 /// ADR 0060 §5). Derived on read from the connection row; resolves
-/// intrinsically when a sync succeeds (or the connection is forgotten in
-/// Settings). Rate-limited syncs are healthy and never surface here.
+/// intrinsically when a refresh succeeds (or the connection is forgotten in
+/// Settings). Rate-limited refreshes are healthy and never surface here.
 function ConnectorErrorRow({
   item,
   selectCell,
@@ -187,14 +187,14 @@ function ConnectorErrorRow({
         {selectCell}
         <TableCell className="min-w-0">
           <div className="truncate font-medium">
-            {payload.display_hint ?? "Bank connection"} could not sync
+            {payload.display_hint ?? "Bank connection"} could not refresh
           </div>
         </TableCell>
         {/* No amount for a connection problem — keep the cell so columns align. */}
         <TableCell className="w-0 text-right" />
         <TableCell className="w-0">
           <Button size="sm" disabled={retrying} onClick={retry}>
-            {retrying ? "Syncing…" : "Retry sync"}
+            {retrying ? "Refreshing…" : "Retry refresh"}
           </Button>
         </TableCell>
         <ExpandCell item={item} expanded={expanded} onToggleExpand={onToggleExpand} />
@@ -212,8 +212,8 @@ function ConnectorErrorRow({
                 <span>
                   <span className="font-medium">{payload.last_error}</span>{" "}
                   {payload.last_synced_at
-                    ? "New transactions stop arriving until the connection syncs again."
-                    : "This connection has not completed a sync yet."}
+                    ? "New transactions stop arriving until the connection refreshes again."
+                    : "This connection has not completed a refresh yet."}
                 </span>
               </div>
               <p className="text-sm text-muted-foreground">

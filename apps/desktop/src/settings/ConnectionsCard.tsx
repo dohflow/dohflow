@@ -1,6 +1,6 @@
 // The Connections card (personal-cfo-ul5d, ADR 0060): link a SimpleFIN Bridge
 // connection from a pasted setup token, map its external accounts onto real
-// accounts, sync on demand, and read connection health at a glance. The
+// accounts, refresh on demand, and read connection health at a glance. The
 // health surface the connector engine (gglk) feeds.
 //
 // The setup token is a one-time secret: it lives in local state only until
@@ -45,8 +45,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/// Beyond this, a "Synced" badge stops being reassuring: the Bridge refreshes
-/// about daily, so a few missed days means syncs are not happening.
+/// Beyond this, a "Refreshed" badge stops being reassuring: the Bridge
+/// refreshes about daily, so a few missed days means refreshes are not
+/// happening.
 const STALE_AFTER_DAYS = 3;
 
 function HealthBadge({ connection }: { connection: ConnectorConnectionDto }) {
@@ -55,16 +56,16 @@ function HealthBadge({ connection }: { connection: ConnectorConnectionDto }) {
   }
   const stamp = formatDateTime(connection.last_synced_at);
   if (!stamp) {
-    return <Badge variant="outline">Never synced</Badge>;
+    return <Badge variant="outline">Never refreshed</Badge>;
   }
   const ageDays = Math.floor(
     (Date.now() - new Date(connection.last_synced_at ?? "").getTime()) /
       86_400_000,
   );
   if (ageDays >= STALE_AFTER_DAYS) {
-    return <Badge variant="warning">Synced {stamp}</Badge>;
+    return <Badge variant="warning">Refreshed {stamp}</Badge>;
   }
-  return <Badge variant="gain">Synced {stamp}</Badge>;
+  return <Badge variant="gain">Refreshed {stamp}</Badge>;
 }
 
 /// Sentinel select value that opens the create-new-account dialog instead
@@ -95,8 +96,8 @@ function AccountLinkRow({
         <p className="text-xs text-muted-foreground">
           {link.account_id
             ? link.last_synced_on
-              ? `Synced through ${formatIsoDate(link.last_synced_on)}`
-              : "Mapped — next sync fetches full history"
+              ? `Refreshed through ${formatIsoDate(link.last_synced_on)}`
+              : "Mapped — next refresh fetches full history"
             : "Not mapped — transactions from this account are not imported"}
         </p>
       </div>
@@ -170,19 +171,19 @@ function ConnectionRow({
             onClick={onSync}
           >
             {syncPending ? <Loader2 className="animate-spin" /> : null}
-            Sync now
+            Refresh now
           </Button>
         </div>
       </div>
       {connection.last_error ? (
         <p role="alert" className="mt-2 text-sm text-loss">
-          Last sync failed: {connection.last_error}
+          Last refresh failed: {connection.last_error}
         </p>
       ) : null}
       <div className="mt-3 flex flex-col gap-2">
         {connection.links.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No accounts discovered yet — sync to discover them.
+            No accounts discovered yet — refresh to discover them.
           </p>
         ) : accountsPending ? (
           // A mapped link must never masquerade as "Not mapped" while the
@@ -207,7 +208,7 @@ function ConnectionRow({
           <div className="flex items-center gap-2 rounded-md border border-loss/40 bg-loss/5 p-2">
             <p className="flex-1 text-xs text-muted-foreground">
               Forgetting removes the stored credential. Transactions already
-              synced stay in the ledger. Re-linking needs a fresh setup token.
+              refreshed stay in the ledger. Re-linking needs a fresh setup token.
             </p>
             <Button size="sm" variant="destructive" onClick={onForget}>
               Forget
@@ -278,7 +279,7 @@ export function ConnectionsCard() {
         setLinking(false);
         setNotice(
           result.fetch_error
-            ? "Connected. Account discovery hit a snag — sync to retry it."
+            ? "Connected. Account discovery hit a snag — refresh to retry it."
             : `Connected — ${result.accounts.length} account(s) discovered. Map them below.`,
         );
       } else {
@@ -340,7 +341,7 @@ export function ConnectionsCard() {
         <CardTitle className="text-sm">Connections</CardTitle>
         <CardDescription>
           Bank connections via the SimpleFIN Bridge. The Bridge refreshes bank
-          data about daily; the app syncs it on open and on demand, and
+          data about daily; the app refreshes it on open and on demand, and
           everything stays in this vault.
         </CardDescription>
       </CardHeader>
@@ -357,7 +358,7 @@ export function ConnectionsCard() {
           <EmptyState
             icon={Cable}
             title="No connections yet"
-            description="Link a SimpleFIN Bridge connection to sync transactions automatically."
+            description="Link a SimpleFIN Bridge connection to refresh transactions automatically."
           />
         ) : accountsQuery.error ? (
           <p role="alert" className="text-sm text-loss">
