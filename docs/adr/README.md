@@ -87,7 +87,7 @@ simply skips them; that's a pre-existing gap, not an error.
 | 0069 | Bead-graph reconciliation rules | Public | Not yet written (`personal-cfo-jtn8n`) |
 | 0070 | [Dev vs. release vault data-directory separation](0070-dev-release-vault-directory-separation.md) | Public | Accepted |
 | 0071 | [Public-repo contribution model](0071-public-repo-contribution-model.md) | Public | Accepted |
-| 0072 | Universal binary distribution (Intel + Apple Silicon) | Public | Not yet written (`personal-cfo-wpgqr`) |
+| 0072 | [Universal binary distribution (Intel + Apple Silicon)](0072-universal-binary-distribution.md) | Public | Accepted |
 | 0073 | Sync disposition rules | Public | Not yet written (`personal-cfo-vlfd`) |
 | 0074 | DohFlow Sync architecture | Public | Not yet written (`personal-cfo-j8ab7`) |
 | 0075 | — internal | Internal | Not yet written (`personal-cfo-oh3hg`) |
