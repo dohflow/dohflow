@@ -79,10 +79,12 @@ appears.
 >
 > **Link the review comment here:** <!-- URL -->
 >
-> Hosted CI is `workflow_dispatch`-only by deliberate decision, so there is no
-> automatic status check on this PR. Two independent local gate runs — the
-> implementation agent's above, and the reviewer's in its comment — are the
-> evidence.
+> CI runs automatically on this PR (this repository is public and is where
+> development happens — `personal-cfo-r36ck`) and its five required checks
+> are the primary evidence. It does not replace the two independent local
+> gate runs below — the implementation agent's own, and the reviewer's in
+> its comment — which prove each agent understood what it ran, not just
+> that a status check went green.
 >
 > Automatic reviewer merging is disabled during calibration. A pass returns
 > `APPROVED_TO_MERGE`; the repository owner authorizes or performs the merge.
