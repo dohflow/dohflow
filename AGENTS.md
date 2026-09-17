@@ -302,6 +302,10 @@ Five rules hold regardless of which path is taken:
 1. **One owner at a time.** Only the session that claimed the bead edits it.
    Ownership transfers only after the previous owner pushes a checkpoint and stops.
 2. **No self-merge.** An implementation session never merges its own PR.
+   This repository's branch ruleset does not technically enforce it
+   (0 required approving reviews, Admin role always bypasses) — ADR 0071
+   records the actual enforcement posture and why the review session's
+   PASS comment is the artifact every merge cites regardless.
 3. **Review binds to a SHA.** A review approves one commit. Any new commit
    invalidates the prior verdict and requires a fresh review.
 4. **Merge closes the bead, not the review.** A bead stays open until its change
