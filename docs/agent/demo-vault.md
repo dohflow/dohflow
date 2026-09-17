@@ -7,6 +7,15 @@ refreshed in `personal-cfo-4d8.28.4`) and lives in the app-data directory,
 whose path keeps the frozen bundle identifier (ADR 0067):
 `~/Library/Application Support/ai.personalcfo.desktop`.
 
+**This is the *release* directory, on purpose** — screenshots and design
+walkthroughs are taken against the real installed `/Applications/DohFlow.app`
+for a polished result, so the manual seed below targets `PCFO_SEED_ROOT`
+directly and is unaffected by the dev/release data-directory split (ADR 0070,
+`docs/development/desktop-app.md`). Still: **don't run a seed against the
+real app-data root while a `tauri dev` process or another seed is touching
+it** — the one-instance-at-a-time rule is what the 2026-09-09 seed-drift
+confusion (`personal-cfo-h93wf`) turned out to be, not an actual seeding bug.
+
 ## Invocation
 
 The seeding body is one function, `seed_demo_vault(root, anchor)`, with two

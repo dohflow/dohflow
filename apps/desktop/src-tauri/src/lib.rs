@@ -5,6 +5,7 @@
 //! of truth for the command list, shared by the running app ([`run`]) and the
 //! binding exporter ([`export_bindings`] / the `export_bindings` binary).
 
+pub mod data_dir;
 pub mod ipc;
 pub mod state;
 pub mod update;
@@ -250,7 +251,18 @@ pub fn run() {
             // Locked / CorruptNeedsRecovery) before the webview loads, so the UI
             // routes correctly on first paint. The DEK only enters memory once
             // the user unlocks (personal-cfo-8v2).
-            let data_dir = app.path().app_data_dir()?;
+            //
+            // A dev build (PCFO_BUILD_CHANNEL == "dev") never resolves to the
+            // release identifier's own directory — ADR 0070, personal-cfo-he3xo.
+            // This is what keeps `pnpm tauri dev` from ever touching the real
+            // vault that /Applications/DohFlow.app holds.
+            let data_dir = data_dir::resolve_data_dir(
+                update::BUILD_CHANNEL,
+                app.path().app_data_dir()?,
+                std::env::var("PCFO_DATA_DIR")
+                    .ok()
+                    .map(std::path::PathBuf::from),
+            );
             std::fs::create_dir_all(&data_dir)?;
             // Multi-vault registry (ADR 0042): register the pre-existing single vault in place and
             // open the active one. Backward-compatible — the active path is the legacy `vault.db`

@@ -18,7 +18,7 @@ const REPO_ROOT: &str = env!("PCFO_REPO_ROOT");
 /// Build identity stamped by `build.rs` (personal-cfo-4d8.27.3.1), so the running app can
 /// say WHICH build it is: `dev` vs `release` (or an explicit channel), when it was built,
 /// and whether the worktree had uncommitted changes at the time.
-const BUILD_CHANNEL: &str = env!("PCFO_BUILD_CHANNEL");
+pub(crate) const BUILD_CHANNEL: &str = env!("PCFO_BUILD_CHANNEL");
 const BUILD_TIME: &str = env!("PCFO_BUILD_TIME");
 const BUILD_DIRTY: bool = matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true");
 
