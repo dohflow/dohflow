@@ -6,7 +6,7 @@ This file is the project-specific contract that extends the repository-level `AG
 
 - Working project name: DohFlow (pronounced "doe-flow"; ADR 0067, `docs/product/brand-direction.md`)
 - Public name: DohFlow, decided 2026-09-01 (`docs/product/brand-direction.md`); the trademark, domain, and namespace checks are recorded in `docs/research/trademark-clearance-dossier.md` and `TRADEMARK.md`. The bundle identifier and machine names stay `personal-cfo` / `ai.personalcfo.desktop` (ADR 0067).
-- Repository visibility: private by default. Public release requires explicit user approval plus security hardening, stable core functionality, complete public-facing docs, and external review.
+- Repository visibility: **this repository (`dohflow/dohflow`) is public**, flipped 2026-09-14 (`personal-cfo-fkt5.9`) after the security-hardening/review bar below was met. Development moved here fully as of `personal-cfo-r36ck` (2026-09-16/17); the original private repository (`chrisbustos/personal-cfo`) is retained read-only as the pre-launch archive, never rewritten or deleted. A *new* repository this policy would apply to is still private by default until the same bar is met.
 - Product description: local-first personal CFO for households.
 - Product thesis: build a secure, auditable, forecast-oriented household finance desktop app that answers: “How much cash will this household probably have in the future, what assumptions drive that forecast, and what risks are emerging before they become painful?”
 - Product wedge: Future Cash, a forward-looking daily household liquidity forecast.
@@ -340,33 +340,37 @@ Security and release hardening, added progressively:
 - Include the Bead ID in commit messages and PR descriptions when applicable.
 - Push checkpoints before ending a session when safe.
 
-### Review evidence (manual-CI project, pre-flip)
+### Review evidence
 
-`ci.yml` (`personal-cfo-fkt5.7`) already carries real `pull_request`/`push`/
-`schedule` triggers — they ship inside the go-live snapshot rather than being
-added only after the flip — but every job is guarded to run only on a manual
-`workflow_dispatch` or once `github.event.repository.private == false`. Until
-this repository is flipped public, that guard means every job still no-ops on
-a real PR, so there is **no automatic status check on a PR today** and no
-green tick to rely on. Consequently, for now:
+This repository is public and this is where development happens
+(`personal-cfo-r36ck`, 2026-09-16/17, following the visibility flip
+`personal-cfo-fkt5.9` on 2026-09-14). `ci.yml`'s `pull_request`/`push`
+triggers run for real now — a genuine status check exists on every PR, not
+just a manual dispatch. `personal-cfo-fkt5.9`'s branch-protection ruleset
+makes the `Rust (workspace)` / `Frontend (apps/desktop)` / `IPC codegen
+(apps/desktop/src-tauri)` / `Security scanning (secrets + dependencies)` /
+`Shell scripts` job names required checks.
 
-- The implementation agent runs the applicable gates above locally and records
-  the exact commands and results **in the PR body**.
-- The reviewer independently **reruns** the relevant gates against the candidate
-  SHA whenever practical and records its own results in a **separate structured
-  review comment**, not by editing the PR body. Results pasted by the
-  implementation agent are a claim, not evidence.
-- Any gate that could not be run is named, with the reason, by whichever agent
-  could not run it.
+That automatic check is the primary evidence, but agents still record their
+own gate runs, because CI proves the candidate SHA passes — it does not
+prove the implementation agent understood what it ran or the reviewer
+independently verified the result:
 
-**After the flip**, this whole section becomes historical: CI runs
-automatically on every PR pushed against the (now-public) `dohflow/dohflow`,
-so a real status check exists again and both local re-runs above become a
-supplement to it rather than the only evidence. `personal-cfo-fkt5.9`'s
-branch-protection ruleset makes the `rust`/`frontend`/`ipc-codegen`/
-`security-scan`/`shell-scripts` job names required checks at that point.
+- The implementation agent runs the applicable gates above locally and
+  records the exact commands and results **in the PR body**.
+- The reviewer independently **reruns** the relevant gates against the
+  candidate SHA whenever practical and records its own results in a
+  **separate structured review comment**, not by editing the PR body.
+  Results pasted by the implementation agent are a claim, not evidence, and
+  neither is a green CI tick on its own.
+- Any gate that could not be run is named, with the reason, by whichever
+  agent could not run it.
 - A direct push to the default branch is refused by a local pre-push guard
-  (AGENTS.md §16). It is a safety bumper, not a security boundary.
+  (AGENTS.md §16). It is a safety bumper, not a security boundary — this
+  repository's branch ruleset also admits an explicit owner bypass for the
+  rare foundational commit that has to land outside the normal PR flow (see
+  `docs/operations/public-launch-snapshot.md`'s catch-up procedure for the
+  pattern).
 
 ## Beads policy
 
