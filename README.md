@@ -29,7 +29,7 @@ data and inspectable down to every assumption.
 
 ## Download
 
-**[Download for macOS (Apple silicon)](https://github.com/dohflow/dohflow/releases/latest)**
+**[Download for macOS (Apple silicon or Intel)](https://github.com/dohflow/dohflow/releases/latest)**
 — a signed, notarized `.dmg`. Manual entry works fully offline; connecting a
 bank account (via [SimpleFIN](https://www.simplefin.org)) is optional.
 
