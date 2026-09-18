@@ -7,6 +7,30 @@ record until the first tagged release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-18
+
+### Added
+
+- **Intel Mac support via a universal binary** (`personal-cfo-sg8.1.1`,
+  ADR 0072). DohFlow now ships one DMG containing both `arm64` and `x86_64`
+  builds — Intel Macs are a fully supported tier, not just Apple silicon.
+  Backed by a CI build-and-launch smoke test on real Intel hardware
+  (`macos-15-intel`) that runs on every push, and a documented owner-run
+  Gatekeeper drill (`docs/operations/intel-smoke.md`) for the real-hardware
+  download/install/unlock path.
+
+### Changed
+
+- The connector action labeled **"Sync" is now "Refresh"** everywhere in the
+  UI (`personal-cfo-p7qc6`); "Sync" is reserved for the upcoming DohFlow Sync
+  feature so the two aren't confused.
+
+### Fixed
+
+- Development builds and release builds now use **separate vault data
+  directories** (`personal-cfo-he3xo`), so running a dev build can no longer
+  read or write a real release vault.
+
 ## [0.1.0] - 2026-09-14
 
 ### Added
