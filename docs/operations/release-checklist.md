@@ -159,13 +159,12 @@ confirmed above ADR 0065's 14.0 floor):
 - [ ] Publish a small follow-up release afterward and confirm Settings →
   Software update finds it, installs, and relaunches — proving the update
   path against a *real*, non-smoke release once one exists.
-- [ ] **Intel smoke (DIST-4, `personal-cfo-0wfrr`):** the CI Intel
-  build-and-launch smoke job (`personal-cfo-rr0lm`, `runs-on:
-  macos-15-intel`) passes on this release's commit — confirm the workflow
-  run before proceeding. Also run the Gatekeeper leg on real Intel
-  hardware when it's available (DIST-4 documents the exact procedure);
-  record in this release's bead whether that hardware leg ran or is
-  unavailable.
+- [ ] **Intel smoke (DIST-4, `personal-cfo-0wfrr`):** both legs in
+  [`docs/operations/intel-smoke.md`](intel-smoke.md) — the CI Intel
+  build-and-launch smoke job (`personal-cfo-rr0lm`) passes on this
+  release's commit, and the Gatekeeper leg runs on real Intel hardware
+  when it's available. Record in this release's bead whether the
+  hardware leg ran or is unavailable.
 
 If anything here fails, **do not proceed to step 6.** Fix it, rebuild
 (step 1), and re-run from step 2 (a fresh version/tag if the fix touches
@@ -217,6 +216,13 @@ build's progress.
   `publish-release.sh` can touch.)
 - [ ] Record the published release URL and the smoke-test evidence
   (step 5) in the release's bead.
+- [ ] **`v0.2.1` only:** run the first-ever Intel updater round trip
+  (`v0.2.0 → v0.2.1` — `v0.1.0` never ran on Intel at all, so there is no
+  earlier Intel install to update from). Same procedure as
+  `docs/operations/updater-smoke-test.md`, on the real Intel hardware from
+  `docs/operations/intel-smoke.md` Leg 2 if available. Not a gate for any
+  release before `v0.2.1` — recorded here so it isn't forgotten
+  (`personal-cfo-0wfrr`).
 
 ## Roll-forward rule (never delete or unpublish a release)
 
@@ -236,6 +242,9 @@ unpublish, and do not force-push the tag.
 
 - [`release-signing.md`](release-signing.md) — what signing/notarization
   actually do, credential setup, and `scripts/release.sh`'s own flags.
+- [`intel-smoke.md`](intel-smoke.md) — the Intel launch leg (CI, automated,
+  already green) and the Gatekeeper leg (real hardware, owner-run) that
+  back ADR 0072's "Intel is a supported tier" decision.
 - [`updater-smoke-test.md`](updater-smoke-test.md) — the pre-flip proof
   that the update mechanism works, run once against a throwaway public
   repo (`personal-cfo-867.1.2`, already closed).
