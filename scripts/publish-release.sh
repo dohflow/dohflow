@@ -6,8 +6,9 @@
 #
 # This script does NOT build the app. Run scripts/release.sh first: it
 # signs, notarizes, and writes the .dmg / .app.tar.gz / .sig / latest.json
-# under apps/desktop/src-tauri/target/release/bundle/{macos,dmg}/. This
-# script picks up from there — it tags the release commit, assembles and
+# under apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/{macos,dmg}/
+# (ADR 0072's universal build moves cargo's own output under a
+# target-triple-named directory). This script picks up from there — it tags the release commit, assembles and
 # checksums the upload set, drafts the GitHub Release, and — on a later,
 # separate invocation, only after the owner's second-Mac Gatekeeper smoke
 # test has passed against the DRAFT — publishes it and triggers the
@@ -55,9 +56,12 @@ tauri_conf="$desktop_dir/src-tauri/tauri.conf.json"
 desktop_cargo_toml="$desktop_dir/src-tauri/Cargo.toml"
 desktop_package_json="$desktop_dir/package.json"
 changelog="$repo_root/CHANGELOG.md"
-bundle_macos_dir="$desktop_dir/src-tauri/target/release/bundle/macos"
-bundle_dmg_dir="$desktop_dir/src-tauri/target/release/bundle/dmg"
-assets_dir="$desktop_dir/src-tauri/target/release/bundle/release-assets"
+# ADR 0072: `--target universal-apple-darwin` moves cargo/Tauri's own output
+# under a target-triple-named directory — verified against a real build.
+bundle_target_dir="$desktop_dir/src-tauri/target/universal-apple-darwin/release/bundle"
+bundle_macos_dir="$bundle_target_dir/macos"
+bundle_dmg_dir="$bundle_target_dir/dmg"
+assets_dir="$bundle_target_dir/release-assets"
 
 app_path="$bundle_macos_dir/DohFlow.app"
 updater_archive="$bundle_macos_dir/DohFlow.app.tar.gz"

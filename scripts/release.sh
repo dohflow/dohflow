@@ -202,10 +202,15 @@ fi
 
 # ── Verify (never skip): a build that "succeeded" but didn't actually sign is worse
 # than a failure, because it looks shippable. Prove the signature + Gatekeeper verdict. ──
-app="$repo_root/apps/desktop/src-tauri/target/release/bundle/macos/DohFlow.app"
+# `--target universal-apple-darwin` (ADR 0072) moves cargo/Tauri's own output
+# under a target-triple-named directory — confirmed empirically against a
+# real build, not assumed: `target/release/...` (no target dir) is where a
+# plain, non-`--target` build would have landed, and is stale since 0zlg9.
+bundle_dir="$repo_root/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle"
+app="$bundle_dir/macos/DohFlow.app"
 [[ -d "$app" ]] || fail "build finished but the .app is missing: $app"
 shopt -s nullglob
-dmgs=("$repo_root"/apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg)
+dmgs=("$bundle_dir"/dmg/*.dmg)
 shopt -u nullglob
 [[ ${#dmgs[@]} -ge 1 ]] || fail "build finished but no .dmg was produced."
 dmg="${dmgs[0]}"
@@ -231,7 +236,7 @@ echo "✓ universal binary confirmed — lipo -archs: $archs"
 # sidecar files alongside the .app — VERIFY-ON-BUILD: confirmed the exact naming/location
 # once run for real; expected next to the .app per Tauri v2's documented macOS updater
 # artifact layout.
-updater_archive="$repo_root/apps/desktop/src-tauri/target/release/bundle/macos/DohFlow.app.tar.gz"
+updater_archive="$bundle_dir/macos/DohFlow.app.tar.gz"
 updater_sig="$updater_archive.sig"
 [[ -f "$updater_archive" ]] || fail "build finished but the updater archive is missing: $updater_archive (is bundle.createUpdaterArtifacts true in tauri.conf.json, and were TAURI_SIGNING_* set?)"
 [[ -f "$updater_sig" ]] || fail "build finished but the updater signature is missing: $updater_sig"
@@ -285,7 +290,7 @@ echo "── Writing latest.json ───────────────�
 # signature — there is no second file to point to. The pinned
 # tauri-plugin-updater=2.11.0 selects its entry by the running binary's
 # cfg!(target_arch), so this one manifest correctly serves both.
-latest_json="$repo_root/apps/desktop/src-tauri/target/release/bundle/macos/latest.json"
+latest_json="$bundle_dir/macos/latest.json"
 python3 -c "
 import json, sys
 version, notes, sig_path, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]

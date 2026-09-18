@@ -510,11 +510,116 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: |
           set -euo pipefail
-          cargo run --quiet --bin export_bindings
+          cargo run --quiet --bin export_bindings --features export-bindings
           if ! git diff --exit-code ../src/bindings.ts; then
-            echo "::error::apps/desktop/src/bindings.ts is stale — run 'cargo run --bin export_bindings' in apps/desktop/src-tauri and commit the result."
+            echo "::error::apps/desktop/src/bindings.ts is stale — run 'cargo run --bin export_bindings --features export-bindings' in apps/desktop/src-tauri and commit the result."
             exit 1
           fi
+
+  # personal-cfo-rr0lm (DIST-5): proves the x86_64 slice of the universal
+  # binary (ADR 0072) actually builds AND launches, on a REAL native Intel
+  # runner — so Track D never depends on owning an Intel Mac, and the
+  # ~doubled build time of a universal build gets verified off the 8 GB
+  # build Mac instead of on it. NO SECRETS (D9a): this job references no
+  # `secrets.*` at all — it is not release signing (D9b, which stays local
+  # on the build Mac) — so it would be safe on a fork PR by GitHub's own
+  # default, though it does not run on pull_request at all (push:main and
+  # workflow_dispatch only, per personal-cfo-rr0lm's own AC), to keep every
+  # contributor PR from paying a ~2x-build-time macOS-Intel job.
+  # What this job does NOT prove: Gatekeeper acceptance, notarization, or a
+  # signed artifact — see docs/development/desktop-app.md.
+  intel-smoke:
+    name: Intel build + launch smoke (macos-15-intel)
+    runs-on: macos-15-intel
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.repository.private == false)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The pinned toolchain comes from rust-toolchain.toml (rustup honors it).
+      - name: Show toolchain
+        run: rustup show
+
+      # A universal build needs BOTH slices installed — confirmed live on a
+      # real macos-15-intel runner, which ships x86_64-apple-darwin natively
+      # but NOT aarch64-apple-darwin (the mirror image of a build Mac, which
+      # ships aarch64 natively but not x86_64 — see scripts/release.sh's own
+      # preflight). Both calls are idempotent no-ops if already installed.
+      - name: Install both Darwin targets (ADR 0072 — universal build)
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # A real launch smoke should exercise the real bundled frontend, not a
+      # placeholder — unlike the Linux-hosted ipc-codegen job above, which
+      # only compile-checks Rust and never actually launches the binary.
+      - name: Install desktop app dependencies (pulls in @tauri-apps/cli)
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the frontend
+        working-directory: apps/desktop
+        run: pnpm build
+
+      # App bundle only — no DMG, no code signing, no updater artifacts.
+      # D9b (release signing) stays on the local build Mac; this job proves
+      # the binary builds and runs, nothing about its distribution form.
+      - name: Build universal binary (ADR 0072)
+        working-directory: apps/desktop
+        run: |
+          pnpm tauri build --target universal-apple-darwin --bundles app \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Verify the binary is genuinely universal (lipo -archs)
+        run: |
+          set -euo pipefail
+          binary="apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/DohFlow.app/Contents/MacOS/personal-cfo-desktop"
+          [ -f "$binary" ] || { echo "::error::expected binary not found: $binary"; exit 1; }
+          archs="$(lipo -archs "$binary")"
+          echo "lipo -archs: $archs"
+          case " $archs " in *' arm64 '*) ;; *) echo "::error::missing arm64 slice — lipo -archs reported: $archs"; exit 1 ;; esac
+          case " $archs " in *' x86_64 '*) ;; *) echo "::error::missing x86_64 slice — lipo -archs reported: $archs"; exit 1 ;; esac
+
+      # Launch smoke: the binary starts, setup() completes (vault-registry
+      # bootstrap, data-dir resolution — ADR 0070), and it exits 0 ON ITS
+      # OWN via PCFO_SMOKE_TEST_EXIT — no display, no vault, no secrets
+      # needed. A hang would mean setup() blocked; a non-zero/early exit
+      # would mean it panicked — both fail this step instead of hanging CI.
+      - name: Launch smoke (headless, no display required)
+        run: |
+          set -euo pipefail
+          binary="apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/DohFlow.app/Contents/MacOS/personal-cfo-desktop"
+          log="$(mktemp)"
+          PCFO_SMOKE_TEST_EXIT=1 "$binary" > "$log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::error::smoke launch did not exit within 30s — killing"
+            kill -9 "$pid" 2>/dev/null || true
+            cat "$log"
+            exit 1
+          fi
+          wait "$pid"
+          code=$?
+          echo "── captured stdout/stderr ──"
+          cat "$log"
+          echo "── exit code: $code ──"
+          [ "$code" -eq 0 ] || { echo "::error::smoke launch exited $code, expected 0"; exit 1; }
+          [ -s "$log" ] || { echo "::error::smoke launch produced no output"; exit 1; }
+          grep -qF "DohFlow smoke test" "$log" || { echo "::error::expected confirmation line missing from output"; exit 1; }
 
   # Secret + dependency scanning (personal-cfo-6r6 / -7t7). Runs unconditionally
   # (visibility guard only, no path filter — see the workflow-level comment) on

@@ -275,6 +275,16 @@ pub fn run() {
             let controller = finance_kernel::VaultController::open(active_path);
             app.manage(AppState::with_registry(controller, registry, data_dir));
 
+            // CI launch smoke (personal-cfo-rr0lm, DIST-5): a headless proof that
+            // the binary starts and setup() completes without a display or a
+            // vault, distinct from D9b (release signing) — this reads no
+            // secrets and changes nothing else about a normal launch. Opt-in
+            // only: an unset/mismatched env var is a no-op in every real launch.
+            if std::env::var("PCFO_SMOKE_TEST_EXIT").as_deref() == Ok("1") {
+                println!("DohFlow smoke test: setup() completed successfully, exiting 0.");
+                std::process::exit(0);
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

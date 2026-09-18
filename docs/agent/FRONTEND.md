@@ -227,7 +227,9 @@ handled; hard-code a hex and you've silently opted out of dark mode for that one
 
 - `apps/desktop/src/bindings.ts` is **generated**, never hand-edited.
 - When Rust IPC changes: `pnpm -C apps/desktop build` (needs `dist`), then from
-  `apps/desktop/src-tauri` run `cargo run --bin export_bindings`, and update the
+  `apps/desktop/src-tauri` run `cargo run --bin export_bindings --features
+  export-bindings` (the feature gate keeps this dev-only tool out of `tauri
+  build --target universal-apple-darwin`'s bundle, ADR 0072), and update the
   command list in `bindings.test.ts`. CI's `ipc-codegen` job fails if it drifts.
 - A **pure-frontend** change leaves `bindings.ts` untouched.
 

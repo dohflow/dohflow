@@ -337,8 +337,8 @@ open(out, 'w').write(base64.b64encode(text.encode()).decode())
 # than the expected placeholder.
 place_build_artifacts() {  # <repo> [sig_mode=good] [latest_json_url=placeholder]
   local repo="$1" sig_mode="${2:-good}" url="${3:-REPLACE_WITH_THE_UPLOADED_APP_TAR_GZ_ASSET_URL}"
-  local macos_dir="$repo/apps/desktop/src-tauri/target/release/bundle/macos"
-  local dmg_dir="$repo/apps/desktop/src-tauri/target/release/bundle/dmg"
+  local macos_dir="$repo/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos"
+  local dmg_dir="$repo/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
   mkdir -p "$macos_dir" "$dmg_dir"
   mkdir -p "$macos_dir/DohFlow.app"
   echo "fake dmg" > "$dmg_dir/DohFlow_0.1.0_universal.dmg"
@@ -515,12 +515,12 @@ place_build_artifacts "$REPO" good
 run_script "$REPO" package
 assert_eq "exit code" "$CODE" "0"
 assert_contains "output" "$OUT" "structural check passed"
-SUMS="$REPO/apps/desktop/src-tauri/target/release/bundle/release-assets/SHA256SUMS.txt"
+SUMS="$REPO/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/release-assets/SHA256SUMS.txt"
 [ -f "$SUMS" ] && LINES="$(wc -l < "$SUMS" | tr -d ' ')" || LINES="missing"
 assert_eq "SHA256SUMS.txt line count" "$LINES" "4"
-PATCHED_URL="$(python3 -c "import json; print(json.load(open('$REPO/apps/desktop/src-tauri/target/release/bundle/release-assets/latest.json'))['platforms']['darwin-aarch64']['url'])")"
+PATCHED_URL="$(python3 -c "import json; print(json.load(open('$REPO/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/release-assets/latest.json'))['platforms']['darwin-aarch64']['url'])")"
 assert_eq "latest.json url patched (darwin-aarch64)" "$PATCHED_URL" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
-PATCHED_URL_X86="$(python3 -c "import json; print(json.load(open('$REPO/apps/desktop/src-tauri/target/release/bundle/release-assets/latest.json'))['platforms']['darwin-x86_64']['url'])")"
+PATCHED_URL_X86="$(python3 -c "import json; print(json.load(open('$REPO/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/release-assets/latest.json'))['platforms']['darwin-x86_64']['url'])")"
 assert_eq "latest.json url patched (darwin-x86_64, ADR 0072: same url as aarch64)" "$PATCHED_URL_X86" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
 
 case_start "package fails when the signature's key id doesn't match tauri.conf.json's pubkey"
