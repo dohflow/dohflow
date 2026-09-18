@@ -84,7 +84,7 @@ simply skips them; that's a pre-existing gap, not an error.
 | 0066 | [Business model: free local app + paid services](0066-business-model-free-app-paid-services.md) | Public | Accepted — discusses the business model in the abstract; allowlisted in the tier tripwire (ADR 0082) |
 | 0067 | [DohFlow rename policy](0067-dohflow-rename-policy.md) | Public | Accepted |
 | 0068 | [Release distribution and update channel](0068-release-distribution-and-update-channel.md) | Public | Accepted |
-| 0069 | Bead-graph reconciliation rules | Public | Not yet written (`personal-cfo-jtn8n`) |
+| 0069 | [Bead-graph reconciliation rules](0069-bead-graph-reconciliation-rules.md) | Public | Accepted |
 | 0070 | [Dev vs. release vault data-directory separation](0070-dev-release-vault-directory-separation.md) | Public | Accepted |
 | 0071 | [Public-repo contribution model](0071-public-repo-contribution-model.md) | Public | Accepted |
 | 0072 | [Universal binary distribution (Intel + Apple Silicon)](0072-universal-binary-distribution.md) | Public | Accepted |
