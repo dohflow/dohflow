@@ -539,6 +539,16 @@ jobs:
       - name: Show toolchain
         run: rustup show
 
+      # A universal build needs BOTH slices installed — confirmed live on a
+      # real macos-15-intel runner, which ships x86_64-apple-darwin natively
+      # but NOT aarch64-apple-darwin (the mirror image of a build Mac, which
+      # ships aarch64 natively but not x86_64 — see scripts/release.sh's own
+      # preflight). Both calls are idempotent no-ops if already installed.
+      - name: Install both Darwin targets (ADR 0072 — universal build)
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/desktop/src-tauri
