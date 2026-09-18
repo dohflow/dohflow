@@ -29,6 +29,28 @@ publish = false
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# NOT under src/bin/ — deliberately. The Tauri CLI's bundler scans that
+# directory directly (bypassing `required-features` entirely — a confirmed
+# upstream quirk, not just a theory: the crate's own build fails identically
+# whether or not this bin is feature-gated, as long as the file lives under
+# src/bin/) and expects every file it finds there to exist as a built binary
+# in `tauri build --target universal-apple-darwin`'s (ADR 0072) universal
+# output directory — but Tauri's own lipo step only merges the app's OWN
+# main binary, never a second cargo-discovered bin, so the bundler then
+# fails with "Failed to copy binary ... does not exist". Moving the file to
+# tools/ removes it from that directory scan entirely; `required-features`
+# is kept too as a second, independent guard against `cargo build --release`
+# (no --target) ever bundling it into a real app by accident.
+# `cargo run --bin export_bindings --features export-bindings` is the only
+# way to invoke it now.
+[[bin]]
+name = "export_bindings"
+path = "tools/export_bindings.rs"
+required-features = ["export-bindings"]
+
+[features]
+export-bindings = []
+
 [build-dependencies]
 tauri-build = { version = "2.6.2", features = [] }
 

@@ -134,3 +134,36 @@ The app's own encrypted backup/restore (Settings → Vault) already can't cross
 the boundary: it always operates on whichever vault is active for the running
 process, so a dev build's backups land in the dev directory and a release
 build's in the release directory — never mixed.
+
+## CI: the Intel build + launch smoke (`personal-cfo-rr0lm`)
+
+Every push to `main` (and manual `workflow_dispatch`) runs a job on a real,
+native `macos-15-intel` GitHub runner: `intel-smoke` in `.github/workflows/ci.yml`.
+It builds the universal binary (`--target universal-apple-darwin`, ADR 0072),
+confirms `lipo -archs` reports both `arm64` and `x86_64`, then launches the
+binary headlessly with `PCFO_SMOKE_TEST_EXIT=1` — an opt-in env var that makes
+`setup()` (vault-registry bootstrap, ADR 0070's data-dir resolution) run to
+completion and then exit `0` on its own, with no display, no vault, and no
+network required.
+
+**What this proves:** the x86_64 slice actually compiles and its Rust startup
+logic runs without panicking, on real Intel hardware, without needing the
+owner to own an Intel Mac.
+
+**What this does NOT prove** — deliberately out of scope, no secrets are
+available to this job (D9a; this is not release signing, D9b, which stays on
+the local build Mac per `scripts/release.sh`):
+
+- **No Gatekeeper check.** The binary is unsigned and unnotarized; a real user
+  downloading an unsigned build would see the "unidentified developer" wall
+  this job never triggers or clears.
+- **No notarization.** `xcrun notarytool`/`stapler` never run here.
+- **No signed, distributable artifact.** `--bundles app` only, no DMG, no
+  updater archive/signature (`createUpdaterArtifacts: false` for this job).
+- **No real UI/webview interaction.** The smoke exit fires before the window
+  ever paints; this is not a UI test.
+
+The real signing/notarization/Gatekeeper proof is the owner's manual smoke
+test against a real release draft — see
+[`docs/operations/release-checklist.md`](../operations/release-checklist.md)
+step 5, which now also gates on this CI job passing for the release commit.
