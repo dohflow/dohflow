@@ -602,11 +602,21 @@ assert_contains "curl POSTed the hook URL" "$(cat "$CURL_LOG")" "https://example
 
 case_start "verify fails when latest.json is not HTTP 200"
 new_case_repo
-( cd "$REPO" && FAKE_CURL_STATUS="404" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+# Everything AFTER the manifest-status check is primed to pass (personal-cfo-
+# gpw8z): "HTTP 404" alone is ambiguous — it also appears in the SUCCESS
+# message ("latest.json is live (HTTP $status)") when $status happens to be
+# 404, which it is whenever this check is disabled entirely. Asserting on
+# "expected 200" instead (unique to the failure echo, cmd_verify:407) and
+# setting a passing FAKE_CURL_PAGE_BODY/FAKE_CURL_MANIFEST_BODY means a
+# mutation that disables the status check makes cmd_verify run clean to
+# completion and exit 0, rather than coincidentally still exiting 1 via the
+# download-page check failing next for its own unrelated reason.
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz")"
+( cd "$REPO" && FAKE_CURL_STATUS="404" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
 CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "1"
-assert_contains "output" "$OUT" "HTTP 404"
+assert_contains "output" "$OUT" "expected 200"
 
 case_start "verify fails when the download page doesn't mention the version"
 new_case_repo
