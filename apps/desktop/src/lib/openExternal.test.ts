@@ -5,6 +5,7 @@ import {
   DOHFLOW_LINKS,
   DOHFLOW_ORIGIN,
   isAllowedExternalUrl,
+  migrateGuideUrl,
   openExternal,
 } from "./openExternal";
 
@@ -49,5 +50,13 @@ describe("openExternal (personal-cfo-n76x.18)", () => {
     for (const url of Object.values(DOHFLOW_LINKS)) {
       expect(isAllowedExternalUrl(url)).toBe(true);
     }
+  });
+
+  it("builds a migrate guide URL that stays inside the allow-list (personal-cfo-gvidg)", async () => {
+    const url = migrateGuideUrl("move-from-ynab");
+    expect(url).toBe("https://dohflow.app/help/migrate/move-from-ynab");
+    expect(isAllowedExternalUrl(url)).toBe(true);
+    await openExternal(url);
+    expect(mocks.openUrl).toHaveBeenCalledWith(url);
   });
 });

@@ -25,6 +25,15 @@ export function isAllowedExternalUrl(url: string): boolean {
   return url.startsWith(DOHFLOW_ORIGIN);
 }
 
+/// A migrate guide's URL, from a `SourcePresetDto.help_slug` (personal-cfo-gvidg).
+/// The ONE place `help/migrate/<slug>` gets built — every other DOHFLOW_LINKS
+/// entry is a fixed string; this is the sole dynamic one, kept here rather
+/// than inlined at the "Import from <app>" picker's call site so a future
+/// slug source still goes through `isAllowedExternalUrl`'s same-origin check.
+export function migrateGuideUrl(helpSlug: string): string {
+  return `${DOHFLOW_ORIGIN}help/migrate/${helpSlug}`;
+}
+
 /// Open `url` in the system browser. Refuses anything outside the DohFlow site
 /// BEFORE the IPC call — defense in depth beside the Tauri capability scope
 /// (`opener:allow-open-url` → `https://dohflow.app/*`), which rejects it again in

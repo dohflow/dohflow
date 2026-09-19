@@ -782,6 +782,7 @@ fn seed_demo_vault(root: &Path, anchor: NaiveDate) -> SeededVault {
             filename: Some("saltmarsh-checking.csv".to_owned()),
             target_account_id: checking.clone(),
             plugin_id: Some("generic-csv".to_owned()),
+            preset_id: None,
             column_mapping: None,
             default_currency: Some("USD".to_owned()),
             date_format: Some("%Y-%m-%d".to_owned()),

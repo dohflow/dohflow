@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   dismissInboxItem: vi.fn(),
   accountList: vi.fn(),
   importBatch: vi.fn(),
+  importPreviewColumns: vi.fn(),
+  listSourcePresets: vi.fn(),
   archiveAccount: vi.fn(),
   assertBalance: vi.fn(),
   markReviewed: vi.fn(),
@@ -41,6 +43,8 @@ vi.mock("@/bindings", () => ({
     dismissInboxItem: mocks.dismissInboxItem,
     accountList: mocks.accountList,
     importBatch: mocks.importBatch,
+    importPreviewColumns: mocks.importPreviewColumns,
+    listSourcePresets: mocks.listSourcePresets,
     archiveAccount: mocks.archiveAccount,
     assertBalance: mocks.assertBalance,
     markReviewed: mocks.markReviewed,
@@ -263,6 +267,8 @@ beforeEach(() => {
   mocks.voidTransaction.mockResolvedValue(mutationOk());
   // No accounts by default → the inbox-item tests don't show the Import button.
   mocks.accountList.mockResolvedValue(ok([]));
+  mocks.importPreviewColumns.mockResolvedValue(ok([]));
+  mocks.listSourcePresets.mockResolvedValue([]);
 });
 
 it("renders a flagged item with its detail, reason, and actions", async () => {

@@ -28,6 +28,7 @@ describe("generated IPC bindings", () => {
         "updateBatchState",
         "importBatch",
         "importPreviewColumns",
+        "listSourcePresets",
         "transactionList",
         "transactionPage",
         "transactionRowsByIds",

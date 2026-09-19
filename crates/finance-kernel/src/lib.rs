@@ -51,9 +51,11 @@ pub use db_worker::{
     CURRENT_SCHEMA_VERSION, FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY,
 };
 pub use importer_core::{
-    content_fingerprint, detect_best, plugin_by_id, run_bounded, ColumnMapping, ImporterPlugin,
-    ParseError, ParseWarning, ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord,
-    ParsedTransaction, ParserHints, ParserInput, ParserLimits, ParserRunReport, RunStatus,
+    all_presets, content_fingerprint, detect_best, plugin_by_id, preset_by_id, run_bounded,
+    AccountHandling, CategoryHandling, ColumnMapping, ImporterPlugin, ParseError, ParseWarning,
+    ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord, ParsedTransaction, ParserHints,
+    ParserInput, ParserLimits, ParserRunReport, RunStatus, SignConvention, SourcePreset,
+    SourceQuirk,
 };
 pub use pay_schedule::{Frequency, PaySchedule};
 // Canonical onboarding warning (ADR 0002 / personal-cfo-n7bo): re-exported so the

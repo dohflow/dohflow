@@ -32,6 +32,7 @@ export const commands = {
 	updateBatchState: (input: UpdateBatchStateInput) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("update_batch_state", { input })),
 	importBatch: (input: ImportBatchInput) => typedError<BatchResultDto, IpcError>(__TAURI_INVOKE("import_batch", { input })),
 	importPreviewColumns: (data: number[], filename: string | null, pluginId: string | null) => typedError<string[], IpcError>(__TAURI_INVOKE("import_preview_columns", { data, filename, pluginId })),
+	listSourcePresets: () => __TAURI_INVOKE<SourcePresetDto[]>("list_source_presets"),
 	updateAccount: (input: UpdateAccountInput) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("update_account", { input })),
 	setAccountSubtype: (accountId: string, subtype: string | null, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_account_subtype", { accountId, subtype, idempotencyKey })),
 	setAccountNote: (accountId: string, note: string | null, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_account_note", { accountId, note, idempotencyKey })),
@@ -809,6 +810,9 @@ export type CloneScenarioInput = {
 /**
  *  Source-column → field mapping for a CSV import (personal-cfo-cu8), by header
  *  name. Any field may be omitted (the importer auto-detects common headers).
+ *  `Serialize` (personal-cfo-gvidg) alongside `Deserialize`: a preset's own
+ *  mapping is sent OUT to seed the "Import from <app>" picker's pre-filled
+ *  mapping UI, not just received from the user's own choices.
  */
 export type ColumnMappingDto = {
 	date: string | null,
@@ -818,6 +822,11 @@ export type ColumnMappingDto = {
 	credit: string | null,
 	account: string | null,
 	category: string | null,
+	/**
+	 *  A second, coarser category column (personal-cfo-gvidg) — see
+	 *  `ColumnMapping::category_group`.
+	 */
+	category_group: string | null,
 	currency: string | null,
 	memo: string | null,
 };
@@ -1375,7 +1384,17 @@ export type ImportBatchInput = {
 	target_account_id: string,
 	/**  An explicit importer plugin id; if omitted, the best-detected one is used. */
 	plugin_id: string | null,
-	/**  Optional column mapping (CSV). */
+	/**
+	 *  A source-app preset id (personal-cfo-gvidg, e.g. `"ynab"`) — applied
+	 *  as the BASE hints, with `column_mapping`/`date_format` below
+	 *  overriding any field they set. `None` behaves exactly as before this
+	 *  field existed.
+	 */
+	preset_id: string | null,
+	/**
+	 *  Optional column mapping (CSV). Overrides the matching field of
+	 *  `preset_id`'s own mapping when both are given.
+	 */
 	column_mapping: ColumnMappingDto | null,
 	/**  Default currency code (e.g. `"USD"`) for amounts without one. */
 	default_currency: string | null,
@@ -1907,6 +1926,26 @@ export type SetScenarioExpiryInput = {
 	id: string,
 	/**  `YYYY-MM-DD`, or `None` to clear the expiry. */
 	expires_on: string | null,
+};
+
+/**
+ *  One entry in the "Import from <app>" picker (personal-cfo-gvidg) — the
+ *  static half of a `SourcePreset`, everything the frontend needs to offer
+ *  the choice, pre-fill the mapping UI, and link the migrate guide, without
+ *  exposing the trait object itself across the IPC boundary.
+ */
+export type SourcePresetDto = {
+	id: string,
+	display_name: string,
+	source_app_url: string,
+	/**
+	 *  The columns this preset expects to find, by canonical field — the
+	 *  frontend checks these against the file's real headers
+	 *  (`import_preview_columns`) to decide whether the mapping step can be
+	 *  skipped or needs pre-filling with a gap shown.
+	 */
+	column_mapping: ColumnMappingDto,
+	help_slug: string,
 };
 
 /**

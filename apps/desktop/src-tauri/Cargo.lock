@@ -2973,6 +2973,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simplefin-adapter",
+ "source-presets",
  "specta",
  "specta-typescript",
  "static_assertions",
@@ -4002,6 +4003,13 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "source-presets"
+version = "0.1.0"
+dependencies = [
+ "importer-core",
 ]
 
 [[package]]

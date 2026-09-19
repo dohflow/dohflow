@@ -9,13 +9,13 @@
 
 use chrono::NaiveDate;
 use finance_kernel::{
-    detect_best, plugin_by_id, ActorType, ApplyScenario, ArchiveAccount, ArchiveCategory,
-    ArchiveIncomeSource, ArchiveRecurringBill, AttachSourceRecord, CategoryId, CommandEnvelope,
-    CommandMeta, CommitStaged, ConfirmObligationEarly, ConvertUnexplainedToTransaction,
-    CreateAccount, CreateCategory, CreateIncomeSource, CreateRecurringBill,
-    CreateRecurringTransfer, CreateSourceBatch, CreateTag, DeleteIncomeSource, DeleteRecurringBill,
-    DeleteRecurringTransfer, DismissInboxItem, DismissRecurringSuggestion, Kernel, MarkReviewed,
-    Money, MoveCategory, NewScenario, ParserHints, ParserInput, ParserLimits,
+    all_presets, detect_best, plugin_by_id, preset_by_id, ActorType, ApplyScenario, ArchiveAccount,
+    ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill, AttachSourceRecord, CategoryId,
+    CommandEnvelope, CommandMeta, CommitStaged, ConfirmObligationEarly,
+    ConvertUnexplainedToTransaction, CreateAccount, CreateCategory, CreateIncomeSource,
+    CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag, DeleteIncomeSource,
+    DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem, DismissRecurringSuggestion,
+    Kernel, MarkReviewed, Money, MoveCategory, NewScenario, ParserHints, ParserInput, ParserLimits,
     RecategorizeTransaction, RecurringEventId, RecurringTransferId, ReinstateAccount,
     ReinstateCategory, RestoreIncomeSource, RestoreRecurringBill, RevertScenarioApply,
     ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype, SetBillAutopay,
@@ -36,24 +36,25 @@ use crate::ipc::dto::{
     AssertBalanceResult, AssumptionEventDto, AttachSourceRecordInput, AttachSourceRecordResult,
     AttachmentDto, BandDriftSignalDto, BatchResultDto, BuildInfoDto, CapabilityUnlockDto,
     CardStatementForecastDto, CardStatementHistoryDto, CashAvailabilityDto, CashFlowHistoryDto,
-    CashTiersDto, CategoryDto, ChangePasswordInput, CloneScenarioInput, ComfortBandDto,
-    ConfirmObligationEarlyInput, CreateAccountInput, CreateAccountResult, CreateCategoryInput,
-    CreateCategoryResult, CreateForecastAssumptionInput, CreateIncomeSourceInput,
-    CreateManualFutureEntryInput, CreateRecurringBillInput, CreateRecurringBillResult,
-    CreateRecurringTransferInput, CreateRecurringTransferResult, CreateScenarioInput,
-    CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult, DebtPayoffPlanDto,
-    DebtTermsDto, DismissRecurringSuggestionInput, ForecastReadinessDto, ForecastViewDto,
-    ImportBatchInput, ImportedTransactionFieldsDto, IncomeSourceDto, LoanDoubleCountWarningDto,
-    ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto,
-    MutationResult, RecordTransactionInput, RecordTransactionResult, RecordTransferInput,
-    RecurringBillDto, RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
-    ScenarioDto, SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput,
-    SetScenarioExpiryInput, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto,
-    SplitLineInputDto, TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
-    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
-    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
-    UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto,
-    VaultStatusDto, VaultSummaryDto,
+    CashTiersDto, CategoryDto, ChangePasswordInput, CloneScenarioInput, ColumnMappingDto,
+    ComfortBandDto, ConfirmObligationEarlyInput, CreateAccountInput, CreateAccountResult,
+    CreateCategoryInput, CreateCategoryResult, CreateForecastAssumptionInput,
+    CreateIncomeSourceInput, CreateManualFutureEntryInput, CreateRecurringBillInput,
+    CreateRecurringBillResult, CreateRecurringTransferInput, CreateRecurringTransferResult,
+    CreateScenarioInput, CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult,
+    DebtPayoffPlanDto, DebtTermsDto, DismissRecurringSuggestionInput, ForecastReadinessDto,
+    ForecastViewDto, ImportBatchInput, ImportedTransactionFieldsDto, IncomeSourceDto,
+    LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
+    MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
+    RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
+    RecurringCandidateDto, RecurringTransferDto, ScenarioDto, SetBillAutopayInput,
+    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
+    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
+    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
+    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
+    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
+    UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto, VaultStatusDto,
+    VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
@@ -955,11 +956,29 @@ pub fn import_batch_impl(
             Some(code) => Some(parse_currency(code)?),
             None => None,
         };
+        // A preset (personal-cfo-gvidg) is the BASE; the user's own
+        // column_mapping/date_format/default_currency, when given, override
+        // the matching field — the user can always correct a preset's guess.
+        // No preset_id behaves exactly as before this field existed.
+        let preset_hints = match input.preset_id.as_deref() {
+            Some(id) => Some(
+                preset_by_id(id)
+                    .ok_or_else(|| IpcError::Validation(format!("no source preset {id:?}")))?
+                    .hints(),
+            ),
+            None => None,
+        };
         let hints = ParserHints {
-            column_mapping: input.column_mapping.map(|m| m.into_mapping()),
-            date_format: input.date_format,
-            default_currency,
-            institution: None,
+            column_mapping: input
+                .column_mapping
+                .map(|m| m.into_mapping())
+                .or_else(|| preset_hints.as_ref().and_then(|h| h.column_mapping.clone())),
+            date_format: input
+                .date_format
+                .or_else(|| preset_hints.as_ref().and_then(|h| h.date_format.clone())),
+            default_currency: default_currency
+                .or_else(|| preset_hints.as_ref().and_then(|h| h.default_currency)),
+            institution: preset_hints.as_ref().and_then(|h| h.institution.clone()),
         };
         let plugin = match input.plugin_id.as_deref() {
             Some(id) => plugin_by_id(id)
@@ -1026,6 +1045,34 @@ pub fn import_preview_columns(
     plugin_id: Option<String>,
 ) -> Result<Vec<String>, IpcError> {
     import_preview_columns_impl(state.inner(), data, filename, plugin_id)
+}
+
+/// Every registered source-app preset (personal-cfo-gvidg), for the "Import
+/// from <app>" picker. No vault access, no state needed — the registry is
+/// compile-time and process-global — but takes `&AppState` for the same
+/// reason every other `*_impl` does: a uniform signature integration tests
+/// can call without constructing a `tauri::State`.
+pub fn list_source_presets_impl(_state: &AppState) -> Vec<SourcePresetDto> {
+    all_presets()
+        .map(|preset| {
+            let hints = preset.hints();
+            SourcePresetDto {
+                id: preset.id().to_owned(),
+                display_name: preset.display_name().to_owned(),
+                source_app_url: preset.source_app_url().to_owned(),
+                column_mapping: ColumnMappingDto::from_mapping(
+                    &hints.column_mapping.unwrap_or_default(),
+                ),
+                help_slug: preset.help_slug().to_owned(),
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_source_presets(state: tauri::State<'_, AppState>) -> Vec<SourcePresetDto> {
+    list_source_presets_impl(state.inner())
 }
 
 // ---- attachments (ADR 0023) ------------------------------------------------
