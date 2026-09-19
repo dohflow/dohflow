@@ -492,7 +492,7 @@ sys.exit(1 if mismatched else 0)
 }
 
 verify_manifest_url() {
-  local t="$1" expected dl_dir
+  local t="$1" expected dl_dir asset_status
   expected="https://github.com/$repo/releases/download/$t/DohFlow.app.tar.gz"
 
   dl_dir="$(mktemp -d)"
@@ -503,42 +503,53 @@ verify_manifest_url() {
 
   if manifest_urls_match_expected "$dl_dir/latest.json" "$expected"; then
     ok "manifest URL confirmed on both platform keys: $expected"
-    rm -rf "$dl_dir"
-    return
-  fi
+  else
+    echo "note: latest.json's own url field(s) do not all match the predicted" >&2
+    echo "  '$expected' — the asset's location and what the manifest itself" >&2
+    echo "  claims can diverge independently (personal-cfo-xvj0k). Correcting" >&2
+    echo "  both platform keys and the manifest's checksum, then re-uploading both." >&2
 
-  echo "note: latest.json's own url field(s) do not all match the predicted" >&2
-  echo "  '$expected' — the asset's location and what the manifest itself" >&2
-  echo "  claims can diverge independently (personal-cfo-xvj0k). Correcting" >&2
-  echo "  both platform keys and the manifest's checksum, then re-uploading both." >&2
-
-  python3 -c "
+    python3 -c "
 import json
 manifest = json.load(open('$dl_dir/latest.json'))
 for plat in ('darwin-aarch64', 'darwin-x86_64'):
     manifest['platforms'][plat]['url'] = '$expected'
 json.dump(manifest, open('$assets_dir/latest.json', 'w'), indent=2)
 "
-  # The other three staged files are untouched since `package` wrote them;
-  # only latest.json's lines actually change, but the whole file is
-  # regenerated so it stays a complete, accurate manifest of everything
-  # about to be (re-)uploaded.
-  ( cd "$assets_dir" && shasum -a 256 DohFlow.dmg DohFlow.app.tar.gz DohFlow.app.tar.gz.sig latest.json > SHA256SUMS.txt )
+    # The other three staged files are untouched since `package` wrote them;
+    # only latest.json's lines actually change, but the whole file is
+    # regenerated so it stays a complete, accurate manifest of everything
+    # about to be (re-)uploaded.
+    ( cd "$assets_dir" && shasum -a 256 DohFlow.dmg DohFlow.app.tar.gz DohFlow.app.tar.gz.sig latest.json > SHA256SUMS.txt )
 
-  gh release upload "$t" --repo "$repo" --clobber "$assets_dir/latest.json" "$assets_dir/SHA256SUMS.txt"
+    gh release upload "$t" --repo "$repo" --clobber "$assets_dir/latest.json" "$assets_dir/SHA256SUMS.txt"
 
-  rm -f "$dl_dir/latest.json"
-  if ! gh release download "$t" --repo "$repo" --pattern latest.json --dir "$dl_dir" --clobber >/dev/null; then
-    rm -rf "$dl_dir"
-    fail "uploaded the corrected latest.json, but could not download it back to re-verify — stop and investigate before proceeding."
-  fi
-  if ! manifest_urls_match_expected "$dl_dir/latest.json" "$expected"; then
-    rm -rf "$dl_dir"
-    fail "corrected and re-uploaded latest.json, but re-downloading it still shows a mismatched platform key — stop and investigate before proceeding."
+    rm -f "$dl_dir/latest.json"
+    if ! gh release download "$t" --repo "$repo" --pattern latest.json --dir "$dl_dir" --clobber >/dev/null; then
+      rm -rf "$dl_dir"
+      fail "uploaded the corrected latest.json, but could not download it back to re-verify — stop and investigate before proceeding."
+    fi
+    if ! manifest_urls_match_expected "$dl_dir/latest.json" "$expected"; then
+      rm -rf "$dl_dir"
+      fail "corrected and re-uploaded latest.json, but re-downloading it still shows a mismatched platform key — stop and investigate before proceeding."
+    fi
+
+    ok "manifest corrected, re-uploaded, and re-verified by downloading it back fresh (both platform keys): $expected"
   fi
   rm -rf "$dl_dir"
 
-  ok "manifest corrected, re-uploaded, and re-verified by downloading it back fresh (both platform keys): $expected"
+  # personal-cfo-8sn07: everything above grounds what the manifest CLAIMS
+  # against itself (re-downloaded fresh, never trusting a local copy) — but
+  # that is self-consistency, not reality. The asset the manifest's url
+  # field actually points at could still not exist (the exact shape of the
+  # original xvj0k bug, one level removed: a confidently-reported manifest
+  # that 404s). Ground that fact too, independently, the same -L HEAD check
+  # cmd_verify's own per-platform-key loop already uses.
+  asset_status="$(curl -sI -L -o /dev/null -w '%{http_code}' "$expected")"
+  if [[ "$asset_status" != "200" ]]; then
+    fail "latest.json's url field resolves to HTTP $asset_status, expected 200: $expected — the manifest and the release disagree about where the asset actually is."
+  fi
+  ok "the asset the manifest points at actually resolves (HTTP $asset_status): $expected"
 }
 
 # ── publish: flip the draft public, then rebuild the site, then verify ────────

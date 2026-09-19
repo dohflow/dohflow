@@ -152,9 +152,12 @@ elif [ "$has_w" = "1" ] && [ "$is_manifest" = "1" ]; then
   printf '%s' "${FAKE_CURL_STATUS:-200}"
   exit 0
 elif [ "$has_w" = "1" ]; then
-  # cmd_verify's per-platform-key asset-url status check (ADR 0072) — a
-  # DIFFERENT url from the manifest alias above, so it gets its own
-  # status var: a test can fail one independently of the other.
+  # cmd_verify's per-platform-key asset-url status check (ADR 0072), AND
+  # (personal-cfo-8sn07) verify_manifest_url's own asset-resolution check —
+  # both are a -w status HEAD on a non-latest.json url, so they share this
+  # branch and this var. A DIFFERENT url from the manifest alias above, so
+  # it gets its own status var: a test can fail one independently of the
+  # top-level manifest-alias check.
   printf '%s' "${FAKE_CURL_ASSET_STATUS:-200}"
   exit 0
 elif [ "$is_manifest" = "1" ]; then
@@ -698,13 +701,49 @@ assert_eq "exit code" "$CODE" "0"
 assert_contains "gh edit --draft=false was called" "$(cat "$GH_LOG")" "--draft=false"
 assert_contains "output confirms the manifest URL" "$OUT" "manifest URL confirmed"
 assert_eq "gh was called exactly twice (edit + download, no correction/upload needed)" "$(wc -l < "$GH_LOG" | tr -d ' ')" "2"
-# Both the hook POST and every verify check ran (6 curl calls: POST, the
-# manifest-alias status check, the download-page fetch, the ADR-0072
-# manifest-body fetch, and one asset-url status check per platform key) —
-# confirms publish drove rebuild-site AND the full verify sequence, not
-# just the gh edit.
-assert_eq "curl was called six times (POST + status + page + manifest body + 2 asset checks)" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "6"
+# Both the hook POST and every verify check ran (7 curl calls:
+# verify_manifest_url's own asset-resolution check (personal-cfo-8sn07),
+# then POST, the manifest-alias status check, the download-page fetch, the
+# ADR-0072 manifest-body fetch, and one asset-url status check per platform
+# key) — confirms publish drove verify_manifest_url's own grounding check,
+# rebuild-site, AND the full verify sequence, not just the gh edit.
+assert_eq "curl was called seven times (asset resolution + POST + status + page + manifest body + 2 asset checks)" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "7"
 assert_contains "one curl call POSTed the hook" "$(cat "$CURL_LOG")" "POST https://example.com/hook"
+
+case_start "personal-cfo-8sn07: verify_manifest_url fails when the asset it points at does not actually resolve, even though the manifest's own url field is correct"
+new_case_repo
+place_build_artifacts "$REPO" good
+run_script "$REPO" package
+assert_eq "package precondition exit code" "$CODE" "0"
+GH_LOG="$CASE/gh.log"; CURL_LOG="$CASE/curl.log"
+SEED="$CASE/seed-manifest.json"
+# The manifest ALREADY names the expected url — manifest_urls_match_expected
+# passes, no correction happens, so a failure here can only be attributed
+# to the NEW asset-resolution check, not the pre-existing content check.
+# DOHFLOW_SITE_DEPLOY_HOOK_URL is set (matching the full-success case above)
+# so that IF this new check were ever bypassed, the run would proceed
+# cleanly into rebuild-site/cmd_verify rather than failing there instead for
+# an unrelated reason (a missing env var) that would otherwise mask exactly
+# the mutation this case exists to catch.
+write_manifest "$SEED" "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz"
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz")"
+( cd "$REPO" \
+  && DOHFLOW_SITE_DEPLOY_HOOK_URL="https://example.com/hook" \
+     FAKE_GH_LOG="$GH_LOG" FAKE_GH_DOWNLOAD_SEED="$SEED" FAKE_CURL_LOG="$CURL_LOG" \
+     FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="DohFlow 0.1.0" \
+     FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" FAKE_CURL_ASSET_STATUS="404" \
+     PATH="$TEST_PATH" bash scripts/publish-release.sh publish > "$CASE/out.txt" 2>&1 )
+CODE=$?
+OUT="$(cat "$CASE/out.txt")"
+assert_eq "exit code" "$CODE" "1"
+assert_contains "output names the mismatch between the manifest and reality" "$OUT" "disagree about where the asset actually is"
+assert_contains "output confirmed the manifest's own content first (proving THIS check, not the content check, is what failed)" "$OUT" "manifest URL confirmed"
+assert_eq "gh was called exactly twice (edit + download, never reached the correction/upload path)" "$(wc -l < "$GH_LOG" | tr -d ' ')" "2"
+# Exactly ONE curl call happened: the new asset-resolution check itself.
+# Nothing from rebuild-site's hook POST or cmd_verify's own checks — proving
+# verify_manifest_url's new check is what stopped the pipeline, not some
+# later, coincidentally-failing step.
+assert_eq "curl was called exactly once (the new asset-resolution check, before rebuild-site or cmd_verify ever ran)" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "1"
 
 case_start "personal-cfo-xvj0k: verify_manifest_url corrects latest.json AND regenerates SHA256SUMS.txt when the manifest's own url is stale (reproduces the 2026-09-14 go-live case: the manifest still names an untagged- draft url even though the asset itself already sits at the tag path — a fact this check no longer even looks at)"
 new_case_repo
