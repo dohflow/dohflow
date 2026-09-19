@@ -107,6 +107,10 @@ finance-kernel = { path = "../../../crates/finance-kernel" }
 csv-importer = { path = "../../../crates/importers/csv-importer" }
 # OFX/QFX importer (personal-cfo-fr79): registers `OfxImporter` the same way.
 ofx-importer = { path = "../../../crates/importers/ofx-importer" }
+# Source-app import presets (personal-cfo-gvidg): registers each SourcePreset
+# (YNAB, ...) in the compile-time preset registry the same way importers and
+# connectors register.
+source-presets = { path = "../../../crates/importers/source-presets" }
 # Connector contract + the SimpleFIN adapter (personal-cfo-gglk, ADR 0060):
 # linking the adapter registers it in the compile-time connector registry the
 # same way importers register. The adapter's ureq/rustls stack enters this

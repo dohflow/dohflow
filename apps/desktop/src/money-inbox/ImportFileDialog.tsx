@@ -12,12 +12,14 @@ import type {
   AccountViewDto,
   BatchResultDto,
   ColumnMappingDto,
+  SourcePresetDto,
 } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { mintIdempotencyKey } from "@/lib/idempotency";
 import { describeIpcError } from "@/vault/useVault";
 import { ExportGuidance } from "@/imports/ExportGuidance";
+import { migrateGuideUrl, openExternal } from "@/lib/openExternal";
 
 import { useImportBatch } from "./useImportBatch";
 
@@ -25,21 +27,37 @@ const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 
 /// The canonical CSV fields a user can remap, in display order (ADR 0045 slice 3,
-/// personal-cfo-4d8.24.1.2). Each maps to a `ColumnMappingDto` key; the "Date" field
-/// sets the posted (primary) date. Unmapped fields fall back to header auto-detect.
-type MapField = "date" | "description" | "amount" | "debit" | "credit" | "category" | "currency";
+/// personal-cfo-4d8.24.1.2; `account` added personal-cfo-gvidg for sources whose
+/// export spans multiple accounts, e.g. a preset's own mapping). Each maps to a
+/// `ColumnMappingDto` key; the "Date" field sets the posted (primary) date.
+/// Unmapped fields fall back to header auto-detect. `category_group` (also
+/// personal-cfo-gvidg) is deliberately NOT here — only a preset sets it; a
+/// generic import has no safe name to guess it from, and hand-mapping a
+/// second category column is a rare enough need to defer rather than widen
+/// this grid for it now.
+type MapField =
+  | "date"
+  | "description"
+  | "amount"
+  | "debit"
+  | "credit"
+  | "account"
+  | "category"
+  | "currency";
 const MAP_FIELDS: { key: MapField; label: string }[] = [
   { key: "date", label: "Date (posted)" },
   { key: "description", label: "Description" },
   { key: "amount", label: "Amount" },
   { key: "debit", label: "Debit" },
   { key: "credit", label: "Credit" },
+  { key: "account", label: "Account" },
   { key: "category", label: "Category" },
   { key: "currency", label: "Currency" },
 ];
 
 /// Build a `ColumnMappingDto` from the user's selections, or `null` when nothing was
-/// overridden (so the importer auto-detects, unchanged behavior).
+/// overridden (so the importer auto-detects, or a chosen preset's own mapping
+/// applies unmodified — personal-cfo-gvidg).
 function toColumnMapping(
   selections: Partial<Record<MapField, string>>,
 ): ColumnMappingDto | null {
@@ -51,11 +69,41 @@ function toColumnMapping(
     amount: pick("amount"),
     debit: pick("debit"),
     credit: pick("credit"),
-    account: null,
+    account: pick("account"),
     category: pick("category"),
+    category_group: null,
     currency: pick("currency"),
     memo: null,
   };
+}
+
+/// Every non-empty field a preset's own mapping declares, as `[MapField, name]`
+/// pairs — `category_group` excluded (not a MapField; applied server-side via
+/// `preset_id` regardless of what the mapping UI shows).
+function presetMapEntries(preset: SourcePresetDto): [MapField, string][] {
+  const m = preset.column_mapping;
+  const entries: [MapField, string | null][] = [
+    ["date", m.date],
+    ["description", m.description],
+    ["amount", m.amount],
+    ["debit", m.debit],
+    ["credit", m.credit],
+    ["account", m.account],
+    ["category", m.category],
+    ["currency", m.currency],
+  ];
+  return entries.filter((e): e is [MapField, string] => e[1] !== null);
+}
+
+/// Whether every column `preset` declares is actually present in `headers`
+/// (case-insensitive, matching the importer's own `find()`) — when true, the
+/// mapping step can be skipped entirely; the preset's own hints already
+/// cover the file completely (personal-cfo-gvidg AC #2).
+function presetFullyMatches(preset: SourcePresetDto, headers: string[]): boolean {
+  const lower = headers.map((h) => h.trim().toLowerCase());
+  return presetMapEntries(preset).every(([, name]) =>
+    lower.includes(name.trim().toLowerCase()),
+  );
 }
 
 /// Human-readable outcome of an import (ADR 0014 auto-commit-clean): a whole-file
@@ -91,7 +139,7 @@ export function ImportFileDialog({
   accounts: AccountViewDto[];
   onClose: () => void;
 }) {
-  const { importFile, previewColumns } = useImportBatch();
+  const { importFile, previewColumns, listPresets } = useImportBatch();
   const fileInput = useRef<HTMLInputElement>(null);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const [file, setFile] = useState<File | null>(null);
@@ -101,6 +149,11 @@ export function ImportFileDialog({
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<BatchResultDto | null>(null);
+  // "Import from <app>" (personal-cfo-gvidg): "" is the generic/auto-detect
+  // path, unchanged from before this feature existed.
+  const [presets, setPresets] = useState<SourcePresetDto[]>([]);
+  const [presetId, setPresetId] = useState("");
+  const selectedPreset = presets.find((p) => p.id === presetId) ?? null;
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -109,6 +162,32 @@ export function ImportFileDialog({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  useEffect(() => {
+    void listPresets().then(setPresets);
+  }, [listPresets]);
+
+  /// Pre-fill the mapping UI from `preset` for whichever of its declared
+  /// columns are actually present in `headers`; a gap is left blank (falls
+  /// back to auto-detect / a manual pick from the real column list) rather
+  /// than shown pointing at a header that doesn't exist. Auto-expands the
+  /// mapping section only when something needs a look — a fully-matching
+  /// preset stays collapsed, nothing to review (personal-cfo-gvidg AC #2).
+  function applyPreset(preset: SourcePresetDto | null, headers: string[]) {
+    if (!preset || headers.length === 0) {
+      setMapping({});
+      setShowMapping(false);
+      return;
+    }
+    const lower = headers.map((h) => h.trim().toLowerCase());
+    const next: Partial<Record<MapField, string>> = {};
+    for (const [key, name] of presetMapEntries(preset)) {
+      const match = headers[lower.indexOf(name.trim().toLowerCase())];
+      if (match) next[key] = match;
+    }
+    setMapping(next);
+    setShowMapping(!presetFullyMatches(preset, headers));
+  }
 
   async function onPickFile(event: ChangeEvent<HTMLInputElement>) {
     const picked = event.target.files?.[0] ?? null;
@@ -121,8 +200,16 @@ export function ImportFileDialog({
     // has mappable columns; OFX/an unrecognized file returns none (auto-detect only).
     if (picked) {
       const bytes = Array.from(new Uint8Array(await picked.arrayBuffer()));
-      setColumns(await previewColumns(bytes, picked.name));
+      const headers = await previewColumns(bytes, picked.name);
+      setColumns(headers);
+      applyPreset(selectedPreset, headers);
     }
+  }
+
+  function onPickPreset(event: ChangeEvent<HTMLSelectElement>) {
+    const id = event.target.value;
+    setPresetId(id);
+    applyPreset(presets.find((p) => p.id === id) ?? null, columns);
   }
 
   async function onImport() {
@@ -136,6 +223,7 @@ export function ImportFileDialog({
       filename: file.name,
       target_account_id: accountId,
       plugin_id: null,
+      preset_id: presetId || null,
       column_mapping: toColumnMapping(mapping),
       default_currency: account?.balance.currency ?? null,
       date_format: null,
@@ -187,6 +275,25 @@ export function ImportFileDialog({
               held in the Money Inbox for you to review.
             </p>
 
+            {presets.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="import-preset">Import from</Label>
+                <select
+                  id="import-preset"
+                  className={SELECT_CLASS}
+                  value={presetId}
+                  onChange={onPickPreset}
+                >
+                  <option value="">Another bank or app (generic)</option>
+                  {presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.display_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="import-account">Import into</Label>
               <select
@@ -230,6 +337,32 @@ export function ImportFileDialog({
                   <ExportGuidance id="import-export-guide" />
                 </div>
               </details>
+
+            {/* Only when the guide is actually live (personal-cfo-gvidg
+                review finding F1, PR #15): help_slug existing does not mean
+                the page is published, and linking to a draft page would
+                make it effectively discoverable, defeating the point of it
+                being a draft. */}
+            {selectedPreset?.help_published && (
+              <p className="text-xs text-muted-foreground">
+                <button
+                  type="button"
+                  className="underline underline-offset-2"
+                  onClick={() => {
+                    const url = migrateGuideUrl(selectedPreset.help_slug);
+                    // Same handling as AboutCard's external links: nothing in
+                    // the dialog can act on a browser-launch failure, but it
+                    // must not vanish as an unhandled rejection either.
+                    void openExternal(url).catch((err: unknown) => {
+                      console.error(`Could not open ${url}`, err);
+                    });
+                  }}
+                >
+                  Full guide: moving from {selectedPreset.display_name}
+                </button>
+              </p>
+            )}
+
             {columns.length > 0 && (
 
               <section className="flex flex-col gap-2" aria-label="Column mapping">

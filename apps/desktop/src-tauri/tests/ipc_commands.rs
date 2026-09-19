@@ -1868,6 +1868,7 @@ fn import_batch_imports_a_csv_through_the_pipeline() {
             filename: Some("statement.csv".to_owned()),
             target_account_id: account_id.clone(),
             plugin_id: None, // auto-detect → GenericCsv
+            preset_id: None,
             column_mapping: None,
             default_currency: Some("USD".to_owned()),
             date_format: None,
@@ -1917,6 +1918,7 @@ fn money_inbox_surfaces_a_flagged_import_through_ipc() {
             filename: Some("statement.csv".to_owned()),
             target_account_id: account_id,
             plugin_id: None,
+            preset_id: None,
             column_mapping: None,
             default_currency: Some("USD".to_owned()),
             date_format: None,
@@ -1965,6 +1967,7 @@ fn import_with_one_flagged(state: &AppState) -> (String, String) {
             filename: Some("statement.csv".to_owned()),
             target_account_id: account_id.clone(),
             plugin_id: None,
+            preset_id: None,
             column_mapping: None,
             default_currency: Some("USD".to_owned()),
             date_format: None,
@@ -2401,6 +2404,7 @@ fn import_batch_imports_an_ofx_file_through_the_pipeline() {
             filename: Some("statement.ofx".to_owned()),
             target_account_id: account_id.clone(),
             plugin_id: None, // auto-detect → the OFX importer
+            preset_id: None,
             column_mapping: None,
             default_currency: None, // CURDEF carries the currency
             date_format: None,
@@ -2457,6 +2461,7 @@ fn identical_fingerprints_on_different_accounts_are_not_duplicates() {
                 filename: Some("statement.ofx".to_owned()),
                 target_account_id: account.to_owned(),
                 plugin_id: None,
+                preset_id: None,
                 column_mapping: None,
                 default_currency: None,
                 date_format: None,
@@ -3173,6 +3178,7 @@ fn export_csv_round_trips_through_the_csv_importer() {
             filename: Some("export.csv".to_owned()),
             target_account_id: account_b,
             plugin_id: Some("generic-csv".to_owned()),
+            preset_id: None,
             column_mapping: Some(ColumnMappingDto {
                 date: Some("date".to_owned()),
                 description: Some("note".to_owned()),
@@ -3181,6 +3187,7 @@ fn export_csv_round_trips_through_the_csv_importer() {
                 credit: None,
                 account: Some("account".to_owned()),
                 category: Some("category".to_owned()),
+                category_group: None,
                 currency: Some("currency".to_owned()),
                 memo: Some("memo".to_owned()),
             }),
@@ -3246,6 +3253,7 @@ fn recurring_deposits_surface_as_income_candidates() {
             filename: Some("statement.ofx".to_owned()),
             target_account_id: account_id.clone(),
             plugin_id: None,
+            preset_id: None,
             column_mapping: None,
             default_currency: None,
             date_format: None,

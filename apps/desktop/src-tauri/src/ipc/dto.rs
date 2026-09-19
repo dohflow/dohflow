@@ -1351,7 +1351,10 @@ pub struct UpdateBatchStateInput {
 
 /// Source-column → field mapping for a CSV import (personal-cfo-cu8), by header
 /// name. Any field may be omitted (the importer auto-detects common headers).
-#[derive(Debug, Clone, Default, Deserialize, Type)]
+/// `Serialize` (personal-cfo-gvidg) alongside `Deserialize`: a preset's own
+/// mapping is sent OUT to seed the "Import from <app>" picker's pre-filled
+/// mapping UI, not just received from the user's own choices.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
 pub struct ColumnMappingDto {
     pub date: Option<String>,
     pub description: Option<String>,
@@ -1360,6 +1363,9 @@ pub struct ColumnMappingDto {
     pub credit: Option<String>,
     pub account: Option<String>,
     pub category: Option<String>,
+    /// A second, coarser category column (personal-cfo-gvidg) — see
+    /// `ColumnMapping::category_group`.
+    pub category_group: Option<String>,
     pub currency: Option<String>,
     pub memo: Option<String>,
 }
@@ -1376,10 +1382,50 @@ impl ColumnMappingDto {
             credit: self.credit,
             account: self.account,
             category: self.category,
+            category_group: self.category_group,
             currency: self.currency,
             memo: self.memo,
         }
     }
+
+    /// The reverse of [`Self::into_mapping`] — a preset's own `ColumnMapping`
+    /// sent out to the frontend as a pre-fill (personal-cfo-gvidg).
+    #[must_use]
+    pub fn from_mapping(mapping: &ColumnMapping) -> Self {
+        Self {
+            date: mapping.date.clone(),
+            description: mapping.description.clone(),
+            amount: mapping.amount.clone(),
+            debit: mapping.debit.clone(),
+            credit: mapping.credit.clone(),
+            account: mapping.account.clone(),
+            category: mapping.category.clone(),
+            category_group: mapping.category_group.clone(),
+            currency: mapping.currency.clone(),
+            memo: mapping.memo.clone(),
+        }
+    }
+}
+
+/// One entry in the "Import from <app>" picker (personal-cfo-gvidg) — the
+/// static half of a `SourcePreset`, everything the frontend needs to offer
+/// the choice, pre-fill the mapping UI, and link the migrate guide, without
+/// exposing the trait object itself across the IPC boundary.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct SourcePresetDto {
+    pub id: String,
+    pub display_name: String,
+    pub source_app_url: String,
+    /// The columns this preset expects to find, by canonical field — the
+    /// frontend checks these against the file's real headers
+    /// (`import_preview_columns`) to decide whether the mapping step can be
+    /// skipped or needs pre-filling with a gap shown.
+    pub column_mapping: ColumnMappingDto,
+    pub help_slug: String,
+    /// Whether `help_slug`'s guide is actually live on the public site
+    /// (personal-cfo-gvidg review finding F1, PR #15) — the frontend must
+    /// not render a guide link when this is `false`.
+    pub help_published: bool,
 }
 
 /// Input for importing a file through the ingestion pipeline (personal-cfo-cu8).
@@ -1395,7 +1441,13 @@ pub struct ImportBatchInput {
     pub target_account_id: String,
     /// An explicit importer plugin id; if omitted, the best-detected one is used.
     pub plugin_id: Option<String>,
-    /// Optional column mapping (CSV).
+    /// A source-app preset id (personal-cfo-gvidg, e.g. `"ynab"`) — applied
+    /// as the BASE hints, with `column_mapping`/`date_format` below
+    /// overriding any field they set. `None` behaves exactly as before this
+    /// field existed.
+    pub preset_id: Option<String>,
+    /// Optional column mapping (CSV). Overrides the matching field of
+    /// `preset_id`'s own mapping when both are given.
     pub column_mapping: Option<ColumnMappingDto>,
     /// Default currency code (e.g. `"USD"`) for amounts without one.
     pub default_currency: Option<String>,

@@ -12,10 +12,12 @@
 //! v1 scope: US-style numerics (`,` = thousands, `.` = decimal). European
 //! decimal-comma needs an explicit locale hint and is a documented follow-up.
 
+use std::collections::BTreeSet;
+
 use core_money::{Currency, Money};
 use importer_core::{
-    register_importer, ColumnMapping, ImporterPlugin, ParseError, ParseWarning, ParsedBatch,
-    ParsedRecord, ParsedTransaction, ParserHints, ParserInput,
+    register_importer, ColumnMapping, ImporterPlugin, ParseError, ParseWarning, ParsedAccount,
+    ParsedBatch, ParsedRecord, ParsedTransaction, ParserHints, ParserInput,
 };
 use semver::Version;
 
@@ -34,6 +36,16 @@ struct Columns {
     credit: Option<usize>,
     currency: Option<usize>,
     category: Option<usize>,
+    /// A second, coarser category column (personal-cfo-gvidg) — e.g. YNAB's
+    /// "Category Group" — combined with `category` as `"{group}: {category}"`.
+    /// Only resolved from an explicit mapping (a preset's `ColumnMapping`);
+    /// auto-detect never guesses this, since no generic header name for it
+    /// is common enough to be safe to guess.
+    category_group: Option<usize>,
+    /// An account-label column (personal-cfo-gvidg) — a source that exports
+    /// several accounts in one file names each row's account here. `None`
+    /// for the (today, universal) one-file-per-account case.
+    account: Option<usize>,
 }
 
 /// Map a currency code to a [`Currency`], or `None` if unsupported.
@@ -155,6 +167,8 @@ fn resolve_columns(headers: &csv::StringRecord, mapping: Option<&ColumnMapping>)
             credit: m.credit.as_deref().and_then(&find),
             currency: m.currency.as_deref().and_then(&find),
             category: m.category.as_deref().and_then(&find),
+            category_group: m.category_group.as_deref().and_then(&find),
+            account: m.account.as_deref().and_then(&find),
         }
     } else {
         // Every column whose header mentions a date, in source order.
@@ -192,6 +206,11 @@ fn resolve_columns(headers: &csv::StringRecord, mapping: Option<&ColumnMapping>)
             credit: find_any(&["credit", "deposit"]),
             currency: find_any(&["currency"]),
             category: find_any(&["category"]),
+            // Never auto-detected: no generic "group" header name is common
+            // enough across exports to guess safely (personal-cfo-gvidg) —
+            // only an explicit preset/user mapping sets this.
+            category_group: None,
+            account: find_any(&["account"]),
         }
     }
 }
@@ -316,6 +335,7 @@ impl ImporterPlugin for GenericCsv {
         let currency = hints.default_currency.unwrap_or(Currency::Usd);
         let mut records = Vec::new();
         let mut warnings = Vec::new();
+        let mut seen_accounts = BTreeSet::new();
 
         for (idx, result) in reader.records().enumerate() {
             let row = match result {
@@ -378,7 +398,15 @@ impl ImporterPlugin for GenericCsv {
                     .map(str::to_owned)
             };
             let description = trimmed(cols.description);
-            let category = trimmed(cols.category);
+            // A group + category combine as "Group: Category"; a group alone
+            // (no matching category cell) is used bare rather than dropped
+            // (personal-cfo-gvidg) — still a real, if coarser, prefill.
+            let category = match (trimmed(cols.category_group), trimmed(cols.category)) {
+                (Some(group), Some(cat)) => Some(format!("{group}: {cat}")),
+                (Some(group), None) => Some(group),
+                (None, cat) => cat,
+            };
+            let account_label = trimmed(cols.account);
             let normalized_merchant = description.as_ref().map(|d| d.to_ascii_lowercase());
             let txn_fingerprint = format!(
                 "{posted_date}|{amount_minor}|{}",
@@ -391,6 +419,9 @@ impl ImporterPlugin for GenericCsv {
             let source_hash =
                 importer_core::content_fingerprint(format!("{idx}:{normalized}").as_bytes());
 
+            if let Some(label) = &account_label {
+                seen_accounts.insert(label.clone());
+            }
             records.push(ParsedRecord {
                 external_id: None,
                 source_hash,
@@ -405,16 +436,37 @@ impl ImporterPlugin for GenericCsv {
                     description,
                     category,
                     normalized_merchant,
-                    external_account: None,
+                    // The account column's raw label, when the source has one
+                    // (personal-cfo-gvidg) — doubles as the matching
+                    // `ParsedAccount::external_id` below, so a per-account
+                    // commit path (e.g. `stage_sync_batch`) can correlate the
+                    // two by the same string. `stage_parsed_batch` (today's
+                    // only file-import commit path) does not read this field
+                    // yet — see this crate's `SourcePreset` docs.
+                    external_account: account_label.clone(),
                     txn_fingerprint,
                 }),
                 balance: None,
             });
         }
 
+        // One ParsedAccount per distinct account label observed (sorted, via
+        // BTreeSet — matching happens by label, so order carries no meaning)
+        // — never from a source with no account column (accounts stays
+        // empty, unchanged from before this field existed).
+        let accounts = seen_accounts
+            .into_iter()
+            .map(|label| ParsedAccount {
+                external_id: Some(label.clone()),
+                external_name: Some(label),
+                external_number_hash: None,
+                proposed_subtype: None,
+            })
+            .collect();
+
         Ok(ParsedBatch {
             source_format: "csv".to_owned(),
-            accounts: vec![],
+            accounts,
             records,
             warnings,
         })
@@ -572,6 +624,85 @@ mod tests {
         assert_eq!(
             batch.records[1].transaction.as_ref().unwrap().amount,
             Money::new(4500, Currency::Usd)
+        );
+    }
+
+    #[test]
+    fn an_account_column_stages_distinct_parsed_accounts_and_stamps_rows() {
+        let csv = "Date,Description,Amount,Account\n2026-06-20,Rent,-1200.00,Checking\n2026-06-21,Paycheck,2500.00,Checking\n2026-06-22,Groceries,-84.20,Credit Card\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 3);
+        let mut account_names: Vec<_> = batch
+            .accounts
+            .iter()
+            .map(|a| a.external_name.as_deref().unwrap())
+            .collect();
+        account_names.sort_unstable();
+        assert_eq!(account_names, vec!["Checking", "Credit Card"]);
+        // Every ParsedAccount's external_id matches its external_name — the
+        // same string a row's external_account carries, so a per-row
+        // commit path can correlate the two (personal-cfo-gvidg).
+        for account in &batch.accounts {
+            assert_eq!(account.external_id, account.external_name);
+        }
+        let external_accounts: Vec<_> = batch
+            .records
+            .iter()
+            .map(|r| r.transaction.as_ref().unwrap().external_account.clone())
+            .collect();
+        assert_eq!(
+            external_accounts,
+            vec![
+                Some("Checking".to_owned()),
+                Some("Checking".to_owned()),
+                Some("Credit Card".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_csv_with_no_account_column_stages_no_parsed_accounts() {
+        // Unchanged from before ParsedAccount existed on this importer: no
+        // account column means no accounts staged, ever.
+        let csv = "Date,Description,Amount\n2026-06-20,Rent,-1200.00\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert!(batch.accounts.is_empty());
+        assert_eq!(
+            batch.records[0]
+                .transaction
+                .as_ref()
+                .unwrap()
+                .external_account,
+            None
+        );
+    }
+
+    #[test]
+    fn an_explicit_category_group_combines_with_category() {
+        let csv = "Date,Description,Amount,Group,Cat\n2026-06-20,Rent,-1200.00,Immediate Obligations,Rent\n2026-06-21,Misc,-10.00,Just for Fun,\n";
+        let hints = ParserHints {
+            column_mapping: Some(ColumnMapping {
+                date: Some("Date".to_owned()),
+                amount: Some("Amount".to_owned()),
+                category_group: Some("Group".to_owned()),
+                category: Some("Cat".to_owned()),
+                ..ColumnMapping::default()
+            }),
+            ..ParserHints::default()
+        };
+        let batch = GenericCsv.parse(&input(csv), &hints).unwrap();
+        assert_eq!(
+            batch.records[0].transaction.as_ref().unwrap().category,
+            Some("Immediate Obligations: Rent".to_owned())
+        );
+        // A group with no matching category cell is used bare, not dropped.
+        assert_eq!(
+            batch.records[1].transaction.as_ref().unwrap().category,
+            Some("Just for Fun".to_owned())
         );
     }
 

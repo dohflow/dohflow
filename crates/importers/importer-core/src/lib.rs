@@ -13,6 +13,13 @@
 //! on the `inventory` crate). There is no runtime registration map to populate,
 //! and ADR 0022 forbids runtime dynamic loading (libloading/dlopen) — the plugin
 //! roster is fixed when the binary is built.
+//!
+//! A second, smaller registry — [`SourcePreset`]/[`register_preset!`] — declares
+//! per-source-app export shapes (YNAB, Monarch Money, …) applied by the generic
+//! CSV importer before a user's own column mapping (personal-cfo-gvidg). A
+//! preset is a set of hints over the existing importer architecture, not a new
+//! parser: most personal-finance apps export CSV with stable headers, so for
+//! most sources a preset is the whole job.
 
 use chrono::NaiveDate;
 use core_money::{Currency, Money};
@@ -111,6 +118,12 @@ pub struct ColumnMapping {
     pub credit: Option<String>,
     pub account: Option<String>,
     pub category: Option<String>,
+    /// A second, coarser category column some sources export alongside
+    /// `category` (e.g. YNAB's "Category Group"), combined as
+    /// `"{category_group}: {category}"` when both resolve on a row
+    /// (personal-cfo-gvidg). `None` for sources with a single category
+    /// column — the existing `category`-only behavior is unchanged.
+    pub category_group: Option<String>,
     pub currency: Option<String>,
     pub memo: Option<String>,
 }
@@ -344,6 +357,212 @@ pub fn detect_best(input: &ParserInput) -> Option<&'static dyn ImporterPlugin> {
         .filter(|(confidence, _)| *confidence > 0)
         .max_by_key(|(confidence, _)| *confidence)
         .map(|(_, plugin)| plugin)
+}
+
+// ===========================================================================
+// Source presets — per-app export-shape declarations (personal-cfo-gvidg)
+// ===========================================================================
+
+/// How a source app's export encodes amount direction. Documentation only —
+/// the CSV importer's `resolve_amount` already handles a signed `amount`
+/// column and a debit/credit split generically from whichever columns a
+/// preset's [`ColumnMapping`] points at; this names which shape a given
+/// source actually uses, for the preset author and the migrate guide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignConvention {
+    /// One amount column, negative = outflow (DohFlow's own convention).
+    SignedAmount,
+    /// Separate outflow/inflow columns (mapped as `debit`/`credit`).
+    SeparateOutflowInflow,
+    /// One amount column where the source's own sign means the opposite of
+    /// DohFlow's convention (rare; not handled automatically — a preset with
+    /// this convention must document the flip in its quirks for now).
+    NegativeIsCredit,
+}
+
+/// Whether a source's category column(s) become a transaction's category
+/// prefill, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryHandling {
+    /// The source has no category column.
+    None,
+    /// One category column, mapped via `ColumnMapping::category`.
+    SingleColumn,
+    /// Two columns — a coarser group and a specific category — combined via
+    /// `ColumnMapping::category_group` + `category`.
+    GroupAndCategory,
+}
+
+/// Whether a source's account column (when present) should split one export
+/// into multiple [`ParsedAccount`]s, or the source is assumed one-file-per-
+/// account (today's behavior for every source with no account column).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountHandling {
+    /// No account column; the whole file targets one account (today's only
+    /// behavior for `generic-csv`, unchanged).
+    OneFilePerAccount,
+    /// An account column present — the importer stages one [`ParsedAccount`]
+    /// per distinct value and stamps each row's `external_account`.
+    /// Routing those into DIFFERENT real DohFlow accounts at commit time is
+    /// NOT part of this preset mechanism (see this crate's module docs) —
+    /// today every row still commits into whichever single account the user
+    /// picked, the same as `OneFilePerAccount`; only the *parsed* data is
+    /// richer.
+    AccountColumn,
+}
+
+/// A known quirk in a source's export, surfaced in the migrate guide and
+/// worth a dedicated row in the preset's test fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceQuirk {
+    /// Amounts use a thousands separator (already handled generically by
+    /// the CSV importer's `parse_minor_units` — named here so a preset's
+    /// fixture exercises it deliberately, not by accident).
+    ThousandsSeparator,
+    /// Negative amounts are written in parentheses, accounting-style
+    /// (also already handled generically — same rationale).
+    ParenthesesNegative,
+    /// The export carries a memo/notes column distinct from the main
+    /// description.
+    MemoColumn,
+    /// The export includes transfer rows (moves between the user's own
+    /// accounts), which a migrate guide should tell the user to expect and
+    /// review rather than treat as external income/spending.
+    TransferRows,
+    /// The export includes split-transaction rows (one purchase, multiple
+    /// categories) that don't have a DohFlow-side equivalent on first
+    /// import and need manual re-splitting after.
+    SplitRows,
+    /// The export marks pending/uncleared rows distinctly from posted ones.
+    PendingFlag,
+}
+
+/// A compile-time declared preset for one source app's export shape, applied
+/// by the generic CSV importer's caller *before* the user's own column
+/// mapping (which can still override any field the preset guessed) —
+/// personal-cfo-gvidg, mirroring [`register_importer!`]'s trait+registry
+/// shape exactly. A trait, not a plain data struct: `inventory::submit!`
+/// requires const-evaluable statics, which rules out a struct literal
+/// holding `Option<String>` fields directly — the same reason
+/// [`ImporterPlugin`]/`ConnectorAdapter` are traits returning owned data
+/// from methods rather than struct literals.
+///
+/// SCOPE NOTE on [`AccountHandling::AccountColumn`]: this mechanism parses
+/// and stages an account column's distinct values as [`ParsedAccount`]s and
+/// stamps `external_account` on each row — but does not itself route
+/// different rows into different *real* DohFlow accounts at commit time.
+/// `crates/db-worker`'s `stage_parsed_batch` (the file-import commit path)
+/// still targets one account for the whole batch, same as today;
+/// `stage_sync_batch` (the connector-sync path) already supports true
+/// per-row account routing via an external-key → real-account map, and is
+/// the natural mechanism to reuse for this — deliberately left to whichever
+/// bead does the first `AccountColumn`-handling preset's full end-to-end
+/// commit path (e.g. `personal-cfo-tulv`'s YNAB guide), not built here.
+pub trait SourcePreset: Sync {
+    /// Stable, unique id (e.g. `"ynab"`). Never changes.
+    fn id(&self) -> &'static str;
+
+    /// Human-facing name (e.g. `"YNAB"`).
+    fn display_name(&self) -> &'static str;
+
+    /// The source app's own homepage or export-docs URL, shown in the
+    /// migrate guide and the "Import from" picker.
+    fn source_app_url(&self) -> &'static str;
+
+    /// The hints applied before the user's own mapping. Built fresh per
+    /// call (not stored) since [`ParserHints`]/[`ColumnMapping`] hold owned
+    /// `String`s.
+    fn hints(&self) -> ParserHints;
+
+    fn sign_convention(&self) -> SignConvention;
+    fn category_handling(&self) -> CategoryHandling;
+    fn account_handling(&self) -> AccountHandling;
+
+    /// Known quirks this source's export has. Default: none.
+    fn quirks(&self) -> &'static [SourceQuirk] {
+        &[]
+    }
+
+    /// The export headers this preset declares, as verified against the
+    /// source app's own documentation — `"<what was checked> — <date>"`,
+    /// e.g. `"YNAB Register export docs, support.ynab.com — 2026-09-19"`.
+    /// A one-time provenance stamp per preset (re-stamped only when the
+    /// export shape is re-verified), distinct from ADR 0015's cost/terms
+    /// review cadence, which this preset mechanism has no equivalent of —
+    /// an export column layout doesn't carry a cost or terms to go stale.
+    fn verified_against(&self) -> &'static str;
+
+    /// Slug of the migrate guide this preset links to: renders as
+    /// `/help/migrate/<help_slug>` once `personal-cfo-y0o0x`'s migrate
+    /// collection (or a flat help article, its own stated fallback) carries
+    /// that page. Not validated against a real URL by this crate — the
+    /// frontend's own link-check gates do that.
+    fn help_slug(&self) -> &'static str;
+
+    /// Whether `help_slug`'s guide is actually LIVE on the public site —
+    /// distinct from the slug existing (personal-cfo-gvidg review finding
+    /// F1, PR #15). A preset can exist (and be genuinely useful for
+    /// skipping/pre-filling the mapping step) before its migrate guide is
+    /// ready to publish; the guide is a content/product-sequencing call
+    /// (`dohflow-site`'s own draft flag), separate from this crate's own
+    /// release. Defaults to `false` so a preset author must explicitly opt
+    /// in once the guide is confirmed live — the failure mode of forgetting
+    /// to flip this is "no guide link shown" (a minor UX gap), not "the app
+    /// links users to a page marked draft" (the bug this default prevents).
+    /// The frontend must not render a guide link when this is `false`.
+    fn help_published(&self) -> bool {
+        false
+    }
+
+    /// A synthesized fixture (never a real user file) exercising this
+    /// preset's known shape and quirks, in the source's own documented
+    /// export format — required so the preset test harness
+    /// (personal-cfo-gvidg) can generically assert every registered preset
+    /// has one, and so `parse()` applied through this preset's `hints()`
+    /// has something to run against without per-preset harness boilerplate.
+    fn fixture_csv(&self) -> &'static str;
+}
+
+/// A compile-time preset registration. Created by [`register_preset!`] —
+/// never constructed by hand.
+pub struct PresetRegistration {
+    pub preset: &'static dyn SourcePreset,
+}
+
+inventory::collect!(PresetRegistration);
+
+/// Register a source preset at compile time.
+///
+/// ```ignore
+/// use importer_core::{register_preset, SourcePreset};
+/// struct Ynab;
+/// impl SourcePreset for Ynab { /* … */ }
+/// register_preset!(Ynab);
+/// ```
+#[macro_export]
+macro_rules! register_preset {
+    ($preset:expr) => {
+        $crate::inventory::submit! {
+            $crate::PresetRegistration { preset: &$preset }
+        }
+    };
+}
+
+/// Every registered preset, in registration order.
+pub fn all_presets() -> impl Iterator<Item = &'static dyn SourcePreset> {
+    inventory::iter::<PresetRegistration>
+        .into_iter()
+        .map(|r| r.preset)
+}
+
+/// Look up a preset by its stable id.
+#[must_use]
+pub fn preset_by_id(id: &str) -> Option<&'static dyn SourcePreset> {
+    all_presets().find(|p| p.id() == id)
 }
 
 #[cfg(test)]

@@ -40,6 +40,7 @@ commands.allow = [
   "update_batch_state",
   "import_batch",
   "import_preview_columns",
+  "list_source_presets",
   "update_account",
   "set_account_subtype",
   "set_account_note",

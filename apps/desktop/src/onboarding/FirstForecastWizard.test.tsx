@@ -7,6 +7,7 @@ import { FirstForecastWizard } from "./FirstForecastWizard";
 
 const mocks = vi.hoisted(() => ({
   importPreviewColumns: vi.fn(),
+  listSourcePresets: vi.fn(),
   importBatch: vi.fn(),
   markReviewed: vi.fn(),
   dismissRecurringSuggestion: vi.fn(),
@@ -32,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/bindings", () => ({
   commands: {
     importPreviewColumns: mocks.importPreviewColumns,
+    listSourcePresets: mocks.listSourcePresets,
     importBatch: mocks.importBatch,
     markReviewed: mocks.markReviewed,
     dismissRecurringSuggestion: mocks.dismissRecurringSuggestion,
@@ -76,6 +78,7 @@ beforeEach(() => {
   mocks.dismissRecurringSuggestion.mockResolvedValue({ status: "ok", data: null });
   mocks.recurringBillHistory.mockResolvedValue({ status: "ok", data: [] });
   mocks.accountList.mockResolvedValue(ok([oneAccount]));
+  mocks.listSourcePresets.mockResolvedValue([]);
   mocks.incomeSourceList.mockResolvedValue(ok([]));
   mocks.recurringBillList.mockResolvedValue(ok([]));
   mocks.baseCurrency.mockResolvedValue(ok("USD"));

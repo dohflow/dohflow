@@ -6,6 +6,7 @@ import {
   type BatchResultDto,
   type ImportBatchInput,
   type IpcError,
+  type SourcePresetDto,
 } from "@/bindings";
 import { queryKeys } from "@/lib/query";
 
@@ -55,5 +56,14 @@ export function useImportBatch() {
     [],
   );
 
-  return { importFile, previewColumns };
+  /// Every registered source-app preset (personal-cfo-gvidg), for the
+  /// "Import from <app>" picker. The registry is compile-time and doesn't
+  /// change during a session, so this is a plain callback (like
+  /// `previewColumns`) rather than a cached query — nothing ever
+  /// invalidates it.
+  const listPresets = useCallback(async (): Promise<SourcePresetDto[]> => {
+    return commands.listSourcePresets();
+  }, []);
+
+  return { importFile, previewColumns, listPresets };
 }

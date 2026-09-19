@@ -797,6 +797,7 @@ fn csv_backfill_flags_already_synced_rows() {
             filename: Some("backfill.csv".to_owned()),
             target_account_id: checking,
             plugin_id: Some("generic-csv".to_owned()),
+            preset_id: None,
             column_mapping: None,
             default_currency: Some("USD".to_owned()),
             date_format: None,

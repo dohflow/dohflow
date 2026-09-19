@@ -20,6 +20,8 @@ pub use state::AppState;
 // importer crate gets a line here.
 use csv_importer as _;
 use ofx_importer as _;
+// Source-app presets register the same way (personal-cfo-gvidg).
+use source_presets as _;
 // Connector adapters register the same way (personal-cfo-gglk, ADR 0060).
 use simplefin_adapter as _;
 
@@ -55,6 +57,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::update_batch_state,
         ipc::commands::import_batch,
         ipc::commands::import_preview_columns,
+        ipc::commands::list_source_presets,
         ipc::commands::update_account,
         ipc::commands::set_account_subtype,
         ipc::commands::set_account_note,

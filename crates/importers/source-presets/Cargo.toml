@@ -1,0 +1,18 @@
+[package]
+name = "source-presets"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Compile-time SourcePreset registrations for migrating from other personal-finance apps (personal-cfo-gvidg): one module per source app (YNAB, Monarch Money, Copilot Money, ...), each a set of hints over the generic CSV importer. Pure (no DB/network/IPC), same shape as csv-importer/ofx-importer."
+
+# Pure parsing crate — no database, async runtime, or Tauri (CI-enforced for
+# crates/importers/*), same rule csv-importer/ofx-importer already follow.
+[dependencies]
+importer-core = { path = "../importer-core" }
+
+[dev-dependencies]
+csv-importer = { path = "../csv-importer" }
+core-money = { path = "../../core-money" }
