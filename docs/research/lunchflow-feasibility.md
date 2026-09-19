@@ -9,7 +9,7 @@
   its public docs (lunchflow.app/docs, mirrored at lunchflow.mintlify.app), and its
   `llms.txt` doc index. Every claim below is a public-page fetch with the URL and the
   date fetched (2026-09-18 unless noted). **Tier: Public per ADR 0082** — the affiliate
-  program's commission/payout terms and the demand-test count live in
+  program's economics and the demand-test count live in
   `dohflow/internal`'s `docs/research/lunchflow-affiliate.md` instead of here; see that
   file for §(e).
 - **What this doc does NOT establish:** several claims below need a real (owner-only)
@@ -44,7 +44,7 @@ Platform API (it would misleadingly suggest DohFlow needs a registered app, whic
 does not).
 
 **Unresolved from public pages, owner-verify:** which plan tier(s) actually expose the
-"create an API destination" option in the live dashboard. The pricing page
+"create an API destination" option in the live dashboard. LunchFlow's own website
 (lunchflow.app, fetched 2026-09-18) describes the Individual plan ($34.99/yr) as
 "sync to unlimited destinations" without naming API access explicitly, while a
 separate marketing page (lunchflow.app/features/api-integration) states "all plans
@@ -56,28 +56,66 @@ checking the dashboard directly** — see "Open items for the owner."
 
 ## (b) ToS / ecosystem fit
 
-**Not independently verifiable from public pages.** lunchflow.app/terms and
-lunchflow.app/acceptable-use both render their substantive legal text client-side —
-every fetch of these two URLs (2026-09-18, three attempts each) returned only page
-navigation and footer links, no policy body text. This is a tooling limitation
-(the fetcher does not execute the page's JavaScript), not a finding that the pages
-are empty — visiting either URL in a real browser will show real content.
+**Resolved.** lunchflow.app/terms and lunchflow.app/acceptable-use both render their
+substantive legal text client-side, so this session's automated fetches only returned
+page navigation (2026-09-18, three attempts each). The owner read both in a browser
+and provided the full text for review (2026-09-18, "Last updated 24 August 2026" per
+both documents' own headers).
 
-**What is confirmed:** LunchFlow explicitly documents itself as a sync/aggregation
-layer for third-party destinations — its own docs list SimpleFIN Bridge, Actual
-Budget, Firefly III, Lunch Money, YNAB, Google Sheets, and CSV/OFX files as first-
-class "destinations" (lunchflow.app/integrations, fetched 2026-09-18). A service
-built around "connect this to other apps" as its core pitch is a strong prior against
-a ToS that prohibits third-party clients reading a user's own data via their own key
-— but that is an inference, not a citation, and does not substitute for actually
-reading §(b)'s clauses.
+**No clause blocks a third-party client using a user's own self-service API key.**
+Neither document contains a "Third-Party Applications" or "API Access" section at
+all. The clauses that could plausibly apply, read precisely:
 
-**Data processing location:** not found on any public page fetched. LunchFlow's docs
-mention region coverage (US, Canada, Brazil, EU, UK, 30+ countries per its own
-marketing) via multiple regional sub-aggregators (SnapTrade, MX, Finicity, Pluggy
-named explicitly for holdings support — lunchflow.app/docs, fetched 2026-09-18), which
-implies no single home region for processing, but this is not a citation for where
-LunchFlow itself processes or stores data.
+- "Transfer, distribute, or 'mirror' any part of our Services' **Materials**... without
+  explicit authorisation" and "decompile, or reverse engineer any Materials, software,
+  or content" — the Terms define **"Materials"** narrowly as "content provided,
+  generated, or made available for or in relation to our Services," i.e. LunchFlow's
+  own site/software/content. A user's own transaction data flowing through a
+  documented, self-service API endpoint is not "LunchFlow's Materials," and using a
+  published API as documented is not "reverse engineering" it.
+- "Use automated scripts or technologies... to access, scrape, or extract data from
+  our Services **without explicit consent from us**" — LunchFlow's own docs publicly
+  document the Personal API specifically for programmatic access; publishing a
+  self-service API is the explicit consent this clause requires. This targets
+  unauthorized scraping of the website/app, not documented API use.
+- The Acceptable Use Policy's "Fair use" clause ("business as usual... if your use is
+  considered excessive, additional fees may be charged or capacity restricted") is a
+  soft rate-limit, consistent with §(c)'s finding that no hard numeric rate limit is
+  published anywhere. `r2pow`'s adapter should poll conservatively (on-vault-open +
+  manual refresh, matching SimpleFIN's own pattern) rather than assume any specific
+  request budget.
+- The brand-use clause ("you may refer to our company name and brand in a factual and
+  truthful manner... must not use our name, logo, trademarks... in any way that
+  implies endorsement, sponsorship, or affiliation... without prior written consent")
+  is a real constraint for future site/help copy (`personal-cfo-wk0iv`): naming
+  LunchFlow factually ("connect via LunchFlow") is fine; using their logo is not,
+  without separately checking the affiliate program's brand-asset permissions.
+
+**Data processing location:** not stated in either document. The company is **Zen Labs
+LTD**, UK-registered (company no. 16061160, VAT ID EU372096652), trading as Lunch
+Flow — UK governing law and dispute resolution apply to the LunchFlow-customer
+relationship, but this does not state where the aggregated financial data itself is
+processed or stored. Still unresolved; not blocking, since DohFlow's own posture (no
+DohFlow server, connector providers are independent controllers — the same framing
+`personal-cfo-s3keh`'s privacy-page work already uses for SimpleFIN) does not depend
+on knowing LunchFlow's specific processing region.
+
+**Notable, non-blocking oddity:** the live Terms contain two unresolved template
+placeholders where real values should be — the liability cap reads "the greater of
+(a) the total amounts paid by you to us... or (b) `mpkwali0-x9idrhsjr8a`" and the
+pre-litigation negotiation window reads "within `mp6oadoc-a52vai8iv24` days." Both
+look like an unfilled legal-document-generator variable, not real contract terms.
+Not something that affects DohFlow's integration (DohFlow is not a party to this
+contract — the user is), but worth knowing: this is evidence of a small operation
+running templated legal docs, in the same spirit as SimpleFIN's own "single small
+operator" risk noted below, not a reason to distrust the service technically.
+
+**Ecosystem fit, otherwise confirmed:** LunchFlow explicitly documents itself as a
+sync/aggregation layer for third-party destinations — its own docs list SimpleFIN
+Bridge, Actual Budget, Firefly III, Lunch Money, YNAB, Google Sheets, and CSV/OFX
+files as first-class "destinations" (lunchflow.app/integrations, fetched
+2026-09-18). Nothing in the read Terms or Acceptable Use Policy contradicts this
+being the intended use of the Personal API.
 
 ## (c) Data shape
 
@@ -113,8 +151,8 @@ not exist publicly.
   Includes 2 connections; additional connections cost **$10.00 each** beyond the
   included pair (lunchflow.app, fetched 2026-09-18).
 - **[U] resolved partially, one clause still open:** the plan §22 open question was
-  "the period of '$10.00 per extra connection.'" Every public page found (pricing page,
-  marketing copy, three independent web searches) states the figure as "$10.00 per
+  "the period of '$10.00 per extra connection.'" Every public page found (the LunchFlow
+  homepage, marketing copy, three independent web searches) states the figure as "$10.00 per
   extra connection" with **no time unit attached anywhere** — not "$10/month" or
   "$10/year." Given the base plan itself is quoted as an annual figure ($34.99/yr) with
   a monthly-equivalent shown alongside it, and the extra-connection charge is not shown
@@ -124,9 +162,9 @@ not exist publicly.
   **Unresolvable from public pages; the actual checkout flow (trial account, adding a
   third connection) is the only way to see the real billing cadence** — owner action.
 - **7-day free trial** confirmed (lunchflow.app, fetched 2026-09-18).
-- **Developer/Team plan:** "custom pricing," contact-sales model — not needed, since
+- **Developer/Team plan:** no published self-serve cost, a contact-sales model — not needed, since
   the Personal API (§a) does not require this tier. No further research spent here.
-- **Currency-account datum for C.7a:** LunchFlow's pricing page itself offers pricing
+- **Currency-account datum for C.7a:** LunchFlow's own website itself lists its cost
   in GBP, USD, or EUR (fetched 2026-09-18) and the service aggregates via US-market
   aggregators (SnapTrade, MX, Finicity) among its regional set — consistent with a US
   household on US institutions getting USD-denominated accounts through LunchFlow, the
@@ -231,8 +269,8 @@ has. But neither path should wait on `r2pow` — they cost nothing to document t
 These cannot be completed by an agent session — no account creation, no credential
 entry, no reading of logged-in-only pages:
 
-1. **Create a LunchFlow trial account** (7-day free trial, no card required per the
-   pricing page) and confirm whether the Individual plan's dashboard actually shows
+1. **Create a LunchFlow trial account** (7-day free trial, no card required per
+   LunchFlow's own website) and confirm whether the Individual plan's dashboard actually shows
    the "create an API destination" option, or whether it's gated to Developer/Team.
    Resolves §a's open question.
 2. **Connect at least one bank/brokerage account** in the trial, then:
@@ -247,14 +285,11 @@ entry, no reading of logged-in-only pages:
      parse.
    - Add a third connection and check the actual $10 charge's billing cadence
      (monthly vs. annual) shown at checkout — resolves §d's remaining [U].
-3. **Read `lunchflow.app/terms` and `/acceptable-use` in an actual browser** (both
-   render client-side; this session's automated fetches could not retrieve the body
-   text) — confirm no clause prohibits third-party clients reading a user's own data
-   via their own key, and note any anti-aggregation/redistribution language.
-4. **Log into `lunchflow.affonso.io`'s affiliate application** and read the actual
-   commission/payout/disclosure terms — see `dohflow/internal`'s
-   `docs/research/lunchflow-affiliate.md` for the exact questions to answer there and
-   to record the D15 decision.
+3. ~~Read `lunchflow.app/terms` and `/acceptable-use` in an actual browser~~ — **done,
+   2026-09-18.** No blocking clause found; see §(b) above.
+4. ~~Log into `lunchflow.affonso.io`'s affiliate application~~ — **done, 2026-09-18.**
+   See `dohflow/internal`'s `docs/research/lunchflow-affiliate.md` for the answers and
+   the finalized D15 decision.
 5. **Choose the demand-test instrument** (a GitHub Discussion thread on
    `dohflow/dohflow`, and/or an issue-label prompt) once Part 2's help content is
    merged, and record the link + baseline count + date on `personal-cfo-hdk50`'s notes.
