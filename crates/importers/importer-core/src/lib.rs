@@ -503,6 +503,21 @@ pub trait SourcePreset: Sync {
     /// frontend's own link-check gates do that.
     fn help_slug(&self) -> &'static str;
 
+    /// Whether `help_slug`'s guide is actually LIVE on the public site —
+    /// distinct from the slug existing (personal-cfo-gvidg review finding
+    /// F1, PR #15). A preset can exist (and be genuinely useful for
+    /// skipping/pre-filling the mapping step) before its migrate guide is
+    /// ready to publish; the guide is a content/product-sequencing call
+    /// (`dohflow-site`'s own draft flag), separate from this crate's own
+    /// release. Defaults to `false` so a preset author must explicitly opt
+    /// in once the guide is confirmed live — the failure mode of forgetting
+    /// to flip this is "no guide link shown" (a minor UX gap), not "the app
+    /// links users to a page marked draft" (the bug this default prevents).
+    /// The frontend must not render a guide link when this is `false`.
+    fn help_published(&self) -> bool {
+        false
+    }
+
     /// A synthesized fixture (never a real user file) exercising this
     /// preset's known shape and quirks, in the source's own documented
     /// export format — required so the preset test harness

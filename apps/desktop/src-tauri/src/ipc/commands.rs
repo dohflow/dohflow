@@ -1064,6 +1064,7 @@ pub fn list_source_presets_impl(_state: &AppState) -> Vec<SourcePresetDto> {
                     &hints.column_mapping.unwrap_or_default(),
                 ),
                 help_slug: preset.help_slug().to_owned(),
+                help_published: preset.help_published(),
             }
         })
         .collect()

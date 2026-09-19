@@ -79,6 +79,19 @@ impl SourcePreset for Ynab {
         "move-from-ynab"
     }
 
+    fn help_published(&self) -> bool {
+        // dohflow-site's src/content/migrate/move-from-ynab.md is `draft:
+        // true` as of this writing, per the owner's explicit product-
+        // sequencing call in personal-cfo-y0o0x's PR #48 review thread:
+        // "build out robust migration mechanisms in the app first, then we
+        // can come out with these." This preset (the mechanism) shipping is
+        // exactly what unblocks that "then" -- but publishing the guide
+        // itself is still a separate, owner/tulv decision. Flip to `true`
+        // only once that file's draft flag actually flips on dohflow-site
+        // main (personal-cfo-gvidg review finding F1, PR #15).
+        false
+    }
+
     fn fixture_csv(&self) -> &'static str {
         // Synthesized, never a real export. Exercises: two distinct
         // accounts (AccountColumn), a category group + category combining,
@@ -148,5 +161,15 @@ mod tests {
             "a clean fixture should parse with no warnings, got {:?}",
             batch.warnings
         );
+    }
+
+    #[test]
+    fn help_guide_is_not_marked_published_while_the_site_page_is_still_draft() {
+        // Regression guard for personal-cfo-gvidg review finding F1 (PR
+        // #15): the frontend must not be able to render a guide link for
+        // this preset until dohflow-site's move-from-ynab.md actually
+        // publishes. Flip this assertion in the SAME commit that flips
+        // that file's draft flag -- not before.
+        assert!(!Ynab.help_published());
     }
 }

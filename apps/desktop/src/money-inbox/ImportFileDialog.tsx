@@ -338,7 +338,12 @@ export function ImportFileDialog({
                 </div>
               </details>
 
-            {selectedPreset && (
+            {/* Only when the guide is actually live (personal-cfo-gvidg
+                review finding F1, PR #15): help_slug existing does not mean
+                the page is published, and linking to a draft page would
+                make it effectively discoverable, defeating the point of it
+                being a draft. */}
+            {selectedPreset?.help_published && (
               <p className="text-xs text-muted-foreground">
                 <button
                   type="button"

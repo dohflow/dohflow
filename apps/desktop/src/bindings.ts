@@ -1946,6 +1946,12 @@ export type SourcePresetDto = {
 	 */
 	column_mapping: ColumnMappingDto,
 	help_slug: string,
+	/**
+	 *  Whether `help_slug`'s guide is actually live on the public site
+	 *  (personal-cfo-gvidg review finding F1, PR #15) — the frontend must
+	 *  not render a guide link when this is `false`.
+	 */
+	help_published: boolean,
 };
 
 /**

@@ -65,6 +65,11 @@ function preset(over: Partial<SourcePresetDto> = {}): SourcePresetDto {
       memo: "Memo",
     },
     help_slug: "move-from-ynab",
+    // Matches the real YNAB preset's own default (personal-cfo-gvidg review
+    // finding F1, PR #15): a guide slug existing does not mean the page is
+    // published. Tests that specifically cover the guide link opt in with
+    // `preset({ help_published: true })`.
+    help_published: false,
     ...over,
   };
 }
@@ -297,16 +302,46 @@ it("skips the mapping step when a chosen preset's columns fully match the file",
   // Every column the preset declared was found — nothing to review, the
   // mapping section stays collapsed (no "Map Amount" etc. visible).
   expect(screen.queryByLabelText("Map Date (posted)")).not.toBeInTheDocument();
-  // The migrate guide link appears once a preset is chosen.
-  expect(
-    screen.getByRole("button", { name: /full guide: moving from ynab/i }),
-  ).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: /^import$/i }));
   await waitFor(() => expect(mocks.importBatch).toHaveBeenCalledTimes(1));
   expect(mocks.importBatch).toHaveBeenCalledWith(
     expect.objectContaining({ preset_id: "ynab" }),
   );
+});
+
+// personal-cfo-gvidg review finding F1 (PR #15): a preset's help_slug
+// existing does not mean the page is published — the app must never offer a
+// user-reachable link to a page marked draft on the site.
+it("never shows a guide link for a preset whose guide is not published", async () => {
+  mocks.listSourcePresets.mockResolvedValue([preset({ help_published: false })]);
+  const { container } = renderWithClient(
+    <ImportFileDialog accounts={[account()]} onClose={vi.fn()} />,
+  );
+  const presetPicker = await screen.findByLabelText("Import from");
+  fireEvent.change(presetPicker, { target: { value: "ynab" } });
+
+  const input = container.querySelector(
+    'input[type="file"]',
+  ) as HTMLInputElement;
+  Object.defineProperty(input, "files", { value: [csvFile()] });
+  fireEvent.change(input);
+  await screen.findByText("statement.csv");
+
+  expect(
+    screen.queryByRole("button", { name: /full guide/i }),
+  ).not.toBeInTheDocument();
+});
+
+it("shows the guide link once a preset's guide is published", async () => {
+  mocks.listSourcePresets.mockResolvedValue([preset({ help_published: true })]);
+  renderWithClient(<ImportFileDialog accounts={[account()]} onClose={vi.fn()} />);
+  const presetPicker = await screen.findByLabelText("Import from");
+  fireEvent.change(presetPicker, { target: { value: "ynab" } });
+
+  expect(
+    await screen.findByRole("button", { name: /full guide: moving from ynab/i }),
+  ).toBeInTheDocument();
 });
 
 it("pre-fills the mapping and leaves a gap visible when a preset's columns partially match", async () => {

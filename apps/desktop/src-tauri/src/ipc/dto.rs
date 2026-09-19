@@ -1422,6 +1422,10 @@ pub struct SourcePresetDto {
     /// skipped or needs pre-filling with a gap shown.
     pub column_mapping: ColumnMappingDto,
     pub help_slug: String,
+    /// Whether `help_slug`'s guide is actually live on the public site
+    /// (personal-cfo-gvidg review finding F1, PR #15) — the frontend must
+    /// not render a guide link when this is `false`.
+    pub help_published: bool,
 }
 
 /// Input for importing a file through the ingestion pipeline (personal-cfo-cu8).
