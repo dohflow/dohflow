@@ -36,7 +36,7 @@ fn dev_channel_setup_never_touches_the_release_directory() {
     let before = fingerprint(&release_vault);
 
     // Exactly what `lib.rs`'s `setup()` does for a dev-channel run.
-    let dev_dir = resolve_data_dir("dev", release_dir.clone(), None);
+    let dev_dir = resolve_data_dir("dev", true, release_dir.clone(), None);
     fs::create_dir_all(&dev_dir).unwrap();
     // And exactly what opening/creating a fresh vault there would do.
     fs::write(
@@ -73,6 +73,35 @@ fn release_channel_setup_ignores_a_stray_override_env_shape() {
     let stray_override = support_root.path().join("leftover-dev-override");
     fs::create_dir_all(&release_dir).unwrap();
 
-    let resolved = resolve_data_dir("release", release_dir.clone(), Some(stray_override));
+    let resolved = resolve_data_dir("release", false, release_dir.clone(), Some(stray_override));
     assert_eq!(resolved, release_dir);
+}
+
+#[test]
+fn a_debug_build_mislabeled_as_a_non_dev_channel_still_never_touches_the_release_directory() {
+    // personal-cfo-qrh3t, ADR 0070 addendum: the gap this closes. Before it,
+    // `PCFO_BUILD_CHANNEL=beta pnpm tauri dev` — a debug-profile binary whose
+    // channel label is not "dev" — was treated as release and pointed
+    // straight at the real vault directory. Same filesystem-level proof as
+    // `dev_channel_setup_never_touches_the_release_directory` above, but
+    // with the channel label that used to leak through.
+    let support_root = tempfile::tempdir().expect("temp dir");
+    let release_dir = support_root.path().join("ai.personalcfo.desktop");
+    fs::create_dir_all(&release_dir).unwrap();
+
+    let release_vault = release_dir.join("vault.db");
+    fs::write(&release_vault, b"pretend-encrypted-vault-bytes-v1").unwrap();
+    let before = fingerprint(&release_vault);
+
+    let dev_dir = resolve_data_dir("beta", true, release_dir.clone(), None);
+    fs::create_dir_all(&dev_dir).unwrap();
+    fs::write(
+        dev_dir.join("vault.db"),
+        b"a-completely-different-dev-vault",
+    )
+    .unwrap();
+
+    let after = fingerprint(&release_vault);
+    assert_eq!(before, after, "the release vault's bytes must be untouched");
+    assert_ne!(dev_dir, release_dir);
 }

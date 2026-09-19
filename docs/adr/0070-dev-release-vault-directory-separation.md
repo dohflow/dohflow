@@ -130,24 +130,80 @@ today.
 - **Negative / accepted.** Nothing stops two `tauri dev` processes from
   colliding with each other inside the dev directory; only the dev-vs-release
   boundary is closed here. Tracked as a follow-up (decision 4).
-- **Negative / accepted (found in review).** The property depends on the
-  `PCFO_BUILD_CHANNEL` *label*, not on the actual Cargo profile. `build.rs`
-  lets an explicit `PCFO_BUILD_CHANNEL` win over its `PROFILE`-derived
-  default so a beta/pre-release pipeline can label itself (see `update.rs`'s
-  doc comment) — so `PCFO_BUILD_CHANNEL=beta pnpm tauri dev` compiles a debug
-  binary with `channel == "beta"`, which is not `"dev"`, which
-  `resolve_data_dir` therefore treats as release and points at the real
-  vault directory. `data_dir`'s own `unknown_channel_is_treated_as_release`
-  test documents this deliberately. In practice this requires deliberately
-  combining an explicit non-`"dev"` channel override with the interactive
-  dev server, which is not how `PCFO_BUILD_CHANNEL` is described or used
-  anywhere in this repo today (`build.rs`'s stated purpose for the override
-  is labeling a **release**-lineage build, not the dev server) — but it is
-  possible, and the safety property is conditional on that label rather than
-  unconditional. Hardening the property so it does not depend on a label at
-  all (for example, keying off the Cargo profile directly, or narrowing what
-  counts as a "release" channel to an allow-list) is a design change and the
-  owner's call, not made in this PR.
+- **Closed by addendum below (`personal-cfo-qrh3t`, 2026-09-19).** The
+  property used to depend on the `PCFO_BUILD_CHANNEL` *label*, not on the
+  actual Cargo profile — see the addendum for the decision and what changed.
 - **Follow-up beads to file once this ADR is Accepted:** auto-seed the dev
   directory with the Polish Demo vault fixture; concurrent-instance
   detection/locking for the dev profile.
+
+## Addendum (2026-09-19, `personal-cfo-qrh3t`) — closing the Cargo-profile gap
+
+**The residual risk this closes.** `build.rs` lets an explicit
+`PCFO_BUILD_CHANNEL` win over its `PROFILE`-derived default so a beta/
+pre-release pipeline can label itself (see `update.rs`'s doc comment) — so
+`PCFO_BUILD_CHANNEL=beta pnpm tauri dev` compiled a debug binary with
+`channel == "beta"`, which is not `"dev"`, which `resolve_data_dir` then
+treated as release and pointed at the real vault directory. `data_dir`'s own
+`unknown_channel_is_treated_as_release` test documented this deliberately.
+This required deliberately combining an explicit non-`"dev"` channel override
+with the interactive dev server — not how `PCFO_BUILD_CHANNEL` is described
+or used anywhere in this repo today — but it was possible, and the safety
+property was conditional on the label rather than unconditional.
+
+**The question decided.** Should a debug-profile binary ever be able to
+resolve to the release vault directory, whatever it calls itself? The owner's
+answer, in chat, 2026-09-19: no.
+
+**Decision: gate the release path on the Cargo profile as well as the
+channel label.** `resolve_data_dir` gained an `is_debug_build: bool`
+parameter (the caller passes `cfg!(debug_assertions)`); the release path now
+requires **both** a non-`"dev"` channel label **and** a release-profile
+binary:
+
+```text
+resolve_data_dir(channel: &str, is_debug_build: bool, app_data_dir: PathBuf, override_dir: Option<PathBuf>) -> PathBuf
+  if channel != "dev" and not is_debug_build:
+      return app_data_dir                      // unchanged from decision 1/2 above
+  if let Some(dir) = override_dir:
+      return dir
+  return sibling of app_data_dir named "<last-component>-dev"
+```
+
+**Fail-safe direction preserved, not inverted.** A release-profile binary's
+behavior is exactly unchanged — decision 2 above (a release build never even
+consults `PCFO_DATA_DIR`) still holds verbatim, since `is_debug_build` is
+`false` for it and the original `channel != "dev"` check alone decides. Only
+the debug-profile side changes: it now *always* gets the dev path,
+regardless of what its channel label claims. No legitimate debug-profile
+release-lineage artifact exists today — `release.sh` builds the release
+profile, and the CI Intel smoke drill builds release too — so this closes
+the gap with no known legitimate case it needs to carve out.
+
+**Alternatives considered and rejected**, both from `personal-cfo-qrh3t`'s
+own candidate list:
+
+- **Narrow "release" to an explicit allow-list** (e.g. exactly `"release"`,
+  everything else falls to dev). **Rejected**: this inverts the fail-safe
+  direction. A typo or an unrecognized label on a REAL release-profile build
+  would then send it to the *dev* directory instead of the real one — a
+  different, arguably worse failure mode than the one being closed, since it
+  risks a real user's release install silently behaving as if freshly
+  installed (empty dev-sibling vault) rather than a dev build silently
+  reaching production data.
+- **Accept as-is, no code change.** **Rejected**: the owner judged the
+  trigger worth closing rather than accepting as a documented residual,
+  given it concerns a safety property over real financial data
+  (AGENTS.md §15) rather than developer convenience.
+
+**What did not change.** `resolve_data_dir`'s existing tests for the
+release-profile side (`release_returns_app_data_dir_unchanged`,
+`release_ignores_override`) are untouched in substance — they now pass
+`is_debug_build: false` explicitly. `unknown_channel_is_treated_as_release`
+is renamed `unknown_channel_on_a_release_profile_build_is_treated_as_release`
+and narrowed to `is_debug_build: false`, since that is the specific claim it
+was ever entitled to make — a NEW test,
+`a_debug_profile_build_never_resolves_to_release_regardless_of_channel_label`,
+covers the case that test used to be misread as covering. A matching
+filesystem-level integration test was added in
+`tests/dev_release_directory_separation.rs`.
