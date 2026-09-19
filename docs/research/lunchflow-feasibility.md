@@ -12,9 +12,12 @@
   program's economics and the demand-test count live in
   `dohflow/internal`'s `docs/research/lunchflow-affiliate.md` instead of here; see that
   file for §(e).
-- **What this doc does NOT establish:** several claims below need a real (owner-only)
-  LunchFlow account, a live API key, and a connected bank to verify — those are called
-  out explicitly rather than guessed at. See "Open items for the owner" at the end.
+- **Owner-verified live, 2026-09-18:** every claim that originally needed a real
+  LunchFlow account, a live API key, and a connected bank has since been checked
+  against the live product — auth tier, cost structure, data-shape existence, the
+  OFX/CSV import round trip, and the SimpleFIN Bridge fallback are all confirmed
+  working, not just read from documentation. See "Open items for the owner" at the
+  end for the full before/after list.
 
 ## (a) Auth model — classified against ADR 0004
 
@@ -43,16 +46,13 @@ should use the Personal API only, and the doc/help copy should never mention the
 Platform API (it would misleadingly suggest DohFlow needs a registered app, which it
 does not).
 
-**Unresolved from public pages, owner-verify:** which plan tier(s) actually expose the
-"create an API destination" option in the live dashboard. LunchFlow's own website
-(lunchflow.app, fetched 2026-09-18) describes the Individual plan ($34.99/yr) as
-"sync to unlimited destinations" without naming API access explicitly, while a
-separate marketing page (lunchflow.app/features/api-integration) states "all plans
-include full API access with generous rate limits" and a third page implies the
-"RESTful API with OAuth connect flow" is a Developer/Team-plan feature. These three
-public pages do not agree, and none of them distinguish Personal API from Platform
-API when making that claim. **This resolves only by creating a trial account and
-checking the dashboard directly** — see "Open items for the owner."
+**Resolved, owner-verified 2026-09-18.** The public pages disagreed with each other
+(see prior draft of this section), but the live dashboard settles it: the owner
+created a trial account on the **$5.49/month Individual plan** (4 connections
+included, billed monthly — an option not shown on the pages fetched
+earlier, which only surfaced the $2.92/mo-equivalent annual option; see §d) and
+confirmed the "create an API destination" option is present and works on this plan.
+Personal API access is not gated to the Developer/Team tier.
 
 ## (b) ToS / ecosystem fit
 
@@ -124,10 +124,17 @@ Confirmed endpoints (Personal API, `lunchflow.app/docs/llms.txt` index, fetched
 
 | Entity | Endpoint | Stable id | Currency | Date fields | Pending/posted | Pagination | Rate limit |
 |---|---|---|---|---|---|---|---|
-| Accounts | `GET /accounts` | not documented publicly | not documented publicly | n/a | n/a | not documented | not documented |
-| Transactions | `GET /accounts/{id}/transactions` | not documented publicly | not documented publicly | `from`/`to` date-range filter confirmed; no field names for posted/effective date given | confirmed distinct: `include_pending=true` toggles inclusion of "pending (unposted)" transactions — the API distinguishes the two states | no cursor/limit parameter documented; `from`/`to` is the only filter confirmed | not documented |
+| Accounts | `GET /accounts` | **confirmed present** (owner-verified live, 2026-09-18 — exact field name not yet recorded) | **confirmed USD** for a US account (owner-verified live) | n/a | n/a | not documented | not documented |
+| Transactions | `GET /accounts/{id}/transactions` | **confirmed present** (owner-verified live — exact field name not yet recorded) | not independently confirmed per-row (account-level currency observed; a multi-currency account's per-transaction field not tested) | `from`/`to` date-range filter confirmed; no field names for posted/effective date given | confirmed distinct: `include_pending=true` toggles inclusion of "pending (unposted)" transactions — the API distinguishes the two states | no cursor/limit parameter documented; `from`/`to` is the only filter confirmed | not documented |
 | Balances | `GET /accounts/{id}/balance` | n/a | not documented publicly | as-of timestamp not documented | n/a | n/a | not documented |
 | Holdings | `GET /accounts/{id}/holdings` | not documented publicly | not documented publicly | not documented | n/a | not documented | not documented |
+
+**Owner-verified live, 2026-09-18:** connected a real US bank account through the
+trial and confirmed the API returns stable ids and USD-denominated amounts as
+expected. Exact field names (whether the id key is `id`, `account_id`, etc.) and
+the amount sign convention were not recorded during this pass — worth a quick
+follow-up when `r2pow` actually starts implementation, but no longer a GO/NO-GO
+blocker since the shape (stable id + real currency) is now confirmed to exist.
 
 Holdings are explicitly scoped: "only available for accounts from providers that
 support holdings (SnapTrade, MX, Finicity, Pluggy)" (llms.txt, fetched 2026-09-18) —
@@ -145,23 +152,25 @@ not exist publicly.
 
 ## (d) Cost
 
-- **Individual plan:** $2.92/month, or $34.99/year billed annually (LunchFlow's own
-  page frames this as a "47% discount," though $2.92 × 12 = $35.04 — effectively flat,
-  not a real discount; noted for accuracy, not a claim DohFlow repeats anywhere).
-  Includes 2 connections; additional connections cost **$10.00 each** beyond the
-  included pair (lunchflow.app, fetched 2026-09-18).
-- **[U] resolved partially, one clause still open:** the plan §22 open question was
-  "the period of '$10.00 per extra connection.'" Every public page found (the LunchFlow
-  homepage, marketing copy, three independent web searches) states the figure as "$10.00 per
-  extra connection" with **no time unit attached anywhere** — not "$10/month" or
-  "$10/year." Given the base plan itself is quoted as an annual figure ($34.99/yr) with
-  a monthly-equivalent shown alongside it, and the extra-connection charge is not shown
-  with a separate cadence, the most likely reading is that $10.00 is **also an annual,
-  per-connection add-on** (i.e., $34.99 + $10.00 × extra connections, billed yearly) —
-  but this is an inference, not a citation, and the doc must not assert it as fact.
-  **Unresolvable from public pages; the actual checkout flow (trial account, adding a
-  third connection) is the only way to see the real billing cadence** — owner action.
-- **7-day free trial** confirmed (lunchflow.app, fetched 2026-09-18).
+**Two Individual billing options exist** — public pages only surfaced one of them;
+the second was found by the owner in the live checkout flow, 2026-09-18:
+
+- **Annual billing:** $34.99/year, 2 connections included, additional connections
+  **$10.00/year each** (lunchflow.app, fetched 2026-09-18; billing cadence for the
+  add-on confirmed live — see below).
+- **Monthly billing:** **$5.49/month**, 4 connections included, additional
+  connections **$1.00/month each** — an option not shown on any public page
+  this doc's earlier research pass found (owner-verified live checkout, 2026-09-18).
+- **7-day free trial**, no card required, confirmed on both (lunchflow.app, fetched
+  2026-09-18; owner used it live).
+
+**[U] resolved, owner-verified live, 2026-09-18:** the plan §22 open question was
+"the period of '$10.00 per extra connection.'" No public page stated a time unit.
+Confirmed at checkout: **the $10.00 figure is the annual plan's per-connection
+add-on** ($10.00/year); the monthly plan's equivalent add-on is $1.00/month per
+extra connection — consistent with each other (12 × $1.00 ≈ $10.00/yr) and with the
+base-plan ratio ($5.49 × 12 = $65.88/yr vs. $34.99/yr — the monthly option carries
+no annual discount, same shape as the base plan's own annual-vs-monthly figures).
 - **Developer/Team plan:** no published self-serve cost, a contact-sales model — not needed, since
   the Personal API (§a) does not require this tier. No further research spent here.
 - **Currency-account datum for C.7a:** LunchFlow's own website itself lists its cost
@@ -201,10 +210,13 @@ fetched 2026-09-18):
   limits," fetched 2026-09-18) — this is materially better than a rate-limited API for
   a low-frequency manual workflow.
 - **No publicly downloadable sample file exists** (confirmed by direct fetch attempts
-  and three targeted web searches, 2026-09-18) — getting a real export to test against
-  DohFlow's importers requires an actual account with at least one connected account,
-  which is owner-only (see below). AC #5's "vendor's published sample" alternative is
-  not available for LunchFlow; a real export is the only path.
+  and three targeted web searches, 2026-09-18) — AC #5's "vendor's published sample"
+  alternative was not available for LunchFlow; a real export was the only path.
+- **AC #5 satisfied, owner-verified 2026-09-18:** the owner exported both CSV and OFX
+  from a real connected account and imported each through DohFlow's file importer —
+  both **parsed correctly**. This resolves the FITID question above by demonstration:
+  whatever LunchFlow's OFX export carries, it round-tripped through DohFlow's existing
+  OFX importer (`personal-cfo-fr79`) without a parse failure. No bug bead needed.
 
 ### Bonus path found during this research: LunchFlow as a SimpleFIN Bridge
 
@@ -229,6 +241,12 @@ Bridge itself is US-only via MX) can link LunchFlow as a SimpleFIN destination a
 paste that token into DohFlow's existing "Connect via SimpleFIN" flow — no adapter,
 no registry entry, no new crate.
 
+**Owner-verified end-to-end, 2026-09-18:** tested this exact flow live — created a
+SimpleFIN destination in the LunchFlow trial, generated the setup token, pasted it
+into DohFlow's existing SimpleFIN connect flow. Worked as documented. This is not a
+theoretical reading of LunchFlow's docs; it is a confirmed, working integration path
+today, with zero DohFlow code changes.
+
 This changes the shape of the VERDICT below: LunchFlow support does not have to wait
 on `r2pow` shipping. The SimpleFIN-Bridge-re-exposure path is a documentation-only
 change (a help article + `/help/known-limitations` line saying "non-US banks: connect
@@ -239,16 +257,18 @@ whether a dedicated Personal-API adapter (`r2pow`) is ever built.
 
 **GO for `personal-cfo-r2pow`**, sized **M** as the plan estimated, via the Personal
 API (§a) — user-token tier, no relay, no project-owned secret, same shape as the
-shipped SimpleFIN adapter. Assumptions `r2pow` inherits from this doc, all flagged
-"confirm against a live response" rather than asserted:
+shipped SimpleFIN adapter. Confidence in this verdict is now high: auth tier, ToS/AUP,
+data-shape existence (stable ids, real currency), and both zero-code fallback paths
+are all owner-verified live, not just read from documentation. Remaining assumptions
+`r2pow` inherits, narrower than before and no longer GO/NO-GO-relevant — implementation
+detail, not feasibility risk:
 
-- Stable id field names for accounts/transactions/holdings (§c) — unknown until a real
-  API response is inspected.
-- Amount sign convention and per-transaction currency field (§c) — unknown.
-- Rate limits and pagination beyond `from`/`to` date filtering (§c) — unknown; the
-  adapter's polling cadence cannot be finalized until this is confirmed.
-- Which plan tier(s) genuinely expose Personal API access in the live dashboard (§a) —
-  unknown; affects the cost line DohFlow's help copy quotes.
+- Exact field names for stable ids and the amount sign convention (§c) — existence
+  confirmed live; exact JSON shape not yet recorded. A five-minute check when
+  implementation starts, not a research gap.
+- Rate limits and pagination beyond `from`/`to` date filtering (§c) — still genuinely
+  undocumented anywhere, public or live-observed; the adapter's polling cadence should
+  default conservative (on-vault-open + manual refresh, §b) until this is known.
 
 **Independent of `r2pow`'s timeline, two zero-code paths exist today** and should be
 documented immediately (Part 2 of this bead):
@@ -266,30 +286,28 @@ has. But neither path should wait on `r2pow` — they cost nothing to document t
 
 ## Open items for the owner
 
-These cannot be completed by an agent session — no account creation, no credential
-entry, no reading of logged-in-only pages:
+All owner-only items from this doc's first draft are now resolved (2026-09-18):
 
-1. **Create a LunchFlow trial account** (7-day free trial, no card required per
-   LunchFlow's own website) and confirm whether the Individual plan's dashboard actually shows
-   the "create an API destination" option, or whether it's gated to Developer/Team.
-   Resolves §a's open question.
-2. **Connect at least one bank/brokerage account** in the trial, then:
-   - Generate a Personal API key and make one real request to each of the four
-     endpoints in §c's table; record the actual JSON field names for stable ids,
-     currency, amount sign, and pending/posted status, and any rate-limit response
-     headers.
-   - Generate a CSV and an OFX export, and run the OFX file through DohFlow's file
-     importer on a **test vault** (never a real vault) to confirm it parses — record
-     the parser result (parsed rows, warnings, dedupe behavior on a second import of
-     the same file) in this doc's §f. File a bug bead and link it here if it fails to
-     parse.
-   - Add a third connection and check the actual $10 charge's billing cadence
-     (monthly vs. annual) shown at checkout — resolves §d's remaining [U].
-3. ~~Read `lunchflow.app/terms` and `/acceptable-use` in an actual browser~~ — **done,
-   2026-09-18.** No blocking clause found; see §(b) above.
-4. ~~Log into `lunchflow.affonso.io`'s affiliate application~~ — **done, 2026-09-18.**
-   See `dohflow/internal`'s `docs/research/lunchflow-affiliate.md` for the answers and
-   the finalized D15 decision.
-5. **Choose the demand-test instrument** (a GitHub Discussion thread on
-   `dohflow/dohflow`, and/or an issue-label prompt) once Part 2's help content is
-   merged, and record the link + baseline count + date on `personal-cfo-hdk50`'s notes.
+1. ~~Create a LunchFlow trial account, confirm Personal API access~~ — **done.**
+   $5.49/mo plan, 4 connections, Personal API confirmed available. §a.
+2. ~~Connect a bank/brokerage account, inspect live API responses~~ — **done**
+   (stable ids + USD confirmed; exact field names still a five-minute follow-up at
+   `r2pow` implementation time, not a research gap). §c.
+3. ~~Export CSV/OFX and run through DohFlow's importer~~ — **done, both parsed
+   correctly.** §f.
+4. ~~Test the SimpleFIN Bridge re-exposure path end to end~~ — **done, worked as
+   documented.** §f.
+5. ~~Resolve the $10/extra-connection billing period~~ — **done**, and turned out
+   richer than expected: two separate billing options exist ($10/yr on annual,
+   $1/mo on monthly), not just one clarified cadence. §d.
+6. ~~Read `lunchflow.app/terms` and `/acceptable-use`~~ — **done.** No blocking
+   clause found. §b.
+7. ~~Log into the affiliate program, decide D15~~ — **done, finalized: take and
+   disclose.** `dohflow/internal`'s `docs/research/lunchflow-affiliate.md`.
+8. ~~Choose the demand-test instrument~~ — **done:**
+   [dohflow/dohflow#13](https://github.com/dohflow/dohflow/discussions/13), created
+   2026-09-18, baseline count 0 (thread just created).
+
+Nothing owner-only remains blocking this bead's close. The one open thread is
+`personal-cfo-r2pow`'s own implementation eventually recording the exact live JSON
+field names (§c) — routine implementation detail, tracked there, not here.
