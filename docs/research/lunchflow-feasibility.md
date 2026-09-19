@@ -49,10 +49,11 @@ does not).
 **Resolved, owner-verified 2026-09-18.** The public pages disagreed with each other
 (see prior draft of this section), but the live dashboard settles it: the owner
 created a trial account on the **$5.49/month Individual plan** (4 connections
-included, billed monthly — an option not shown on the pages fetched
-earlier, which only surfaced the $2.92/mo-equivalent annual option; see §d) and
-confirmed the "create an API destination" option is present and works on this plan.
-Personal API access is not gated to the Developer/Team tier.
+included, billed monthly — published at the cost section of lunchflow.app's homepage behind a
+Monthly/Yearly toggle; this doc's earlier research pass fetched the page's default
+state and never flipped the toggle, so it only recorded the Yearly figures; see §d)
+and confirmed the "create an API destination" option is present and works on this
+plan. Personal API access is not gated to the Developer/Team tier.
 
 ## (b) ToS / ecosystem fit
 
@@ -152,25 +153,33 @@ not exist publicly.
 
 ## (d) Cost
 
-**Two Individual billing options exist** — public pages only surfaced one of them;
-the second was found by the owner in the live checkout flow, 2026-09-18:
+**Two Individual billing options exist, both published at the cost section of lunchflow.app's homepage
+behind a Monthly/Yearly toggle.** This doc's earlier research pass fetched the
+page's default (Yearly) state and never flipped the toggle, so its first draft
+wrongly implied the Monthly option was undocumented/checkout-only — it is not; it
+is public, just one click away:
 
 - **Annual billing:** $34.99/year, 2 connections included, additional connections
-  **$10.00/year each** (lunchflow.app, fetched 2026-09-18; billing cadence for the
-  add-on confirmed live — see below).
+  **$10.00/year each** (the cost section of lunchflow.app's homepage, Yearly toggle state, fetched
+  2026-09-18; billing cadence for the add-on confirmed live — see below).
 - **Monthly billing:** **$5.49/month**, 4 connections included, additional
-  connections **$1.00/month each** — an option not shown on any public page
-  this doc's earlier research pass found (owner-verified live checkout, 2026-09-18).
-- **7-day free trial**, no card required, confirmed on both (lunchflow.app, fetched
-  2026-09-18; owner used it live).
+  connections **$1.00/month each** (the cost section of lunchflow.app's homepage, Monthly toggle state —
+  missed by this doc's first fetch pass, confirmed public via screenshot 2026-09-18).
+- **7-day free trial**, no card required, shown on both toggle states
+  (lunchflow.app, fetched 2026-09-18; owner also confirmed it live).
 
-**[U] resolved, owner-verified live, 2026-09-18:** the plan §22 open question was
-"the period of '$10.00 per extra connection.'" No public page stated a time unit.
-Confirmed at checkout: **the $10.00 figure is the annual plan's per-connection
-add-on** ($10.00/year); the monthly plan's equivalent add-on is $1.00/month per
-extra connection — consistent with each other (12 × $1.00 ≈ $10.00/yr) and with the
-base-plan ratio ($5.49 × 12 = $65.88/yr vs. $34.99/yr — the monthly option carries
-no annual discount, same shape as the base plan's own annual-vs-monthly figures).
+**[U] resolved, owner-verified live, 2026-09-18 — the toggle itself does not
+resolve this.** The plan §22 open question was "the period of '$10.00 per extra
+connection.'" Both toggle states show their add-on figure ("$10.00 per extra" on the
+Yearly card, "$1.00 per extra" on the Monthly card) **with no time unit printed on
+either card** — the cadence is implied only by which toggle state you're looking
+at, never stated in words. That the two figures are a real per-year/per-month pair,
+not two independently-costed tiers, is what live verification at checkout resolved,
+not something restated from the public page: **$10.00 is the annual add-on**;
+**$1.00/month is the monthly add-on** — consistent with each other
+(12 × $1.00 ≈ $10.00/yr) and with the base-plan ratio ($5.49 × 12 = $65.88/yr vs.
+$34.99/yr — the monthly option carries no annual discount, same shape as the base
+plan's own annual-vs-monthly figures).
 - **Developer/Team plan:** no published self-serve cost, a contact-sales model — not needed, since
   the Personal API (§a) does not require this tier. No further research spent here.
 - **Currency-account datum for C.7a:** LunchFlow's own website itself lists its cost
