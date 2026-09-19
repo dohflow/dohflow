@@ -258,15 +258,18 @@ pub fn run() {
             // A dev build (PCFO_BUILD_CHANNEL == "dev") never resolves to the
             // release identifier's own directory — ADR 0070, personal-cfo-he3xo.
             // Neither does a debug-profile build under ANY channel label
-            // (personal-cfo-qrh3t, ADR 0070 addendum) — `cfg!(debug_assertions)`
-            // is true for `cargo build`/`cargo run`/`tauri dev` and false for a
-            // `--release` build, so an explicit `PCFO_BUILD_CHANNEL=beta pnpm
-            // tauri dev` can no longer point a debug binary at the real vault.
-            // This is what keeps `pnpm tauri dev` from ever touching the real
-            // vault that /Applications/DohFlow.app holds.
-            let data_dir = data_dir::resolve_data_dir(
+            // (personal-cfo-qrh3t, ADR 0070 addendum) — `resolve_app_data_dir`
+            // is `resolve_data_dir` wired to the CURRENT build's own profile,
+            // so an explicit `PCFO_BUILD_CHANNEL=beta pnpm tauri dev` can no
+            // longer point a debug binary at the real vault. This is what
+            // keeps `pnpm tauri dev` from ever touching the real vault that
+            // /Applications/DohFlow.app holds. The profile check itself lives
+            // in `data_dir::resolve_app_data_dir`, not inline here, precisely
+            // so it has a test that can assert on it directly (personal-cfo-
+            // qrh3t review round 2) — this call site has nothing of its own
+            // left to get backwards.
+            let data_dir = data_dir::resolve_app_data_dir(
                 update::BUILD_CHANNEL,
-                cfg!(debug_assertions),
                 app.path().app_data_dir()?,
                 std::env::var("PCFO_DATA_DIR")
                     .ok()

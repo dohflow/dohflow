@@ -34,6 +34,36 @@ pub fn resolve_data_dir(
     override_dir.unwrap_or_else(|| dev_sibling(&app_data_dir))
 }
 
+/// [`resolve_data_dir`] wired to the CURRENT build's own profile — the one
+/// function `lib.rs`'s `setup()` actually calls.
+///
+/// This exists because `resolve_data_dir`'s `is_debug_build` parameter, taken
+/// on its own, is untestable at its real call site: `cfg!(debug_assertions)`
+/// is a compile-time expression with no runtime value to assert on from
+/// outside, so a plain call `resolve_data_dir(channel, cfg!(debug_assertions),
+/// ...)` inline in `setup()` left that one production wiring completely
+/// uncovered (personal-cfo-qrh3t review round 2) — inverting it either
+/// direction (`!cfg!(debug_assertions)`, or hardcoding `false`) passed the
+/// entire `apps/desktop/src-tauri` suite unchanged, silently reintroducing
+/// the bug this bead exists to fix or creating a new one (a shipped release
+/// build resolving to the dev directory instead).
+///
+/// Moving the `cfg!(debug_assertions)` expression IN HERE closes that gap:
+/// `cargo test` compiles this crate in the debug profile, so this module's
+/// own test (`resolve_app_data_dir_pins_the_debug_profile_it_is_actually_built_with`)
+/// can assert this function's behavior directly, and `setup()`'s call site
+/// is left with no boolean expression of its own left to invert — only
+/// plain parameter passthrough already covered by `resolve_data_dir`'s own
+/// tests.
+#[must_use]
+pub fn resolve_app_data_dir(
+    channel: &str,
+    app_data_dir: PathBuf,
+    override_dir: Option<PathBuf>,
+) -> PathBuf {
+    resolve_data_dir(channel, cfg!(debug_assertions), app_data_dir, override_dir)
+}
+
 /// `.../Application Support/ai.personalcfo.desktop` ->
 /// `.../Application Support/ai.personalcfo.desktop-dev`.
 fn dev_sibling(app_data_dir: &Path) -> PathBuf {
@@ -123,5 +153,28 @@ mod tests {
         // including the literal string "release".
         assert_ne!(resolve_data_dir("beta", true, base(), None), base());
         assert_ne!(resolve_data_dir("release", true, base(), None), base());
+    }
+
+    #[test]
+    fn resolve_app_data_dir_pins_the_debug_profile_it_is_actually_built_with() {
+        // personal-cfo-qrh3t review round 2: `resolve_data_dir`'s
+        // `is_debug_build` parameter was untested at its one real call site
+        // (`lib.rs`'s `setup()`, which passed a bare `cfg!(debug_assertions)`
+        // inline) — the review confirmed by mutation that inverting it either
+        // direction passed the entire suite. `resolve_app_data_dir` moves
+        // that expression into a function THIS test can assert on directly:
+        // `cargo test` compiles this crate in the debug profile, so a
+        // non-"dev" channel must still resolve to the dev sibling here. If
+        // `resolve_app_data_dir`'s internal `cfg!(debug_assertions)` were
+        // ever inverted (or hardcoded `false`), this assertion fails.
+        assert_ne!(resolve_app_data_dir("beta", base(), None), base());
+        assert_ne!(resolve_app_data_dir("release", base(), None), base());
+        // The release-profile direction is unaffected by this wrapper: a
+        // literal "release" channel with the (real, debug) test profile
+        // still resolves to dev only because the test binary IS debug —
+        // `resolve_data_dir`'s own tests above cover the release-profile
+        // case in isolation, which this wrapper cannot exercise from within
+        // a debug-profile test suite (there is no way to compile a release-
+        // profile unit test), so it is not re-asserted here.
     }
 }
