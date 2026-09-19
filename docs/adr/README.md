@@ -16,8 +16,11 @@ the sixty-three ADRs that predate ADR 0082 (all of them public; see ADR
 from 0082 onward states its own tier in its front matter, and that value must
 match this table.
 
-Numbers 0005, 0015, 0016, 0017, and 0019 were never assigned — the sequence
-simply skips them; that's a pre-existing gap, not an error.
+Numbers 0005, 0016, 0017, and 0019 were never assigned — the sequence simply
+skips them; that's a pre-existing gap, not an error. **0015 is not part of
+that gap** — `personal-cfo-j5d` held that slot since 2026-05-03, predating
+this note; the note was wrong about 0015 specifically, corrected 2026-09-19
+when the ADR was written (owner-confirmed).
 
 | # | Title | Tier | Status |
 |---|---|---|---|
@@ -34,6 +37,7 @@ simply skips them; that's a pre-existing gap, not an error.
 | 0012 | [Command idempotency and retry semantics](0012-command-idempotency-and-retry.md) | Public | Accepted |
 | 0013 | [Entity identifier strategy](0013-id-strategy.md) | Public | Accepted |
 | 0014 | [Money Inbox and the ingestion pipeline](0014-money-inbox-and-ingestion-pipeline.md) | Public | Accepted |
+| 0015 | [Connector capability/cost/terms registry](0015-connector-capability-cost-terms-registry.md) | Public | Accepted |
 | 0018 | [Forecast language and non-advice boundary](0018-forecast-language-and-non-advice-boundary.md) | Public | Accepted |
 | 0020 | [Frontend state, data-fetching, and forms architecture](0020-frontend-state-data-forms.md) | Public | Accepted |
 | 0021 | [Date and timezone policy](0021-date-timezone-policy.md) | Public | Accepted |
