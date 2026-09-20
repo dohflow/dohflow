@@ -217,25 +217,31 @@ classification.
 ### 2. No lease: compare-and-swap, then rollback-then-replay
 
 The service head sequence is the sole write serialization point. A push carries
-`base_seq` and an immutable envelope identity. Before checking `base_seq`, the
-service checks its accepted-envelope index by `command_id` and the canonical
-envelope digest. An exact retry returns the original accepted `seq` and result,
-even when the retry's `base_seq` is stale. A same-`command_id` or
-same-`idempotency_key` request with a different digest or immutable metadata
-fails closed as `ProtocolFork`; it is never treated as a fresh command. Only an
-unknown envelope is subject to the normal CAS rule: the service accepts it if
-and only if `base_seq` equals the current head, otherwise it returns the
-envelopes since `base_seq`. The accepted-envelope index is retained with the
-operation log and is an authoritative, recovery-durable record rather than a
-tail cache. It survives every tail truncation, latest-snapshot bootstrap, and
-service restart/recovery, and is retained for as long as any device can retry
-its outbox; Sync v1 defines no finite retry horizon or automatic expiry. The
-index is privacy-minimal and opaque: it contains only `command_id`, the
-canonical envelope digest, the accepted `seq`/result reference, and the
-recovery metadata needed to restore that binding—never plaintext payload. A
-rebase or rebootstrap consults it before ordinary replay even when the
-accepted envelope is no longer in the pulled tail. There is no single-writer
-lease, expiry policy, or takeover window.
+`base_seq`, an immutable envelope identity, and an opaque
+`idempotency_key_tag`: a protocol-defined, keyed, vault-scoped fingerprint of
+the canonical idempotency key, stable across key epochs and never the plaintext
+key. Before checking `base_seq`, the service looks up **both** `command_id` and
+that tag in its accepted-envelope index. An exact two-key binding with the
+same canonical envelope digest and immutable-metadata commitment returns the
+original accepted `seq` and result, even when the retry's `base_seq` is stale.
+If either lookup finds a different bound command, tag, digest, or immutable
+metadata commitment—or the two lookups disagree—the request fails closed as
+`ProtocolFork`; it is never treated as a fresh command. This preserves the
+same-`command_id` and same-`idempotency_key` fork rule after the tail is gone.
+Only an envelope for which both identities are unknown is subject to the normal
+CAS rule: the service accepts it if and only if `base_seq` equals the current
+head, otherwise it returns the envelopes since `base_seq`. The accepted-envelope
+index is retained with the operation log and is an authoritative,
+recovery-durable record rather than a tail cache. It survives every tail
+truncation, latest-snapshot bootstrap, and service restart/recovery, and is
+retained for as long as any device can retry its outbox; Sync v1 defines no
+finite retry horizon or automatic expiry. The index is privacy-minimal and
+opaque: it contains only `command_id`, `idempotency_key_tag`, the canonical
+envelope digest, the immutable-metadata commitment, the accepted `seq`/result
+reference, and the recovery metadata needed to restore those bindings—never a
+plaintext key or payload. A rebase or rebootstrap consults both identities
+before ordinary replay even when the accepted envelope is no longer in the
+pulled tail. There is no single-writer lease, expiry policy, or takeover window.
 
 A client with unpushed work rebases by **rollback-then-replay** on a base image,
 not by applying pulled envelopes over unpushed local state:
@@ -259,18 +265,20 @@ not by applying pulled envelopes over unpushed local state:
    mutation exists in scratch. Current device-local state wins over the base;
    it is never silently merged with, or replaced by, stale base state.
 4. Before ordinary reapply, consult the authoritative accepted-envelope index
-   for every planned outbox envelope, even when the accepted envelope has
-   expired from the pulled tail. Correlate the index record and any pulled
-   envelope by immutable `command_id`, authenticated canonical envelope digest,
-   and the complete original `CommandMeta` plus payload/schema/version fields.
-   An exact match is **already accepted** whether found in the index or tail:
-   bind the local outbox record to the accepted server `seq` and result,
-   reconcile/remap its scratch audit and idempotency evidence, and remove it
-   from the replay plan without replaying or queueing it. A same-`command_id`
-   mismatch fails closed as `ProtocolFork` in either source, with both
-   envelopes retained for diagnosis.
-   A command whose response failed before service acceptance has no index or
-   tail match and follows the ordinary path below.
+   for every planned outbox envelope by both its `command_id` and its
+   `idempotency_key_tag`, even when the accepted envelope has expired from the
+   pulled tail. Correlate the index record and any pulled envelope by immutable
+   `command_id`, the authenticated tag, canonical envelope digest, immutable-
+   metadata commitment, and the complete original `CommandMeta` plus
+   payload/schema/version fields. An exact match is **already accepted** whether
+   found in the index or tail: bind the local outbox record to the accepted
+   server `seq` and result, reconcile/remap its scratch audit and idempotency
+   evidence, and remove it from the replay plan without replaying or queueing
+   it. A same-`command_id` mismatch fails closed as `ProtocolFork`; a tag
+   collision with a different command also fails closed as `ProtocolFork` in
+   either source, with both envelopes retained for diagnosis. A command whose
+   response failed before service acceptance has no index or tail match and
+   follows the ordinary path below.
 
    Reapply each remaining local outbox envelope under its original
    `command_id` and complete original `CommandMeta` only when its write set is
@@ -320,6 +328,15 @@ has a `canonical_envelope_digest` over the canonical clear header and exact
 ciphertext bytes. This is an opaque equality token for accepted-retry
 reconciliation, not a plaintext content hash; the authenticated header and
 AEAD tag must verify before a client accepts a digest match.
+
+The service-visible clear header carries the authenticated
+`idempotency_key_tag` rather than the plaintext idempotency key. Its keyed,
+vault-scoped derivation is stable across key epochs and domain-separated from
+payload content; ADR 0077 owns the exact derivation and canonical encoding.
+The tag and the immutable-metadata commitment are included in the canonical
+envelope digest and in the pre-encryption authenticated header. A service or
+recovery root therefore retains only opaque equality and fork-detection data,
+never the key or payload itself.
 
 `issued_at` replaces every `Utc::now()` reached inside `apply/`, so apply
 is a function of payload, metadata, and base state. An engine- or schema-version
@@ -524,9 +541,9 @@ model.
 snapshot encryption; `personal-cfo-klr.4` (ADR 0077) owns the canonical
 header, derivations, nonce, manifest commitment, and compatibility format;
 `personal-cfo-6kn` (ADR 0017) owns signed device-key identity and nonce-state
-loss/re-enrollment; `personal-cfo-v98vd` owns service enforcement and the
-duplicate-detection backstop; and `personal-cfo-bc8iv` (ADR 0066-A) owns the
-endpoint and egress posture.
+loss/re-enrollment; `personal-cfo-v98vd` owns service enforcement, the
+dual-identity accepted-index lookup, and the duplicate-detection backstop; and
+`personal-cfo-bc8iv` (ADR 0066-A) owns the endpoint and egress posture.
 
 ### 9. Identity, restore, and ordering
 
@@ -594,7 +611,12 @@ The simulator also has four mandatory safety suites:
   one mutation/op-log row and preserves the audit/outbox evidence. A genuinely
   pre-acceptance failure at the same age has no index entry, performs no
   automatic mutation or silent loss, and preserves its evidence for ordinary
-  replay.
+  replay. The same long-offline sequence then submits a second envelope with a
+  new `command_id` but the first command's `idempotency_key_tag`; dual lookup
+  returns `ProtocolFork`, creates no second mutation/op-log row, and retains
+  diagnostic evidence. An exact retry of the first envelope still returns its
+  original `seq`/result, and the retained lookup contains no plaintext key or
+  payload.
 - **Nonce lifecycle:** concurrent devices, rejected-CAS retries, crash/restart,
   re-snapshot, and epoch rotation never repeat a `(derived AEAD key, nonce)`
   pair. The test sequencer deliberately offers overlapping domain/range grants
@@ -667,6 +689,9 @@ changes them nor introduces an account requirement to the local app.
   exact command/digest match must bind the outbox to the already accepted
   sequence; a same-ID mismatch is protocol corruption, and an unknown command
   remains eligible for normal replay.
+- **Store plaintext idempotency keys in the durable index.** A stable,
+  vault-scoped keyed tag preserves dual-key fork detection after tail expiry
+  without exposing the key or payload to the service or recovery roots.
 - **Accept or truncate a snapshot without an artifact closure.** A canonical
   row could then outlive the only recoverable ciphertext for its artifact.
 - **Expose a bare content hash or reuse a service artifact address across an
