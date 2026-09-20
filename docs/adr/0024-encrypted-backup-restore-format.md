@@ -317,12 +317,14 @@ fail to reach the phone rather than silently leak there.
   password rewrap/rekey and can match one to the existing vault-envelope
   sidecar; a rewrap/rekey ends and reveals such epochs. This accepted
   linkability consequence preserves the self-contained restore contract.
-  BACK-0b updates the threat model's asset A4 and "Backup theft" row.
+  BACK-0b updates `docs/security/threat-model.md`'s asset A4 and "Backup
+  theft" row.
 - `personal-cfo-8qh` consumes unattended export for the local job. A
   user-chosen cloud-synced folder sends ciphertext through that user's own
   sync client; it is not an app-managed upload. That bead owns the corresponding
-  public privacy and site-privacy language for both this metadata linkability
-  and the user-selected cloud-folder ciphertext egress.
+  public privacy language in `docs/public/privacy.md` and the site privacy page
+  for both this metadata linkability and the user-selected cloud-folder
+  ciphertext egress.
 - BACK-0b updates `docs/operations/backup-and-recovery.md` and
   `docs/user-guide/recover-a-vault.md` to remove the export password prompt;
   `personal-cfo-klr.4` records the resulting format in the future vault-format
