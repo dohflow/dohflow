@@ -203,6 +203,12 @@ export const commands = {
 	 */
 	buildInfo: () => __TAURI_INVOKE<BuildInfoDto>("build_info"),
 	/**
+	 *  Bridge a release-updater failure from the WebView into the redacting tracing subscriber. The
+	 *  command itself cannot fail: losing diagnostic logging must never hide the updater error that
+	 *  the user needs to see.
+	 */
+	recordReleaseUpdateFailure: (errorText: string, failureKind: ReleaseUpdateFailureKind) => __TAURI_INVOKE<void>("record_release_update_failure", { errorText, failureKind }),
+	/**
 	 *  Apply an update: rebuild + reinstall the app from the source checkout (via the shared
 	 *  `scripts/update-app.sh`). Minutes-long; `async` + `spawn_blocking` keeps it off the main
 	 *  thread so the UI stays responsive with a progress spinner. Returns whether it succeeded and
@@ -1815,6 +1821,13 @@ export type RecurringTransferDto = {
 	/**  When the transfer was created (RFC 3339). */
 	created_at: string,
 };
+
+/**
+ *  The stage inferred from a release-updater error by the frontend. This is deliberately a
+ *  small, closed vocabulary: the tracing bridge accepts no user-entered context and never
+ *  needs access to a vault in order to record an updater failure.
+ */
+export type ReleaseUpdateFailureKind = "download" | "signature" | "install";
 
 /**  How a liability is repaid (ADR 0035 §1), on the wire as a snake_case token. */
 export type RepaymentPhilosophyDto = 

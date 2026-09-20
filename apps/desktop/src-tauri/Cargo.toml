@@ -148,4 +148,4 @@ static_assertions = "1.1"
 # Integration tests drive the command impls against a real temp-vault kernel.
 finance-kernel = { path = "../../../crates/finance-kernel" }
 tempfile = "3"
-
+tracing-subscriber = "0.3"

@@ -47,14 +47,14 @@ use crate::ipc::dto::{
     LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
     MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
     RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
-    RecurringCandidateDto, RecurringTransferDto, ScenarioDto, SetBillAutopayInput,
-    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
-    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
-    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
-    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
-    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
-    UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto, VaultStatusDto,
-    VaultSummaryDto,
+    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind, ScenarioDto,
+    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
+    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
+    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
+    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
+    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
+    UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto,
+    VaultStatusDto, VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
@@ -2375,6 +2375,54 @@ pub fn build_info() -> BuildInfoDto {
         built_at: env!("PCFO_BUILD_TIME").to_owned(),
         dirty: matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true"),
     }
+}
+
+// ---- record_release_update_failure (personal-cfo-md8h2.1) ------------------
+
+/// Record the updater plugin's serialized failure text through the app's redacting tracing
+/// boundary. The release updater runs inside the plugin, so this narrow command is the only
+/// way its JavaScript-side rejection can enter DohFlow's structured logs. It deliberately takes
+/// no vault state and no user-entered context; the frontend passes only the plugin error text
+/// and this fixed classification.
+pub fn record_release_update_failure_impl(
+    error_text: &str,
+    failure_kind: ReleaseUpdateFailureKind,
+) {
+    let started_at = std::time::Instant::now();
+    let command_id = Uuid::now_v7();
+    let correlation_id = Uuid::now_v7();
+    let span = tracing::info_span!(
+        "tauri_command",
+        command_id = %command_id,
+        correlation_id = %correlation_id,
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command = "record_release_update_failure",
+    );
+    let _entered = span.enter();
+
+    // Redact before the event reaches the subscriber as well as at the subscriber itself. This
+    // keeps the raw updater diagnostic useful while preserving the no-financial-data log rule if
+    // a future test or alternate subscriber observes the event directly.
+    let safe_error_text = observability::redact(error_text);
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::warn!(
+        failure_kind = failure_kind.as_str(),
+        error_text = %safe_error_text,
+        duration_ms,
+        outcome = failure_kind.as_str(),
+        "release updater failure recorded",
+    );
+}
+
+/// Bridge a release-updater failure from the WebView into the redacting tracing subscriber. The
+/// command itself cannot fail: losing diagnostic logging must never hide the updater error that
+/// the user needs to see.
+#[tauri::command]
+#[specta::specta]
+pub fn record_release_update_failure(error_text: String, failure_kind: ReleaseUpdateFailureKind) {
+    record_release_update_failure_impl(&error_text, failure_kind);
 }
 
 // ---- apply_update / relaunch_app (personal-cfo-1ik.4) ----------------------
@@ -4817,6 +4865,102 @@ mod household_timezone_tests {
         assert_eq!(
             resolve_initial_household_timezone(Err(iana_time_zone::GetTimezoneError::OsError)),
             None,
+        );
+    }
+}
+
+#[cfg(test)]
+mod release_update_failure_tests {
+    use std::{
+        io::{self, Write},
+        sync::{Arc, Mutex},
+    };
+
+    use observability::RedactingMakeWriter;
+    use tracing_subscriber::{fmt::MakeWriter, prelude::*};
+
+    use super::record_release_update_failure_impl;
+    use crate::ipc::dto::ReleaseUpdateFailureKind;
+
+    #[derive(Clone, Default)]
+    struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("test log buffer lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = BufWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn updater_failure_tracing_is_structured_redacted_and_vault_independent() {
+        let buffer = BufWriter::default();
+        // Build the test-only sensitive value at runtime so the repository's
+        // real-value scanner does not mistake its source text for user data.
+        let sensitive_account = ["1234", "5678", "9012", "3456"].concat();
+        let sensitive_error = format!("account {sensitive_account} could not install update");
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(RedactingMakeWriter::new(buffer.clone()));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        // This invokes the implementation directly: it must not need AppState or vault access.
+        tracing::subscriber::with_default(subscriber, || {
+            record_release_update_failure_impl(
+                "network error while downloading release",
+                ReleaseUpdateFailureKind::Download,
+            );
+            record_release_update_failure_impl(&sensitive_error, ReleaseUpdateFailureKind::Install);
+        });
+
+        let logged = String::from_utf8(buffer.0.lock().expect("test log buffer lock").clone())
+            .expect("test log output is UTF-8");
+
+        for required_field in [
+            "release updater failure recorded",
+            "command",
+            "record_release_update_failure",
+            "command_id",
+            "correlation_id",
+            "causation_id",
+            "actor_type",
+            "actor_id",
+            "failure_kind",
+            "duration_ms",
+            "outcome",
+            "local-user",
+            "none",
+            "download",
+            "install",
+            "network error while downloading release",
+        ] {
+            assert!(
+                logged.contains(required_field),
+                "missing {required_field:?} in {logged}"
+            );
+        }
+        assert!(
+            logged.contains("[ACCT_NUMBER]"),
+            "expected account redaction in {logged}"
+        );
+        assert!(
+            !logged.contains(&sensitive_account),
+            "raw account number leaked in {logged}"
         );
     }
 }
