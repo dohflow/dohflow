@@ -36,6 +36,11 @@ require_text "rebase captures a durable plan" "rebase plan for every local outbo
 require_text "service retries accepted pushes before CAS" 'Before checking `base_seq`, the'
 require_text "accepted pushes reconcile without replay" 'An exact match is **already accepted**'
 require_text "same command id mismatch fails closed" 'mismatch fails closed as `ProtocolFork`'
+require_text "accepted index has no retry horizon" "no finite retry horizon"
+require_text "accepted index survives truncation and recovery" "tail truncation, latest-snapshot bootstrap, and"
+require_text "accepted index carries no plaintext" "never plaintext payload"
+require_text "rebase consults index after tail expiry" "expired from the pulled tail"
+require_text "same-age pre-acceptance failure is preserved" "pre-acceptance failure at the same age has no index entry"
 require_text "replay-owned memos are withheld" "replay-owned idempotency memo is deliberately absent"
 require_text "replay rebuilds the memo target" "memo points at the rebuilt"
 require_text "queued retry cannot silently apply" "QueuedForDisposition"

@@ -226,8 +226,16 @@ fails closed as `ProtocolFork`; it is never treated as a fresh command. Only an
 unknown envelope is subject to the normal CAS rule: the service accepts it if
 and only if `base_seq` equals the current head, otherwise it returns the
 envelopes since `base_seq`. The accepted-envelope index is retained with the
-operation log and published recovery roots for the same retention window. There
-is no single-writer lease, expiry policy, or takeover window.
+operation log and is an authoritative, recovery-durable record rather than a
+tail cache. It survives every tail truncation, latest-snapshot bootstrap, and
+service restart/recovery, and is retained for as long as any device can retry
+its outbox; Sync v1 defines no finite retry horizon or automatic expiry. The
+index is privacy-minimal and opaque: it contains only `command_id`, the
+canonical envelope digest, the accepted `seq`/result reference, and the
+recovery metadata needed to restore that binding—never plaintext payload. A
+rebase or rebootstrap consults it before ordinary replay even when the
+accepted envelope is no longer in the pulled tail. There is no single-writer
+lease, expiry policy, or takeover window.
 
 A client with unpushed work rebases by **rollback-then-replay** on a base image,
 not by applying pulled envelopes over unpushed local state:
@@ -250,16 +258,19 @@ not by applying pulled envelopes over unpushed local state:
    never cause the ordinary dispatcher to return `Replayed` before the command
    mutation exists in scratch. Current device-local state wins over the base;
    it is never silently merged with, or replaced by, stale base state.
-4. Before ordinary reapply, correlate every planned outbox envelope with every
-   pulled envelope by immutable `command_id`, authenticated canonical envelope
-   digest, and the complete original `CommandMeta` plus payload/schema/version
-   fields. An exact match is **already accepted**: bind the local outbox record
-   to the pulled server `seq`, reconcile/remap its scratch audit and
-   idempotency evidence to the accepted operation/result, and remove it from
-   the replay plan without replaying or queueing it. A same-`command_id`
-   mismatch fails closed as `ProtocolFork` with both envelopes retained for
-   diagnosis. A command whose response failed before service acceptance has no
-   accepted match and follows the ordinary path below.
+4. Before ordinary reapply, consult the authoritative accepted-envelope index
+   for every planned outbox envelope, even when the accepted envelope has
+   expired from the pulled tail. Correlate the index record and any pulled
+   envelope by immutable `command_id`, authenticated canonical envelope digest,
+   and the complete original `CommandMeta` plus payload/schema/version fields.
+   An exact match is **already accepted** whether found in the index or tail:
+   bind the local outbox record to the accepted server `seq` and result,
+   reconcile/remap its scratch audit and idempotency evidence, and remove it
+   from the replay plan without replaying or queueing it. A same-`command_id`
+   mismatch fails closed as `ProtocolFork` in either source, with both
+   envelopes retained for diagnosis.
+   A command whose response failed before service acceptance has no index or
+   tail match and follows the ordinary path below.
 
    Reapply each remaining local outbox envelope under its original
    `command_id` and complete original `CommandMeta` only when its write set is
@@ -291,8 +302,10 @@ problem. The replica's operation-log row records `applied_base_seq` and
 state.
 
 `personal-cfo-bxsbz` (SYNC-1c) implements the base image and atomic rebase;
-`personal-cfo-v98vd` (S2-1) implements the accepted-envelope index and exact
-retry response; `personal-cfo-vlfd` (ADR 0073) defines the disposition rules;
+`personal-cfo-v98vd` (S2-1) implements the authoritative recovery-durable,
+privacy-minimal accepted-envelope index across tail truncation, snapshot
+bootstrap, and service recovery, plus the exact retry response;
+`personal-cfo-vlfd` (ADR 0073) defines the disposition rules;
 and `personal-cfo-mpep3` (S3-2) presents queued groups.
 
 ### 3. Envelopes: versioned payloads and verified class-1 writes
@@ -575,7 +588,13 @@ The simulator also has four mandatory safety suites:
   envelope digest, and complete metadata, binds the outbox to the remote
   `seq`, and never replays or queues it; a same-ID/different-envelope case
   fails closed as `ProtocolFork`. A failure before service acceptance still
-  takes the ordinary replay path.
+  takes the ordinary replay path. The accepted case is repeated after tail
+  expiry, latest-snapshot rebootstrap, and service restart/recovery from the
+  latest retained root; the durable accepted-command index still binds exactly
+  one mutation/op-log row and preserves the audit/outbox evidence. A genuinely
+  pre-acceptance failure at the same age has no index entry, performs no
+  automatic mutation or silent loss, and preserves its evidence for ordinary
+  replay.
 - **Nonce lifecycle:** concurrent devices, rejected-CAS retries, crash/restart,
   re-snapshot, and epoch rotation never repeat a `(derived AEAD key, nonce)`
   pair. The test sequencer deliberately offers overlapping domain/range grants
