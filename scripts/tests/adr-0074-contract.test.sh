@@ -48,6 +48,13 @@ require_text "idempotency tag collisions fork" "collision with a different comma
 require_text "rebase checks the idempotency tag" 'by both its `command_id` and'
 require_text "new command id with reused tag forks" 'new `command_id` but the first command'
 require_text "idempotency lookup has no plaintext" "retained lookup contains no plaintext key"
+require_text "AAD binds the dual identity fields" 'object_id ‖ idempotency_key_tag ‖ immutable_metadata_commitment'
+require_text "AAD has canonical null markers" "canonical null markers"
+require_text "receiver recomputes the keyed tag" "receiver recomputes the keyed"
+require_text "receiver recomputes the metadata commitment" 'immutable_metadata_commitment` from'
+require_text "validation precedes mutation and reconciliation" "before any mutation"
+require_text "clear tag and commitment tamper is covered" "tampered clear tag or commitment"
+require_text "tamper retains ciphertext" "while retaining the ciphertext"
 require_text "replay-owned memos are withheld" "replay-owned idempotency memo is deliberately absent"
 require_text "replay rebuilds the memo target" "memo points at the rebuilt"
 require_text "queued retry cannot silently apply" "QueuedForDisposition"

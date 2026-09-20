@@ -517,16 +517,27 @@ the service to allocate either field.
 
 The authenticated data is the canonical encoding of every pre-encryption clear
 header field: `protocol_version ‖ vault_id ‖ key_epoch ‖ object_type ‖
-object_id ‖ device_id ‖ device_key_fingerprint ‖ nonce_domain ‖
-invocation_counter ‖ base_seq ‖ payload_schema_version ‖ engine_version ‖
-schema_version ‖ artifact_manifest_commitment`. Object-type-specific absent
-fields use explicit canonical null markers. `object_id` is the immutable
+object_id ‖ idempotency_key_tag ‖ immutable_metadata_commitment ‖ device_id ‖
+device_key_fingerprint ‖ nonce_domain ‖ invocation_counter ‖ base_seq ‖
+payload_schema_version ‖ engine_version ‖ schema_version ‖
+artifact_manifest_commitment`. Object-type-specific absent fields—including
+`idempotency_key_tag` and `immutable_metadata_commitment` on non-envelope
+objects—use explicit canonical null markers. `object_id` is the immutable
 `command_id` for an envelope or the fresh snapshot ID for a snapshot. The
 service-assigned `seq` is deliberately not in AAD: it does not exist until
 after the CAS accepts the already sealed object. The wire format binds the
 returned sequence to that immutable object ID in the append-only service log.
-Any AAD, epoch, object-type, fingerprint, domain, counter, or tag mismatch
-fails closed.
+Any AAD, epoch, object-type, fingerprint, domain, counter, tag, or commitment
+mismatch fails closed.
+
+After authenticated decryption, the receiver recomputes the keyed
+`idempotency_key_tag` from the canonical idempotency key and recomputes
+`immutable_metadata_commitment` from the complete immutable `CommandMeta`.
+Either recomputation must equal the authenticated clear-header field before
+the client applies the command, enters rebase, or consults/remaps the accepted
+index. A separately tampered clear tag or commitment therefore retains the
+ciphertext and diagnostic evidence but fails closed before any mutation,
+replay, queue, or index reconciliation.
 
 **D1:** ADR 0066 leaves this encryption mechanism open; this ADR supplies the
 client-side ciphertext-only mechanism while leaving ADR 0066's free-local-app
@@ -616,7 +627,10 @@ The simulator also has four mandatory safety suites:
   returns `ProtocolFork`, creates no second mutation/op-log row, and retains
   diagnostic evidence. An exact retry of the first envelope still returns its
   original `seq`/result, and the retained lookup contains no plaintext key or
-  payload.
+  payload. Protocol cases separately tamper the clear `idempotency_key_tag` and
+  the clear `immutable_metadata_commitment` while retaining the ciphertext;
+  authenticated-AAD/recomputation validation fails closed before apply, rebase,
+  or index reconciliation, while retaining ciphertext and diagnostic evidence.
 - **Nonce lifecycle:** concurrent devices, rejected-CAS retries, crash/restart,
   re-snapshot, and epoch rotation never repeat a `(derived AEAD key, nonce)`
   pair. The test sequencer deliberately offers overlapping domain/range grants
