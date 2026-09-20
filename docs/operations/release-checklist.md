@@ -216,6 +216,14 @@ build's progress.
   `publish-release.sh` can touch.)
 - [ ] Record the published release URL and the smoke-test evidence
   (step 5) in the release's bead.
+- [ ] **`v0.2.0` only: Apple-silicon updater round trip.** On an Apple-silicon
+  Mac, start from a clean, DMG-installed `v0.1.0` release (not a source-built
+  or pre-tag dogfooding app). In Settings → Software update, confirm it finds
+  `v0.2.0`, downloads, verifies, replaces the app, and relaunches. Record the
+  pre- and post-update build badges, `uname -m`, and either the successful
+  result or the exact displayed error in the release bead. This specifically
+  proves the released-artifact-to-released-artifact path against the live
+  manifest; a development build is not a substitute.
 - [ ] **`v0.2.1` only:** run the first-ever Intel updater round trip
   (`v0.2.0 → v0.2.1` — `v0.1.0` never ran on Intel at all, so there is no
   earlier Intel install to update from). Same procedure as

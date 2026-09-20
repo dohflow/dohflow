@@ -3,7 +3,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchProcess } from "@tauri-apps/plugin-process";
 
-import { commands, type UpdateStatusDto } from "@/bindings";
+import {
+  commands,
+  type ReleaseUpdateFailureKind,
+  type UpdateStatusDto,
+} from "@/bindings";
 
 /// A second, independent query cache entry for the live `Update` resource handle
 /// (personal-cfo-sk4xr) — see the long comment on `useSoftwareUpdate` for why a
@@ -74,6 +78,67 @@ export type ApplyProgress =
 
 export type ApplyOutcome = { ok: true } | { ok: false; message: string };
 
+type ReleaseUpdateFailure = {
+  rawText: string;
+  kind: ReleaseUpdateFailureKind;
+  message: string;
+};
+
+/// Convert the Tauri bridge's serialized rejection into the text the plugin actually emitted.
+/// `tauri-plugin-updater` serializes its Rust Error as a bare string, so checking only
+/// `instanceof Error` loses the production diagnostic. Preserve Error instances for tests and
+/// other callers, a plain-string production error, and useful text from any other rejection.
+function updaterErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message || error.name;
+  if (typeof error === "string") return error;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+
+  try {
+    const serialized = JSON.stringify(error);
+    if (typeof serialized === "string") return serialized;
+  } catch {
+    // A hostile/non-serializable value is not expected from the updater, but must not replace
+    // the original update failure with a formatter failure.
+  }
+
+  try {
+    return String(error);
+  } catch {
+    return "Unknown updater error";
+  }
+}
+
+/// The plugin exposes one serialized error string for download, signature, and installation
+/// failures. Give the user a useful heading while retaining the original diagnostic verbatim.
+function describeReleaseUpdateFailure(error: unknown): ReleaseUpdateFailure {
+  const rawText = updaterErrorText(error);
+  const normalized = rawText.toLowerCase();
+  const kind: ReleaseUpdateFailureKind = /signature|verify|minisign|public key|base64/.test(
+    normalized,
+  )
+    ? "signature"
+    : /download|network|fetch|connect|dns|timed? ?out|http|remote|request|response|url/.test(
+          normalized,
+        )
+      ? "download"
+      : "install";
+  const heading =
+    kind === "signature"
+      ? "Signature verification failed."
+      : kind === "download"
+        ? "Couldn't download the update."
+        : "Couldn't install the update.";
+
+  return { rawText, kind, message: `${heading} ${rawText}` };
+}
+
 /// The in-app update check + install, covering BOTH channels (personal-cfo-1ik.3/1ik.4,
 /// personal-cfo-867.1.2). Shared by the Settings card and the launch corner notice: one check
 /// runs on first mount and is cached, and `check()` re-runs it (the "Check for updates" button).
@@ -133,7 +198,7 @@ export function useSoftwareUpdate() {
           latestVersion: null,
           notes: null,
           date: null,
-          error: e instanceof Error ? e.message : "Could not check for updates.",
+          error: updaterErrorText(e),
         } satisfies ReleaseUpdateStatus;
       }
     },
@@ -195,13 +260,18 @@ export function useSoftwareUpdate() {
     } catch (e) {
       // A tampered artifact or a mismatched signature surfaces here as a rejected promise
       // (personal-cfo-miei) — the plugin verifies against tauri.conf.json's pubkey before
-      // any bytes are trusted.
+      // any bytes are trusted. The plugin serializes its Rust Error as a plain string, so retain
+      // that text rather than treating every non-Error rejection as a signature failure.
+      const failure = describeReleaseUpdateFailure(e);
+      try {
+        await commands.recordReleaseUpdateFailure(failure.rawText, failure.kind);
+      } catch {
+        // Logging is diagnostic-only; an unavailable tracing bridge must not mask the updater
+        // error shown to the user.
+      }
       return {
         ok: false,
-        message:
-          e instanceof Error
-            ? e.message
-            : "The update couldn't be installed — it may have failed signature verification.",
+        message: failure.message,
       };
     } finally {
       setProgress(null);

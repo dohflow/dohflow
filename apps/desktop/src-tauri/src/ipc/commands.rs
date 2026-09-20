@@ -47,14 +47,14 @@ use crate::ipc::dto::{
     LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
     MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
     RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
-    RecurringCandidateDto, RecurringTransferDto, ScenarioDto, SetBillAutopayInput,
-    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
-    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
-    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
-    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
-    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
-    UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto, VaultStatusDto,
-    VaultSummaryDto,
+    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind, ScenarioDto,
+    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
+    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
+    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
+    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
+    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
+    UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto,
+    VaultStatusDto, VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
@@ -2375,6 +2375,54 @@ pub fn build_info() -> BuildInfoDto {
         built_at: env!("PCFO_BUILD_TIME").to_owned(),
         dirty: matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true"),
     }
+}
+
+// ---- record_release_update_failure (personal-cfo-md8h2.1) ------------------
+
+/// Record the updater plugin's serialized failure text through the app's redacting tracing
+/// boundary. The release updater runs inside the plugin, so this narrow command is the only
+/// way its JavaScript-side rejection can enter DohFlow's structured logs. It deliberately takes
+/// no vault state and no user-entered context; the frontend passes only the plugin error text
+/// and this fixed classification.
+pub fn record_release_update_failure_impl(
+    error_text: &str,
+    failure_kind: ReleaseUpdateFailureKind,
+) {
+    let started_at = std::time::Instant::now();
+    let command_id = Uuid::now_v7();
+    let correlation_id = Uuid::now_v7();
+    let span = tracing::info_span!(
+        "tauri_command",
+        command_id = %command_id,
+        correlation_id = %correlation_id,
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command = "record_release_update_failure",
+    );
+    let _entered = span.enter();
+
+    // Redact before the event reaches the subscriber as well as at the subscriber itself. This
+    // keeps the raw updater diagnostic useful while preserving the no-financial-data log rule if
+    // a future test or alternate subscriber observes the event directly.
+    let safe_error_text = observability::redact(error_text);
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::warn!(
+        failure_kind = failure_kind.as_str(),
+        error_text = %safe_error_text,
+        duration_ms,
+        outcome = failure_kind.as_str(),
+        "release updater failure recorded",
+    );
+}
+
+/// Bridge a release-updater failure from the WebView into the redacting tracing subscriber. The
+/// command itself cannot fail: losing diagnostic logging must never hide the updater error that
+/// the user needs to see.
+#[tauri::command]
+#[specta::specta]
+pub fn record_release_update_failure(error_text: String, failure_kind: ReleaseUpdateFailureKind) {
+    record_release_update_failure_impl(&error_text, failure_kind);
 }
 
 // ---- apply_update / relaunch_app (personal-cfo-1ik.4) ----------------------

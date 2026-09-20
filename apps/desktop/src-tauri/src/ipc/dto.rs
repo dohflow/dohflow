@@ -2785,6 +2785,28 @@ impl From<crate::update::ApplyResult> for ApplyUpdateResultDto {
     }
 }
 
+/// The stage inferred from a release-updater error by the frontend. This is deliberately a
+/// small, closed vocabulary: the tracing bridge accepts no user-entered context and never
+/// needs access to a vault in order to record an updater failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseUpdateFailureKind {
+    Download,
+    Signature,
+    Install,
+}
+
+impl ReleaseUpdateFailureKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Download => "download",
+            Self::Signature => "signature",
+            Self::Install => "install",
+        }
+    }
+}
+
 /// A detected recurring-bill candidate (personal-cfo-98ql): a merchant that recurs at a
 /// consistent cadence + amount in the realized history. A suggestion for the user to confirm
 /// (ADR 0018 — never auto-created); backs the "Suggested recurring" review surface.

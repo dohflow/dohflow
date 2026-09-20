@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   buildInfo: vi.fn(),
   pluginCheck: vi.fn(),
   pluginRelaunch: vi.fn(),
+  recordReleaseUpdateFailure: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/bindings", () => ({
     applyUpdate: mocks.applyUpdate,
     relaunchApp: mocks.relaunchApp,
     buildInfo: mocks.buildInfo,
+    recordReleaseUpdateFailure: mocks.recordReleaseUpdateFailure,
   },
 }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: mocks.pluginCheck }));
@@ -142,6 +144,7 @@ describe("dev channel", () => {
 describe("release channel", () => {
   beforeEach(() => {
     mocks.buildInfo.mockResolvedValue(buildInfo({ channel: "release" }));
+    mocks.recordReleaseUpdateFailure.mockResolvedValue(undefined);
   });
 
   test("shows up-to-date when the plugin finds no update", async () => {
@@ -189,6 +192,50 @@ describe("release channel", () => {
     fireEvent.click(await screen.findByRole("button", { name: /update & relaunch/i }));
     expect(await screen.findByText(/signature verification failed/i)).toBeInTheDocument();
     expect(screen.getByText(/didn't complete/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.recordReleaseUpdateFailure).toHaveBeenCalledWith(
+        "signature verification failed",
+        "signature",
+      ),
+    );
+    expect(mocks.pluginRelaunch).not.toHaveBeenCalled();
+  });
+
+  test("a plain-string download failure shows and logs the plugin's real text", async () => {
+    const pluginError = "network error: request timed out while downloading the update";
+    const update = pluginUpdate({
+      downloadAndInstall: vi.fn().mockRejectedValue(pluginError),
+    });
+    mocks.pluginCheck.mockResolvedValue(update);
+    renderWithClient(<SoftwareUpdateCard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /update & relaunch/i }));
+
+    expect(await screen.findByText(/couldn't download the update/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/network error: request timed out while downloading the update/i),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.recordReleaseUpdateFailure).toHaveBeenCalledWith(pluginError, "download"),
+    );
+    expect(mocks.pluginRelaunch).not.toHaveBeenCalled();
+  });
+
+  test("a non-Error object failure uses its message and classifies installation", async () => {
+    const pluginError = { message: "failed to replace the app bundle" };
+    const update = pluginUpdate({
+      downloadAndInstall: vi.fn().mockRejectedValue(pluginError),
+    });
+    mocks.pluginCheck.mockResolvedValue(update);
+    renderWithClient(<SoftwareUpdateCard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /update & relaunch/i }));
+
+    expect(await screen.findByText(/couldn't install the update/i)).toBeInTheDocument();
+    expect(screen.getByText(/failed to replace the app bundle/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.recordReleaseUpdateFailure).toHaveBeenCalledWith(pluginError.message, "install"),
+    );
     expect(mocks.pluginRelaunch).not.toHaveBeenCalled();
   });
 

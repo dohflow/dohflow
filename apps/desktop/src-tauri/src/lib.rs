@@ -139,6 +139,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::recurring_bill_history,
         ipc::commands::check_for_update,
         ipc::commands::build_info,
+        ipc::commands::record_release_update_failure,
         ipc::commands::apply_update,
         ipc::commands::relaunch_app,
         ipc::commands::create_manual_future_entry,

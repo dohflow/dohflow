@@ -153,6 +153,7 @@ describe("generated IPC bindings", () => {
         "cloneScenario",
         "setScenarioExpiry",
         "buildInfo",
+        "recordReleaseUpdateFailure",
         "exportBackup",
         "exportTransactionsCsv",
         "restoreBackup",
