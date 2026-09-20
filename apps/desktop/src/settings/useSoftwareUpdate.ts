@@ -89,15 +89,27 @@ type ReleaseUpdateFailure = {
 /// `instanceof Error` loses the production diagnostic. Preserve Error instances for tests and
 /// other callers, a plain-string production error, and useful text from any other rejection.
 function updaterErrorText(error: unknown): string {
-  if (error instanceof Error) return error.message || error.name;
   if (typeof error === "string") return error;
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  ) {
-    return error.message;
+
+  // Error-like values can be proxies or objects with throwing getters. Keep all
+  // operations that may invoke user-defined behavior inside a guard so reporting
+  // a failed update cannot itself make the update flow reject.
+  try {
+    if (error instanceof Error) {
+      if (error.message) return error.message;
+      if (error.name) return error.name;
+    }
+  } catch {
+    // Fall through to the remaining safe representations.
+  }
+
+  try {
+    if (typeof error === "object" && error !== null) {
+      const message = Reflect.get(error, "message");
+      if (typeof message === "string") return message;
+    }
+  } catch {
+    // Fall through to serialization or the stable fallback.
   }
 
   try {

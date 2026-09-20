@@ -4868,3 +4868,98 @@ mod household_timezone_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod release_update_failure_tests {
+    use std::{
+        io::{self, Write},
+        sync::{Arc, Mutex},
+    };
+
+    use observability::RedactingMakeWriter;
+    use tracing_subscriber::{fmt::MakeWriter, prelude::*};
+
+    use super::record_release_update_failure_impl;
+    use crate::ipc::dto::ReleaseUpdateFailureKind;
+
+    #[derive(Clone, Default)]
+    struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("test log buffer lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = BufWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn updater_failure_tracing_is_structured_redacted_and_vault_independent() {
+        let buffer = BufWriter::default();
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(RedactingMakeWriter::new(buffer.clone()));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        // This invokes the implementation directly: it must not need AppState or vault access.
+        tracing::subscriber::with_default(subscriber, || {
+            record_release_update_failure_impl(
+                "network error while downloading release",
+                ReleaseUpdateFailureKind::Download,
+            );
+            record_release_update_failure_impl(
+                "account 1234567890123456 could not install update",
+                ReleaseUpdateFailureKind::Install,
+            );
+        });
+
+        let logged = String::from_utf8(buffer.0.lock().expect("test log buffer lock").clone())
+            .expect("test log output is UTF-8");
+
+        for required_field in [
+            "release updater failure recorded",
+            "command",
+            "record_release_update_failure",
+            "command_id",
+            "correlation_id",
+            "causation_id",
+            "actor_type",
+            "actor_id",
+            "failure_kind",
+            "duration_ms",
+            "outcome",
+            "local-user",
+            "none",
+            "download",
+            "install",
+            "network error while downloading release",
+        ] {
+            assert!(
+                logged.contains(required_field),
+                "missing {required_field:?} in {logged}"
+            );
+        }
+        assert!(
+            logged.contains("[ACCT_NUMBER]"),
+            "expected account redaction in {logged}"
+        );
+        assert!(
+            !logged.contains("1234567890123456"),
+            "raw account number leaked in {logged}"
+        );
+    }
+}

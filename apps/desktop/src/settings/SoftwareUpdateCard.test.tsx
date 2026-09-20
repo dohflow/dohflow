@@ -239,6 +239,37 @@ describe("release channel", () => {
     expect(mocks.pluginRelaunch).not.toHaveBeenCalled();
   });
 
+  test("a hostile rejection remains visible and records a safe fallback", async () => {
+    const pluginError = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("hostile getter");
+        },
+        getPrototypeOf() {
+          throw new Error("hostile prototype");
+        },
+      },
+    );
+    const update = pluginUpdate({
+      downloadAndInstall: vi.fn().mockRejectedValue(pluginError),
+    });
+    mocks.pluginCheck.mockResolvedValue(update);
+    renderWithClient(<SoftwareUpdateCard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /update & relaunch/i }));
+
+    expect(await screen.findByText(/couldn't install the update/i)).toBeInTheDocument();
+    expect(screen.getByText(/unknown updater error/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.recordReleaseUpdateFailure).toHaveBeenCalledWith(
+        "Unknown updater error",
+        "install",
+      ),
+    );
+    expect(mocks.pluginRelaunch).not.toHaveBeenCalled();
+  });
+
   test("shows the offline state when the check can't reach the network", async () => {
     mocks.pluginCheck.mockRejectedValue(new Error("network error: could not connect"));
     renderWithClient(<SoftwareUpdateCard />);
