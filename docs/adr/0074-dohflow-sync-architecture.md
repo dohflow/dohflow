@@ -60,6 +60,11 @@ the shipped source:
   (`crates/db-worker/src/apply/recurring.rs:264-278`), and recurring bills
   including their contracts
   (`crates/db-worker/src/apply/recurring.rs:633-654`).
+- Device-local staging can refer to replicated artifacts: for example,
+  `staged_transactions.source_record_id` references `source_records`
+  (`crates/db-worker/src/migrations.rs:636-654`). A rollback base therefore
+  cannot silently substitute its older class-3 state for the currently live
+  state after class-1 replay.
 
 These constraints mean Sync starts from a logical, encrypted representation of
 canonical user intent and adds a versioned command tail. It is not retroactive
@@ -98,18 +103,33 @@ no single-writer lease, expiry policy, or takeover window.
 A client with unpushed work rebases by **rollback-then-replay** on a base image,
 not by applying pulled envelopes over unpushed local state:
 
-1. Keep `vault.db` as of `base_seq` beside the live vault and advance it on
-   every accepted push.
-2. Restore that base image and apply the service envelopes.
-3. Reapply each local outbox envelope under its original `command_id` only
+1. Enter `Rebasing` under the single-instance lock, freeze local writers, and
+   capture a consistent **class-3 preservation image** from the current live
+   vault. Keep `vault.db` as of `base_seq` beside the live vault and advance it
+   on every accepted push.
+2. Restore that base image only as a scratch vault and apply the service
+   envelopes. The base's class-3 rows are never authoritative after this step.
+3. Remove the stale class-3 rows inherited from the base and transactionally
+   overlay the captured current class-3 state in the scratch vault using the
+   per-table preservation and reference-validation rules in CLASS-0. Current
+   device-local state wins over the base; it is never silently merged with, or
+   replaced by, stale base state.
+4. Reapply each local outbox envelope under its original `command_id` only
    when its write set is untouched and it still validates. Otherwise queue its
    whole correlation group for disposition.
-4. Atomically swap the rebuilt vault and retry the push.
+5. Rebuild class 2 and validate every class-3 reference to changed class-1 or
+   class-1b state before the swap. An invalid reference enters a typed
+   `RebaseBlockedLocalState` recovery state, preserves both the live vault and
+   scratch evidence, and requires an explicit repair or re-bootstrap. It never
+   drops the row or falls back to the old base.
+6. Atomically swap the fully validated rebuilt vault and retry the push.
 
-Nothing is discarded and no envelope is applied twice. Garbage collection and
-rebase are therefore one integrity problem. The replica's operation-log row
-records `applied_base_seq` and `rebased_from` for R46. Pulled envelopes are
-never applied over unpushed local state.
+Nothing is discarded, including device-local work, and no envelope is applied
+twice. A failed preservation or validation step leaves the live vault
+byte-identical. Garbage collection and rebase are therefore one integrity
+problem. The replica's operation-log row records `applied_base_seq` and
+`rebased_from` for R46. Pulled envelopes are never applied over unpushed local
+state.
 
 `personal-cfo-bxsbz` (SYNC-1c) implements the base image and atomic rebase;
 `personal-cfo-vlfd` (ADR 0073) defines the disposition rules; and
@@ -174,7 +194,8 @@ as local.
 Class 1 covers user-facing canonical intent; class 1b covers artifact bytes;
 class 2 is rebuilt; class 3 includes connector credentials, refresh
 watermarks, staged rows, idempotency keys, audit events, node-local values,
-KDF parameters, `device.*` settings, durable jobs, and backup history.
+KDF parameters, `device.*` settings, durable jobs, backup history, and local
+Sync key-epoch, nonce-range cursor, and service-credential state.
 CLASS-0 records the exact per-table manifest. `personal-cfo-5ymg8` (SYNC-2)
 implements the routing and module-level lint; `personal-cfo-07u` (SYNC-2a)
 splits connector identity from device-local secrets.
@@ -201,18 +222,66 @@ disposition model.
 `personal-cfo-egn67` (SYNC-2b) implements this rule and covers all three
 existing delete paths.
 
-### 8. Client-side encryption and key custody
+### 8. Client-side encryption, epochs, and key custody
 
-Snapshots and envelopes are encrypted client-side with AES-256-GCM, a fresh
-per-envelope nonce, and AAD equal to `vault_id ‖ seq`. Sync uses a **Sync
-key** distinct from the vault DEK. That key is sealed to each enrolled device;
-the same enrollment and `device_id` mechanism is reused by the phone-container
-work in ADR 0024-A. The service never holds a decryption key.
+Snapshots and envelopes use AES-256-GCM under a fresh, uniformly random
+32-byte **Sync key** that is distinct from the vault DEK. Every encrypted object
+belongs to a monotonically increasing `key_epoch`; the key is sealed only to
+the enrolled devices in that epoch. The same enrollment and `device_id`
+mechanism is reused by the phone-container work in ADR 0024-A. The service
+stores sealed-key blobs and protocol metadata, never a decryption key.
 
-Revoking a device means sealing the Sync key to the remaining devices and
-publishing a new snapshot. **D1:** ADR 0066 leaves this encryption mechanism
-open; this ADR supplies the client-side ciphertext-only mechanism while leaving
-ADR 0066's free-local-app and separate-service boundary otherwise unchanged.
+Device revocation is a fresh-key, atomic epoch cutover — not a re-seal of a
+key the removed device already knows:
+
+1. An authorized remaining device generates a fresh Sync key for epoch
+   `e + 1`, seals it to every remaining enrolled device, and encrypts a new
+   logical snapshot at the current service head.
+2. The service atomically verifies the device-management authorization and
+   head, installs the `e + 1` sealed-key set and snapshot, records the active
+   epoch, and revokes the removed device's enrollment and service credential.
+3. The service rejects every old-epoch write or nonce allocation after the
+   cutover. A remaining device can obtain its new sealed key and bootstrap from
+   the new snapshot; a removed, offline device cannot decrypt or submit any
+   post-cutover object.
+
+Ciphertext already obtained before the cutover cannot be made secret
+retroactively. That limitation is shown in the revocation UX; it does not
+justify retaining the old key for new data. `personal-cfo-v98vd` owns the
+service authorization, credential revocation, epoch transition, and atomic
+cutover contract; `personal-cfo-elciw` owns the client Settings flow.
+
+The GCM nonce is a deterministic 96-bit value
+`nonce_domain(32) ‖ invocation_counter(64)`. The service assigns a unique
+`nonce_domain` for each `(vault_id, key_epoch, device_id, object_type)` context
+and allocates durable counter ranges for that context before encryption. A
+client persists its next counter ahead of use in device-only local Sync state;
+a crash or changed retry burns the value, while an exact-byte retransmission
+reuses the existing ciphertext. Neither a domain nor a counter range is reused
+within an epoch, including after a crash, retry, or re-enrollment. Snapshots
+have their own `object_type` domain. The service charges every allocated value
+against a per-epoch budget and refuses further allocation at
+`2^32` invocations, forcing a fresh-key epoch before any additional object is
+encrypted. It accepts a `(key_epoch, nonce)` only once for a new object; an
+exact-byte retransmission receives the prior idempotent result, while any
+non-identical reuse fails closed. This is the fixed-field/invocation-field
+construction in
+[NIST SP 800-38D §8.2.1](https://doi.org/10.6028/NIST.SP.800-38D), with a
+deliberate operational cap rather than random IVs.
+
+The authenticated data is the canonical encoding of every pre-encryption clear
+header field: `protocol_version ‖ vault_id ‖ key_epoch ‖ object_type ‖
+object_id ‖ device_id ‖ base_seq ‖ payload_schema_version ‖ engine_version ‖
+schema_version`. `object_id` is the immutable `command_id` for an envelope or
+the fresh snapshot ID for a snapshot. The service-assigned `seq` is deliberately
+not in AAD: it does not exist until after the CAS accepts the already sealed
+object. The wire format binds the returned sequence to that immutable object ID
+in the append-only service log. Any AAD, epoch, object-type, domain, counter,
+or tag mismatch fails closed.
+
+**D1:** ADR 0066 leaves this encryption mechanism open; this ADR supplies the
+client-side ciphertext-only mechanism while leaving ADR 0066's free-local-app
+and separate-service boundary otherwise unchanged.
 
 **D12, owner decision 2026-09-20:** there is no recovery escrow in Sync v1.
 This is a key-custody constraint for the encrypted protocol and is also stated
@@ -220,8 +289,10 @@ in Decision 10; it does not change the local password or backup-recovery
 model.
 
 `personal-cfo-1cltt` (SYNC-3) implements the sealed Sync key and snapshot
-encryption, and `personal-cfo-bc8iv` (ADR 0066-A) owns the endpoint and
-egress posture.
+encryption; `personal-cfo-klr.4` (ADR 0077) owns the canonical header, nonce,
+and compatibility format; `personal-cfo-v98vd` owns nonce allocation and
+device-service authorization; and `personal-cfo-bc8iv` (ADR 0066-A) owns the
+endpoint and egress posture.
 
 ### 9. Identity, restore, and ordering
 
@@ -259,6 +330,25 @@ exit instrument, not an optional test utility. It covers:
 `personal-cfo-tp2ln` (SYNC-1b) implements the harness and convergence
 property tests; `personal-cfo-mpep3` exposes the queue and audit evidence.
 
+The simulator also has three mandatory safety suites:
+
+- **Revocation cutover:** enroll A and B, take B offline, revoke B while it
+  races an old-epoch push, and prove that A continues, B cannot unwrap or
+  decrypt any post-cutover object, B has no accepted request, and old-epoch
+  writes fail closed. The test documents the non-retroactive historical-data
+  limitation.
+- **Class-3 preservation:** after the base image, mutate representative local
+  credentials and watermarks, staged rows, `device.*` settings, durable jobs,
+  audit/idempotency state, and backup history. Successful and queued rebases
+  preserve their canonical row values across swap and crash recovery while
+  class 1 converges and class 2 rebuilds. Invalid local references and injected
+  preservation failures leave the live vault untouched in
+  `RebaseBlockedLocalState`.
+- **Nonce lifecycle:** concurrent devices, rejected-CAS retries, crash/restart,
+  re-snapshot, and epoch rotation never repeat a `(key_epoch, nonce)` pair.
+  Injected reuse fails closed, and a boundary test rotates before the allocated
+  invocation budget is exceeded.
+
 ### 12. The local-app promise
 
 The fact-sheet invariant, to ship in S2a and be protected by
@@ -290,6 +380,13 @@ changes them nor introduces an account requirement to the local app.
   especially for assertions, toggles, and correlation groups.
 - **Merge on the service.** The service does not hold a decryption key and
   must not receive plaintext canonical state.
+- **Re-seal an unchanged Sync key on revocation.** The removed device already
+  possesses that key, so rewrapping it cannot protect later ciphertext.
+- **Use random GCM IVs for a shared epoch.** A per-device random draw does not
+  make global uniqueness, crash recovery, or the epoch-wide budget enforceable.
+- **Restore class-3 state from the rollback base.** It can erase later local
+  credentials, staging work, settings, jobs, audit/idempotency state, or backup
+  history.
 - **Add recovery escrow in v1.** It widens the key-custody boundary before the
   dedicated recovery design and external review are complete.
 
@@ -298,11 +395,16 @@ changes them nor introduces an account requirement to the local app.
 - SYNC-1 (`personal-cfo-t2s4b`) adds operation-log-v2 envelopes;
   SYNC-1a (`personal-cfo-32fmp`) adds deterministic apply; SYNC-1b
   (`personal-cfo-tp2ln`) adds the simulator; SYNC-1c
-  (`personal-cfo-bxsbz`) adds base-image rebase; SYNC-2
+  (`personal-cfo-bxsbz`) adds base-image rebase and class-3 preservation;
+  SYNC-2
   (`personal-cfo-5ymg8`), SYNC-2a (`personal-cfo-07u`), SYNC-2b
   (`personal-cfo-egn67`), and SYNC-2c (`personal-cfo-0g528`) implement
   table routing, secret separation, tombstones, and payload materialization;
-  SYNC-3 (`personal-cfo-1cltt`) adds genesis and the sealed Sync key.
+  SYNC-3 (`personal-cfo-1cltt`) adds genesis and the sealed Sync key. CLASS-0
+  (`personal-cfo-w21q7`) additionally records every class-3 table's rebase
+  preservation and reference-validation rule. S2-1
+  (`personal-cfo-v98vd`) provides epoch authorization, credential revocation,
+  nonce-range allocation, and the atomic cutover.
 - ADR 0013-A, ADR 0073, ADR 0017, ADR 0077, ADR 0066-A, ADR 0024 Addendum A,
   ADR 0075, and ADR 0078 remain their own records. This ADR does not duplicate
   their detailed decisions.
@@ -349,6 +451,7 @@ changes them nor introduces an account requirement to the local app.
 - `personal-cfo-egn67` (SYNC-2b: tombstones)
 - `personal-cfo-0g528` (SYNC-2c: payload materialization)
 - `personal-cfo-1cltt` (SYNC-3: logical genesis and Sync key)
+- `personal-cfo-v98vd` (S2-1: service CAS, device authorization, and epochs)
 - `personal-cfo-elciw` (S3-1: client engine)
 - `personal-cfo-mpep3` (S3-2: rebase queue UI)
 - `personal-cfo-1df8d` (ADR 0013-A: derived IDs)
