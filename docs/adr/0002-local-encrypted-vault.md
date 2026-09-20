@@ -119,7 +119,7 @@ ADR change, not a code change.
 
 - SQLCipher is EOL, has an unfixed CVE in our pinned line, or upstream guidance changes the recommended cipher mode.
 - Argon2id is superseded by a future PHC recommendation.
-- We add multi-device sync (ADR 0017): the vault model may need a separate device key wrapped by the DEK for sync envelope encryption.
+- ~~We add multi-device sync (ADR 0017): the vault model may need a separate device key wrapped by the DEK for sync envelope encryption.~~ **Fired 2026-09-20:** ADR 0074 defines a separate, per-device-sealed Sync key distinct from the vault DEK; it does not alter the password or backup-recovery hierarchy and introduces no recovery escrow in v1.
 - A real recovery-key requirement (per §6.5.1) becomes urgent — at that point we re-open this ADR and design the reserve slot.
 
 ## Implementation notes

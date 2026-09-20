@@ -191,6 +191,7 @@ design.
 
 ## Implementation notes
 
+- See ADR 0074 for the Sync architecture; this ADR's free-local-app and separate-service boundary remains unchanged.
 - ADR 0043 gains a one-line pointer to this ADR, appended after its
   2026-09-02 CLA addendum.
 - Site copy: `personal-cfo-n76x.23` reconciles `index.astro`, `pricing.astro`,
