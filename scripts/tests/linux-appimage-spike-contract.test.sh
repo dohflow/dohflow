@@ -27,6 +27,7 @@ assert_file_contains "$WORKFLOW" 'pnpm tauri build --bundles appimage' 'AppImage
 assert_file_contains "$WORKFLOW" 'xvfb-run --auto-servernum' 'Xvfb launch smoke is present'
 assert_file_contains "$WORKFLOW" 'xdotool search --name' 'window-presence assertion is present'
 assert_file_contains "$WORKFLOW" 'import -window' 'screenshot capture is present'
+assert_file_contains "$WORKFLOW" 'for attempt in $(seq 1 10)' 'screenshot capture retries transient X11 failures'
 assert_file_contains "$WORKFLOW" 'DohFlow vault screen detected' 'vault-screen log marker is present'
 assert_file_contains "$WORKFLOW" 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' 'artifact upload is pinned'
 

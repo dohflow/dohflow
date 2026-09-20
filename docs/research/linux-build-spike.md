@@ -57,8 +57,10 @@ It records elapsed build time, AppImage byte size, and every build-log line
 mentioning a warning, icon, or desktop entry. The AppImage is launched with a
 temporary `PCFO_DATA_DIR` under `xvfb-run`; the script waits for a live window
 named `DohFlow`, captures it with ImageMagick, and appends the marker
-`DohFlow vault screen detected` to the launch log. This is a fresh no-vault
-run, so the visible first screen is the vault gate and no real data is used.
+`DohFlow vault screen detected` to the launch log. ImageMagick capture retries
+transient X11 mapping failures for up to ten seconds before reporting a real
+smoke failure. This is a fresh no-vault run, so the visible first screen is the
+vault gate and no real data is used.
 
 ## Evidence captured by the run
 
