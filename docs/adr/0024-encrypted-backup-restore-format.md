@@ -200,6 +200,7 @@ password
   → vault_crypto::unwrap_dek(wrapped backup DEK)
   → backup DEK
   → vault_crypto::backup::open(payload)
+  → constant-time, byte-exact comparison of the header and payload vault envelopes
   → existing manifest verification and verify-then-install restore
 ```
 
@@ -223,11 +224,22 @@ The plaintext header fields are, in order:
 7. `sealed_payload_nonce` = 12 bytes.
 8. `sealed_payload_ciphertext_len` = `u64`, followed by its ciphertext.
 
-The same serialized vault-envelope bytes remain inside the encrypted payload
-and in its manifest integrity record. The header copy makes unattended restore
-possible; the payload copy preserves the existing byte-for-byte restore
-property for the installed envelope sidecar and keeps the existing component
-verification model intact.
+The same serialized vault-envelope bytes remain inside the encrypted payload,
+whose manifest carries their integrity hash. The encrypted payload copy is
+authoritative: it is the only envelope installed on a successful restore. The
+plaintext header copy is bootstrap material only. Immediately after
+`backup::open` authenticates the payload, and before extracting to staging or
+performing any filesystem write, `disassemble` checks the bounded raw header
+and payload envelope lengths, then compares equal-length byte strings with
+constant-time equality. A mismatch is the typed
+`BackupError::HeaderEnvelopeMismatch`, never a wrong-password error, and
+aborts the restore without creating restore state.
+
+The header copy lets an unattendedly-created backup remain self-contained and
+restorable with the vault password; it does not permit unattended restore. The
+payload copy preserves the existing byte-for-byte restore property for the
+installed envelope sidecar and keeps the existing component-verification model
+intact.
 
 `disassemble` accepts format versions 1 and 2 forever. The v1 parser and
 its password-derived key chain remain byte-compatible; assembly writes only
@@ -242,10 +254,23 @@ value, a missing required field, or an unknown field with a clear error rather
 than defaulting it. The v1 parser keeps its legacy manifest grammar so existing
 v1 containers remain restorable.
 
-Before deriving the vault KEK, a v2 restore parses the header envelope and
-refuses Argon2id parameters below the runtime floor in `personal-cfo-3fdd.15`.
-The refusal happens before any vault write. A malformed or tampered envelope,
-HKDF salt, wrapped backup key, or sealed payload likewise fails closed.
+Before invoking Argon2id, both parsers apply the versioned backup KDF admission
+policy. For parameter-schema version 1, the build uses its fixed Argon2id
+version `0x13`, permits only parallelism `1`, and accepts exactly one of the
+three profile tuples already documented in `docs/security/encryption-design.md`:
+LegacyCompatibility
+(`19_456 KiB`, time cost `2`), InteractiveDefault (`65_536 KiB`, time cost
+`3`), or HighSecurity (`262_144 KiB`, time cost `4`). This is a bounded
+allowlist, not merely a lower floor: the largest accepted memory cost is
+`262_144 KiB` and the largest accepted time cost is `4`.
+
+The v1 parser validates its plaintext KDF fields, and the v2 parser validates
+the parsed header vault envelope, before `derive_kek`, Argon2 allocation or
+work, staging, or any vault write. An unsupported parameter-schema version or
+resource tuple returns the typed `BackupError::UnsupportedKdfParameters`; this
+is distinct from `BackupError::Crypto` for a wrong password. A malformed or
+tampered envelope, unknown algorithm, HKDF salt, wrapped backup key, or sealed
+payload likewise fails closed.
 
 #### 3. Phone containers are a separate, non-restorable destination
 
@@ -280,13 +305,18 @@ fail to reach the phone rather than silently leak there.
   `export_unattended`, the no-password manual export surface, v1 compatibility,
   and the manifest grammar.
 - The header exposes the same wrapped vault-envelope material already stored
-  beside `vault.db`; it adds no plaintext financial data and does not increase
-  the secret exposure of a stolen backup. The threat model's asset A4 and
-  "Backup theft" row are updated by BACK-0b.
+  beside `vault.db`; it adds no plaintext financial data or usable key material.
+  Its deterministic serialization is nevertheless a stable fingerprint: an
+  observer of ciphertext objects can correlate version-2 backups made before a
+  password rewrap/rekey and can match one to the existing vault-envelope
+  sidecar; a rewrap/rekey ends and reveals such epochs. This accepted
+  linkability consequence preserves the self-contained restore contract.
+  BACK-0b updates the threat model's asset A4 and "Backup theft" row.
 - `personal-cfo-8qh` consumes unattended export for the local job. A
   user-chosen cloud-synced folder sends ciphertext through that user's own
   sync client; it is not an app-managed upload. That bead owns the corresponding
-  sentence in `docs/public/privacy.md` and the site privacy page.
+  public privacy and site-privacy language for both this metadata linkability
+  and the user-selected cloud-folder ciphertext egress.
 - BACK-0b updates `docs/operations/backup-and-recovery.md` and
   `docs/user-guide/recover-a-vault.md` to remove the export password prompt;
   `personal-cfo-klr.4` records the resulting format in the future vault-format
@@ -300,6 +330,9 @@ fail to reach the phone rather than silently leak there.
   HKDF construction, header framing, or threat model.
 - ADR 0002 changes `vault_envelope_version` or its serialization; the backup
   header must then dispatch explicitly on that version.
+- A stronger or per-device-calibrated KDF needs values outside the current
+  parameter-schema-1 allowlist; it must add a reviewed, explicitly versioned
+  parser policy rather than silently widen these restore-time resource bounds.
 - A cloud destination needs a different transport contract; it should reuse
   this self-contained container rather than create a second backup format.
 - Sync-key rotation (ADR 0074) needs a separate rotation story; it must not
@@ -325,10 +358,15 @@ fail to reach the phone rather than silently leak there.
   recovery instructions, executed).
 - `personal-cfo-c545`: a backup one schema version old restores + migrates.
 - `personal-cfo-ii3an` (BACK-0b): a checked-in v1 fixture restores; v2 completes
-  `restore_drill_reproduces_the_canonical_state`; wrong-password failure occurs
-  before any write; tampered header/envelope fails closed; the backup KEK is
-  domain-separated from the attachment key for the same vault DEK; and below-floor
-  envelope parameters are refused.
+  `restore_drill_reproduces_the_canonical_state`; an ordinary v2 round trip is
+  retained; wrong-password failure occurs before any write; and the backup KEK
+  is domain-separated from the attachment key for the same vault DEK. A v2
+  attack test uses `rewrap_envelope` to produce two valid envelopes for the
+  same DEK, splices one into the other package's header, and asserts
+  `BackupError::HeaderEnvelopeMismatch` before staging or any target write.
+  Doctored v1-header and v2-envelope fixtures below the floor or above the
+  version-1 allowlist each return `BackupError::UnsupportedKdfParameters`
+  before Argon2 work or any write.
 
 ## Linked beads
 
