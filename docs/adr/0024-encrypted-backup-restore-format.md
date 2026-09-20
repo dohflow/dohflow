@@ -148,6 +148,163 @@ kernel commands; the frontend never touches the package bytes directly.
   live envelope; a fresh per-backup salt/key keeps the backup self-contained and
   independently revocable.
 
+## Addendum A (2026-09-15, personal-cfo-lhouc): unattended backup key model — format_version 2
+
+### Context
+
+Version 1 derives the outer backup KEK from a password supplied at export. A
+scheduled job may run while a vault is already unlocked, when the in-memory
+vault DEK is available but the master password is intentionally not retained.
+Re-prompting for a password would make that job attended; retaining a password,
+creating a second backup password, or introducing a Keychain-held backup secret
+would weaken the vault model in ADR 0002.
+
+This addendum fixes the version-2 container contract that `personal-cfo-ii3an`
+implements. It does not change the v1 parser or the atomic verify-then-install
+restore rule in this ADR.
+
+### Decision
+
+#### 1. Derive a distinct backup KEK from the unlocked vault DEK
+
+While the vault is unlocked, the exporter derives a backup KEK with
+`HKDF-SHA256`:
+
+```text
+backup KEK = HKDF-SHA256(
+  ikm  = vault DEK,
+  salt = fresh random 16-byte hkdf_salt for this backup,
+  info = ASCII "dohflow-backup-kek-v2"
+)
+```
+
+The fixed `info` string is a domain-separation boundary: it must never be
+reused for attachment addressing or another DEK-derived key. The implementation
+lives beside the existing backup AEAD helpers as
+`vault_crypto::backup::derive_backup_kek`; it uses `Hkdf` over the in-memory
+DEK and returns a KEK suitable for the existing `vault_crypto::wrap_dek` /
+`vault_crypto::unwrap_dek` primitives.
+
+Export generates a random backup DEK as today, wraps it under that distinct
+backup KEK, and seals the framed payload with `vault_crypto::backup::seal`.
+Restore performs the inverse chain:
+
+```text
+password
+  → vault_crypto::derive_kek(header vault-envelope salt + Argon2id params)
+  → vault KEK
+  → vault_crypto::unwrap_dek(header vault envelope)
+  → vault DEK
+  → HKDF-SHA256 with the header hkdf_salt and fixed info
+  → backup KEK
+  → vault_crypto::unwrap_dek(wrapped backup DEK)
+  → backup DEK
+  → vault_crypto::backup::open(payload)
+  → existing manifest verification and verify-then-install restore
+```
+
+The vault password remains the only user secret. No Keychain item, recovery
+secret, or password material is added to the backup job, and the job runs only
+while the vault is unlocked.
+
+#### 2. Write format_version 2; retain format_version 1 forever
+
+All version-2 integer lengths and versions use the existing big-endian framing.
+The plaintext header fields are, in order:
+
+1. `magic` = `PCFOBK`.
+2. `format_version` = `u16(2)`.
+3. `vault_envelope_len` = `u32`, followed by the serialized vault-envelope
+   bytes (envelope version, Argon2id parameters and salt, then the wrapped
+   vault DEK nonce and ciphertext).
+4. `hkdf_salt` = a fresh 16-byte random salt.
+5. `wrapped_backup_dek_nonce` = 12 bytes.
+6. `wrapped_backup_dek_ciphertext_len` = `u32`, followed by its ciphertext.
+7. `sealed_payload_nonce` = 12 bytes.
+8. `sealed_payload_ciphertext_len` = `u64`, followed by its ciphertext.
+
+The same serialized vault-envelope bytes remain inside the encrypted payload
+and in its manifest integrity record. The header copy makes unattended restore
+possible; the payload copy preserves the existing byte-for-byte restore
+property for the installed envelope sidecar and keeps the existing component
+verification model intact.
+
+`disassemble` accepts format versions 1 and 2 forever. The v1 parser and
+its password-derived key chain remain byte-compatible; assembly writes only
+v2. Both manual and scheduled export use the unlocked vault DEK and therefore
+do not prompt for a password. Restore continues to ask for the vault password.
+
+The v2 manifest gains `manifest_schema_version = 1`
+(`personal-cfo-3fdd.15(c)) to describe the manifest field set. It is distinct
+from both the outer `format_version` and the existing database
+`schema_version`. The v2 parser must reject an unsupported manifest schema
+value, a missing required field, or an unknown field with a clear error rather
+than defaulting it. The v1 parser keeps its legacy manifest grammar so existing
+v1 containers remain restorable.
+
+Before deriving the vault KEK, a v2 restore parses the header envelope and
+refuses Argon2id parameters below the runtime floor in `personal-cfo-3fdd.15`.
+The refusal happens before any vault write. A malformed or tampered envelope,
+HKDF salt, wrapped backup key, or sealed payload likewise fails closed.
+
+#### 3. Phone containers are a separate, non-restorable destination
+
+Decision D24 is recorded here for the later mobile work: a phone container is
+not a user-restorable backup. `personal-cfo-28js0` builds it, never strips an
+existing SQLite file (a `DELETE` could leave ciphertext in freed pages), and
+uses only the class-1 and class-2 allowlist from `personal-cfo-w21q7` (CLASS-0).
+It is sealed with HPKE to a per-phone, Secure-Enclave-backed public key enrolled
+by QR; the vault password never leaves the Mac. Revocation means ceasing to
+seal future phone containers to that key. An unclassified table must visibly
+fail to reach the phone rather than silently leak there.
+
+### Rejected alternatives
+
+- **Reuse the vault's KEK as the backup key.** The original rejection still
+  applies. Version 2 does not reuse the vault KEK: it derives a distinct backup
+  KEK from the vault DEK with HKDF, a per-backup salt, and a separate domain.
+  The vault envelope travels in the header, so the container remains portable.
+  A later live-vault rekey does not orphan an old backup: that backup carries
+  the envelope that was current when it was made and opens with the password
+  current at that time.
+- **Keychain-held backup key.** ✗ This would make a portable backup depend on a
+  macOS-only convenience layer that the backup path does not otherwise use.
+- **A second backup password.** ✗ It creates another secret the user can lose
+  without improving the vault's recovery model.
+- **Plaintext backup DEK at rest.** ✗ It would let possession of a package
+  defeat the vault's encryption boundary.
+
+### Consequences
+
+- `personal-cfo-ii3an` (BACK-0b) implements this container contract, including
+  `export_unattended`, the no-password manual export surface, v1 compatibility,
+  and the manifest grammar.
+- The header exposes the same wrapped vault-envelope material already stored
+  beside `vault.db`; it adds no plaintext financial data and does not increase
+  the secret exposure of a stolen backup. The threat model's asset A4 and
+  "Backup theft" row are updated by BACK-0b.
+- `personal-cfo-8qh` consumes unattended export for the local job. A
+  user-chosen cloud-synced folder sends ciphertext through that user's own
+  sync client; it is not an app-managed upload. That bead owns the corresponding
+  sentence in `docs/public/privacy.md` and the site privacy page.
+- BACK-0b updates `docs/operations/backup-and-recovery.md` and
+  `docs/user-guide/recover-a-vault.md` to remove the export password prompt;
+  `personal-cfo-klr.4` records the resulting format in the future vault-format
+  specification.
+- CLASS-0 is a hard input to the phone-container builder, not an implicit data
+  export rule.
+
+### Revisit if
+
+- The external cryptographic review (`personal-cfo-5kua`) finds a fault in the
+  HKDF construction, header framing, or threat model.
+- ADR 0002 changes `vault_envelope_version` or its serialization; the backup
+  header must then dispatch explicitly on that version.
+- A cloud destination needs a different transport contract; it should reuse
+  this self-contained container rather than create a second backup format.
+- Sync-key rotation (ADR 0074) needs a separate rotation story; it must not
+  silently redefine this backup key hierarchy.
+
 ## Revisit if
 
 - Incremental/differential backups are needed (this ADR is full-snapshot only).
@@ -155,6 +312,8 @@ kernel commands; the frontend never touches the package bytes directly.
   ADR 0002) in addition to the password.
 - Cross-device sync (ADR 0017) introduces a streaming/chunked transport that
   should share the manifest/verification model.
+- The format-version-2 unattended key model or its header needs to change (see
+  Addendum A and its explicit review triggers).
 
 ## Test coverage
 
@@ -165,13 +324,25 @@ kernel commands; the frontend never touches the package bytes directly.
 - `personal-cfo-7pfu`: fresh-clone restore-drill regression (the gate's manual
   recovery instructions, executed).
 - `personal-cfo-c545`: a backup one schema version old restores + migrates.
+- `personal-cfo-ii3an` (BACK-0b): a checked-in v1 fixture restores; v2 completes
+  `restore_drill_reproduces_the_canonical_state`; wrong-password failure occurs
+  before any write; tampered header/envelope fails closed; the backup KEK is
+  domain-separated from the attachment key for the same vault DEK; and below-floor
+  envelope parameters are refused.
 
 ## Linked beads
 
 - `personal-cfo-nf18` (this ADR)
+- `personal-cfo-lhouc` (Addendum A: unattended backup key model)
 - `personal-cfo-ef3` (encrypted backup export v1)
 - `personal-cfo-au3` (encrypted backup restore + verification)
 - `personal-cfo-7pfu` (restore-drill regression test)
 - `personal-cfo-b7jk` (ADR 0023 attachment store — the blob store backup bundles)
 - `personal-cfo-c545` (migration tests — older-backup restore path)
 - `personal-cfo-2lm` (vault_metadata — schema/envelope versions in the manifest)
+- `personal-cfo-ii3an` (BACK-0b format-version-2 implementation)
+- `personal-cfo-3fdd.15` (Argon2id floor and manifest schema hardening)
+- `personal-cfo-8qh` (scheduled backup job)
+- `personal-cfo-w21q7` (CLASS-0 table-class manifest)
+- `personal-cfo-28js0` (MOB-0a phone-container builder)
+- `personal-cfo-5kua` (external cryptographic review)

@@ -44,7 +44,12 @@ Concretely:
 4. **SQLCipher** is keyed from the DEK at unlock time. The DEK lives only in app-controlled memory while the vault is unlocked; lock zeroizes it (`personal-cfo-1t0`).
 5. **Attachments** each have a randomly-generated content key wrapped by the DEK. Filenames are stored only as encrypted metadata; on-disk filenames are opaque storage IDs (`personal-cfo-bcj`).
 6. **Optional Touch ID** is a Keychain-stored wrapped form of unlock material, available only after a successful password unlock has established intent. Touch ID never replaces the password as the system of record. macOS Keychain is used per [Apple's guidance](https://developer.apple.com/documentation/security/keychain_services) for small secrets, with appropriate access controls.
-7. **Versioned envelope.** The on-disk envelope carries a `vault_envelope_version` so we can migrate from v1 → v2 (e.g., upgraded Argon2id parameters, different AEAD primitive) without breaking older vaults.
+7. **Versioned envelope.** The on-disk envelope carries a
+   `vault_envelope_version` so we can migrate from v1 → v2 (e.g., upgraded
+   Argon2id parameters, different AEAD primitive) without breaking older vaults.
+   ADR 0024 Addendum A (`personal-cfo-lhouc`) carries these serialized envelope
+   bytes in a format-version-2 backup header so an unattended backup remains
+   recoverable with the vault password and introduces no new secret.
 
 The vault state machine (`personal-cfo-tg5`, §6.2.1) governs transitions: NoVault → CreatingVault → Locked → Unlocking → Unlocked → Locking → Rekeying → Migrating → RestoringBackup → CorruptNeedsRecovery.
 
