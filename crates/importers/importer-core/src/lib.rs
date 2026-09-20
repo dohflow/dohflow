@@ -611,4 +611,62 @@ mod tests {
         let back: ParsedBatch = serde_json::from_str(&json).unwrap();
         assert_eq!(batch, back);
     }
+
+    /// Deliberately does NOT override `help_published()` — the whole point
+    /// (personal-cfo-08nvk) is to exercise the TRAIT's own default rather
+    /// than any real preset's choice. Every registered preset today (YNAB)
+    /// overrides the method explicitly, so the default itself is otherwise
+    /// never exercised by any test in this workspace: flipping it from
+    /// `false` to `true` left `cargo test -p source-presets -p
+    /// importer-core` fully green (04-review, gvidg PR #15 re-review).
+    struct PresetWithNoOpinionOnPublishStatus;
+
+    impl SourcePreset for PresetWithNoOpinionOnPublishStatus {
+        fn id(&self) -> &'static str {
+            "test-only-no-publish-opinion"
+        }
+        fn display_name(&self) -> &'static str {
+            "Test-only preset"
+        }
+        fn source_app_url(&self) -> &'static str {
+            "https://example.invalid"
+        }
+        fn hints(&self) -> ParserHints {
+            ParserHints::default()
+        }
+        fn sign_convention(&self) -> SignConvention {
+            SignConvention::SignedAmount
+        }
+        fn category_handling(&self) -> CategoryHandling {
+            CategoryHandling::None
+        }
+        fn account_handling(&self) -> AccountHandling {
+            AccountHandling::OneFilePerAccount
+        }
+        fn verified_against(&self) -> &'static str {
+            "n/a — test-only, never registered"
+        }
+        fn help_slug(&self) -> &'static str {
+            "test-only"
+        }
+        fn fixture_csv(&self) -> &'static str {
+            "Date,Amount\n2026-01-01,-1.00\n"
+        }
+        // help_published intentionally omitted.
+    }
+
+    #[test]
+    fn help_published_defaults_to_false_pinning_the_fail_safe_direction() {
+        // personal-cfo-08nvk: this is the ONLY test in the workspace that
+        // exercises SourcePreset::help_published()'s own default rather
+        // than a specific preset's override — do not delete it as
+        // "redundant" with any preset-specific assertion (e.g. YNAB's own
+        // `help_published() == false` test), which cannot catch a change to
+        // the default because it overrides the method. If this test starts
+        // failing, the default was flipped to `true` — the direction whose
+        // failure mode is "the app links a user to a page that might still
+        // be a draft," not the safer "a preset's guide link stays hidden
+        // one release longer than necessary."
+        assert!(!PresetWithNoOpinionOnPublishStatus.help_published());
+    }
 }
