@@ -160,8 +160,10 @@ creating a second backup password, or introducing a Keychain-held backup secret
 would weaken the vault model in ADR 0002.
 
 This addendum fixes the version-2 container contract that `personal-cfo-ii3an`
-implements. It does not change the v1 parser or the atomic verify-then-install
-restore rule in this ADR.
+implements. It preserves v1 framing, its password-derived key chain, and the
+atomic verify-then-install restore rule in this ADR. It also hardens the v1
+parser with the same pre-KDF admission validation as v2: unsupported parameter
+tuples fail with a typed error before Argon2 work or any restore write.
 
 ### Decision
 
@@ -241,10 +243,14 @@ payload copy preserves the existing byte-for-byte restore property for the
 installed envelope sidecar and keeps the existing component-verification model
 intact.
 
-`disassemble` accepts format versions 1 and 2 forever. The v1 parser and
-its password-derived key chain remain byte-compatible; assembly writes only
-v2. Both manual and scheduled export use the unlocked vault DEK and therefore
-do not prompt for a password. Restore continues to ask for the vault password.
+`disassemble` accepts format versions 1 and 2 forever. For v1, the on-disk
+framing and password-derived key chain remain byte-compatible, so every
+historically app-emitted v1 package remains restorable. Its only added behavior
+is the pre-KDF admission validation below: unsupported parameter tuples return
+`BackupError::UnsupportedKdfParameters` before Argon2 work or any write.
+Assembly writes only v2. Both manual and scheduled export use the unlocked vault
+DEK and therefore do not prompt for a password. Restore continues to ask for
+the vault password.
 
 The v2 manifest gains `manifest_schema_version = 1`
 (`personal-cfo-3fdd.15(c)) to describe the manifest field set. It is distinct
