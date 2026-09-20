@@ -15,12 +15,13 @@ that the ADR needs.
 ## Run record
 
 The job is manual-only (`workflow_dispatch`) and is intentionally not a
-required check. Replace these placeholders after dispatching the branch:
+required check. The successful evidence run is:
 
-- **Run URL:** pending
-- **Artifact:** pending (`linux-appimage-spike-<run-id>`; contains the AppImage,
-  build log/warnings, runner versions, SQLCipher probe, Argon2 timing, launch
-  log, and `vault-screen.png`)
+- **Run URL:** <https://github.com/dohflow/dohflow/actions/runs/35544187701>
+- **Artifact:** <https://github.com/dohflow/dohflow/actions/runs/35544187701/artifacts/10616795641>
+  (`linux-appimage-spike-35544187701`; contains the AppImage, build
+  log/warnings, runner versions, SQLCipher probe, Argon2 timing, launch log,
+  and `vault-screen.png`)
 
 ## Exact runner setup
 
@@ -40,9 +41,11 @@ xdotool
 imagemagick
 ```
 
-The run records `/etc/os-release`, `uname -a`, glibc from
-`getconf GNU_LIBC_VERSION`, the `libwebkit2gtk-4.1-dev` and GTK package
-versions, Node 22, pnpm 11.5.2, and the pinned Rust toolchain in the artifact.
+The run resolved `ubuntu-latest` to Ubuntu 24.04.5 LTS (Noble), x86_64, with
+glibc 2.39, WebKitGTK 4.1 package 2.52.6-0ubuntu0.24.04.1, GTK 3 package
+3.24.41-4ubuntu1.3, Node v22.23.2, pnpm 11.5.2, and Rust 1.96.0. The exact
+`/etc/os-release`, `uname -a`, package versions, and toolchain output are in the
+artifact's `linux-spike-versions.txt`.
 
 ## Build and launch procedure
 
@@ -53,24 +56,27 @@ pnpm tauri build --bundles appimage \
   --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
-It records elapsed build time, AppImage byte size, and every build-log line
-mentioning a warning, icon, or desktop entry. The AppImage is launched with a
+It recorded 476.47 seconds of build time and an 87,362,040-byte AppImage. The
+captured warning lines include the existing frontend chunk-size warning; no
+icon or desktop-entry failure was reported. The AppImage is launched with a
 temporary `PCFO_DATA_DIR` under `xvfb-run`; the script waits for a live window
 named `DohFlow`, captures it with ImageMagick, and appends the marker
 `DohFlow vault screen detected` to the launch log. ImageMagick capture retries
 transient X11 mapping failures for up to ten seconds before reporting a real
-smoke failure. This is a fresh no-vault run, so the visible first screen is the
-vault gate and no real data is used.
+smoke failure. The run produced an 800x600 `vault-screen.png` and the marker
+`DohFlow vault screen detected: window=2097155 title=DohFlow process=62217`.
+This is a fresh no-vault run, so the visible first screen is the vault gate and
+no real data is used.
 
 ## Evidence captured by the run
 
 ### SQLCipher
 
-The job records the active `rusqlite` feature (`bundled-sqlcipher-vendored-openssl`)
-and runs a temporary Finance Kernel probe that prints both
-`PRAGMA cipher_version` and the linked SQLite version exposed by
-`finance_kernel::sqlite_version()` on the Linux runner. The
-temporary source is removed before the job ends; no production code is added.
+The job records the active `rusqlite` feature
+(`bundled-sqlcipher-vendored-openssl`) and runs a temporary Finance Kernel
+probe. The linked versions were `PRAGMA cipher_version=4.5.7 community` and
+`rusqlite sqlite_version=3.45.3`. The temporary source is removed before the
+job ends; no production code is added.
 
 ### Updater with no Linux channel
 
@@ -90,9 +96,10 @@ capability/CSP contract used by the existing IPC CI gate.
 ### Argon2id
 
 A temporary probe measures five `Profile::InteractiveDefault` derivations and
-records the median wall-clock time with memory, time-cost, and parallelism. It
-uses the production `vault-crypto` implementation and deletes the probe before
-the job ends.
+records the median wall-clock time with memory, time-cost, and parallelism. On
+this runner it measured `median_unlock_ms=2801.13` with
+`memory_kib=65536`, `time_cost=3`, and `parallelism=1`. It uses the production
+`vault-crypto` implementation and deletes the probe before the job ends.
 
 ### Owner-only arm64 VM leg
 
@@ -103,10 +110,15 @@ runner.
 
 ## Verdict for ADR 0079
 
-**DEFER — pending the manual workflow run.** After the run, replace this line
-with `GO`, `NO-GO`, or `DEFER`, include the exact measured floor, and keep the
-arm64 VM result explicit. The candidate floor to evaluate is **Ubuntu 22.04 LTS
-or newer, WebKitGTK 4.1, and glibc >= 2.35**, subject to the runner evidence.
+**GO for the hosted x86_64 AppImage floor; DEFER the owner arm64 VM leg.** The
+measured floor is Ubuntu 24.04.5 LTS, WebKitGTK 4.1, and glibc 2.39 on
+`ubuntu-latest`. This is a CI/build-spike verdict only: Linux is not a release
+tier, no Linux updater channel is claimed, and ADR 0079 must still decide the
+distribution and signing policy before any product release decision. The
+candidate compatibility floor remains **Ubuntu 22.04 LTS or newer, WebKitGTK
+4.1, and glibc >= 2.35**, subject to a future older-runner check.
+If a future run cannot reproduce the AppImage or vault-screen smoke, record a
+`NO-GO` for that runner instead of widening the floor silently.
 
 ADR 0079 must decide:
 
