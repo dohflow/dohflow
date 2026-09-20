@@ -93,7 +93,7 @@ when the ADR was written (owner-confirmed).
 | 0071 | [Public-repo contribution model](0071-public-repo-contribution-model.md) | Public | Accepted |
 | 0072 | [Universal binary distribution (Intel + Apple Silicon)](0072-universal-binary-distribution.md) | Public | Accepted |
 | 0073 | Sync disposition rules | Public | Not yet written (`personal-cfo-vlfd`) |
-| 0074 | DohFlow Sync architecture | Public | Not yet written (`personal-cfo-j8ab7`) |
+| 0074 | [DohFlow Sync architecture](0074-dohflow-sync-architecture.md) | Public | Accepted |
 | 0075 | — internal | Internal | Not yet written (`personal-cfo-oh3hg`) |
 | 0076 | Multi-provider connector strategy (public stance) | Public + Internal split | Not yet written (`personal-cfo-m0kgx`) — public ADR carries the decision and the D15/FTC sentence; an internal companion carries the connector's affiliate-payout terms and demand-test results |
 | 0077 | Data ownership and wire formats | Public | Not yet written (`personal-cfo-klr.4`) |
