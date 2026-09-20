@@ -33,17 +33,27 @@ require_text() {
 }
 
 require_text "rebase captures a durable plan" "rebase plan for every local outbox"
+require_text "service retries accepted pushes before CAS" 'Before checking `base_seq`, the'
+require_text "accepted pushes reconcile without replay" 'An exact match is **already accepted**'
+require_text "same command id mismatch fails closed" 'mismatch fails closed as `ProtocolFork`'
 require_text "replay-owned memos are withheld" "replay-owned idempotency memo is deliberately absent"
-require_text "replay rebuilds the memo target" "rebuilt memo points at the"
+require_text "replay rebuilds the memo target" "memo points at the rebuilt"
 require_text "queued retry cannot silently apply" "QueuedForDisposition"
-require_text "rebase validates an artifact closure before swap" "durable receipt/pin closure"
+require_text "rebase validates an artifact closure before swap" "receipt/pin closure"
 require_text "envelopes preserve replay identity" "complete original \`CommandMeta\`"
+require_text "envelopes have an opaque canonical digest" "canonical_envelope_digest"
 require_text "service is not the nonce authority" "it is **not** a confidentiality authority"
 require_text "membership starts from a client-created genesis" "The first Sync device creates the genesis membership record locally"
 require_text "AEAD keys are client-derived" "K_e,d,t = HKDF-SHA256-Expand"
 require_text "counter rollback fails closed" "NonceStateLost"
 require_text "service nonce tracking is only a backstop" "not the security source"
 require_text "artifact addresses are opaque and epoch scoped" "sync_artifact_id_e"
+require_text "artifact transport carries portable bytes" 'canonical `SyncArtifactTransportV1` object'
+require_text "receivers derive their own storage identity" "StorageId_B = HMAC-SHA256"
+require_text "receivers keep local materialization state" "device-local mapping from"
+require_text "received refs preserve the canonical service address" "preserves the origin's"
+require_text "attachment crypto fields stay local" "class-1/1b schema is therefore split"
+require_text "materialization failure is typed" "ArtifactMaterializationFailed"
 require_text "artifact publication is upload first" "Publication is upload-before-reference"
 require_text "snapshot truncation needs a durable closure" "closure pin are durable in one CAS transaction"
 require_text "artifact cache loss has a typed recovery path" "ArtifactRebootstrapRequired"

@@ -65,6 +65,15 @@ the shipped source:
   (`crates/db-worker/src/migrations.rs:636-654`). A rollback base therefore
   cannot silently substitute its older class-3 state for the currently live
   state after class-1 replay.
+- The current attachment store is DEK-bound: `attachments` stores a local
+  `storage_id`, wrapped content key, key/content nonces, and logical metadata
+  (`crates/db-worker/src/migrations.rs:184-216`); `attachments.rs` writes blob
+  ciphertext under that local ID and keeps the wrapped key in the row
+  (`crates/db-worker/src/attachments.rs:1-16`, `:69-102`, `:129-160`). The
+  crypto crate derives the ID from the vault DEK and wraps/unwraps each fresh
+  content key under that DEK (`crates/vault-crypto/src/attachment.rs:100-121`,
+  `:124-201`). A Sync replica with a different DEK cannot copy those local
+  fields and expect the blob to decrypt.
 
 These constraints mean Sync starts from a logical, encrypted representation of
 canonical user intent and adds a versioned command tail. It is not retroactive
@@ -118,9 +127,47 @@ The service can neither correlate the same plaintext across vaults nor use a
 guessed plaintext to confirm an artifact; cross-vault deduplication is
 forbidden. Local attachment dedup remains local.
 Any plaintext integrity digest stays inside the encrypted artifact descriptor;
-recipients verify the outer AEAD, the existing per-blob AEAD, and the keyed
-local `StorageId` after decrypting. A Sync-key epoch transition is thus an
+recipients verify the outer AEAD, then verify their receiver-local per-blob
+AEAD and keyed local `StorageId` after materialization. A Sync-key epoch transition is thus an
 intentional artifact re-upload boundary, not a reuse of a prior service object.
+
+The portable encrypted payload is a canonical `SyncArtifactTransportV1` object.
+It contains the opaque `sync_artifact_id_e`, artifact kind, plaintext length, a
+plaintext integrity digest, allowed logical metadata, and the verified artifact
+bytes. The bytes are encrypted by the outer Sync artifact object under the
+epoch-derived key; the transport never carries an origin `StorageId`, blob
+path, wrapped content key, content-key nonce, or origin blob ciphertext as a
+replicated field. The digest and metadata remain inside the authenticated
+encrypted descriptor, so the service still sees only the opaque ID and
+ciphertext. Source-batch, source-record, parser-run, and attachment artifacts
+all use this same portable object.
+
+On receipt, the client verifies the outer AEAD and the descriptor digest before
+materializing anything. It derives a receiver-local
+`StorageId_B = HMAC-SHA256(addr_subkey_B, plaintext_bytes)` under the receiving
+vault's DEK, generates a fresh local content key, encrypts the bytes with the
+existing per-blob AEAD, wraps that key under `DEK_B`, and atomically writes the
+receiver's blob plus metadata. It then records a device-local mapping from
+`sync_artifact_id_e` to the local attachment ID, `StorageId_B`, wrapped key, and
+nonces. No origin local crypto field is copied. A canonical attachment/link may
+become usable only after that mapping commits; a missing or failed local
+materialization returns typed `ArtifactMaterializationFailed`, discards
+temporary plaintext/ciphertext, and leaves the live vault and cache unchanged.
+The received canonical reference always preserves the origin's
+`sync_artifact_id_e`; the receiver never recomputes a different service ID for
+that object. Only a newly originated artifact derives a fresh address from its
+own local `StorageId`, and same-vault cross-device local deduplication is not a
+Sync requirement.
+
+The class-1/1b schema is therefore split before Sync reads it: logical
+attachment identity, links, size, and user metadata are replicated canonical
+fields; `ref_count` is rebuilt as class 2 from those links; and
+`storage_id`, wrapped/content-key fields, content nonces, blob paths, cache
+state, and the materialization mapping are class-3 local fields.
+The migration and manifest must make that split explicit; none of those local
+fields may appear in a snapshot, tail, or service-visible metadata. A replica
+may retain a pending encrypted descriptor while offline, but it must fetch and
+materialize the object before resolving its local link.
 
 Each retained snapshot carries a canonical, ordered **full closure manifest**
 of its `sync_artifact_id_e` values; each envelope that creates, links, or cites
@@ -157,8 +204,10 @@ queue record needs that object. A missing required artifact enters typed
 `ArtifactRebootstrapRequired`; it is not silently dropped or reconstructed from
 a stale base.
 
-`personal-cfo-1cltt` (SYNC-3) implements the logical snapshot and bootstrap;
-`personal-cfo-0g528` (SYNC-2c) materializes opaque artifact references;
+`personal-cfo-1cltt` (SYNC-3) implements the logical snapshot, portable
+artifact bootstrap, and receiver-local materialization;
+`personal-cfo-0g528` (SYNC-2c) materializes opaque artifact references and the
+portable transport descriptor;
 `personal-cfo-v98vd` (S2-1) owns receipts, pins, retention, and GC;
 `personal-cfo-elciw` (S3-1) owns upload, cache, and rebootstrap behavior; and
 ADR 0077, implemented by `personal-cfo-klr.4`, owns the durable manifest and
@@ -168,9 +217,17 @@ classification.
 ### 2. No lease: compare-and-swap, then rollback-then-replay
 
 The service head sequence is the sole write serialization point. A push carries
-`base_seq`; the service accepts it if and only if that value equals the
-current head. Otherwise it returns the envelopes since `base_seq`. There is
-no single-writer lease, expiry policy, or takeover window.
+`base_seq` and an immutable envelope identity. Before checking `base_seq`, the
+service checks its accepted-envelope index by `command_id` and the canonical
+envelope digest. An exact retry returns the original accepted `seq` and result,
+even when the retry's `base_seq` is stale. A same-`command_id` or
+same-`idempotency_key` request with a different digest or immutable metadata
+fails closed as `ProtocolFork`; it is never treated as a fresh command. Only an
+unknown envelope is subject to the normal CAS rule: the service accepts it if
+and only if `base_seq` equals the current head, otherwise it returns the
+envelopes since `base_seq`. The accepted-envelope index is retained with the
+operation log and published recovery roots for the same retention window. There
+is no single-writer lease, expiry policy, or takeover window.
 
 A client with unpushed work rebases by **rollback-then-replay** on a base image,
 not by applying pulled envelopes over unpushed local state:
@@ -193,22 +250,34 @@ not by applying pulled envelopes over unpushed local state:
    never cause the ordinary dispatcher to return `Replayed` before the command
    mutation exists in scratch. Current device-local state wins over the base;
    it is never silently merged with, or replaced by, stale base state.
-4. Reapply each local outbox envelope under its original `command_id` and
-   complete original `CommandMeta` only when its write set is untouched and it
-   still validates. This uses a narrowly scoped rebase executor, not a blanket
-   idempotency bypass: the executor accepts only a command in the immutable
-   plan, requires its replay-owned memo to be absent, performs normal command
-   validation and canonical writes, then writes a new operation-log row and
-   idempotency memo in the same transaction. The rebuilt memo points at the
-   rebuilt `op_seq`, never the pre-rebase numeric value. Otherwise queue the
-   whole correlation group for disposition, preserving its original envelope
-   and audit evidence in `outbox_queue` but installing no dispatchable memo.
-   An ordinary retry of that key returns typed `QueuedForDisposition`, not a
-   successful no-op or a second apply.
-5. Reconcile the replay-owned audit evidence with the automatic or queued
-   disposition, rebuild class 2, and validate every class-3 reference to
-   changed class-1 or class-1b state—including the durable receipt/pin closure
-   of each referenced class-1b artifact—before the swap. An invalid reference
+4. Before ordinary reapply, correlate every planned outbox envelope with every
+   pulled envelope by immutable `command_id`, authenticated canonical envelope
+   digest, and the complete original `CommandMeta` plus payload/schema/version
+   fields. An exact match is **already accepted**: bind the local outbox record
+   to the pulled server `seq`, reconcile/remap its scratch audit and
+   idempotency evidence to the accepted operation/result, and remove it from
+   the replay plan without replaying or queueing it. A same-`command_id`
+   mismatch fails closed as `ProtocolFork` with both envelopes retained for
+   diagnosis. A command whose response failed before service acceptance has no
+   accepted match and follows the ordinary path below.
+
+   Reapply each remaining local outbox envelope under its original
+   `command_id` and complete original `CommandMeta` only when its write set is
+   untouched and it still validates. This uses a narrowly scoped rebase
+   executor, not a blanket idempotency bypass: the executor accepts only a
+   command in the immutable plan, requires its replay-owned memo to be absent,
+   performs normal command validation and canonical writes, then writes a new
+   operation-log row and idempotency memo in the same transaction. The rebuilt
+   memo points at the rebuilt `op_seq`, never the pre-rebase numeric value.
+   Otherwise queue the whole correlation group for disposition, preserving its
+   original envelope and audit evidence in `outbox_queue` but installing no
+   dispatchable memo. An ordinary retry of that key returns typed
+   `QueuedForDisposition`, not a successful no-op or a second apply.
+5. Reconcile the replay-owned audit evidence with the automatic, already
+   accepted, or queued disposition, rebuild class 2, and validate every
+   class-3 reference to changed class-1 or class-1b state—including the durable
+   receipt/pin closure of each referenced class-1b artifact and any required
+   receiver-local materialization mapping—before the swap. An invalid reference
    enters a typed `RebaseBlockedLocalState` recovery state, preserves both the
    live vault and scratch evidence, and requires an explicit repair or
    re-bootstrap. It never drops the row or falls back to the old base.
@@ -222,8 +291,9 @@ problem. The replica's operation-log row records `applied_base_seq` and
 state.
 
 `personal-cfo-bxsbz` (SYNC-1c) implements the base image and atomic rebase;
-`personal-cfo-vlfd` (ADR 0073) defines the disposition rules; and
-`personal-cfo-mpep3` (S3-2) presents queued groups.
+`personal-cfo-v98vd` (S2-1) implements the accepted-envelope index and exact
+retry response; `personal-cfo-vlfd` (ADR 0073) defines the disposition rules;
+and `personal-cfo-mpep3` (S3-2) presents queued groups.
 
 ### 3. Envelopes: versioned payloads and verified class-1 writes
 
@@ -232,7 +302,11 @@ the payload-schema version; the complete original `CommandMeta`, including
 immutable `command_id`, `idempotency_key`, `issued_at`, `correlation_id`,
 `causation_id`, and `device_id`; the engine and schema versions; `seq` and
 `base_seq`; and a write-set hash over canonically ordered class-1 rows touched
-by the command. Class-2 rebuilds are excluded from that write-set hash.
+by the command. Class-2 rebuilds are excluded from that write-set hash. It also
+has a `canonical_envelope_digest` over the canonical clear header and exact
+ciphertext bytes. This is an opaque equality token for accepted-retry
+reconciliation, not a plaintext content hash; the authenticated header and
+AEAD tag must verify before a client accepts a digest match.
 
 `issued_at` replaces every `Utc::now()` reached inside `apply/`, so apply
 is a function of payload, metadata, and base state. An engine- or schema-version
@@ -278,7 +352,7 @@ as local.
 | `merchant_aliases` | 1 | A user correction to a merchant name follows the user instead of producing different local interpretations. |
 | `merchant_identities` | 1 | Identity knowledge follows the user; conflicts remain visible through the disposition queue. |
 | `manual_entry_links` | 1 | A manually linked assumption remains explainable on every device rather than looking like a missing relationship. |
-| `attachments` and `attachment_links` | 1 for links; 1b for blobs | Links replicate with canonical data; blobs replicate by opaque `sync_artifact_id` and may be fetched lazily only after their closure pin is durable. |
+| `attachments` and `attachment_links` | 1 for logical rows/links; 1b for bytes | Logical attachment rows and links replicate with canonical data; bytes replicate by opaque `sync_artifact_id` and are fetched/materialized lazily only after their closure pin is durable. Local crypto fields never replicate. |
 | `transaction_categorizations` | 1 | `merchant_memory.rs` is routed through the command bus by SYNC-2, eliminating the present split writer and preserving the user's category decision. |
 | `settings` keys under `user.*` | 1 | Household-level settings follow the user through the command bus. This explicitly reverses the direct `set_setting` convention at `lib.rs:2595`; `device.*` settings remain class 3. |
 
@@ -286,7 +360,10 @@ Class 1 covers user-facing canonical intent; class 1b covers artifact bytes;
 class 2 is rebuilt; class 3 includes connector credentials, refresh
 watermarks, staged rows, idempotency keys, audit events, node-local values,
 KDF parameters, `device.*` settings, durable jobs, backup history, and local
-Sync key-epoch, nonce-counter, and service-credential state. CLASS-0 records
+Sync key-epoch, nonce-counter, service-credential, and class-1b
+materialization state. That materialization state includes receiver-local
+`storage_id`, wrapped/content-key fields, content nonces, blob paths, cache
+state, and the `sync_artifact_id_e` mapping. CLASS-0 records
 the per-table preservation and correlation rule; replay-owned is a per-row
 phase selected only when a row belongs to an active outbox/queue command, and
 every other captured row is stable.
@@ -298,10 +375,13 @@ splits connector identity from device-local secrets.
 
 An envelope payload may reference only a class-1 row or a class-1b artifact by
 its opaque `sync_artifact_id`; a bare plaintext digest or local `StorageId`
-never crosses the service boundary. `CommitStaged` is reshaped to carry its
-materialized transaction and cite the source record's opaque artifact ID
-instead of a device-local staging ID. Source-batch, source-record, parser-run,
-and state kinds become class-1b artifact envelopes. `SkipStaged` stays
+never crosses the service boundary. A replica resolves that reference through
+its device-local materialization mapping, fetching and verifying the portable
+transport object before a local link is usable. `CommitStaged` is reshaped to
+carry its materialized transaction and cite the source record's opaque artifact
+ID instead of a device-local staging ID. Source-batch, source-record, parser-
+run, and state kinds become class-1b artifact envelopes using the same
+portable transport and receiver-local re-encryption rule. `SkipStaged` stays
 device-local and never ships.
 
 `personal-cfo-0g528` (SYNC-2c) implements that materialization and a test
@@ -490,7 +570,12 @@ The simulator also has four mandatory safety suites:
   with its idempotency memo, lets a remote operation claim the old numeric
   `op_seq`, and proves automatic replay writes the mutation exactly once and
   remaps the memo; queued resolution preserves audit evidence and blocks an
-  ordinary retry; unrelated idempotency rows survive.
+  ordinary retry; unrelated idempotency rows survive. A separate accepted-CAS
+  then lost-response case matches the pulled envelope by command ID, canonical
+  envelope digest, and complete metadata, binds the outbox to the remote
+  `seq`, and never replays or queues it; a same-ID/different-envelope case
+  fails closed as `ProtocolFork`. A failure before service acceptance still
+  takes the ordinary replay path.
 - **Nonce lifecycle:** concurrent devices, rejected-CAS retries, crash/restart,
   re-snapshot, and epoch rotation never repeat a `(derived AEAD key, nonce)`
   pair. The test sequencer deliberately offers overlapping domain/range grants
@@ -503,10 +588,16 @@ The simulator also has four mandatory safety suites:
   rejected; crashes before and after publication preserve a complete recovery
   root; every object reachable from a retained snapshot/tail remains fetchable;
   concurrent re-snapshot, an offline-device tombstone/rebootstrap, and eventual
-  orphan collection preserve that invariant. The same plaintext in two vaults
-  or two Sync epochs has unlinkable service addresses and outer ciphertext;
-  guessed plaintext cannot confirm presence, while altered bytes fail every
-  required integrity check.
+  orphan collection preserve that invariant. A two-replica fixture uses
+  independently generated DEKs: the receiver verifies a portable transport
+  object, derives a different local `StorageId`, re-encrypts bytes with a fresh
+  local content key, wraps it under the receiver DEK, and records only a
+  device-local materialization mapping. Origin crypto fields never enter the
+  snapshot, tail, or service metadata; wrong-DEK unwrap, corrupt transport,
+  failed materialization, and cache cleanup all fail closed. The same plaintext
+  in two vaults or two Sync epochs has unlinkable service addresses and outer
+  ciphertext; guessed plaintext cannot confirm presence, while altered bytes
+  fail every required integrity check.
 
 ### 12. The local-app promise
 
@@ -553,11 +644,18 @@ changes them nor introduces an account requirement to the local app.
 - **Overlay every captured idempotency memo before replay.** The ordinary
   dispatcher would treat an absent scratch mutation as a successful replay; the
   rebase plan instead remaps or queues only the memo/audit rows it owns.
+- **Treat an accepted push with a lost response as an ordinary replay.** An
+  exact command/digest match must bind the outbox to the already accepted
+  sequence; a same-ID mismatch is protocol corruption, and an unknown command
+  remains eligible for normal replay.
 - **Accept or truncate a snapshot without an artifact closure.** A canonical
   row could then outlive the only recoverable ciphertext for its artifact.
 - **Expose a bare content hash or reuse a service artifact address across an
   epoch.** Either permits equality/confirmation leakage that an opaque,
   epoch-scoped outer object avoids.
+- **Copy the origin attachment `StorageId` or wrapped key into a replica.**
+  Those fields are bound to the origin DEK; a receiver must verify portable
+  bytes and re-encrypt them under its own DEK and local content key.
 - **Add recovery escrow in v1.** It widens the key-custody boundary before the
   dedicated recovery design and external review are complete.
 
@@ -570,9 +668,10 @@ changes them nor introduces an account requirement to the local app.
   memo remapping, and crash-safe swap. SYNC-2 (`personal-cfo-5ymg8`), SYNC-2a
   (`personal-cfo-07u`), SYNC-2b (`personal-cfo-egn67`), and SYNC-2c
   (`personal-cfo-0g528`) implement table routing, secret separation,
-  tombstones, opaque artifact materialization, and closure deltas. SYNC-3
-  (`personal-cfo-1cltt`) adds genesis, the sealed epoch root, and artifact
-  bootstrap. CLASS-0 (`personal-cfo-w21q7`) additionally records every
+  tombstones, portable opaque artifact transport/materialization, and closure
+  deltas. SYNC-3 (`personal-cfo-1cltt`) adds genesis, the sealed epoch root,
+  receiver-local artifact bootstrap, and DEK-separated materialization. CLASS-0
+  (`personal-cfo-w21q7`) additionally records every
   class-3 table's rebase phase and reference-validation rule. S2-1
   (`personal-cfo-v98vd`) provides signed-membership enforcement, credential
   revocation, receipt/pin/retention/GC service behavior, duplicate detection,
