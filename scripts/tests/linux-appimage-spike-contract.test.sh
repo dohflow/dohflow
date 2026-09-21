@@ -70,8 +70,9 @@ case_start "research output names every acceptance leg"
 for needle in \
   'personal-cfo-xcrsk' 'Run URL:' 'Artifact:' 'PRAGMA cipher_version' \
   'updater' 'Argon2id' 'arm64 VM leg' 'GO' 'NO-GO' 'DEFER' \
-  'Ubuntu 22.04 LTS' 'AppImage-only' 'minisign' '35546349584' \
-  '10615929425' '422.26' '1747.21' '4.5.7 community' 'Ubuntu 24.04.5 LTS'; do
+  'Ubuntu 22.04 LTS' 'AppImage-only' 'minisign' '35550000687' \
+  '10618516214' '493.19' '2712.39' '4.5.7 community' 'Ubuntu 24.04.5 LTS' \
+  'rendered_pixels=0.952062 colors=1449' 'fresh temporary `PCFO_DATA_DIR`'; do
   assert_file_contains "$DOC" "$needle" "research doc mentions $needle"
 done
 

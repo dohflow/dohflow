@@ -17,9 +17,9 @@ that the ADR needs.
 The job is manual-only (`workflow_dispatch`) and is intentionally not a
 required check. The successful evidence run from the repaired candidate is:
 
-- **Run URL:** <https://github.com/dohflow/dohflow/actions/runs/35546349584>
-- **Artifact:** <https://github.com/dohflow/dohflow/actions/runs/35546349584/artifacts/10615929425>
-  (`linux-appimage-spike-35546349584`; contains the AppImage, build
+- **Run URL:** <https://github.com/dohflow/dohflow/actions/runs/35550000687>
+- **Artifact:** <https://github.com/dohflow/dohflow/actions/runs/35550000687/artifacts/10618516214>
+  (`linux-appimage-spike-35550000687`; contains the AppImage, build
   log/warnings, `linux-spike-apt-packages.txt`, `linux-spike-versions.txt`,
   SQLCipher probe, Argon2 timing, launch log, and `vault-screen.png`)
 
@@ -57,15 +57,17 @@ pnpm tauri build --bundles appimage \
   --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
-It recorded 422.26 seconds of build time and an 87,366,136-byte AppImage. The
+It recorded 493.19 seconds of build time and an 87,366,136-byte AppImage. The
 captured warning lines include the existing frontend chunk-size warning; no
 icon or desktop-entry failure was reported. The AppImage is launched with a
-temporary `PCFO_DATA_DIR` under `xvfb-run`; the script waits for a live window
-named `DohFlow`, captures it with ImageMagick, and appends the marker
-`DohFlow vault screen detected` to the launch log. ImageMagick capture retries
-transient X11 mapping failures for up to ten seconds before reporting a real
-smoke failure. The run produced an 800x600 `vault-screen.png` and the marker
-`DohFlow vault screen detected: window=2097155 title=DohFlow process=62217`.
+fresh temporary `PCFO_DATA_DIR` under `xvfb-run`; the script waits for a live
+window named `DohFlow`, captures it with ImageMagick, and requires a non-black
+image (mean pixel value > 0.01 and more than one color) before appending the
+marker `DohFlow vault screen detected` to the launch log. ImageMagick capture
+retries transient X11 mapping failures for up to ten seconds before reporting
+a real smoke failure. The run produced an 800x600 `vault-screen.png`; visual
+inspection shows the rendered “Create your vault” screen, and the marker is
+`DohFlow vault screen detected: window=2097155 title=DohFlow process=62227 rendered_pixels=0.952062 colors=1449`.
 This is a fresh no-vault run, so the visible first screen is the vault gate and
 no real data is used.
 
@@ -98,7 +100,7 @@ capability/CSP contract used by the existing IPC CI gate.
 
 A temporary probe measures five `Profile::InteractiveDefault` derivations and
 records the median wall-clock time with memory, time-cost, and parallelism. On
-this runner it measured `median_unlock_ms=1747.21` with
+this runner it measured `median_unlock_ms=2712.39` with
 `memory_kib=65536`, `time_cost=3`, and `parallelism=1`. It uses the production
 `vault-crypto` implementation and deletes the probe before the job ends.
 
