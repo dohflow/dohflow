@@ -722,16 +722,18 @@ jobs:
               captured=0
               rendered=0
               render_stats=''
+              color_count=''
               for attempt in $(seq 1 10); do
                 if import -window "$window" "$screenshot" 2>>"$log"; then
                   captured=1
                   if [ -s "$screenshot" ]; then
-                    render_stats="$(identify -format '%[fx:mean] %[fx:max]' "$screenshot" 2>/dev/null || true)"
-                    if awk -v stats="$render_stats" 'BEGIN { n = split(stats, values, /[[:space:]]+/); exit !(n >= 2 && values[1] > 0.01 && values[2] > 0.05) }'; then
+                    render_stats="$(identify -format '%[fx:mean]' "$screenshot" 2>/dev/null || true)"
+                    color_count="$(identify -format '%k' "$screenshot" 2>/dev/null || true)"
+                    if awk -v mean="$render_stats" -v colors="$color_count" 'BEGIN { exit !(mean > 0.01 && colors > 1) }'; then
                       rendered=1
                       break
                     fi
-                    echo "Screenshot has no rendered pixels (mean/max: ${render_stats:-unavailable}); retrying." >> "$log"
+                    echo "Screenshot has no rendered pixels (mean/colors: ${render_stats:-unavailable}/${color_count:-unavailable}); retrying." >> "$log"
                   fi
                 fi
                 sleep 1
@@ -741,7 +743,7 @@ jobs:
                 xdotool getwindowgeometry "$window" >&2 || true
                 exit 1
               fi
-              printf 'DohFlow vault screen detected: window=%s title=%s process=%s rendered_pixels=%s\n' "$window" "$title" "$pid" "$render_stats" | tee -a "$log"
+              printf 'DohFlow vault screen detected: window=%s title=%s process=%s rendered_pixels=%s colors=%s\n' "$window" "$title" "$pid" "$render_stats" "$color_count" | tee -a "$log"
               exit 0
             fi
             sleep 1
