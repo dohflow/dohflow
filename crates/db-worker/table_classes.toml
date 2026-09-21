@@ -1,0 +1,521 @@
+# CLASS-0 table-class manifest.
+#
+# `kind = "sqlite_table"` is the default for rows backed by sqlite_master.
+# `kind = "pseudo"` and `kind = "planned"` describe storage surfaces that are
+# deliberately not present in the current migrated schema.  The db-worker
+# validation test compares only sqlite_table rows with sqlite_master.
+
+[[table]]
+table = "operation_log"
+class = "1"
+owner_bead = "personal-cfo-0s0"
+note = "Canonical command history and accepted-envelope evidence; class-1 rows are ordered by the Sync tail and retained for replay provenance."
+
+[[table]]
+table = "ledger_accounts"
+class = "1"
+owner_bead = "personal-cfo-klr.2"
+note = "Canonical ledger account identity and links; replicated through the command bus."
+
+[[table]]
+table = "accounts"
+class = "1"
+owner_bead = "personal-cfo-klr.2"
+note = "Canonical user account identity, links, and user metadata; replicated through the command bus."
+
+[[table]]
+table = "ledger_transactions"
+class = "1"
+owner_bead = "personal-cfo-klr.2"
+note = "Canonical transaction headers; replicated through the command bus."
+
+[[table]]
+table = "ledger_postings"
+class = "1"
+owner_bead = "personal-cfo-klr.2"
+note = "Canonical balanced postings and split-line amounts; replicated through the command bus."
+
+[[table]]
+table = "provenance_links"
+class = "1"
+owner_bead = "personal-cfo-0s0"
+note = "Canonical operation-to-entity provenance index; travels with the operation history."
+
+[[table]]
+table = "categories"
+class = "1"
+owner_bead = "personal-cfo-d3p"
+note = "Canonical category taxonomy and user category intent; replicated through the command bus."
+
+[[table]]
+table = "category_aliases"
+class = "1"
+owner_bead = "personal-cfo-d3p"
+note = "Canonical category aliases; user corrections follow the ledger history."
+
+[[table]]
+table = "income_sources"
+class = "1"
+owner_bead = "personal-cfo-le79"
+note = "Canonical recurring income intent and schedule; replicated through the command bus."
+
+[[table]]
+table = "recurring_events"
+class = "1"
+owner_bead = "personal-cfo-rxw"
+note = "Canonical recurring-event rules; replicated through the command bus."
+
+[[table]]
+table = "recurring_event_instances"
+class = "1"
+owner_bead = "personal-cfo-rxw"
+note = "Canonical materialized recurring occurrences and user outcomes; replicated through the command bus."
+
+[[table]]
+table = "recurring_event_tags"
+class = "1"
+owner_bead = "personal-cfo-4d8.24.5.1"
+note = "Canonical tag links for recurring events; replicated through the command bus."
+
+[[table]]
+table = "recurring_transfers"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.18"
+note = "Canonical recurring transfer intent; replicated through the command bus."
+
+[[table]]
+table = "bill_contracts"
+class = "1"
+owner_bead = "personal-cfo-rxw"
+note = "Canonical bill and contract intent; replicated through the command bus."
+
+[[table]]
+table = "confirmed_obligations"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.19"
+note = "Canonical confirmed obligation decisions; replicated through the command bus."
+
+[[table]]
+table = "transaction_details"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.1"
+note = "Canonical user-facing transaction detail and note fields; replicated with the ledger transaction."
+
+[[table]]
+table = "transaction_reviews"
+class = "1"
+owner_bead = "personal-cfo-4d8.24.7"
+note = "Canonical review decisions and state; replicated through the command bus."
+
+[[table]]
+table = "tags"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.4"
+note = "Canonical user tag vocabulary; replicated through the command bus."
+
+[[table]]
+table = "transaction_tags"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.4"
+note = "Canonical transaction-to-tag links; replicated through the command bus."
+
+[[table]]
+table = "split_lines"
+class = "1"
+owner_bead = "personal-cfo-e7i"
+note = "Canonical transaction split lines; replicated through the command bus."
+
+[[table]]
+table = "split_line_tags"
+class = "1"
+owner_bead = "personal-cfo-e7i"
+note = "Canonical split-line tag links; replicated through the command bus."
+
+[[table]]
+table = "debt_terms"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.15"
+note = "Canonical debt repayment terms; replicated through the command bus."
+
+[[table]]
+table = "credit_card_cycles"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.20"
+note = "Canonical credit-card cycle intent; replicated through the command bus."
+
+[[table]]
+table = "credit_card_statements"
+class = "1"
+owner_bead = "personal-cfo-4d8.25.20"
+note = "Canonical credit-card statement intent; replicated through the command bus."
+
+[[table]]
+table = "change_journal_entries"
+class = "1"
+owner_bead = "personal-cfo-0s0"
+note = "Canonical SnoozeInboxItem and DismissInboxItem change journal; replicated through the command bus."
+
+[[table]]
+table = "attachments"
+class = "4"
+owner_bead = "personal-cfo-bcj"
+note = "Current metadata writer is outside the command bus, so this is a class-4 candidate; ADR 0074 and SYNC-2 decide the promotion to class 1 while preserving the logical row."
+canonical_fields = "id,size,user_metadata,created_at"
+excluded_local_fields = "storage_id,wrapped_content_key,content_key_nonce,content_nonce,blob_path,cache_state,sync_artifact_id_e_to_local_materialization"
+receiver_transport = "SyncArtifactTransportV1 with a receiver DEK"
+materialization_failure = "ArtifactMaterializationFailed before the link becomes usable"
+
+[[table]]
+table = "attachment_links"
+class = "4"
+owner_bead = "personal-cfo-bcj"
+note = "Current link writer is outside the command bus, so this is a class-4 candidate; ADR 0074 and SYNC-2 decide the logical link routing."
+
+[[table]]
+table = "source_batches"
+class = "1b"
+owner_bead = "personal-cfo-m8f2"
+note = "Import provenance artifact envelope; the batch identity is opaque to the service and the bytes close over retained recovery roots."
+local_identity = "source_batch UUID plus local vault row identity"
+opaque_sync_reference = "opaque sync_artifact_id_e"
+closure_role = "envelope-delta"
+retention = "retain while a committed ledger row or recovery root references the artifact"
+reference_validation = "source records and committed rows must resolve before apply or rebase"
+
+[[table]]
+table = "source_records"
+class = "1b"
+owner_bead = "personal-cfo-m8f2"
+note = "User-supplied import record artifact; the service receives only an opaque artifact reference."
+local_identity = "source_record UUID plus local vault row identity"
+opaque_sync_reference = "opaque sync_artifact_id_e"
+closure_role = "envelope-delta"
+retention = "retain for the provenance closure of its committed ledger row"
+reference_validation = "the source batch and entity provenance link must resolve before apply or rebase"
+
+[[table]]
+table = "parser_runs"
+class = "1b"
+owner_bead = "personal-cfo-m8f2"
+note = "Parser evidence artifact; parser output is portable only through an opaque Sync artifact envelope."
+local_identity = "parser_run UUID plus local vault row identity"
+opaque_sync_reference = "opaque sync_artifact_id_e"
+closure_role = "snapshot-full"
+retention = "retain while the associated source batch remains recoverable"
+reference_validation = "the parser run must resolve to a retained source batch before replay"
+
+[[table]]
+table = "source_provenance_links"
+class = "1b"
+owner_bead = "personal-cfo-m8f2"
+note = "Provenance invariant for imported artifacts; m8f2 owns the entity-to-source closure."
+local_identity = "entity UUID and source_record UUID in the local vault"
+opaque_sync_reference = "opaque sync_artifact_id_e"
+closure_role = "envelope-delta"
+retention = "retain until every linked class-1 row is tombstoned and its recovery root advances"
+reference_validation = "entity and source artifact closure is checked before a replay or snapshot swap"
+
+[[table]]
+table = "commitments"
+class = "2"
+owner_bead = "personal-cfo-rxw"
+note = "Forecast-facing projection rebuilt from recurring events and bill contracts; never shipped."
+
+[[table]]
+table = "transaction_display_rows_read_model"
+class = "2"
+owner_bead = "personal-cfo-qik"
+note = "Projection-only transaction display read model; rebuilt from class-1 ledger, category, merchant, provenance, and review state."
+
+[[table]]
+table = "read_model_checksums"
+class = "2"
+owner_bead = "personal-cfo-xn7"
+note = "Derived drift checksum; rebuilt locally and never shipped."
+
+[[table]]
+table = "forecast_input_snapshots"
+class = "2"
+owner_bead = "personal-cfo-164u"
+note = "Rebuildable forecast input snapshot; the class-1 source rows are authoritative."
+
+[[table]]
+table = "forecast_runs"
+class = "2"
+owner_bead = "personal-cfo-164u"
+note = "Rebuildable forecast run header; never shipped as canonical user intent."
+
+[[table]]
+table = "forecast_rows"
+class = "2"
+owner_bead = "personal-cfo-164u"
+note = "Rebuildable forecast output rows; never shipped."
+
+[[table]]
+table = "forecast_actuals"
+class = "2"
+owner_bead = "personal-cfo-6rhn"
+note = "Forecast-versus-actual projection rebuilt from canonical ledger history."
+
+[[table]]
+table = "forecast_diffs"
+class = "2"
+owner_bead = "personal-cfo-6rhn"
+note = "Forecast diff projection rebuilt locally; never shipped."
+
+[[table]]
+table = "forecast_dirty_ranges"
+class = "2"
+owner_bead = "personal-cfo-ltj9"
+note = "Derived invalidation ranges; rebuilt locally from canonical changes."
+
+[[table]]
+table = "forecast_quality_scores"
+class = "2"
+owner_bead = "personal-cfo-5ie"
+note = "Derived forecast quality projection; rebuilt locally."
+
+[[table]]
+table = "forecast_backtest_results"
+class = "2"
+owner_bead = "personal-cfo-6rhn"
+note = "Derived backtest output; rebuilt locally and never shipped."
+
+[[table]]
+table = "money_inbox_read_model"
+class = "2"
+owner_bead = "personal-cfo-ykdv"
+note = "Derived Money Inbox projection rebuilt from canonical evidence and review state."
+
+[[table]]
+table = "model_registry"
+class = "2"
+owner_bead = "personal-cfo-164u"
+note = "Forecast model metadata used to rebuild projections; verify against the model-registry owner before Sync implementation."
+
+[[table]]
+table = "risk_flags"
+class = "2"
+owner_bead = "personal-cfo-5ie"
+note = "Derived forecast risk projection; verify against the risk-flag owner before Sync implementation."
+
+[[table]]
+table = "recurring_suggestion_suppressions"
+class = "2"
+owner_bead = "personal-cfo-4d8.24.6"
+note = "Detector read model keyed by canonical merchant and cadence evidence; verify classification before Sync implementation."
+
+[[table]]
+table = "command_idempotency_keys"
+class = "3"
+owner_bead = "personal-cfo-bxsbz"
+note = "Device-local idempotency memo; it is replay-owned only for an active local plan and is never copied from a stale base."
+rebase_phase = "replay_owned"
+rebase_preservation = "stable rows overlay by immutable key; a planned row is absent until its command auto-replays or receives a queued disposition"
+reference_validation = "command_id, idempotency tag, immutable metadata commitment, and referenced class-1 result must match before remap"
+correlate_to_live_plan = "immutable command_id, idempotency_key_tag, envelope digest, and complete original metadata"
+auto_replay_remap = "rebuild the memo against the new op_seq after the canonical mutation succeeds"
+queued_disposition = "remove the dispatchable memo and retain the evidence as QueuedForDisposition"
+
+[[table]]
+table = "vault_meta"
+class = "3"
+owner_bead = "personal-cfo-bxsbz"
+note = "Device-local node identity; not part of a snapshot or Sync tail."
+rebase_phase = "stable"
+rebase_preservation = "preserve the current node identity in the scratch vault"
+reference_validation = "node identity must remain well-formed before swap"
+
+[[table]]
+table = "vault_metadata"
+class = "3"
+owner_bead = "personal-cfo-vhv"
+note = "Vault-local envelope and KDF parameters; class-1 snapshots never carry origin key material."
+rebase_phase = "stable"
+rebase_preservation = "preserve the current vault envelope, KDF parameters, and local manifest pointer"
+reference_validation = "schema and envelope versions must be supported before swap"
+
+[[table]]
+table = "schema_migrations"
+class = "3"
+owner_bead = "personal-cfo-wkn"
+note = "Device-local migration tracker; migrations are applied by the receiving build, not by Sync."
+rebase_phase = "stable"
+rebase_preservation = "retain the scratch vault migration history only after its schema hash validates"
+reference_validation = "every applied version must match this build's migration content hash"
+
+[[table]]
+table = "audit_events"
+class = "3"
+owner_bead = "personal-cfo-bxsbz"
+note = "Device-local audit evidence; rows tied to a planned command are replay-owned and unrelated rows are stable."
+rebase_phase = "stable"
+rebase_preservation = "overlay stable evidence; reconcile replay-owned evidence after automatic replay or queue disposition"
+reference_validation = "event metadata must reference a present class-1 command or remain local diagnostic evidence"
+
+[[table]]
+table = "settings"
+class = "3"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current direct-write table is class 3 for device.* keys; user.* keys are the class-4 candidate and ADR 0074 / SYNC-2 decide their routing without a rename."
+rebase_phase = "stable"
+rebase_preservation = "preserve device.* values from the live vault; user.* values remain explicit candidate intent until SYNC-2 routes them"
+reference_validation = "key scope is validated by the device.* / user.* convention; legacy keys remain unchanged"
+legacy_settings_keys = "locale,reporting_currency"
+new_setting_keys = ""
+
+[[table]]
+table = "connector_connections"
+class = "3"
+owner_bead = "personal-cfo-07u"
+note = "Current table contains provider credentials; SYNC-2a splits replicated identity from device-local secrets."
+rebase_phase = "stable"
+rebase_preservation = "preserve the local credential and refresh state; never overlay a remote credential"
+reference_validation = "adapter identity and local secret material must remain paired with the local connection"
+
+[[table]]
+table = "connector_account_links"
+class = "3"
+owner_bead = "personal-cfo-07u"
+note = "Current mapping includes local sync watermarks; SYNC-2a decides the identity/secret split before replication."
+rebase_phase = "stable"
+rebase_preservation = "preserve the local watermark and mapping while validating the referenced class-1 account"
+reference_validation = "account references must resolve; a stale provider mapping blocks the rebase swap"
+
+[[table]]
+table = "staged_accounts"
+class = "3"
+owner_bead = "personal-cfo-m8f2"
+note = "Device-local import staging; staged rows never enter a snapshot or Sync tail."
+rebase_phase = "stable"
+rebase_preservation = "preserve staged candidates from the live device"
+reference_validation = "source batch and proposed account references must remain local and valid"
+
+[[table]]
+table = "staged_balances"
+class = "3"
+owner_bead = "personal-cfo-m8f2"
+note = "Device-local import staging; balance candidates remain on the device until committed."
+rebase_phase = "stable"
+rebase_preservation = "preserve staged candidates and their source references"
+reference_validation = "staged account and source record references must resolve before swap"
+
+[[table]]
+table = "staged_transactions"
+class = "3"
+owner_bead = "personal-cfo-m8f2"
+note = "Device-local import staging; only the committed class-1 transaction crosses the Sync boundary."
+rebase_phase = "stable"
+rebase_preservation = "preserve pending staged candidates and commit-plan evidence"
+reference_validation = "source records and proposed account references must resolve before swap"
+
+[[table]]
+table = "system_ledger_accounts"
+class = "3"
+owner_bead = "personal-cfo-bxsbz"
+note = "Device-local system-account mapping derived during vault bootstrap; canonical user ledger rows remain class 1."
+rebase_phase = "stable"
+rebase_preservation = "preserve the local role/currency mapping and regenerate only when its class-1 account reference is valid"
+reference_validation = "every mapping must point at a valid local ledger account"
+
+[[table]]
+table = "projection_cursors"
+class = "3"
+owner_bead = "personal-cfo-bxsbz"
+note = "Device-local projection progress; read models are rebuilt rather than shipped."
+rebase_phase = "stable"
+rebase_preservation = "preserve cursor evidence only when the corresponding derived checksum is valid"
+reference_validation = "cursor names and op sequence references must be valid for the local schema"
+
+[[table]]
+table = "dedupe_decisions"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current import decision writer is outside the bus, so this is a class-4 candidate; ADR 0074 and SYNC-2 decide routing so a dedupe choice follows the related history."
+
+[[table]]
+table = "balance_observations"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Manual and connector balance assertions currently cross the staging boundary outside the bus; ADR 0074 and SYNC-2 decide the class-1 promotion and conflict disposition."
+
+[[table]]
+table = "scenarios"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current scenario writer is direct; ADR 0074 and SYNC-2 decide routing so scenario intent follows the user."
+
+[[table]]
+table = "forecast_assumption_events"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current assumption-event writer is direct; ADR 0074 and SYNC-2 decide class-1 routing and queued conflict handling."
+
+[[table]]
+table = "forecast_dependency_edges"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current dependency-edge writer is direct; ADR 0074 and SYNC-2 decide class-1 routing with its assumption."
+
+[[table]]
+table = "merchant_aliases"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current merchant-alias writer is direct; ADR 0074 and SYNC-2 decide the class-1 user-correction route."
+
+[[table]]
+table = "merchant_identities"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current merchant-identity writer is direct; ADR 0074 and SYNC-2 decide the class-1 identity route."
+
+[[table]]
+table = "manual_entry_links"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Current manual-entry link writer is direct; ADR 0074 and SYNC-2 decide class-1 routing so the link remains explainable on every device."
+
+[[table]]
+table = "transaction_categorizations"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "The apply path is a class-1 writer but merchant_memory.rs is currently a class-4 writer; ADR 0074 and SYNC-2 decide the single routed command path."
+
+[[table]]
+table = "settings_user_keys"
+kind = "pseudo"
+class = "4"
+owner_bead = "personal-cfo-5ymg8"
+note = "Key-scope marker only: user.* is the class-4 candidate; ADR 0074 and SYNC-2 decide routing while this bead makes no rename or migration."
+
+[[table]]
+table = "attachment_blobs"
+kind = "pseudo"
+class = "1b"
+owner_bead = "personal-cfo-bcj"
+note = "ADR 0023 encrypted blob store pseudo-row; bytes close over an opaque artifact reference and are materialized locally under the receiver DEK."
+local_identity = "local blob UUID and receiver-local materialization identity"
+opaque_sync_reference = "opaque sync_artifact_id_e"
+closure_role = "snapshot-full"
+retention = "retain ciphertext while a canonical attachment row or retained recovery root references it"
+reference_validation = "verify SyncArtifactTransportV1 integrity and receiver-DEK materialization; fail with ArtifactMaterializationFailed"
+
+[[table]]
+table = "durable_jobs"
+kind = "planned"
+class = "3"
+owner_bead = "personal-cfo-ati"
+note = "Planned class-3 table owned by the durable job runtime; it is not in the current migrated schema and will be added by ati."
+rebase_phase = "stable"
+rebase_preservation = "preserve due-job state and in-flight correlation evidence on a scratch rebase"
+reference_validation = "job payload references must resolve locally before swap"
+
+[[table]]
+table = "backup_history"
+kind = "planned"
+class = "3"
+owner_bead = "personal-cfo-8qh"
+note = "Planned class-3 table owned by scheduled backup; it is not in the current migrated schema and will be added by 8qh."
+rebase_phase = "stable"
+rebase_preservation = "preserve backup receipt and retention evidence on a scratch rebase"
+reference_validation = "receipt paths remain local and are checked before swap"
