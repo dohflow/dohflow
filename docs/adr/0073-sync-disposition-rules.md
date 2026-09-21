@@ -52,9 +52,10 @@ can be envelopes. `SkipStaged` is a local inbox action and never ships.
 There are exactly three user-visible dispositions. No financial data is
 silently dropped; an idempotent no-op is an **auto** disposition, not a drop.
 
-1. **Auto.** Reapply the envelope on the new base when its write set is
-   untouched and the command still validates. Equal end states and explicitly
-   idempotent commands are safe no-ops.
+1. **Auto.** Reapply the envelope on the new base only when its write set is
+   untouched and the command still validates. An equal end state or an
+   idempotent command is an auto no-op only under that same strict predicate;
+   a touched write set queues even when the resulting state would be equal.
 2. **Queue-choose.** Preserve both the local envelope and the current-base
    value. The user chooses which scalar or toggle outcome wins; the choice is
    emitted as a new command and the queued command remains audit evidence.
@@ -85,38 +86,48 @@ SYNC-2 implementation can ship it.
 
 #### Create (8)
 
-Create commands append an entity or balanced posting. They auto-apply when
-all referenced rows are still valid on the new base. An invalid or deleted
-reference opens **queue-edit**; the editor validates the repaired command
-before it can be submitted. Postings append rather than overwrite another
-device's money movement, so valid Creates commute.
+Create commands append an entity or balanced posting. They auto-apply only
+when the strict predicate holds and all referenced rows are still valid on the
+new base. An invalid or deleted reference opens **queue-edit**; the editor
+validates the repaired command before it can be submitted. Postings append
+rather than overwrite another device's money movement, so valid Creates can
+be replayed when their write set is untouched; this is not a semantic merge
+for a touched row.
 
 #### Set (17)
 
 The thirteen scalar Sets (`SetCardStatementBalance` included) default to
-**queue-choose** when a concurrent value differs; an exact no-op is auto. The
-three structural Sets are **queue-edit**:
+**queue-choose** when a concurrent value differs or their write set was
+touched; an exact no-op is auto only when the strict predicate holds. The
+three structural Sets are **queue-edit** when their invariant needs repair;
+otherwise they also require the strict predicate before auto-apply:
 
 - `SetSplits` must preserve the transaction sum invariant;
 - `MoveCategory` must preserve the category no-cycle invariant; and
 - `SetAccountLink` must preserve the real-asset → liability rule.
 
-`SetTags` is **auto**: tags merge by set union and never remove another
-device's tag. A balance assertion is still a Set, but it is never LWW: two
-assertions for the same account and date always produce **queue-choose** with
-both values and dates (ADR 0027; ADR 0074 Decision 5).
+`SetTags` is replacement-style, not a semantic set-union merge. It is auto only
+when the strict predicate holds; if its write set was touched, it is
+**queue-choose** with both replacement payloads. Rebase never rewrites a
+replacement payload into a union and never removes the other device's evidence.
+A balance assertion is still a Set, but it is never LWW: two assertions for
+the same account and date always produce **queue-choose** with both values and
+dates (ADR 0027; ADR 0074 Decision 5).
 
 #### Toggle (12)
 
 Archive/reinstate, void, unconfirm, snooze, and dismiss commands compare their
-end state. Equal end states auto-apply; opposed states produce
-**queue-choose**. The three hard deletes are not Toggle until SYNC-2b replaces
-them with tombstones; their exception rows are listed separately below.
+end state. Equal end states auto-apply only when the strict predicate holds;
+any touched write set—including one with an equal end state—produces
+**queue-choose**, as does an opposed state. The three hard deletes are not
+Toggle until SYNC-2b replaces them with tombstones; their exception rows are
+listed separately below.
 
 #### Base-dependent (4)
 
 These commands must be re-evaluated against the new base rather than treated
-as ordinary scalar Sets:
+as ordinary scalar Sets. Any automatic result still requires the strict
+untouched-and-valid predicate:
 
 - `ConfirmObligationEarly` is **auto** after idempotent re-evaluation of
   `(recurring_event_id, scheduled_date)`; it must not post the same occurrence
@@ -152,12 +163,13 @@ These rows are deliberately not ordinary shape outcomes:
    otherwise look disjoint.
 
 The generated appendix reports the rough planning tally from these paths:
-23 default-auto rows, 15 scalar/Scenario queue-choose rows, 3 structural
-queue-edit rows plus the generic invalid-reference Create queue-edit path, 3
-tombstone-first rows, 4 reshape-first rows, and 1 never-ships row. The
-planning shorthand “about 23 / 14 / 4” counts the grouped scenario and
-generic-reference paths rather than treating every conditional branch as a
-separate row; the test output is authoritative.
+23 strict-auto candidate rows (only when the predicate holds), 15
+scalar/Scenario queue-choose rows, 3 structural queue-edit rows plus the
+generic invalid-reference Create queue-edit path, 3 tombstone-first rows, 4
+reshape-first rows, and 1 never-ships row. The planning shorthand “about 23 /
+14 / 4” counts the grouped scenario and generic-reference paths rather than
+treating every conditional branch as a separate row; the test output is
+authoritative. It must not be read as permission to auto-merge a touched row.
 
 ### 4. Correlation-group queueing and audit
 
@@ -189,9 +201,12 @@ commit past device-local staging without the outbox.
 
 ## Generated appendix
 
-The following table is generated by the `#[test]` named above. The outcome
-column is the default path; all rows still pass through the auto-iff rule and
-the whole-group rule.
+The following table is generated by the `#[test]` named above and is compared
+cell-for-cell against its checked-in output by that test. The outcome column is
+the default path; every `auto` cell still means **only** the strict
+`write_set_untouched_since(base_seq) && validates_against(the_new_base)` rule,
+and all rows still pass through the whole-group rule. A touched row never
+receives semantic auto-merge treatment.
 
 | `WriteCommand` variant | Shape | Default disposition |
 | --- | --- | --- |
@@ -216,22 +231,22 @@ the whole-group rule.
 | `RecategorizeTransaction` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `DismissRecurringSuggestion` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `MarkReviewed` | Set | queue-choose (scalar; idempotent no-op is auto) |
-| `SetTags` | Set | auto (set union; never removes another device's tag) |
+| `SetTags` | Set | auto iff strict predicate; queue-choose if touched (replacement payload; no union rewrite) |
 | `SetNote` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SetSplits` | Set | queue-edit (sum invariant) |
 | `MoveCategory` | Set | queue-edit (cycle invariant) |
-| `ArchiveAccount` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `ReinstateAccount` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `UnconfirmObligation` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `ArchiveIncomeSource` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `RestoreIncomeSource` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `ArchiveRecurringBill` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `RestoreRecurringBill` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `SnoozeInboxItem` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `DismissInboxItem` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `ArchiveCategory` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `ReinstateCategory` | Toggle | auto if end state is equal; queue-choose if opposed |
-| `VoidTransaction` | Toggle | auto if end state is equal; queue-choose if opposed |
+| `ArchiveAccount` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ReinstateAccount` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `UnconfirmObligation` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ArchiveIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `RestoreIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ArchiveRecurringBill` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `RestoreRecurringBill` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ReinstateCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `VoidTransaction` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ConfirmObligationEarly` | Base-dependent | auto after idempotent re-evaluation of (event, date) |
 | `ConvertUnexplainedToTransaction` | Base-dependent | auto after residual/assertion re-evaluation |
 | `ApplyScenario` | Base-dependent | queue-choose (reversal handle is command_id) |
@@ -273,6 +288,11 @@ the whole-group rule.
   expiry creates a second-writer window and a new recovery UX.
 - **Drop as an outcome.** An idempotent no-op is the only automatic absence of
   mutation; financial data is never silently discarded.
+
+- **Semantic tag union during rebase.** `SetTags` is a replacement command, so
+  rewriting it into a union would invent intent and hide a concurrent edit.
+  A future delta-tag command model may support semantic auto-merge, but it
+  requires a separately planned bead and ADR; this contract does not grant it.
 
 ## Revisit if
 

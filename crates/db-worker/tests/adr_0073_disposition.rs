@@ -1,10 +1,15 @@
 //! Exhaustive ADR 0073 disposition appendix generator.
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
-//! silently going stale as `WriteCommand` grows.  It deliberately parses the
+//! silently going stale as `WriteCommand` grows. It deliberately parses the
 //! enum declaration rather than constructing all 49 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
-//! can ship a command with no rebase rule.
+//! can ship a command with no rebase rule. It also compares every checked-in
+//! ADR cell against this table and proves that a one-cell outcome drift fails.
+
+use std::collections::BTreeSet;
+
+const ADR_SOURCE: &str = include_str!("../../../docs/adr/0073-sync-disposition-rules.md");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
@@ -83,8 +88,9 @@ const DISPOSITIONS: &[Disposition] = &[
         Shape::Create,
         "auto; queue-edit if a reference is invalid",
     ),
-    // Set (17): thirteen scalar sets choose on conflict; the three structural
-    // edits open an existing editor; tags use a commutative set union.
+    // Set (17): every automatic path is gated by the strict untouched-and-
+    // valid predicate; conflicts choose or open an existing editor. SetTags
+    // remains a replacement payload and is never rewritten as a union.
     d(
         "UpdateAccount",
         Shape::Set,
@@ -153,7 +159,7 @@ const DISPOSITIONS: &[Disposition] = &[
     d(
         "SetTags",
         Shape::Set,
-        "auto (set union; never removes another device's tag)",
+        "auto iff strict predicate; queue-choose if touched (replacement payload; no union rewrite)",
     ),
     d(
         "SetNote",
@@ -162,67 +168,67 @@ const DISPOSITIONS: &[Disposition] = &[
     ),
     d("SetSplits", Shape::Set, "queue-edit (sum invariant)"),
     d("MoveCategory", Shape::Set, "queue-edit (cycle invariant)"),
-    // Toggle (12): an equal end state is an idempotent auto-apply; opposed
-    // states are shown as a choose, never silently last-write-wins.
+    // Toggle (12): an equal end state auto-applies only when the strict
+    // untouched-and-valid predicate holds; touched or opposed states choose.
     d(
         "ArchiveAccount",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "ReinstateAccount",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "UnconfirmObligation",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "ArchiveIncomeSource",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "RestoreIncomeSource",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "ArchiveRecurringBill",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "RestoreRecurringBill",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "SnoozeInboxItem",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "DismissInboxItem",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "ArchiveCategory",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "ReinstateCategory",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "VoidTransaction",
         Shape::Toggle,
-        "auto if end state is equal; queue-choose if opposed",
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     // Base-dependent (4): apply against the new base only after re-evaluation.
     d(
@@ -326,6 +332,68 @@ fn write_command_variants() -> Vec<&'static str> {
         .collect()
 }
 
+type AppendixRow = (String, String, String);
+
+fn parse_adr_appendix(source: &str) -> Result<Vec<AppendixRow>, String> {
+    let mut in_table = false;
+    let mut rows = Vec::new();
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "| `WriteCommand` variant | Shape | Default disposition |" {
+            in_table = true;
+            continue;
+        }
+        if in_table && trimmed.starts_with("## ") {
+            break;
+        }
+        if !in_table || !trimmed.starts_with("| `") {
+            continue;
+        }
+
+        let cells: Vec<_> = trimmed.split('|').map(str::trim).collect();
+        if cells.len() != 5 {
+            return Err(format!("appendix row has {} cells: {trimmed}", cells.len()));
+        }
+        let variant = cells[1]
+            .strip_prefix('`')
+            .and_then(|cell| cell.strip_suffix('`'))
+            .ok_or_else(|| format!("appendix variant is not backtick-delimited: {trimmed}"))?;
+        rows.push((variant.to_owned(), cells[2].to_owned(), cells[3].to_owned()));
+    }
+
+    if !in_table {
+        return Err("ADR appendix header is missing".to_owned());
+    }
+    Ok(rows)
+}
+
+fn compare_adr_appendix(source: &str) -> Result<(), String> {
+    let actual = parse_adr_appendix(source)?;
+    if actual.len() != DISPOSITIONS.len() {
+        return Err(format!(
+            "ADR appendix has {} rows; generated table has {}",
+            actual.len(),
+            DISPOSITIONS.len()
+        ));
+    }
+
+    for (index, (actual, expected)) in actual.iter().zip(DISPOSITIONS).enumerate() {
+        let expected = (
+            expected.variant.to_owned(),
+            expected.shape.as_str().to_owned(),
+            expected.outcome.to_owned(),
+        );
+        if actual != &expected {
+            return Err(format!(
+                "ADR appendix row {} drifted: actual={actual:?}, expected={expected:?}",
+                index + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
@@ -377,4 +445,139 @@ fn disposition_appendix_covers_every_write_command_variant() {
             row.outcome
         );
     }
+}
+
+#[test]
+fn adr_appendix_matches_generated_rows_cell_for_cell() {
+    compare_adr_appendix(ADR_SOURCE).expect("checked-in ADR appendix must match generated rows");
+}
+
+#[test]
+fn adr_appendix_comparison_rejects_one_cell_outcome_drift() {
+    let original = "| `CreateAccount` | Create | auto; queue-edit if a reference is invalid |";
+    let drifted = "| `CreateAccount` | Create | queue-choose (drift fixture) |";
+    assert_eq!(ADR_SOURCE.matches(original).count(), 1);
+    let mutated = ADR_SOURCE.replacen(original, drifted, 1);
+    let error =
+        compare_adr_appendix(&mutated).expect_err("one outcome cell must fail the contract");
+    assert!(error.contains("ADR appendix row 1 drifted"), "{error}");
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VaultState {
+    seq: u64,
+    touched_rows: BTreeSet<&'static str>,
+    archived: bool,
+    tags: BTreeSet<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Envelope {
+    Toggle {
+        target_row: &'static str,
+        archived: bool,
+    },
+    SetTags {
+        target_row: &'static str,
+        replacement: Vec<&'static str>,
+    },
+}
+
+fn rebase_two_vaults(
+    base_seq: u64,
+    new_base: &VaultState,
+    envelope: &Envelope,
+) -> Result<VaultState, &'static str> {
+    let (target_row, validates) = match envelope {
+        Envelope::Toggle { target_row, .. } => (*target_row, true),
+        Envelope::SetTags {
+            target_row,
+            replacement,
+        } => (*target_row, !replacement.is_empty()),
+    };
+    let write_set_untouched =
+        new_base.seq >= base_seq && !new_base.touched_rows.contains(target_row);
+    if !(write_set_untouched && validates) {
+        return Err("queue-choose");
+    }
+
+    let mut rebased = new_base.clone();
+    match envelope {
+        Envelope::Toggle { archived, .. } => rebased.archived = *archived,
+        Envelope::SetTags { replacement, .. } => {
+            rebased.tags = replacement.iter().copied().collect();
+        }
+    }
+    Ok(rebased)
+}
+
+fn vault(seq: u64, archived: bool, tags: &[&'static str]) -> VaultState {
+    VaultState {
+        seq,
+        touched_rows: BTreeSet::new(),
+        archived,
+        tags: tags.iter().copied().collect(),
+    }
+}
+
+#[test]
+fn two_vault_strict_rebase_queues_equal_end_state_toggle_when_touched() {
+    let base = vault(10, false, &["base"]);
+    let mut remote = base.clone();
+    remote.seq = 11;
+    remote.touched_rows.insert("account:1");
+    remote.archived = true;
+    let envelope = Envelope::Toggle {
+        target_row: "account:1",
+        archived: true,
+    };
+
+    assert_eq!(
+        rebase_two_vaults(base.seq, &remote, &envelope),
+        Err("queue-choose")
+    );
+    assert!(
+        remote.archived,
+        "the queued envelope must not rewrite the remote vault"
+    );
+}
+
+#[test]
+fn two_vault_strict_rebase_queues_set_tags_without_union_rewrite() {
+    let base = vault(10, false, &["base"]);
+    let mut remote = base.clone();
+    remote.seq = 11;
+    remote.touched_rows.insert("transaction:1");
+    remote.tags = ["base", "remote"].into_iter().collect();
+    let envelope = Envelope::SetTags {
+        target_row: "transaction:1",
+        replacement: vec!["base", "local"],
+    };
+
+    assert_eq!(
+        rebase_two_vaults(base.seq, &remote, &envelope),
+        Err("queue-choose")
+    );
+    assert_eq!(remote.tags, ["base", "remote"].into_iter().collect());
+    assert!(
+        !remote.tags.contains("local"),
+        "rebase must not synthesize a tag union"
+    );
+}
+
+#[test]
+fn two_vault_strict_rebase_auto_applies_only_an_untouched_valid_row() {
+    let base = vault(10, false, &["base"]);
+    let mut remote = base.clone();
+    remote.seq = 11;
+    remote.touched_rows.insert("account:2");
+    let envelope = Envelope::Toggle {
+        target_row: "account:1",
+        archived: true,
+    };
+
+    let rebased =
+        rebase_two_vaults(base.seq, &remote, &envelope).expect("untouched row auto-applies");
+    assert!(rebased.archived);
+    assert_eq!(rebased.seq, remote.seq);
 }
