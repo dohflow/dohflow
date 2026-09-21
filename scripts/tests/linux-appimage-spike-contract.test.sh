@@ -31,6 +31,19 @@ assert_file_contains "$WORKFLOW" 'xvfb-run --auto-servernum' 'Xvfb launch smoke 
 assert_file_contains "$WORKFLOW" 'xdotool search --name' 'window-presence assertion is present'
 assert_file_contains "$WORKFLOW" 'import -window' 'screenshot capture is present'
 assert_file_contains "$WORKFLOW" 'for attempt in $(seq 1 10)' 'screenshot capture retries transient X11 failures'
+assert_file_contains "$WORKFLOW" 'identify -format '\''%[fx:mean] %[fx:max]'\''' 'screenshot pixel statistics are measured'
+assert_file_contains "$WORKFLOW" 'values[1] > 0.01 && values[2] > 0.05' 'all-black or empty screenshots are rejected'
+assert_file_contains "$WORKFLOW" 'rendered=1' 'rendered-pixel safeguard gates the smoke marker'
+assert_file_contains "$WORKFLOW" 'Unable to capture a rendered X11 window' 'rendered screenshot failures are explicit'
+assert_file_contains "$WORKFLOW" 'if [ "$captured" -ne 1 ] || [ "$rendered" -ne 1 ]; then' 'rendered-pixel guard gates success'
+assert_file_contains "$WORKFLOW" 'mktemp -d "${RUNNER_TEMP}/dohflow-linux-data.XXXXXX"' 'launch smoke uses a fresh data directory'
+render_guard_line="$(grep -nF 'if [ "$captured" -ne 1 ] || [ "$rendered" -ne 1 ]; then' "$WORKFLOW" | head -n1 | cut -d: -f1)"
+marker_line="$(grep -nF 'DohFlow vault screen detected' "$WORKFLOW" | head -n1 | cut -d: -f1)"
+if [ -n "$render_guard_line" ] && [ -n "$marker_line" ] && [ "$render_guard_line" -lt "$marker_line" ]; then
+  pass 'rendered-pixel guard appears before the vault-screen marker'
+else
+  fail 'rendered-pixel guard must appear before the vault-screen marker'
+fi
 assert_file_contains "$WORKFLOW" 'DohFlow vault screen detected' 'vault-screen log marker is present'
 assert_file_contains "$WORKFLOW" 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' 'artifact upload is pinned'
 assert_file_contains "$WORKFLOW" 'printf '\''%s\n'\'' "${packages[@]}" > "$artifact_dir/linux-spike-apt-packages.txt"' 'apt package record is written into the artifact directory'

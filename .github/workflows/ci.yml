@@ -697,8 +697,7 @@ jobs:
           appimage="$1"
           log="$2"
           screenshot="$3"
-          data_dir="${RUNNER_TEMP}/dohflow-linux-data"
-          mkdir -p "$data_dir"
+          data_dir="$(mktemp -d "${RUNNER_TEMP}/dohflow-linux-data.XXXXXX")"
           cleanup() {
             if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
               kill "$pid" 2>/dev/null || true
@@ -721,19 +720,28 @@ jobs:
             if [ -n "$window" ]; then
               title="$(xdotool getwindowname "$window" 2>/dev/null || true)"
               captured=0
+              rendered=0
+              render_stats=''
               for attempt in $(seq 1 10); do
                 if import -window "$window" "$screenshot" 2>>"$log"; then
                   captured=1
-                  break
+                  if [ -s "$screenshot" ]; then
+                    render_stats="$(identify -format '%[fx:mean] %[fx:max]' "$screenshot" 2>/dev/null || true)"
+                    if awk -v stats="$render_stats" 'BEGIN { n = split(stats, values, /[[:space:]]+/); exit !(n >= 2 && values[1] > 0.01 && values[2] > 0.05) }'; then
+                      rendered=1
+                      break
+                    fi
+                    echo "Screenshot has no rendered pixels (mean/max: ${render_stats:-unavailable}); retrying." >> "$log"
+                  fi
                 fi
                 sleep 1
               done
-              if [ "$captured" -ne 1 ] || [ ! -s "$screenshot" ]; then
-                echo "Unable to capture X11 window $window after 10 attempts." >&2
+              if [ "$captured" -ne 1 ] || [ "$rendered" -ne 1 ]; then
+                echo "Unable to capture a rendered X11 window $window after 10 attempts." >&2
                 xdotool getwindowgeometry "$window" >&2 || true
                 exit 1
               fi
-              printf 'DohFlow vault screen detected: window=%s title=%s process=%s\n' "$window" "$title" "$pid" | tee -a "$log"
+              printf 'DohFlow vault screen detected: window=%s title=%s process=%s rendered_pixels=%s\n' "$window" "$title" "$pid" "$render_stats" | tee -a "$log"
               exit 0
             fi
             sleep 1
