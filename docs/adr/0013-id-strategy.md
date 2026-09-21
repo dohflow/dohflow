@@ -127,14 +127,50 @@ rand_b  = first 62 bits of
           HMAC-SHA256(id_key, command_id || tag || ordinal)
 ```
 
-`command_id` is its canonical 16-byte UUID representation, `tag` is a stable
-ASCII entity-domain label (length-prefixed in the canonical input), and
-`ordinal` is a big-endian `u16`.  The HMAC input is therefore unambiguous and
-the same on every device.  The first 62 output bits are interpreted
-big-endian; the UUID variant bits remain the RFC 9562 variant bits.  The
-implementation constructs the value with uuid 1.23.2's
-`Builder::from_unix_timestamp_millis`, supplying the 10-byte counter/random
-block whose `rand_a` and `rand_b` fields are fixed above.
+The HMAC message bytes are normative and have no implicit text encoding:
+
+```text
+message = command_id.bytes                 # 16 bytes, RFC UUID/network order
+       || u8_be(tag_len)                   # exactly one byte
+       || tag.bytes                        # tag_len bytes
+       || u16_be(ordinal)                  # exactly two bytes
+```
+
+`tag` is a non-empty printable US-ASCII byte string (`0x21..=0x7e`), bounded
+to 1..=255 bytes.  The one-octet length prefix is therefore sufficient; an
+empty tag, a non-ASCII byte, or a length greater than 255 is a validation
+error, and no Unicode normalization or NUL terminator is applied.  `ordinal`
+is validated in 0..=4095 before it is encoded.  These rules make the HMAC
+input exactly `16 + 1 + tag_len + 2` bytes on every device.
+
+Let `digest = HMAC-SHA256(id_key, message)`.  `rand_b` is the *high* 62 bits
+of the digest, interpreted as an unsigned big-endian integer:
+
+```text
+rand_b = u64_be(digest[0..8]) >> 2
+```
+
+The shift is normative right-alignment: the high 62 digest bits become a
+62-bit integer with two leading zero bits before its eight-byte encoding; no
+implementation may copy the raw first eight HMAC bytes into the builder.
+
+The ten-byte buffer passed to uuid 1.23.2 is packed exactly as follows (the
+top two bits of `rand_b` are consequently zero):
+
+```text
+counter_random_bytes[0] = (ordinal >> 8) & 0x0f
+counter_random_bytes[1] = ordinal & 0xff
+counter_random_bytes[2..10] = rand_b.to_be_bytes()
+```
+
+`uuid::Builder::from_unix_timestamp_millis(unix_ms,
+&counter_random_bytes).into_uuid()` then sets the RFC 9562 version and variant
+bits.  The builder masks the top two bits of byte 2 and writes the `10` variant
+bits itself; it does not consume the raw first eight HMAC bytes.  Thus the
+62 HMAC bits are preserved as UUID byte 8's low six bits followed by bytes
+9–15, while `rand_a` occupies UUID bytes 6–7.  The UUID is consequently a
+function of the command, not of a device, process, wall-clock read, or
+replica base.
 
 The 32-byte, non-secret `id_key` is fixed as:
 
@@ -142,13 +178,46 @@ The 32-byte, non-secret `id_key` is fixed as:
 id_key = SHA-256(ASCII("dohflow/derived-id-key/v1") || vault_id.bytes)
 ```
 
-where `vault_id.bytes` is the canonical 16-byte UUID.  Genesis carries this
+The ASCII label has no trailing NUL or length prefix; `vault_id.bytes` is the
+canonical 16-byte UUID/network-order representation.  Genesis carries this
 value beside `vault_id`; a receiver recomputes it and rejects a mismatch
 before applying the snapshot.  It is an identifier-domain constant, not a
 credential or encryption key, so exposing it does not weaken vault secrecy.
 Changing the label or encoding is a payload-schema change and is a revisit
 trigger below.  The UUID is consequently a function of the command, not of a
 device, process, wall-clock read, or replica base.
+
+These two known-answer vectors are normative (all hexadecimal is lowercase),
+including the message, full HMAC, packed builder input, and final UUID.  The
+future SYNC-1 `core-ids` test must consume these same vectors and add a
+different-tag/different-ordinal assertion rather than retyping an alternate
+grammar.
+
+```text
+vector A
+vault_id              = 00112233-4455-6677-8899-aabbccddeeff
+command_id            = ffeeddcc-bbaa-9988-7766-554433221100
+issued_at_unix_ms     = 1700000000123
+tag                   = ledger_transaction
+ordinal               = 0
+id_key                = f2f6ac71bc63e3df2f66370676ead3f3b6b677a87c124f190941659224b42149
+message_hex           = ffeeddccbbaa99887766554433221100126c65646765725f7472616e73616374696f6e0000
+hmac_sha256           = bd3f13b4d1dc70d711049be5e9dc25476758dd74c249b2b2a09d7fe9f2ecab20
+counter_random_bytes  = 00002f4fc4ed34771c35
+uuid                  = 018bcfe5-687b-7000-af4f-c4ed34771c35
+
+vector B
+vault_id              = 11223344-5566-7788-99aa-bbccddeeff00
+command_id            = 01234567-89ab-cdef-0123-456789abcdef
+issued_at_unix_ms     = 1700000000999
+tag                   = split_line
+ordinal               = 7
+id_key                = b33777244109db333d33cacff0f92a7d03e93497cc2d460e8f2b2db3548891b8
+message_hex           = 0123456789abcdef0123456789abcdef0a73706c69745f6c696e650007
+hmac_sha256           = fa00859fd235ec6e29d41c7e4ccea2df6260ed2141e15183b4c9ece7fc1182a6
+counter_random_bytes  = 00073e802167f48d7b1b
+uuid                  = 018bcfe5-6be7-7007-be80-2167f48d7b1b
+```
 
 #### 2. Metadata and time boundary
 
