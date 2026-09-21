@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::aggregate::{ForecastDayView, ForecastEventView};
 use super::{parse_date, parse_frequency};
 use crate::forecast_overrides::EntityOverride;
-use crate::{currency_from_code, DbError};
+use crate::{currency_from_code, DbError, REPORTING_CURRENCY_KEY};
 
 /// Enrich the pure engine's daily series with each event's source-entity display
 /// name (shared by the aggregate and per-account paths).
@@ -102,8 +102,8 @@ pub(crate) fn household_today_at(
 pub(crate) fn reporting_currency(conn: &Connection) -> Result<Option<Currency>, DbError> {
     let code: Option<String> = conn
         .query_row(
-            "SELECT value FROM settings WHERE key = 'reporting_currency'",
-            [],
+            "SELECT value FROM settings WHERE key = ?1",
+            [REPORTING_CURRENCY_KEY],
             |r| r.get(0),
         )
         .optional()?;

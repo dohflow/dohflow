@@ -26,12 +26,19 @@ ADR 0023. `durable_jobs` and `backup_history` are planned class-3 rows owned by
 
 Each class-3 row in the manifest has these fields:
 
-- `rebase_phase` is `stable` for unrelated local state or `replay_owned` for a
-  row owned by an active local outbox/queue plan.
-- `rebase_preservation` says how the live value is carried into the scratch
-  vault.
-- `reference_validation` names the class-1/class-1b references and the typed
-  validation rule that must pass before swap.
+- `rebase_phase` is `stable` for unrelated local state, `replay_owned` for a
+  row owned by an active local outbox/queue plan, or `mixed` when one physical
+  table contains both runtime branches.
+- Stable rows use `rebase_preservation` and `reference_validation`. A mixed
+  table instead declares `stable_selector`, `stable_rebase_preservation`, and
+  `stable_reference_validation` alongside the corresponding
+  `replay_owned_*` fields; its top-level preservation and validation fields
+  describe the fail-closed branch dispatch.
+- Replay-owned rows (including the replay branch of a mixed table) must declare
+  `correlate_to_live_plan`, `auto_replay_remap`, and `queued_disposition`.
+  These fields say how the live value is carried into the scratch vault and how
+  the class-1/class-1b references and typed validation rule are checked before
+  swap.
 
 The phase is selected per row at runtime. Stable rows overlay the current live
 value after the remote envelopes are applied. Replay-owned idempotency and
@@ -50,10 +57,14 @@ Every class-1b row records a local identity, an opaque
 bare plaintext digest is never a service-facing identity.
 
 Attachment metadata and links are kept separate from the class-3 materialized
-blob fields. The manifest records canonical identity, links, size, and user
-metadata separately from `storage_id`, wrapped/content-key fields, content
-nonces, paths, cache state, and the receiver-local
-`sync_artifact_id_e`-to-local mapping. A receiver verifies
+blob fields. The manifest uses the migrated schema's actual columns: attachment
+identity and user metadata are `id`, `plaintext_size`, `mime_type`,
+`original_filename`, and `created_at`; `content_alg` and `ref_count` are
+derived; `storage_id`, wrapped/content-key fields, and content nonces are
+receiver-local. Link identity is the canonical
+`attachment_id`/`entity_kind`/`entity_id`/`created_at` tuple. A fresh-vault
+`PRAGMA table_info` test rejects invented, omitted, newly added, or wrongly
+classified columns before the manifest can be consumed. A receiver verifies
 `SyncArtifactTransportV1`, re-encrypts with a receiver-local content key under
 the receiver DEK, and fails closed with `ArtifactMaterializationFailed` when
 the transport or DEK validation fails.
@@ -61,11 +72,18 @@ the transport or DEK validation fails.
 ## Settings key convention
 
 The existing unprefixed `locale` and `reporting_currency` keys are legacy and
-remain unchanged. New settings keys must begin with `device.` or `user.`. The
-manifest test checks the declared post-CLASS-0 key list and allowlists those two
-legacy names; it does not rename keys or route writes. `device.*` is currently
-class 3, while `user.*` is the class-4 candidate whose routing is owned by ADR
-0074 / SYNC-2.
+remain unchanged. The current persisted inventory also contains the four
+unprefixed keys `minimum_cash_floor_minor`, `comfort_band_upper_minor`,
+`auto_categorize_on_import`, and `future_cash_series_selection`; these are
+explicitly recorded as legacy user preferences rather than silently labeled
+device-local. New settings keys must begin with `device.` or `user.`. The
+manifest test enumerates the source-defined key inventory and a fresh vault
+instead of validating only an empty allowlist. `personal-cfo-5ymg8` owns the
+backwards-compatible prefix migration/dual-read rollout; this bead does not
+rename or route any key. The intended migration scope is `user.*` for the six
+existing user preferences, subject to that bead's mixed-version and conflict
+tests. `device.*` remains class 3, while `user.*` is the class-4 candidate whose
+routing is owned by ADR 0074 / SYNC-2.
 
 ## Class-4 candidate dispositions
 
