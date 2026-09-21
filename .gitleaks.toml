@@ -29,4 +29,9 @@ regexes = [
   # The connector-arc leak-canary strings (personal-cfo-x6dr/-gglk): fixtures
   # that exist to PROVE credentials never serialize into output. Never real.
   '''CFO-CANARY-[0-9a-f]{8}''',
+  # ADR 0013's two normative vectors publish derived keys as known-answer
+  # material. These exact constants are protocol fixtures, not credentials;
+  # keep the exceptions value-scoped rather than allowlisting the ADR path.
+  '''f2f6ac71bc63e3df2f66370676ead3f3b6b677a87c124f190941659224b42149''',
+  '''b33777244109db333d33cacff0f92a7d03e93497cc2d460e8f2b2db3548891b8''',
 ]
