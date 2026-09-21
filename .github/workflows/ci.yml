@@ -531,6 +531,8 @@ jobs:
       - name: Install Linux build and GUI-smoke dependencies
         run: |
           set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/linux-appimage-spike"
+          mkdir -p "$artifact_dir"
           packages=(
             build-essential
             libwebkit2gtk-4.1-dev
@@ -546,7 +548,7 @@ jobs:
           )
           sudo apt-get update
           sudo apt-get install -y "${packages[@]}"
-          printf '%s\n' "${packages[@]}" > "$RUNNER_TEMP/linux-spike-apt-packages.txt"
+          printf '%s\n' "${packages[@]}" > "$artifact_dir/linux-spike-apt-packages.txt"
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
@@ -558,6 +560,8 @@ jobs:
       - name: Record Linux runner floor
         run: |
           set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/linux-appimage-spike"
+          mkdir -p "$artifact_dir"
           {
             echo '--- /etc/os-release ---'
             cat /etc/os-release
@@ -569,7 +573,7 @@ jobs:
             echo "pnpm: $(pnpm --version)"
             echo "node: $(node --version)"
             rustc -Vv
-          } | tee "$RUNNER_TEMP/linux-spike-versions.txt"
+          } | tee "$artifact_dir/linux-spike-versions.txt"
 
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile

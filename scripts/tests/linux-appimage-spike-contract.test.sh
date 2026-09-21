@@ -16,6 +16,9 @@ case_start() { CASES=$((CASES + 1)); echo; echo "[$CASES] $*"; }
 assert_file_contains() {
   if grep -Fq -- "$2" "$1"; then pass "$3"; else fail "$3 (missing '$2' in $1)"; fi
 }
+assert_file_not_contains() {
+  if grep -Fq -- "$2" "$1"; then fail "$3 (unexpected '$2' in $1)"; else pass "$3"; fi
+}
 
 [ -f "$WORKFLOW" ] || { echo "no CI workflow at $WORKFLOW" >&2; exit 1; }
 [ -f "$DOC" ] || { echo "no Linux spike doc at $DOC" >&2; exit 1; }
@@ -30,6 +33,11 @@ assert_file_contains "$WORKFLOW" 'import -window' 'screenshot capture is present
 assert_file_contains "$WORKFLOW" 'for attempt in $(seq 1 10)' 'screenshot capture retries transient X11 failures'
 assert_file_contains "$WORKFLOW" 'DohFlow vault screen detected' 'vault-screen log marker is present'
 assert_file_contains "$WORKFLOW" 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' 'artifact upload is pinned'
+assert_file_contains "$WORKFLOW" 'printf '\''%s\n'\'' "${packages[@]}" > "$artifact_dir/linux-spike-apt-packages.txt"' 'apt package record is written into the artifact directory'
+assert_file_contains "$WORKFLOW" 'tee "$artifact_dir/linux-spike-versions.txt"' 'runner-version record is written into the artifact directory'
+assert_file_contains "$WORKFLOW" 'path: ${{ runner.temp }}/linux-appimage-spike/' 'artifact upload path includes runner evidence records'
+assert_file_not_contains "$WORKFLOW" '$RUNNER_TEMP/linux-spike-apt-packages.txt' 'apt package record is not stranded outside the artifact directory'
+assert_file_not_contains "$WORKFLOW" '$RUNNER_TEMP/linux-spike-versions.txt' 'runner-version record is not stranded outside the artifact directory'
 
 case_start "Linux prerequisites and platform probes are retained"
 for package in \
