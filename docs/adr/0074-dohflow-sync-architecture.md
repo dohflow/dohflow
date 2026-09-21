@@ -7,9 +7,9 @@
 - **Decider:** Owner, 2026-09-20
 - **Related:** ADR 0002 (local encrypted vault), ADR 0011 (hybrid
   persistence), ADR 0013-A (derived identifiers, accepted in Addendum A), ADR 0066 (free
-  local app and separate services), ADR 0073 (sync disposition rules,
-  planned), ADR 0077 (wire formats, planned), and ADR 0082 (public disclosure
-  boundary)
+  local app and separate services), ADR 0073 (sync disposition rules, accepted
+  at `docs/adr/0073-sync-disposition-rules.md`), ADR 0077 (wire formats,
+  planned), and ADR 0082 (public disclosure boundary)
 
 ## Context
 
