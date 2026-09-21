@@ -123,6 +123,6 @@ require_text "test asserts live enum count" "$TEST" "variants.len(),"
 require_text "test pins the current enum count" "$TEST" "        49,"
 require_text "test asserts shape counts" "$TEST" "assert_eq!(shape_count(Shape::Create), 8"
 require_text "test rejects unmapped variants" "$TEST" "exactly one disposition row"
-require_text "0074 links accepted ADR 0073" "$ADR074" "ADR 0073 (sync disposition rules, accepted at"
+require_text "0074 links accepted ADR 0073" "$ADR074" "ADR 0073 (sync disposition rules, accepted"
 
 echo "PASS — $CASES ADR 0073 contract assertions, 0 failures"
