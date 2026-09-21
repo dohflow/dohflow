@@ -6,7 +6,7 @@
 - **Bead:** `personal-cfo-j8ab7`
 - **Decider:** Owner, 2026-09-20
 - **Related:** ADR 0002 (local encrypted vault), ADR 0011 (hybrid
-  persistence), ADR 0013-A (derived identifiers, planned), ADR 0066 (free
+  persistence), ADR 0013-A (derived identifiers, accepted in Addendum A), ADR 0066 (free
   local app and separate services), ADR 0073 (sync disposition rules,
   planned), ADR 0077 (wire formats, planned), and ADR 0082 (public disclosure
   boundary)
@@ -352,7 +352,8 @@ update and fork-recovery behavior.
 
 ### 4. Derived identifiers
 
-ADR 0013-A (`personal-cfo-1df8d`) defines derived IDs before SYNC-1:
+ADR 0013 Addendum A — deterministic derived identifiers for apply-minted rows
+(`personal-cfo-1df8d`) defines derived IDs before SYNC-1:
 replicas never seed IDs locally. A genesis snapshot carries rows already seeded
 by the origin. This makes the simulator's seed-twin case deterministic without
 turning allocation control flow into a wire format.
