@@ -49,7 +49,11 @@ require_text "replicas never seed" "$ADR" "A replica never seeds — the genesis
 require_text "seed twin is required" "$ADR" "Simulator case (ii), the seed-twin bootstrap"
 require_text "pre-v2 compatibility is explicit" "$ADR" "Existing operation-log rows"
 require_text "replay uses canonical row hashes" "$ADR" "hash of canonically ordered"
-require_text "all five rejected alternatives are present" "$ADR" "Sequential per-device counters in the UUID"
+require_text "receipt alternative is rejected" "$ADR" "Apply receipts containing mint counts and IDs."
+require_text "mapping-table alternative is rejected" "$ADR" "Random IDs plus a per-device mapping table."
+require_text "central allocation alternative is rejected" "$ADR" "Central server allocation."
+require_text "ULID alternative is rejected" "$ADR" "**ULID.** Rejected"
+require_text "per-device counter alternative is rejected" "$ADR" "Sequential per-device counters in the UUID"
 require_text "revisit triggers include the cap" "$ADR" "A command legitimately needs more than 4,096 derived IDs."
 require_text "SYNC-1 points at accepted heading" "$SYNC" "ADR 0013 Addendum A — deterministic derived identifiers for apply-minted rows"
 
