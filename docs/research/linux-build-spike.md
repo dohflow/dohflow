@@ -15,13 +15,13 @@ that the ADR needs.
 ## Run record
 
 The job is manual-only (`workflow_dispatch`) and is intentionally not a
-required check. The successful evidence run is:
+required check. The successful evidence run from the repaired candidate is:
 
-- **Run URL:** <https://github.com/dohflow/dohflow/actions/runs/35544187701>
-- **Artifact:** <https://github.com/dohflow/dohflow/actions/runs/35544187701/artifacts/10616795641>
-  (`linux-appimage-spike-35544187701`; contains the AppImage, build
-  log/warnings, runner versions, SQLCipher probe, Argon2 timing, launch log,
-  and `vault-screen.png`)
+- **Run URL:** <https://github.com/dohflow/dohflow/actions/runs/35546349584>
+- **Artifact:** <https://github.com/dohflow/dohflow/actions/runs/35546349584/artifacts/10615929425>
+  (`linux-appimage-spike-35546349584`; contains the AppImage, build
+  log/warnings, `linux-spike-apt-packages.txt`, `linux-spike-versions.txt`,
+  SQLCipher probe, Argon2 timing, launch log, and `vault-screen.png`)
 
 ## Exact runner setup
 
@@ -45,7 +45,8 @@ The run resolved `ubuntu-latest` to Ubuntu 24.04.5 LTS (Noble), x86_64, with
 glibc 2.39, WebKitGTK 4.1 package 2.52.6-0ubuntu0.24.04.1, GTK 3 package
 3.24.41-4ubuntu1.3, Node v22.23.2, pnpm 11.5.2, and Rust 1.96.0. The exact
 `/etc/os-release`, `uname -a`, package versions, and toolchain output are in the
-artifact's `linux-spike-versions.txt`.
+artifact's `linux-spike-versions.txt`; the exact apt list is in
+`linux-spike-apt-packages.txt`.
 
 ## Build and launch procedure
 
@@ -56,7 +57,7 @@ pnpm tauri build --bundles appimage \
   --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
-It recorded 476.47 seconds of build time and an 87,362,040-byte AppImage. The
+It recorded 422.26 seconds of build time and an 87,366,136-byte AppImage. The
 captured warning lines include the existing frontend chunk-size warning; no
 icon or desktop-entry failure was reported. The AppImage is launched with a
 temporary `PCFO_DATA_DIR` under `xvfb-run`; the script waits for a live window
@@ -97,7 +98,7 @@ capability/CSP contract used by the existing IPC CI gate.
 
 A temporary probe measures five `Profile::InteractiveDefault` derivations and
 records the median wall-clock time with memory, time-cost, and parallelism. On
-this runner it measured `median_unlock_ms=2801.13` with
+this runner it measured `median_unlock_ms=1747.21` with
 `memory_kib=65536`, `time_cost=3`, and `parallelism=1`. It uses the production
 `vault-crypto` implementation and deletes the probe before the job ends.
 
