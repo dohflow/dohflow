@@ -21,7 +21,7 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/categorization", "crates/connector-core", "crates/connectors/simplefin-adapter", "crates/core-ids", "crates/core-money", "crates/core-ledger", "crates/forecast-engine", "crates/db-worker", "crates/finance-kernel", "crates/importers/importer-core", "crates/importers/csv-importer", "crates/importers/ofx-importer", "crates/importers/source-presets", "crates/observability", "crates/pay-schedule", "crates/synthetic-data", "crates/vault-crypto"]
+members = ["crates/categorization", "crates/connector-core", "crates/connectors/simplefin-adapter", "crates/core-ids", "crates/core-money", "crates/core-ledger", "crates/forecast-engine", "crates/db-worker", "crates/finance-kernel", "crates/importers/importer-core", "crates/importers/csv-importer", "crates/importers/ofx-importer", "crates/importers/source-presets", "crates/job-runtime", "crates/observability", "crates/pay-schedule", "crates/synthetic-data", "crates/vault-crypto"]
 
 [workspace.package]
 edition = "2021"

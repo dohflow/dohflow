@@ -8,9 +8,10 @@
 //! state of a locked app.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use finance_kernel::VaultController;
+use finance_kernel::{Kernel, VaultController};
+use job_runtime::JobExecutor;
 
 use crate::ipc::IpcError;
 use crate::vault_registry::VaultRegistry;
@@ -30,6 +31,10 @@ pub struct AppState {
     /// walk the network concurrently for one connection (the Bridge budget is
     /// ~24 requests/day, and the loser's whole batch would churn as skips).
     connector_syncs_in_flight: Mutex<std::collections::HashSet<uuid::Uuid>>,
+    /// Optional consumer registry.  Consumers own their opt-in policy and
+    /// domain work; the unlock hook only runs the durable scheduler when one
+    /// has been registered.
+    job_executor: Mutex<Option<Arc<dyn JobExecutor<Kernel>>>>,
 }
 
 impl AppState {
@@ -42,6 +47,7 @@ impl AppState {
             registry: Mutex::new(VaultRegistry::default()),
             vaults_root: None,
             connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
+            job_executor: Mutex::new(None),
         }
     }
 
@@ -58,6 +64,7 @@ impl AppState {
             registry: Mutex::new(registry),
             vaults_root: Some(vaults_root),
             connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
+            job_executor: Mutex::new(None),
         }
     }
 
@@ -85,6 +92,20 @@ impl AppState {
         if let Ok(mut set) = self.connector_syncs_in_flight.lock() {
             set.remove(&connection_id);
         }
+    }
+
+    /// Register the process-local durable-job consumer set.  The executor is
+    /// deliberately an `Arc` so an unlock-spawn can outlive the command call.
+    pub fn set_job_executor(&self, executor: Arc<dyn JobExecutor<Kernel>>) {
+        if let Ok(mut slot) = self.job_executor.lock() {
+            *slot = Some(executor);
+        }
+    }
+
+    /// Snapshot the registered job executor for an unlock-spawn.
+    #[must_use]
+    pub fn job_executor(&self) -> Option<Arc<dyn JobExecutor<Kernel>>> {
+        self.job_executor.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// Lock the registry mutex, mapping a poisoned lock to a typed error.

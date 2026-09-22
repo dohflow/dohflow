@@ -39,16 +39,17 @@ pub use db_worker::{
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
     CashTiers, CategoryFilter, CategorySource, CategorySpend, CategoryView, ComfortBand,
     CommandMeta, CommitmentView, ConnectorConnectionRow, ConnectorLinkRow, DayBalance,
-    DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec, ForecastDayView,
-    ForecastEventView, ForecastReadiness, ForecastView, GroupSeriesView, HistoryDay,
-    ImportedTransactionFields, IncomeSourceView, LoanDoubleCount, ManualEntry, MoneyInboxItem,
-    MultiSeriesForecast, NewScenario, Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor,
-    RecurringBillView, RecurringCandidateView, RecurringInstanceRow, RecurringTransferView,
-    RepaymentPhilosophy, ReviewStatus, ScenarioStatus, ScenarioView, SpendBreakdown, SpendFilters,
-    SplitLineInput, SplitLineView, TagView, TransactionDisplayRow, TransactionPage,
-    TransactionPageQuery, TransactionRow, TransactionSortOrder, UnconfirmedOccurrence,
-    VaultMetadata, WorkerState, AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY,
-    CURRENT_SCHEMA_VERSION, FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
+    DebtTermsInput, DebtTermsView, DriftFactorView, DurableJobView, ForecastAssumptionSpec,
+    ForecastDayView, ForecastEventView, ForecastReadiness, ForecastView, GroupSeriesView,
+    HistoryDay, ImportedTransactionFields, IncomeSourceView, LoanDoubleCount, ManualEntry,
+    MoneyInboxItem, MultiSeriesForecast, NewScenario, Outcome, PayoffDebtSeries, PayoffPlanView,
+    ReadinessFactor, RecurringBillView, RecurringCandidateView, RecurringInstanceRow,
+    RecurringTransferView, RepaymentPhilosophy, ReviewStatus, ScenarioStatus, ScenarioView,
+    SpendBreakdown, SpendFilters, SplitLineInput, SplitLineView, TagView, TransactionDisplayRow,
+    TransactionPage, TransactionPageQuery, TransactionRow, TransactionSortOrder,
+    UnconfirmedOccurrence, VaultMetadata, WorkerState, AUTO_CATEGORIZE_ON_IMPORT_KEY,
+    COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION, FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY,
+    REPORTING_CURRENCY_KEY,
 };
 pub use importer_core::{
     all_presets, content_fingerprint, detect_best, plugin_by_id, preset_by_id, run_bounded,
@@ -56,6 +57,10 @@ pub use importer_core::{
     ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord, ParsedTransaction, ParserHints,
     ParserInput, ParserLimits, ParserRunReport, RunStatus, SignConvention, SourcePreset,
     SourceQuirk,
+};
+pub use job_runtime::{
+    BackoffPolicy, CancellationToken, Clock, JobExecution, JobExecutor, JobFailure, JobOutcome,
+    JobRecord, JobRunReport, JobRunnerError, JobSpec, JobState, Schedule, SystemClock,
 };
 pub use pay_schedule::{Frequency, PaySchedule};
 // Canonical onboarding warning (ADR 0002 / personal-cfo-n7bo): re-exported so the
@@ -2650,6 +2655,59 @@ impl Kernel {
 
         tracing::info!(?outcome, "kernel command applied");
         Ok(outcome)
+    }
+
+    /// Persist or update a local durable schedule.  Job configuration is
+    /// encrypted with the vault because the db-worker owns the SQLCipher
+    /// connection; no job payload is logged or exposed to IPC here.
+    pub fn schedule_job(&self, spec: &JobSpec) -> Result<(), KernelError> {
+        self.worker.schedule_job(spec)?;
+        Ok(())
+    }
+
+    /// Read the local durable-job history for a Settings/status surface.
+    pub fn durable_jobs(&self) -> Result<Vec<DurableJobView>, KernelError> {
+        Ok(self.worker.durable_jobs()?)
+    }
+
+    /// Read one local durable job.
+    pub fn durable_job(&self, id: Uuid) -> Result<Option<DurableJobView>, KernelError> {
+        Ok(self.worker.durable_job(id)?)
+    }
+
+    /// Request cancellation of a queued or running local job.
+    pub fn cancel_job(&self, id: Uuid) -> Result<bool, KernelError> {
+        Ok(self.worker.cancel_job(id)?)
+    }
+
+    /// Run due jobs for one unlocked-vault window.  Desktop callers invoke
+    /// this from a spawned blocking task after unlock; the method itself never
+    /// waits on the vault lifecycle mutex.  The handler receives this kernel as
+    /// context, so a consumer can keep its work inside the same boundary.
+    pub fn run_due_jobs<E: JobExecutor<Self> + ?Sized>(
+        &self,
+        now: DateTime<Utc>,
+        unlock_window: &str,
+        executor: &E,
+        cancellation: &CancellationToken,
+    ) -> Result<JobRunReport, KernelError> {
+        self.worker
+            .run_due_jobs(now, unlock_window, self, executor, cancellation)
+            .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
+    }
+
+    /// Clock-injected variant for deterministic job-runner integration tests.
+    pub fn run_due_jobs_with_clock<E: JobExecutor<Self> + ?Sized>(
+        &self,
+        now: DateTime<Utc>,
+        unlock_window: &str,
+        executor: &E,
+        cancellation: &CancellationToken,
+        clock: &dyn Clock,
+    ) -> Result<JobRunReport, KernelError> {
+        self.worker
+            .run_due_jobs_with_clock(now, unlock_window, self, executor, cancellation, clock)
+            .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
     }
 
     /// Run an importer end to end (personal-cfo-cmx): parse the bytes in the

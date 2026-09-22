@@ -7,7 +7,7 @@
 //! DI can build). Commands carry **no business logic** — they validate input
 //! shape, build a kernel command + provenance, dispatch, and map the result.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use finance_kernel::{
     all_presets, detect_best, plugin_by_id, preset_by_id, ActorType, ApplyScenario, ArchiveAccount,
     ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill, AttachSourceRecord, CategoryId,
@@ -27,6 +27,7 @@ use finance_kernel::{
 };
 use uuid::Uuid;
 use zeroize::Zeroizing;
+use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 
 use crate::ipc::dto::{
     parse_account_id, parse_attachment_id, parse_category_id, parse_currency,
@@ -246,6 +247,20 @@ pub fn unlock_vault_impl(state: &AppState, password: String) -> Result<VaultStat
     vault_status_dto(&guard)
 }
 
+/// Run registered local jobs for one unlocked-vault window.  This helper is
+/// intentionally separate from `unlock_vault_impl`: the unlock command returns
+/// synchronously, while its caller schedules this work after the response.
+pub fn run_due_jobs_on_unlock_impl(
+    state: &AppState,
+    executor: &dyn JobExecutor<Kernel>,
+    unlock_window: &str,
+) -> Result<JobRunReport, IpcError> {
+    let cancellation = CancellationToken::new();
+    with_kernel(state, |kernel| {
+        Ok(kernel.run_due_jobs(Utc::now(), unlock_window, executor, &cancellation)?)
+    })
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn unlock_vault(
@@ -254,6 +269,27 @@ pub fn unlock_vault(
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
     let status = unlock_vault_impl(state.inner(), password)?;
+    // Local durable jobs (personal-cfo-ati): the scheduler is a post-unlock
+    // task just like connector auto-sync.  No job handler is installed until a
+    // consumer bead registers one, and even when present this spawn never
+    // delays the successful unlock response.
+    if let Some(executor) = state.inner().job_executor() {
+        let unlock_window = format!("unlock-{}", Uuid::now_v7());
+        let job_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                let app_state = job_app.state::<AppState>();
+                if let Err(err) = run_due_jobs_on_unlock_impl(
+                    &app_state,
+                    executor.as_ref(),
+                    &unlock_window,
+                ) {
+                    tracing::warn!(error = %err, "durable jobs on unlock failed");
+                }
+            })
+            .await;
+        });
+    }
     // Sync-on-open (personal-cfo-gglk, ADR 0060 §4): fire-and-forget so the
     // network NEVER blocks the unlock; debounced inside; outcomes land on the
     // connection rows for the health surface. Lives in the wrapper — the impl

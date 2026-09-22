@@ -880,6 +880,7 @@ dependencies = [
  "core-money",
  "forecast-engine",
  "importer-core",
+ "job-runtime",
  "pay-schedule",
  "rusqlite",
  "serde_json",
@@ -1236,6 +1237,7 @@ dependencies = [
  "core-money",
  "db-worker",
  "importer-core",
+ "job-runtime",
  "pay-schedule",
  "serde",
  "serde_json",
@@ -2246,6 +2248,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "job-runtime"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2967,6 +2979,7 @@ dependencies = [
  "csv-importer",
  "finance-kernel",
  "iana-time-zone",
+ "job-runtime",
  "observability",
  "ofx-importer",
  "plist",
