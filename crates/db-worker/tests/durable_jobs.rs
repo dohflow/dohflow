@@ -312,7 +312,6 @@ fn db_cancel_request_reaches_a_running_handler_within_the_sla() {
     let worker = Arc::new(worker);
     let id = Uuid::now_v7();
     worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
-    let started = Instant::now();
     let task_worker = Arc::clone(&worker);
     let clock = FixedClock(now());
     let task = std::thread::spawn(move || {
@@ -341,6 +340,7 @@ fn db_cancel_request_reaches_a_running_handler_within_the_sla() {
         std::thread::sleep(StdDuration::from_millis(2));
     }
     assert!(running, "job should be running before cancellation");
+    let started = Instant::now();
     worker.cancel_job(id).unwrap();
     let report = task.join().unwrap();
     assert_eq!(report.cancelled, 1);
