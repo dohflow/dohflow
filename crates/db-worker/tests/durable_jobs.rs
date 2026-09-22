@@ -6,7 +6,12 @@
 
 mod common;
 
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -51,7 +56,7 @@ impl JobExecutor<()> for CountingSucceed {
 
 struct BlockingSucceed {
     calls: Arc<AtomicU32>,
-    started: Arc<AtomicBool>,
+    started: SyncSender<()>,
     release: Arc<AtomicBool>,
 }
 
@@ -63,11 +68,103 @@ impl JobExecutor<()> for BlockingSucceed {
         _context: &(),
     ) -> JobExecution {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.started.store(true, Ordering::SeqCst);
+        let _ = self.started.send(());
         while !self.release.load(Ordering::SeqCst) {
             std::thread::sleep(StdDuration::from_millis(2));
         }
         JobExecution::Succeeded
+    }
+}
+
+const CHILD_VAULT_PATH: &str = "DOHFLOW_DB_WORKER_CHILD_VAULT";
+const CHILD_READY_PATH: &str = "DOHFLOW_DB_WORKER_CHILD_READY";
+const CHILD_RELEASE_PATH: &str = "DOHFLOW_DB_WORKER_CHILD_RELEASE";
+
+/// A child process that owns a vault lock for the cross-process contention test.
+/// The normal parent test run invokes this as a no-op; the parent sets all three
+/// environment variables and runs this test by exact name in the child binary.
+#[test]
+fn child_holds_vault_lock_for_parent_test() {
+    let Some(vault_path) = env::var_os(CHILD_VAULT_PATH) else {
+        return;
+    };
+    let ready_path =
+        PathBuf::from(env::var_os(CHILD_READY_PATH).expect("child ready path should be provided"));
+    let release_path = PathBuf::from(
+        env::var_os(CHILD_RELEASE_PATH).expect("child release path should be provided"),
+    );
+    let _worker = DbWorker::open(vault_path, common::KEY).expect("child opens the vault");
+    fs::write(&ready_path, b"ready").expect("child signals that the lock is held");
+
+    let deadline = Instant::now() + StdDuration::from_secs(10);
+    while !release_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "parent did not release the child vault lock within 10 seconds"
+        );
+        std::thread::sleep(StdDuration::from_millis(5));
+    }
+}
+
+struct ChildLockGuard {
+    child: Option<Child>,
+    release_path: PathBuf,
+}
+
+impl ChildLockGuard {
+    fn try_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten())
+    }
+
+    fn release_and_wait(mut self) -> std::process::ExitStatus {
+        fs::write(&self.release_path, b"release").expect("parent releases child lock");
+        self.child
+            .take()
+            .expect("child is still running")
+            .wait()
+            .expect("child process should exit")
+    }
+}
+
+impl Drop for ChildLockGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = fs::write(&self.release_path, b"release");
+            let _ = child.wait();
+        }
+    }
+}
+
+fn wait_for_file(path: &Path, timeout: StdDuration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(StdDuration::from_millis(5));
+    }
+    path.exists()
+}
+
+fn spawn_lock_holder(path: &Path, ready_path: &Path, release_path: &Path) -> ChildLockGuard {
+    let child = Command::new(env::current_exe().expect("test binary path"))
+        .args([
+            "--exact",
+            "child_holds_vault_lock_for_parent_test",
+            "--nocapture",
+        ])
+        .env(CHILD_VAULT_PATH, path)
+        .env(CHILD_READY_PATH, ready_path)
+        .env(CHILD_RELEASE_PATH, release_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn child lock holder");
+    ChildLockGuard {
+        child: Some(child),
+        release_path: release_path.to_path_buf(),
     }
 }
 
@@ -453,11 +550,10 @@ fn exclusive_vault_owner_blocks_second_runner_and_reopens_for_recovery() {
     worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
 
     let calls = Arc::new(AtomicU32::new(0));
-    let started = Arc::new(AtomicBool::new(false));
+    let (started_sender, started_receiver) = mpsc::sync_channel(1);
     let release = Arc::new(AtomicBool::new(false));
     let task_worker = Arc::clone(&worker);
     let task_calls = Arc::clone(&calls);
-    let task_started = Arc::clone(&started);
     let task_release = Arc::clone(&release);
     let task = std::thread::spawn(move || {
         task_worker
@@ -467,7 +563,7 @@ fn exclusive_vault_owner_blocks_second_runner_and_reopens_for_recovery() {
                 &(),
                 &BlockingSucceed {
                     calls: task_calls,
-                    started: task_started,
+                    started: started_sender,
                     release: task_release,
                 },
                 &CancellationToken::new(),
@@ -476,20 +572,13 @@ fn exclusive_vault_owner_blocks_second_runner_and_reopens_for_recovery() {
             .unwrap()
     });
 
-    let mut running = false;
-    for _ in 0..200 {
-        if started.load(Ordering::SeqCst)
-            && worker
-                .durable_job(id)
-                .unwrap()
-                .is_some_and(|job| job.state == JobState::Running)
-        {
-            running = true;
-            break;
-        }
-        std::thread::sleep(StdDuration::from_millis(2));
-    }
-    assert!(running, "owner A should be executing before owner B opens");
+    started_receiver
+        .recv_timeout(StdDuration::from_secs(5))
+        .expect("owner A should signal execution before owner B opens");
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Running
+    );
 
     let second = DbWorker::open(&path, common::KEY);
     assert!(matches!(second, Err(DbError::VaultInUse)));
@@ -532,6 +621,63 @@ fn exclusive_vault_owner_blocks_second_runner_and_reopens_for_recovery() {
         )
         .unwrap();
     assert_eq!(recovered.recovered, 1);
+    assert_eq!(recovered.succeeded, 1);
+    assert_eq!(recovery_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        reopened.durable_job(abandoned).unwrap().unwrap().state,
+        JobState::Succeeded
+    );
+}
+
+#[test]
+fn distinct_process_owner_blocks_second_open_and_reopens_for_recovery() {
+    let (dir, worker) = worker();
+    let path = dir.path().join("test.vault");
+    let abandoned = Uuid::now_v7();
+    worker
+        .schedule_job(&spec(abandoned, Schedule::Once))
+        .unwrap();
+    assert!(worker
+        .claim_job(abandoned, 1, now(), "unlock-process-owner-a")
+        .unwrap());
+    drop(worker);
+
+    let ready_path = dir.path().join("child.ready");
+    let release_path = dir.path().join("child.release");
+    let mut child = spawn_lock_holder(&path, &ready_path, &release_path);
+    assert!(
+        wait_for_file(&ready_path, StdDuration::from_secs(5)),
+        "child did not acquire the vault lock within 5 seconds; status={:?}",
+        child.try_status()
+    );
+
+    // This is a separate process boundary: B cannot even open the worker, so
+    // it cannot migrate, recover, claim, or invoke the running row.
+    let second = DbWorker::open(&path, common::KEY);
+    assert!(matches!(second, Err(DbError::VaultInUse)));
+
+    let status = child.release_and_wait();
+    assert!(
+        status.success(),
+        "child lock holder exited unsuccessfully: {status}"
+    );
+
+    let reopened = DbWorker::open(&path, common::KEY).unwrap();
+    let recovery_calls = Arc::new(AtomicU32::new(0));
+    let recovered = reopened
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-after-process-owner-exit",
+            &(),
+            &CountingSucceed {
+                calls: Arc::clone(&recovery_calls),
+            },
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+    assert_eq!(recovered.recovered, 1);
+    assert_eq!(recovered.attempted, 1);
     assert_eq!(recovered.succeeded, 1);
     assert_eq!(recovery_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
