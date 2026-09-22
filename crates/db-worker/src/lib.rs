@@ -13,12 +13,15 @@
 //!   than risking silent corruption.
 //! - **Required provenance.** Every command carries §9.1.2 metadata; missing
 //!   metadata is rejected.
+//! - **Exclusive unlocked owner.** A process holds an OS advisory lock for the
+//!   worker lifetime, so durable-job recovery cannot race another opener.
 //!
 //! This crate is the **only** one that may depend on `rusqlite` (CI-enforced).
 //! The full domain schema and command set arrive via the schema beads and the
 //! Finance Kernel; db-worker provides the mechanism plus a minimal representative
 //! command (`CreateAccount`) used to prove the invariants.
 
+use std::fs::{File, OpenOptions};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -32,6 +35,7 @@ use core_ledger::{
     TransactionId,
 };
 use core_money::{Currency, Money, MoneyError};
+use fs2::FileExt;
 use importer_core::{ParsedBatch, ParserRunReport};
 use pay_schedule::{Frequency, PaySchedule};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -148,6 +152,10 @@ pub use spend_by_category::{CategorySpend, SpendBreakdown, SpendFilters};
 const JOURNAL_SIZE_LIMIT: i64 = 64 * 1024 * 1024;
 /// How long a blocked connection waits on a lock before erroring.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Suffix for the process-exclusive advisory lock held while a vault is open.
+/// The file is intentionally empty metadata; its OS lock, not its contents,
+/// is the ownership marker (personal-cfo-ati, ADR 0070 addendum).
+const RUNNER_LOCK_SUFFIX: &str = ".runner.lock";
 // The schema version stamped into `PRAGMA user_version` and each op-log row is
 // `migrations::CURRENT_VERSION` (the highest applied migration). The version
 // history now lives in `migrations::MIGRATIONS` (personal-cfo-wkn).
@@ -1067,6 +1075,9 @@ pub enum DbError {
     /// A required metadata field was empty.
     #[error("missing required command metadata: {0}")]
     MissingMetadata(&'static str),
+    /// Another process already owns the unlocked-vault runner.
+    #[error("vault is already unlocked by another process")]
+    VaultInUse,
     /// The worker is not in a state that accepts writes.
     #[error("worker unavailable for writes: {0:?}")]
     WorkerUnavailable(WorkerState),
@@ -1160,8 +1171,15 @@ enum KeyMaterial {
 /// The database worker. Cheap to share across threads behind an `Arc`.
 pub struct DbWorker {
     inner: Mutex<Inner>,
+    /// Serializes scheduler sweeps made through this worker. The advisory file
+    /// lock below prevents a second process; this gate prevents two unlock
+    /// callbacks in the same process from recovering/claiming concurrently.
+    runner_gate: Mutex<()>,
     path: PathBuf,
     key: KeyMaterial,
+    /// Held for the worker's lifetime so the OS releases vault ownership on a
+    /// clean lock, process exit, or crash. The lock file's contents are unused.
+    _runner_lock: File,
     /// Stable per-vault node identity (UUIDv7) stamped on every op-log row
     /// (§9.1.2; stored as a BLOB per ADR 0011).
     node_id: Uuid,
@@ -1175,14 +1193,17 @@ impl DbWorker {
     ///
     /// # Errors
     /// Returns [`DbError`] if the connection cannot be opened/keyed/configured,
-    /// the schema cannot be created, or the self-test fails.
+    /// the schema cannot be created, the self-test fails, or another process
+    /// already has this vault unlocked.
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
+        let runner_lock = acquire_runner_lock(&path)?;
         let conn = open_keyed(&path, key)?;
         Self::bootstrap(
             path,
             conn,
             KeyMaterial::Passphrase(Zeroizing::new(key.to_owned())),
+            runner_lock,
         )
     }
 
@@ -1197,17 +1218,24 @@ impl DbWorker {
     ///
     /// # Errors
     /// Returns [`DbError`] if the connection cannot be opened/keyed/configured,
-    /// the schema cannot be created, or the self-test fails.
+    /// the schema cannot be created, the self-test fails, or another process
+    /// already has this vault unlocked.
     pub fn open_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
+        let runner_lock = acquire_runner_lock(&path)?;
         let conn = open_keyed_raw(&path, &dek)?;
-        Self::bootstrap(path, conn, KeyMaterial::Raw(dek))
+        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
     }
 
     /// Shared post-keying bootstrap: migrate, seed singletons, self-test. Run
     /// before the worker is usable so no domain query ever touches a
     /// half-migrated vault (personal-cfo-wkn).
-    fn bootstrap(path: PathBuf, mut conn: Connection, key: KeyMaterial) -> Result<Self, DbError> {
+    fn bootstrap(
+        path: PathBuf,
+        mut conn: Connection,
+        key: KeyMaterial,
+        runner_lock: File,
+    ) -> Result<Self, DbError> {
         migrations::run_migrations(&mut conn)?;
         let node_id = ensure_node_id(&conn)?;
         ensure_vault_metadata(&conn, migrations::CURRENT_VERSION)?;
@@ -1221,8 +1249,10 @@ impl DbWorker {
                 state: WorkerState::Healthy,
                 last_hlc,
             }),
+            runner_gate: Mutex::new(()),
             path,
             key,
+            _runner_lock: runner_lock,
             node_id,
             schema_version: migrations::CURRENT_VERSION,
         };
@@ -3781,6 +3811,29 @@ impl LedgerQuery for Connection {
     fn operation_count(&self) -> Result<u64, DbError> {
         let n: i64 = self.query_row("SELECT COUNT(*) FROM operation_log", [], |r| r.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+}
+
+/// Acquire the process-exclusive ownership lease for the unlocked vault.
+///
+/// The lock is advisory at the operating-system level and is held by the
+/// returned file descriptor for as long as [`DbWorker`] lives. A second
+/// opener therefore fails before it can run migrations or recover durable
+/// jobs. Because the OS releases the lock when the descriptor disappears,
+/// the next opener can safely perform crash recovery after an owner exits.
+fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(RUNNER_LOCK_SUFFIX);
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(lock_path))?;
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => Ok(lock_file),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(DbError::VaultInUse),
+        Err(error) => Err(DbError::Io(error)),
     }
 }
 

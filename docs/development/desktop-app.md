@@ -110,16 +110,16 @@ app. A fresh dev checkout starts from an empty vault the first time; it does
 not currently seed the Polish Demo fixture automatically (tracked separately,
 `personal-cfo-wmsw2`).
 
-**One instance of a given channel at a time.** Two `tauri dev` processes (or
-`cargo test --test seed_polish_vault -- --ignored` racing a running `tauri
-dev`) can still collide with each other inside the *same* dev directory —
-only the dev-vs-release boundary is closed today, not concurrent-instance
-detection within a channel (tracked separately, `personal-cfo-4sfnh`, and the
-reason the 2026-09-09 screenshot session produced confusing results —
-`personal-cfo-h93wf`). Don't run two dev/build processes against the same
-data directory at once, and see "Usage and hardware constraints" in
-`docs/agent/WORKFLOW_ROLES.md` for the broader one-build-at-a-time rule on
-this machine.
+**One unlocked instance of a given vault at a time.** `DbWorker` holds an OS
+advisory lock on `<vault>.runner.lock` for the whole unlocked session. A second
+`tauri dev` process (or `cargo test --test seed_polish_vault -- --ignored`
+racing a running `tauri dev`) cannot unlock the same vault; it receives a
+plain "vault is already open" error before it can migrate or run durable-job
+recovery. The lock is released when the first instance locks, exits, or
+crashes, so a later unlock can recover safely. This protects a shared vault,
+but does not coordinate two processes that are only classifying an empty or
+locked directory, and it does not replace the broader one-build-at-a-time rule
+in `docs/agent/WORKFLOW_ROLES.md`.
 
 **Time Machine:** the dev directory holds disposable fixture/test data, not
 your real vault, so it's excluded from Time Machine rather than backed up

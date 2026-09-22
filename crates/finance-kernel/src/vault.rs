@@ -98,6 +98,8 @@ impl Kernel {
     /// - [`KernelError::VaultUnlockFailed`] if the password is wrong.
     /// - [`KernelError::Vault`] if the envelope is malformed or unreadable.
     /// - [`KernelError::Persistence`] if the database cannot be opened.
+    /// - [`KernelError::VaultInUse`] if another process already owns the
+    ///   unlocked vault.
     pub fn unlock_vault(path: impl AsRef<Path>, password: &[u8]) -> Result<Self, KernelError> {
         let db_path = path.as_ref();
         let sidecar = sidecar_path(db_path);

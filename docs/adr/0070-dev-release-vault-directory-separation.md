@@ -90,9 +90,8 @@ app startup — a larger, separable change. Tracked as a follow-up bead rather
 than folded in here.
 
 **4. Detecting concurrent instances (a lock file or similar) is out of scope
-for this ADR.** It would have caught `h93wf` outright and is worth building,
-but it is a distinct mechanism from directory separation and ships
-independently. Tracked as a follow-up bead.
+for the original directory-separation change.** The single-owner enforcement
+that now applies to every unlocked vault is recorded in the addendum below.
 
 **5. Backup/restore interaction.** The app's own backup/restore commands
 operate on whichever vault is active in `AppState`, which is already
@@ -127,15 +126,15 @@ today.
   empty vault, not a pre-seeded one, until the seeding follow-up bead lands.
   This matches today's actual first-run experience for a brand-new install,
   so it is not a regression.
-- **Negative / accepted.** Nothing stops two `tauri dev` processes from
-  colliding with each other inside the dev directory; only the dev-vs-release
-  boundary is closed here. Tracked as a follow-up (decision 4).
+- **Negative / accepted.** Directory separation alone does not prevent two
+  `tauri dev` processes from colliding inside the dev directory; the unlocked
+  vault runner's ownership lock is the independent protection described in the
+  addendum below.
 - **Closed by addendum below (`personal-cfo-qrh3t`, 2026-09-19).** The
   property used to depend on the `PCFO_BUILD_CHANNEL` *label*, not on the
   actual Cargo profile — see the addendum for the decision and what changed.
 - **Follow-up beads to file once this ADR is Accepted:** auto-seed the dev
-  directory with the Polish Demo vault fixture; concurrent-instance
-  detection/locking for the dev profile.
+  directory with the Polish Demo vault fixture.
 
 ## Addendum (2026-09-19, `personal-cfo-qrh3t`) — closing the Cargo-profile gap
 
@@ -207,3 +206,34 @@ was ever entitled to make — a NEW test,
 covers the case that test used to be misread as covering. A matching
 filesystem-level integration test was added in
 `tests/dev_release_directory_separation.rs`.
+
+## Addendum (2026-09-22, `personal-cfo-ati`) — exclusive ownership for unlocked vaults
+
+The durable-job runner initially recovered every `running` row whenever a
+`DbWorker` opened a vault. That is safe only after the prior owner has actually
+released the vault: a second process could otherwise requeue and invoke a job
+while the first process was still handling it. The existing architecture is
+local and single-process (see `docs/architecture/stack.md` and ADR 0003), so
+multi-process unlocked-vault access is not a supported mode.
+
+**Decision.** `DbWorker::open` and `DbWorker::open_with_raw_key` acquire a
+nonblocking operating-system advisory exclusive lock on `<vault>.runner.lock`
+before opening SQLCipher. The file descriptor is retained for the worker's
+entire lifetime. A second opener receives the typed `VaultInUse` error before
+it can migrate, recover, claim, or execute durable jobs. The OS releases the
+lock on a normal drop, process exit, or crash; the next opener may then recover
+uncancelled `running` rows. The scheduler entry points also serialize sweeps
+within one process so two unlock callbacks cannot overlap on the same worker.
+
+The lock file is empty metadata and may remain after a clean lock or vault
+deletion; ownership is the OS lock, not the file contents. The file is not
+included in encrypted backups. Persisted owner leases and multi-process
+fencing are deliberately not added because the product does not support
+concurrent unlocked owners; that choice can be revisited in a future ADR if
+the deployment model changes.
+
+**Consequences.** Only one unlocked DohFlow instance can own a vault's durable
+runner at a time, eliminating the recovery/claim duplicate-invocation race.
+Crash recovery remains available after the OS releases the lock, and the
+existing cancellation-before-recovery behavior remains unchanged. Users must
+close or lock the existing instance before opening the same vault elsewhere.

@@ -2541,6 +2541,9 @@ pub enum KernelError {
     /// `unlock_vault` found no vault envelope at the given location.
     #[error("no vault exists at this location")]
     VaultNotFound,
+    /// Another DohFlow process already owns this vault's unlocked runner.
+    #[error("vault is already unlocked by another process")]
+    VaultInUse,
     /// The vault could not be unlocked: the password was wrong (the wrapped DEK
     /// failed to authenticate). Deliberately carries no detail — there is no
     /// oracle distinguishing wrong-password from a tampered envelope.
@@ -2577,6 +2580,7 @@ impl From<DbError> for KernelError {
     fn from(error: DbError) -> Self {
         match error {
             DbError::MissingMetadata(field) => KernelError::MissingMetadata(field),
+            DbError::VaultInUse => KernelError::VaultInUse,
             DbError::WorkerUnavailable(state) => KernelError::Unavailable(state),
             DbError::WriterPanicked => KernelError::WriterPanicked,
             DbError::InvalidCommand(message) => KernelError::Validation(message),
@@ -2606,7 +2610,8 @@ impl Kernel {
     ///
     /// # Errors
     /// Returns [`KernelError`] if the underlying vault cannot be opened or fails
-    /// its startup self-test.
+    /// its startup self-test, including [`KernelError::VaultInUse`] when another
+    /// process already owns the unlocked vault.
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, KernelError> {
         Ok(Self {
             worker: DbWorker::open(path, key)?,

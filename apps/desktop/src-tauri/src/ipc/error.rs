@@ -63,6 +63,9 @@ impl From<KernelError> for IpcError {
             KernelError::VaultNotFound => {
                 IpcError::Validation("no vault exists at this location".to_owned())
             }
+            KernelError::VaultInUse => IpcError::Unavailable(
+                "vault is already open in another DohFlow instance".to_owned(),
+            ),
             // `KernelError` is `#[non_exhaustive]`; any other variant (a vault
             // I/O error, an illegal transition — an internal invariant) collapses
             // to a non-leaky persistence error rather than failing to compile.

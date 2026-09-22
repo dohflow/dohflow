@@ -6,14 +6,13 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Duration, Utc};
 use common::worker;
-use db_worker::DbWorker;
-use db_worker::JobStoreError;
+use db_worker::{DbError, DbWorker, JobStoreError};
 use job_runtime::{
     BackoffPolicy, CancellationToken, Clock, JobExecution, JobExecutor, JobFinishResult, JobRecord,
     JobRunner, JobSpec, JobState, JobStore, Schedule,
@@ -46,6 +45,28 @@ impl JobExecutor<()> for CountingSucceed {
         _context: &(),
     ) -> JobExecution {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        JobExecution::Succeeded
+    }
+}
+
+struct BlockingSucceed {
+    calls: Arc<AtomicU32>,
+    started: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+}
+
+impl JobExecutor<()> for BlockingSucceed {
+    fn execute(
+        &self,
+        _job: &JobRecord,
+        _cancellation: &CancellationToken,
+        _context: &(),
+    ) -> JobExecution {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.store(true, Ordering::SeqCst);
+        while !self.release.load(Ordering::SeqCst) {
+            std::thread::sleep(StdDuration::from_millis(2));
+        }
         JobExecution::Succeeded
     }
 }
@@ -421,6 +442,102 @@ fn cancellation_request_survives_restart_before_terminal_write() {
     assert_eq!(row.state, JobState::Cancelled);
     assert_eq!(row.last_outcome, Some(job_runtime::JobOutcome::Cancelled));
     assert_eq!(row.last_error.as_deref(), Some("cancelled before recovery"));
+}
+
+#[test]
+fn exclusive_vault_owner_blocks_second_runner_and_reopens_for_recovery() {
+    let (dir, worker) = worker();
+    let path = dir.path().join("test.vault");
+    let worker = Arc::new(worker);
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+
+    let calls = Arc::new(AtomicU32::new(0));
+    let started = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let task_worker = Arc::clone(&worker);
+    let task_calls = Arc::clone(&calls);
+    let task_started = Arc::clone(&started);
+    let task_release = Arc::clone(&release);
+    let task = std::thread::spawn(move || {
+        task_worker
+            .run_due_jobs_with_clock(
+                now(),
+                "unlock-owner-a",
+                &(),
+                &BlockingSucceed {
+                    calls: task_calls,
+                    started: task_started,
+                    release: task_release,
+                },
+                &CancellationToken::new(),
+                &FixedClock(now()),
+            )
+            .unwrap()
+    });
+
+    let mut running = false;
+    for _ in 0..200 {
+        if started.load(Ordering::SeqCst)
+            && worker
+                .durable_job(id)
+                .unwrap()
+                .is_some_and(|job| job.state == JobState::Running)
+        {
+            running = true;
+            break;
+        }
+        std::thread::sleep(StdDuration::from_millis(2));
+    }
+    assert!(running, "owner A should be executing before owner B opens");
+
+    let second = DbWorker::open(&path, common::KEY);
+    assert!(matches!(second, Err(DbError::VaultInUse)));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    release.store(true, Ordering::SeqCst);
+    let report = task.join().unwrap();
+    assert_eq!(report.succeeded, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Succeeded
+    );
+
+    // Once the owner exits, a new unlock window can recover a row left in
+    // `running`, which preserves the existing crash-recovery contract.
+    drop(worker);
+    let owner = DbWorker::open(&path, common::KEY).unwrap();
+    let abandoned = Uuid::now_v7();
+    owner
+        .schedule_job(&spec(abandoned, Schedule::Once))
+        .unwrap();
+    assert!(owner
+        .claim_job(abandoned, 1, now(), "unlock-owner-exit")
+        .unwrap());
+    drop(owner);
+
+    let reopened = DbWorker::open(&path, common::KEY).unwrap();
+    let recovery_calls = Arc::new(AtomicU32::new(0));
+    let recovered = reopened
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-after-owner-exit",
+            &(),
+            &CountingSucceed {
+                calls: Arc::clone(&recovery_calls),
+            },
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+    assert_eq!(recovered.recovered, 1);
+    assert_eq!(recovered.succeeded, 1);
+    assert_eq!(recovery_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        reopened.durable_job(abandoned).unwrap().unwrap().state,
+        JobState::Succeeded
+    );
 }
 
 #[test]

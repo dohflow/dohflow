@@ -10,6 +10,7 @@ description = "Sole owner of the SQLCipher connection for DohFlow. Serializes wr
 
 [dependencies]
 rusqlite = { workspace = true }
+fs2 = { workspace = true }
 core-money = { path = "../core-money" }
 core-ledger = { path = "../core-ledger" }
 # Merchant normalization for merchant-memory auto-categorization (personal-cfo-7yh0).

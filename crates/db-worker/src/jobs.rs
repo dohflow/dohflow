@@ -267,6 +267,10 @@ impl DbWorker {
         executor: &E,
         cancellation: &CancellationToken,
     ) -> Result<JobRunReport, JobRunnerError<JobStoreError>> {
+        let _runner_guard = self
+            .runner_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         JobRunner::new(self).run_due(now, unlock_window, context, executor, cancellation)
     }
 
@@ -281,6 +285,10 @@ impl DbWorker {
         cancellation: &CancellationToken,
         clock: &dyn Clock,
     ) -> Result<JobRunReport, JobRunnerError<JobStoreError>> {
+        let _runner_guard = self
+            .runner_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         JobRunner::new(self).run_due_with_clock(
             now,
             unlock_window,
