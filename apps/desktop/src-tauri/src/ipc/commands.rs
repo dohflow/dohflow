@@ -25,9 +25,9 @@ use finance_kernel::{
     UpdateRecurringBill, VaultController, VoidTransaction, COMFORT_BAND_UPPER_KEY,
     MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
+use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 use uuid::Uuid;
 use zeroize::Zeroizing;
-use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 
 use crate::ipc::dto::{
     parse_account_id, parse_attachment_id, parse_category_id, parse_currency,
@@ -279,11 +279,9 @@ pub fn unlock_vault(
         tauri::async_runtime::spawn(async move {
             let _ = tauri::async_runtime::spawn_blocking(move || {
                 let app_state = job_app.state::<AppState>();
-                if let Err(err) = run_due_jobs_on_unlock_impl(
-                    &app_state,
-                    executor.as_ref(),
-                    &unlock_window,
-                ) {
+                if let Err(err) =
+                    run_due_jobs_on_unlock_impl(&app_state, executor.as_ref(), &unlock_window)
+                {
                     tracing::warn!(error = %err, "durable jobs on unlock failed");
                 }
             })
