@@ -20,6 +20,9 @@ pay-schedule = { path = "../pay-schedule" }
 # Deterministic Future Cash fold consumed by the forecast input adapter
 # (personal-cfo-164u). Pure crate; db-worker provides the impure DB reads + clock.
 forecast-engine = { path = "../forecast-engine" }
+# Durable local job scheduling stays pure; this crate supplies the SQLCipher
+# persistence implementation (personal-cfo-ati).
+job-runtime = { path = "../job-runtime" }
 # The ImporterPlugin output type (`ParsedBatch`) the ingestion pipeline bulk-stages
 # (personal-cfo-cmx). importer-core is a pure parsing-types crate (no DB), so no cycle.
 importer-core = { path = "../importers/importer-core" }
