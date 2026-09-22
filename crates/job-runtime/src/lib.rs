@@ -1132,7 +1132,7 @@ mod tests {
             _context: &(),
         ) -> JobExecution {
             JobExecution::Failed(JobFailure::permanent(
-                "provider failure: account=1234567890123456 payload=secret-token",
+                "provider failure: account=acct-sensitive-42 payload=secret-token",
             ))
         }
     }
@@ -1291,7 +1291,7 @@ mod tests {
         let store = FakeStore::default();
         let mut scheduled = job(Schedule::Once);
         scheduled.payload_json =
-            Some("{\"account\":\"1234567890123456\",\"token\":\"secret-token\"}".to_owned());
+            Some("{\"account\":\"acct-sensitive-42\",\"token\":\"secret-token\"}".to_owned());
         let id = scheduled.id;
         store.jobs.lock().unwrap().insert(id, scheduled);
 
@@ -1322,7 +1322,7 @@ mod tests {
         let logged = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
         assert!(logged.contains("job.invocation"));
         assert!(logged.contains("outcome=\"failed\""));
-        assert!(!logged.contains("1234567890123456"));
+        assert!(!logged.contains("acct-sensitive-42"));
         assert!(!logged.contains("secret-token"));
         assert!(!logged.contains("provider failure"));
     }
