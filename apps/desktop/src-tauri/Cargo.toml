@@ -101,6 +101,9 @@ tauri-plugin-process = "2"
 # the pure domain crates. Versions are pinned exactly: tauri-specta/specta are
 # pre-1.0 release candidates whose patch releases can break.
 finance-kernel = { path = "../../../crates/finance-kernel" }
+# Durable jobs are scheduled by the kernel after unlock; consumers register a
+# context-aware handler in a later feature bead (personal-cfo-ati).
+job-runtime = { path = "../../../crates/job-runtime" }
 # Linking the CSV importer registers its `GenericCsv` plugin in the compile-time
 # inventory (personal-cfo-cu8); the import IPC resolves plugins from that registry.
 # Per-format importers are linked here as they land.

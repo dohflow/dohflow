@@ -281,6 +281,27 @@ fn wrong_password_is_rejected_and_leaves_the_vault_locked() {
 }
 
 #[test]
+fn second_unlock_maps_vault_in_use_to_typed_unavailable_error() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let owner = AppState::new(VaultController::open(&path));
+    create_vault_impl(&owner, PASSWORD.to_owned()).unwrap();
+
+    let contender = AppState::new(VaultController::open(&path));
+    let error = unlock_vault_impl(&contender, PASSWORD.to_owned()).unwrap_err();
+    match error {
+        IpcError::Unavailable(message) => {
+            assert_eq!(message, "vault is already open in another DohFlow instance")
+        }
+        other => panic!("expected typed unavailable error, got {other:?}"),
+    }
+    assert_eq!(
+        vault_status_impl(&contender).unwrap().state,
+        VaultStateDto::Locked
+    );
+}
+
+#[test]
 fn change_password_rotates_the_unlock_credential() {
     let (_dir, state) = empty_state();
     create_vault_impl(&state, PASSWORD.to_owned()).unwrap();

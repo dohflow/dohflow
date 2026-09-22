@@ -21,7 +21,7 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/categorization", "crates/connector-core", "crates/connectors/simplefin-adapter", "crates/core-ids", "crates/core-money", "crates/core-ledger", "crates/forecast-engine", "crates/db-worker", "crates/finance-kernel", "crates/importers/importer-core", "crates/importers/csv-importer", "crates/importers/ofx-importer", "crates/importers/source-presets", "crates/observability", "crates/pay-schedule", "crates/synthetic-data", "crates/vault-crypto"]
+members = ["crates/categorization", "crates/connector-core", "crates/connectors/simplefin-adapter", "crates/core-ids", "crates/core-money", "crates/core-ledger", "crates/forecast-engine", "crates/db-worker", "crates/finance-kernel", "crates/importers/importer-core", "crates/importers/csv-importer", "crates/importers/ofx-importer", "crates/importers/source-presets", "crates/job-runtime", "crates/observability", "crates/pay-schedule", "crates/synthetic-data", "crates/vault-crypto"]
 
 [workspace.package]
 edition = "2021"
@@ -81,6 +81,9 @@ aes-gcm = "0.10"
 sha2 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
+# Cross-platform advisory file locks for the single-owner unlocked-vault runner
+# (personal-cfo-ati, ADR 0070 addendum).
+fs2 = "0.4"
 # Importer plugin registry (personal-cfo-eay): `inventory` registers importer
 # plugins at COMPILE TIME (no runtime dynamic loading — ADR 0022 forbids
 # libloading/dlopen); `semver` types the plugin version recorded on every
