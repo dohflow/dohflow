@@ -1,9 +1,8 @@
-# FUNDING.yml — personal-cfo-fkt5.8.
+# FUNDING.yml — personal-cfo-n76x.5.
 #
-# Owner decision, 2026-09-07 (recorded on this bead): ships with the custom
-# URL only. github:/ko_fi: processor entries are added later, by
-# personal-cfo-n76x.5, once those accounts actually exist — the go-live
-# requirement here is the /sponsor link on the site, not processor
-# enrollment. Do not add github:/ko_fi: entries in this file without that
-# later bead's own change.
+# GitHub Sponsors is the primary channel; Ko-fi is the no-GitHub-account
+# fallback. The site remains the canonical landing page for the full
+# explanation and the no-perks policy.
+github: chrisbustos
+ko_fi: dohflow
 custom: ["https://dohflow.app/sponsor"]
