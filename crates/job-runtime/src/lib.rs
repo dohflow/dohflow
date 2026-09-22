@@ -940,11 +940,20 @@ where
                     report.cancelled += 1;
                 }
                 JobExecution::Skipped => {
-                    span.record("outcome", "skipped");
-                    self.store
+                    let finish = self
+                        .store
                         .finish_skipped(&job, completed_at)
                         .map_err(JobRunnerError::Store)?;
-                    report.skipped += 1;
+                    if finish == JobFinishResult::Cancelled {
+                        self.store
+                            .finish_cancelled(&job, completed_at, "job cancelled")
+                            .map_err(JobRunnerError::Store)?;
+                        span.record("outcome", "cancelled");
+                        report.cancelled += 1;
+                    } else {
+                        span.record("outcome", "skipped");
+                        report.skipped += 1;
+                    }
                 }
             }
         }

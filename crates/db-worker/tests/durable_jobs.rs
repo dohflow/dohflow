@@ -84,6 +84,19 @@ impl JobExecutor<()> for PermanentFailure {
     }
 }
 
+struct Skip;
+
+impl JobExecutor<()> for Skip {
+    fn execute(
+        &self,
+        _job: &JobRecord,
+        _cancellation: &CancellationToken,
+        _context: &(),
+    ) -> JobExecution {
+        JobExecution::Skipped
+    }
+}
+
 struct WaitForCancellation;
 
 impl JobExecutor<()> for WaitForCancellation {
@@ -173,6 +186,7 @@ impl JobStore for CancelAtTerminalWrite {
         job: &JobRecord,
         skipped_at: DateTime<Utc>,
     ) -> Result<JobFinishResult, Self::Error> {
+        self.worker.cancel_job(job.id)?;
         self.worker.finish_skipped(job, skipped_at)
     }
 }
@@ -479,4 +493,31 @@ fn cancellation_wins_the_final_poll_to_failure_write_race() {
         worker.durable_job(id).unwrap().unwrap().state,
         JobState::Cancelled
     );
+}
+
+#[test]
+fn cancellation_wins_the_final_poll_to_executor_skipped_write_race() {
+    let (_dir, worker) = worker();
+    let worker = Arc::new(worker);
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    let store = CancelAtTerminalWrite {
+        worker: Arc::clone(&worker),
+    };
+    let report = JobRunner::new(&store)
+        .run_due_with_clock(
+            now(),
+            "unlock-terminal-skipped-race",
+            &(),
+            &Skip,
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.cancelled, 1);
+    let row = worker.durable_job(id).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Cancelled);
+    assert_eq!(row.last_outcome, Some(job_runtime::JobOutcome::Cancelled));
 }
