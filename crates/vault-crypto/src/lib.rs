@@ -178,6 +178,13 @@ impl Kek {
     pub fn expose_bytes(&self) -> &[u8; KEK_LEN] {
         self.0.expose()
     }
+
+    /// Move a derived key into the protected buffer, scrubbing its stack copy.
+    pub(crate) fn from_array(mut bytes: [u8; KEK_LEN]) -> Self {
+        let kek = Kek(SecretBytes::new(bytes));
+        bytes.zeroize();
+        kek
+    }
 }
 
 impl Zeroize for Kek {

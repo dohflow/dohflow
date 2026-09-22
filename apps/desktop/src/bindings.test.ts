@@ -1,5 +1,9 @@
 import { commands } from "./bindings";
 
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+
 // Guards that the generated binding surface stays present and typed. The Rust↔TS
 // schema-sync check itself is enforced in CI (regenerate + `git diff --exit-code`
 // in the `ipc-codegen` job); this test catches an accidentally emptied or
@@ -165,5 +169,15 @@ describe("generated IPC bindings", () => {
     for (const fn of Object.values(commands)) {
       expect(typeof fn).toBe("function");
     }
+  });
+
+  it("exports a backup using only the chosen output path", async () => {
+    mocks.invoke.mockResolvedValue(null);
+
+    await commands.exportBackup("/tmp/backup.pcfobk");
+
+    expect(mocks.invoke).toHaveBeenCalledWith("export_backup", {
+      outPath: "/tmp/backup.pcfobk",
+    });
   });
 });

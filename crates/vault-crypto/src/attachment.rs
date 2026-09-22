@@ -280,6 +280,30 @@ mod tests {
     }
 
     #[test]
+    fn backup_kek_is_salted_and_domain_separated_from_attachment_key() {
+        use zeroize::Zeroize;
+
+        let dek = generate_dek().unwrap();
+        let salt_a = [1u8; crate::SALT_LEN];
+        let salt_b = [2u8; crate::SALT_LEN];
+        let backup_a = crate::backup::derive_backup_kek(&dek, &salt_a).unwrap();
+        let backup_b = crate::backup::derive_backup_kek(&dek, &salt_b).unwrap();
+        assert_ne!(
+            backup_a.expose_bytes(),
+            backup_b.expose_bytes(),
+            "fresh per-backup salts derive distinct backup KEKs"
+        );
+
+        let mut attachment_key = addressing_subkey(&dek);
+        assert_ne!(
+            backup_a.expose_bytes().as_slice(),
+            attachment_key.as_slice(),
+            "the backup HKDF info must be domain-separated from attachment addressing"
+        );
+        attachment_key.zeroize();
+    }
+
+    #[test]
     fn each_encrypt_uses_a_fresh_nonce() {
         let key = generate_content_key().unwrap();
         let a = encrypt_blob(&key, b"x").unwrap();

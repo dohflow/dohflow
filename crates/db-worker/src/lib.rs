@@ -1300,6 +1300,21 @@ impl DbWorker {
         Ok(std::fs::read(&self.path)?)
     }
 
+    /// Run a synchronous, non-escaping operation with the unlocked raw DEK.
+    ///
+    /// This narrow borrowing seam lets the Finance Kernel derive backup keys
+    /// without cloning or exporting the worker-owned key. The higher-ranked
+    /// closure result cannot borrow the DEK beyond this call.
+    ///
+    /// # Errors
+    /// [`DbError::KeyUnavailable`] if this worker was opened in passphrase mode.
+    pub fn with_dek<R>(
+        &self,
+        operation: impl for<'dek> FnOnce(&'dek Dek) -> R,
+    ) -> Result<R, DbError> {
+        Ok(operation(self.dek()?))
+    }
+
     /// The vault database path (`vault.db`). Used by the backup module to locate
     /// the envelope sidecar and blob store (personal-cfo-ef3).
     #[must_use]

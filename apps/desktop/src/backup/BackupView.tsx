@@ -4,8 +4,6 @@ import { Download, Loader2 } from "lucide-react";
 
 import { commands } from "@/bindings";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { describeIpcError, useVault } from "@/vault/useVault";
 
@@ -14,13 +12,11 @@ import {
   recordBackupExported,
 } from "./backupNudgeStorage";
 
-/// Export an encrypted backup of the whole vault to a user-chosen file (ef3,
-/// ADR 0024). The user re-enters their vault password (the backup is encrypted
-/// with it); a native Save dialog picks the destination, so plaintext never
-/// leaves the worker.
+/// Export an encrypted backup of the whole vault to a user-chosen file (ADR
+/// 0024-A). The unlocked kernel uses its in-memory DEK; a native Save dialog
+/// picks the destination, so plaintext never leaves the worker.
 export function BackupView() {
   const { vaults } = useVault();
-  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedTo, setSavedTo] = useState<string | null>(null);
@@ -35,10 +31,9 @@ export function BackupView() {
     });
     if (!path) return; // the user cancelled the dialog
     setBusy(true);
-    const result = await commands.exportBackup(password, path);
+    const result = await commands.exportBackup(path);
     setBusy(false);
     if (result.status === "ok") {
-      setPassword("");
       setSavedTo(path);
       // Retires the Dashboard's first-run backup nudge (personal-cfo-vdmb) — a
       // localStorage marker, since the vault keeps no backup history.
@@ -56,18 +51,8 @@ export function BackupView() {
           <p className="text-sm text-muted-foreground">
             Export an encrypted copy of your entire vault — accounts,
             transactions, income, bills, and attachments — to a single file. Keep
-            it somewhere safe; you&apos;ll need this password to restore it.
+            it somewhere safe. Your backup opens with your vault password.
           </p>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="backup-password">Vault password</Label>
-            <Input
-              id="backup-password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="Confirm your password to export"
-            />
-          </div>
           {error && (
             <p role="alert" className="text-sm text-loss">
               {error}
@@ -78,7 +63,7 @@ export function BackupView() {
           )}
           <Button
             className="self-start"
-            disabled={busy || password.length === 0}
+            disabled={busy}
             onClick={onExport}
           >
             {busy ? (

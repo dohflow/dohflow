@@ -7,7 +7,7 @@ asset-centric with a STRIDE-lite lens, and covers the shipped R1 surface
 (`personal-cfo-agh`, Risk Register §24). It is a living document — extend it as
 new surfaces land (import, documents, agents).
 
-**Last substantive revision: 2026-09-11** (`personal-cfo-7ie.8`) — see
+**Last substantive revision: 2026-09-22** (`personal-cfo-ii3an`) — see
 [Revision history](#revision-history) at the bottom of this document.
 
 ## What we are protecting (assets)
@@ -17,7 +17,7 @@ new surfaces land (import, documents, agents).
 | **A1** | Financial data at rest — accounts, transactions, income, bills, balances, attachments | confidentiality + integrity |
 | **A2** | The data-encryption key (DEK) — unwrapped into memory only while the vault is unlocked | confidentiality |
 | **A3** | The master password — derives the key-encryption key (KEK) via Argon2id | confidentiality |
-| **A4** | Encrypted backups — single-file portable containers | confidentiality + integrity |
+| **A4** | Encrypted backups — portable ciphertext; the v2 header carries the same wrapped vault envelope as the sidecar, allowing backups from one password/rekey epoch to be correlated | confidentiality + integrity, with accepted envelope linkability |
 | **A5** | Logs / diagnostics — must never carry A1 | confidentiality |
 
 ## Trust boundaries
@@ -68,7 +68,7 @@ new surfaces land (import, documents, agents).
 | Financial data leaks into logs | tracing spans / diagnostics | a global redacting tracing layer scrubs §6.6 attributes app-wide; a release-blocking CI test asserts an exhaustive corpus is scrubbed | `2vs` / `zobt` |
 | WebView XSS / malicious rendered content | a content-injection bug in the UI | strict CSP (CI-guarded against regression), no remote content loaded, no secrets in the frontend, scoped capabilities | ADR 0010 (`h7h8`) |
 | Untrusted IPC input reaches the core | crafted command payloads | a sealed, typed command bus; Rust is authoritative for validation; raw `invoke` is lint-forbidden | ADR 0003 / 0006 |
-| Backup theft | a copied backup file | encrypted single-file container (AES-256-GCM payload under a freshly-wrapped backup DEK); wrong password fails closed before any write | ADR 0024 (`ef3`/`au3`) |
+| Backup theft | a copied backup file | the AES-256-GCM payload uses a random backup DEK wrapped under an HKDF-SHA256 KEK derived from the vault DEK; the plaintext v2 header carries the same wrapped vault envelope as the on-disk sidecar, but no financial data or usable key. A stolen backup is no more decryptable than a stolen vault directory: the vault password is still required. The repeated envelope is a stable fingerprint that permits correlating backups within a password/rekey epoch and matching them to the sidecar. Wrong password, tampering, or component-hash mismatch fails before any restore write. | ADR 0024 / addendum A (`personal-cfo-ii3an`) |
 | Attachment plaintext at rest | blobs on disk | per-blob AES-256-GCM, content-addressed, keys wrapped under the DEK; a canary test proves no plaintext artifact | ADR 0023 (`bcj`) |
 | Vulnerable third-party dependency | supply chain | `cargo audit` (both workspaces) + `pnpm audit` in CI | `7t7` |
 | Secret committed by mistake | git history | gitleaks in CI with a tight allowlist | `6r6` |
@@ -153,3 +153,8 @@ new surfaces land (import, documents, agents).
   actually ships (independent, separately-encrypted named vaults, switchable
   one at a time) versus what remains unbuilt (true multi-user access —
   roles/permissions/concurrent access — *within* a single shared vault).
+- **2026-09-22** (`personal-cfo-ii3an`, ADR 0024 addendum A) — updated asset A4
+  and the backup-theft threat for format v2: the header carries the existing
+  wrapped vault envelope, the payload key is derived from the unlocked vault
+  DEK, and the resulting envelope fingerprint/linkability is an accepted
+  metadata exposure. The vault password remains required to restore.

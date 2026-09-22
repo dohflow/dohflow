@@ -2,11 +2,10 @@
 //!
 //! The encrypted-backup container's payload (manifest + vault envelope + DB +
 //! attachment blobs) is AES-256-GCM-sealed under a random per-backup **DEK**,
-//! which is itself wrapped under a password-derived **KEK** — the same
-//! `password → KEK → DEK` model as the vault (ADR 0002), so there is one key
-//! model to reason about. The backup KEK comes from [`crate::derive_kek`] (a
-//! fresh per-backup salt) and the backup DEK from [`crate::generate_dek`] /
-//! [`crate::wrap_dek`]; this module adds only the **payload AEAD**.
+//! which is itself wrapped under a **backup KEK** derived from the unlocked
+//! vault DEK with HKDF-SHA256 and a dedicated domain (ADR 0024-A). The backup
+//! DEK comes from [`crate::generate_dek`] / [`crate::wrap_dek`]; this module
+//! also provides the **payload AEAD**.
 //!
 //! Container assembly (the plaintext header, the manifest, content hashes, and
 //! bundling the vault files) lives in the backup module that can read the vault
@@ -14,12 +13,37 @@
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
+use hkdf::Hkdf;
+use sha2::Sha256;
+use zeroize::Zeroize;
 
 use crate::envelope::Dek;
 use crate::VaultCryptoError;
 
 /// AES-GCM nonce length, in bytes (96-bit).
 const NONCE_LEN: usize = 12;
+
+/// Domain-separated from attachment addressing and every other DEK-derived key.
+const BACKUP_KEK_INFO: &[u8] = b"dohflow-backup-kek-v2";
+
+/// Derive the per-backup KEK from the unlocked vault DEK.
+///
+/// The 16-byte salt must be fresh for every backup. HKDF's info value is a
+/// cryptographic domain boundary and must not be reused for another purpose.
+/// The returned key is protected and zeroized on drop like an Argon2-derived
+/// [`crate::Kek`].
+pub fn derive_backup_kek(
+    dek: &crate::Dek,
+    salt: &[u8; crate::SALT_LEN],
+) -> Result<crate::Kek, crate::VaultCryptoError> {
+    let hkdf = Hkdf::<Sha256>::new(Some(salt), dek.expose_bytes());
+    let mut bytes = [0u8; crate::KEK_LEN];
+    if hkdf.expand(BACKUP_KEK_INFO, &mut bytes).is_err() {
+        bytes.zeroize();
+        return Err(crate::VaultCryptoError::Derivation);
+    }
+    Ok(crate::Kek::from_array(bytes))
+}
 
 /// AES-256-GCM-sealed bytes: ciphertext (with auth tag) + the nonce used. Not
 /// secret — this is what the backup container stores as its payload.

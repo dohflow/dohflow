@@ -55,8 +55,7 @@ fn seed_and_export(dir: &std::path::Path) -> std::path::PathBuf {
 
     let pkg = dir.join("backup.pcfobk");
     kernel
-        .export_backup(
-            PASSWORD,
+        .export_unattended(
             &pkg,
             "0.1.0-test",
             "2026-06-20T00:00:00Z".into(),

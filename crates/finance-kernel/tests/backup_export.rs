@@ -20,8 +20,7 @@ fn export_produces_a_sealed_package_that_round_trips() {
 
     let out = dir.path().join("backup.pcfobk");
     kernel
-        .export_backup(
-            b"correct horse battery",
+        .export_unattended(
             &out,
             "0.1.0-test",
             "2026-06-20T00:00:00Z".into(),
@@ -50,6 +49,7 @@ fn export_produces_a_sealed_package_that_round_trips() {
         restored.manifest.schema_version,
         finance_kernel::CURRENT_SCHEMA_VERSION
     );
+    assert_eq!(restored.manifest.manifest_schema_version, Some(1));
     assert_eq!(
         restored.manifest.backup_id,
         Uuid::from_bytes([9u8; 16]).to_string()

@@ -39,13 +39,12 @@ Practical advice:
 ## Make an encrypted backup
 
 A backup is a single file (ending in `.pcfobk`) that contains your entire
-vault, encrypted with the same password. Anyone who finds the file sees only
-scrambled data; you, with the password, can turn it back into your vault.
+vault. While your vault is unlocked, DohFlow uses its in-memory encryption key
+to seal the backup; it does not ask you to type your password again. Your vault
+password is still required to restore it.
 
 1. Unlock your vault and open the **Backup** tab in the sidebar.
-2. Type your vault password into the **Vault password** field (the backup is
-   sealed with it, so the app asks you to confirm it).
-3. Click **Export backup…** and choose where to save the file.
+2. Click **Export backup…** and choose where to save the file.
 
 That's it — one file. Where to keep it:
 
@@ -78,7 +77,8 @@ attachment, to the byte.
 Honesty over comfort:
 
 - **You have a backup but forgot the password:** the backup cannot be opened.
-  It is encrypted with the same password as the vault, and there is no reset.
+  Its header carries the wrapped vault key, which still requires your password,
+  and there is no reset.
 - **You have the password but no backup, and the machine is gone:** the data
   went with the machine. There is no cloud copy to pull down.
 - **No backup and no password:** the data is gone. Nothing in the app, and

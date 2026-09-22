@@ -169,8 +169,7 @@ fn restore_drill_reproduces_the_canonical_state() {
     // Export, then restore into a fresh location (a "new machine").
     let pkg = src.path().join("backup.pcfobk");
     kernel
-        .export_backup(
-            PW,
+        .export_unattended(
             &pkg,
             "0.1.0-test",
             "2026-06-20T00:00:00Z".into(),
