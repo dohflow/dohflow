@@ -542,7 +542,8 @@ pub trait JobStore {
     /// Store-specific error type.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Recover rows left `running` by a crash and return them to the queue.
+    /// Recover rows left `running` by a crash, terminalizing rows with a
+    /// durable cancellation request and returning the rest to the queue.
     fn recover_running(&self, now: DateTime<Utc>) -> Result<u64, Self::Error>;
     /// List rows due at `now` that have not been claimed in `unlock_window`.
     fn due_jobs(
@@ -826,15 +827,17 @@ where
                     .store
                     .finish_skipped(&job, clock.now())
                     .map_err(JobRunnerError::Store)?;
-                if finish == JobFinishResult::Cancelled {
+                let outcome = if finish == JobFinishResult::Cancelled {
                     self.store
                         .finish_cancelled(&job, clock.now(), "job cancelled")
                         .map_err(JobRunnerError::Store)?;
                     report.cancelled += 1;
+                    "cancelled"
                 } else {
                     report.skipped += 1;
-                }
-                tracing::info!(job.kind = %job.kind, outcome = "skipped", "durable job policy skipped invocation");
+                    "skipped"
+                };
+                tracing::info!(job.kind = %job.kind, outcome, "durable job policy skipped invocation");
                 continue;
             }
             report.attempted += 1;
@@ -987,6 +990,7 @@ mod tests {
     #[derive(Default)]
     struct FakeStore {
         jobs: Mutex<HashMap<Uuid, JobRecord>>,
+        cancel_on_skip: bool,
     }
 
     impl JobStore for FakeStore {
@@ -1110,6 +1114,9 @@ mod tests {
         ) -> Result<JobFinishResult, Self::Error> {
             let mut jobs = self.jobs.lock().unwrap();
             let row = jobs.get_mut(&job.id).unwrap();
+            if self.cancel_on_skip {
+                row.cancel_requested = true;
+            }
             if row.cancel_requested {
                 return Ok(JobFinishResult::Cancelled);
             }
@@ -1334,6 +1341,49 @@ mod tests {
         assert!(!logged.contains("acct-sensitive-42"));
         assert!(!logged.contains("secret-token"));
         assert!(!logged.contains("provider failure"));
+    }
+
+    #[test]
+    fn policy_skip_race_logs_cancelled_when_terminal_write_loses() {
+        let store = FakeStore {
+            cancel_on_skip: true,
+            ..FakeStore::default()
+        };
+        let mut scheduled = job(Schedule::Once);
+        scheduled.requires_explicit_opt_in = true;
+        let id = scheduled.id;
+        store.jobs.lock().unwrap().insert(id, scheduled);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer({
+                let captured = Arc::clone(&captured);
+                move || CaptureWriter(Arc::clone(&captured))
+            })
+            .finish();
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let report = tracing::subscriber::with_default(subscriber, || {
+            JobRunner::new(&store).run_due_with_clock(
+                now,
+                "unlock-policy-skip-race",
+                &(),
+                &Succeed,
+                &CancellationToken::new(),
+                &FixedClock(now),
+            )
+        })
+        .unwrap();
+
+        assert_eq!(report.skipped, 0);
+        assert_eq!(report.cancelled, 1);
+        let logged = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(logged.contains("durable job policy skipped invocation"));
+        assert!(logged.contains("outcome=\"cancelled\""));
+        assert!(!logged.contains("outcome=\"skipped\""));
+        let row = store.jobs.lock().unwrap()[&id].clone();
+        assert_eq!(row.state, JobState::Cancelled);
+        assert_eq!(row.last_outcome, Some(JobOutcome::Cancelled));
     }
 
     #[test]

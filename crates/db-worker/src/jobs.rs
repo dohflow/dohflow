@@ -320,8 +320,18 @@ impl JobStore for DbWorker {
     type Error = JobStoreError;
 
     fn recover_running(&self, now: DateTime<Utc>) -> Result<u64, Self::Error> {
-        let guard = self.lock();
-        let changed = guard.conn.execute(
+        let mut guard = self.lock();
+        let tx = guard.conn.transaction()?;
+        let now = now.to_rfc3339();
+        let cancelled = tx.execute(
+            "UPDATE durable_jobs
+                SET state = 'cancelled', last_outcome = 'cancelled',
+                    last_error = 'cancelled before recovery',
+                    cancel_requested = 0, updated_at = ?1
+              WHERE state = 'running' AND cancel_requested = 1",
+            params![now],
+        )?;
+        let requeued = tx.execute(
             "UPDATE durable_jobs
                 SET state = 'queued',
                     next_due_at = CASE
@@ -330,10 +340,11 @@ impl JobStore for DbWorker {
                     END,
                     cancel_requested = 0,
                     updated_at = ?1
-              WHERE state = 'running'",
-            params![now.to_rfc3339()],
+              WHERE state = 'running' AND cancel_requested = 0",
+            params![now],
         )?;
-        Ok(changed as u64)
+        tx.commit()?;
+        Ok((cancelled + requeued) as u64)
     }
 
     fn due_jobs(

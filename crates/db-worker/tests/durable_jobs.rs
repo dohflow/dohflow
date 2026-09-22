@@ -34,6 +34,22 @@ impl JobExecutor<()> for Succeed {
     }
 }
 
+struct CountingSucceed {
+    calls: Arc<AtomicU32>,
+}
+
+impl JobExecutor<()> for CountingSucceed {
+    fn execute(
+        &self,
+        _job: &JobRecord,
+        _cancellation: &CancellationToken,
+        _context: &(),
+    ) -> JobExecution {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        JobExecution::Succeeded
+    }
+}
+
 struct FailThenSucceed {
     calls: AtomicU32,
 }
@@ -366,6 +382,45 @@ fn running_rows_are_requeued_after_a_crash_and_cancellation_is_terminal() {
         worker.durable_job(cancelled).unwrap().unwrap().state,
         JobState::Cancelled
     );
+}
+
+#[test]
+fn cancellation_request_survives_restart_before_terminal_write() {
+    let (dir, worker) = worker();
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    assert!(worker
+        .claim_job(id, 1, now(), "unlock-before-crash")
+        .unwrap());
+    assert!(worker.cancel_job(id).unwrap());
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Running
+    );
+
+    drop(worker);
+    let reopened = DbWorker::open(dir.path().join("test.vault"), common::KEY).unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let report = reopened
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-after-restart",
+            &(),
+            &CountingSucceed {
+                calls: Arc::clone(&calls),
+            },
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+
+    assert_eq!(report.recovered, 1);
+    assert_eq!(report.attempted, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let row = reopened.durable_job(id).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Cancelled);
+    assert_eq!(row.last_outcome, Some(job_runtime::JobOutcome::Cancelled));
+    assert_eq!(row.last_error.as_deref(), Some("cancelled before recovery"));
 }
 
 #[test]
