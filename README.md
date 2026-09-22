@@ -124,7 +124,7 @@ Manual entry is always sufficient: a connected account is an enhancement,
   report generators — never writers.
 
 The workspace: `core-money`, `core-ids`, `core-ledger`, `vault-crypto`,
-`db-worker`, `job-runtime`, `finance-kernel`, `forecast-engine`, `pay-schedule`,
+`db-worker`, `finance-kernel`, `forecast-engine`, `pay-schedule`,
 `categorization`, `observability`, `synthetic-data`,
 `importers/{importer-core,csv-importer,ofx-importer}`,
 `connector-core`, `connectors/simplefin-adapter` (Rust), and `apps/desktop`

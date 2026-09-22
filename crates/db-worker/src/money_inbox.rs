@@ -314,57 +314,6 @@ const PRIORITY_STALE_BALANCE: i64 = 40;
 /// uncommitted money.
 const PRIORITY_CONNECTOR_ERROR: i64 = 30;
 
-/// Sort weight for terminal durable-job failures (personal-cfo-ati): a failed
-/// reliability job is actionable, but it must not outrank uncommitted money.
-const PRIORITY_JOB_FAILURE: i64 = 25;
-
-/// Derived-on-read generator for terminal local jobs.  Durable jobs are
-/// canonical class-3 state, so this stays truthful without a separate queue
-/// table or a projection write path.  Error text was sanitized at persistence;
-/// this function still selects no payload/configuration column defensively.
-pub(crate) fn failed_job_items(conn: &Connection) -> Result<Vec<MoneyInboxItem>, DbError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, kind, last_error, last_run_at, updated_at, attempt_count
-           FROM durable_jobs
-          WHERE state = 'failed' AND last_error IS NOT NULL
-          ORDER BY updated_at, id",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, Uuid>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, Option<String>>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, i64>(5)?,
-        ))
-    })?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, kind, reason, last_run_at, updated_at, attempts) = row?;
-        let payload = format!(
-            "{{\"job_kind\":{},\"reason\":{},\"last_run_at\":{},\"attempts\":{}}}",
-            json_str(&kind),
-            json_str(&reason),
-            json_opt(last_run_at.as_deref()),
-            attempts,
-        );
-        out.push(MoneyInboxItem {
-            item_id: id,
-            item_kind: "job_failure".to_owned(),
-            target_table: "durable_jobs".to_owned(),
-            target_id: id,
-            priority: PRIORITY_JOB_FAILURE,
-            surfaced_at: updated_at,
-            snoozed_until: None,
-            dismissed_at: None,
-            resolved_at: None,
-            payload_json: payload,
-        });
-    }
-    Ok(out)
-}
-
 /// Derived-on-read generator (personal-cfo-zfyo, ADR 0014 §7 addendum
 /// pattern): one item per connector connection whose last sync recorded an
 /// error. Connector state is written outside the command bus (configuration,

@@ -12,8 +12,6 @@ description = "The Finance Kernel: the single internal boundary for all financia
 core-ledger = { path = "../core-ledger" }
 core-money = { path = "../core-money" }
 db-worker = { path = "../db-worker" }
-# Pure lifecycle/scheduling contract; the worker provides its persistence.
-job-runtime = { path = "../job-runtime" }
 # The ImporterPlugin contract + bounded host the ingestion pipeline runs
 # (personal-cfo-cmx). Pure parsing crate; the kernel orchestrates it + the worker.
 importer-core = { path = "../importers/importer-core" }

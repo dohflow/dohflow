@@ -1546,51 +1546,6 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         down: Some("DROP TABLE IF EXISTS manual_entry_links;"),
         rebuilds_read_models: false,
     },
-    // Local durable job state (personal-cfo-ati).  The table is deliberately
-    // class 3: schedules, retry state, payload configuration, and unlock-window
-    // claims are device-local and never enter the Sync snapshot/tail.
-    Migration {
-        version: 51,
-        name: "durable_jobs",
-        up: "CREATE TABLE IF NOT EXISTS durable_jobs (
-                 id                         BLOB PRIMARY KEY,
-                 kind                       TEXT NOT NULL,
-                 cadence                    TEXT NOT NULL,
-                 next_due_at                TEXT,
-                 state                      TEXT NOT NULL DEFAULT 'queued'
-                     CHECK (state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
-                 attempt_count              INTEGER NOT NULL DEFAULT 0
-                     CHECK (attempt_count >= 0),
-                 max_attempts               INTEGER NOT NULL
-                     CHECK (max_attempts > 0),
-                 backoff_initial_seconds   INTEGER NOT NULL DEFAULT 60
-                     CHECK (backoff_initial_seconds >= 0),
-                 backoff_multiplier_bps     INTEGER NOT NULL DEFAULT 20000
-                     CHECK (backoff_multiplier_bps >= 10000),
-                 enabled                    INTEGER NOT NULL DEFAULT 1
-                     CHECK (enabled IN (0, 1)),
-                 requires_explicit_opt_in  INTEGER NOT NULL DEFAULT 0
-                     CHECK (requires_explicit_opt_in IN (0, 1)),
-                 payload_json               TEXT,
-                 last_run_at                TEXT,
-                 last_outcome               TEXT
-                     CHECK (last_outcome IS NULL OR last_outcome IN (
-                         'succeeded', 'failed', 'cancelled', 'skipped')),
-                 last_error                 TEXT,
-                 last_unlock_window         TEXT,
-                 cancel_requested           INTEGER NOT NULL DEFAULT 0
-                     CHECK (cancel_requested IN (0, 1)),
-                 created_at                 TEXT NOT NULL,
-                 updated_at                 TEXT NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS idx_durable_jobs_due
-                 ON durable_jobs (enabled, state, next_due_at);",
-        down: Some(
-            "DROP INDEX IF EXISTS idx_durable_jobs_due;
-             DROP TABLE IF EXISTS durable_jobs;",
-        ),
-        rebuilds_read_models: false,
-    },
 ];
 
 const fn max_version() -> i64 {

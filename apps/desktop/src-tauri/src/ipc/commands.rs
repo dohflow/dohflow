@@ -7,9 +7,7 @@
 //! DI can build). Commands carry **no business logic** — they validate input
 //! shape, build a kernel command + provenance, dispatch, and map the result.
 
-use std::sync::Arc;
-
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use finance_kernel::{
     all_presets, detect_best, plugin_by_id, preset_by_id, ActorType, ApplyScenario, ArchiveAccount,
     ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill, AttachSourceRecord, CategoryId,
@@ -27,7 +25,6 @@ use finance_kernel::{
     UpdateRecurringBill, VaultController, VoidTransaction, COMFORT_BAND_UPPER_KEY,
     MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
-use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -106,29 +103,6 @@ fn with_kernel<T>(
     let guard = state.lock_controller()?;
     let kernel = guard.kernel().ok_or(IpcError::VaultLocked)?;
     f(kernel)
-}
-
-/// Stable, non-sensitive telemetry code for a post-unlock scheduler failure.
-/// Never format the underlying [`IpcError`]: persistence messages may contain
-/// implementation details that are appropriate for the Money Inbox but not a
-/// log sink.
-fn durable_job_ipc_error_code(error: &IpcError) -> &'static str {
-    match error {
-        IpcError::Validation(_) => "validation",
-        IpcError::VaultLocked => "vault_locked",
-        IpcError::VaultUnlockFailed => "vault_unlock_failed",
-        IpcError::Unavailable(_) => "unavailable",
-        IpcError::WriterPanicked => "writer_panicked",
-        IpcError::Persistence(_) => "persistence",
-    }
-}
-
-fn record_durable_job_unlock_failure(error: &IpcError) {
-    tracing::warn!(
-        error_code = durable_job_ipc_error_code(error),
-        outcome = "failed",
-        "durable jobs on unlock failed"
-    );
 }
 
 // ---- vault lifecycle (personal-cfo-8v2 / -3ry) -----------------------------
@@ -272,34 +246,6 @@ pub fn unlock_vault_impl(state: &AppState, password: String) -> Result<VaultStat
     vault_status_dto(&guard)
 }
 
-/// Run registered local jobs for one unlocked-vault window.  This helper is
-/// intentionally separate from `unlock_vault_impl`: the unlock command returns
-/// synchronously, while its caller schedules this work after the response.
-pub fn run_due_jobs_on_unlock_impl(
-    state: &AppState,
-    executor: &dyn JobExecutor<Kernel>,
-    unlock_window: &str,
-) -> Result<JobRunReport, IpcError> {
-    let cancellation = CancellationToken::new();
-    with_kernel(state, |kernel| {
-        Ok(kernel.run_due_jobs(Utc::now(), unlock_window, executor, &cancellation)?)
-    })
-}
-
-/// Spawn one post-unlock scheduler sweep on Tauri's blocking pool.  The
-/// explicit state form keeps the dispatch boundary testable without a native
-/// `AppHandle`; the production command below uses the same `spawn_blocking`
-/// boundary after resolving its managed state from the handle.
-pub fn spawn_due_jobs_on_unlock_for_state(
-    state: Arc<AppState>,
-    executor: Arc<dyn JobExecutor<Kernel>>,
-    unlock_window: String,
-) -> tauri::async_runtime::JoinHandle<Result<JobRunReport, IpcError>> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_due_jobs_on_unlock_impl(&state, executor.as_ref(), &unlock_window)
-    })
-}
-
 #[tauri::command]
 #[specta::specta]
 pub fn unlock_vault(
@@ -308,24 +254,6 @@ pub fn unlock_vault(
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
     let status = unlock_vault_impl(state.inner(), password)?;
-    // Local durable jobs (personal-cfo-ati): the production dispatcher is
-    // always installed in AppState, so every successful unlock runs one
-    // post-unlock sweep. The blocking work is fire-and-forget and never delays
-    // the successful unlock response.
-    let executor = state.inner().job_dispatcher();
-    let unlock_window = format!("unlock-{}", Uuid::now_v7());
-    let job_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            let app_state = job_app.state::<AppState>();
-            if let Err(err) =
-                run_due_jobs_on_unlock_impl(&app_state, executor.as_ref(), &unlock_window)
-            {
-                record_durable_job_unlock_failure(&err);
-            }
-        })
-        .await;
-    });
     // Sync-on-open (personal-cfo-gglk, ADR 0060 §4): fire-and-forget so the
     // network NEVER blocks the unlock; debounced inside; outcomes land on the
     // connection rows for the health surface. Lives in the wrapper — the impl
@@ -4948,9 +4876,8 @@ mod release_update_failure_tests {
     use observability::RedactingMakeWriter;
     use tracing_subscriber::{fmt::MakeWriter, prelude::*};
 
-    use super::{record_durable_job_unlock_failure, record_release_update_failure_impl};
+    use super::record_release_update_failure_impl;
     use crate::ipc::dto::ReleaseUpdateFailureKind;
-    use crate::ipc::IpcError;
 
     #[derive(Clone, Default)]
     struct BufWriter(Arc<Mutex<Vec<u8>>>);
@@ -5032,30 +4959,5 @@ mod release_update_failure_tests {
             !logged.contains(&sensitive_account),
             "raw account number leaked in {logged}"
         );
-    }
-
-    #[test]
-    fn durable_job_unlock_failure_logs_only_a_safe_error_code() {
-        let buffer = BufWriter::default();
-        let sensitive_payload = ["account=", "1234", "5678", "9012", "3456"].concat();
-        let error = IpcError::Persistence(format!(
-            "opaque durable payload {sensitive_payload} should never reach logs"
-        ));
-        let layer = tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(RedactingMakeWriter::new(buffer.clone()));
-        let subscriber = tracing_subscriber::registry().with(layer);
-
-        tracing::subscriber::with_default(subscriber, || {
-            record_durable_job_unlock_failure(&error);
-        });
-
-        let logged = String::from_utf8(buffer.0.lock().expect("test log buffer lock").clone())
-            .expect("test log output is UTF-8");
-        assert!(logged.contains("durable jobs on unlock failed"));
-        assert!(logged.contains("error_code") && logged.contains("persistence"));
-        assert!(logged.contains("outcome") && logged.contains("failed"));
-        assert!(!logged.contains(&sensitive_payload));
-        assert!(!logged.contains("opaque durable payload"));
     }
 }
