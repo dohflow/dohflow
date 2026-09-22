@@ -10,8 +10,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use finance_kernel::{Kernel, VaultController};
-use job_runtime::JobExecutor;
+use finance_kernel::{JobDispatcher, JobHandler, JobSpecError, Kernel, VaultController};
 
 use crate::ipc::IpcError;
 use crate::vault_registry::VaultRegistry;
@@ -31,10 +30,11 @@ pub struct AppState {
     /// walk the network concurrently for one connection (the Bridge budget is
     /// ~24 requests/day, and the loser's whole batch would churn as skips).
     connector_syncs_in_flight: Mutex<std::collections::HashSet<uuid::Uuid>>,
-    /// Optional consumer registry.  Consumers own their opt-in policy and
-    /// domain work; the unlock hook only runs the durable scheduler when one
-    /// has been registered.
-    job_executor: Mutex<Option<Arc<dyn JobExecutor<Kernel>>>>,
+    /// Process-local consumer registry. Consumers own their opt-in policy and
+    /// domain work; the production state always installs the dispatcher so an
+    /// unlock runs the durable scheduler even before a feature bead registers
+    /// its first handler.
+    job_dispatcher: Arc<JobDispatcher<Kernel>>,
 }
 
 impl AppState {
@@ -47,7 +47,7 @@ impl AppState {
             registry: Mutex::new(VaultRegistry::default()),
             vaults_root: None,
             connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
-            job_executor: Mutex::new(None),
+            job_dispatcher: Arc::new(JobDispatcher::new()),
         }
     }
 
@@ -64,7 +64,7 @@ impl AppState {
             registry: Mutex::new(registry),
             vaults_root: Some(vaults_root),
             connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
-            job_executor: Mutex::new(None),
+            job_dispatcher: Arc::new(JobDispatcher::new()),
         }
     }
 
@@ -94,18 +94,19 @@ impl AppState {
         }
     }
 
-    /// Register the process-local durable-job consumer set.  The executor is
-    /// deliberately an `Arc` so an unlock-spawn can outlive the command call.
-    pub fn set_job_executor(&self, executor: Arc<dyn JobExecutor<Kernel>>) {
-        if let Ok(mut slot) = self.job_executor.lock() {
-            *slot = Some(executor);
-        }
+    /// Snapshot the production dispatcher for an unlock-spawn or a consumer
+    /// registration. The `Arc` lets a post-unlock task outlive the command.
+    #[must_use]
+    pub fn job_dispatcher(&self) -> Arc<JobDispatcher<Kernel>> {
+        Arc::clone(&self.job_dispatcher)
     }
 
-    /// Snapshot the registered job executor for an unlock-spawn.
-    #[must_use]
-    pub fn job_executor(&self) -> Option<Arc<dyn JobExecutor<Kernel>>> {
-        self.job_executor.lock().ok().and_then(|slot| slot.clone())
+    /// Register or replace one process-local durable-job consumer.
+    pub fn register_job_handler(
+        &self,
+        handler: Arc<dyn JobHandler<Kernel>>,
+    ) -> Result<(), JobSpecError> {
+        self.job_dispatcher.register(handler)
     }
 
     /// Lock the registry mutex, mapping a poisoned lock to a typed error.

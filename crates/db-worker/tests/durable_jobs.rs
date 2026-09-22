@@ -13,9 +13,10 @@ use std::time::{Duration as StdDuration, Instant};
 use chrono::{DateTime, Duration, Utc};
 use common::worker;
 use db_worker::DbWorker;
+use db_worker::JobStoreError;
 use job_runtime::{
-    BackoffPolicy, CancellationToken, Clock, JobExecution, JobExecutor, JobRecord, JobSpec,
-    JobState, Schedule,
+    BackoffPolicy, CancellationToken, Clock, JobExecution, JobExecutor, JobFinishResult, JobRecord,
+    JobRunner, JobSpec, JobState, JobStore, Schedule,
 };
 use rusqlite::params;
 use uuid::Uuid;
@@ -96,6 +97,83 @@ impl JobExecutor<()> for WaitForCancellation {
             std::thread::sleep(StdDuration::from_millis(5));
         }
         JobExecution::Cancelled
+    }
+}
+
+/// Inject a cancellation immediately before the durable terminal write. This
+/// models the final-poll-to-terminal-write race without relying on scheduler
+/// timing or sleeps.
+struct CancelAtTerminalWrite {
+    worker: Arc<DbWorker>,
+}
+
+impl JobStore for CancelAtTerminalWrite {
+    type Error = JobStoreError;
+
+    fn recover_running(&self, now: DateTime<Utc>) -> Result<u64, Self::Error> {
+        self.worker.recover_running(now)
+    }
+
+    fn due_jobs(
+        &self,
+        now: DateTime<Utc>,
+        unlock_window: &str,
+    ) -> Result<Vec<JobRecord>, Self::Error> {
+        self.worker.due_jobs(now, unlock_window)
+    }
+
+    fn claim_job(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        started_at: DateTime<Utc>,
+        unlock_window: &str,
+    ) -> Result<bool, Self::Error> {
+        self.worker
+            .claim_job(id, attempt, started_at, unlock_window)
+    }
+
+    fn cancellation_requested(&self, id: Uuid) -> Result<bool, Self::Error> {
+        self.worker.cancellation_requested(id)
+    }
+
+    fn finish_success(
+        &self,
+        job: &JobRecord,
+        completed_at: DateTime<Utc>,
+        next_due_at: Option<DateTime<Utc>>,
+    ) -> Result<JobFinishResult, Self::Error> {
+        self.worker.cancel_job(job.id)?;
+        self.worker.finish_success(job, completed_at, next_due_at)
+    }
+
+    fn finish_failure(
+        &self,
+        job: &JobRecord,
+        failed_at: DateTime<Utc>,
+        failure: &job_runtime::JobFailure,
+        retry_at: Option<DateTime<Utc>>,
+    ) -> Result<JobFinishResult, Self::Error> {
+        self.worker.cancel_job(job.id)?;
+        self.worker
+            .finish_failure(job, failed_at, failure, retry_at)
+    }
+
+    fn finish_cancelled(
+        &self,
+        job: &JobRecord,
+        cancelled_at: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<(), Self::Error> {
+        self.worker.finish_cancelled(job, cancelled_at, reason)
+    }
+
+    fn finish_skipped(
+        &self,
+        job: &JobRecord,
+        skipped_at: DateTime<Utc>,
+    ) -> Result<JobFinishResult, Self::Error> {
+        self.worker.finish_skipped(job, skipped_at)
     }
 }
 
@@ -345,4 +423,60 @@ fn db_cancel_request_reaches_a_running_handler_within_the_sla() {
     let report = task.join().unwrap();
     assert_eq!(report.cancelled, 1);
     assert!(started.elapsed() < StdDuration::from_millis(500));
+}
+
+#[test]
+fn cancellation_wins_the_final_poll_to_success_write_race() {
+    let (_dir, worker) = worker();
+    let worker = Arc::new(worker);
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    let store = CancelAtTerminalWrite {
+        worker: Arc::clone(&worker),
+    };
+    let report = JobRunner::new(&store)
+        .run_due_with_clock(
+            now(),
+            "unlock-terminal-race",
+            &(),
+            &Succeed,
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+
+    assert_eq!(report.succeeded, 0);
+    assert_eq!(report.cancelled, 1);
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Cancelled
+    );
+}
+
+#[test]
+fn cancellation_wins_the_final_poll_to_failure_write_race() {
+    let (_dir, worker) = worker();
+    let worker = Arc::new(worker);
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    let store = CancelAtTerminalWrite {
+        worker: Arc::clone(&worker),
+    };
+    let report = JobRunner::new(&store)
+        .run_due_with_clock(
+            now(),
+            "unlock-terminal-failure-race",
+            &(),
+            &PermanentFailure,
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.cancelled, 1);
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Cancelled
+    );
 }

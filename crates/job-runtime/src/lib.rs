@@ -6,9 +6,10 @@
 //! testable with an in-memory store while [`db-worker`] remains the only crate
 //! that owns the encrypted database connection.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Duration, Utc};
@@ -188,17 +189,7 @@ impl fmt::Debug for JobSpec {
 impl JobSpec {
     /// Validate values before they are persisted.
     pub fn validate(&self) -> Result<(), JobSpecError> {
-        if self.kind.trim().is_empty() {
-            return Err(JobSpecError::EmptyKind);
-        }
-        if self.kind.len() > 64
-            || !self
-                .kind
-                .bytes()
-                .all(|character| character.is_ascii_alphanumeric() || b"._-".contains(&character))
-        {
-            return Err(JobSpecError::InvalidKind);
-        }
+        validate_job_kind(&self.kind)?;
         if self.max_attempts == 0 {
             return Err(JobSpecError::ZeroAttempts);
         }
@@ -215,6 +206,20 @@ impl JobSpec {
         }
         Ok(())
     }
+}
+
+fn validate_job_kind(kind: &str) -> Result<(), JobSpecError> {
+    if kind.trim().is_empty() {
+        return Err(JobSpecError::EmptyKind);
+    }
+    if kind.len() > 64
+        || !kind
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || b"._-".contains(&character))
+    {
+        return Err(JobSpecError::InvalidKind);
+    }
+    Ok(())
 }
 
 /// Validation failures for a job specification.
@@ -455,6 +460,19 @@ pub enum JobExecution {
     Skipped,
 }
 
+/// Result of an atomic terminal transition.
+///
+/// A store returns [`Self::Cancelled`] when a cancellation request won the
+/// race with a success/failure/skip write.  The runner then records the
+/// cancellation outcome instead of claiming that the handler completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobFinishResult {
+    /// The requested terminal state was persisted.
+    Applied,
+    /// A cancellation request was observed before the terminal write.
+    Cancelled,
+}
+
 /// Cooperative cancellation shared by the runtime and a handler.
 #[derive(Clone, Default)]
 pub struct CancellationToken {
@@ -550,7 +568,7 @@ pub trait JobStore {
         job: &JobRecord,
         completed_at: DateTime<Utc>,
         next_due_at: Option<DateTime<Utc>>,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<JobFinishResult, Self::Error>;
     /// Record a failure. `retry_at` is `Some` only when another attempt is due.
     fn finish_failure(
         &self,
@@ -558,7 +576,7 @@ pub trait JobStore {
         failed_at: DateTime<Utc>,
         failure: &JobFailure,
         retry_at: Option<DateTime<Utc>>,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<JobFinishResult, Self::Error>;
     /// Record a cancellation without claiming success.
     fn finish_cancelled(
         &self,
@@ -567,8 +585,102 @@ pub trait JobStore {
         reason: &str,
     ) -> Result<(), Self::Error>;
     /// Record a policy skip while leaving the job eligible for a later unlock.
-    fn finish_skipped(&self, job: &JobRecord, skipped_at: DateTime<Utc>)
-        -> Result<(), Self::Error>;
+    fn finish_skipped(
+        &self,
+        job: &JobRecord,
+        skipped_at: DateTime<Utc>,
+    ) -> Result<JobFinishResult, Self::Error>;
+}
+
+/// A registered consumer for one durable job kind.
+pub trait JobHandler<C: ?Sized>: Send + Sync {
+    /// Stable job-kind token used to route a row to this handler.
+    fn kind(&self) -> &'static str;
+
+    /// Decide whether the handler is enabled by current user settings.
+    fn should_run(&self, job: &JobRecord, _context: &C) -> bool {
+        !job.requires_explicit_opt_in
+    }
+
+    /// Execute one claimed job.
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        context: &C,
+    ) -> JobExecution;
+}
+
+/// Process-local dispatcher that routes durable rows to registered consumers.
+///
+/// The dispatcher is intentionally empty by default: a job with no registered
+/// consumer is skipped (and remains queued for a later unlock), while an
+/// opt-in job still fails closed through the handler policy. Feature beads add
+/// their handlers without changing the scheduler or unlock lifecycle.
+pub struct JobDispatcher<C: ?Sized> {
+    handlers: RwLock<BTreeMap<String, Arc<dyn JobHandler<C>>>>,
+}
+
+impl<C: ?Sized> Default for JobDispatcher<C> {
+    fn default() -> Self {
+        Self {
+            handlers: RwLock::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl<C: ?Sized> JobDispatcher<C> {
+    /// Create an empty dispatcher.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register or replace a handler for its stable kind token.
+    ///
+    /// The token is validated with the same constraints as [`JobSpec::kind`]
+    /// so it is safe to use in SQL rows, tracing fields, and UI labels.
+    pub fn register(&self, handler: Arc<dyn JobHandler<C>>) -> Result<(), JobSpecError> {
+        validate_job_kind(handler.kind())?;
+        if let Ok(mut handlers) = self.handlers.write() {
+            handlers.insert(handler.kind().to_owned(), handler);
+        }
+        Ok(())
+    }
+
+    /// Whether a handler for `kind` is currently registered.
+    #[must_use]
+    pub fn contains(&self, kind: &str) -> bool {
+        self.handlers
+            .read()
+            .map(|handlers| handlers.contains_key(kind))
+            .unwrap_or(false)
+    }
+}
+
+impl<C: ?Sized> JobExecutor<C> for JobDispatcher<C> {
+    fn should_run(&self, job: &JobRecord, context: &C) -> bool {
+        self.handlers
+            .read()
+            .ok()
+            .and_then(|handlers| handlers.get(&job.kind).cloned())
+            .is_some_and(|handler| handler.should_run(job, context))
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        context: &C,
+    ) -> JobExecution {
+        self.handlers
+            .read()
+            .ok()
+            .and_then(|handlers| handlers.get(&job.kind).cloned())
+            .map_or(JobExecution::Skipped, |handler| {
+                handler.execute(job, cancellation, context)
+            })
+    }
 }
 
 /// A job handler.  The context type lets the host pass its safe kernel façade
@@ -675,10 +787,18 @@ where
             let attempt = job.attempts.saturating_add(1);
             if attempt > job.max_attempts {
                 let failure = JobFailure::permanent("maximum attempts reached");
-                self.store
+                let finish = self
+                    .store
                     .finish_failure(&job, now, &failure, None)
                     .map_err(JobRunnerError::Store)?;
-                report.failed += 1;
+                if finish == JobFinishResult::Cancelled {
+                    self.store
+                        .finish_cancelled(&job, clock.now(), "job cancelled")
+                        .map_err(JobRunnerError::Store)?;
+                    report.cancelled += 1;
+                } else {
+                    report.failed += 1;
+                }
                 continue;
             }
             if !self
@@ -702,10 +822,18 @@ where
             }
 
             if !executor.should_run(&job, context) {
-                self.store
+                let finish = self
+                    .store
                     .finish_skipped(&job, clock.now())
                     .map_err(JobRunnerError::Store)?;
-                report.skipped += 1;
+                if finish == JobFinishResult::Cancelled {
+                    self.store
+                        .finish_cancelled(&job, clock.now(), "job cancelled")
+                        .map_err(JobRunnerError::Store)?;
+                    report.cancelled += 1;
+                } else {
+                    report.skipped += 1;
+                }
                 tracing::info!(job.kind = %job.kind, outcome = "skipped", "durable job policy skipped invocation");
                 continue;
             }
@@ -768,23 +896,41 @@ where
             match execution {
                 JobExecution::Succeeded => {
                     span.record("outcome", "succeeded");
-                    self.store
+                    let finish = self
+                        .store
                         .finish_success(
                             &job,
                             completed_at,
                             job.schedule.next_due_after(completed_at),
                         )
                         .map_err(JobRunnerError::Store)?;
-                    report.succeeded += 1;
+                    if finish == JobFinishResult::Cancelled {
+                        self.store
+                            .finish_cancelled(&job, completed_at, "job cancelled")
+                            .map_err(JobRunnerError::Store)?;
+                        span.record("outcome", "cancelled");
+                        report.cancelled += 1;
+                    } else {
+                        report.succeeded += 1;
+                    }
                 }
                 JobExecution::Failed(failure) => {
                     span.record("outcome", "failed");
                     let retry_at = (failure.retryable && attempt < job.max_attempts)
                         .then(|| completed_at + job.backoff.delay_for_attempt(attempt));
-                    self.store
+                    let finish = self
+                        .store
                         .finish_failure(&job, completed_at, &failure, retry_at)
                         .map_err(JobRunnerError::Store)?;
-                    report.failed += 1;
+                    if finish == JobFinishResult::Cancelled {
+                        self.store
+                            .finish_cancelled(&job, completed_at, "job cancelled")
+                            .map_err(JobRunnerError::Store)?;
+                        span.record("outcome", "cancelled");
+                        report.cancelled += 1;
+                    } else {
+                        report.failed += 1;
+                    }
                 }
                 JobExecution::Cancelled => {
                     span.record("outcome", "cancelled");
@@ -809,7 +955,10 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+
+    use tracing_subscriber::fmt::format::FmtSpan;
 
     use super::*;
 
@@ -894,15 +1043,18 @@ mod tests {
             job: &JobRecord,
             completed_at: DateTime<Utc>,
             next_due_at: Option<DateTime<Utc>>,
-        ) -> Result<(), Self::Error> {
+        ) -> Result<JobFinishResult, Self::Error> {
             let mut jobs = self.jobs.lock().unwrap();
             let row = jobs.get_mut(&job.id).unwrap();
+            if row.cancel_requested {
+                return Ok(JobFinishResult::Cancelled);
+            }
             row.state = JobState::Succeeded;
             row.attempts = 0;
             row.last_outcome = Some(JobOutcome::Succeeded);
             row.last_run_at = Some(completed_at);
             row.next_due_at = next_due_at;
-            Ok(())
+            Ok(JobFinishResult::Applied)
         }
 
         fn finish_failure(
@@ -911,9 +1063,12 @@ mod tests {
             _failed_at: DateTime<Utc>,
             failure: &JobFailure,
             retry_at: Option<DateTime<Utc>>,
-        ) -> Result<(), Self::Error> {
+        ) -> Result<JobFinishResult, Self::Error> {
             let mut jobs = self.jobs.lock().unwrap();
             let row = jobs.get_mut(&job.id).unwrap();
+            if row.cancel_requested {
+                return Ok(JobFinishResult::Cancelled);
+            }
             row.state = if retry_at.is_some() {
                 JobState::Queued
             } else {
@@ -922,7 +1077,7 @@ mod tests {
             row.last_outcome = Some(JobOutcome::Failed);
             row.last_error = Some(failure.reason.clone());
             row.next_due_at = retry_at.or(row.next_due_at);
-            Ok(())
+            Ok(JobFinishResult::Applied)
         }
 
         fn finish_cancelled(
@@ -943,12 +1098,15 @@ mod tests {
             &self,
             job: &JobRecord,
             _skipped_at: DateTime<Utc>,
-        ) -> Result<(), Self::Error> {
+        ) -> Result<JobFinishResult, Self::Error> {
             let mut jobs = self.jobs.lock().unwrap();
             let row = jobs.get_mut(&job.id).unwrap();
+            if row.cancel_requested {
+                return Ok(JobFinishResult::Cancelled);
+            }
             row.state = JobState::Queued;
             row.last_outcome = Some(JobOutcome::Skipped);
-            Ok(())
+            Ok(JobFinishResult::Applied)
         }
     }
 
@@ -961,6 +1119,35 @@ mod tests {
             _context: &(),
         ) -> JobExecution {
             JobExecution::Succeeded
+        }
+    }
+
+    struct SensitiveFailure;
+
+    impl JobExecutor<()> for SensitiveFailure {
+        fn execute(
+            &self,
+            _job: &JobRecord,
+            _cancellation: &CancellationToken,
+            _context: &(),
+        ) -> JobExecution {
+            JobExecution::Failed(JobFailure::permanent(
+                "provider failure: account=1234567890123456 payload=secret-token",
+            ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
         }
     }
 
@@ -1008,6 +1195,71 @@ mod tests {
         assert!(!Succeed.should_run(&job, &()));
     }
 
+    struct TestHandler;
+
+    impl JobHandler<()> for TestHandler {
+        fn kind(&self) -> &'static str {
+            "test"
+        }
+
+        fn execute(
+            &self,
+            _job: &JobRecord,
+            _cancellation: &CancellationToken,
+            _context: &(),
+        ) -> JobExecution {
+            JobExecution::Succeeded
+        }
+    }
+
+    #[test]
+    fn dispatcher_routes_registered_kinds_and_skips_unknown_jobs() {
+        let dispatcher = JobDispatcher::new();
+        assert!(!dispatcher.should_run(&job(Schedule::Once), &()));
+        dispatcher.register(Arc::new(TestHandler)).unwrap();
+        assert!(dispatcher.contains("test"));
+
+        let registered = job(Schedule::Once);
+        assert!(dispatcher.should_run(&registered, &()));
+        assert_eq!(
+            dispatcher.execute(&registered, &CancellationToken::new(), &()),
+            JobExecution::Succeeded
+        );
+
+        let mut unknown = registered;
+        unknown.kind = "other".to_owned();
+        assert!(!dispatcher.should_run(&unknown, &()));
+        assert_eq!(
+            dispatcher.execute(&unknown, &CancellationToken::new(), &()),
+            JobExecution::Skipped
+        );
+    }
+
+    #[test]
+    fn dispatcher_rejects_unsafe_handler_kinds() {
+        struct UnsafeHandler;
+        impl JobHandler<()> for UnsafeHandler {
+            fn kind(&self) -> &'static str {
+                "user supplied reason"
+            }
+
+            fn execute(
+                &self,
+                _job: &JobRecord,
+                _cancellation: &CancellationToken,
+                _context: &(),
+            ) -> JobExecution {
+                JobExecution::Succeeded
+            }
+        }
+
+        let dispatcher = JobDispatcher::new();
+        assert_eq!(
+            dispatcher.register(Arc::new(UnsafeHandler)).unwrap_err(),
+            JobSpecError::InvalidKind
+        );
+    }
+
     #[test]
     fn debug_output_redacts_payloads_and_failure_reasons() {
         let mut spec = JobSpec {
@@ -1032,6 +1284,47 @@ mod tests {
 
         spec.payload_json = None;
         assert!(format!("{spec:?}").contains("payload_json: None"));
+    }
+
+    #[test]
+    fn runner_tracing_omits_sensitive_payload_and_failure_text() {
+        let store = FakeStore::default();
+        let mut scheduled = job(Schedule::Once);
+        scheduled.payload_json =
+            Some("{\"account\":\"1234567890123456\",\"token\":\"secret-token\"}".to_owned());
+        let id = scheduled.id;
+        store.jobs.lock().unwrap().insert(id, scheduled);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_writer({
+                let captured = Arc::clone(&captured);
+                move || CaptureWriter(Arc::clone(&captured))
+            })
+            .finish();
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = FixedClock(now);
+        let report = tracing::subscriber::with_default(subscriber, || {
+            JobRunner::new(&store).run_due_with_clock(
+                now,
+                "unlock-sensitive",
+                &(),
+                &SensitiveFailure,
+                &CancellationToken::new(),
+                &clock,
+            )
+        })
+        .unwrap();
+
+        assert_eq!(report.failed, 1);
+        let logged = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(logged.contains("job.invocation"));
+        assert!(logged.contains("outcome=\"failed\""));
+        assert!(!logged.contains("1234567890123456"));
+        assert!(!logged.contains("secret-token"));
+        assert!(!logged.contains("provider failure"));
     }
 
     #[test]

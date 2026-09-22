@@ -59,8 +59,9 @@ pub use importer_core::{
     SourceQuirk,
 };
 pub use job_runtime::{
-    BackoffPolicy, CancellationToken, Clock, JobExecution, JobExecutor, JobFailure, JobOutcome,
-    JobRecord, JobRunReport, JobRunnerError, JobSpec, JobState, Schedule, SystemClock,
+    BackoffPolicy, CancellationToken, Clock, JobDispatcher, JobExecution, JobExecutor, JobFailure,
+    JobFinishResult, JobHandler, JobOutcome, JobRecord, JobRunReport, JobRunnerError, JobSpec,
+    JobSpecError, JobState, Schedule, SystemClock,
 };
 pub use pay_schedule::{Frequency, PaySchedule};
 // Canonical onboarding warning (ADR 0002 / personal-cfo-n7bo): re-exported so the

@@ -6,8 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use job_runtime::{
-    BackoffPolicy, CancellationToken, Clock, JobExecutor, JobFailure, JobOutcome, JobRecord,
-    JobRunReport, JobRunner, JobRunnerError, JobSpec, JobState, JobStore,
+    BackoffPolicy, CancellationToken, Clock, JobExecutor, JobFailure, JobFinishResult, JobOutcome,
+    JobRecord, JobRunReport, JobRunner, JobRunnerError, JobSpec, JobState, JobStore,
 };
 use rusqlite::{params, OptionalExtension};
 use thiserror::Error;
@@ -392,21 +392,25 @@ impl JobStore for DbWorker {
         job: &JobRecord,
         completed_at: DateTime<Utc>,
         next_due_at: Option<DateTime<Utc>>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<JobFinishResult, Self::Error> {
         let guard = self.lock();
-        guard.conn.execute(
+        let changed = guard.conn.execute(
             "UPDATE durable_jobs
                 SET state = 'succeeded', attempt_count = 0,
                     next_due_at = ?2, last_outcome = 'succeeded',
                     last_error = NULL, cancel_requested = 0, updated_at = ?3
-              WHERE id = ?1 AND state = 'running'",
+              WHERE id = ?1 AND state = 'running' AND cancel_requested = 0",
             params![
                 job.id,
                 next_due_at.map(|value| value.to_rfc3339()),
                 completed_at.to_rfc3339()
             ],
         )?;
-        Ok(())
+        Ok(if changed == 0 {
+            JobFinishResult::Cancelled
+        } else {
+            JobFinishResult::Applied
+        })
     }
 
     fn finish_failure(
@@ -415,18 +419,20 @@ impl JobStore for DbWorker {
         failed_at: DateTime<Utc>,
         failure: &JobFailure,
         retry_at: Option<DateTime<Utc>>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<JobFinishResult, Self::Error> {
         let state = if retry_at.is_some() {
             "queued"
         } else {
             "failed"
         };
         let guard = self.lock();
-        guard.conn.execute(
+        let changed = guard.conn.execute(
             "UPDATE durable_jobs
                 SET state = ?2, next_due_at = COALESCE(?3, next_due_at),
-                    last_outcome = 'failed', last_error = ?4, updated_at = ?5
-              WHERE id = ?1 AND state IN ('running', 'queued', 'succeeded')",
+                    last_outcome = 'failed', last_error = ?4,
+                    cancel_requested = 0, updated_at = ?5
+              WHERE id = ?1 AND state IN ('running', 'queued', 'succeeded')
+                AND cancel_requested = 0",
             params![
                 job.id,
                 state,
@@ -435,7 +441,11 @@ impl JobStore for DbWorker {
                 failed_at.to_rfc3339(),
             ],
         )?;
-        Ok(())
+        Ok(if changed == 0 {
+            JobFinishResult::Cancelled
+        } else {
+            JobFinishResult::Applied
+        })
     }
 
     fn finish_cancelled(
@@ -459,15 +469,19 @@ impl JobStore for DbWorker {
         &self,
         job: &JobRecord,
         skipped_at: DateTime<Utc>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<JobFinishResult, Self::Error> {
         let guard = self.lock();
-        guard.conn.execute(
+        let changed = guard.conn.execute(
             "UPDATE durable_jobs
                 SET state = 'queued', last_outcome = 'skipped',
                     cancel_requested = 0, updated_at = ?2
-              WHERE id = ?1 AND state = 'running'",
+              WHERE id = ?1 AND state = 'running' AND cancel_requested = 0",
             params![job.id, skipped_at.to_rfc3339()],
         )?;
-        Ok(())
+        Ok(if changed == 0 {
+            JobFinishResult::Cancelled
+        } else {
+            JobFinishResult::Applied
+        })
     }
 }

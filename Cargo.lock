@@ -850,6 +850,7 @@ dependencies = [
  "chrono",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
