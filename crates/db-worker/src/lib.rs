@@ -56,8 +56,6 @@ mod forecast_events;
 mod forecast_overrides;
 mod forecast_persist;
 mod ingestion;
-mod jobs;
-pub use jobs::{DurableJobView, JobStoreError};
 mod loan_overlap;
 mod manual_entry;
 mod merchant_grouping;
@@ -1793,11 +1791,6 @@ impl DbWorker {
             })
             .collect();
         items.extend(money_inbox::connector_error_items(&conn)?);
-        // Durable jobs are canonical local state (class 3), so a terminal
-        // failure can be derived into the same triage surface without a
-        // second hand-written queue.  The payload contains only the safe job
-        // kind and sanitized reason; no opaque job configuration is selected.
-        items.extend(money_inbox::failed_job_items(&conn)?);
         items.extend(money_inbox::stale_balance_items(&conn, Utc::now())?);
         // The low-confidence-category review items (ADR 0030 addendum, personal-cfo-j5ij/
         // -uc95): auto-categorized below the confidence threshold + unreviewed, computed on

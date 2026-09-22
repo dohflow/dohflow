@@ -18,10 +18,9 @@ table, or run a migration. A fresh-vault CI test compares the rows marked
 
 The manifest includes every table in the current migrated schema. The
 `attachment_blobs` row is a pseudo-row for the encrypted directory described by
-ADR 0023. `durable_jobs` is a class-3 table owned by `personal-cfo-ati`; its
-schedule, retry state, and unlock-window claims remain device-local. The
-scheduled-backup `backup_history` table remains a planned class-3 row owned by
-`personal-cfo-8qh` until that consumer lands.
+ADR 0023. `durable_jobs` and `backup_history` are planned class-3 rows owned by
+`personal-cfo-ati` and `personal-cfo-8qh`; they are not in the current
+`sqlite_master` set and remain owned by those beads until they land.
 
 ## Class-3 rebase contract
 

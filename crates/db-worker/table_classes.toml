@@ -518,12 +518,13 @@ reference_validation = "verify SyncArtifactTransportV1 integrity and receiver-DE
 
 [[table]]
 table = "durable_jobs"
+kind = "planned"
 class = "3"
 owner_bead = "personal-cfo-ati"
-note = "Device-local scheduled work, retry state, unlock-window claims, and opaque encrypted-vault job configuration; never included in a Sync snapshot or tail."
+note = "Planned class-3 table owned by the durable job runtime; it is not in the current migrated schema and will be added by ati."
 rebase_phase = "stable"
-rebase_preservation = "preserve queued/running/terminal state and in-flight unlock-window evidence on a scratch rebase"
-reference_validation = "job kind, schedule, retry policy, and opaque payload remain locally valid before swap"
+rebase_preservation = "preserve due-job state and in-flight correlation evidence on a scratch rebase"
+reference_validation = "job payload references must resolve locally before swap"
 
 [[table]]
 table = "backup_history"

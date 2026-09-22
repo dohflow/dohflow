@@ -359,7 +359,6 @@ dependencies = [
  "core-money",
  "forecast-engine",
  "importer-core",
- "job-runtime",
  "pay-schedule",
  "proptest",
  "rusqlite",
@@ -442,7 +441,6 @@ dependencies = [
  "core-money",
  "db-worker",
  "importer-core",
- "job-runtime",
  "observability",
  "pay-schedule",
  "semver",
@@ -842,17 +840,6 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
-
-[[package]]
-name = "job-runtime"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "thiserror",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "js-sys"
