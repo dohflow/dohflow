@@ -29,19 +29,16 @@ beforeEach(() => {
 });
 
 describe("BackupView", () => {
-  it("exports to the chosen path with the vault password", async () => {
+  it("exports to the chosen path without asking for a password", async () => {
     mocks.save.mockResolvedValue("/home/me/personal-cfo-backup.pcfobk");
     mocks.exportBackup.mockResolvedValue(ok(null));
     render(<BackupView />);
 
-    fireEvent.change(screen.getByLabelText(/vault password/i), {
-      target: { value: "s3cret" },
-    });
+    expect(screen.queryByLabelText(/vault password/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
 
     await waitFor(() =>
       expect(mocks.exportBackup).toHaveBeenCalledWith(
-        "s3cret",
         "/home/me/personal-cfo-backup.pcfobk",
       ),
     );
@@ -55,9 +52,6 @@ describe("BackupView", () => {
     mocks.save.mockResolvedValue(null);
     render(<BackupView />);
 
-    fireEvent.change(screen.getByLabelText(/vault password/i), {
-      target: { value: "x" },
-    });
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
 
     await waitFor(() => expect(mocks.save).toHaveBeenCalled());
@@ -69,9 +63,6 @@ describe("BackupView", () => {
     mocks.exportBackup.mockResolvedValue({ status: "error", error: "VaultLocked" });
     render(<BackupView />);
 
-    fireEvent.change(screen.getByLabelText(/vault password/i), {
-      target: { value: "x" },
-    });
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
 
     expect(await screen.findByRole("alert")).toBeInTheDocument();

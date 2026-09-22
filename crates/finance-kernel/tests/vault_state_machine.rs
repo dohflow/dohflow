@@ -373,8 +373,7 @@ fn an_encrypted_backup_respawns_a_deleted_vault() {
     controller
         .kernel()
         .unwrap()
-        .export_backup(
-            PASSWORD,
+        .export_unattended(
             &backup,
             "test",
             "2026-07-02T00:00:00Z".to_owned(),

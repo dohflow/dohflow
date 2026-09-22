@@ -125,17 +125,16 @@ impl Kernel {
         // to statically guarantee the unlocked kernel is no longer usable.
     }
 
-    /// Export an encrypted backup of this unlocked vault to `out_path` (ADR 0024,
-    /// personal-cfo-ef3). Bundles a consistent `vault.db` snapshot, the envelope
-    /// sidecar, and every attachment blob into one password-encrypted package.
-    /// `created_at`, `backup_id`, and `app_version` are supplied by the caller
-    /// (the kernel reads no clock).
+    /// Export an encrypted backup of this unlocked vault to `out_path` (ADR
+    /// 0024-A). Bundles a consistent `vault.db` snapshot, the envelope sidecar,
+    /// and every attachment blob into format v2 using the worker-owned DEK; no
+    /// password is retained or requested. `created_at`, `backup_id`, and
+    /// `app_version` are supplied by the caller (the kernel reads no clock).
     ///
     /// # Errors
     /// [`KernelError`] on a snapshot, file-read, crypto, or write failure.
-    pub fn export_backup(
+    pub fn export_unattended(
         &self,
-        password: &[u8],
         out_path: &Path,
         app_version: &str,
         created_at: String,
@@ -157,8 +156,10 @@ impl Kernel {
             created_at,
             backup_id,
         };
-        let package = crate::backup::assemble(password, &inputs)
-            .map_err(|e| KernelError::Vault(format!("assembling backup: {e}")))?;
+        let package = self.worker.with_dek(|dek| {
+            crate::backup::assemble(dek, &inputs)
+                .map_err(|error| KernelError::Vault(format!("assembling backup: {error}")))
+        })??;
         std::fs::write(out_path, &package)
             .map_err(|e| KernelError::Vault(format!("writing backup: {e}")))?;
         Ok(())
@@ -182,8 +183,8 @@ impl Kernel {
         dest_db_path: &Path,
     ) -> Result<Self, KernelError> {
         // 1. Read + disassemble: parse, decrypt to memory, verify every hash. A
-        //    wrong password fails here (the payload AEAD tag does not verify) —
-        //    before any byte is written to disk.
+        //    wrong password fails while unwrapping the v1 backup key or v2 vault
+        //    envelope — before any byte is written to disk.
         let package = std::fs::read(package_path)
             .map_err(|e| KernelError::Vault(format!("reading backup: {e}")))?;
         let restored = crate::backup::disassemble(password, &package).map_err(map_restore_err)?;
@@ -325,8 +326,8 @@ fn install_payload(
     Ok(())
 }
 
-/// Map a backup-parse failure to a kernel error. A wrong password makes the
-/// payload AEAD fail to open; surface it as [`KernelError::VaultUnlockFailed`],
+/// Map a backup-parse failure to a kernel error. A wrong password fails an
+/// envelope/key unwrap; surface it as [`KernelError::VaultUnlockFailed`],
 /// matching `unlock_vault`.
 fn map_restore_err(error: crate::backup::BackupError) -> KernelError {
     match error {

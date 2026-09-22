@@ -108,11 +108,10 @@ fn with_kernel<T>(
     f(kernel)
 }
 
-/// Stable, non-sensitive telemetry code for a post-unlock scheduler failure.
-/// Never format the underlying [`IpcError`]: persistence messages may contain
-/// implementation details that are appropriate for the Money Inbox but not a
-/// log sink.
-fn durable_job_ipc_error_code(error: &IpcError) -> &'static str {
+/// Stable, non-sensitive telemetry code for a typed IPC failure. Never format
+/// the underlying [`IpcError`]: persistence messages may contain implementation
+/// details that are appropriate for the UI but not a log sink.
+fn ipc_error_code(error: &IpcError) -> &'static str {
     match error {
         IpcError::Validation(_) => "validation",
         IpcError::VaultLocked => "vault_locked",
@@ -125,7 +124,7 @@ fn durable_job_ipc_error_code(error: &IpcError) -> &'static str {
 
 fn record_durable_job_unlock_failure(error: &IpcError) {
     tracing::warn!(
-        error_code = durable_job_ipc_error_code(error),
+        error_code = ipc_error_code(error),
         outcome = "failed",
         "durable jobs on unlock failed"
     );
@@ -745,32 +744,46 @@ pub fn export_transactions_csv(
     export_transactions_csv_impl(state.inner(), out_path)
 }
 
-pub fn export_backup_impl(
-    state: &AppState,
-    password: String,
-    out_path: String,
-) -> Result<(), IpcError> {
-    let password = Zeroizing::new(password);
-    with_kernel(state, |kernel| {
-        kernel.export_backup(
-            password.as_bytes(),
+pub fn export_backup_impl(state: &AppState, out_path: String) -> Result<(), IpcError> {
+    let started_at = std::time::Instant::now();
+    // Keep the IPC trace useful without recording the chosen path or any key
+    // material. The unlocked kernel owns the only DEK copy used for export.
+    let span = tracing::info_span!(
+        "tauri_command",
+        command_id = %Uuid::now_v7(),
+        correlation_id = %Uuid::now_v7(),
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command = "export_backup",
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    let result = with_kernel(state, |kernel| {
+        kernel.export_unattended(
             std::path::Path::new(&out_path),
             env!("CARGO_PKG_VERSION"),
             chrono::Utc::now().to_rfc3339(),
             Uuid::now_v7(),
         )?;
         Ok(())
-    })
+    });
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let outcome = match &result {
+        Ok(()) => "success",
+        Err(error) => ipc_error_code(error),
+    };
+    span.record("duration_ms", duration_ms);
+    span.record("outcome", outcome);
+    tracing::info!(duration_ms, outcome, "backup export completed");
+    result
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn export_backup(
-    state: tauri::State<'_, AppState>,
-    password: String,
-    out_path: String,
-) -> Result<(), IpcError> {
-    export_backup_impl(state.inner(), password, out_path)
+pub fn export_backup(state: tauri::State<'_, AppState>, out_path: String) -> Result<(), IpcError> {
+    export_backup_impl(state.inner(), out_path)
 }
 
 /// Restore an encrypted backup from `package_path` into a fresh vault, leaving it
@@ -4948,9 +4961,13 @@ mod release_update_failure_tests {
     use observability::RedactingMakeWriter;
     use tracing_subscriber::{fmt::MakeWriter, prelude::*};
 
-    use super::{record_durable_job_unlock_failure, record_release_update_failure_impl};
+    use super::{
+        export_backup_impl, record_durable_job_unlock_failure, record_release_update_failure_impl,
+    };
     use crate::ipc::dto::ReleaseUpdateFailureKind;
     use crate::ipc::IpcError;
+    use crate::state::AppState;
+    use finance_kernel::VaultController;
 
     #[derive(Clone, Default)]
     struct BufWriter(Arc<Mutex<Vec<u8>>>);
@@ -5057,5 +5074,49 @@ mod release_update_failure_tests {
         assert!(logged.contains("outcome") && logged.contains("failed"));
         assert!(!logged.contains(&sensitive_payload));
         assert!(!logged.contains("opaque durable payload"));
+    }
+
+    #[test]
+    fn backup_export_tracing_is_structured_and_does_not_log_the_path() {
+        let buffer = BufWriter::default();
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(RedactingMakeWriter::new(buffer.clone()));
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let state = AppState::new(VaultController::open(directory.path().join("absent.db")));
+        let path = directory.path().join("private-backup-destination.pcfobk");
+
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(matches!(
+                export_backup_impl(&state, path.display().to_string()),
+                Err(IpcError::VaultLocked)
+            ));
+        });
+
+        let logged = String::from_utf8(buffer.0.lock().expect("test log buffer lock").clone())
+            .expect("test log output is UTF-8");
+        for required_field in [
+            "backup export completed",
+            "command",
+            "export_backup",
+            "command_id",
+            "correlation_id",
+            "causation_id",
+            "actor_type",
+            "actor_id",
+            "duration_ms",
+            "outcome",
+            "vault_locked",
+        ] {
+            assert!(
+                logged.contains(required_field),
+                "missing {required_field:?} in {logged}"
+            );
+        }
+        assert!(
+            !logged.contains(&path.display().to_string()),
+            "backup destination path leaked into the log: {logged}"
+        );
     }
 }

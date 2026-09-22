@@ -1489,12 +1489,7 @@ fn seeded_demo_vault_populates_every_screenshot_surface() {
     assert!(vault_health_impl(state).expect("health").is_healthy);
     let account_count = accounts.len() as u32;
     let package = root.path().join("polish-demo.pcfobk");
-    export_backup_impl(
-        state,
-        PASSWORD.to_owned(),
-        package.to_string_lossy().into_owned(),
-    )
-    .expect("export backup");
+    export_backup_impl(state, package.to_string_lossy().into_owned()).expect("export backup");
     let restore_root = TempDir::new().expect("restore root");
     let restored = AppState::new(VaultController::open(restore_root.path().join("vault.db")));
     let status = restore_backup_impl(

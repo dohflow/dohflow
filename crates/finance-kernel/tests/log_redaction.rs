@@ -135,6 +135,15 @@ fn no_sensitive_value_survives_into_logs() {
                 CreateAccount::with_opening_balance(acct, Money::new(9_876_543, Currency::Usd)),
             ))
             .unwrap();
+
+        kernel
+            .export_unattended(
+                &dir.path().join("redaction-check.pcfobk"),
+                "0.1.0-test",
+                "2026-09-22T00:00:00Z".to_owned(),
+                Uuid::from_bytes([0x42; 16]),
+            )
+            .unwrap();
         kernel
             .dispatch(CommandEnvelope::new(
                 meta(),
@@ -170,6 +179,10 @@ fn no_sensitive_value_survives_into_logs() {
     assert!(
         !logged.contains(NAME_EMBEDDED_NUMBER),
         "an account number leaked into the log (source discipline + backstop):\n{logged}"
+    );
+    assert!(
+        !logged.contains("redaction gate pw"),
+        "the password used for unattended export leaked into the log:\n{logged}"
     );
 
     // Every known-negative value passes through unchanged (no over-redaction).
