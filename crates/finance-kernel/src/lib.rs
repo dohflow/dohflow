@@ -48,7 +48,7 @@ pub use db_worker::{
     SplitLineInput, SplitLineView, TagView, TransactionDisplayRow, TransactionPage,
     TransactionPageQuery, TransactionRow, TransactionSortOrder, UnconfirmedOccurrence,
     VaultMetadata, WorkerState, AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY,
-    CURRENT_SCHEMA_VERSION, FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY,
+    CURRENT_SCHEMA_VERSION, FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 pub use importer_core::{
     all_presets, content_fingerprint, detect_best, plugin_by_id, preset_by_id, run_bounded,

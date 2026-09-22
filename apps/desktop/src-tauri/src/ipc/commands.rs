@@ -23,7 +23,7 @@ use finance_kernel::{
     SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, TagId, TransactionId,
     UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory, UpdateIncomeSource,
     UpdateRecurringBill, VaultController, VoidTransaction, COMFORT_BAND_UPPER_KEY,
-    MINIMUM_CASH_FLOOR_KEY,
+    MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -3538,9 +3538,6 @@ pub fn restore_recurring_bill(
 }
 
 // ---- settings: base/reporting currency (personal-cfo-p5g / -4d8.1) ----------
-
-/// The settings key holding the vault's base/reporting currency code.
-const REPORTING_CURRENCY_KEY: &str = "reporting_currency";
 
 /// The vault's base/reporting currency code, defaulting to `"USD"` when it has
 /// never been set. New account/income/bill forms default to this instead of

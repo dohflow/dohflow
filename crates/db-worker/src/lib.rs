@@ -107,6 +107,22 @@ pub const AUTO_CATEGORIZE_ON_IMPORT_KEY: &str = "auto_categorize_on_import";
 /// (personal-cfo-4d8.25.26): an opaque JSON array of series keys the frontend
 /// serializes. Absent means the default (the three aggregate tiers).
 pub const FUTURE_CASH_SERIES_KEY: &str = "future_cash_series_selection";
+/// Legacy household settings keys retained while personal-cfo-5ymg8 performs the
+/// backwards-compatible `user.*` prefix migration. They are inventory metadata only;
+/// this bead does not rename, route, or reject writes for them.
+pub const LOCALE_KEY: &str = "locale";
+pub const REPORTING_CURRENCY_KEY: &str = "reporting_currency";
+/// Every currently defined setting key that can be persisted in the settings KV.
+/// New keys must be added with an explicit `device.*` or `user.*` prefix by the
+/// owning migration/write-path bead.
+pub const PERSISTED_SETTING_KEYS: &[&str] = &[
+    LOCALE_KEY,
+    REPORTING_CURRENCY_KEY,
+    MINIMUM_CASH_FLOOR_KEY,
+    COMFORT_BAND_UPPER_KEY,
+    AUTO_CATEGORIZE_ON_IMPORT_KEY,
+    FUTURE_CASH_SERIES_KEY,
+];
 pub use categorization::RecurringCandidate;
 pub use debt::{DebtTermsInput, DebtTermsView, RepaymentPhilosophy};
 pub use forecast_engine::{AssumptionBasis, Band};
