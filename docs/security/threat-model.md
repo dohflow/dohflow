@@ -7,7 +7,7 @@ asset-centric with a STRIDE-lite lens, and covers the shipped R1 surface
 (`personal-cfo-agh`, Risk Register §24). It is a living document — extend it as
 new surfaces land (import, documents, agents).
 
-**Last substantive revision: 2026-09-22** (`personal-cfo-ii3an`) — see
+**Last substantive revision: 2026-09-22** (`personal-cfo-8qh`) — see
 [Revision history](#revision-history) at the bottom of this document.
 
 ## What we are protecting (assets)
@@ -51,9 +51,12 @@ new surfaces land (import, documents, agents).
      verification happen Rust-side (`tauri-plugin-updater`, not a
      renderer-reachable `http:` grant). Only the **download-and-install**
      step requires an explicit user click, and is minisign-verified first.
-  A user-initiated file export (backup) or import remains the only other data
-  movement and is local-disk, not network. See the threats table below for each
-  path's specific mitigations and evidence.
+  Backup exports and imports are file operations, not app-managed network
+  paths. A scheduled backup stays local unless the user chooses a
+  cloud-synced folder; then the provider's own client carries the encrypted
+  file off-device as ciphertext. Folder classification is local display-only,
+  and no destination or cloud-folder usage is reported to DohFlow. See the
+  threats table below for the ciphertext's metadata exposure.
 - **TB4 — WebView ↔ OS** (ADR 0010). A strict Content Security Policy and a minimal
   Tauri capability set bound what the WebView can reach.
 
@@ -69,6 +72,7 @@ new surfaces land (import, documents, agents).
 | WebView XSS / malicious rendered content | a content-injection bug in the UI | strict CSP (CI-guarded against regression), no remote content loaded, no secrets in the frontend, scoped capabilities | ADR 0010 (`h7h8`) |
 | Untrusted IPC input reaches the core | crafted command payloads | a sealed, typed command bus; Rust is authoritative for validation; raw `invoke` is lint-forbidden | ADR 0003 / 0006 |
 | Backup theft | a copied backup file | the AES-256-GCM payload uses a random backup DEK wrapped under an HKDF-SHA256 KEK derived from the vault DEK; the plaintext v2 header carries the same wrapped vault envelope as the on-disk sidecar, but no financial data or usable key. A stolen backup is no more decryptable than a stolen vault directory: the vault password is still required. The repeated envelope is a stable fingerprint that permits correlating backups within a password/rekey epoch and matching them to the sidecar. Wrong password, tampering, or component-hash mismatch fails before any restore write. | ADR 0024 / addendum A (`personal-cfo-ii3an`) |
+| Cloud provider sees a scheduled backup | the user's chosen cloud-sync client copies a `.pcfobk` file from its selected folder | the client carries ciphertext, not plaintext financial data; the app does not perform an upload or report the chosen folder. The v2 header's repeated vault envelope remains linkable within one password/rekey epoch and reveals the backup's association with the vault sidecar. The user chooses whether to put backups under that provider's control. | ADR 0024 addendum A · `personal-cfo-8qh` |
 | Attachment plaintext at rest | blobs on disk | per-blob AES-256-GCM, content-addressed, keys wrapped under the DEK; a canary test proves no plaintext artifact | ADR 0023 (`bcj`) |
 | Vulnerable third-party dependency | supply chain | `cargo audit` (both workspaces) + `pnpm audit` in CI | `7t7` |
 | Secret committed by mistake | git history | gitleaks in CI with a tight allowlist | `6r6` |
@@ -88,8 +92,11 @@ new surfaces land (import, documents, agents).
 - **No password recovery — by design** (ADR 0002). Losing the master password means
   losing the data; the canonical no-reset warning is shown and acknowledged at vault
   creation. This deliberately removes a recovery backdoor as an attack surface.
-- **No cloud sync, no telemetry, no analytics, no arbitrary-host egress — by
-  design.** The only egress is the three narrow, pinned-endpoint paths in TB3
+- **No DohFlow-managed cloud sync or backup upload, no telemetry, no analytics,
+  no arbitrary-host egress — by design.** A user-selected cloud-synced backup
+  folder is moved by the provider's own client as ciphertext, as described in
+  TB3 and the threat row above; this is not an app-managed upload. The only
+  network egress by the app is the three narrow, pinned-endpoint paths in TB3
   (SimpleFIN sync, the `dohflow.app`-scoped opener, and the pinned updater
   endpoint), each with its own mitigations in the threats table above. This is
   **not** "no background network activity": two of the three — SimpleFIN sync
@@ -158,3 +165,7 @@ new surfaces land (import, documents, agents).
   wrapped vault envelope, the payload key is derived from the unlocked vault
   DEK, and the resulting envelope fingerprint/linkability is an accepted
   metadata exposure. The vault password remains required to restore.
+- **2026-09-22** (`personal-cfo-8qh`) — documented the user-selected cloud
+  client as a ciphertext egress path outside DohFlow's network stack, and the
+  v2 header's accepted cross-backup linkability; clarified that no destination
+  or cloud-folder demand data is reported to DohFlow.

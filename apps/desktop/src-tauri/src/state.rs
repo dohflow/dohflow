@@ -15,6 +15,14 @@ use finance_kernel::{JobDispatcher, JobHandler, JobSpecError, Kernel, VaultContr
 use crate::ipc::IpcError;
 use crate::vault_registry::VaultRegistry;
 
+fn new_job_dispatcher() -> Arc<JobDispatcher<Kernel>> {
+    let dispatcher = Arc::new(JobDispatcher::new());
+    dispatcher
+        .register(Arc::new(crate::backup_job::BackupJobHandler))
+        .expect("backup job kind is a valid stable routing token");
+    dispatcher
+}
+
 /// Application state managed by Tauri (`tauri::Builder::manage`).
 pub struct AppState {
     /// The vault controller: lifecycle state + the unlocked kernel for the *active* vault.
@@ -47,7 +55,7 @@ impl AppState {
             registry: Mutex::new(VaultRegistry::default()),
             vaults_root: None,
             connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
-            job_dispatcher: Arc::new(JobDispatcher::new()),
+            job_dispatcher: new_job_dispatcher(),
         }
     }
 
@@ -64,7 +72,7 @@ impl AppState {
             registry: Mutex::new(registry),
             vaults_root: Some(vaults_root),
             connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
-            job_dispatcher: Arc::new(JobDispatcher::new()),
+            job_dispatcher: new_job_dispatcher(),
         }
     }
 

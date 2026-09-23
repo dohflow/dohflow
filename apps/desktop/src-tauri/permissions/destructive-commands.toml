@@ -7,10 +7,12 @@
 
 [[permission]]
 identifier = "allow-destructive-commands"
-description = "Commands that can destroy vault data (delete_vault, restore_backup), move it out of the vault (export_backup), or swap/restart the binary (apply_update, relaunch_app). Granted only by capabilities/destructive.json (main window today)."
+description = "Commands that can destroy vault data (delete_vault, restore_backup), move it out of the vault (export_backup, configure_backup, run_backup_now), or swap/restart the binary (apply_update, relaunch_app). Granted only by capabilities/destructive.json (main window today)."
 commands.allow = [
   "delete_vault",
   "export_backup",
+  "configure_backup",
+  "run_backup_now",
   "export_transactions_csv",
   "restore_backup",
   "apply_update",

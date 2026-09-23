@@ -200,6 +200,66 @@ impl DbWorker {
         Ok(())
     }
 
+    /// Replace user-owned configuration for a durable job, resetting terminal
+    /// failure/cancellation state so the new settings can take effect. An
+    /// active handler is never reconfigured underneath its invocation.
+    pub fn reconfigure_job(&self, spec: &JobSpec) -> Result<(), DbError> {
+        spec.validate()
+            .map_err(|error| DbError::InvalidCommand(error.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let mut guard = self.lock();
+        let tx = guard.conn.transaction()?;
+        let running: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM durable_jobs WHERE id = ?1 AND state = 'running')",
+            params![spec.id],
+            |row| row.get(0),
+        )?;
+        if running {
+            return Err(DbError::InvalidCommand(
+                "cannot reconfigure a running job".to_owned(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO durable_jobs (
+                id, kind, cadence, next_due_at, state, attempt_count,
+                max_attempts, backoff_initial_seconds, backoff_multiplier_bps,
+                enabled, requires_explicit_opt_in, payload_json, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, 'queued', 0, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                kind = excluded.kind,
+                cadence = excluded.cadence,
+                next_due_at = excluded.next_due_at,
+                state = 'queued',
+                attempt_count = 0,
+                max_attempts = excluded.max_attempts,
+                backoff_initial_seconds = excluded.backoff_initial_seconds,
+                backoff_multiplier_bps = excluded.backoff_multiplier_bps,
+                enabled = excluded.enabled,
+                requires_explicit_opt_in = excluded.requires_explicit_opt_in,
+                payload_json = excluded.payload_json,
+                last_outcome = NULL,
+                last_error = NULL,
+                last_unlock_window = NULL,
+                cancel_requested = 0,
+                updated_at = excluded.updated_at",
+            params![
+                spec.id,
+                spec.kind,
+                spec.schedule.as_token(),
+                spec.next_due_at.to_rfc3339(),
+                i64::from(spec.max_attempts),
+                spec.backoff.initial.num_seconds(),
+                i64::from(spec.backoff.multiplier_bps),
+                if spec.enabled { 1 } else { 0 },
+                if spec.requires_explicit_opt_in { 1 } else { 0 },
+                spec.payload_json,
+                now,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Read one durable row.
     pub fn durable_job(&self, id: Uuid) -> Result<Option<DurableJobView>, DbError> {
         let conn = self.read_connection()?;

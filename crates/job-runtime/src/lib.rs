@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration as StdDuration, Instant};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Months, Utc};
 use thiserror::Error;
 use tracing::info_span;
 use uuid::Uuid;
@@ -51,6 +51,9 @@ pub enum Schedule {
     Daily,
     /// A seven-day cadence.
     Weekly,
+    /// A calendar-month cadence. When the original day is not present in the
+    /// next month, the due date falls on that month's final day.
+    Monthly,
 }
 
 impl Schedule {
@@ -60,6 +63,7 @@ impl Schedule {
             "once" => Ok(Self::Once),
             "daily" => Ok(Self::Daily),
             "weekly" => Ok(Self::Weekly),
+            "monthly" => Ok(Self::Monthly),
             value => value
                 .strip_prefix("interval:")
                 .ok_or_else(|| ScheduleError::Invalid(value.to_owned()))
@@ -82,6 +86,7 @@ impl Schedule {
             Self::Once => "once".to_owned(),
             Self::Daily => "daily".to_owned(),
             Self::Weekly => "weekly".to_owned(),
+            Self::Monthly => "monthly".to_owned(),
             Self::Interval { seconds } => format!("interval:{seconds}"),
         }
     }
@@ -94,6 +99,7 @@ impl Schedule {
             Self::Interval { seconds } => Some(completed_at + Duration::seconds(*seconds)),
             Self::Daily => Some(completed_at + Duration::days(1)),
             Self::Weekly => Some(completed_at + Duration::weeks(1)),
+            Self::Monthly => completed_at.checked_add_months(Months::new(1)),
         }
     }
 }
@@ -970,6 +976,7 @@ mod tests {
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
 
+    use chrono::TimeZone;
     use tracing_subscriber::fmt::format::FmtSpan;
 
     use super::*;
@@ -1196,12 +1203,19 @@ mod tests {
             (Schedule::Once, "once"),
             (Schedule::Daily, "daily"),
             (Schedule::Weekly, "weekly"),
+            (Schedule::Monthly, "monthly"),
             (Schedule::Interval { seconds: 90 }, "interval:90"),
         ] {
             assert_eq!(Schedule::parse(token).unwrap(), schedule);
             assert_eq!(schedule.as_token(), token);
         }
         assert!(Schedule::parse("interval:0").is_err());
+
+        let jan_31 = Utc.with_ymd_and_hms(2024, 1, 31, 12, 0, 0).unwrap();
+        assert_eq!(
+            Schedule::Monthly.next_due_after(jan_31),
+            Some(Utc.with_ymd_and_hms(2024, 2, 29, 12, 0, 0).unwrap())
+        );
     }
 
     #[test]

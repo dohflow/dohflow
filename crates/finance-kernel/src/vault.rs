@@ -140,6 +140,39 @@ impl Kernel {
         created_at: String,
         backup_id: uuid::Uuid,
     ) -> Result<(), KernelError> {
+        let package = self.assemble_unattended_backup(app_version, created_at, backup_id)?;
+        std::fs::write(out_path, &package)
+            .map_err(|e| KernelError::Vault(format!("writing backup: {e}")))?;
+        Ok(())
+    }
+
+    /// Export a newly scheduled backup without replacing any existing file.
+    /// The exclusive create prevents a timestamp collision from overwriting a
+    /// previous recovery point.
+    pub fn export_unattended_new(
+        &self,
+        out_path: &Path,
+        app_version: &str,
+        created_at: String,
+        backup_id: uuid::Uuid,
+    ) -> Result<(), KernelError> {
+        let package = self.assemble_unattended_backup(app_version, created_at, backup_id)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(out_path)
+            .map_err(|_| KernelError::Vault("creating backup file failed".to_owned()))?;
+        file.write_all(&package)
+            .map_err(|_| KernelError::Vault("writing backup file failed".to_owned()))?;
+        Ok(())
+    }
+
+    fn assemble_unattended_backup(
+        &self,
+        app_version: &str,
+        created_at: String,
+        backup_id: uuid::Uuid,
+    ) -> Result<Vec<u8>, KernelError> {
         let db_path = self.worker.db_path();
         let envelope_bytes = std::fs::read(sidecar_path(db_path))
             .map_err(|e| KernelError::Vault(format!("reading envelope: {e}")))?;
@@ -160,9 +193,28 @@ impl Kernel {
             crate::backup::assemble(dek, &inputs)
                 .map_err(|error| KernelError::Vault(format!("assembling backup: {error}")))
         })??;
-        std::fs::write(out_path, &package)
-            .map_err(|e| KernelError::Vault(format!("writing backup: {e}")))?;
-        Ok(())
+        Ok(package)
+    }
+
+    /// Re-open a format-v2 backup with this unlocked vault's in-memory DEK and
+    /// verify every manifest component hash before the caller records success.
+    pub fn verify_unattended_backup(
+        &self,
+        package_path: &Path,
+        expected_backup_id: uuid::Uuid,
+    ) -> Result<crate::backup::Manifest, KernelError> {
+        let package = std::fs::read(package_path)
+            .map_err(|_| KernelError::Vault("reading backup file failed".to_owned()))?;
+        let restored = self.worker.with_dek(|dek| {
+            crate::backup::disassemble_with_vault_dek(dek, &package)
+                .map_err(|_| KernelError::Vault("backup verification failed".to_owned()))
+        })??;
+        if restored.manifest.backup_id != expected_backup_id.to_string() {
+            return Err(KernelError::Vault(
+                "backup identity verification failed".to_owned(),
+            ));
+        }
+        Ok(restored.manifest)
     }
 
     /// Restore an encrypted backup package into a **fresh** vault at

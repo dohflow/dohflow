@@ -52,6 +52,8 @@ fn every_registered_command_has_exactly_one_acl_grant() {
     );
     let app = granted(APP_COMMANDS);
     let destructive = granted(DESTRUCTIVE_COMMANDS);
+    assert!(app.contains("backup_history"));
+    assert!(!destructive.contains("backup_history"));
 
     let both: Vec<_> = app.intersection(&destructive).collect();
     assert!(both.is_empty(), "commands granted twice: {both:?}");
@@ -77,6 +79,8 @@ fn destructive_grants_stay_a_deliberate_short_list() {
     let expected: BTreeSet<String> = [
         "delete_vault",
         "export_backup",
+        "configure_backup",
+        "run_backup_now",
         "restore_backup",
         "apply_update",
         "relaunch_app",

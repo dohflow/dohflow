@@ -412,6 +412,113 @@ fn one_shot_job_claims_once_per_unlock_and_persists_terminal_state() {
 }
 
 #[test]
+fn weekly_job_due_while_locked_runs_once_on_next_unlock_and_recurs() {
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Weekly)).unwrap();
+    let first_clock = FixedClock(now());
+
+    let first = worker
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-before-lock",
+            &(),
+            &Succeed,
+            &CancellationToken::new(),
+            &first_clock,
+        )
+        .unwrap();
+    assert_eq!(first.attempted, 1);
+    let persisted_next_due = worker
+        .durable_job(id)
+        .unwrap()
+        .unwrap()
+        .next_due_at
+        .unwrap();
+    assert_eq!(persisted_next_due, now() + Duration::weeks(1));
+
+    // The vault remains locked while the persisted due time passes. The next
+    // unlock sweeps it; a second sweep in that same unlock window is debounced.
+    let next_unlock_time = persisted_next_due + Duration::seconds(1);
+    let next_clock = FixedClock(next_unlock_time);
+    let next_unlock = worker
+        .run_due_jobs_with_clock(
+            next_unlock_time,
+            "unlock-after-due",
+            &(),
+            &Succeed,
+            &CancellationToken::new(),
+            &next_clock,
+        )
+        .unwrap();
+    assert_eq!(next_unlock.attempted, 1);
+    assert_eq!(next_unlock.succeeded, 1);
+
+    let same_window = worker
+        .run_due_jobs_with_clock(
+            next_unlock_time + Duration::weeks(1),
+            "unlock-after-due",
+            &(),
+            &Succeed,
+            &CancellationToken::new(),
+            &FixedClock(next_unlock_time + Duration::weeks(1)),
+        )
+        .unwrap();
+    assert_eq!(same_window.attempted, 0);
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Succeeded
+    );
+}
+
+#[test]
+fn reconfiguration_reactivates_terminal_jobs_but_not_running_jobs() {
+    let (_dir, worker) = worker();
+    let terminal_id = Uuid::now_v7();
+    worker
+        .schedule_job(&spec(terminal_id, Schedule::Once))
+        .unwrap();
+    worker
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-terminal",
+            &(),
+            &Succeed,
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+    assert_eq!(
+        worker.durable_job(terminal_id).unwrap().unwrap().state,
+        JobState::Succeeded
+    );
+
+    let mut recurring = spec(terminal_id, Schedule::Weekly);
+    recurring.next_due_at = now() + Duration::weeks(1);
+    worker.reconfigure_job(&recurring).unwrap();
+    let reconfigured = worker.durable_job(terminal_id).unwrap().unwrap();
+    assert_eq!(reconfigured.state, JobState::Queued);
+    assert_eq!(reconfigured.attempts, 0);
+    assert_eq!(reconfigured.schedule, Schedule::Weekly);
+    assert_eq!(reconfigured.next_due_at, Some(now() + Duration::weeks(1)));
+
+    let running_id = Uuid::now_v7();
+    worker
+        .schedule_job(&spec(running_id, Schedule::Weekly))
+        .unwrap();
+    assert!(worker
+        .claim_job(running_id, 1, now(), "unlock-running")
+        .unwrap());
+    assert!(worker
+        .reconfigure_job(&spec(running_id, Schedule::Daily))
+        .is_err());
+    assert_eq!(
+        worker.durable_job(running_id).unwrap().unwrap().state,
+        JobState::Running
+    );
+}
+
+#[test]
 fn retryable_failure_uses_backoff_and_then_succeeds() {
     let (_dir, worker) = worker();
     let id = Uuid::now_v7();

@@ -116,7 +116,7 @@ export function UnlockedHome() {
         <CapabilityUnlockNotice />
         {tab === "dashboard" ? (
           <>
-            {/* First-run backup nudge (personal-cfo-vdmb): data + no export yet. */}
+            {/* Backup nudge is hidden by a verified vault-local history receipt. */}
             <BackupNudge onOpenBackup={() => setTab("backup")} />
             <DashboardView onOpenCashFlow={() => setTab("cash-flow")} />
           </>

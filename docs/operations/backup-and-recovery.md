@@ -21,18 +21,33 @@ key without your password. Its repeated fingerprint does let someone who can
 see the backup and sidecar correlate them, and lets them correlate backups made
 before the next password rewrap/rekey.
 
-> **There is no cloud, and no password reset.** The backup is only as recoverable
-> as your password. If you lose the password, the backup cannot be opened. Store
-> the password somewhere safe and separate from the backup file.
+> **There is no DohFlow cloud backup and no password reset.** If you choose a
+> cloud-synced folder, your own provider's client carries the encrypted file;
+> DohFlow does not upload it. The backup is only as recoverable as your
+> password. If you lose the password, it cannot be opened. Store the password
+> somewhere safe and separate from the backup file.
 
 ## Make a backup
 
-1. Unlock your vault and open the **Backup** tab.
-2. Choose **Export backup…**.
-3. Pick where to save the `.pcfobk` file in the system Save dialog.
+1. Unlock your vault and open **Settings → Backups**.
+2. Choose a destination folder and a cadence: off, daily, weekly (the default),
+   or monthly. The schedule is saved for this vault.
+3. Choose **Save backup settings**. A due backup runs at the next unlock; it
+   never blocks the unlock or asks for your password again.
+4. Choose **Back up now** to create and verify a backup immediately in the
+   selected folder. The card shows the most recent verified backup and terminal
+   scheduled-job errors.
 
-Keep the backup somewhere durable and ideally off the machine (an external drive
-or a synced folder). Re-export after meaningful changes.
+Backups are kept indefinitely unless you explicitly enter a number in Retention
+to keep only the newest N scheduled backups. Retention never deletes manual
+backups or files the job cannot verify as its own. You may also use the **Backup**
+tab's **Export backup…** for a one-off backup in a separately chosen file.
+
+For an off-device copy, you can select a folder managed by iCloud Drive, Dropbox,
+or another sync client. If that folder is synced, the provider's own client sends
+the encrypted backup off your Mac as ciphertext. The v2 header's stable
+vault-envelope fingerprint allows someone who can see the ciphertext to
+correlate backups made before a password rewrap or rekey.
 
 ## Restore on a new machine
 

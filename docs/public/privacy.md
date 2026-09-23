@@ -52,7 +52,12 @@ its own.
   app cannot open any other site this way; that link scope is enforced the
   same way the network restrictions above are.
 
-That's the complete list. Nothing else in the app can reach the network.
+Those are the network connections DohFlow itself makes. If you save an
+encrypted backup in a cloud-synced folder, it leaves your Mac through your
+chosen provider's sync client as ciphertext. DohFlow does not manage that
+upload and receives no folder or usage report. A format-v2 backup header does
+contain a stable vault-envelope fingerprint, so someone who can see the
+ciphertext can correlate backups made before a password rewrap or rekey.
 
 ## What we never collect
 

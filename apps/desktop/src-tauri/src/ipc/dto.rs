@@ -11,18 +11,19 @@ use chrono::{DateTime, NaiveDate, Utc};
 use finance_kernel::{
     Account, AccountAvailability, AccountFlags, AccountId, AccountSeriesView, AccountSubtype,
     AccountView, AssumptionBasis, AssumptionEventView, AssumptionParams, AttachmentId,
-    AttachmentMeta, Band, BandDriftView, BatchResult, CapabilityUnlock, CardCycleView,
-    CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
-    CashTiers, CashflowRole, CategoryFilter, CategoryId, CategoryView, ColumnMapping, ComfortBand,
-    Currency, DayBalance, DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec,
-    ForecastDayView, ForecastEventView, ForecastReadiness, ForecastView, Frequency,
-    GroupSeriesView, ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId,
-    LoanDoubleCount, ManualEntry, Money, MoneyInboxItem, MultiSeriesForecast, Outcome,
-    PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView,
-    RecurringCandidateView, RecurringEventId, RecurringInstanceRow, RecurringTransferId,
-    RecurringTransferView, RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput,
-    SplitLineView, StagedTransactionId, TagId, TagView, TransactionId, TransactionPage,
-    TransactionPageQuery, TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
+    AttachmentMeta, BackupCadence, BackupHistoryEntry, BackupHistoryKind, BackupScheduleSettings,
+    Band, BandDriftView, BatchResult, CapabilityUnlock, CardCycleView, CardStatementForecastView,
+    CardStatementHistoryView, CashAvailability, CashFlowHistory, CashTiers, CashflowRole,
+    CategoryFilter, CategoryId, CategoryView, ColumnMapping, ComfortBand, Currency, DayBalance,
+    DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec, ForecastDayView,
+    ForecastEventView, ForecastReadiness, ForecastView, Frequency, GroupSeriesView,
+    ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId, LoanDoubleCount,
+    ManualEntry, Money, MoneyInboxItem, MultiSeriesForecast, Outcome, PayoffDebtSeries,
+    PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView, RecurringCandidateView,
+    RecurringEventId, RecurringInstanceRow, RecurringTransferId, RecurringTransferView,
+    RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput, SplitLineView,
+    StagedTransactionId, TagId, TagView, TransactionId, TransactionPage, TransactionPageQuery,
+    TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -216,6 +217,149 @@ impl From<Money> for MoneyDto {
         Self {
             minor_units: money.minor_units(),
             currency: money.currency().code().to_owned(),
+        }
+    }
+}
+
+/// User-facing cadence for the one local scheduled-backup job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupCadenceDto {
+    Off,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl From<BackupCadence> for BackupCadenceDto {
+    fn from(cadence: BackupCadence) -> Self {
+        match cadence {
+            BackupCadence::Off => Self::Off,
+            BackupCadence::Daily => Self::Daily,
+            BackupCadence::Weekly => Self::Weekly,
+            BackupCadence::Monthly => Self::Monthly,
+        }
+    }
+}
+
+impl From<BackupCadenceDto> for BackupCadence {
+    fn from(cadence: BackupCadenceDto) -> Self {
+        match cadence {
+            BackupCadenceDto::Off => Self::Off,
+            BackupCadenceDto::Daily => Self::Daily,
+            BackupCadenceDto::Weekly => Self::Weekly,
+            BackupCadenceDto::Monthly => Self::Monthly,
+        }
+    }
+}
+
+/// Read-only schedule state for the unlocked vault.
+#[derive(Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BackupScheduleSettingsDto {
+    pub cadence: BackupCadenceDto,
+    pub destination: Option<String>,
+    pub keep_last: Option<u32>,
+    pub next_due_at: Option<String>,
+    pub last_run_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+impl std::fmt::Debug for BackupScheduleSettingsDto {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BackupScheduleSettingsDto")
+            .field("cadence", &self.cadence)
+            .field(
+                "destination",
+                &self.destination.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("keep_last", &self.keep_last)
+            .field("next_due_at", &self.next_due_at)
+            .field("last_run_at", &self.last_run_at)
+            .field(
+                "last_error",
+                &self.last_error.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+impl From<BackupScheduleSettings> for BackupScheduleSettingsDto {
+    fn from(settings: BackupScheduleSettings) -> Self {
+        Self {
+            cadence: settings.cadence.into(),
+            destination: settings
+                .destination
+                .map(|destination| destination.to_string_lossy().into_owned()),
+            keep_last: settings.keep_last,
+            next_due_at: settings.next_due_at.map(|value| value.to_rfc3339()),
+            last_run_at: settings.last_run_at.map(|value| value.to_rfc3339()),
+            last_error: settings.last_error,
+        }
+    }
+}
+
+/// One vault-local history receipt; local paths are returned only to the trusted
+/// main window for Settings display and retention diagnostics.
+#[derive(Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BackupHistoryEntryDto {
+    pub backup_id: String,
+    pub vault_id: String,
+    pub created_at: String,
+    pub kind: BackupHistoryKindDto,
+    pub destination: String,
+    pub format_version: u16,
+    #[specta(type = Number)]
+    pub size_bytes: u64,
+    pub verified: bool,
+    pub error: Option<String>,
+}
+
+impl std::fmt::Debug for BackupHistoryEntryDto {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BackupHistoryEntryDto")
+            .field("backup_id", &self.backup_id)
+            .field("vault_id", &self.vault_id)
+            .field("created_at", &self.created_at)
+            .field("kind", &self.kind)
+            .field("destination", &"[REDACTED]")
+            .field("format_version", &self.format_version)
+            .field("size_bytes", &self.size_bytes)
+            .field("verified", &self.verified)
+            .field("error", &self.error.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupHistoryKindDto {
+    Manual,
+    Scheduled,
+}
+
+impl From<BackupHistoryKind> for BackupHistoryKindDto {
+    fn from(kind: BackupHistoryKind) -> Self {
+        match kind {
+            BackupHistoryKind::Manual => Self::Manual,
+            BackupHistoryKind::Scheduled => Self::Scheduled,
+        }
+    }
+}
+
+impl From<BackupHistoryEntry> for BackupHistoryEntryDto {
+    fn from(entry: BackupHistoryEntry) -> Self {
+        Self {
+            backup_id: entry.backup_id.to_string(),
+            vault_id: entry.vault_id.to_string(),
+            created_at: entry.created_at,
+            kind: entry.kind.into(),
+            destination: entry.destination,
+            format_version: entry.format_version,
+            size_bytes: entry.size_bytes,
+            verified: entry.verified,
+            error: entry.error,
         }
     }
 }
@@ -3606,6 +3750,37 @@ mod tests {
             ..Default::default()
         };
         assert!(zero_amount.to_spec(Uuid::now_v7()).is_err());
+    }
+
+    #[test]
+    fn backup_dto_debug_output_redacts_local_paths_and_error_text() {
+        let secret_path = "/Users/example/Dropbox/Household";
+        let settings = BackupScheduleSettingsDto {
+            cadence: BackupCadenceDto::Weekly,
+            destination: Some(secret_path.to_owned()),
+            keep_last: None,
+            next_due_at: None,
+            last_run_at: None,
+            last_error: Some(format!("Could not write to {secret_path}")),
+        };
+        let settings_debug = format!("{settings:?}");
+        assert!(!settings_debug.contains(secret_path));
+        assert!(settings_debug.contains("[REDACTED]"));
+
+        let history = BackupHistoryEntryDto {
+            backup_id: "backup-id".to_owned(),
+            vault_id: "vault-id".to_owned(),
+            created_at: "2026-09-22T00:00:00Z".to_owned(),
+            kind: BackupHistoryKindDto::Scheduled,
+            destination: secret_path.to_owned(),
+            format_version: 2,
+            size_bytes: 123,
+            verified: false,
+            error: Some(format!("Could not verify {secret_path}")),
+        };
+        let history_debug = format!("{history:?}");
+        assert!(!history_debug.contains(secret_path));
+        assert!(history_debug.contains("[REDACTED]"));
     }
 }
 

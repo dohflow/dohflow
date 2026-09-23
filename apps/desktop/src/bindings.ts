@@ -268,7 +268,11 @@ export const commands = {
 	setSplits: (transactionId: string, lines: SplitLineInputDto[], idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_splits", { transactionId, lines, idempotencyKey })),
 	transactionSplits: (transactionId: string) => typedError<SplitLineDto[], IpcError>(__TAURI_INVOKE("transaction_splits", { transactionId })),
 	duplicateCandidates: (stagedTransactionId: string) => typedError<TransactionRowDto[], IpcError>(__TAURI_INVOKE("duplicate_candidates", { stagedTransactionId })),
+	backupScheduleSettings: () => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("backup_schedule_settings")),
+	backupHistory: () => typedError<BackupHistoryEntryDto[], IpcError>(__TAURI_INVOKE("backup_history")),
 	exportBackup: (outPath: string) => typedError<null, IpcError>(__TAURI_INVOKE("export_backup", { outPath })),
+	configureBackup: (cadence: BackupCadenceDto, destination: string | null, keepLast: number | null) => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("configure_backup", { cadence, destination, keepLast })),
+	runBackupNow: () => typedError<BackupHistoryEntryDto, IpcError>(__TAURI_INVOKE("run_backup_now")),
 	exportTransactionsCsv: (outPath: string) => typedError<number, IpcError>(__TAURI_INVOKE("export_transactions_csv", { outPath })),
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
@@ -485,6 +489,37 @@ export type AttachmentDto = {
 	plaintext_size: number,
 	/**  RFC 3339 creation instant. */
 	created_at: string,
+};
+
+/**  User-facing cadence for the one local scheduled-backup job. */
+export type BackupCadenceDto = "off" | "daily" | "weekly" | "monthly";
+
+/**
+ *  One vault-local history receipt; local paths are returned only to the trusted
+ *  main window for Settings display and retention diagnostics.
+ */
+export type BackupHistoryEntryDto = {
+	backup_id: string,
+	vault_id: string,
+	created_at: string,
+	kind: BackupHistoryKindDto,
+	destination: string,
+	format_version: number,
+	size_bytes: number,
+	verified: boolean,
+	error: string | null,
+};
+
+export type BackupHistoryKindDto = "manual" | "scheduled";
+
+/**  Read-only schedule state for the unlocked vault. */
+export type BackupScheduleSettingsDto = {
+	cadence: BackupCadenceDto,
+	destination: string | null,
+	keep_last: number | null,
+	next_due_at: string | null,
+	last_run_at: string | null,
+	last_error: string | null,
 };
 
 /**

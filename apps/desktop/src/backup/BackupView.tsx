@@ -5,18 +5,15 @@ import { Download, Loader2 } from "lucide-react";
 import { commands } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { describeIpcError, useVault } from "@/vault/useVault";
-
-import {
-  activeVaultStorageId,
-  recordBackupExported,
-} from "./backupNudgeStorage";
+import { describeIpcError } from "@/vault/useVault";
+import { queryKeys } from "@/lib/query";
+import { useQueryClient } from "@tanstack/react-query";
 
 /// Export an encrypted backup of the whole vault to a user-chosen file (ADR
 /// 0024-A). The unlocked kernel uses its in-memory DEK; a native Save dialog
 /// picks the destination, so plaintext never leaves the worker.
 export function BackupView() {
-  const { vaults } = useVault();
+  const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedTo, setSavedTo] = useState<string | null>(null);
@@ -35,9 +32,7 @@ export function BackupView() {
     setBusy(false);
     if (result.status === "ok") {
       setSavedTo(path);
-      // Retires the Dashboard's first-run backup nudge (personal-cfo-vdmb) — a
-      // localStorage marker, since the vault keeps no backup history.
-      recordBackupExported(activeVaultStorageId(vaults));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.backupHistory });
     } else {
       setError(describeIpcError(result.error));
     }

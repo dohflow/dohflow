@@ -91,6 +91,9 @@ export const queryKeys = {
   duplicateCandidates: (stagedTransactionId: string) =>
     ["duplicate-candidates", stagedTransactionId] as const,
   manualEntries: ["manual-entries"] as const,
+  /// Device-local verified backup receipts and the active vault's schedule.
+  backupHistory: ["backup-history"] as const,
+  backupSchedule: ["backup-schedule"] as const,
   baseCurrency: ["base-currency"] as const,
   /// The household's IANA timezone (ADR 0021 §1, personal-cfo-q329) — the calendar-boundary
   /// authority for "today". Setting it invalidates the `["forecast"]` prefix (which already

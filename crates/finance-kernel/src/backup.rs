@@ -378,6 +378,41 @@ pub fn disassemble(password: &[u8], package: &[u8]) -> Result<RestoredBackup, Ba
     }
 }
 
+/// Open and verify a format-v2 backup using the already-unlocked vault DEK.
+///
+/// Scheduled export uses this after writing a package: it proves the output can
+/// be opened by this vault and that every ciphertext component matches the
+/// manifest, without prompting for or deriving from the password again.
+pub(crate) fn disassemble_with_vault_dek(
+    vault_dek: &vault_crypto::Dek,
+    package: &[u8],
+) -> Result<RestoredBackup, BackupError> {
+    let mut r = Reader::new(package);
+    if r.take(MAGIC.len())? != MAGIC || r.u16()? != FORMAT_VERSION {
+        return Err(BackupError::Malformed);
+    }
+
+    let header_envelope_bytes = r.bytes_u32_bounded(MAX_ENVELOPE_LEN)?;
+    let header_envelope =
+        VaultEnvelope::from_bytes(&header_envelope_bytes).map_err(|_| BackupError::Malformed)?;
+    validate_kdf(&header_envelope.kdf)?;
+
+    let hkdf_salt = r.take_arr::<SALT_LEN>()?;
+    let wrapped = vault_crypto::WrappedDek {
+        nonce: r.take_arr::<NONCE_LEN>()?,
+        ciphertext: r.bytes_u32()?,
+    };
+    let sealed = vault_crypto::backup::SealedPayload {
+        nonce: r.take_arr::<NONCE_LEN>()?,
+        ciphertext: r.bytes_u64()?,
+    };
+
+    let backup_kek = derive_backup_kek(vault_dek, &hkdf_salt)?;
+    let backup_dek = unwrap_dek(&backup_kek, &wrapped)?;
+    let payload = open(&backup_dek, &sealed)?;
+    restore_payload(&payload, FORMAT_VERSION, Some(&header_envelope_bytes))
+}
+
 fn disassemble_v1(password: &[u8], r: &mut Reader<'_>) -> Result<RestoredBackup, BackupError> {
     if r.take_arr::<1>()?[0] != ALGO_ARGON2ID {
         return Err(BackupError::Malformed);
@@ -629,6 +664,16 @@ mod tests {
         assert_eq!(restored.manifest.schema_version, 5);
         assert_eq!(restored.manifest.backup_id, inputs.backup_id.to_string());
         assert_eq!(restored.manifest.blobs.len(), 2);
+
+        let verified = disassemble_with_vault_dek(&dek, &pkg).unwrap();
+        assert_eq!(verified.manifest.backup_id, inputs.backup_id.to_string());
+        assert_eq!(verified.db_bytes, inputs.db_bytes);
+
+        let wrong_dek = generate_dek().unwrap();
+        assert!(matches!(
+            disassemble_with_vault_dek(&wrong_dek, &pkg),
+            Err(BackupError::Crypto(_))
+        ));
 
         assert_eq!(&pkg[..MAGIC.len()], MAGIC);
         assert_eq!(u16::from_be_bytes([pkg[6], pkg[7]]), FORMAT_VERSION);

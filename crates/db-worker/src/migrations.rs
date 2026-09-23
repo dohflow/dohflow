@@ -1591,6 +1591,35 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         ),
         rebuilds_read_models: false,
     },
+    // Verified local backup receipts and retention evidence (personal-cfo-8qh).
+    // The destination is device-local and remains inside the SQLCipher vault;
+    // retention separately verifies the package manifest before deleting it.
+    Migration {
+        version: 52,
+        name: "backup_history",
+        up: "CREATE TABLE IF NOT EXISTS backup_history (
+                 backup_id       BLOB PRIMARY KEY CHECK (length(backup_id) = 16),
+                 vault_id        BLOB NOT NULL CHECK (length(vault_id) = 16),
+                 created_at      TEXT NOT NULL,
+                 kind            TEXT NOT NULL CHECK (kind IN ('manual', 'scheduled')),
+                 destination     TEXT NOT NULL CHECK (length(destination) > 0),
+                 format_version  INTEGER NOT NULL CHECK (format_version = 2),
+                 size_bytes      INTEGER NOT NULL CHECK (size_bytes >= 0),
+                 verified        INTEGER NOT NULL CHECK (verified IN (0, 1)),
+                 error           TEXT,
+                 CHECK (
+                     (verified = 1 AND error IS NULL)
+                     OR (verified = 0 AND error IS NOT NULL)
+                 )
+             );
+             CREATE INDEX IF NOT EXISTS idx_backup_history_vault_created
+                 ON backup_history (vault_id, created_at DESC, backup_id DESC);",
+        down: Some(
+            "DROP INDEX IF EXISTS idx_backup_history_vault_created;
+             DROP TABLE IF EXISTS backup_history;",
+        ),
+        rebuilds_read_models: false,
+    },
 ];
 
 const fn max_version() -> i64 {

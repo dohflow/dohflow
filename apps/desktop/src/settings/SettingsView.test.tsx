@@ -23,6 +23,17 @@ const mocks = vi.hoisted(() => ({
   changePassword: vi.fn(),
   buildInfo: vi.fn(),
   openUrl: vi.fn(),
+  backupScheduleSettings: vi.fn(),
+  backupHistory: vi.fn(),
+  configureBackup: vi.fn(),
+  runBackupNow: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/path", () => ({
+  homeDir: vi.fn().mockResolvedValue("/Users/test"),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn().mockResolvedValue(null),
 }));
 
 // The About card's links leave the app through the opener plugin (n76x.18).
@@ -58,6 +69,10 @@ vi.mock("@/bindings", () => ({
     connectorConnections: mocks.connectorConnections,
     accountList: mocks.accountList,
     buildInfo: mocks.buildInfo,
+    backupScheduleSettings: mocks.backupScheduleSettings,
+    backupHistory: mocks.backupHistory,
+    configureBackup: mocks.configureBackup,
+    runBackupNow: mocks.runBackupNow,
   },
 }));
 
@@ -146,6 +161,23 @@ beforeEach(() => {
   });
   mocks.openUrl.mockReset();
   mocks.openUrl.mockResolvedValue(undefined);
+  mocks.backupScheduleSettings.mockReset();
+  mocks.backupHistory.mockReset();
+  mocks.configureBackup.mockReset();
+  mocks.runBackupNow.mockReset();
+  mocks.backupScheduleSettings.mockResolvedValue(
+    ok({
+      cadence: "weekly",
+      destination: null,
+      keep_last: null,
+      next_due_at: null,
+      last_run_at: null,
+      last_error: null,
+    }),
+  );
+  mocks.backupHistory.mockResolvedValue(ok([]));
+  mocks.configureBackup.mockResolvedValue(ok({ cadence: "weekly" }));
+  mocks.runBackupNow.mockResolvedValue(ok({ destination: "/backup.pcfobk" }));
 });
 
 describe("SettingsView", () => {
@@ -189,6 +221,16 @@ describe("SettingsView", () => {
     renderWithClient(<SettingsView />);
     expect(await screen.findByText("Connections")).toBeInTheDocument();
     expect(await screen.findByText("No connections yet")).toBeInTheDocument();
+  });
+
+  it("renders one Settings backup card with schedule and on-demand backup", async () => {
+    renderWithClient(<SettingsView />);
+    expect(await screen.findByText("Backups")).toBeInTheDocument();
+    expect(screen.getByLabelText("Schedule")).toHaveValue("weekly");
+    expect(
+      screen.getByRole("button", { name: /back up now/i }),
+    ).toBeDisabled();
+    expect(screen.getByText(/no verified backups yet/i)).toBeInTheDocument();
   });
 
   it("renders the About card with the build identity and the Support row (n76x.18)", async () => {

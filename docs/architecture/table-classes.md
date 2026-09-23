@@ -20,8 +20,9 @@ The manifest includes every table in the current migrated schema. The
 `attachment_blobs` row is a pseudo-row for the encrypted directory described by
 ADR 0023. `durable_jobs` is a class-3 table owned by `personal-cfo-ati`; its
 schedule, retry state, and unlock-window claims remain device-local. The
-scheduled-backup `backup_history` table remains a planned class-3 row owned by
-`personal-cfo-8qh` until that consumer lands.
+`backup_history` table is also class 3 and records manual/scheduled backup
+receipts inside the vault. Its paths are local-only; retention cleanup must
+reopen a file and verify its manifest backup id before deleting it.
 
 ## Class-3 rebase contract
 
