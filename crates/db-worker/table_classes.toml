@@ -527,10 +527,9 @@ reference_validation = "job kind, schedule, retry policy, and opaque payload rem
 
 [[table]]
 table = "backup_history"
-kind = "planned"
 class = "3"
 owner_bead = "personal-cfo-8qh"
-note = "Planned class-3 table owned by scheduled backup; it is not in the current migrated schema and will be added by 8qh."
+note = "Device-local receipts for manual and scheduled verified backups; destination paths stay inside the vault and never enter Sync or telemetry."
 rebase_phase = "stable"
-rebase_preservation = "preserve backup receipt and retention evidence on a scratch rebase"
-reference_validation = "receipt paths remain local and are checked before swap"
+rebase_preservation = "preserve local backup receipts on a scratch rebase"
+reference_validation = "vault ids and destination paths remain local; scheduled backups never delete destination files"

@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 
+import { renderWithClient } from "@/test/renderWithClient";
 import { BackupView } from "./BackupView";
-import { hasExportedBackup } from "./backupNudgeStorage";
 
 const mocks = vi.hoisted(() => ({
   exportBackup: vi.fn(),
@@ -32,7 +32,7 @@ describe("BackupView", () => {
   it("exports to the chosen path without asking for a password", async () => {
     mocks.save.mockResolvedValue("/home/me/personal-cfo-backup.pcfobk");
     mocks.exportBackup.mockResolvedValue(ok(null));
-    render(<BackupView />);
+    renderWithClient(<BackupView />);
 
     expect(screen.queryByLabelText(/vault password/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
@@ -43,14 +43,12 @@ describe("BackupView", () => {
       ),
     );
     expect(await screen.findByText(/backup saved to/i)).toBeInTheDocument();
-    // A successful export records the marker that retires the Dashboard's
-    // backup nudge (personal-cfo-vdmb).
-    expect(hasExportedBackup("default")).toBe(true);
+    expect(localStorage.getItem("backup-exported:default")).toBeNull();
   });
 
   it("does nothing when the save dialog is cancelled", async () => {
     mocks.save.mockResolvedValue(null);
-    render(<BackupView />);
+    renderWithClient(<BackupView />);
 
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
 
@@ -61,7 +59,7 @@ describe("BackupView", () => {
   it("surfaces an export error", async () => {
     mocks.save.mockResolvedValue("/p.pcfobk");
     mocks.exportBackup.mockResolvedValue({ status: "error", error: "VaultLocked" });
-    render(<BackupView />);
+    renderWithClient(<BackupView />);
 
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
 

@@ -24,6 +24,7 @@ import { SoftwareUpdateCard } from "./SoftwareUpdateCard";
 import { AboutCard } from "./AboutCard";
 import { VaultsCard } from "./VaultsCard";
 import { DeleteVaultCard } from "./DeleteVaultCard";
+import { BackupScheduleCard } from "@/backup/BackupScheduleCard";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -70,6 +71,7 @@ export function SettingsView({
       <PageHeader title="Settings" />
       <HouseholdCard />
       <AppearanceCard />
+      <BackupScheduleCard />
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">General</CardTitle>

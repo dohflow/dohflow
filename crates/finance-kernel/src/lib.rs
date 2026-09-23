@@ -34,22 +34,22 @@ pub use core_ledger::{
 pub use core_money::{Currency, Money};
 pub use db_worker::{
     sqlite_version, AccountAvailability, AccountHistoryView, AccountSeriesView, AccountView,
-    ActorType, AssumptionBasis, AssumptionEventView, AssumptionParams, AttachmentMeta, Band,
-    BandDriftView, CandidateObservation, CapabilityUnlock, CardCycleView,
-    CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
-    CashTiers, CategoryFilter, CategorySource, CategorySpend, CategoryView, ComfortBand,
-    CommandMeta, CommitmentView, ConnectorConnectionRow, ConnectorLinkRow, DayBalance,
-    DebtTermsInput, DebtTermsView, DriftFactorView, DurableJobView, ForecastAssumptionSpec,
-    ForecastDayView, ForecastEventView, ForecastReadiness, ForecastView, GroupSeriesView,
-    HistoryDay, ImportedTransactionFields, IncomeSourceView, LoanDoubleCount, ManualEntry,
-    MoneyInboxItem, MultiSeriesForecast, NewScenario, Outcome, PayoffDebtSeries, PayoffPlanView,
-    ReadinessFactor, RecurringBillView, RecurringCandidateView, RecurringInstanceRow,
-    RecurringTransferView, RepaymentPhilosophy, ReviewStatus, ScenarioStatus, ScenarioView,
-    SpendBreakdown, SpendFilters, SplitLineInput, SplitLineView, TagView, TransactionDisplayRow,
-    TransactionPage, TransactionPageQuery, TransactionRow, TransactionSortOrder,
-    UnconfirmedOccurrence, VaultMetadata, WorkerState, AUTO_CATEGORIZE_ON_IMPORT_KEY,
-    COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION, FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY,
-    REPORTING_CURRENCY_KEY,
+    ActorType, AssumptionBasis, AssumptionEventView, AssumptionParams, AttachmentMeta,
+    BackupHistoryEntry, BackupHistoryKind, Band, BandDriftView, CandidateObservation,
+    CapabilityUnlock, CardCycleView, CardStatementForecastView, CardStatementHistoryView,
+    CashAvailability, CashFlowHistory, CashTiers, CategoryFilter, CategorySource, CategorySpend,
+    CategoryView, ComfortBand, CommandMeta, CommitmentView, ConnectorConnectionRow,
+    ConnectorLinkRow, DayBalance, DebtTermsInput, DebtTermsView, DriftFactorView, DurableJobView,
+    ForecastAssumptionSpec, ForecastDayView, ForecastEventView, ForecastReadiness, ForecastView,
+    GroupSeriesView, HistoryDay, ImportedTransactionFields, IncomeSourceView, LoanDoubleCount,
+    ManualEntry, MoneyInboxItem, MultiSeriesForecast, NewScenario, Outcome, PayoffDebtSeries,
+    PayoffPlanView, ReadinessFactor, RecurringBillView, RecurringCandidateView,
+    RecurringInstanceRow, RecurringTransferView, RepaymentPhilosophy, ReviewStatus, ScenarioStatus,
+    ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput, SplitLineView, TagView,
+    TransactionDisplayRow, TransactionPage, TransactionPageQuery, TransactionRow,
+    TransactionSortOrder, UnconfirmedOccurrence, VaultMetadata, WorkerState,
+    AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
+    FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 pub use importer_core::{
     all_presets, content_fingerprint, detect_best, plugin_by_id, preset_by_id, run_bounded,
@@ -79,6 +79,8 @@ mod vault;
 pub use vault::{classify_vault, VaultController, VaultHealth, VaultState};
 
 pub mod backup;
+mod backup_jobs;
+pub use backup_jobs::{BackupCadence, BackupScheduleSettings, BACKUP_JOB_ID, BACKUP_JOB_KIND};
 
 mod sealed {
     /// Private supertrait that seals [`KernelCommand`](super::KernelCommand):

@@ -5,6 +5,7 @@
 //! of truth for the command list, shared by the running app ([`run`]) and the
 //! binding exporter ([`export_bindings`] / the `export_bindings` binary).
 
+mod backup_job;
 pub mod data_dir;
 pub mod ipc;
 pub mod state;
@@ -175,7 +176,11 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::set_splits,
         ipc::commands::transaction_splits,
         ipc::commands::duplicate_candidates,
+        ipc::commands::backup_schedule_settings,
+        ipc::commands::backup_history,
         ipc::commands::export_backup,
+        ipc::commands::configure_backup,
+        ipc::commands::run_backup_now,
         ipc::commands::export_transactions_csv,
         ipc::commands::restore_backup,
         // Connectors (personal-cfo-gglk, ADR 0060).

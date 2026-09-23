@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use finance_kernel::{
     all_presets, detect_best, plugin_by_id, preset_by_id, ActorType, ApplyScenario, ArchiveAccount,
     ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill, AttachSourceRecord, CategoryId,
-    CommandEnvelope, CommandMeta, CommitStaged, ConfirmObligationEarly,
+    Clock, CommandEnvelope, CommandMeta, CommitStaged, ConfirmObligationEarly,
     ConvertUnexplainedToTransaction, CreateAccount, CreateCategory, CreateIncomeSource,
     CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag, DeleteIncomeSource,
     DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem, DismissRecurringSuggestion,
@@ -22,10 +22,10 @@ use finance_kernel::{
     ReinstateCategory, RestoreIncomeSource, RestoreRecurringBill, RevertScenarioApply,
     ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype, SetBillAutopay,
     SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged,
-    SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, TagId, TransactionId,
-    UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory, UpdateIncomeSource,
-    UpdateRecurringBill, VaultController, VoidTransaction, COMFORT_BAND_UPPER_KEY,
-    MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
+    SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock, TagId,
+    TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
+    UpdateIncomeSource, UpdateRecurringBill, VaultController, VoidTransaction,
+    COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 use uuid::Uuid;
@@ -37,7 +37,8 @@ use crate::ipc::dto::{
     parse_source_batch_id, parse_staged_transaction_id, parse_subtype, parse_tag_id,
     parse_transaction_id, AccountViewDto, ApplyUpdateResultDto, AssertBalanceInput,
     AssertBalanceResult, AssumptionEventDto, AttachSourceRecordInput, AttachSourceRecordResult,
-    AttachmentDto, BandDriftSignalDto, BatchResultDto, BuildInfoDto, CapabilityUnlockDto,
+    AttachmentDto, BackupCadenceDto, BackupHistoryEntryDto, BackupScheduleSettingsDto,
+    BandDriftSignalDto, BatchResultDto, BuildInfoDto, CapabilityUnlockDto,
     CardStatementForecastDto, CardStatementHistoryDto, CashAvailabilityDto, CashFlowHistoryDto,
     CashTiersDto, CategoryDto, ChangePasswordInput, CloneScenarioInput, ColumnMappingDto,
     ComfortBandDto, ConfirmObligationEarlyInput, CreateAccountInput, CreateAccountResult,
@@ -279,9 +280,26 @@ pub fn run_due_jobs_on_unlock_impl(
     executor: &dyn JobExecutor<Kernel>,
     unlock_window: &str,
 ) -> Result<JobRunReport, IpcError> {
+    run_due_jobs_on_unlock_with_clock_impl(state, executor, unlock_window, &SystemClock)
+}
+
+/// Clock-injected form of the post-unlock sweep for deterministic scheduler
+/// integration tests and hosts with an explicit time source.
+pub(crate) fn run_due_jobs_on_unlock_with_clock_impl(
+    state: &AppState,
+    executor: &dyn JobExecutor<Kernel>,
+    unlock_window: &str,
+    clock: &dyn Clock,
+) -> Result<JobRunReport, IpcError> {
     let cancellation = CancellationToken::new();
     with_kernel(state, |kernel| {
-        Ok(kernel.run_due_jobs(Utc::now(), unlock_window, executor, &cancellation)?)
+        Ok(kernel.run_due_jobs_with_clock(
+            clock.now(),
+            unlock_window,
+            executor,
+            &cancellation,
+            clock,
+        )?)
     })
 }
 
@@ -761,12 +779,7 @@ pub fn export_backup_impl(state: &AppState, out_path: String) -> Result<(), IpcE
     );
     let _entered = span.enter();
     let result = with_kernel(state, |kernel| {
-        kernel.export_unattended(
-            std::path::Path::new(&out_path),
-            env!("CARGO_PKG_VERSION"),
-            chrono::Utc::now().to_rfc3339(),
-            Uuid::now_v7(),
-        )?;
+        kernel.export_manual_backup(std::path::Path::new(&out_path), env!("CARGO_PKG_VERSION"))?;
         Ok(())
     });
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -784,6 +797,83 @@ pub fn export_backup_impl(state: &AppState, out_path: String) -> Result<(), IpcE
 #[specta::specta]
 pub fn export_backup(state: tauri::State<'_, AppState>, out_path: String) -> Result<(), IpcError> {
     export_backup_impl(state.inner(), out_path)
+}
+
+/// Read the active vault's local scheduled-backup settings.
+pub fn backup_schedule_settings_impl(
+    state: &AppState,
+) -> Result<BackupScheduleSettingsDto, IpcError> {
+    with_kernel(state, |kernel| {
+        Ok(kernel.backup_schedule_settings()?.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn backup_schedule_settings(
+    state: tauri::State<'_, AppState>,
+) -> Result<BackupScheduleSettingsDto, IpcError> {
+    backup_schedule_settings_impl(state.inner())
+}
+
+/// Read backup receipts belonging to the active vault only.
+pub fn backup_history_impl(state: &AppState) -> Result<Vec<BackupHistoryEntryDto>, IpcError> {
+    with_kernel(state, |kernel| {
+        Ok(kernel
+            .backup_history()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn backup_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<BackupHistoryEntryDto>, IpcError> {
+    backup_history_impl(state.inner())
+}
+
+/// Save this vault's local schedule and destination.
+pub fn configure_backup_impl(
+    state: &AppState,
+    cadence: BackupCadenceDto,
+    destination: Option<String>,
+) -> Result<BackupScheduleSettingsDto, IpcError> {
+    with_kernel(state, |kernel| {
+        Ok(kernel
+            .configure_backup_schedule(
+                cadence.into(),
+                destination.as_deref().map(std::path::Path::new),
+            )?
+            .into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn configure_backup(
+    state: tauri::State<'_, AppState>,
+    cadence: BackupCadenceDto,
+    destination: Option<String>,
+) -> Result<BackupScheduleSettingsDto, IpcError> {
+    configure_backup_impl(state.inner(), cadence, destination)
+}
+
+/// Create and verify an immediate backup in the configured folder.
+pub fn run_backup_now_impl(state: &AppState) -> Result<BackupHistoryEntryDto, IpcError> {
+    with_kernel(state, |kernel| {
+        Ok(kernel.run_backup_now(env!("CARGO_PKG_VERSION"))?.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn run_backup_now(
+    state: tauri::State<'_, AppState>,
+) -> Result<BackupHistoryEntryDto, IpcError> {
+    run_backup_now_impl(state.inner())
 }
 
 /// Restore an encrypted backup from `package_path` into a fresh vault, leaving it

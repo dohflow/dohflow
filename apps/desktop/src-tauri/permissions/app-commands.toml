@@ -155,6 +155,8 @@ commands.allow = [
   "set_splits",
   "transaction_splits",
   "duplicate_candidates",
+  "backup_schedule_settings",
+  "backup_history",
   # Pre-listed for the in-flight paged-transaction-read work (wave2 Part A);
   # remove if that command lands under a different name.
   "transaction_page",

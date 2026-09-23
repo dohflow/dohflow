@@ -47,6 +47,7 @@ use zeroize::{Zeroize, Zeroizing};
 mod apply;
 mod assumptions;
 mod attachments;
+mod backup_history;
 mod band_drift;
 mod categories;
 mod connectors;
@@ -82,6 +83,7 @@ pub use assumptions::{
     DirtyRange, DirtyReason, EdgeType, NewAssumptionEvent,
 };
 pub use attachments::AttachmentMeta;
+pub use backup_history::{BackupHistoryEntry, BackupHistoryKind};
 pub use categories::CategoryView;
 pub use commitments::CommitmentView;
 pub use money_inbox::MoneyInboxItem;
