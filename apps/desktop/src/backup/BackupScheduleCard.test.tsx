@@ -54,14 +54,17 @@ beforeEach(() => {
 describe("BackupScheduleCard", () => {
   it("saves the selected local folder and cadence with keep-all behavior", async () => {
     const folder = "/Users/test/Library/Mobile Documents/com~apple~CloudDocs/Backups";
+    const savedSettings = {
+      ...initialSettings,
+      cadence: "monthly",
+      destination: folder,
+    };
     mocks.open.mockResolvedValue(folder);
-    mocks.configureBackup.mockResolvedValue(
-      ok({
-        ...initialSettings,
-        cadence: "monthly",
-        destination: folder,
-      }),
-    );
+    mocks.backupScheduleSettings
+      .mockResolvedValueOnce(ok(initialSettings))
+      .mockResolvedValue(ok(savedSettings));
+    mocks.configureBackup.mockResolvedValue(ok(savedSettings));
+    mocks.runBackupNow.mockResolvedValue(ok({ destination: `${folder}/new.pcfobk` }));
     renderWithClient(<BackupScheduleCard />);
 
     fireEvent.click(await screen.findByRole("button", { name: /choose folder/i }));
@@ -83,6 +86,50 @@ describe("BackupScheduleCard", () => {
     expect(
       screen.getByText(/dohflow keeps all backups and does not delete older copies automatically/i),
     ).toBeInTheDocument();
+
+    const backupNowButton = screen.getByRole("button", { name: /back up now/i });
+    await waitFor(() => expect(backupNowButton).toBeEnabled());
+    fireEvent.click(backupNowButton);
+    await waitFor(() => expect(mocks.runBackupNow).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText(`Backup created and verified at ${folder}/new.pcfobk.`),
+    ).toBeInTheDocument();
+  });
+
+  it("does not run now while the first selected folder is unsaved", async () => {
+    mocks.open.mockResolvedValue("/Users/test/Backups/B");
+    renderWithClient(<BackupScheduleCard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /choose folder/i }));
+    const backupNowButton = screen.getByRole("button", { name: /back up now/i });
+
+    expect(backupNowButton).toBeDisabled();
+    expect(
+      await screen.findByText("Save backup settings before using Back up now."),
+    ).toBeInTheDocument();
+    fireEvent.click(backupNowButton);
+    expect(mocks.runBackupNow).not.toHaveBeenCalled();
+  });
+
+  it("does not run now against saved folder A while unsaved folder B is displayed", async () => {
+    const folderA = "/Users/test/Backups/A";
+    const folderB = "/Users/test/Backups/B";
+    mocks.backupScheduleSettings.mockResolvedValue(
+      ok({ ...initialSettings, destination: folderA }),
+    );
+    mocks.open.mockResolvedValue(folderB);
+    renderWithClient(<BackupScheduleCard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /choose folder/i }));
+
+    expect(await screen.findByText(folderB)).toBeInTheDocument();
+    const backupNowButton = screen.getByRole("button", { name: /back up now/i });
+    expect(backupNowButton).toBeDisabled();
+    expect(
+      await screen.findByText("Save backup settings before using Back up now."),
+    ).toBeInTheDocument();
+    fireEvent.click(backupNowButton);
+    expect(mocks.runBackupNow).not.toHaveBeenCalled();
   });
 
   it("runs a verified backup now in the saved folder", async () => {

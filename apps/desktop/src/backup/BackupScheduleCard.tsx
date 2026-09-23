@@ -66,6 +66,10 @@ export function BackupScheduleCard() {
       ? backupFolderHint(draft.destination, homeDirectory)
       : null;
   const lastVerifiedBackup = historyQuery.data?.find((backup) => backup.verified);
+  const draftMatchesSavedSettings =
+    settingsQuery.data?.cadence === draft.cadence &&
+    settingsQuery.data?.destination === draft.destination;
+  const draftNeedsSave = settingsQuery.data ? !draftMatchesSavedSettings : dirty;
 
   function changeDraft(update: Partial<BackupDraft>) {
     setDraft((current) => ({ ...current, ...update }));
@@ -194,6 +198,11 @@ export function BackupScheduleCard() {
               DohFlow keeps all backups and does not delete older copies automatically. To remove
               old backups, use Finder or your file manager.
             </p>
+            {draftNeedsSave && (
+              <p id="backup-now-save-first" className="text-xs text-muted-foreground">
+                Save backup settings before using Back up now.
+              </p>
+            )}
 
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy || !dirty} onClick={() => void saveSettings()}>
@@ -204,7 +213,8 @@ export function BackupScheduleCard() {
               </Button>
               <Button
                 variant="outline"
-                disabled={busy || !draft.destination}
+                disabled={busy || !settingsQuery.data?.destination || draftNeedsSave}
+                aria-describedby={draftNeedsSave ? "backup-now-save-first" : undefined}
                 onClick={() => void backUpNow()}
               >
                 {runBackupNow.isPending ? (

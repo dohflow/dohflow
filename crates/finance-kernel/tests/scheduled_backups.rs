@@ -67,6 +67,8 @@ fn scheduled_exports_keep_prior_backups_and_never_delete_foreign_files() {
     assert_eq!(on_demand.kind, BackupHistoryKind::Manual);
     assert!(on_demand.verified);
     assert!(std::path::Path::new(&on_demand.destination).exists());
+    assert!(std::path::Path::new(&on_demand.destination)
+        .starts_with(backup_dir.canonicalize().unwrap()));
 
     let history = kernel.backup_history().unwrap();
     assert_eq!(history.len(), 8);
