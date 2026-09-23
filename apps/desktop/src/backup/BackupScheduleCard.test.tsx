@@ -31,7 +31,6 @@ const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 const initialSettings = {
   cadence: "weekly",
   destination: null,
-  keep_last: null,
   next_due_at: null,
   last_run_at: null,
   last_error: null,
@@ -53,7 +52,7 @@ beforeEach(() => {
 });
 
 describe("BackupScheduleCard", () => {
-  it("saves the selected local folder, cadence, and explicit retention", async () => {
+  it("saves the selected local folder and cadence with keep-all behavior", async () => {
     const folder = "/Users/test/Library/Mobile Documents/com~apple~CloudDocs/Backups";
     mocks.open.mockResolvedValue(folder);
     mocks.configureBackup.mockResolvedValue(
@@ -61,7 +60,6 @@ describe("BackupScheduleCard", () => {
         ...initialSettings,
         cadence: "monthly",
         destination: folder,
-        keep_last: 5,
       }),
     );
     renderWithClient(<BackupScheduleCard />);
@@ -75,15 +73,16 @@ describe("BackupScheduleCard", () => {
     fireEvent.change(screen.getByLabelText("Schedule"), {
       target: { value: "monthly" },
     });
-    fireEvent.change(screen.getByLabelText("Retention"), {
-      target: { value: "5" },
-    });
     fireEvent.click(screen.getByRole("button", { name: /save backup settings/i }));
 
     await waitFor(() =>
-      expect(mocks.configureBackup).toHaveBeenCalledWith("monthly", folder, 5),
+      expect(mocks.configureBackup).toHaveBeenCalledWith("monthly", folder),
     );
     expect(await screen.findByText("Backup settings saved.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Retention")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/dohflow keeps all backups and does not delete older copies automatically/i),
+    ).toBeInTheDocument();
   });
 
   it("runs a verified backup now in the saved folder", async () => {

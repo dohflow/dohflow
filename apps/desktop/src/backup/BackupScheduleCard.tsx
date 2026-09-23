@@ -6,7 +6,6 @@ import { FolderOpen, Loader2 } from "lucide-react";
 import type { BackupCadenceDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { backupFolderHint } from "./backupFolderHint";
 import {
@@ -19,13 +18,11 @@ import {
 type BackupDraft = {
   cadence: BackupCadenceDto;
   destination: string | null;
-  keepLast: string;
 };
 
 const DEFAULT_DRAFT: BackupDraft = {
   cadence: "weekly",
   destination: null,
-  keepLast: "",
 };
 
 function formatTimestamp(timestamp: string): string {
@@ -61,15 +58,9 @@ export function BackupScheduleCard() {
     setDraft({
       cadence: settings.cadence,
       destination: settings.destination,
-      keepLast: settings.keep_last?.toString() ?? "",
     });
   }, [settingsQuery.data, dirty]);
 
-  const retentionEnabled = draft.keepLast !== "";
-  const keepLast = retentionEnabled ? Number(draft.keepLast) : null;
-  const retentionValid =
-    keepLast === null ||
-    (Number.isSafeInteger(keepLast) && keepLast > 0 && keepLast <= 0xffff_ffff);
   const provider =
     draft.destination && homeDirectory
       ? backupFolderHint(draft.destination, homeDirectory)
@@ -100,22 +91,16 @@ export function BackupScheduleCard() {
   }
 
   async function saveSettings() {
-    if (!retentionValid) {
-      setError("Enter a whole number greater than zero for scheduled backups to keep.");
-      return;
-    }
     setError(null);
     setNotice(null);
     try {
       const saved = await configureBackup.mutateAsync({
         cadence: draft.cadence,
         destination: draft.destination,
-        keepLast,
       });
       setDraft({
         cadence: saved.cadence,
         destination: saved.destination,
-        keepLast: saved.keep_last?.toString() ?? "",
       });
       setDirty(false);
       setNotice("Backup settings saved.");
@@ -205,31 +190,13 @@ export function BackupScheduleCard() {
               )}
             </div>
 
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="backup-keep-last">Retention</Label>
-              <p className="text-xs text-muted-foreground">
-                Keep all scheduled backups unless you explicitly choose a limit. Manual backups are
-                never removed by this setting.
-              </p>
-              <Input
-                id="backup-keep-last"
-                type="number"
-                min={1}
-                step={1}
-                inputMode="numeric"
-                placeholder="Keep all"
-                value={draft.keepLast}
-                disabled={busy}
-                onChange={(event) => changeDraft({ keepLast: event.target.value })}
-                aria-describedby="backup-retention-help"
-              />
-              <span id="backup-retention-help" className="text-xs text-muted-foreground">
-                Enter a number to keep only the newest scheduled backups; leave blank to keep all.
-              </span>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              DohFlow keeps all backups and does not delete older copies automatically. To remove
+              old backups, use Finder or your file manager.
+            </p>
 
             <div className="flex flex-wrap gap-2">
-              <Button disabled={busy || !dirty || !retentionValid} onClick={() => void saveSettings()}>
+              <Button disabled={busy || !dirty} onClick={() => void saveSettings()}>
                 {configureBackup.isPending ? (
                   <Loader2 className="animate-spin" aria-hidden />
                 ) : null}

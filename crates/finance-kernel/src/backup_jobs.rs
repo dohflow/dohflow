@@ -51,8 +51,6 @@ pub struct BackupScheduleSettings {
     pub cadence: BackupCadence,
     /// Canonical local destination folder, if selected.
     pub destination: Option<PathBuf>,
-    /// Explicit retention cap for scheduled files; `None` means keep all.
-    pub keep_last: Option<u32>,
     /// Persisted runtime due time, if a job row exists.
     pub next_due_at: Option<DateTime<Utc>>,
     /// Last durable-job attempt time.
@@ -66,7 +64,11 @@ pub struct BackupScheduleSettings {
 struct BackupJobPayload {
     cadence: BackupCadence,
     destination: Option<String>,
-    keep_last: Option<u32>,
+    // Accept the field written by an unshipped preview, but never persist or
+    // act on it. S2a-0 keeps every backup; a future retention decision is
+    // tracked separately.
+    #[serde(default, rename = "keep_last", skip_serializing)]
+    _legacy_keep_last: Option<u32>,
 }
 
 impl Kernel {
@@ -76,7 +78,6 @@ impl Kernel {
             return Ok(BackupScheduleSettings {
                 cadence: BackupCadence::Weekly,
                 destination: None,
-                keep_last: None,
                 next_due_at: None,
                 last_run_at: None,
                 last_error: None,
@@ -94,11 +95,10 @@ impl Kernel {
             .ok_or_else(|| {
                 KernelError::Persistence("backup job configuration is invalid".to_owned())
             })?;
-        if payload.keep_last == Some(0)
-            || payload
-                .destination
-                .as_deref()
-                .is_some_and(|path| !Path::new(path).is_absolute())
+        if payload
+            .destination
+            .as_deref()
+            .is_some_and(|path| !Path::new(path).is_absolute())
         {
             return Err(KernelError::Persistence(
                 "backup job configuration is invalid".to_owned(),
@@ -108,26 +108,20 @@ impl Kernel {
         Ok(BackupScheduleSettings {
             cadence: payload.cadence,
             destination: payload.destination.map(PathBuf::from),
-            keep_last: payload.keep_last,
             next_due_at: job.next_due_at,
             last_run_at: job.last_run_at,
             last_error: job.last_error,
         })
     }
 
-    /// Persist the user-selected folder, cadence, and optional scheduled-file
-    /// retention policy in the encrypted job row for this vault.
+    /// Persist the user-selected folder and cadence in the encrypted job row
+    /// for this vault. Scheduled backups are keep-all; this payload contains no
+    /// automatic-retention policy.
     pub fn configure_backup_schedule(
         &self,
         cadence: BackupCadence,
         destination: Option<&Path>,
-        keep_last: Option<u32>,
     ) -> Result<BackupScheduleSettings, KernelError> {
-        if keep_last == Some(0) {
-            return Err(KernelError::Validation(
-                "retention must keep at least one scheduled backup".to_owned(),
-            ));
-        }
         let destination = destination
             .map(|path| {
                 if !path.is_absolute() {
@@ -152,7 +146,7 @@ impl Kernel {
         let payload = BackupJobPayload {
             cadence,
             destination,
-            keep_last,
+            _legacy_keep_last: None,
         };
         let payload_json = serde_json::to_string(&payload).map_err(|_| {
             KernelError::Persistence("backup configuration could not be saved".to_owned())
@@ -193,13 +187,7 @@ impl Kernel {
         app_version: &str,
     ) -> Result<BackupHistoryEntry, KernelError> {
         validate_backup_file_path(package_path)?;
-        self.perform_backup_export(
-            package_path,
-            app_version,
-            BackupHistoryKind::Manual,
-            false,
-            None,
-        )
+        self.perform_backup_export(package_path, app_version, BackupHistoryKind::Manual, false)
     }
 
     /// Run the shared backup exporter immediately using the configured folder.
@@ -209,7 +197,7 @@ impl Kernel {
             KernelError::Validation("choose a backup folder in Settings first".to_owned())
         })?;
         let path = scheduled_backup_path(&folder, self.vault_metadata()?.vault_id, Utc::now());
-        self.perform_backup_export(&path, app_version, BackupHistoryKind::Manual, true, None)
+        self.perform_backup_export(&path, app_version, BackupHistoryKind::Manual, true)
     }
 
     /// Execute one durable scheduled-backup invocation.
@@ -227,13 +215,7 @@ impl Kernel {
             KernelError::Validation("choose a backup folder in Settings first".to_owned())
         })?;
         let path = scheduled_backup_path(&folder, self.vault_metadata()?.vault_id, Utc::now());
-        self.perform_backup_export(
-            &path,
-            app_version,
-            BackupHistoryKind::Scheduled,
-            true,
-            settings.keep_last,
-        )
+        self.perform_backup_export(&path, app_version, BackupHistoryKind::Scheduled, true)
     }
 
     fn perform_backup_export(
@@ -242,7 +224,23 @@ impl Kernel {
         app_version: &str,
         kind: BackupHistoryKind,
         exclusive: bool,
-        keep_last: Option<u32>,
+    ) -> Result<BackupHistoryEntry, KernelError> {
+        self.perform_backup_export_with_verifier(
+            package_path,
+            app_version,
+            kind,
+            exclusive,
+            |kernel, path, backup_id| kernel.verify_unattended_backup(path, backup_id).map(|_| ()),
+        )
+    }
+
+    fn perform_backup_export_with_verifier(
+        &self,
+        package_path: &Path,
+        app_version: &str,
+        kind: BackupHistoryKind,
+        exclusive: bool,
+        verify: impl FnOnce(&Self, &Path, Uuid) -> Result<(), KernelError>,
     ) -> Result<BackupHistoryEntry, KernelError> {
         let vault_id = self.vault_metadata()?.vault_id;
         let backup_id = Uuid::now_v7();
@@ -255,8 +253,7 @@ impl Kernel {
         let write_succeeded = export_result.is_ok();
         let failure = match export_result {
             Err(_) => Some("Could not write the backup file."),
-            Ok(()) => self
-                .verify_unattended_backup(package_path, backup_id)
+            Ok(()) => verify(self, package_path, backup_id)
                 .err()
                 .map(|_| "Could not verify the backup file."),
         };
@@ -289,64 +286,7 @@ impl Kernel {
         if let Some(error) = entry.error.as_deref() {
             return Err(KernelError::Vault(error.to_owned()));
         }
-
-        if kind == BackupHistoryKind::Scheduled {
-            if let Some(keep_last) = keep_last {
-                if let Some(folder) = package_path.parent() {
-                    if self.prune_scheduled_backups(folder, keep_last).is_err() {
-                        tracing::warn!(
-                            outcome = "retention_skipped",
-                            "backup retention cleanup was skipped"
-                        );
-                    }
-                }
-            }
-        }
         Ok(entry)
-    }
-
-    fn prune_scheduled_backups(&self, folder: &Path, keep_last: u32) -> Result<(), KernelError> {
-        let vault_id = self.vault_metadata()?.vault_id;
-        let canonical_folder = std::fs::canonicalize(folder)
-            .map_err(|_| KernelError::Vault("backup folder is unavailable".to_owned()))?;
-        let mut candidates = self
-            .worker
-            .backup_history(vault_id)?
-            .into_iter()
-            .filter(|entry| entry.kind == BackupHistoryKind::Scheduled && entry.verified)
-            .filter(|entry| {
-                Path::new(&entry.destination)
-                    .parent()
-                    .is_some_and(|parent| parent == canonical_folder)
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            right
-                .created_at
-                .cmp(&left.created_at)
-                .then_with(|| right.backup_id.cmp(&left.backup_id))
-        });
-
-        for entry in candidates.into_iter().skip(keep_last as usize) {
-            let path = Path::new(&entry.destination);
-            match std::fs::symlink_metadata(path) {
-                Ok(metadata) if metadata.file_type().is_file() => {}
-                _ => continue,
-            }
-            if self
-                .verify_unattended_backup(path, entry.backup_id)
-                .is_err()
-            {
-                continue;
-            }
-            if std::fs::remove_file(path).is_err() {
-                tracing::warn!(
-                    outcome = "retention_delete_failed",
-                    "verified old backup could not be removed"
-                );
-            }
-        }
-        Ok(())
     }
 }
 
@@ -376,4 +316,60 @@ fn scheduled_backup_path(folder: &Path, vault_id: Uuid, now: DateTime<Utc>) -> P
         now.timestamp_subsec_nanos()
     );
     folder.join(format!("{vault_id}-{timestamp}.pcfobk"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn legacy_retention_value_is_ignored_and_not_serialized() {
+        let payload: BackupJobPayload = serde_json::from_str(
+            r#"{"cadence":"weekly","destination":"/tmp/backups","keep_last":3}"#,
+        )
+        .unwrap();
+
+        assert_eq!(payload.cadence, BackupCadence::Weekly);
+        assert_eq!(payload.destination.as_deref(), Some("/tmp/backups"));
+        let rewritten = serde_json::to_string(&payload).unwrap();
+        assert!(!rewritten.contains("keep_last"));
+    }
+
+    #[test]
+    fn verification_failure_after_write_preserves_output_and_records_safe_receipt() {
+        let root = tempdir().unwrap();
+        let backup_dir = root.path().join("backups");
+        std::fs::create_dir(&backup_dir).unwrap();
+        let kernel =
+            Kernel::create_vault(root.path().join("vault.db"), b"correct horse battery").unwrap();
+        let package_path = backup_dir.join("failed-verification.pcfobk");
+
+        let error = kernel
+            .perform_backup_export_with_verifier(
+                &package_path,
+                "0.2.0-test",
+                BackupHistoryKind::Scheduled,
+                true,
+                |_, _, _| Err(KernelError::Vault("injected verifier failure".to_owned())),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelError::Vault(ref message) if message == "Could not verify the backup file."
+        ));
+        assert!(package_path.is_file());
+        assert!(std::fs::metadata(&package_path).unwrap().len() > 0);
+
+        let history = kernel.backup_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].destination, package_path.to_string_lossy());
+        assert_eq!(history[0].kind, BackupHistoryKind::Scheduled);
+        assert!(!history[0].verified);
+        assert_eq!(
+            history[0].error.as_deref(),
+            Some("Could not verify the backup file.")
+        );
+    }
 }

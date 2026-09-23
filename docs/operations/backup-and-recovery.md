@@ -38,10 +38,11 @@ before the next password rewrap/rekey.
    selected folder. The card shows the most recent verified backup and terminal
    scheduled-job errors.
 
-Backups are kept indefinitely unless you explicitly enter a number in Retention
-to keep only the newest N scheduled backups. Retention never deletes manual
-backups or files the job cannot verify as its own. You may also use the **Backup**
-tab's **Export backup…** for a one-off backup in a separately chosen file.
+Scheduled and one-off backups are kept until you remove them yourself. DohFlow
+does not automatically prune or delete older backup files. To free space, use
+Finder or your file manager to remove the copies you no longer need. You may also
+use the **Backup** tab's **Export backup…** for a one-off backup in a separately
+chosen file.
 
 For an off-device copy, you can select a folder managed by iCloud Drive, Dropbox,
 or another sync client. If that folder is synced, the provider's own client sends

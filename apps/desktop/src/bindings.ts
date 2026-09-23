@@ -271,7 +271,7 @@ export const commands = {
 	backupScheduleSettings: () => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("backup_schedule_settings")),
 	backupHistory: () => typedError<BackupHistoryEntryDto[], IpcError>(__TAURI_INVOKE("backup_history")),
 	exportBackup: (outPath: string) => typedError<null, IpcError>(__TAURI_INVOKE("export_backup", { outPath })),
-	configureBackup: (cadence: BackupCadenceDto, destination: string | null, keepLast: number | null) => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("configure_backup", { cadence, destination, keepLast })),
+	configureBackup: (cadence: BackupCadenceDto, destination: string | null) => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("configure_backup", { cadence, destination })),
 	runBackupNow: () => typedError<BackupHistoryEntryDto, IpcError>(__TAURI_INVOKE("run_backup_now")),
 	exportTransactionsCsv: (outPath: string) => typedError<number, IpcError>(__TAURI_INVOKE("export_transactions_csv", { outPath })),
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
@@ -496,7 +496,7 @@ export type BackupCadenceDto = "off" | "daily" | "weekly" | "monthly";
 
 /**
  *  One vault-local history receipt; local paths are returned only to the trusted
- *  main window for Settings display and retention diagnostics.
+ *  main window for Settings display.
  */
 export type BackupHistoryEntryDto = {
 	backup_id: string,
@@ -516,7 +516,6 @@ export type BackupHistoryKindDto = "manual" | "scheduled";
 export type BackupScheduleSettingsDto = {
 	cadence: BackupCadenceDto,
 	destination: string | null,
-	keep_last: number | null,
 	next_due_at: string | null,
 	last_run_at: string | null,
 	last_error: string | null,

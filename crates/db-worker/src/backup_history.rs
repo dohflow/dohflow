@@ -1,9 +1,8 @@
 //! Device-local receipts for verified backup exports (personal-cfo-8qh).
 //!
 //! Destinations and errors are kept only inside the SQLCipher-protected vault.
-//! The recorded path is evidence for retention, never authority by itself: the
-//! Finance Kernel re-opens the package and verifies its manifest before a file
-//! can be removed.
+//! These receipts support local history and the backup nudge; scheduled backup
+//! runs do not use them to delete or prune files.
 
 use rusqlite::{params, OptionalExtension};
 use std::fmt;

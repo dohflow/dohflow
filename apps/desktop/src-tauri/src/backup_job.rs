@@ -87,7 +87,7 @@ mod tests {
             let guard = state.lock_controller().unwrap();
             let kernel = guard.kernel().unwrap();
             kernel
-                .configure_backup_schedule(BackupCadence::Weekly, Some(&destination), None)
+                .configure_backup_schedule(BackupCadence::Weekly, Some(&destination))
                 .unwrap();
             let job = kernel.durable_job(super::BACKUP_JOB_ID).unwrap().unwrap();
             kernel
@@ -151,7 +151,7 @@ mod tests {
             let guard = state.lock_controller().unwrap();
             let kernel = guard.kernel().unwrap();
             kernel
-                .configure_backup_schedule(BackupCadence::Weekly, Some(&destination), None)
+                .configure_backup_schedule(BackupCadence::Weekly, Some(&destination))
                 .unwrap();
             let job = kernel.durable_job(super::BACKUP_JOB_ID).unwrap().unwrap();
             kernel

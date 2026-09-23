@@ -840,14 +840,12 @@ pub fn configure_backup_impl(
     state: &AppState,
     cadence: BackupCadenceDto,
     destination: Option<String>,
-    keep_last: Option<u32>,
 ) -> Result<BackupScheduleSettingsDto, IpcError> {
     with_kernel(state, |kernel| {
         Ok(kernel
             .configure_backup_schedule(
                 cadence.into(),
                 destination.as_deref().map(std::path::Path::new),
-                keep_last,
             )?
             .into())
     })
@@ -859,9 +857,8 @@ pub fn configure_backup(
     state: tauri::State<'_, AppState>,
     cadence: BackupCadenceDto,
     destination: Option<String>,
-    keep_last: Option<u32>,
 ) -> Result<BackupScheduleSettingsDto, IpcError> {
-    configure_backup_impl(state.inner(), cadence, destination, keep_last)
+    configure_backup_impl(state.inner(), cadence, destination)
 }
 
 /// Create and verify an immediate backup in the configured folder.

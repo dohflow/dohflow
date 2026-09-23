@@ -258,7 +258,6 @@ impl From<BackupCadenceDto> for BackupCadence {
 pub struct BackupScheduleSettingsDto {
     pub cadence: BackupCadenceDto,
     pub destination: Option<String>,
-    pub keep_last: Option<u32>,
     pub next_due_at: Option<String>,
     pub last_run_at: Option<String>,
     pub last_error: Option<String>,
@@ -273,7 +272,6 @@ impl std::fmt::Debug for BackupScheduleSettingsDto {
                 "destination",
                 &self.destination.as_ref().map(|_| "[REDACTED]"),
             )
-            .field("keep_last", &self.keep_last)
             .field("next_due_at", &self.next_due_at)
             .field("last_run_at", &self.last_run_at)
             .field(
@@ -291,7 +289,6 @@ impl From<BackupScheduleSettings> for BackupScheduleSettingsDto {
             destination: settings
                 .destination
                 .map(|destination| destination.to_string_lossy().into_owned()),
-            keep_last: settings.keep_last,
             next_due_at: settings.next_due_at.map(|value| value.to_rfc3339()),
             last_run_at: settings.last_run_at.map(|value| value.to_rfc3339()),
             last_error: settings.last_error,
@@ -300,7 +297,7 @@ impl From<BackupScheduleSettings> for BackupScheduleSettingsDto {
 }
 
 /// One vault-local history receipt; local paths are returned only to the trusted
-/// main window for Settings display and retention diagnostics.
+/// main window for Settings display.
 #[derive(Clone, PartialEq, Eq, Serialize, Type)]
 pub struct BackupHistoryEntryDto {
     pub backup_id: String,
@@ -3758,7 +3755,6 @@ mod tests {
         let settings = BackupScheduleSettingsDto {
             cadence: BackupCadenceDto::Weekly,
             destination: Some(secret_path.to_owned()),
-            keep_last: None,
             next_due_at: None,
             last_run_at: None,
             last_error: Some(format!("Could not write to {secret_path}")),

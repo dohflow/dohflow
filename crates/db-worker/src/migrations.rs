@@ -1591,9 +1591,9 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         ),
         rebuilds_read_models: false,
     },
-    // Verified local backup receipts and retention evidence (personal-cfo-8qh).
-    // The destination is device-local and remains inside the SQLCipher vault;
-    // retention separately verifies the package manifest before deleting it.
+    // Local backup receipts (personal-cfo-8qh). The destination is device-local
+    // and remains inside the SQLCipher vault; scheduled backups never delete
+    // files from the selected folder.
     Migration {
         version: 52,
         name: "backup_history",

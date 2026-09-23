@@ -169,7 +169,6 @@ beforeEach(() => {
     ok({
       cadence: "weekly",
       destination: null,
-      keep_last: null,
       next_due_at: null,
       last_run_at: null,
       last_error: null,

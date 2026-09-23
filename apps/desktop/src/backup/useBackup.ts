@@ -31,12 +31,10 @@ export function useConfigureBackup() {
     mutationFn: async (input: {
       cadence: "off" | "daily" | "weekly" | "monthly";
       destination: string | null;
-      keepLast: number | null;
     }) => {
       const result = await commands.configureBackup(
         input.cadence,
         input.destination,
-        input.keepLast,
       );
       if (result.status === "error") {
         throw new Error(describeIpcError(result.error));
