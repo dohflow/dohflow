@@ -1,6 +1,6 @@
 # ADR 0010: Tauri window + capability isolation model
 
-- **Status:** Accepted — amended 2026-07-04 (see [Addendum](#addendum-2026-07-04-app-commands-are-capability-gated-after-all)); amended 2026-09-06 (see [Addendum: scoped opener grant for the About card](#addendum-2026-09-06-scoped-opener-grant-for-the-about-card)); amended 2026-09-08 (see [Addendum: updater + process grants for the signed release updater](#addendum-2026-09-08-updater--process-grants-for-the-signed-release-updater))
+- **Status:** Accepted — amended 2026-07-04 (see [Addendum](#addendum-2026-07-04-app-commands-are-capability-gated-after-all)); amended 2026-09-06 (see [Addendum: scoped opener grant for the About card](#addendum-2026-09-06-scoped-opener-grant-for-the-about-card)); amended 2026-09-08 (see [Addendum: updater + process grants for the signed release updater](#addendum-2026-09-08-updater--process-grants-for-the-signed-release-updater)); amended 2026-09-27 (see [Addendum: untrusted windows are isolated by an empty capability](#addendum-2026-09-27-untrusted-windows-are-isolated-by-an-empty-capability-not-by-a-missing-invoke-handler))
 - **Date:** 2026-06-20
 - **Deciders:** Project owner
 - **Bead:** [`personal-cfo-tif`](../../.beads/issues.jsonl)
@@ -63,7 +63,7 @@ Therefore:
 - **Per-window least privilege is achieved by window separation, not per-command
   capability lists.** Untrusted windows (`document_preview`, `agent_report`) get a
   **minimal/empty** capability file and **do not load the app's `invoke` handler**,
-  so they structurally cannot reach Finance-Kernel commands.
+  so they structurally cannot reach Finance-Kernel commands. *(Tauri v2 cannot withhold the handler per window; the boundary is enforced by an empty capability instead — see the [2026-09-27 addendum](#addendum-2026-09-27-untrusted-windows-are-isolated-by-an-empty-capability-not-by-a-missing-invoke-handler).)*
 - Adding a dangerous capability plugin (fs/shell/http) to **any** window requires
   explicit justification in review; the default is "don't".
 
@@ -103,7 +103,7 @@ in-app WebView (ADR 0003 §2.3). No in-app window is granted remote-navigation.
 1. **CI fails if `app.security.csp` is null** — the policy cannot silently regress
    to "no CSP" (the gap this ADR closes).
 2. When the untrusted windows land, a test asserts an **untrusted window cannot
-   invoke a Finance-Kernel command** (it loads no `invoke` handler), complementing
+   invoke a Finance-Kernel command** (it loads no `invoke` handler — *see the 2026-09-27 addendum: its capability is empty, so the ACL rejects the call*), complementing
    the IPC/CSP/redaction tests in `personal-cfo-1z4o` and `personal-cfo-zobt`.
 
 ## Consequences
@@ -204,7 +204,7 @@ can only call enumerated commands — and (b) the pre-cut seam for window isolat
 
 ### What stays true from the original decision
 
-Window separation (untrusted windows load no `invoke` handler) remains the primary
+Window separation (untrusted windows load no `invoke` handler — *corrected by the 2026-09-27 addendum: an empty capability, not a missing handler*) remains the primary
 isolation mechanism, and `core:default` remains the right baseline for `main`. The
 ACL gate is a **second, declarative layer** on top — defense in depth, not a
 replacement.
@@ -377,8 +377,125 @@ The pre-existing `no_capability_grants_opener_default_shell_fs_or_http` and
 `the_opener_grant_did_not_loosen_the_csp` continue to hold unmodified, which is
 the evidence that this change adds no network or filesystem surface.
 
+## Addendum (2026-09-27): untrusted windows are isolated by an empty capability, not by a missing invoke handler
+
+**Bead:** `personal-cfo-2no`. **Verified against the pinned versions in
+`apps/desktop/src-tauri/Cargo.lock`:** `tauri 2.11.2`, `tauri-runtime-wry 2.11.2`,
+`wry 0.55.1`, `tauri-utils 2.9.2` — by reading the vendored crate sources.
+
+### What the original decision got wrong
+
+The Decision section says the untrusted windows (`document_preview`,
+`agent_report`) "do not load the app's `invoke` handler". Tauri v2 cannot do that
+for one window and not another:
+
+- The invoke handler is registered once, on the app builder, and serves every
+  webview (`Builder::invoke_handler`).
+- The IPC bridge (`__TAURI_INTERNALS__`, the invoke key) is injected into every
+  webview the manager prepares; there is no per-webview switch to leave it out.
+
+What Tauri *does* offer per window is the capability system, and since the
+2026-07-04 addendum the app ACL manifest is active. In `Webview::on_message`
+(`tauri-2.11.2/src/webview/mod.rs`) every request is resolved against the
+capabilities that name the calling window's label, and it is **rejected before
+dispatch** when nothing grants it:
+
+    if (plugin_command.is_some() || has_app_acl_manifest || !is_local)
+        && invoke.acl.is_none() { reject("... not allowed by ACL") }
+
+With the manifest active, that condition covers the **whole** command surface —
+app commands, destructive commands, and every plugin command, including the
+`core:*` ones (`plugin:event|…`, `plugin:window|…`, …). A window whose capability
+grants nothing can therefore call nothing — with one exception, below.
+
+**The one ACL exception: Tauri's channel-fetch command.** `on_message` exempts
+`plugin:__TAURI_CHANNEL__|fetch` from the ACL (`tauri-2.11.2/src/ipc/channel.rs`).
+When a Rust `tauri::ipc::Channel` sends a payload too large to `eval` directly
+(JSON ≥ 8 KiB, raw ≥ 1 KiB), Tauri parks it in an **app-wide** queue under a
+**sequential** id and has the receiving webview fetch it. The queue is not keyed
+by webview, so any webview — an untrusted one included — could guess the id and
+take the payload first. Today nothing reaches that queue: the app defines no
+`ipc::Channel`, and the one plugin channel in use (updater download progress)
+sends small JSON that goes through `eval`. That becomes a rule in the decision
+below rather than an accident.
+
+### Decision
+
+1. **The isolation mechanism is an explicit empty capability per untrusted
+   window.** `capabilities/document-preview.json` targets only
+   `document_preview`, `capabilities/agent-report.json` targets only
+   `agent_report`, and both have `"permissions": []`. The files exist (rather
+   than being omitted) so the intent is reviewable and pinned by tests; an
+   untrusted window added later gets its own empty file the same way.
+2. **`default.json` and `destructive.json` keep targeting `main` only.** They are
+   never widened to an untrusted label, and no capability declares a `remote`
+   origin.
+3. **Every window is built in Rust, not by Tauri from config.** The `main` entry
+   in `tauri.conf.json` gets `"create": false` and is built in `setup()` with
+   `WebviewWindowBuilder::from_config`, so the same builder hooks apply to it as
+   to the shells. The shells are not in `tauri.conf.json` at all.
+4. **Shell lifecycle.** A shell is created on demand through a Rust function
+   (one instance per label: re-opening focuses the existing window; closing
+   destroys it). No IPC command opens a shell in this change — the features that
+   need one (`personal-cfo-vrng`, `personal-cfo-z6pn`) add their own opener with
+   their own review, so no unfinished surface reaches the UI. A shell loads a
+   static, script-free page from the app bundle; it never loads a remote URL.
+5. **Navigation and new windows are denied for every webview.** The
+   navigation guard from `personal-cfo-2rf` (a plugin, so it covers every
+   webview including the shells) cancels any navigation outside the app
+   origin. Each builder also installs `on_new_window(… Deny)`, so
+   `window.open` / `target="_blank"` cannot create a webview or popup on any
+   platform — wry already creates none on macOS/Linux without a handler, but
+   WebView2 on Windows opens one by default.
+6. **Getting content into a shell is not decided here.** With an empty
+   capability a shell cannot even listen for events. Whatever
+   `personal-cfo-vrng` / `personal-cfo-z6pn` need (a read-only custom protocol,
+   an event grant, …) is a new grant to an untrusted window and needs its own
+   dated addendum here first; it may never include an app command, a destructive
+   command, `opener:*`, `dialog:*`, `updater:*`, `process:*`, or the `shell`/`fs`/
+   `http` plugins.
+7. **No vault data through a large `ipc::Channel` payload.** Because of the
+   channel-fetch exception above, app code does not use `tauri::ipc::Channel` to
+   send vault data. A feature that needs streaming either keeps each message
+   under the direct-`eval` size or brings a dated addendum here that closes the
+   queue gap first (for example, a Tauri release that keys the queue per
+   webview).
+
+### Production versus development
+
+| | Production (`tauri build`) | Development (`tauri dev`) |
+|---|---|---|
+| App origin loaded | `tauri://localhost` (`http(s)://tauri.localhost` on Windows/Android) | `build.devUrl` (`http://localhost:1420`) |
+| Navigation guard also allows | nothing else | the `devUrl` origin (`tauri::is_dev()`) |
+| CSP | `csp` (strict) | `devCsp` (adds HMR's script relaxations and the dev server to `connect-src`) |
+| Web inspector | off (the `devtools` cargo feature stays off) | on in debug builds (Tauri's default) |
+| Capabilities, shells, new-window deny | identical | identical |
+
+### What stays true
+
+`core:default` for `main`, the separate `destructive` capability, and the scoped
+opener, updater, and process grants of the earlier addenda are unchanged. Window
+separation is still the design; this addendum only corrects *how* Tauri enforces
+it, and makes the ACL — already the "second, declarative layer" of the
+2026-07-04 addendum — the primary control for untrusted windows.
+
+### What pins it
+
+- An integration test builds the app on Tauri's mock runtime with the **real**
+  resolved ACL (`generate_context!` over the committed capability files) and
+  asserts that `main` may invoke a general and a destructive command while
+  `document_preview` and `agent_report` are rejected for an app command, a
+  destructive command, and representative `core`, `dialog`, `opener`,
+  `updater`, and `process` plugin commands.
+- The same test drives the navigation guard for each untrusted label.
+- `tests/acl_coverage.rs` pins the capability files: which labels each targets,
+  that the untrusted ones grant nothing, and that `default`/`destructive` target
+  only `main`.
+- A source test fails if app code starts using `tauri::ipc::Channel` (rule 7).
+
 ## Linked beads
 
+- `personal-cfo-2no` (window topology + empty-capability isolation — 2026-09-27 addendum)
 - `personal-cfo-n76x.18` (About card, Support row, scoped opener grant — 2026-09-06 addendum)
 - `personal-cfo-867.1.2` (updater + process capability grants — 2026-09-08 addendum)
 - `personal-cfo-tif` (this ADR's implementation: window/capability isolation)
