@@ -38,6 +38,7 @@ Internal strategy drafts (monetization, pricing, legal-posture analysis) live ou
 Rank these in order when making tradeoffs:
 
 1. Security: encrypted local-first data, minimal cloud dependency, no plaintext financial secrets, no accidental telemetry, and explicit consent before anything leaves the device.
+   Future managed-service egress follows [ADR 0066-A](../adr/0066-A-dohflow-endpoints-pinned-credential-not-unlock.md).
 2. Reliability: forecasts must be explainable and backtested; manual entry and import must continue working even if connectors fail.
 3. Usability: simple daily check-in experience with progressive disclosure for advanced features.
 4. Flexibility: support manual accounts, imports, overrides, categories, household profiles, scenarios, documents, and optional connectors over time.

@@ -191,6 +191,7 @@ design.
 
 ## Implementation notes
 
+- See ADR 0066-A for pinned service endpoints, credential-only access, and operational-log limits.
 - See ADR 0074 for the Sync architecture; this ADR's free-local-app and separate-service boundary remains unchanged.
 - ADR 0043 gains a one-line pointer to this ADR, appended after its
   2026-09-02 CLA addendum.
