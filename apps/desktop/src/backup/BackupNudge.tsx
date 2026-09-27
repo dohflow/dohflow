@@ -18,7 +18,7 @@ import { useBackupHistory } from "./useBackup";
 /// created a verified backup nor dismissed the notice. The receipt is read
 /// from the vault's encrypted local history; only dismissal remains in browser
 /// storage as a viewer preference.
-export function BackupNudge({ onOpenBackup }: { onOpenBackup: () => void }) {
+export function BackupNudge({ onOpenBackups }: { onOpenBackups: () => void }) {
   const { accounts } = useAccounts();
   const { vaults } = useVault();
   const { data: backupHistory, isPending: historyPending } = useBackupHistory();
@@ -51,8 +51,8 @@ export function BackupNudge({ onOpenBackup }: { onOpenBackup: () => void }) {
           the encrypted file through its own sync client.
         </p>
       </div>
-      <Button variant="outline" size="sm" onClick={onOpenBackup}>
-        Open Backup
+      <Button variant="outline" size="sm" onClick={onOpenBackups}>
+        Open Backups in Settings
       </Button>
       <Button
         variant="ghost"

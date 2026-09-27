@@ -1,75 +1,75 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Download, Loader2 } from "lucide-react";
 
 import { commands } from "@/bindings";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { describeIpcError } from "@/vault/useVault";
 import { queryKeys } from "@/lib/query";
 import { useQueryClient } from "@tanstack/react-query";
 
-/// Export an encrypted backup of the whole vault to a user-chosen file (ADR
-/// 0024-A). The unlocked kernel uses its in-memory DEK; a native Save dialog
-/// picks the destination, so plaintext never leaves the worker.
-export function BackupView() {
+/// The manual file export inside Settings → Backups. It retains the native Save
+/// dialog and typed export command; scheduled backups remain a separate action.
+export function ManualBackupExport({
+  disabled = false,
+  onBusyChange,
+}: {
+  disabled?: boolean;
+  onBusyChange?: (busy: boolean) => void;
+}) {
   const queryClient = useQueryClient();
+  const exporting = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedTo, setSavedTo] = useState<string | null>(null);
 
   async function onExport() {
+    if (disabled || exporting.current) return;
+    exporting.current = true;
+    setBusy(true);
+    onBusyChange?.(true);
     setError(null);
     setSavedTo(null);
-    const path = await save({
-      title: "Save encrypted backup",
-      defaultPath: "personal-cfo-backup.pcfobk",
-      filters: [{ name: "DohFlow backup", extensions: ["pcfobk"] }],
-    });
-    if (!path) return; // the user cancelled the dialog
-    setBusy(true);
-    const result = await commands.exportBackup(path);
-    setBusy(false);
-    if (result.status === "ok") {
-      setSavedTo(path);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.backupHistory });
-    } else {
-      setError(describeIpcError(result.error));
+    try {
+      const path = await save({
+        title: "Save encrypted backup",
+        defaultPath: "personal-cfo-backup.pcfobk",
+        filters: [{ name: "DohFlow backup", extensions: ["pcfobk"] }],
+      });
+      if (!path) return; // the user cancelled the dialog
+      const result = await commands.exportBackup(path);
+      if (result.status === "ok") {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.backupHistory });
+        setSavedTo(path);
+      } else {
+        setError(describeIpcError(result.error));
+      }
+    } catch {
+      setError("Could not export the backup. Please try again.");
+    } finally {
+      exporting.current = false;
+      setBusy(false);
+      onBusyChange?.(false);
     }
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
-      <h2 className="text-lg font-semibold tracking-tight">Backup</h2>
-      <Card>
-        <CardContent className="flex flex-col gap-4 pt-6">
-          <p className="text-sm text-muted-foreground">
-            Export an encrypted copy of your entire vault — accounts,
-            transactions, income, bills, and attachments — to a single file. Keep
-            it somewhere safe. Your backup opens with your vault password.
-          </p>
-          {error && (
-            <p role="alert" className="text-sm text-loss">
-              {error}
-            </p>
-          )}
-          {savedTo && (
-            <p className="text-sm text-gain">Backup saved to {savedTo}</p>
-          )}
-          <Button
-            className="self-start"
-            disabled={busy}
-            onClick={onExport}
-          >
-            {busy ? (
-              <Loader2 className="animate-spin" aria-hidden />
-            ) : (
-              <Download aria-hidden />
-            )}
-            {busy ? "Exporting…" : "Export backup…"}
-          </Button>
-        </CardContent>
-      </Card>
+    <div className="flex flex-col gap-3 border-t pt-5">
+      <p className="text-sm font-medium">Manual file export</p>
+      <p className="text-sm text-muted-foreground">
+        Save an encrypted copy of this vault to a file you choose. This is separate
+        from the scheduled destination above; your vault password opens the backup.
+      </p>
+      {error && <p role="alert" className="text-sm text-loss">{error}</p>}
+      {savedTo && <p role="status" className="break-all text-sm text-gain">Backup saved to {savedTo}</p>}
+      <Button
+        className="self-start"
+        disabled={busy || disabled}
+        onClick={() => void onExport()}
+      >
+        {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Download aria-hidden />}
+        {busy ? "Exporting…" : "Export backup…"}
+      </Button>
     </div>
   );
 }

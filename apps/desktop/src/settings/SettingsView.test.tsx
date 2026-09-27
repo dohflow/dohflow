@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   backupHistory: vi.fn(),
   configureBackup: vi.fn(),
   runBackupNow: vi.fn(),
+  exportBackup: vi.fn(),
+  save: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
@@ -34,6 +36,7 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn().mockResolvedValue(null),
+  save: mocks.save,
 }));
 
 // The About card's links leave the app through the opener plugin (n76x.18).
@@ -73,6 +76,7 @@ vi.mock("@/bindings", () => ({
     backupHistory: mocks.backupHistory,
     configureBackup: mocks.configureBackup,
     runBackupNow: mocks.runBackupNow,
+    exportBackup: mocks.exportBackup,
   },
 }));
 
@@ -165,6 +169,8 @@ beforeEach(() => {
   mocks.backupHistory.mockReset();
   mocks.configureBackup.mockReset();
   mocks.runBackupNow.mockReset();
+  mocks.exportBackup.mockReset();
+  mocks.save.mockReset();
   mocks.backupScheduleSettings.mockResolvedValue(
     ok({
       cadence: "weekly",
@@ -177,6 +183,8 @@ beforeEach(() => {
   mocks.backupHistory.mockResolvedValue(ok([]));
   mocks.configureBackup.mockResolvedValue(ok({ cadence: "weekly" }));
   mocks.runBackupNow.mockResolvedValue(ok({ destination: "/backup.pcfobk" }));
+  mocks.exportBackup.mockResolvedValue(ok(null));
+  mocks.save.mockResolvedValue(null);
 });
 
 describe("SettingsView", () => {
@@ -224,12 +232,42 @@ describe("SettingsView", () => {
 
   it("renders one Settings backup card with schedule and on-demand backup", async () => {
     renderWithClient(<SettingsView />);
-    expect(await screen.findByText("Backups")).toBeInTheDocument();
+    const card = await screen.findByRole("region", { name: "Backups" });
+    expect(card).toBeInTheDocument();
     expect(screen.getByLabelText("Schedule")).toHaveValue("weekly");
     expect(
       screen.getByRole("button", { name: /back up now/i }),
     ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /export backup/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /restore from backup/i })).not.toBeInTheDocument();
     expect(screen.getByText(/no verified backups yet/i)).toBeInTheDocument();
+  });
+
+  it("manually exports from Settings and refreshes the verified backup receipt", async () => {
+    const destination = "/Users/test/Manual/copy.pcfobk";
+    mocks.save.mockResolvedValue(destination);
+    mocks.backupHistory
+      .mockResolvedValueOnce(ok([]))
+      .mockResolvedValue(ok([{
+        backup_id: "manual-1",
+        created_at: "2026-09-27T12:00:00Z",
+        destination,
+        verified: true,
+      }]));
+    renderWithClient(<SettingsView />);
+
+    const card = await screen.findByRole("region", { name: "Backups" });
+    fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
+
+    await waitFor(() => expect(mocks.exportBackup).toHaveBeenCalledWith(destination));
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Save encrypted backup",
+      filters: [{ name: "DohFlow backup", extensions: ["pcfobk"] }],
+    }));
+    expect(await screen.findByText(/backup saved to/i)).toHaveAttribute("role", "status");
+    await waitFor(() => expect(mocks.backupHistory).toHaveBeenCalledTimes(2));
+    expect(card).toHaveTextContent(`to ${destination} (verified)`);
+    expect(screen.getByRole("button", { name: /back up now/i })).toBeDisabled();
   });
 
   it("renders the About card with the build identity and the Support row (n76x.18)", async () => {

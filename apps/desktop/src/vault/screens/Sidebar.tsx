@@ -3,7 +3,6 @@ import {
   ArrowLeftRight,
   Banknote,
   CreditCard,
-  Download,
   FlaskConical,
   Heart,
   Inbox,
@@ -43,7 +42,6 @@ export type Tab =
   | "income"
   | "money-inbox"
   | "categories"
-  | "backup"
   | "settings";
 
 /// The labelled nav groups, in render order (ADR 0049 §1). `utility` is pinned to the
@@ -79,7 +77,6 @@ const NAV: NavItem[] = [
   { tab: "income", label: "Income", icon: <Banknote aria-hidden />, group: "planning" },
   { tab: "money-inbox", label: "Money Inbox", icon: <Inbox aria-hidden />, group: "review" },
   { tab: "categories", label: "Categories", icon: <Tags aria-hidden />, group: "review" },
-  { tab: "backup", label: "Backup", icon: <Download aria-hidden />, group: "utility" },
   { tab: "settings", label: "Settings", icon: <Settings aria-hidden />, group: "utility" },
 ];
 

@@ -38,7 +38,7 @@ const CHECKS: {
     label: "Database integrity",
     meaning: "Your vault's database passed its built-in consistency check.",
     remedy:
-      "The database file may be damaged. Restore from your most recent backup (Backup tab) to recover your data.",
+      "The database file may be damaged. Lock the vault, then restore your most recent backup as a separate vault from the vault picker.",
   },
   {
     key: "writer_healthy",

@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
-import { BackupView } from "./BackupView";
+import { ManualBackupExport } from "./BackupView";
 
 const mocks = vi.hoisted(() => ({
   exportBackup: vi.fn(),
@@ -12,10 +12,7 @@ vi.mock("@/bindings", () => ({
   commands: { exportBackup: mocks.exportBackup },
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: mocks.save }));
-// The view reads the vault registry only to key the backup-exported marker
-// (personal-cfo-vdmb); single-vault mode (empty registry) is fine here.
 vi.mock("@/vault/useVault", () => ({
-  useVault: () => ({ vaults: [] }),
   describeIpcError: (e: unknown) =>
     typeof e === "string" ? e : "Something went wrong.",
 }));
@@ -28,11 +25,11 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe("BackupView", () => {
+describe("ManualBackupExport", () => {
   it("exports to the chosen path without asking for a password", async () => {
     mocks.save.mockResolvedValue("/home/me/personal-cfo-backup.pcfobk");
     mocks.exportBackup.mockResolvedValue(ok(null));
-    renderWithClient(<BackupView />);
+    renderWithClient(<ManualBackupExport />);
 
     expect(screen.queryByLabelText(/vault password/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
@@ -48,7 +45,7 @@ describe("BackupView", () => {
 
   it("does nothing when the save dialog is cancelled", async () => {
     mocks.save.mockResolvedValue(null);
-    renderWithClient(<BackupView />);
+    renderWithClient(<ManualBackupExport />);
 
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
 
@@ -59,10 +56,28 @@ describe("BackupView", () => {
   it("surfaces an export error", async () => {
     mocks.save.mockResolvedValue("/p.pcfobk");
     mocks.exportBackup.mockResolvedValue({ status: "error", error: "VaultLocked" });
-    renderWithClient(<BackupView />);
+    renderWithClient(<ManualBackupExport />);
 
     fireEvent.click(screen.getByRole("button", { name: /export backup/i }));
 
     expect(await screen.findByRole("alert")).toBeInTheDocument();
+  });
+
+  it("disables duplicate submissions while the native Save dialog is open", async () => {
+    let finishPick!: (path: string | null) => void;
+    mocks.save.mockReturnValue(new Promise((resolve) => { finishPick = resolve; }));
+    const onBusyChange = vi.fn();
+    renderWithClient(<ManualBackupExport onBusyChange={onBusyChange} />);
+
+    const exportButton = screen.getByRole("button", { name: /export backup/i });
+    fireEvent.click(exportButton);
+    expect(exportButton).toBeDisabled();
+    fireEvent.click(exportButton);
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+    expect(mocks.exportBackup).not.toHaveBeenCalled();
+    finishPick(null);
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    expect(onBusyChange).toHaveBeenNthCalledWith(1, true);
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
   });
 });

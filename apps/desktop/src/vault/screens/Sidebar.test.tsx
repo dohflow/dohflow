@@ -45,6 +45,7 @@ describe("Sidebar", () => {
       "aria-current",
       "page",
     );
+    expect(screen.queryByRole("button", { name: /^Backup$/ })).not.toBeInTheDocument();
   });
 
   it("selects a section on click", () => {

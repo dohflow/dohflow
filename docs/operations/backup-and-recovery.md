@@ -41,8 +41,8 @@ before the next password rewrap/rekey.
 Scheduled and one-off backups are kept until you remove them yourself. DohFlow
 does not automatically prune or delete older backup files. To free space, use
 Finder or your file manager to remove the copies you no longer need. You may also
-use the **Backup** tab's **Export backup…** for a one-off backup in a separately
-chosen file.
+use **Export backup…** in the same Settings card for a one-off backup in a
+separately chosen file.
 
 For an off-device copy, you can select a folder managed by iCloud Drive, Dropbox,
 or another sync client. If that folder is synced, the provider's own client sends

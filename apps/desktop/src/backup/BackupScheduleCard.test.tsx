@@ -8,7 +8,9 @@ const mocks = vi.hoisted(() => ({
   backupHistory: vi.fn(),
   configureBackup: vi.fn(),
   runBackupNow: vi.fn(),
+  exportBackup: vi.fn(),
   open: vi.fn(),
+  save: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -17,12 +19,13 @@ vi.mock("@/bindings", () => ({
     backupHistory: mocks.backupHistory,
     configureBackup: mocks.configureBackup,
     runBackupNow: mocks.runBackupNow,
+    exportBackup: mocks.exportBackup,
   },
 }));
 vi.mock("@tauri-apps/api/path", () => ({
   homeDir: vi.fn().mockResolvedValue("/Users/test"),
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open, save: mocks.save }));
 vi.mock("@/vault/useVault", () => ({
   describeIpcError: (error: unknown) => String(error),
 }));
@@ -41,7 +44,9 @@ beforeEach(() => {
   mocks.backupHistory.mockReset();
   mocks.configureBackup.mockReset();
   mocks.runBackupNow.mockReset();
+  mocks.exportBackup.mockReset();
   mocks.open.mockReset();
+  mocks.save.mockReset();
   mocks.backupScheduleSettings.mockResolvedValue(ok(initialSettings));
   mocks.backupHistory.mockResolvedValue(ok([]));
   mocks.configureBackup.mockResolvedValue(ok(initialSettings));
@@ -49,6 +54,8 @@ beforeEach(() => {
     ok({ destination: "/Users/test/Backups/new.pcfobk" }),
   );
   mocks.open.mockResolvedValue(null);
+  mocks.save.mockResolvedValue(null);
+  mocks.exportBackup.mockResolvedValue(ok(null));
 });
 
 describe("BackupScheduleCard", () => {
@@ -168,5 +175,26 @@ describe("BackupScheduleCard", () => {
       await screen.findByText(/last backup: .* to \/users\/test\/backups\/recent\.pcfobk \(verified\)/i),
     ).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(/scheduled backup failed/i);
+    expect(screen.getByRole("button", { name: /export backup/i })).toBeEnabled();
+  });
+
+  it("keeps manual export distinct and disables it during a scheduled run", async () => {
+    let finishRun!: (value: { status: "ok"; data: { destination: string } }) => void;
+    mocks.backupScheduleSettings.mockResolvedValue(ok({
+      ...initialSettings,
+      destination: "/Users/test/Backups",
+    }));
+    mocks.runBackupNow.mockReturnValue(new Promise((resolve) => { finishRun = resolve; }));
+    renderWithClient(<BackupScheduleCard />);
+
+    const runNow = await screen.findByRole("button", { name: "Back up now" });
+    const manual = screen.getByRole("button", { name: "Export backup…" });
+    expect(manual).toBeEnabled();
+    fireEvent.click(runNow);
+    await waitFor(() => expect(manual).toBeDisabled());
+    expect(mocks.save).not.toHaveBeenCalled();
+
+    finishRun(ok({ destination: "/Users/test/Backups/new.pcfobk" }));
+    await waitFor(() => expect(manual).toBeEnabled());
   });
 });

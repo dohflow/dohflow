@@ -44,13 +44,13 @@ beforeEach(() => {
 
 describe("BackupNudge", () => {
   it("shows for a vault with data until history proves a verified backup exists", async () => {
-    renderWithClient(<BackupNudge onOpenBackup={vi.fn()} />);
+    renderWithClient(<BackupNudge onOpenBackups={vi.fn()} />);
     expect(await screen.findByText(NUDGE_COPY)).toBeInTheDocument();
   });
 
   it("stays hidden on an empty vault", async () => {
     mocks.accountList.mockResolvedValue(ok([]));
-    renderWithClient(<BackupNudge onOpenBackup={vi.fn()} />);
+    renderWithClient(<BackupNudge onOpenBackups={vi.fn()} />);
     await waitFor(() => expect(mocks.accountList).toHaveBeenCalled());
     expect(screen.queryByText(NUDGE_COPY)).not.toBeInTheDocument();
   });
@@ -59,29 +59,29 @@ describe("BackupNudge", () => {
     mocks.backupHistory.mockResolvedValue(
       ok([{ verified: true, backup_id: "backup-1" }]),
     );
-    renderWithClient(<BackupNudge onOpenBackup={vi.fn()} />);
+    renderWithClient(<BackupNudge onOpenBackups={vi.fn()} />);
     await waitFor(() => expect(mocks.accountList).toHaveBeenCalled());
     expect(screen.queryByText(NUDGE_COPY)).not.toBeInTheDocument();
   });
 
   it("does not trust a legacy localStorage exported marker", async () => {
     localStorage.setItem("backup-exported:default", new Date().toISOString());
-    renderWithClient(<BackupNudge onOpenBackup={vi.fn()} />);
+    renderWithClient(<BackupNudge onOpenBackups={vi.fn()} />);
     expect(await screen.findByText(NUDGE_COPY)).toBeInTheDocument();
     expect(mocks.backupHistory).toHaveBeenCalledTimes(1);
   });
 
-  it("routes to the Backup tab", async () => {
-    const onOpenBackup = vi.fn();
-    renderWithClient(<BackupNudge onOpenBackup={onOpenBackup} />);
+  it("routes to the Settings Backups card", async () => {
+    const onOpenBackups = vi.fn();
+    renderWithClient(<BackupNudge onOpenBackups={onOpenBackups} />);
     fireEvent.click(
-      await screen.findByRole("button", { name: /open backup/i }),
+      await screen.findByRole("button", { name: /open backups in settings/i }),
     );
-    expect(onOpenBackup).toHaveBeenCalledTimes(1);
+    expect(onOpenBackups).toHaveBeenCalledTimes(1);
   });
 
   it("dismisses immediately and persists across a remount", async () => {
-    const first = renderWithClient(<BackupNudge onOpenBackup={vi.fn()} />);
+    const first = renderWithClient(<BackupNudge onOpenBackups={vi.fn()} />);
     fireEvent.click(
       await screen.findByRole("button", { name: /dismiss backup reminder/i }),
     );
@@ -89,7 +89,7 @@ describe("BackupNudge", () => {
     first.unmount();
 
     // A fresh mount (new session) reads the persisted dismissal.
-    renderWithClient(<BackupNudge onOpenBackup={vi.fn()} />);
+    renderWithClient(<BackupNudge onOpenBackups={vi.fn()} />);
     await waitFor(() => expect(mocks.accountList).toHaveBeenCalledTimes(2));
     expect(screen.queryByText(NUDGE_COPY)).not.toBeInTheDocument();
   });
