@@ -82,6 +82,7 @@ fn destructive_grants_stay_a_deliberate_short_list() {
         "configure_backup",
         "run_backup_now",
         "restore_backup",
+        "restore_backup_as_new_vault",
         "apply_update",
         "relaunch_app",
         "export_transactions_csv",

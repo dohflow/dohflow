@@ -275,6 +275,7 @@ export const commands = {
 	runBackupNow: () => typedError<BackupHistoryEntryDto, IpcError>(__TAURI_INVOKE("run_backup_now")),
 	exportTransactionsCsv: (outPath: string) => typedError<number, IpcError>(__TAURI_INVOKE("export_transactions_csv", { outPath })),
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
+	restoreBackupAsNewVault: (packagePath: string, password: string, name: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup_as_new_vault", { packagePath, password, name })),
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
 	connectorConnections: () => typedError<ConnectorConnectionDto[], IpcError>(__TAURI_INVOKE("connector_connections")),
 	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
@@ -1878,6 +1879,9 @@ export type RepaymentPhilosophyDto =
 /**  Not set — the forecast assumes the minimum. */
 "unknown";
 
+/**  Whether the app found a restore slot that was never committed to the registry. */
+export type RestoreRecoveryStatusDto = "clear" | "interrupted" | "unavailable";
+
 /**
  *  A stored scenario definition — a named overlay on the base forecast
  *  (ADR 0026 §5, personal-cfo-0mg/6zep).
@@ -2404,6 +2408,8 @@ export type VaultHealthDto = {
 /**  The known vaults (personal-cfo-j0cg.6, ADR 0042). */
 export type VaultListDto = {
 	vaults: VaultSummaryDto[],
+	/**  Startup-safe diagnosis for an unregistered vault slot left by an interrupted restore. */
+	restore_recovery_status: RestoreRecoveryStatusDto,
 };
 
 /**

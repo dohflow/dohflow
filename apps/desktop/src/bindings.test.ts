@@ -165,6 +165,7 @@ describe("generated IPC bindings", () => {
         "exportBackup",
         "exportTransactionsCsv",
         "restoreBackup",
+        "restoreBackupAsNewVault",
       ].sort(),
     );
   });

@@ -17,7 +17,7 @@ import { Screen } from "./Screen";
 /// repair in place, so we explain the state, offer a re-check, and offer restore
 /// from an encrypted backup.
 export function RecoveryScreen() {
-  const { refresh } = useVault();
+  const { refresh, restoreRecoveryStatus } = useVault();
   const [checking, setChecking] = useState(false);
 
   async function onRecheck() {
@@ -37,15 +37,29 @@ export function RecoveryScreen() {
             Vault needs attention
           </h1>
           <CardDescription>
-            Your vault files look incomplete — this can happen if setup was
-            interrupted. Your data has not been lost.
+            Your vault files look incomplete or damaged, so DohFlow cannot open
+            them safely. Keep the original files for diagnosis or recovery.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <Button variant="outline" onClick={onRecheck} disabled={checking}>
             {checking ? "Checking…" : "Re-check vault"}
           </Button>
-          <RestoreFromBackup caption="If your vault files are damaged, restore from an encrypted backup to recover your data." />
+          {restoreRecoveryStatus === "interrupted" && (
+            <p role="alert" className="text-sm text-warning">
+              An unregistered vault folder remains from an interrupted operation.
+              Keep it for diagnosis; DohFlow has not added it to the vault list.
+            </p>
+          )}
+          {restoreRecoveryStatus === "unavailable" && (
+            <p role="alert" className="text-sm text-warning">
+              DohFlow could not check for interrupted restores. Check file access before retrying.
+            </p>
+          )}
+          <RestoreFromBackup
+            mode="newNamed"
+            caption="Restore an encrypted backup as a new named vault to recover access."
+          />
         </CardContent>
       </Card>
     </Screen>

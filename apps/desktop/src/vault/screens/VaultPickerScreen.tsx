@@ -81,7 +81,7 @@ function createdLabel(createdAt: string): string {
 /// create a new vault, or restore a backup — all without unlocking anything first. The
 /// picked vault is remembered (the registry's active entry) for the next launch.
 export function VaultPickerScreen() {
-  const { vaults, switchVault } = useVault();
+  const { status, vaults, switchVault, restoreRecoveryStatus } = useVault();
   const [query, setQuery] = useState("");
   const [unlocking, setUnlocking] = useState<VaultSummaryDto | null>(null);
   const [creating, setCreating] = useState(false);
@@ -188,7 +188,23 @@ export function VaultPickerScreen() {
             New vault
           </Button>
         </div>
-        <RestoreFromBackup caption="Have an encrypted backup? Restore it as a vault instead." />
+        {restoreRecoveryStatus === "interrupted" && (
+          <p role="alert" className="mt-2 text-sm text-warning">
+            An unregistered vault folder remains from an interrupted operation. DohFlow has not
+            added it to the vault list; keep that folder for diagnosis.
+          </p>
+        )}
+        {restoreRecoveryStatus === "unavailable" && (
+          <p role="alert" className="mt-2 text-sm text-warning">
+            DohFlow could not check for interrupted restores. Check file access before retrying.
+          </p>
+        )}
+        {status?.state === "Locked" && (
+          <RestoreFromBackup
+            mode="newNamed"
+            caption="Have an encrypted backup? Restore it to a new named vault."
+          />
+        )}
       </div>
 
       {unlocking && (
