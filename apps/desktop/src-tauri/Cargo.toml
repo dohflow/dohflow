@@ -52,12 +52,12 @@ required-features = ["export-bindings"]
 export-bindings = []
 
 [build-dependencies]
-tauri-build = { version = "2.6.2", features = [] }
+tauri-build = { version = "~2.6.2", features = [] }
 
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tauri = { version = "2.11.2", features = [] }
+tauri = { version = "~2.11.2", features = [] }
 # Not used directly by this crate — declared only to force Cargo's resolver
 # to a newer version than tauri/tauri-utils's own (looser) constraint would
 # otherwise pick. RUSTSEC-2026-0195/-0194 (both 7.5/high): plist 1.9.0 (what
@@ -70,7 +70,7 @@ tauri = { version = "2.11.2", features = [] }
 plist = "1.10.1"
 # Native file dialogs for backup export (Save) / restore (Open) — personal-cfo-dvxm.
 # Scoped to open/save only in capabilities/default.json (ADR 0010).
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = "~2.7.1"
 # System-browser opener for the About card / Support row (personal-cfo-n76x.18).
 # The main window is granted ONLY `opener:allow-open-url` scoped to
 # `https://dohflow.app/*` in capabilities/default.json — never `opener:default`,
@@ -90,7 +90,7 @@ tauri-plugin-updater = "=2.11.0"
 # capabilities/destructive.json). No lockstep-pin need: this plugin has no signing
 # semantics to keep in sync with its JS half, so it follows the looser convention
 # `tauri-plugin-dialog` above already uses.
-tauri-plugin-process = "2"
+tauri-plugin-process = "~2.3.1"
 
 # personal-cfo-40t: typed IPC command pattern + serde→TS codegen.
 #
@@ -145,7 +145,7 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 [dev-dependencies]
 # Tauri's mock runtime (`tauri::test`, a feature with no extra dependencies) drives
 # the window-isolation test through the real resolved ACL (personal-cfo-2no).
-tauri = { version = "2.11.2", features = ["test"] }
+tauri = { version = "~2.11.2", features = ["test"] }
 # Parses permissions/*.toml, Cargo.toml and expected-capabilities.toml for the
 # capability drift audit (personal-cfo-cjd). Already in the lock via tauri-utils.
 toml = "1.1"

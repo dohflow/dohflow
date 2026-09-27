@@ -84,6 +84,7 @@ Non-negotiables:
 - Recommendation: use `pnpm` for the frontend/workspace unless there is a specific reason to use npm, Bun, or Yarn.
 - Once the package manager is chosen, commit exactly one frontend lockfile and never introduce competing lockfiles.
 - Rust uses Cargo and the repository should use a Rust workspace for shared crates.
+- **Tauri is pinned (ADR 0001, `personal-cfo-io42`).** The whole Tauri family (Rust `tauri*`/`wry`/`tao`, npm `@tauri-apps/*`) is recorded exactly in `apps/desktop/src-tauri/tauri-pins.toml`, and `tests/tauri_pins.rs` fails CI on any drift. Never bump a Tauri package as a side effect of other work; an upgrade is its own PR, following `docs/agent/TAURI_UPGRADES.md`.
 - Agents must detect the package manager from the committed lockfile or this profile before running install/build/test commands.
 
 ## Architecture boundaries

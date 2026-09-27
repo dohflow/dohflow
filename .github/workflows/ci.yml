@@ -460,6 +460,11 @@ jobs:
               - 'apps/desktop/src-tauri/**'
               - 'apps/desktop/src/bindings.ts'
               - 'apps/desktop/public/isolated-shell.html'
+              # The npm half of the Tauri family (personal-cfo-io42): an npm-only
+              # Tauri bump must still run tests/tauri_pins.rs, the capability suite
+              # and the runtime probe.
+              - 'apps/desktop/package.json'
+              - 'pnpm-lock.yaml'
               - 'crates/**'
               - '.github/workflows/ci.yml'
 

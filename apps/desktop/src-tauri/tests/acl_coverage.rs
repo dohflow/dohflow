@@ -1076,7 +1076,7 @@ fn audit_fails_on_the_devtools_feature_in_any_form() {
     let table_form = audit_with(|i| {
         replace_once(
             &mut i.cargo_toml,
-            "tauri = { version = \"2.11.2\", features = [] }\n",
+            "tauri = { version = \"~2.11.2\", features = [] }\n",
             "",
         );
         i.cargo_toml
