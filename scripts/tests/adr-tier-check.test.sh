@@ -22,6 +22,14 @@
 #         is scoped to specific files, not the whole tree)
 #     (f) the same phrase in a file OUTSIDE docs/adr/ and docs/research/
 #         entirely → exit 0 (the check's scope is those two directories only)
+#     (g) ADR 0076's exact FTC disclosure line (a line-level exception)
+#         → exit 0
+#     (h) the same ADR 0076 file with any OTHER line containing the phrase
+#         → exit 1 (the line exception does not excuse the file)
+#     (i) the exact FTC line in a DIFFERENT file → exit 1 (the exception is
+#         bound to its file)
+#     (j) a one-character edit to the FTC line in ADR 0076 → exit 1 (exact
+#         match, not a prefix)
 #
 # HOW IT IS TESTED
 #   A real throwaway git repo built fresh per case, with the actual
@@ -160,6 +168,44 @@ echo '// Stripe-shaped test fixture, commission rate, $9/month' \
 run_script
 assert_eq "exit 0" "$RC" "0"
 assert_contains "reports clean" "$STDOUT" "adr-tier-check: clean"
+
+# ---------------------------------------------------------------------------
+FTC_LINE='> DohFlow may earn a commission if you sign up for LunchFlow through the link above — this does not affect what LunchFlow charges you, and DohFlow works the same whether or not you use it.'
+ADR_0076="docs/adr/0076-multi-provider-connector-strategy.md"
+
+case_start "ADR 0076's exact FTC disclosure line passes (line-level exception)"
+new_case_repo
+printf '# ADR 0076\n\n%s\n' "$FTC_LINE" > "$REPO/$ADR_0076"
+run_script
+assert_eq "exit 0" "$RC" "0"
+assert_contains "reports clean" "$STDOUT" "adr-tier-check: clean"
+
+# ---------------------------------------------------------------------------
+case_start "any OTHER commission line in ADR 0076 still fails"
+new_case_repo
+printf '# ADR 0076\n\n%s\nThe commission is paid monthly.\n' "$FTC_LINE" > "$REPO/$ADR_0076"
+run_script
+assert_eq "exit 1" "$RC" "1"
+assert_contains "shows the other line" "$STDOUT" "The commission is paid monthly."
+case "$STDOUT" in
+  *"may earn a commission"*) fail "the excepted FTC line was reported" ;;
+  *) pass "the excepted FTC line itself is not reported" ;;
+esac
+
+# ---------------------------------------------------------------------------
+case_start "the exact FTC line in a DIFFERENT file fails"
+new_case_repo
+printf '%s\n' "$FTC_LINE" > "$REPO/docs/adr/0092-other.md"
+run_script
+assert_eq "exit 1" "$RC" "1"
+assert_contains "shows the other file" "$STDOUT" "0092-other.md"
+
+# ---------------------------------------------------------------------------
+case_start "a one-character edit to the FTC line in ADR 0076 fails"
+new_case_repo
+printf '%s!\n' "$FTC_LINE" > "$REPO/$ADR_0076"
+run_script
+assert_eq "exit 1" "$RC" "1"
 
 # ---------------------------------------------------------------------------
 echo
