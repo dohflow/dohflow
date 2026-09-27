@@ -7,12 +7,12 @@
 use std::collections::BTreeMap;
 
 use app_lib::ipc::commands::{
-    account_count_impl, account_list_impl, connector_auto_sync_impl, connector_connections_impl,
-    connector_forget_impl, connector_link_impl, connector_set_account_link_impl,
-    connector_sync_impl, create_account_impl, create_category_impl,
-    create_manual_future_entry_impl, import_batch_impl, manual_future_entry_list_impl,
-    money_inbox_list_impl, recategorize_transaction_impl, record_transaction_impl,
-    set_auto_categorize_on_import_impl, transaction_page_impl,
+    account_count_impl, account_list_impl, connector_adapters_impl, connector_auto_sync_impl,
+    connector_connections_impl, connector_forget_impl, connector_link_impl,
+    connector_link_registered_impl, connector_set_account_link_impl, connector_sync_impl,
+    create_account_impl, create_category_impl, create_manual_future_entry_impl, import_batch_impl,
+    manual_future_entry_list_impl, money_inbox_list_impl, recategorize_transaction_impl,
+    record_transaction_impl, set_auto_categorize_on_import_impl, transaction_page_impl,
 };
 use app_lib::ipc::dto::{
     AccountFlagsDto, CashflowRoleDto, ConnectorForgetInput, ConnectorLinkInput,
@@ -20,8 +20,8 @@ use app_lib::ipc::dto::{
     ImportBatchInput, MoneyDto, RecordTransactionInput, TransactionPageInput,
 };
 use app_lib::AppState;
-use connector_core::mock::MockConnector;
-use connector_core::ConnectorAdapter;
+use connector_core::mock::{mock_registration, MockConnector};
+use connector_core::{ConnectorAdapter, ConnectorRegistration};
 use finance_kernel::VaultController;
 use tempfile::TempDir;
 
@@ -848,4 +848,118 @@ fn synced_transaction_matches_a_manual_future_entry() {
         entry.matched_transaction_id.is_some(),
         "the synced -12.50 on 2026-07-15 realizes the entry: {entry:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Provider registry (personal-cfo-5jjz, ADR 0015 §6)
+// ---------------------------------------------------------------------------
+
+fn disabled_registration(_: &str) -> Option<&'static ConnectorRegistration> {
+    static REGISTRATION: std::sync::OnceLock<&'static ConnectorRegistration> =
+        std::sync::OnceLock::new();
+    Some(*REGISTRATION.get_or_init(|| mock_registration(mock(), false)))
+}
+
+fn enabled_registration(_: &str) -> Option<&'static ConnectorRegistration> {
+    static REGISTRATION: std::sync::OnceLock<&'static ConnectorRegistration> =
+        std::sync::OnceLock::new();
+    Some(*REGISTRATION.get_or_init(|| mock_registration(mock(), true)))
+}
+
+fn link_input() -> ConnectorLinkInput {
+    ConnectorLinkInput {
+        adapter_id: "other".to_owned(),
+        setup_token: "mock-setup-token".to_owned(),
+    }
+}
+
+#[test]
+fn a_disabled_provider_is_refused_before_link_and_stores_nothing() {
+    let (_dir, state) = open_state();
+    // The mock would accept this token — only the registry's enabled flag
+    // stands between it and a stored connection.
+    let err =
+        connector_link_registered_impl(&state, disabled_registration, link_input()).unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(msg) if msg.contains("not available")),
+        "got {err:?}"
+    );
+    assert!(connector_connections_impl(&state).unwrap().is_empty());
+}
+
+#[test]
+fn an_enabled_provider_links_through_the_registry_path() {
+    let (_dir, state) = open_state();
+    let result =
+        connector_link_registered_impl(&state, enabled_registration, link_input()).unwrap();
+    assert_eq!(result.accounts.len(), 2);
+    assert_eq!(connector_connections_impl(&state).unwrap().len(), 1);
+}
+
+#[test]
+fn an_unknown_adapter_id_is_a_validation_error() {
+    let (_dir, state) = open_state();
+    let err = connector_link_registered_impl(&state, |_| None, link_input()).unwrap_err();
+    assert!(matches!(err, app_lib::ipc::IpcError::Validation(_)));
+}
+
+#[test]
+fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
+    let listing = connector_adapters_impl(connector_core::all_registrations());
+    let ids: Vec<&str> = listing.iter().map(|a| a.adapter_id.as_str()).collect();
+    assert_eq!(ids, ["simplefin"]);
+
+    let simplefin = &listing[0];
+    assert!(simplefin.enabled);
+    assert_eq!(simplefin.display_name, "SimpleFIN");
+    assert!(simplefin.capabilities.transactions && !simplefin.capabilities.holdings);
+    assert_eq!(simplefin.regions, ["US"]);
+    assert_eq!(simplefin.economics.currency.as_deref(), Some("USD"));
+    assert!(simplefin.economics.terms_url.is_some());
+
+    // Walk every key the DTO serializes: nothing secret-shaped may exist.
+    fn keys(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    out.push(k.clone());
+                    keys(v, out);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| keys(v, out)),
+            _ => {}
+        }
+    }
+    let mut all_keys = Vec::new();
+    keys(&serde_json::to_value(&listing).unwrap(), &mut all_keys);
+    // `handles_credentials` is disclosure prose ABOUT credentials — the one
+    // key the substring scan must let through.
+    for key in all_keys.iter().filter(|k| *k != "handles_credentials") {
+        for forbidden in [
+            "token",
+            "secret",
+            "credential",
+            "password",
+            "access_url",
+            "key",
+        ] {
+            assert!(
+                !key.contains(forbidden),
+                "registry DTO key {key:?} looks secret-shaped"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_adapters_listing_includes_disabled_providers_flagged() {
+    let listing = connector_adapters_impl([
+        mock_registration(mock(), true),
+        mock_registration(MockConnector::with_fixture().with_id("mock-off"), false),
+    ]);
+    let flags: Vec<(&str, bool)> = listing
+        .iter()
+        .map(|a| (a.adapter_id.as_str(), a.enabled))
+        .collect();
+    assert_eq!(flags, [("mock-off", false), ("other", true)]);
 }

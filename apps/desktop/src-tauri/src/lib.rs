@@ -186,6 +186,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::restore_backup_as_new_vault,
         // Connectors (personal-cfo-gglk, ADR 0060).
         ipc::commands::connector_link,
+        ipc::commands::connector_adapters,
         ipc::commands::connector_connections,
         ipc::commands::connector_set_account_link,
         ipc::commands::connector_sync,

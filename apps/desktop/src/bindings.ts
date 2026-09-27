@@ -277,6 +277,7 @@ export const commands = {
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
 	restoreBackupAsNewVault: (packagePath: string, password: string, name: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup_as_new_vault", { packagePath, password, name })),
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
+	connectorAdapters: () => __TAURI_INVOKE<ConnectorAdapterDto[]>("connector_adapters"),
 	connectorConnections: () => typedError<ConnectorConnectionDto[], IpcError>(__TAURI_INVOKE("connector_connections")),
 	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
 	connectorSync: (input: ConnectorSyncInput) => typedError<ConnectorSyncResultDto, IpcError>(__TAURI_INVOKE("connector_sync", { input })),
@@ -908,6 +909,40 @@ export type ConnectorAccountLinkDto = {
 	last_synced_on: string | null,
 };
 
+/**  A class of account the provider reaches. */
+export type ConnectorAccountTypeDto = "Depository" | "Credit" | "Loan" | "Investment";
+
+/**
+ *  One provider in the connector registry (ADR 0015) — the picker's input.
+ *  Static, compiled-in configuration: there is no secret on this type, and
+ *  none may be added (the registry holds no credentials).
+ */
+export type ConnectorAdapterDto = {
+	/**  The stable adapter id `connector_link` takes. */
+	adapter_id: string,
+	display_name: string,
+	capabilities: ConnectorCapabilitiesDto,
+	tier: ConnectorCredentialTierDto,
+	account_types: ConnectorAccountTypeDto[],
+	/**  ISO 3166-1 alpha-2 codes. */
+	regions: string[],
+	economics: ConnectorEconomicsDto,
+	disclosure: ConnectorDisclosureDto,
+	/**  `false` = implemented but not released; `connector_link` refuses it. */
+	enabled: boolean,
+};
+
+export type ConnectorBillingPeriodDto = "Monthly" | "Annual";
+
+/**  What the adapter's code can fetch (`connector_core::CapabilitySet`). */
+export type ConnectorCapabilitiesDto = {
+	accounts: boolean,
+	transactions: boolean,
+	balances: boolean,
+	holdings: boolean,
+	liabilities: boolean,
+};
+
 /**  A stored connection for listing — the credential never crosses the wire. */
 export type ConnectorConnectionDto = {
 	id: string,
@@ -916,6 +951,41 @@ export type ConnectorConnectionDto = {
 	last_synced_at: string | null,
 	last_error: string | null,
 	links: ConnectorAccountLinkDto[],
+};
+
+/**  ADR 0004's credential tiers: what "connect" means for this provider. */
+export type ConnectorCredentialTierDto = "UserToken" | "ByoCredential" | "Relay";
+
+/**
+ *  The four points shown before any credential is entered (ADR 0060), in
+ *  this provider's own words.
+ */
+export type ConnectorDisclosureDto = {
+	independent_party: string,
+	handles_credentials: string,
+	cost_summary: string,
+	optional: string,
+};
+
+/**
+ *  Cost and terms facts, with the dates they were last checked. Money is
+ *  integer minor units in `currency`.
+ */
+export type ConnectorEconomicsDto = {
+	payer: ConnectorPayerDto,
+	base_cost_minor_units: number | null,
+	/**  ISO 4217. */
+	currency: string | null,
+	billing_period: ConnectorBillingPeriodDto | null,
+	included_connections: number | null,
+	extra_connection_cost_minor_units: number | null,
+	extra_connection_period: ConnectorBillingPeriodDto | null,
+	/**  `YYYY-MM-DD`. */
+	cost_reviewed_at: string,
+	terms_url: string | null,
+	/**  `YYYY-MM-DD`. */
+	terms_reviewed_at: string,
+	history_depth_expectation: string,
 };
 
 /**  An external account the provider exposes on a connection. */
@@ -954,6 +1024,9 @@ export type ConnectorLinkResultDto = {
 	accounts: ConnectorExternalAccountDto[],
 	fetch_error: string | null,
 };
+
+/**  Who pays the provider. */
+export type ConnectorPayerDto = "UserDirect" | "DohflowBrokered" | "None";
 
 /**  Map (or unmap, with `None`) an external account onto a real account. */
 export type ConnectorSetAccountLinkInput = {

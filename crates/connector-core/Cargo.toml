@@ -38,6 +38,12 @@ mock = ["dep:core-money"]
 # Self-reference enabling `mock` for this crate's own integration tests only —
 # the standard cargo pattern for test-only modules that tests/*.rs must see.
 connector-core = { path = ".", features = ["mock"] }
+# Every shipped adapter crate, so tests/registry.rs sees the real roster
+# through all_connectors() (personal-cfo-5jjz, ADR 0015). A dev-dependency
+# cycle is fine for cargo, and the compile barrier checks normal deps only.
+# Adding an adapter crate to the workspace means adding it here too — the
+# roster test names the expected ids, so a forgotten entry fails loudly.
+simplefin-adapter = { path = "../connectors/simplefin-adapter" }
 semver = { workspace = true }
 serde_json = { workspace = true }
 # Compile-time pins that Credential never gains Serialize/Display (§6.6).

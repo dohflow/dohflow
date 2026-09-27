@@ -4538,15 +4538,19 @@ pub fn unconfirmed_past_due(
 // moment it leaves the DB and never appears in logs, errors, or DTOs.
 
 use connector_core::{
-    Connection as ProviderConnection, ConnectorAdapter, ConnectorError,
-    Credential as ProviderCredential, LinkInput as ProviderLinkInput, LinkSession,
+    AccountType as ProviderAccountType, BillingPeriod as ProviderBillingPeriod,
+    Connection as ProviderConnection, ConnectorAdapter, ConnectorError, ConnectorRegistration,
+    Credential as ProviderCredential, CredentialTier as ProviderCredentialTier,
+    LinkInput as ProviderLinkInput, LinkSession, Payer as ProviderPayer,
 };
 use tauri::Manager as _;
 
 use crate::ipc::dto::{
-    ConnectorAccountLinkDto, ConnectorConnectionDto, ConnectorExternalAccountDto,
-    ConnectorForgetInput, ConnectorLinkInput, ConnectorLinkResultDto, ConnectorSetAccountLinkInput,
-    ConnectorSyncInput, ConnectorSyncResultDto,
+    ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto,
+    ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
+    ConnectorCredentialTierDto, ConnectorDisclosureDto, ConnectorEconomicsDto,
+    ConnectorExternalAccountDto, ConnectorForgetInput, ConnectorLinkInput, ConnectorLinkResultDto,
+    ConnectorPayerDto, ConnectorSetAccountLinkInput, ConnectorSyncInput, ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -4598,6 +4602,9 @@ fn connector_link_error(err: &ConnectorError) -> IpcError {
     }
 }
 
+/// Link through an already-resolved adapter. Skips the registry's enabled
+/// check — production goes through [`connector_link_registered_impl`]; this
+/// entry point exists for tests that drive an unregistered mock adapter.
 pub fn connector_link_impl(
     state: &AppState,
     adapter: &dyn ConnectorAdapter,
@@ -4682,13 +4689,126 @@ pub async fn connector_link(
     // Network in spawn_blocking: a stalled provider must not freeze the UI.
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let adapter = connector_core::connector_by_id(&input.adapter_id).ok_or_else(|| {
-            IpcError::Validation(format!("no connector adapter {:?}", input.adapter_id))
-        })?;
-        connector_link_impl(&state, adapter, input)
+        connector_link_registered_impl(&state, connector_core::registration_by_id, input)
     })
     .await
     .map_err(|_| IpcError::Unavailable("connector task failed".to_owned()))?
+}
+
+/// Registration lookup shape for linking, injected so tests drive a mock
+/// registration (enabled or not) through the same refusal path.
+pub type ConnectorRegistrationResolver = fn(&str) -> Option<&'static ConnectorRegistration>;
+
+/// Resolve `input.adapter_id` through the registry and link — refusing a
+/// disabled provider (ADR 0015 §6) with a typed `Validation` error BEFORE the
+/// adapter's `link` runs, so a not-yet-released provider never receives a
+/// token. This is the path the `connector_link` command takes.
+///
+/// # Errors
+/// `Validation` for an unknown or disabled adapter id; otherwise whatever
+/// [`connector_link_impl`] returns.
+pub fn connector_link_registered_impl(
+    state: &AppState,
+    resolve: ConnectorRegistrationResolver,
+    input: ConnectorLinkInput,
+) -> Result<ConnectorLinkResultDto, IpcError> {
+    let registration = resolve(&input.adapter_id).ok_or_else(|| {
+        IpcError::Validation(format!("no connector adapter {:?}", input.adapter_id))
+    })?;
+    if !registration.metadata.enabled {
+        tracing::warn!(adapter = %input.adapter_id, "connector link refused: provider not enabled");
+        return Err(IpcError::Validation(format!(
+            "connector {:?} is not available yet",
+            input.adapter_id
+        )));
+    }
+    connector_link_impl(state, registration.adapter, input)
+}
+
+/// The connector registry as the picker reads it (ADR 0015): every
+/// registered provider — disabled ones included, flagged — with its
+/// capabilities, tier, coverage, cost, terms and disclosure. Static,
+/// compiled-in configuration: no vault access, and no secret field exists on
+/// the DTO to leak.
+#[must_use]
+pub fn connector_adapters_impl<'a>(
+    registrations: impl IntoIterator<Item = &'a ConnectorRegistration>,
+) -> Vec<ConnectorAdapterDto> {
+    let mut out: Vec<ConnectorAdapterDto> = registrations
+        .into_iter()
+        .map(connector_adapter_dto)
+        .collect();
+    // inventory's collection order is unspecified — keep the wire stable.
+    out.sort_by(|a, b| a.adapter_id.cmp(&b.adapter_id));
+    out
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn connector_adapters() -> Vec<ConnectorAdapterDto> {
+    connector_adapters_impl(connector_core::all_registrations())
+}
+
+fn connector_adapter_dto(registration: &ConnectorRegistration) -> ConnectorAdapterDto {
+    let adapter = registration.adapter;
+    let metadata = &registration.metadata;
+    let economics = &metadata.economics;
+    let capabilities = adapter.capabilities();
+    let billing = |period: ProviderBillingPeriod| match period {
+        ProviderBillingPeriod::Monthly => ConnectorBillingPeriodDto::Monthly,
+        ProviderBillingPeriod::Annual => ConnectorBillingPeriodDto::Annual,
+    };
+    ConnectorAdapterDto {
+        adapter_id: adapter.id().to_owned(),
+        display_name: adapter.display_name().to_owned(),
+        capabilities: ConnectorCapabilitiesDto {
+            accounts: capabilities.accounts,
+            transactions: capabilities.transactions,
+            balances: capabilities.balances,
+            holdings: capabilities.holdings,
+            liabilities: capabilities.liabilities,
+        },
+        tier: match metadata.tier {
+            ProviderCredentialTier::UserToken => ConnectorCredentialTierDto::UserToken,
+            ProviderCredentialTier::ByoCredential => ConnectorCredentialTierDto::ByoCredential,
+            ProviderCredentialTier::Relay => ConnectorCredentialTierDto::Relay,
+        },
+        account_types: metadata
+            .account_types
+            .iter()
+            .map(|t| match t {
+                ProviderAccountType::Depository => ConnectorAccountTypeDto::Depository,
+                ProviderAccountType::Credit => ConnectorAccountTypeDto::Credit,
+                ProviderAccountType::Loan => ConnectorAccountTypeDto::Loan,
+                ProviderAccountType::Investment => ConnectorAccountTypeDto::Investment,
+            })
+            .collect(),
+        regions: metadata.regions.iter().map(|r| (*r).to_owned()).collect(),
+        economics: ConnectorEconomicsDto {
+            payer: match economics.payer {
+                ProviderPayer::UserDirect => ConnectorPayerDto::UserDirect,
+                ProviderPayer::DohflowBrokered => ConnectorPayerDto::DohflowBrokered,
+                ProviderPayer::None => ConnectorPayerDto::None,
+            },
+            base_cost_minor_units: economics.base_cost_minor_units,
+            currency: economics.currency.map(str::to_owned),
+            billing_period: economics.billing_period.map(billing),
+            included_connections: economics.included_connections,
+            extra_connection_cost_minor_units: economics.extra_connection_cost_minor_units,
+            extra_connection_period: economics.extra_connection_period.map(billing),
+            cost_reviewed_at: economics.cost_reviewed_at.to_string(),
+            terms_url: economics.terms_url.map(str::to_owned),
+            terms_reviewed_at: economics.terms_reviewed_at.to_string(),
+            history_depth_expectation: economics.history_depth_expectation.to_owned(),
+        },
+        disclosure: ConnectorDisclosureDto {
+            independent_party: metadata.disclosure.independent_party.to_owned(),
+            handles_credentials: metadata.disclosure.handles_credentials.to_owned(),
+            cost_summary: metadata.disclosure.cost_summary.to_owned(),
+            optional: metadata.disclosure.optional.to_owned(),
+        },
+        enabled: metadata.enabled,
+    }
 }
 
 pub fn connector_connections_impl(

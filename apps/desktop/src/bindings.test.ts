@@ -79,6 +79,7 @@ describe("generated IPC bindings", () => {
         "updateAccount",
         "vaultStatus",
     "connectorLink",
+    "connectorAdapters",
     "connectorConnections",
     "connectorSetAccountLink",
     "connectorSync",

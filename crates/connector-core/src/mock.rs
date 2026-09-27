@@ -17,9 +17,53 @@ use importer_core::{ParsedAccount, ParsedBalance, ParsedRecord, ParsedTransactio
 use semver::Version;
 
 use crate::{
-    Capability, CapabilitySet, Connection, ConnectorAdapter, ConnectorError, Credential,
-    HealthStatus, LinkInput, LinkSession,
+    review_date, AccountType, Capability, CapabilitySet, Connection, ConnectorAdapter,
+    ConnectorEconomics, ConnectorError, ConnectorMetadata, ConnectorRegistration, Credential,
+    CredentialTier, DisclosureText, HealthStatus, LinkInput, LinkSession, Payer,
 };
+
+/// Registry metadata for the mock provider — free, US-only, with obviously
+/// fake disclosure wording so no test can mistake it for real provider copy.
+/// Tests flip `enabled` to exercise the disabled-provider refusal.
+#[must_use]
+pub const fn mock_metadata(enabled: bool) -> ConnectorMetadata {
+    ConnectorMetadata {
+        tier: CredentialTier::UserToken,
+        account_types: &[AccountType::Depository],
+        regions: &["US"],
+        economics: ConnectorEconomics {
+            payer: Payer::None,
+            base_cost_minor_units: None,
+            currency: None,
+            billing_period: None,
+            included_connections: None,
+            extra_connection_cost_minor_units: None,
+            extra_connection_period: None,
+            cost_reviewed_at: review_date(2026, 1, 1),
+            terms_url: Some("https://mock.invalid/terms"),
+            terms_reviewed_at: review_date(2026, 1, 1),
+            history_depth_expectation: "mock: fixture history only",
+        },
+        disclosure: DisclosureText {
+            independent_party: "mock: independent-party point",
+            handles_credentials: "mock: credential-handling point",
+            cost_summary: "mock: cost point",
+            optional: "mock: optional point",
+        },
+        enabled,
+    }
+}
+
+/// A leaked, `'static` registration of `adapter` with [`mock_metadata`] —
+/// for tests that resolve adapters through a registry lookup. Never submitted
+/// to `inventory`, so it can never join the production roster.
+#[must_use]
+pub fn mock_registration(adapter: MockConnector, enabled: bool) -> &'static ConnectorRegistration {
+    Box::leak(Box::new(ConnectorRegistration {
+        adapter: Box::leak(Box::new(adapter)),
+        metadata: mock_metadata(enabled),
+    }))
+}
 
 /// Error injection for exercising the ADR 0060 §5 taxonomy end to end
 /// (connection health `ul5d`, connector-error inbox items `zfyo`).
