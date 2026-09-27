@@ -274,3 +274,35 @@ added by the first bead that registers a provider with a referral
 (`personal-cfo-r2pow`), not ahead of need. The picker (`personal-cfo-dto2j`)
 renders the sentence only when the field is present, and the field never
 affects picker order (ADR 0076 §4). Everything else in this ADR is unchanged.
+
+## Addendum (2026-09-27, `personal-cfo-dto2j`): a per-provider link guide
+
+The provider picker (ADR 0076 §4) renders every provider from this registry,
+so everything it says about *how to connect* one provider has to live here
+too. That covers the panel title, how often the provider refreshes, the
+setup steps, the provider's URL, and what the credential is called and how
+to paste it. Kept in the frontend, that copy would need a map keyed by
+adapter id, which puts provider facts in two places and leaves the picker
+hardcoded to whichever providers the map knows (owner decision, 2026-09-27,
+on `personal-cfo-dto2j`).
+
+`ConnectorMetadata` (§2) therefore gains a required **`link_guide`**:
+
+- `title` — the disclosure panel's heading.
+- `refresh_note` — how often the provider pulls from the user's banks, and
+  when the app refreshes.
+- `setup_steps` — what the user does at the provider to get a credential, in
+  order.
+- `provider_url` — the provider's own site. Wherever it appears in a step,
+  the app renders it as **selectable text, never a link**, because ADR 0010's
+  opener grant is scoped to `https://dohflow.app/*` only.
+- `credential_label`, `credential_noun`, `credential_placeholder`,
+  `paste_instructions` — what the credential is called (a SimpleFIN "setup
+  token", a LunchFlow "API key") and how to paste it.
+
+Like `DisclosureText` (§5), every field is written per provider, never shared
+boilerplate. The picker renders the guide after the four disclosure points and
+before any credential field exists. SimpleFIN's guide is the shipped
+onboarding copy (`personal-cfo-kdw6`), unchanged; a test pins it to the
+rendered text of the panel it replaces. Everything else in this ADR is
+unchanged.
