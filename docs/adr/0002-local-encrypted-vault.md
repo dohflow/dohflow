@@ -50,6 +50,9 @@ Concretely:
    ADR 0024 Addendum A (`personal-cfo-lhouc`) carries these serialized envelope
    bytes in a format-version-2 backup header so an unattended backup remains
    recoverable with the vault password and introduces no new secret.
+   Sync's separate, per-device-sealed epoch root is governed by
+   [ADR 0074 Decision 8](0074-dohflow-sync-architecture.md), not by this
+   local envelope or a backup-restored device key.
 
 The vault state machine (`personal-cfo-tg5`, §6.2.1) governs transitions: NoVault → CreatingVault → Locked → Unlocking → Unlocked → Locking → Rekeying → Migrating → RestoringBackup → CorruptNeedsRecovery.
 
