@@ -673,11 +673,109 @@ fn app_code_sends_nothing_through_an_ipc_channel() {
     // ADR 0010 addendum 2026-09-27 rule 7: Tauri's channel-fetch command skips the
     // ACL and parks large Channel payloads in an app-wide queue under sequential
     // ids, so an untrusted window could take one. Keep vault data off that path.
+    //
+    // A whole-word scan for the type name, not for the `ipc::Channel` path: an
+    // alias (`use tauri::ipc::Channel as C`), a grouped import
+    // (`use tauri::ipc::{Channel, …}`) or a glob plus a bare `Channel<…>` all still
+    // name `Channel` (0hp6, hardening the 2no review's advisory). No app source
+    // uses the word for anything else.
+    for (path, source) in rust_sources() {
+        let named = source
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|word| word == "Channel");
+        assert!(
+            !named,
+            "{path} names `Channel` — tauri::ipc::Channel is off-limits (ADR 0010 addendum \
+             2026-09-27 rule 7); rename an unrelated type rather than weaken this scan"
+        );
+    }
+}
+
+#[test]
+fn app_code_never_grants_capabilities_at_runtime() {
+    // Tauri's default `dynamic-acl` feature enables `Manager::add_capability`, which
+    // would grant permissions outside the reviewed capability files and the drift
+    // audit (8ea audit §7.3, 0hp6). Every grant is static and reviewed.
     for (path, source) in rust_sources() {
         assert!(
-            !source.contains("ipc::Channel"),
-            "{path} uses tauri::ipc::Channel — see ADR 0010 addendum 2026-09-27 rule 7"
+            !source.contains("add_capability"),
+            "{path} calls add_capability — grants live in capabilities/*.json, reviewed \
+             against expected-capabilities.toml, never at run time"
         );
+    }
+}
+
+#[test]
+fn the_isolation_probe_is_compiled_out_of_release_builds() {
+    // The runtime probe (src/isolation_probe.rs) evaluates script in every window;
+    // it must not exist in a release binary. Both the module and its one call site
+    // sit behind `#[cfg(debug_assertions)]`.
+    assert!(
+        LIB_RS.contains("#[cfg(debug_assertions)]\nmod isolation_probe;"),
+        "the isolation probe module must be declared under #[cfg(debug_assertions)]"
+    );
+    assert!(
+        LIB_RS.contains(
+            "#[cfg(debug_assertions)]\n            isolation_probe::start_if_requested(app.handle())?;"
+        ),
+        "the isolation probe must be started under #[cfg(debug_assertions)]"
+    );
+    assert_eq!(
+        LIB_RS.matches("isolation_probe::").count(),
+        1,
+        "exactly one call site"
+    );
+}
+
+#[test]
+fn ci_runs_the_runtime_probe_and_the_built_html_check_on_pull_requests() {
+    // The static suite cannot prove runtime isolation; these two CI steps do
+    // (0hp6). Pin that they exist, in the PR-time jobs, with the switches that make
+    // them meaningful.
+    let ci = std::fs::read_to_string(manifest_dir().join("../../../.github/workflows/ci.yml"))
+        .expect("ci.yml is readable");
+    // The lines of one top-level job: from `  <name>:` up to the next line that
+    // starts another job (two-space indent, then a key — not a comment).
+    let job = |name: &str| -> String {
+        let header = format!("  {name}:");
+        let mut lines = ci.lines().skip_while(|line| *line != header);
+        let first = lines
+            .next()
+            .unwrap_or_else(|| panic!("ci.yml has no job `{name}`"));
+        let body = lines.take_while(|line| {
+            let starts_next_job = line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#')
+                && line.trim_end().ends_with(':');
+            !starts_next_job
+        });
+        std::iter::once(first)
+            .chain(body)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let codegen = job("ipc-codegen");
+    for needle in [
+        "- 'apps/desktop/src-tauri/**'",
+        "- 'apps/desktop/public/isolated-shell.html'",
+        "- name: Runtime isolation probe (real WebView, ADR 0010)",
+        "cargo build --features tauri/custom-protocol",
+        "PCFO_ISOLATION_PROBE=",
+        "PCFO_DATA_DIR=\"$(mktemp -d)\"",
+        "xvfb-run",
+    ] {
+        assert!(codegen.contains(needle), "ipc-codegen job lost `{needle}`");
+    }
+    let frontend = job("frontend");
+    // The slicer stops at the job boundary: the codegen job's probe is not "found"
+    // in the frontend job, and vice versa.
+    assert!(!frontend.contains("Runtime isolation probe") && !codegen.contains("check-dist-csp"));
+    for needle in [
+        "- 'scripts/check-dist-csp.mjs'",
+        "run: pnpm -r build",
+        "run: node scripts/check-dist-csp.mjs apps/desktop/dist",
+    ] {
+        assert!(frontend.contains(needle), "frontend job lost `{needle}`");
     }
 }
 

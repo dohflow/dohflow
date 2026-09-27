@@ -8,6 +8,9 @@
 mod backup_job;
 pub mod data_dir;
 pub mod ipc;
+// Runtime isolation probe (personal-cfo-0hp6) — debug builds only.
+#[cfg(debug_assertions)]
+mod isolation_probe;
 pub mod navigation_guard;
 pub mod state;
 pub mod update;
@@ -311,6 +314,10 @@ pub fn run() {
             // a hands-on isolation check. Not compiled into release builds.
             #[cfg(debug_assertions)]
             windows::open_smoke_shells_if_requested(app)?;
+            // Debug builds only: PCFO_ISOLATION_PROBE=<report> probes every window's real
+            // WebView (IPC rejection, effective CSP, navigation, window.open) and exits.
+            #[cfg(debug_assertions)]
+            isolation_probe::start_if_requested(app.handle())?;
 
             // CI launch smoke (personal-cfo-rr0lm, DIST-5): a headless proof that
             // the binary starts and setup() completes without a display or a
