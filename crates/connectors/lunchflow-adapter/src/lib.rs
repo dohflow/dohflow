@@ -43,9 +43,13 @@ use wire::{
     AccountList, BalanceEnvelope, ErrorBody, TransactionList, WireAccount, WireTransaction,
 };
 
-/// The pinned Personal API base (lunchflow.app/docs/api/personal-api-overview).
-/// The threat model's TB3 egress row names this host.
-pub const BASE_URL: &str = "https://lunchflow.app/api/v1";
+/// The pinned Personal API base. LunchFlow's docs show `https://lunchflow.app`,
+/// but that host answers every API path with a permanent 308 redirect to
+/// `www.lunchflow.app` (seen by the owner's live drill, 2026-09-27). The
+/// adapter follows no redirects, so the key header is never replayed to
+/// another host, which means it must name the canonical host directly. The
+/// threat model's TB3 egress row names this host.
+pub const BASE_URL: &str = "https://www.lunchflow.app/api/v1";
 
 /// First-refresh lookback when the caller passes `since: None`. Open-banking
 /// providers generally cap history at 24 months; asking for that much lets
@@ -114,7 +118,7 @@ pub const LUNCHFLOW_METADATA: ConnectorMetadata = ConnectorMetadata {
         extra_connection_cost_minor_units: Some(1000),
         extra_connection_period: Some(BillingPeriod::Annual),
         cost_reviewed_at: review_date(2026, 9, 27),
-        terms_url: Some("https://lunchflow.app/terms"),
+        terms_url: Some("https://www.lunchflow.app/terms"),
         terms_reviewed_at: review_date(2026, 9, 18),
         history_depth_expectation: "Varies by bank and by LunchFlow's own data provider.",
     },
@@ -439,10 +443,10 @@ fn map_transaction(
 }
 
 /// LunchFlow's amount sign → the ledger's (inflow +, outflow −). The API docs
-/// do not state LunchFlow's convention; this assumes money leaving the account
-/// is negative (the ledger's own convention, so the identity) PENDING the
-/// owner's live-account check recorded on personal-cfo-r2pow. Kept as one
-/// named function so the convention is stated, tested, and changeable in
+/// do not state LunchFlow's convention; the owner confirmed on a live account
+/// (2026-09-27, recorded on personal-cfo-r2pow) that purchases come back
+/// negative, the ledger's own convention, so this is the identity. Kept as
+/// one named function so the convention is stated, tested, and changeable in
 /// exactly one place.
 const fn to_ledger_sign(provider_minor: i64) -> i64 {
     provider_minor
@@ -792,6 +796,13 @@ mod tests {
             account_path("../x?y", "transactions"),
             "/accounts/..%2Fx%3Fy/transactions"
         );
+    }
+
+    #[test]
+    fn the_pinned_base_is_the_canonical_https_host() {
+        // The bare `lunchflow.app` host 308-redirects every API path to
+        // `www`; with redirects off, pinning the bare host breaks every call.
+        assert_eq!(BASE_URL, "https://www.lunchflow.app/api/v1");
     }
 
     #[test]
