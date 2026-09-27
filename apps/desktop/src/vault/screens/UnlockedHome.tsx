@@ -16,7 +16,6 @@ import { useTransactionSelection } from "@/transactions/useTransactionSelection"
 import { TransactionBulkBar } from "@/transactions/TransactionBulkBar";
 import { IncomeView } from "@/income/IncomeView";
 import { CategoriesView } from "@/categories/CategoriesView";
-import { BackupView } from "@/backup/BackupView";
 import { BackupNudge } from "@/backup/BackupNudge";
 import { SettingsView } from "@/settings/SettingsView";
 import { UpdateAvailableNotice } from "@/settings/UpdateAvailableNotice";
@@ -36,6 +35,7 @@ export function UnlockedHome() {
   const { accounts } = useAccounts();
   const [locking, setLocking] = useState(false);
   const [tab, setTab] = useState<Tab>("dashboard");
+  const [focusBackups, setFocusBackups] = useState(false);
   // The scenario the Cash Flow screen should open with, set when the user opens one
   // from the Scenarios tab (ADR 0051 §5).
   const [cashFlowScenario, setCashFlowScenario] = useState<string | null>(null);
@@ -56,6 +56,11 @@ export function UnlockedHome() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+  useEffect(() => {
+    if (tab !== "settings" || !focusBackups) return;
+    document.getElementById("settings-backups")?.focus();
+    setFocusBackups(false);
+  }, [tab, focusBackups]);
   // First-run: show the First Forecast Wizard (personal-cfo-uipt) when the vault
   // has no accounts yet. The decision is *latched* on the first load that finds an
   // empty vault, so adding the first account inside the wizard doesn't immediately
@@ -117,7 +122,10 @@ export function UnlockedHome() {
         {tab === "dashboard" ? (
           <>
             {/* Backup nudge is hidden by a verified vault-local history receipt. */}
-            <BackupNudge onOpenBackup={() => setTab("backup")} />
+            <BackupNudge onOpenBackups={() => {
+              setFocusBackups(true);
+              setTab("settings");
+            }} />
             <DashboardView onOpenCashFlow={() => setTab("cash-flow")} />
           </>
         ) : tab === "cash-flow" ? (
@@ -157,8 +165,6 @@ export function UnlockedHome() {
           <IncomeView onOpenScenario={() => setTab("scenarios")} />
         ) : tab === "categories" ? (
           <CategoriesView />
-        ) : tab === "backup" ? (
-          <BackupView />
         ) : (
           <SettingsView onRerunSetup={() => setWizard(true)} />
         )}

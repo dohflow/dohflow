@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { backupFolderHint } from "./backupFolderHint";
+import { ManualBackupExport } from "./BackupView";
 import {
   useBackupHistory,
   useBackupScheduleSettings,
@@ -45,6 +46,7 @@ export function BackupScheduleCard() {
   const [homeDirectory, setHomeDirectory] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [manualBusy, setManualBusy] = useState(false);
 
   useEffect(() => {
     void homeDir()
@@ -125,12 +127,13 @@ export function BackupScheduleCard() {
   }
 
   const loading = settingsQuery.isPending || historyQuery.isPending;
-  const busy = configureBackup.isPending || runBackupNow.isPending;
+  const scheduleBusy = configureBackup.isPending || runBackupNow.isPending;
+  const busy = scheduleBusy || manualBusy;
 
   return (
-    <Card>
+    <Card id="settings-backups" tabIndex={-1} role="region" aria-labelledby="settings-backups-heading">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Backups</CardTitle>
+        <CardTitle id="settings-backups-heading" className="text-base">Backups</CardTitle>
         <CardDescription>
           Scheduled backups use the unlocked vault key without asking for your password. If a
           backup comes due while DohFlow is closed or locked, it runs the next time you unlock.
@@ -259,6 +262,7 @@ export function BackupScheduleCard() {
             {notice}
           </p>
         )}
+        <ManualBackupExport disabled={scheduleBusy} onBusyChange={setManualBusy} />
       </CardContent>
     </Card>
   );

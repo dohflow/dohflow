@@ -43,7 +43,7 @@ vault. While your vault is unlocked, DohFlow uses its in-memory encryption key
 to seal the backup; it does not ask you to type your password again. Your vault
 password is still required to restore it.
 
-1. Unlock your vault and open the **Backup** tab in the sidebar.
+1. Unlock your vault and open **Settings → Backups**.
 2. Click **Export backup…** and choose where to save the file.
 
 That's it — one file. Where to keep it:
@@ -113,4 +113,4 @@ The main file is `vault.db` (additional vaults, if you've created them, sit
 under a `vaults` folder next to it). The files are encrypted — copying them
 somewhere is *not* a substitute for an exported backup, because a stray copy
 misses the integrity checks and versioning a `.pcfobk` file carries. Use the
-Backup tab; treat the data folder as the app's own business.
+**Settings → Backups**; treat the data folder as the app's own business.
