@@ -290,25 +290,17 @@ fn provider_detail(body: &str) -> String {
 }
 
 /// Map one exchange onto the ADR 0060 §5 taxonomy. A 429 is `RateLimited`,
-/// a **healthy** state; a 401 means the key no longer works (re-link); a 403
-/// means LunchFlow refused an otherwise valid key (plan or destination), which
-/// the user fixes at LunchFlow.
+/// a **healthy** state. A 401 (no key) or a 403 (a key LunchFlow refuses —
+/// observed live for a wrong key, 2026-09-27; also a deleted API destination
+/// or a lapsed plan) both mean this key no longer works: re-link.
 fn triage(response: &HttpResponse) -> Result<String, ConnectorError> {
     match response.status {
         200..=299 => Ok(response.body.clone()),
-        401 => Err(ConnectorError::Expired(format!(
-            "LunchFlow no longer accepts this API key — paste a new one{}",
+        401 | 403 => Err(ConnectorError::Expired(format!(
+            "LunchFlow refused this API key — it may have been deleted, or your LunchFlow \
+             plan may have lapsed; paste a new key or check your plan{}",
             provider_detail(&response.body)
         ))),
-        403 => Err(ConnectorError::NeedsUserAction {
-            code: "lunchflow.forbidden".to_owned(),
-            message: format!(
-                "LunchFlow refused access — check that your LunchFlow plan is active and the \
-                 API destination still exists{}",
-                provider_detail(&response.body)
-            ),
-            help_url: None,
-        }),
         429 => Err(ConnectorError::RateLimited(
             "LunchFlow asked the app to slow down".to_owned(),
         )),
@@ -481,6 +473,13 @@ fn map_balance(
     })
 }
 
+/// The ISO currency code a balance response states, if any.
+fn balance_currency(body: &str) -> Option<String> {
+    serde_json::from_str::<BalanceEnvelope>(body)
+        .ok()
+        .and_then(|e| e.balance.currency.as_deref().and_then(wire::iso_code))
+}
+
 fn needs_attention(account: &WireAccount) -> String {
     format!(
         "LunchFlow reports account {} as {} — reconnect it in your LunchFlow dashboard",
@@ -558,7 +557,8 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                 return Err(ConnectorError::NeedsUserAction {
                     code: "key.invalid".to_owned(),
                     message: "LunchFlow did not accept that API key — copy it again from the \
-                              API destination in your LunchFlow dashboard, or create a new one"
+                              API destination in your LunchFlow dashboard (or create a new \
+                              one), and check that your LunchFlow plan is active"
                         .to_owned(),
                     help_url: None,
                 })
@@ -575,8 +575,21 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
         })
     }
 
+    /// Discovery. LunchFlow's live account objects carry no `currency`
+    /// (documented, but absent — observed 2026-09-27), so an account without
+    /// one takes its balance's currency: one extra request per such account,
+    /// because the mapping surface needs the currency to refuse one the app
+    /// cannot hold (ADR 0076 decision 7). A failed lookup leaves it `None`.
     fn fetch_accounts(&self, conn: &Connection) -> Result<Vec<ParsedAccount>, ConnectorError> {
-        Ok(self.accounts(conn)?.iter().map(map_account).collect())
+        let mut accounts = self.accounts(conn)?;
+        for account in accounts.iter_mut().filter(|a| a.currency.is_none()) {
+            match self.get(conn, &account_path(&account.id, "balance"), &[]) {
+                Ok(body) => account.currency = balance_currency(&body),
+                Err(err) if is_connection_level(&err) => return Err(err),
+                Err(_) => {}
+            }
+        }
+        Ok(accounts.iter().map(map_account).collect())
     }
 
     fn fetch_transactions(
@@ -673,10 +686,45 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
             warnings.push(ParseWarning { row: None, message });
         };
 
-        for account in &wire_accounts {
-            accounts.push(map_account(account));
+        for listed in &wire_accounts {
+            // The balance first: it is also where an account without a
+            // stated currency learns one (see fetch_accounts).
+            let mut account = listed.clone();
+            let balance = match self.get(conn, &account_path(&account.id, "balance"), &[]) {
+                Ok(body) => match serde_json::from_str::<BalanceEnvelope>(&body) {
+                    Ok(envelope) => Some(envelope),
+                    Err(_) => {
+                        warn(
+                            &mut warnings,
+                            format!(
+                                "LunchFlow returned an unreadable balance for account {}",
+                                sanitize(&account.id)
+                            ),
+                        );
+                        None
+                    }
+                },
+                Err(err) if is_connection_level(&err) => return Err(err),
+                Err(err) => {
+                    warn(
+                        &mut warnings,
+                        format!(
+                            "the balance for account {} was not refreshed: {err}",
+                            sanitize(&account.id)
+                        ),
+                    );
+                    None
+                }
+            };
+            if account.currency.is_none() {
+                account.currency = balance
+                    .as_ref()
+                    .and_then(|e| e.balance.currency.as_deref().and_then(wire::iso_code));
+            }
+            let account = account;
+            accounts.push(map_account(&account));
             if !account.is_active() {
-                warn(&mut warnings, needs_attention(account));
+                warn(&mut warnings, needs_attention(&account));
                 held_account_ids.push(account.id.clone());
             }
 
@@ -698,7 +746,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                         if !seen.insert(&txn.id) {
                             continue;
                         }
-                        match map_transaction(account, txn, txn_index) {
+                        match map_transaction(&account, txn, txn_index) {
                             Ok(record) => {
                                 records.push(record);
                                 txn_index += 1;
@@ -720,31 +768,14 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                 }
             }
 
-            match self.get(conn, &account_path(&account.id, "balance"), &[]) {
-                Ok(body) => match serde_json::from_str::<BalanceEnvelope>(&body) {
-                    Ok(envelope) => match map_balance(&account.id, &envelope, today) {
-                        Ok(balance) => {
-                            records.push(balance_record(balance_index, balance));
-                            balance_index += 1;
-                        }
-                        Err(reason) => warn(&mut warnings, reason),
-                    },
-                    Err(_) => warn(
-                        &mut warnings,
-                        format!(
-                            "LunchFlow returned an unreadable balance for account {}",
-                            sanitize(&account.id)
-                        ),
-                    ),
-                },
-                Err(err) if is_connection_level(&err) => return Err(err),
-                Err(err) => warn(
-                    &mut warnings,
-                    format!(
-                        "the balance for account {} was not refreshed: {err}",
-                        sanitize(&account.id)
-                    ),
-                ),
+            if let Some(envelope) = balance {
+                match map_balance(&account.id, &envelope, today) {
+                    Ok(balance) => {
+                        records.push(balance_record(balance_index, balance));
+                        balance_index += 1;
+                    }
+                    Err(reason) => warn(&mut warnings, reason),
+                }
             }
         }
 
@@ -822,8 +853,8 @@ mod tests {
             Err(ConnectorError::Expired(_))
         ));
         assert!(matches!(
-            triage(&r(403, "{}")),
-            Err(ConnectorError::NeedsUserAction { .. })
+            triage(&r(403, r#"{"error":"Forbidden","message":"invalid key"}"#)),
+            Err(ConnectorError::Expired(_))
         ));
         assert!(matches!(
             triage(&r(429, "")),

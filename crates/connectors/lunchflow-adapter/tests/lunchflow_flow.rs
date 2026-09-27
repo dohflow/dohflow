@@ -166,7 +166,8 @@ fn a_whitespace_padded_paste_is_accepted() {
 
 #[test]
 fn a_bad_or_revoked_key_is_a_user_action_at_link_time() {
-    for (status, code) in [(401, "key.invalid"), (403, "lunchflow.forbidden")] {
+    // A wrong key answers 403 live (2026-09-27); a missing one 401.
+    for (status, code) in [(401, "key.invalid"), (403, "key.invalid")] {
         let transport = FixtureTransport::with(&[(
             "/accounts",
             status,
@@ -209,7 +210,11 @@ fn accounts_carry_stable_ids_names_and_their_native_currency() {
         accounts[0].external_name.as_deref(),
         Some("Fixture Bank Everyday Checking")
     );
+    // Account 101 states no currency (as live accounts don't): it takes its
+    // balance's, at the cost of one request.
     assert_eq!(accounts[0].currency.as_deref(), Some("USD"));
+    let paths: Vec<String> = transport.recorded().into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, ["/accounts", "/accounts/101/balance"]);
     // A currency the app cannot hold yet is still reported, raw, so the
     // mapping surface can refuse it (ADR 0076 decision 7).
     assert_eq!(accounts[1].currency.as_deref(), Some("GBP"));
@@ -573,10 +578,7 @@ fn health_maps_the_taxonomy_and_a_throttle_is_healthy_not_broken() {
         health(401, include_str!("fixtures/unauthorized.json")),
         HealthStatus::Expired
     );
-    assert!(matches!(
-        health(403, "{}"),
-        HealthStatus::NeedsUserAction { .. }
-    ));
+    assert_eq!(health(403, "{}"), HealthStatus::Expired);
     assert!(matches!(
         health(503, "{}"),
         HealthStatus::Unreachable { .. }

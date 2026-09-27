@@ -22,7 +22,7 @@ pub struct AccountList {
     pub accounts: Vec<WireAccount>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct WireAccount {
     #[serde(deserialize_with = "id_string")]
     pub id: String,
@@ -30,7 +30,8 @@ pub struct WireAccount {
     pub name: Option<String>,
     #[serde(default)]
     pub institution_name: Option<String>,
-    /// ISO 4217, as LunchFlow reports it.
+    /// ISO 4217, as LunchFlow reports it. Documented, but absent from live
+    /// account objects (2026-09-27) — the adapter falls back to the balance's.
     #[serde(default)]
     pub currency: Option<String>,
     /// `"ACTIVE"` when the bank connection is healthy.
