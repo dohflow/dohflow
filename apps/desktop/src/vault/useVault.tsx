@@ -11,6 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   commands,
   type IpcError,
+  type RestoreRecoveryStatusDto,
   type VaultStatusDto,
   type VaultSummaryDto,
 } from "@/bindings";
@@ -39,10 +40,17 @@ type VaultContextValue = {
   /// Restore an encrypted backup into a fresh vault (au3); on success the status
   /// flips to Unlocked.
   restoreVault: (packagePath: string, password: string) => Promise<IpcError | null>;
+  /// Restore a backup as a new named app-managed vault from locked/recovery state.
+  restoreAsNewVault: (
+    packagePath: string,
+    password: string,
+    name: string,
+  ) => Promise<IpcError | null>;
   /// Re-read the on-disk status (used by the recovery screen).
   refresh: () => Promise<void>;
   /// The known vaults + which is active (multi-vault, j0cg.6). Empty in single-vault mode.
   vaults: VaultSummaryDto[];
+  restoreRecoveryStatus: RestoreRecoveryStatusDto;
   /// Create a new named vault and switch to it, unlocked; the status flips to Unlocked.
   createNamedVault: (name: string, password: string) => Promise<IpcError | null>;
   /// Switch to another vault; it comes up locked, so the status flips to Locked.
@@ -59,6 +67,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<VaultStatusDto | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [vaults, setVaults] = useState<VaultSummaryDto[]>([]);
+  const [restoreRecoveryStatus, setRestoreRecoveryStatus] =
+    useState<RestoreRecoveryStatusDto>("clear");
   const queryClient = useQueryClient();
 
   const refresh = useCallback(async () => {
@@ -77,7 +87,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
   const refreshVaults = useCallback(async () => {
     const result = await commands.listVaults();
-    if (result.status === "ok") setVaults(result.data.vaults);
+    if (result.status === "ok") {
+      setVaults(result.data.vaults);
+      setRestoreRecoveryStatus(result.data.restore_recovery_status);
+    }
   }, []);
 
   useEffect(() => {
@@ -156,6 +169,18 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       run(commands.restoreBackup(packagePath, password)),
     [run],
   );
+  const restoreAsNewVault = useCallback(
+    async (packagePath: string, password: string, name: string) => {
+      queryClient.clear();
+      const error = await run(
+        commands.restoreBackupAsNewVault(packagePath, password, name),
+      );
+      await refreshVaults();
+      if (error) await refresh();
+      return error;
+    },
+    [run, queryClient, refreshVaults, refresh],
+  );
   const createNamedVault = useCallback(
     async (name: string, password: string) => {
       // Switching to a fresh vault means none of the previous vault's cache applies.
@@ -198,8 +223,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         lockVault,
         deleteVault,
         restoreVault,
+        restoreAsNewVault,
         refresh,
         vaults,
+        restoreRecoveryStatus,
         createNamedVault,
         switchVault,
         renameVault,

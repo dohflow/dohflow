@@ -1801,6 +1801,17 @@ pub struct VaultSummaryDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct VaultListDto {
     pub vaults: Vec<VaultSummaryDto>,
+    /// Startup-safe diagnosis for an unregistered vault slot left by an interrupted restore.
+    pub restore_recovery_status: RestoreRecoveryStatusDto,
+}
+
+/// Whether the app found a restore slot that was never committed to the registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreRecoveryStatusDto {
+    Clear,
+    Interrupted,
+    Unavailable,
 }
 
 /// The vault health-check result on the wire (personal-cfo-n9w): one boolean per

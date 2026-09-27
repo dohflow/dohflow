@@ -63,6 +63,23 @@ writing anything**, restores the vault into a fresh location, and opens it. A
 wrong password is rejected before any file is written, and an existing vault is
 never overwritten.
 
+## Restore while a vault is already on this device
+
+When the launch picker shows a locked vault, choose **Restore as a new vault…**.
+If the selected vault's database or envelope is incomplete, the recovery screen
+offers the same action. Select the `.pcfobk` file, give the restored copy a
+nonblank name, and enter the password that protected that backup. DohFlow creates
+a separate app-managed vault, verifies and opens it, then makes it the active
+vault. Any existing registry entry for the original vault remains, and its
+database, envelope, and attachments are retained unchanged. A failed restore
+leaves the original selection in place. You do not need to delete the old vault
+to recover access.
+
+If a restore is interrupted, the launch or recovery screen may report an
+unregistered vault folder. DohFlow does not open or silently remove that folder
+on restart; keep it for diagnosis. The original vault and backup file remain
+available. A successful new restore can be attempted separately.
+
 ## Guarantees
 
 - **Byte-identical restore.** The restored vault reproduces the original's
@@ -70,7 +87,9 @@ never overwritten.
   bills, read-model checksums, and decrypted attachment bytes. This is what the
   restore drill asserts.
 - **Verify-then-install.** Restore decrypts and checks all content hashes in
-  memory first; any mismatch or wrong password aborts with nothing written.
+  memory before writing vault data. Restoring alongside an existing vault first
+  reserves a fresh empty slot and marks the attempt so an interruption can be
+  diagnosed. A mismatch or wrong password never replaces the original vault.
 - **No silent downgrade.** A backup from a newer app version is refused rather
   than corrupted; an older-schema backup is migrated forward on open.
 

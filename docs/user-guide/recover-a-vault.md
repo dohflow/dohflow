@@ -72,6 +72,19 @@ untouched — it will never overwrite an existing vault. If everything checks
 out, your vault is restored exactly as it was: every account, transaction, and
 attachment, to the byte.
 
+## Restore when a vault is already on this device
+
+On the locked vault picker, choose **Restore as a new vault…**. If DohFlow shows
+**Vault needs attention** because the selected vault's files are incomplete,
+use the same action there. Pick the backup, enter a name for the restored copy,
+and enter the backup's password. DohFlow opens the restored copy as a separate
+vault. The original vault and its files stay in place; you do not need to delete
+them. If the restore fails, the previous vault remains selected.
+
+An interruption may leave an unregistered vault folder. DohFlow reports it on
+the next launch and keeps it for diagnosis. Keep your backup file and the
+original vault files safe while you investigate or retry.
+
 ## If you lost the password — or never made a backup
 
 Honesty over comfort:

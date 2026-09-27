@@ -24,7 +24,7 @@ use finance_kernel::{
     SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged,
     SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock, TagId,
     TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
-    UpdateIncomeSource, UpdateRecurringBill, VaultController, VoidTransaction,
+    UpdateIncomeSource, UpdateRecurringBill, VaultController, VaultState, VoidTransaction,
     COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
@@ -51,18 +51,18 @@ use crate::ipc::dto::{
     LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
     MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
     RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
-    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind, ScenarioDto,
-    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
-    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
-    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
-    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
-    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
-    UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto,
-    VaultStatusDto, VaultSummaryDto,
+    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind,
+    RestoreRecoveryStatusDto, ScenarioDto, SetBillAutopayInput, SetCardStatementBalanceInput,
+    SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto, SpendBreakdownDto,
+    SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto, TransactionPageDto,
+    TransactionPageInput, TransactionRowDto, UnconfirmObligationInput, UnconfirmedOccurrenceDto,
+    UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput, UpdateIncomeSourceInput,
+    UpdateManualFutureEntryInput, UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto,
+    VaultHealthDto, VaultListDto, VaultStatusDto, VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
-use crate::vault_registry::VaultEntry;
+use crate::vault_registry::{VaultEntry, VaultRegistry};
 
 /// Resolve the effective idempotency key: a blank one becomes a fresh UUIDv7 (so
 /// keyless calls are still safe and never collide), a supplied one is used verbatim.
@@ -448,6 +448,23 @@ pub fn delete_vault(state: tauri::State<'_, AppState>) -> Result<VaultStatusDto,
 
 /// The known vaults + which one is active (personal-cfo-j0cg.6, ADR 0042). Reads only the plaintext
 /// registry — no vault need be unlocked.
+fn restore_recovery_status(state: &AppState, registry: &VaultRegistry) -> RestoreRecoveryStatusDto {
+    let Some(root) = state.vaults_root() else {
+        return RestoreRecoveryStatusDto::Clear;
+    };
+    match registry.has_unregistered_restore_attempt(root) {
+        Ok(false) => RestoreRecoveryStatusDto::Clear,
+        Ok(true) => RestoreRecoveryStatusDto::Interrupted,
+        Err(_) => {
+            tracing::warn!(
+                outcome = "unavailable",
+                "could not inspect unregistered restore locations"
+            );
+            RestoreRecoveryStatusDto::Unavailable
+        }
+    }
+}
+
 pub fn list_vaults_impl(state: &AppState) -> Result<VaultListDto, IpcError> {
     let registry = state.lock_registry()?;
     let vaults = registry
@@ -460,7 +477,10 @@ pub fn list_vaults_impl(state: &AppState) -> Result<VaultListDto, IpcError> {
             created_at: v.created_at.clone(),
         })
         .collect();
-    Ok(VaultListDto { vaults })
+    Ok(VaultListDto {
+        vaults,
+        restore_recovery_status: restore_recovery_status(state, &registry),
+    })
 }
 
 #[tauri::command]
@@ -611,7 +631,10 @@ pub fn rename_vault_impl(
             created_at: v.created_at.clone(),
         })
         .collect();
-    Ok(VaultListDto { vaults })
+    Ok(VaultListDto {
+        vaults,
+        restore_recovery_status: restore_recovery_status(state, &registry),
+    })
 }
 
 #[tauri::command]
@@ -898,6 +921,193 @@ pub fn restore_backup(
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
     restore_backup_impl(state.inner(), package_path, password)
+}
+
+/// Return to the previously selected vault before removing a failed attempt's files. A failed
+/// return or cleanup is surfaced: the attempt remains unregistered and diagnosable, never
+/// mistaken for a completed restore.
+fn rollback_new_vault_restore(
+    controller: &mut VaultController,
+    previous_path: std::path::PathBuf,
+    slot: &std::path::Path,
+    id: Uuid,
+) -> Result<(), IpcError> {
+    controller.switch_to(previous_path).map_err(|error| {
+        IpcError::Persistence(format!(
+            "returning to the previous vault after restore: {error}"
+        ))
+    })?;
+    VaultRegistry::cleanup_restore_attempt(slot, id).map_err(|error| {
+        tracing::warn!(error = %error, "failed restore left an unregistered slot");
+        IpcError::Persistence(
+            "restore failed and its temporary vault could not be removed; the original vault is unchanged"
+                .to_owned(),
+        )
+    })
+}
+
+/// Restore into a fresh app-managed vault from a locked registered vault or a recovery screen
+/// (personal-cfo-g3m.3, ADR 0024/0042). The original files and any registry entry are never used
+/// as the restore destination. The controller and registry locks serialize the full operation with
+/// switch/create/delete commands; the registry commit is the success boundary.
+pub fn restore_backup_as_new_vault_impl(
+    state: &AppState,
+    package_path: String,
+    password: String,
+    name: String,
+) -> Result<VaultStatusDto, IpcError> {
+    restore_backup_as_new_vault_with_id(state, package_path, password, name, Uuid::now_v7())
+}
+
+fn restore_backup_as_new_vault_with_id(
+    state: &AppState,
+    package_path: String,
+    password: String,
+    name: String,
+    id: Uuid,
+) -> Result<VaultStatusDto, IpcError> {
+    let name = name.trim().to_owned();
+    if name.is_empty() {
+        return Err(IpcError::Validation("a vault needs a name".to_owned()));
+    }
+    let password = Zeroizing::new(password);
+    let root = state
+        .vaults_root()
+        .ok_or_else(|| IpcError::Persistence("multi-vault is not configured".to_owned()))?
+        .to_path_buf();
+    let mut controller = state.lock_controller()?;
+    let mut registry = state.lock_registry()?;
+    let previous_path = controller.path().to_path_buf();
+    let registered_path = registry.active_path(&root);
+    let allowed = match controller.state() {
+        VaultState::Locked => registered_path.as_deref() == Some(previous_path.as_path()),
+        // A legacy envelope-only vault can be corrupt before it was ever registered. The
+        // recovery screen still offers restore; keep those original bytes untouched and add
+        // only the verified restored vault to the registry on success.
+        VaultState::CorruptNeedsRecovery => registered_path
+            .as_deref()
+            .is_none_or(|path| path == previous_path.as_path()),
+        _ => false,
+    };
+    if !allowed {
+        return Err(IpcError::Validation(
+            "restore as a new vault is available from a locked vault or recovery screen".to_owned(),
+        ));
+    }
+    if registry.vaults.iter().any(|vault| vault.id == id) {
+        return Err(IpcError::Validation(
+            "a vault already uses the proposed local slot id".to_owned(),
+        ));
+    }
+
+    let slot = VaultRegistry::reserve_restore_slot(&root, id)
+        .map_err(|error| IpcError::Persistence(format!("reserving a new vault: {error}")))?;
+    // A crash at any later point leaves this marker (and an unregistered UUID slot) for the
+    // startup picker/recovery screen to report. Failed cleanup never touches another vault.
+    VaultRegistry::mark_restore_attempt(&slot, id).map_err(|error| {
+        IpcError::Persistence(format!("marking the new vault restore attempt: {error}"))
+    })?;
+    let relative_path = std::path::Path::new("vaults")
+        .join(id.to_string())
+        .join("vault.db");
+    let database_path = root.join(&relative_path);
+    if let Err(error) = controller.switch_to(database_path) {
+        rollback_new_vault_restore(&mut controller, previous_path, &slot, id)?;
+        return Err(error.into());
+    }
+    if let Err(error) = controller.restore(std::path::Path::new(&package_path), password.as_bytes())
+    {
+        rollback_new_vault_restore(&mut controller, previous_path, &slot, id)?;
+        return Err(error.into());
+    }
+    let status = match vault_status_dto(&controller) {
+        Ok(status) => status,
+        Err(error) => {
+            rollback_new_vault_restore(&mut controller, previous_path, &slot, id)?;
+            return Err(error);
+        }
+    };
+
+    let previous_registry = registry.clone();
+    registry.vaults.push(VaultEntry {
+        id,
+        name,
+        path: relative_path,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    });
+    registry.active = Some(id);
+    if let Err(error) = registry.save(&root) {
+        *registry = previous_registry;
+        rollback_new_vault_restore(&mut controller, previous_path, &slot, id)?;
+        return Err(IpcError::Persistence(format!(
+            "saving vault registry: {error}"
+        )));
+    }
+    // The commit already succeeded; a stale marker in this registered slot is harmless and is
+    // ignored by the interrupted-attempt scanner. Do not report a false restore failure here.
+    if let Err(error) = VaultRegistry::clear_restore_marker(&slot) {
+        tracing::warn!(error = %error, "could not clear completed restore marker");
+    }
+    Ok(status)
+}
+
+#[cfg(test)]
+mod restore_collision_tests {
+    use super::{create_vault_named_impl, lock_vault_impl, restore_backup_as_new_vault_with_id};
+    use crate::state::AppState;
+    use crate::vault_registry::VaultRegistry;
+    use finance_kernel::{VaultController, VaultState};
+    use std::fs;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    #[test]
+    fn occupied_uuid_slot_is_never_reused_or_cleaned() {
+        let dir = TempDir::new().unwrap();
+        let state = AppState::with_registry(
+            VaultController::open(dir.path().join("vault.db")),
+            VaultRegistry::default(),
+            dir.path().to_path_buf(),
+        );
+        create_vault_named_impl(
+            &state,
+            "Original".to_owned(),
+            "synthetic password".to_owned(),
+        )
+        .unwrap();
+        lock_vault_impl(&state).unwrap();
+        let original_id = state.lock_registry().unwrap().active;
+        let id = Uuid::now_v7();
+        let occupied = dir.path().join("vaults").join(id.to_string());
+        fs::create_dir(&occupied).unwrap();
+        fs::write(occupied.join("sentinel"), b"existing data").unwrap();
+
+        assert!(restore_backup_as_new_vault_with_id(
+            &state,
+            "unused.pcfobk".to_owned(),
+            "synthetic password".to_owned(),
+            "Restored".to_owned(),
+            id,
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(occupied.join("sentinel")).unwrap(),
+            b"existing data"
+        );
+        assert_eq!(state.lock_registry().unwrap().active, original_id);
+        assert_eq!(state.lock_controller().unwrap().state(), VaultState::Locked);
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn restore_backup_as_new_vault(
+    state: tauri::State<'_, AppState>,
+    package_path: String,
+    password: String,
+    name: String,
+) -> Result<VaultStatusDto, IpcError> {
+    restore_backup_as_new_vault_impl(state.inner(), package_path, password, name)
 }
 
 // ---- create_account --------------------------------------------------------

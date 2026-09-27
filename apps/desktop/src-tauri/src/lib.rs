@@ -183,6 +183,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::run_backup_now,
         ipc::commands::export_transactions_csv,
         ipc::commands::restore_backup,
+        ipc::commands::restore_backup_as_new_vault,
         // Connectors (personal-cfo-gglk, ADR 0060).
         ipc::commands::connector_link,
         ipc::commands::connector_connections,

@@ -9,8 +9,9 @@ const ops = vi.hoisted(() => ({
   createNamedVault: vi.fn(),
 }));
 let vaults: VaultSummaryDto[] = [];
+let status: { state: "Locked" | "NoVault" } = { state: "Locked" };
 vi.mock("@/vault/useVault", () => ({
-  useVault: () => ({ vaults, ...ops }),
+  useVault: () => ({ status, vaults, ...ops }),
   describeIpcError: (e: unknown) => (typeof e === "string" ? e : "error"),
 }));
 // The no-reset warning + restore flow have their own tests; stub them so the picker
@@ -34,7 +35,7 @@ vi.mock("./NoResetWarning", () => ({
   ),
 }));
 vi.mock("@/backup/RestoreFromBackup", () => ({
-  RestoreFromBackup: () => <div data-testid="restore" />,
+  RestoreFromBackup: ({ mode }: { mode?: string }) => <div data-testid="restore" data-mode={mode} />,
 }));
 
 beforeEach(() => {
@@ -42,6 +43,7 @@ beforeEach(() => {
   ops.unlockVault.mockResolvedValue(null);
   ops.switchVault.mockResolvedValue(null);
   ops.createNamedVault.mockResolvedValue(null);
+  status = { state: "Locked" };
   vaults = [
     { id: "real", name: "Real", is_active: true, created_at: "2026-05-01T00:00:00Z" },
     { id: "demo", name: "Polish Demo", is_active: false, created_at: "2026-07-03T00:00:00Z" },
@@ -54,6 +56,13 @@ test("lists every vault with the active one marked as last opened", () => {
   expect(screen.getByText("Polish Demo")).toBeInTheDocument();
   expect(screen.getByText(/last opened/i)).toBeInTheDocument();
   expect(screen.getByText(/2 vaults on this device/i)).toBeInTheDocument();
+  expect(screen.getByTestId("restore")).toHaveAttribute("data-mode", "newNamed");
+});
+
+test("does not offer occupied-vault restore when no vault is selected", () => {
+  status = { state: "NoVault" };
+  render(<VaultPickerScreen />);
+  expect(screen.queryByTestId("restore")).not.toBeInTheDocument();
 });
 
 test("clicking the active vault opens its unlock modal without switching", async () => {
