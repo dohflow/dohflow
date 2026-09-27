@@ -12,10 +12,11 @@
 //! TRUNCATE-safe (removing a batch touches no accounts / ledger / balances).
 //!
 //! Provenance is FK-strict at the application layer: [`link_provenance`] refuses
-//! to pin a committed entity to a `source_record` that does not exist, because
-//! `configure_conn` leaves SQLite's per-connection `foreign_keys` at its default
-//! (off) — the declared `REFERENCES` document intent, this code enforces it
-//! (ADR 0008 §4).
+//! to pin a committed entity to a `source_record` that does not exist. The
+//! provenance link's target is a plain BLOB no foreign key covers, so this code
+//! enforces it (ADR 0008 §4). (The declared intra-staging `REFERENCES` are
+//! enforced by SQLite too: the bundled build defaults `foreign_keys` on — see
+//! migration 53, personal-cfo-r2pow.)
 //!
 //! Every primitive here is forward-built substrate: until the commit pipeline
 //! wires real callers it has no non-test user, hence the module-level

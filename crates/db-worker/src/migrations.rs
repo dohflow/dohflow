@@ -596,12 +596,13 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // Single-household (no `household_id`); BLOB UUID PKs; integer minor units; ISO
     // TEXT dates; CHECK-constrained enums. Unlike the baseline's "BLOB refs without
     // FK" convention, the staging substrate DECLARES its intra-staging foreign keys
-    // (the audit chain must be FK-strict per z2a) — they document intended integrity
-    // and would enforce if `PRAGMA foreign_keys` is ever enabled. Cross-boundary refs
+    // (the audit chain must be FK-strict per z2a) — and they ARE enforced: the bundled
+    // SQLite build turns `foreign_keys` on by default (found by migration 53's tests,
+    // personal-cfo-r2pow; an earlier version of this note said otherwise). Cross-boundary refs
     // to canonical rows (proposed/matched account, committed txn, provenance entity)
     // stay plain BLOBs. Runtime strictness of the provenance invariant is enforced in
     // the `ingestion` module (`link_provenance` validates the source_record exists),
-    // since `configure_conn` leaves `foreign_keys` at SQLite's per-connection default.
+    // since cross-boundary refs are plain BLOBs no foreign key can check.
     //
     // NB: import provenance lives in `source_provenance_links` (entity -> source_record).
     // The baseline's `provenance_links` is a DIFFERENT, pre-existing table (op_seq ->
@@ -1285,9 +1286,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // Broadening the `accounts.subtype` CHECK to admit the real-asset tokens needs a
     // COLUMN SWAP — SQLite can't ALTER a column CHECK. We add a new column carrying the
     // extended CHECK, copy across (every existing token is in the new superset, so all
-    // rows pass), drop the old column, and rename. FK enforcement is off (per
-    // configure_conn), and `subtype` is not indexed (v14's `down` already DROP COLUMNs
-    // it), so the swap touches nothing else.
+    // rows pass), drop the old column, and rename. `subtype` is in no foreign key and
+    // not indexed (v14's `down` already DROP COLUMNs it), so the swap touches nothing
+    // else. (An earlier version of this note said FK enforcement is off; the bundled
+    // SQLite defaults it on — see migration 53.)
     Migration {
         version: 36,
         name: "account_model_extensions",
@@ -1534,9 +1536,9 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         foreign_keys_off: false,
     },
     // Connector connections (personal-cfo-gglk, ADR 0060 §1): one row per
-    // NOTE: the REFERENCES clauses are documentation — PRAGMA foreign_keys
-    // stays OFF repo-wide (see ingestion.rs), so referential integrity is
-    // app-enforced (delete_connector_connection removes links explicitly).
+    // NOTE: these REFERENCES are enforced — the bundled SQLite defaults
+    // `foreign_keys` on (see migration 53) — and delete_connector_connection
+    // also removes links explicitly, first, so it never relies on that.
     // linked aggregator connection. `credential` is the provider access
     // credential (for SimpleFIN, the access URL) — encrypted at rest by
     // SQLCipher like every other column, stored in the vault deliberately so
@@ -1830,38 +1832,57 @@ pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u
     Ok(count)
 }
 
+/// One `PRAGMA foreign_key_check` row: (child table, child rowid, parent
+/// table, constraint index).
+type ForeignKeyViolation = (String, Option<i64>, String, i64);
+
+/// Every foreign-key violation in the database.
+fn foreign_key_violations(
+    conn: &Connection,
+) -> rusqlite::Result<std::collections::BTreeSet<ForeignKeyViolation>> {
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+    rows.collect()
+}
+
 /// Run one migration step — `sql` plus its tracker update — in its own
 /// transaction. A step flagged [`Migration::foreign_keys_off`] follows SQLite's
 /// documented table-rebuild procedure: enforcement off before `BEGIN` (the
-/// pragma is a no-op inside a transaction), an empty `PRAGMA foreign_key_check`
-/// required before `COMMIT`, and the prior setting restored whether the step
+/// pragma is a no-op inside a transaction), no NEW foreign-key violation
+/// allowed before `COMMIT`, and the prior setting restored whether the step
 /// committed or rolled back.
+///
+/// "New" is judged against a `PRAGMA foreign_key_check` taken before the
+/// step: a violation some earlier bug left anywhere in the vault must not
+/// stop the vault from opening — only one this step introduced may. Rows are
+/// matched by child table + rowid, so a step must not rebuild a table that
+/// is itself a CHILD with pre-existing violations (its rowids renumber);
+/// rebuilding a parent, as v53 does, leaves every child rowid in place.
 fn run_step(
     conn: &mut Connection,
     m: &Migration,
     sql: &str,
     track: impl FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<usize>,
 ) -> Result<(), DbError> {
-    let restore_foreign_keys = if m.foreign_keys_off {
+    let (restore_foreign_keys, violations_before) = if m.foreign_keys_off {
         let was_on: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        let before = foreign_key_violations(conn)?;
         conn.pragma_update(None, "foreign_keys", false)?;
-        was_on
+        (was_on, before)
     } else {
-        false
+        (false, std::collections::BTreeSet::new())
     };
     let result = (|| -> Result<(), DbError> {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
         if m.foreign_keys_off {
-            let dangling = tx
-                .prepare("PRAGMA foreign_key_check")?
-                .query([])?
-                .next()?
-                .is_some();
-            if dangling {
+            let introduced = foreign_key_violations(&tx)?
+                .difference(&violations_before)
+                .count();
+            if introduced > 0 {
                 // Dropping `tx` rolls the step back.
                 return Err(DbError::SelfTestFailed(format!(
-                    "migration {} ({}) left foreign-key violations",
+                    "migration {} ({}) introduced {introduced} foreign-key violation(s)",
                     m.version, m.name
                 )));
             }
@@ -2239,6 +2260,38 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
             .unwrap();
         assert!(enforced, "enforcement restored after a refused step");
+    }
+
+    /// Review F2 (personal-cfo-r2pow): the `foreign_keys_off` check fails only
+    /// on violations the step introduced. A violation some earlier bug left
+    /// elsewhere in the vault must not stop v53 — and so the vault — from
+    /// opening, and it is still there afterwards.
+    #[test]
+    fn a_pre_existing_unrelated_violation_does_not_block_v53() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..52]).unwrap();
+        seed_accounts(&conn, 1);
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute(
+            "UPDATE accounts SET linked_account_id = ?1",
+            rusqlite::params![&[0xEEu8; 16][..]],
+        )
+        .unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let before = super::foreign_key_violations(&conn).unwrap();
+        assert_eq!(before.len(), 1, "the planted violation exists");
+
+        apply(&mut conn, &MIGRATIONS[52..53]).unwrap();
+
+        assert_eq!(
+            super::foreign_key_violations(&conn).unwrap(),
+            before,
+            "v53 neither fixed nor added a violation"
+        );
+        let enforced: bool = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert!(enforced);
     }
 
     /// Every prior version → CURRENT up-migration preserves data, leaves the DB
