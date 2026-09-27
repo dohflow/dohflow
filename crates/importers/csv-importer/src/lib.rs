@@ -461,6 +461,7 @@ impl ImporterPlugin for GenericCsv {
                 external_name: Some(label),
                 external_number_hash: None,
                 proposed_subtype: None,
+                currency: None,
             })
             .collect();
 

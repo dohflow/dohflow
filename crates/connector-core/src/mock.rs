@@ -50,6 +50,7 @@ pub const fn mock_metadata(enabled: bool) -> ConnectorMetadata {
             cost_summary: "mock: cost point",
             optional: "mock: optional point",
         },
+        referral: None,
         enabled,
     }
 }
@@ -201,12 +202,14 @@ impl MockConnector {
                 external_name: Some("Mock Checking".to_owned()),
                 external_number_hash: Some("sha256:mock-checking".to_owned()),
                 proposed_subtype: Some("checking".to_owned()),
+                currency: None,
             },
             ParsedAccount {
                 external_id: Some("mock-acct-card".to_owned()),
                 external_name: Some("Mock Card".to_owned()),
                 external_number_hash: Some("sha256:mock-card".to_owned()),
                 proposed_subtype: Some("credit_card".to_owned()),
+                currency: None,
             },
         ];
         if self.include_unnamed_account {
@@ -215,6 +218,7 @@ impl MockConnector {
                 external_name: None,
                 external_number_hash: None,
                 proposed_subtype: None,
+                currency: None,
             });
         }
         accounts

@@ -928,6 +928,12 @@ export type ConnectorAdapterDto = {
 	regions: string[],
 	economics: ConnectorEconomicsDto,
 	disclosure: ConnectorDisclosureDto,
+	/**
+	 *  A referral link DohFlow may earn from, with its FTC sentence (ADR 0076
+	 *  §5). Render the URL as selectable text, never a link, with the
+	 *  sentence beside it. `None` for most providers.
+	 */
+	referral: ConnectorReferralDto | null,
 	/**  `false` = implemented but not released; `connector_link` refuses it. */
 	enabled: boolean,
 };
@@ -1027,6 +1033,12 @@ export type ConnectorLinkResultDto = {
 
 /**  Who pays the provider. */
 export type ConnectorPayerDto = "UserDirect" | "DohflowBrokered" | "None";
+
+/**  A provider's referral URL and the disclosure that must sit next to it. */
+export type ConnectorReferralDto = {
+	url: string,
+	disclosure: string,
+};
 
 /**  Map (or unmap, with `None`) an external account onto a real account. */
 export type ConnectorSetAccountLinkInput = {

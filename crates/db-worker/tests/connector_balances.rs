@@ -49,6 +49,7 @@ fn balance_batch(external: &str, observed: chrono::NaiveDate, minor: i64) -> Par
             external_name: Some("Ext Checking".to_owned()),
             external_number_hash: None,
             proposed_subtype: None,
+            currency: None,
         }],
         records: vec![ParsedRecord {
             external_id: Some(format!("{external}-bal")),

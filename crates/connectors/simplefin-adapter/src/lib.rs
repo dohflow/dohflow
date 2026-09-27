@@ -128,6 +128,8 @@ pub const SIMPLEFIN_METADATA: ConnectorMetadata = ConnectorMetadata {
         optional: "It is optional. Everything in this app works with manual entry and file \
                    imports; a connection only saves the typing.",
     },
+    // SimpleFIN pays DohFlow nothing: no referral (ADR 0076 §5).
+    referral: None,
     enabled: true,
 };
 
@@ -524,6 +526,7 @@ fn map_account(account: &WireAccount, set: &AccountSet) -> ParsedAccount {
         }),
         external_number_hash: None,
         proposed_subtype: None,
+        currency: None,
     }
 }
 

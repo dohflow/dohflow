@@ -1,0 +1,27 @@
+[package]
+name = "lunchflow-adapter"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "LunchFlow connector adapter for DohFlow (personal-cfo-r2pow, ADR 0076): a pasted Personal API key, then accounts, transactions and balances from LunchFlow's documented Personal API, emitted as staged candidates through the connector-core contract. Ships disabled in the registry until its release flips it."
+
+# Same shape as simplefin-adapter (ADR 0004 §2 user-token tier: the user's own
+# key, direct to LunchFlow, no relay, no project secret). All HTTP goes through
+# the Transport trait so every test runs on fixtures; `ureq` (blocking, rustls)
+# is the sole real transport. LEAK RULE: the API key travels only in the
+# `x-api-key` header and never appears in an error message or log.
+[dependencies]
+connector-core = { path = "../../connector-core" }
+importer-core = { path = "../../importers/importer-core" }
+core-money = { path = "../../core-money" }
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+# raw_value: amounts arrive as JSON numbers and are parsed from their exact
+# decimal text — never through a float.
+serde_json = { workspace = true, features = ["raw_value"] }
+semver = { workspace = true }
+ureq = { workspace = true }
+zeroize = { workspace = true }

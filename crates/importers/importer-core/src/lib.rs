@@ -212,6 +212,13 @@ pub struct ParsedAccount {
     pub external_number_hash: Option<String>,
     /// Proposed subtype token (`checking`/`savings`/`credit_card`/…), matched later.
     pub proposed_subtype: Option<String>,
+    /// The account's ISO 4217 currency code **as the source reports it**, when
+    /// the source states one (a connector's account currency). Kept raw — it
+    /// may name a currency the app cannot hold yet, which the mapping surface
+    /// must see in order to refuse it (ADR 0076 decision 7, personal-cfo-049p6).
+    /// `None` for sources that state no account currency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// An observed ending balance → a `staged_balance` (becomes a balance assertion
@@ -585,6 +592,7 @@ mod tests {
                 external_name: Some("Checking".to_owned()),
                 external_number_hash: None,
                 proposed_subtype: Some("checking".to_owned()),
+                currency: None,
             }],
             records: vec![ParsedRecord {
                 external_id: None,

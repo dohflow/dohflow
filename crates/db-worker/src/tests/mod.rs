@@ -6387,6 +6387,7 @@ fn rebuild_flag_triggers_read_model_rebuild() {
         up: "SELECT 1;",
         down: None,
         rebuilds_read_models: true,
+        foreign_keys_off: false,
     }];
     migrations::apply(&mut conn, &synthetic).unwrap();
     // The rebuild wrote the transaction-display cursor + checksum.

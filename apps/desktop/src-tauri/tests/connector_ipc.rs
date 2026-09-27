@@ -907,9 +907,18 @@ fn an_unknown_adapter_id_is_a_validation_error() {
 fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
     let listing = connector_adapters_impl(connector_core::all_registrations());
     let ids: Vec<&str> = listing.iter().map(|a| a.adapter_id.as_str()).collect();
-    assert_eq!(ids, ["simplefin"]);
+    assert_eq!(ids, ["lunchflow", "simplefin"]);
 
-    let simplefin = &listing[0];
+    let lunchflow = &listing[0];
+    assert!(!lunchflow.enabled, "implemented but not released");
+    let referral = lunchflow
+        .referral
+        .as_ref()
+        .expect("lunchflow carries its referral");
+    assert!(referral.disclosure.contains("may earn a commission"));
+
+    let simplefin = &listing[1];
+    assert!(simplefin.referral.is_none());
     assert!(simplefin.enabled);
     assert_eq!(simplefin.display_name, "SimpleFIN");
     assert!(simplefin.capabilities.transactions && !simplefin.capabilities.holdings);
@@ -962,4 +971,301 @@ fn the_adapters_listing_includes_disabled_providers_flagged() {
         .map(|a| (a.adapter_id.as_str(), a.enabled))
         .collect();
     assert_eq!(flags, [("mock-off", false), ("other", true)]);
+}
+
+// ---------------------------------------------------------------------------
+// LunchFlow (personal-cfo-r2pow): registered, disabled, refused before link
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lunchflow_is_refused_while_disabled_through_the_real_registry() {
+    let (_dir, state) = open_state();
+    // The production resolver. The refusal fires before the adapter's link,
+    // so no request is ever made with this key.
+    let err = connector_link_registered_impl(
+        &state,
+        connector_core::registration_by_id,
+        ConnectorLinkInput {
+            adapter_id: "lunchflow".to_owned(),
+            setup_token: "lf-not-a-real-key".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(msg) if msg.contains("not available")),
+        "got {err:?}"
+    );
+    assert!(connector_connections_impl(&state).unwrap().is_empty());
+}
+
+#[test]
+fn connector_spans_carry_the_adapter_and_never_the_token() {
+    use observability::RedactingMakeWriter;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    // The mock accepts exactly this token and issues a fixed credential —
+    // both stand in for the secrets that must never be logged.
+    let token = "mock-setup-token";
+    let buffer = Buffer::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    let subscriber = tracing_subscriber::registry().with(layer);
+    let (_dir, state) = open_state();
+    let adapter = mock();
+    tracing::subscriber::with_default(subscriber, || {
+        let linked = connector_link_impl(
+            &state,
+            &adapter,
+            ConnectorLinkInput {
+                adapter_id: "other".to_owned(),
+                setup_token: token.to_owned(),
+            },
+        )
+        .unwrap();
+        sync(&state, &adapter, &linked.connection_id);
+    });
+
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    for field in [
+        "connector_link",
+        "connector_sync",
+        "adapter_id",
+        "adapter_version",
+        "outcome",
+        "success",
+        "duration_ms",
+    ] {
+        assert!(logged.contains(field), "missing {field:?} in {logged}");
+    }
+    assert!(!logged.contains(token), "token leaked into logs: {logged}");
+    assert!(
+        !logged.contains("mock-access-url"),
+        "credential leaked into logs: {logged}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LunchFlow key-echo (personal-cfo-r2pow review F1): a provider that quotes
+// the key back in its error bodies must not get it into last_error, the
+// connection DTO, sync warnings, or any log line — including auto-sync's.
+// ---------------------------------------------------------------------------
+
+const ECHO_KEY: &str = "lf-IPC-CANARY-5e3a";
+
+struct EchoingLunchFlow {
+    routes: &'static [(&'static str, u16)],
+}
+
+impl lunchflow_adapter::transport::Transport for EchoingLunchFlow {
+    fn get(
+        &self,
+        url: &str,
+        _api_key: &str,
+        _query: &[(String, String)],
+    ) -> Result<
+        lunchflow_adapter::transport::HttpResponse,
+        lunchflow_adapter::transport::TransportError,
+    > {
+        let path = url.strip_prefix(lunchflow_adapter::BASE_URL).unwrap_or(url);
+        let status = self
+            .routes
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map_or(404, |(_, status)| *status);
+        let body = if status == 200 && path == "/accounts" {
+            r#"{"accounts":[{"id":101,"name":"Checking","status":"ACTIVE"}],"total":1}"#.to_owned()
+        } else if status == 200 && path.ends_with("/balance") {
+            r#"{"balance":{"amount":1.00,"currency":"USD"}}"#.to_owned()
+        } else {
+            format!(r#"{{"error":"Rejected","message":"key {ECHO_KEY} is not valid"}}"#)
+        };
+        Ok(lunchflow_adapter::transport::HttpResponse { status, body })
+    }
+}
+
+fn echo_now() -> i64 {
+    1_790_510_400 // 2026-09-27T12:00:00Z
+}
+
+/// A key refused mid-refresh (403 echoing the key on the transactions call;
+/// discovery at link time succeeds, so the account can be mapped).
+fn refused_lunchflow(_: &str) -> Option<&'static dyn ConnectorAdapter> {
+    static ADAPTER: std::sync::OnceLock<lunchflow_adapter::LunchFlowAdapter<EchoingLunchFlow>> =
+        std::sync::OnceLock::new();
+    Some(ADAPTER.get_or_init(|| {
+        lunchflow_adapter::LunchFlowAdapter::new(
+            EchoingLunchFlow {
+                routes: &[
+                    ("/accounts", 200),
+                    ("/accounts/101/balance", 200),
+                    ("/accounts/101/transactions", 403),
+                ],
+            },
+            echo_now,
+        )
+    }))
+}
+
+/// One account whose balance and transactions both fail (400 echoing the key).
+fn failing_account_lunchflow(_: &str) -> Option<&'static dyn ConnectorAdapter> {
+    static ADAPTER: std::sync::OnceLock<lunchflow_adapter::LunchFlowAdapter<EchoingLunchFlow>> =
+        std::sync::OnceLock::new();
+    Some(ADAPTER.get_or_init(|| {
+        lunchflow_adapter::LunchFlowAdapter::new(
+            EchoingLunchFlow {
+                routes: &[
+                    ("/accounts", 200),
+                    ("/accounts/101/balance", 400),
+                    ("/accounts/101/transactions", 400),
+                ],
+            },
+            echo_now,
+        )
+    }))
+}
+
+fn capture<F: FnOnce()>(f: F) -> String {
+    use observability::RedactingMakeWriter;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+    let buffer = Buffer::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), f);
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    logged
+}
+
+fn link_echoing(
+    state: &AppState,
+    resolve: fn(&str) -> Option<&'static dyn ConnectorAdapter>,
+) -> String {
+    connector_link_impl(
+        state,
+        resolve("lunchflow").unwrap(),
+        ConnectorLinkInput {
+            adapter_id: "lunchflow".to_owned(),
+            setup_token: ECHO_KEY.to_owned(),
+        },
+    )
+    .unwrap()
+    .connection_id
+}
+
+#[test]
+fn a_key_echoing_refusal_never_reaches_last_error_the_dto_or_logs() {
+    let (_dir, state) = open_state();
+    let connection_id = link_echoing(&state, refused_lunchflow);
+    let checking = make_account(&state, "Checking");
+    map_account(&state, &connection_id, "101", &checking);
+    let adapter = refused_lunchflow("lunchflow").unwrap();
+
+    let mut rendered = String::new();
+    let logged = capture(|| {
+        // The vault-open path first: a just-linked connection has never
+        // refreshed, so auto-sync is not debounced and really runs.
+        let auto = connector_auto_sync_impl(&state, refused_lunchflow);
+        rendered = format!("{auto:?}");
+        assert!(
+            !rendered.contains("skipped_debounced"),
+            "auto-sync must actually run: {rendered}"
+        );
+        let result = connector_sync_impl(
+            &state,
+            adapter,
+            ConnectorSyncInput {
+                connection_id: connection_id.clone(),
+                idempotency_key: uuid::Uuid::now_v7().to_string(),
+            },
+        );
+        rendered.push_str(&format!("{result:?}"));
+    });
+    assert!(
+        rendered.contains("expired"),
+        "the refresh hit the refusal: {rendered}"
+    );
+    let connections = connector_connections_impl(&state).unwrap();
+    let last_error = connections[0].last_error.clone();
+    assert!(last_error.is_some(), "the refusal is recorded");
+    let dto = serde_json::to_string(&connections).unwrap();
+
+    for (surface, text) in [
+        ("sync result", rendered.as_str()),
+        ("connection dto", dto.as_str()),
+        ("logs", logged.as_str()),
+    ] {
+        assert!(!text.contains(ECHO_KEY), "{surface} leaked the key: {text}");
+    }
+}
+
+#[test]
+fn key_echoing_per_account_errors_never_reach_sync_warnings() {
+    let (_dir, state) = open_state();
+    let connection_id = link_echoing(&state, failing_account_lunchflow);
+    let checking = make_account(&state, "Checking");
+    map_account(&state, &connection_id, "101", &checking);
+    let adapter = failing_account_lunchflow("lunchflow").unwrap();
+    let mut rendered = String::new();
+    let logged = capture(|| {
+        let result = connector_sync_impl(
+            &state,
+            adapter,
+            ConnectorSyncInput {
+                connection_id: connection_id.clone(),
+                idempotency_key: uuid::Uuid::now_v7().to_string(),
+            },
+        );
+        rendered = format!("{result:?}");
+    });
+    assert!(
+        rendered.contains("not refreshed"),
+        "per-account warnings surfaced: {rendered}"
+    );
+    let dto = serde_json::to_string(&connector_connections_impl(&state).unwrap()).unwrap();
+    for text in [&rendered, &dto, &logged] {
+        assert!(!text.contains(ECHO_KEY), "leaked the key: {text}");
+    }
 }
