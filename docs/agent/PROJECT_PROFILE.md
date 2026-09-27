@@ -75,7 +75,7 @@ Non-negotiables:
 - Platform secrets: macOS Keychain for small secrets such as wrapped vault unlock material, connector tokens where allowed, and BYOK API keys only when explicitly saved by the user.
 - Biometric unlock: optional Touch ID after password unlock; password remains the primary unlock path.
 - AI: none required for core app. Later AI features must be scoped report generators brokered by Rust, read-only, schema-validated, evidence-citing, and cost-capped.
-- Connectors: no connector dependency for MVP. Later connector work must keep provider secrets out of the desktop app and route through user-token flows, self-hosted relay, or managed relay as explicitly designed.
+- Connectors: no connector dependency for MVP. Later connector work must keep provider secrets out of the desktop app and route through user-token flows, self-hosted relay, or managed relay as explicitly designed. How a second or later provider enters the free app (user-pay providers only, the registry gate, the picker, the affiliate disclosure, the currency and `source_type` rules) is ADR 0076 (`docs/adr/0076-multi-provider-connector-strategy.md`).
 
 ## Package manager policy
 
