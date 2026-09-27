@@ -7,9 +7,11 @@ use finance_kernel::Kernel;
 
 const PASSWORD: &[u8] = b"checked-in v1 compatibility fixture password";
 const V1_FIXTURE: &[u8] = include_bytes!("fixtures/backup-v1-minimal.pcfobk");
+const VAULT_FORMAT_SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
 
 #[test]
 fn checked_in_v1_fixture_restores_into_a_fresh_vault() {
+    assert!(VAULT_FORMAT_SPEC.contains("<!-- vault-format: backup-read-versions=1,2 -->"));
     let parsed = disassemble(PASSWORD, V1_FIXTURE).expect("parse historical v1 fixture");
     assert_eq!(parsed.manifest.format_version, 1);
     assert_eq!(parsed.manifest.manifest_schema_version, None);
