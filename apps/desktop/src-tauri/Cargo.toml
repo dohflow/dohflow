@@ -143,6 +143,9 @@ specta-typescript = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 
 [dev-dependencies]
+# Tauri's mock runtime (`tauri::test`, a feature with no extra dependencies) drives
+# the window-isolation test through the real resolved ACL (personal-cfo-2no).
+tauri = { version = "2.11.2", features = ["test"] }
 # The deterministic mock connector (personal-cfo-1s2b) drives the connector
 # IPC tests without network — test-only by CI decree (mock feature grep).
 connector-core = { path = "../../../crates/connector-core", features = ["mock"] }
