@@ -6323,6 +6323,114 @@ fn reopen_applies_no_new_migrations() {
 }
 
 #[test]
+fn newer_migration_is_refused_before_stamping_the_vault_down() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("future.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+
+    // Synthetic newer build: its migration is additive, so today's schema
+    // self-tests would otherwise pass despite the version incompatibility.
+    let future = migrations::CURRENT_VERSION + 1;
+    let conn = open_keyed(&path, KEY).unwrap();
+    conn.execute_batch("CREATE TABLE future_additive_data (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
+         VALUES (?1, 'future_additive_data', 'synthetic', '2026-09-27T00:00:00Z')",
+        [future],
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", future).unwrap();
+    conn.execute(
+        "UPDATE vault_metadata SET schema_version = ?1 WHERE singleton = 1",
+        [future],
+    )
+    .unwrap();
+    drop(conn);
+
+    let opened = DbWorker::open(&path, KEY);
+    let observed_after_open = opened.as_ref().ok().map(|worker| {
+        worker
+            .read_connection()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    });
+    assert!(
+        opened.is_err(),
+        "older build opened synthetic newer vault and stamped user_version to {observed_after_open:?}"
+    );
+}
+
+#[test]
+fn read_only_sqlcipher_inspection_observes_committed_wal_marker() {
+    use rusqlite::OpenFlags;
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("future-wal.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+    let future = migrations::CURRENT_VERSION + 1;
+    let writer = open_keyed(&path, KEY).unwrap();
+    writer.pragma_update(None, "user_version", future).unwrap();
+    let before_db = std::fs::read(&path).unwrap();
+    let wal_path = path.with_extension("vault-wal");
+    let before_wal = std::fs::read(&wal_path).unwrap();
+
+    let reader = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    reader.pragma_update(None, "key", KEY).unwrap();
+    let seen: i64 = reader
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        seen, future,
+        "read-only preflight must see committed WAL state"
+    );
+    drop(reader);
+    assert_eq!(std::fs::read(&path).unwrap(), before_db);
+    assert_eq!(std::fs::read(&wal_path).unwrap(), before_wal);
+    drop(writer);
+}
+
+#[test]
+fn read_only_sqlcipher_inspection_preserves_quiescent_vault_files() {
+    use rusqlite::OpenFlags;
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("quiescent.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+    let files = || {
+        let mut entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|entry| entry.as_ref().is_ok_and(|entry| entry.path().is_file()))
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    };
+    let before = files();
+    let reader = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    reader.pragma_update(None, "key", KEY).unwrap();
+    let current: i64 = reader
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(current, migrations::CURRENT_VERSION);
+    drop(reader);
+    let after = files();
+    let before_names: Vec<_> = before.iter().map(|(name, _)| name).collect();
+    let after_names: Vec<_> = after.iter().map(|(name, _)| name).collect();
+    assert_eq!(
+        before_names, after_names,
+        "read-only preflight changed file set"
+    );
+    for ((name, old), (_, new)) in before.iter().zip(&after) {
+        assert!(old == new, "read-only preflight changed {name:?}");
+    }
+}
+
+#[test]
 fn down_then_up_reaches_current_with_integrity() {
     let (_dir, worker) = worker();
     let mut conn = worker.read_connection().unwrap();
