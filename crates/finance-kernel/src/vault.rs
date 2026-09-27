@@ -114,7 +114,7 @@ impl Kernel {
         let envelope = VaultEnvelope::from_bytes(&bytes)?;
         let kek = derive_kek(password, &envelope.salt, &envelope.kdf)?;
         let dek = unwrap_dek(&kek, &envelope.wrapped)?;
-        let worker = DbWorker::open_with_raw_key(db_path, dek)?;
+        let worker = DbWorker::open_existing_with_raw_key(db_path, dek)?;
         Ok(Self::with_worker(worker))
     }
 

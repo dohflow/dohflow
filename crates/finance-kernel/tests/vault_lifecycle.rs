@@ -7,6 +7,7 @@
 //! raw-keyed vault `create_vault` produces — finance-kernel must not depend on
 //! `rusqlite` (the db-worker boundary), so it is not re-tested here.
 
+use db_worker::DbError;
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, CashflowRole, CommandEnvelope, CommandMeta,
     CreateAccount, Currency, Kernel, KernelError, LedgerAccountId,
@@ -97,4 +98,17 @@ fn unlock_missing_vault_reports_not_found() {
 
     let result = Kernel::unlock_vault(&path, PASSWORD);
     assert!(matches!(result, Err(KernelError::VaultNotFound)));
+}
+
+#[test]
+fn newer_schema_error_keeps_its_identity_across_the_kernel_boundary() {
+    let error = KernelError::from(DbError::NewerSchema {
+        observed: db_worker::CURRENT_SCHEMA_VERSION + 1,
+        supported: db_worker::CURRENT_SCHEMA_VERSION,
+    });
+    assert!(matches!(
+        error,
+        KernelError::NewerVaultSchema { observed, supported }
+            if observed == supported + 1
+    ));
 }

@@ -16,12 +16,22 @@ use app_lib::ipc::dto::{
 use app_lib::ipc::IpcError;
 use app_lib::vault_registry::{VaultEntry, VaultRegistry};
 use app_lib::AppState;
-use finance_kernel::VaultController;
+use finance_kernel::{KernelError, VaultController};
 use tempfile::TempDir;
 use uuid::Uuid;
 
 const PASSWORD: &str = "correct horse battery staple";
 const NEW_PASSWORD: &str = "an entirely different phrase";
+
+#[test]
+fn newer_schema_error_is_typed_at_the_ipc_boundary() {
+    let error = IpcError::from(KernelError::NewerVaultSchema {
+        observed: 53,
+        supported: 52,
+    });
+    assert!(matches!(error, IpcError::NewerVaultSchema));
+    assert_eq!(serde_json::to_string(&error).unwrap(), "\"NewerVaultSchema\"");
+}
 
 fn change_input(old: &str, new: &str) -> ChangePasswordInput {
     ChangePasswordInput {

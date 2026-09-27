@@ -38,7 +38,7 @@ use core_money::{Currency, Money, MoneyError};
 use fs2::FileExt;
 use importer_core::{ParsedBatch, ParserRunReport};
 use pay_schedule::{Frequency, PaySchedule};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use thiserror::Error;
 use uuid::Uuid;
 use vault_crypto::Dek;
@@ -1080,6 +1080,17 @@ pub enum DbError {
     /// Another process already owns the unlocked-vault runner.
     #[error("vault is already unlocked by another process")]
     VaultInUse,
+    /// A newer build has written a schema marker this build cannot interpret.
+    #[error("vault schema {observed} is newer than supported schema {supported}")]
+    NewerSchema {
+        /// Observed schema marker; safe to expose without vault contents.
+        observed: i64,
+        /// Highest schema this build knows.
+        supported: i64,
+    },
+    /// An existing vault does not match a proven supported migration layout.
+    #[error("existing vault schema is unsupported or incomplete")]
+    UnsupportedSchema,
     /// The worker is not in a state that accepts writes.
     #[error("worker unavailable for writes: {0:?}")]
     WorkerUnavailable(WorkerState),
@@ -1200,7 +1211,11 @@ impl DbWorker {
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         let runner_lock = acquire_runner_lock(&path)?;
-        let conn = open_keyed(&path, key)?;
+        let conn = if path.exists() {
+            open_existing_keyed(&path, key)?
+        } else {
+            open_keyed(&path, key)?
+        };
         Self::bootstrap(
             path,
             conn,
@@ -1225,7 +1240,20 @@ impl DbWorker {
     pub fn open_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         let runner_lock = acquire_runner_lock(&path)?;
-        let conn = open_keyed_raw(&path, &dek)?;
+        let conn = if path.exists() {
+            open_existing_keyed_raw(&path, &dek)?
+        } else {
+            open_keyed_raw(&path, &dek)?
+        };
+        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
+    }
+
+    /// Open an existing envelope-backed vault. Unlike creation, a missing DB
+    /// must never be silently initialized during unlock.
+    pub fn open_existing_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
+        let path = path.as_ref().to_path_buf();
+        let runner_lock = acquire_runner_lock(&path)?;
+        let conn = open_existing_keyed_raw(&path, &dek)?;
         Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
     }
 
@@ -3863,6 +3891,59 @@ fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
     Ok(conn)
 }
 
+fn open_existing_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
+    open_existing(path, |conn| {
+        conn.pragma_update(None, "key", key).map_err(Into::into)
+    })
+}
+
+fn open_existing_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
+    open_existing(path, |conn| key_raw(conn, dek))
+}
+
+/// The runner lock is held by the caller throughout both checks and bootstrap.
+/// Read-only inspection may let SQLite create absent WAL/SHM coordination files,
+/// but issues no app-controlled write and sees committed WAL state. The second
+/// check is on the writer handle before configure_conn requests WAL.
+fn open_existing(
+    path: &Path,
+    key: impl Fn(&Connection) -> Result<(), DbError>,
+) -> Result<Connection, DbError> {
+    let source = File::open(path).map_err(|_| DbError::UnsupportedSchema)?;
+    let reader = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    key(&reader)?;
+    reader.execute_batch("BEGIN DEFERRED")?;
+    let inspected = migrations::inspect_existing(&reader);
+    reader.execute_batch("ROLLBACK")?;
+    inspected?;
+    drop(reader);
+    verify_file_identity(&source, path)?;
+
+    let writer = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    key(&writer)?;
+    verify_file_identity(&source, path)?;
+    migrations::inspect_existing(&writer)?;
+    configure_conn(&writer)?;
+    Ok(writer)
+}
+
+fn verify_file_identity(source: &File, path: &Path) -> Result<(), DbError> {
+    let original = source.metadata().map_err(|_| DbError::UnsupportedSchema)?;
+    let current = std::fs::metadata(path).map_err(|_| DbError::UnsupportedSchema)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if original.dev() != current.dev() || original.ino() != current.ino() {
+            return Err(DbError::UnsupportedSchema);
+        }
+    }
+    #[cfg(not(unix))]
+    if original.len() != current.len() || original.modified().ok() != current.modified().ok() {
+        return Err(DbError::UnsupportedSchema);
+    }
+    Ok(())
+}
+
 /// Open a SQLCipher connection keyed with a **raw** 256-bit key (no SQLCipher
 /// KDF — the DEK is used verbatim). Used by [`DbWorker::open_with_raw_key`].
 ///
@@ -3871,9 +3952,15 @@ fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
 /// `pragma_update` (which would quote the value and be treated as a passphrase).
 /// The PRAGMA string holds the key in hex and is zeroized immediately after use.
 fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
+    let conn = Connection::open(path)?;
+    key_raw(&conn, dek)?;
+    configure_conn(&conn)?;
+    Ok(conn)
+}
+
+fn key_raw(conn: &Connection, dek: &Dek) -> Result<(), DbError> {
     use std::fmt::Write as _;
 
-    let conn = Connection::open(path)?;
     let mut pragma = String::with_capacity(80);
     pragma.push_str("PRAGMA key = \"x'");
     for byte in dek.expose_bytes() {
@@ -3884,8 +3971,7 @@ fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
     let result = conn.execute_batch(&pragma);
     pragma.zeroize();
     result?;
-    configure_conn(&conn)?;
-    Ok(conn)
+    Ok(())
 }
 
 /// Apply the non-key connection pragmas shared by both keying paths (WAL,

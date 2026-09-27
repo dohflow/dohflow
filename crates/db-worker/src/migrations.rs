@@ -16,7 +16,7 @@
 //! state-machine transition is `personal-cfo-tg5`.
 
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{projection, DbError, BASELINE_UP};
 
@@ -1638,6 +1638,87 @@ const fn max_version() -> i64 {
 /// The schema version a fully-migrated vault is at (the highest migration).
 pub(crate) const CURRENT_VERSION: i64 = max_version();
 
+/// Inspect an already-keyed existing vault without creating tables or changing
+/// version stamps. Call this on a read-only connection before opening a writer,
+/// and once more on the newly opened writer before its first PRAGMA write.
+pub(crate) fn inspect_existing(conn: &Connection) -> Result<(), DbError> {
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if user_version > CURRENT_VERSION {
+        return Err(DbError::NewerSchema {
+            observed: user_version,
+            supported: CURRENT_VERSION,
+        });
+    }
+
+    let tracker_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !tracker_exists {
+        return Err(DbError::UnsupportedSchema);
+    }
+    let applied = applied_versions(conn).map_err(|_| DbError::UnsupportedSchema)?;
+    if applied.is_empty() {
+        return Err(DbError::UnsupportedSchema);
+    }
+    for (version, recorded_hash) in &applied {
+        if *version > CURRENT_VERSION {
+            return Err(DbError::NewerSchema {
+                observed: *version,
+                supported: CURRENT_VERSION,
+            });
+        }
+        let Some(migration) = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == *version)
+        else {
+            return Err(DbError::UnsupportedSchema);
+        };
+        if recorded_hash != &content_hash(migration.up) {
+            return Err(DbError::UnsupportedSchema);
+        }
+    }
+    // Each migration is committed with its tracker row. A contiguous prefix is
+    // the only proven interrupted-upgrade layout; a gap is not recoverable here.
+    if applied.len() > MIGRATIONS.len()
+        || applied
+            .iter()
+            .zip(MIGRATIONS)
+            .any(|((version, _), migration)| *version != migration.version)
+    {
+        return Err(DbError::UnsupportedSchema);
+    }
+
+    let metadata_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vault_metadata')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !metadata_exists {
+        return Err(DbError::UnsupportedSchema);
+    }
+    let metadata_version: Option<i64> = conn
+        .query_row(
+            "SELECT schema_version FROM vault_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| DbError::UnsupportedSchema)?;
+    let Some(metadata_version) = metadata_version else {
+        return Err(DbError::UnsupportedSchema);
+    };
+    if metadata_version > CURRENT_VERSION {
+        return Err(DbError::NewerSchema {
+            observed: metadata_version,
+            supported: CURRENT_VERSION,
+        });
+    }
+    crate::read_vault_metadata(conn).map_err(|_| DbError::UnsupportedSchema)?;
+    Ok(())
+}
+
 /// Apply all pending migrations to `conn` using the canonical [`MIGRATIONS`] set.
 /// Returns the number applied. Runs at vault open, before the worker is usable.
 pub(crate) fn run_migrations(conn: &mut Connection) -> Result<u64, DbError> {
@@ -1649,6 +1730,26 @@ pub(crate) fn run_migrations(conn: &mut Connection) -> Result<u64, DbError> {
 /// records its content hash. If any applied migration rebuilds read models, the
 /// transaction-display projection is rebuilt afterward.
 pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u64, DbError> {
+    // Defensive last line of defense for callers that bypass DbWorker::open.
+    // In particular, never let an unknown future row reach ensure_tracker or
+    // the unconditional user_version stamp below.
+    let tracker_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+        [],
+        |row| row.get(0),
+    )?;
+    if tracker_exists {
+        let applied = applied_versions(conn)?;
+        if let Some((version, _)) = applied
+            .iter()
+            .find(|(version, _)| *version > CURRENT_VERSION)
+        {
+            return Err(DbError::NewerSchema {
+                observed: *version,
+                supported: CURRENT_VERSION,
+            });
+        }
+    }
     ensure_tracker(conn)?;
     let applied = applied_versions(conn)?;
 
@@ -1742,7 +1843,8 @@ fn ensure_tracker(conn: &Connection) -> Result<(), DbError> {
 }
 
 fn applied_versions(conn: &Connection) -> Result<Vec<(i64, String)>, DbError> {
-    let mut stmt = conn.prepare("SELECT version, content_hash FROM schema_migrations")?;
+    let mut stmt =
+        conn.prepare("SELECT version, content_hash FROM schema_migrations ORDER BY version")?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     let mut out = Vec::new();
     for row in rows {

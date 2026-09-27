@@ -6348,18 +6348,123 @@ fn newer_migration_is_refused_before_stamping_the_vault_down() {
     .unwrap();
     drop(conn);
 
-    let opened = DbWorker::open(&path, KEY);
-    let observed_after_open = opened.as_ref().ok().map(|worker| {
-        worker
-            .read_connection()
-            .unwrap()
-            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-            .unwrap()
-    });
-    assert!(
-        opened.is_err(),
-        "older build opened synthetic newer vault and stamped user_version to {observed_after_open:?}"
-    );
+    assert!(matches!(
+        DbWorker::open(&path, KEY),
+        Err(DbError::NewerSchema { observed, supported })
+            if observed == future && supported == migrations::CURRENT_VERSION
+    ));
+    let observer = open_keyed(&path, KEY).unwrap();
+    let stamped: i64 = observer
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(stamped, future, "refusal must not stamp the vault down");
+}
+
+#[test]
+fn every_independent_newer_marker_refuses_without_changing_committed_wal() {
+    for (name, tracker, pragma, metadata) in [
+        ("tracker", true, false, false),
+        ("pragma", false, true, false),
+        ("metadata", false, false, true),
+        ("all", true, true, true),
+        ("lowered-stamps", true, false, false),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(format!("{name}.vault"));
+        drop(DbWorker::open(&path, KEY).unwrap());
+        let future = migrations::CURRENT_VERSION + 1;
+        let writer = open_keyed(&path, KEY).unwrap();
+        if tracker {
+            writer
+                .execute_batch("CREATE TABLE future_additive_data (id INTEGER PRIMARY KEY)")
+                .unwrap();
+            writer
+                .execute(
+                    "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
+                     VALUES (?1, 'future_additive_data', 'synthetic', '2026-09-27T00:00:00Z')",
+                    [future],
+                )
+                .unwrap();
+        }
+        if pragma {
+            writer.pragma_update(None, "user_version", future).unwrap();
+        }
+        if metadata {
+            writer
+                .execute(
+                    "UPDATE vault_metadata SET schema_version = ?1 WHERE singleton = 1",
+                    [future],
+                )
+                .unwrap();
+        }
+        let wal_path = path.with_extension("vault-wal");
+        let before_db = std::fs::read(&path).unwrap();
+        let before_wal = std::fs::read(&wal_path).unwrap();
+        assert!(
+            matches!(
+                DbWorker::open(&path, KEY),
+                Err(DbError::NewerSchema { observed, supported })
+                    if observed == future && supported == migrations::CURRENT_VERSION
+            ),
+            "{name}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before_db,
+            "{name}: DB changed"
+        );
+        assert_eq!(
+            std::fs::read(&wal_path).unwrap(),
+            before_wal,
+            "{name}: WAL changed"
+        );
+        let seen_tracker: i64 = writer
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                [future],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(seen_tracker, i64::from(tracker), "{name}");
+        drop(writer);
+    }
+}
+
+#[test]
+fn existing_unverified_layouts_fail_before_tracker_creation_or_metadata_repair() {
+    for layout in ["no-tracker", "no-metadata-row", "malformed-metadata"] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(format!("{layout}.vault"));
+        drop(DbWorker::open(&path, KEY).unwrap());
+        let writer = open_keyed(&path, KEY).unwrap();
+        match layout {
+            "no-tracker" => writer
+                .execute_batch("DROP TABLE schema_migrations")
+                .unwrap(),
+            "no-metadata-row" => writer.execute_batch("DELETE FROM vault_metadata").unwrap(),
+            _ => writer
+                .execute_batch("UPDATE vault_metadata SET vault_id = X'00' WHERE singleton = 1")
+                .unwrap(),
+        }
+        let wal_path = path.with_extension("vault-wal");
+        let before_db = std::fs::read(&path).unwrap();
+        let before_wal = std::fs::read(&wal_path).unwrap();
+        assert!(
+            matches!(DbWorker::open(&path, KEY), Err(DbError::UnsupportedSchema)),
+            "{layout}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before_db,
+            "{layout}: DB changed"
+        );
+        assert_eq!(
+            std::fs::read(&wal_path).unwrap(),
+            before_wal,
+            "{layout}: WAL changed"
+        );
+        drop(writer);
+    }
 }
 
 #[test]
@@ -6392,7 +6497,7 @@ fn read_only_sqlcipher_inspection_observes_committed_wal_marker() {
 }
 
 #[test]
-fn read_only_sqlcipher_inspection_preserves_quiescent_vault_files() {
+fn read_only_sqlcipher_inspection_preserves_existing_quiescent_vault_files() {
     use rusqlite::OpenFlags;
 
     let dir = TempDir::new().unwrap();
@@ -6419,14 +6524,12 @@ fn read_only_sqlcipher_inspection_preserves_quiescent_vault_files() {
     assert_eq!(current, migrations::CURRENT_VERSION);
     drop(reader);
     let after = files();
-    let before_names: Vec<_> = before.iter().map(|(name, _)| name).collect();
-    let after_names: Vec<_> = after.iter().map(|(name, _)| name).collect();
-    assert_eq!(
-        before_names, after_names,
-        "read-only preflight changed file set"
-    );
-    for ((name, old), (_, new)) in before.iter().zip(&after) {
-        assert!(old == new, "read-only preflight changed {name:?}");
+    for (name, old) in &before {
+        let (_, new) = after
+            .iter()
+            .find(|(after_name, _)| after_name == name)
+            .unwrap();
+        assert_eq!(old, new, "read-only preflight changed {name:?}");
     }
 }
 

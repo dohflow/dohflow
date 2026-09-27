@@ -59,10 +59,8 @@ fn reopening_advances_a_stale_schema_stamp() {
     );
 }
 
-/// The re-stamp only moves the version FORWARD: a stamp that is already newer than
-/// the build's schema (a vault created by a newer DohFlow, opened here by an
-/// older one) must be left intact so the health check still surfaces that genuine
-/// mismatch instead of masking it (personal-cfo-4d8.27.1.3).
+/// A stamp newer than this build must refuse before bootstrap; health_check is
+/// not an unlock gate and must never receive a usable worker in this case.
 #[test]
 fn reopening_does_not_regress_a_newer_schema_stamp() {
     let dir = tempfile::tempdir().unwrap();
@@ -82,12 +80,11 @@ fn reopening_does_not_regress_a_newer_schema_stamp() {
         current
     };
 
-    let reopened = DbWorker::open(path, KEY).unwrap();
-    assert_eq!(
-        reopened.vault_metadata().unwrap().schema_version,
-        current + 1,
-        "a newer stamp must not be regressed to the older build's schema version"
-    );
+    assert!(matches!(
+        DbWorker::open(path, KEY),
+        Err(db_worker::DbError::NewerSchema { observed, supported })
+            if observed == current + 1 && supported == current
+    ));
 }
 
 #[test]

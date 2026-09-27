@@ -2546,6 +2546,12 @@ pub enum KernelError {
     /// Another DohFlow process already owns this vault's unlocked runner.
     #[error("vault is already unlocked by another process")]
     VaultInUse,
+    /// This existing vault was written by a newer schema this build cannot open.
+    #[error("vault requires a newer DohFlow version (schema {observed}; supported {supported})")]
+    NewerVaultSchema { observed: i64, supported: i64 },
+    /// An existing vault layout is not a proven supported migration state.
+    #[error("existing vault schema is unsupported or incomplete")]
+    UnsupportedVaultSchema,
     /// The vault could not be unlocked: the password was wrong (the wrapped DEK
     /// failed to authenticate). Deliberately carries no detail — there is no
     /// oracle distinguishing wrong-password from a tampered envelope.
@@ -2583,6 +2589,14 @@ impl From<DbError> for KernelError {
         match error {
             DbError::MissingMetadata(field) => KernelError::MissingMetadata(field),
             DbError::VaultInUse => KernelError::VaultInUse,
+            DbError::NewerSchema {
+                observed,
+                supported,
+            } => KernelError::NewerVaultSchema {
+                observed,
+                supported,
+            },
+            DbError::UnsupportedSchema => KernelError::UnsupportedVaultSchema,
             DbError::WorkerUnavailable(state) => KernelError::Unavailable(state),
             DbError::WriterPanicked => KernelError::WriterPanicked,
             DbError::InvalidCommand(message) => KernelError::Validation(message),

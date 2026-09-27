@@ -117,6 +117,8 @@ fn ipc_error_code(error: &IpcError) -> &'static str {
         IpcError::Validation(_) => "validation",
         IpcError::VaultLocked => "vault_locked",
         IpcError::VaultUnlockFailed => "vault_unlock_failed",
+        IpcError::NewerVaultSchema => "newer_vault_schema",
+        IpcError::UnsupportedVaultSchema => "unsupported_vault_schema",
         IpcError::Unavailable(_) => "unavailable",
         IpcError::WriterPanicked => "writer_panicked",
         IpcError::Persistence(_) => "persistence",
