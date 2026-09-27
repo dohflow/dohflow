@@ -229,6 +229,18 @@ a visible, reviewable diff. **Registry-only validation (dropping the `CHECK`)
 is rejected** because it trades that database-level guarantee for saving one
 small migration per provider, and providers are added rarely.
 
+**Recipe correction (2026-09-27, `personal-cfo-r2pow`).** The column swap
+named above can't reproduce this column. `source_type` is `NOT NULL` with no
+default, and SQLite's `ADD COLUMN` requires a default for `NOT NULL`, so a swap
+would quietly add one. Migration 53 therefore uses SQLite's documented table
+rebuild: create the table with the wider `CHECK`, copy, drop, rename, and
+recreate its index. It runs under a runner flag (`foreign_keys_off`) because
+the bundled SQLite enforces foreign keys and four tables reference
+`source_batches`. The runner turns enforcement off before the transaction,
+requires an empty `PRAGMA foreign_key_check` before commit, and restores it.
+The decision itself (keep the `CHECK`, one reviewed migration per adapter) is
+unchanged. Later adapters reuse the same recipe.
+
 ### 9. Identifiers are one name, forever
 
 **adapter id == registry key == `source_type` token == crate directory

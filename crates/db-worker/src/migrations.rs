@@ -35,6 +35,15 @@ pub(crate) struct Migration {
     pub down: Option<&'static str>,
     /// Whether applying this migration requires rebuilding the read models.
     pub rebuilds_read_models: bool,
+    /// Run this migration (both directions) with foreign-key enforcement
+    /// off — SQLite's documented table-rebuild procedure. The bundled SQLite
+    /// enforces foreign keys by default, so dropping a parent table that has
+    /// child rows fails even when an identical table replaces it in the same
+    /// transaction. The pragma cannot change inside a transaction, so the
+    /// runner turns it off before `BEGIN`, requires an empty
+    /// `PRAGMA foreign_key_check` before `COMMIT`, then restores it. Only for
+    /// a migration that rebuilds a table other tables reference.
+    pub foreign_keys_off: bool,
 }
 
 /// The ordered migration set. `0001` is the consolidated baseline; later
@@ -46,6 +55,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: BASELINE_UP,
         down: None,
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     Migration {
         version: 2,
@@ -54,6 +64,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON operation_log (correlation_id);",
         down: Some("DROP INDEX IF EXISTS idx_operation_log_correlation;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Recurring net-pay income sources (personal-cfo-le79). The schedule is stored
     // as a frequency token + anchor calendar DATE; pay dates are generated at read
@@ -74,6 +85,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS income_sources;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Canonical recurring-obligation model (plan §9.8, personal-cfo-rxw): the
     // rule/schedule (`recurring_events`), its materialised occurrences
@@ -180,6 +192,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             DROP TABLE IF EXISTS recurring_events;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Encrypted attachment store (personal-cfo-bcj, ADR 0023). Metadata only —
     // the encrypted bytes live in `<vault>/blobs/`, each file named by its
@@ -221,6 +234,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             DROP TABLE IF EXISTS attachments;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Security/audit events, distinct from the financial `operation_log` (which is
     // entity-scoped with provenance). Non-financial events — e.g. the onboarding
@@ -253,6 +267,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             DROP TABLE IF EXISTS audit_events;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // A free-text description on bill contracts (personal-cfo-zl1l). Optional and
     // nullable; surfaced in the bills UI alongside name/amount/type. Added via
@@ -265,6 +280,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE bill_contracts ADD COLUMN description TEXT;",
         down: Some("ALTER TABLE bill_contracts DROP COLUMN description;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Encrypted user settings (personal-cfo-p5g): a key/value store for app-level
     // configuration — reporting currency, locale, notification + privacy
@@ -282,6 +298,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS settings;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Soft-archive timestamp for recurring bills (personal-cfo-4d8.2). Nullable;
     // set when a bill is archived (alongside recurring_events.is_active = 0, which
@@ -293,6 +310,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE recurring_events ADD COLUMN archived_at TEXT;",
         down: Some("ALTER TABLE recurring_events DROP COLUMN archived_at;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Forecast assumption-event backbone (ADR 0026 §4, personal-cfo-5u2): the
     // versioned input/override/scenario events a reproducible run applies
@@ -361,6 +379,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS forecast_assumption_events;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Reproducible forecast persistence (ADR 0026 §3, personal-cfo-eqfw PR-1). The
     // baseline forecast_input_snapshots (63t) stored only entity hashes + a cutoff
@@ -409,6 +428,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              ALTER TABLE forecast_input_snapshots DROP COLUMN content_hash;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Forecast-state schema (ADR 0026, personal-cfo-0mg — the F1 finale): scenario
     // definitions plus the actualization / quality / backtest / risk tables the
@@ -494,6 +514,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS scenarios;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Balance observations (ADR 0027, personal-cfo-xmc): evidence of an account's
     // balance at a point in time — NOT a ledger posting (an observation never
@@ -523,6 +544,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON balance_observations (account_id, observed_at);",
         down: Some("DROP TABLE IF EXISTS balance_observations;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Account subtype (ADR 0028, personal-cfo-9dgg): an optional finer
     // classification within an account's cashflow_role (checking vs savings, credit
@@ -543,6 +565,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                     'brokerage', 'retirement'));",
         down: Some("ALTER TABLE accounts DROP COLUMN subtype;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Income-source archival (personal-cfo-tch0): an `archived_at` timestamp to
     // mirror the recurring-bill archive-with-history model (4d8.2). `income_sources`
@@ -554,6 +577,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE income_sources ADD COLUMN archived_at TEXT;",
         down: Some("ALTER TABLE income_sources DROP COLUMN archived_at;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // R2 ingestion staging substrate (ADR 0008, personal-cfo-ihe). The eight tables
     // every importer/extractor/connector commits *through* — no source writes the
@@ -720,6 +744,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS source_batches;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // The Money Inbox triage read model (ADR 0014 §7, bead dsq). One materialized
     // store for items across all kinds; a deterministic `money_inbox::rebuild_in`
@@ -749,6 +774,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON money_inbox_read_model (priority, surfaced_at, snoozed_until);",
         down: Some("DROP TABLE IF EXISTS money_inbox_read_model;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Per-transaction display detail (personal-cfo-byxe): a free-text memo +
     // counterparty kept beside the pure double-entry ledger (ADR 0007 stays clean).
@@ -765,6 +791,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS transaction_details;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Soft-delete for categories (ADR 0030, personal-cfo-bac): "delete" is archive
     // (non-destructive). An archived category hides from pickers but keeps its
@@ -775,6 +802,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE categories ADD COLUMN archived_at TEXT;",
         down: Some("ALTER TABLE categories DROP COLUMN archived_at;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // A transaction's category assignment (ADR 0030, personal-cfo-bac): one row per
     // categorized transaction (1:1), latest-wins. `source`/`confidence_bps` let a
@@ -795,6 +823,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS transaction_categorizations;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Scheduled account-to-account transfers (ADR 0026 §14, personal-cfo-npoe): a
     // recurring definition that projects on the pay-schedule machinery. v1 moves
@@ -816,6 +845,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS recurring_transfers;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Money Inbox action audit log (ADR 0014 §7, personal-cfo-3d3 / -ci71): one row
     // per user action on an inbox item (snooze / dismiss / resolve / import-anyway /
@@ -841,6 +871,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON change_journal_entries (item_id, created_at);",
         down: Some("DROP TABLE IF EXISTS change_journal_entries;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Soft-delete marker for transactions (personal-cfo-4d8.11, ADR 0007 §9): a voided
     // transaction (and its reversal) stay in the append-only ledger but are hidden from
@@ -851,6 +882,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE ledger_transactions ADD COLUMN voided_at TEXT;",
         down: Some("ALTER TABLE ledger_transactions DROP COLUMN voided_at;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Reviewed-state override store (personal-cfo-4d8.7, ADR 0032 §2). Canonical state
     // (like transaction_categorizations), not a read model: a row is the user's explicit
@@ -867,6 +899,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS transaction_reviews;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Tags + notes (personal-cfo-2ryf / -hmt, ADR 0033). Tags = many-to-many labels
     // orthogonal to the 1:1 category; canonical state, soft-delete via archived_at
@@ -898,6 +931,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS tags;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Transaction splits (personal-cfo-kr9, ADR 0034). A side-table decomposition of
     // ONE unchanged ledger transaction: split_lines carry per-line amount + category +
@@ -930,6 +964,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS split_lines;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Canonical merchant-identity entity layer (ADR 0030 addendum, personal-cfo-zrpg).
     // merchant_identities is the real-world merchant; merchant_aliases map each
@@ -964,6 +999,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS merchant_identities;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Prefix aliases for multi-location merchants (ADR 0030 addendum, personal-cfo-2a6r).
     // An 'exact' alias maps one normalized key; a 'prefix' alias matches any key that begins
@@ -976,6 +1012,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE merchant_aliases ADD COLUMN match_type TEXT NOT NULL DEFAULT 'exact';",
         down: Some("ALTER TABLE merchant_aliases DROP COLUMN match_type;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Per-account debt terms (ADR 0035 §5, personal-cfo-6wk.6). A side-table keyed by
     // account_id — the shared attributes both cards (xcq) and loans (40f) extend, kept off
@@ -1006,6 +1043,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS debt_terms;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Credit-card cycle + statement schema (ADR 0039, personal-cfo-xcq). The per-account debt
     // ATTRIBUTES (apr, days, philosophy, paying source) live in `debt_terms` (v29); these two
@@ -1052,6 +1090,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS credit_card_cycles;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Widen the forecast_assumption_events `kind` CHECK to admit 'recurring_debt_payment' — the
     // ADR 0036 "extra $X/mo against debt" overlay (personal-cfo-6wk.19). SQLite can't ALTER a
@@ -1116,6 +1155,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON forecast_assumption_events (status, scenario_id);",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Early-confirmed obligations (ADR 5ie.7, personal-cfo-5ie.9). One durable row per
     // recurring-bill occurrence the user has marked paid ahead of (or on) its scheduled date:
@@ -1141,6 +1181,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS confirmed_obligations;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Authoritative autopay intent on the bill the forecast reads (ADR 0041, personal-cfo-mc7f).
     // Nullable: 1 = autopay, 0 = manual, NULL = legacy/unknown. Distinct from autopay_account_id
@@ -1152,6 +1193,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE recurring_events ADD COLUMN autopay_enabled INTEGER;",
         down: Some("ALTER TABLE recurring_events DROP COLUMN autopay_enabled;"),
         rebuilds_read_models: true,
+        foreign_keys_off: false,
     },
     // Prepare the risk_flags model for the descriptive band-drift signal (personal-cfo-5ie.8): add
     // the `cash_band_breach` flag_type, and reconcile the ADR 0018 §915.1 decision by renaming
@@ -1218,6 +1260,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_risk_flags_run ON risk_flags (forecast_run_id);",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Read-path index for the assertion-anchored balance reads (personal-cfo-3fdd.3b).
     // The latest-assertion lookup (`assertion_anchored_balance`, the batched cash-tier
@@ -1234,6 +1277,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON balance_observations (account_id, observed_at DESC, created_at DESC);",
         down: Some("DROP INDEX IF EXISTS idx_balance_observations_account_date;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Account-model extensions (ADR 0044, personal-cfo-4d8.22): real-asset subtypes,
     // account notes, and the loan's original principal.
@@ -1276,6 +1320,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              ALTER TABLE accounts RENAME COLUMN subtype_v14 TO subtype;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // The display-only real-asset -> financing-liability link (ADR 0044 §5,
     // personal-cfo-4d8.22.3): a nullable one-to-one pointer stored on the asset row
@@ -1289,6 +1334,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE accounts ADD COLUMN linked_account_id BLOB REFERENCES accounts(id);",
         down: Some("ALTER TABLE accounts DROP COLUMN linked_account_id;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // The secondary transaction / authorization date (ADR 0045, personal-cfo-4d8.24.1):
     // the posted date stays the primary date (`posted_at` / `occurred_at`); this nullable
@@ -1305,6 +1351,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              ALTER TABLE transaction_details DROP COLUMN transaction_date;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // The source's own category string carried on a staged transaction (ADR 0045 §3,
     // personal-cfo-4d8.24.1.1). At commit it is matched (by name) to a real category
@@ -1316,6 +1363,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE staged_transactions ADD COLUMN imported_category TEXT;",
         down: Some("ALTER TABLE staged_transactions DROP COLUMN imported_category;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // The normalized merchant key a recurring bill was promoted from (personal-cfo-5n4.8):
     // a durable link so the recurring-suggestion exclusion keys on this, not the bill's
@@ -1327,6 +1375,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE recurring_events ADD COLUMN source_merchant_key TEXT;",
         down: Some("ALTER TABLE recurring_events DROP COLUMN source_merchant_key;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // User dismissals of recurring-bill suggestions (ADR 0046, personal-cfo-4d8.24.6):
     // a suppression keyed on (merchant_key, currency) recording the dismissed amount +
@@ -1347,6 +1396,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             );",
         down: Some("DROP TABLE IF EXISTS recurring_suggestion_suppressions;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Tags on recurring bills (ADR 0033 addendum, personal-cfo-4d8.24.5.1): the shared
     // `tags` vocabulary joined to a recurring event, mirroring `transaction_tags`. Set
@@ -1363,6 +1413,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON recurring_event_tags (tag_id);",
         down: Some("DROP TABLE IF EXISTS recurring_event_tags;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // HSA + crypto investment subtypes (ADR 0028 addendum 2026-07-11, personal-cfo-4d8.25.23):
     // widen the `accounts.subtype` CHECK via the same COLUMN SWAP as v36 (SQLite can't ALTER a
@@ -1395,6 +1446,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              ALTER TABLE accounts RENAME COLUMN subtype_v36 TO subtype;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Re-type the seeded "Credit Card Payment" category from expense to transfer and move it
     // under the "Transfers" group (ADR 0030 addendum 2026-07-11, personal-cfo-4d8.25.21): a
@@ -1429,6 +1481,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                              WHERE is_system = 1 AND parent_id IS NULL AND name = 'Debt');",
         ),
         rebuilds_read_models: true,
+        foreign_keys_off: false,
     },
     // A scenario can carry a user-set expiry (ADR 0051 §3). It is filtered at READ
     // time, never flipped by a job, so rebuilds stay clock-independent (ADR 0014 §7).
@@ -1438,6 +1491,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         up: "ALTER TABLE scenarios ADD COLUMN expires_on TEXT;",
         down: Some("ALTER TABLE scenarios DROP COLUMN expires_on;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // The category filter and the spend aggregate both look split lines up BY CATEGORY
     // (ADR 0052), which the transaction-keyed index cannot serve.
@@ -1448,6 +1502,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                 ON split_lines (category_id);",
         down: Some("DROP INDEX IF EXISTS idx_split_lines_category;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Applying a scenario (ADR 0055): `applied_at` + `applied_op_id` mark a scenario as
     // applied and carry the reversal handle, and `promoted_from_scenario_id` is both the
@@ -1476,6 +1531,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              ALTER TABLE scenarios DROP COLUMN applied_at;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Connector connections (personal-cfo-gglk, ADR 0060 §1): one row per
     // NOTE: the REFERENCES clauses are documentation — PRAGMA foreign_keys
@@ -1518,6 +1574,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS connector_connections;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // The cross-source dedupe layer (personal-cfo-tevp, ADR 0014 §3 addendum)
     // probes staged_transactions by account + amount per committed row; the
@@ -1530,6 +1587,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                  ON staged_transactions (proposed_account_id, amount_minor);",
         down: Some("DROP INDEX IF EXISTS idx_staged_transactions_account_amount;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Deterministic matcher projection for one-off manual future entries
     // (personal-cfo-xtz5, ADR 0026 addendum 2026-09-02): rebuilt alongside
@@ -1545,6 +1603,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              );",
         down: Some("DROP TABLE IF EXISTS manual_entry_links;"),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Local durable job state (personal-cfo-ati).  The table is deliberately
     // class 3: schedules, retry state, payload configuration, and unlock-window
@@ -1590,6 +1649,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS durable_jobs;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
     },
     // Local backup receipts (personal-cfo-8qh). The destination is device-local
     // and remains inside the SQLCipher vault; scheduled backups never delete
@@ -1619,6 +1679,82 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              DROP TABLE IF EXISTS backup_history;",
         ),
         rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // The `lunchflow` source_type token (personal-cfo-r2pow, ADR 0076 decision 8:
+    // keep the CHECK, widen it with one reviewed migration per adapter). SQLite
+    // cannot ALTER a CHECK, and `source_type` is NOT NULL with no default, so
+    // migration 36's column swap (ADD COLUMN needs a default for NOT NULL) would
+    // quietly add one. Instead this is SQLite's documented table rebuild: create
+    // the table exactly as v16 defined it (no later migration altered it) with
+    // the wider CHECK, copy every row, drop the old table, rename, and recreate
+    // its one index. It runs with `foreign_keys_off` (see [`Migration`]): the
+    // four child tables' `REFERENCES source_batches(id)` keep naming the rebuilt
+    // table, and the runner's `foreign_key_check` proves every child still
+    // resolves before the transaction commits.
+    Migration {
+        version: 53,
+        name: "source_type_lunchflow",
+        up: "CREATE TABLE source_batches_v53 (
+                id              BLOB    PRIMARY KEY,
+                source_type     TEXT    NOT NULL CHECK (source_type IN (
+                    'manual', 'csv', 'ofx', 'qfx', 'qif', 'pdf', 'image',
+                    'simplefin', 'teller', 'plaid', 'relay', 'other', 'lunchflow')),
+                source_name     TEXT,
+                file_fingerprint TEXT,
+                parser_version  TEXT,
+                status          TEXT    NOT NULL DEFAULT 'parsing' CHECK (status IN (
+                    'parsing', 'staged', 'committed', 'partially_committed',
+                    'discarded', 'failed', 'superseded')),
+                staged_count    INTEGER NOT NULL DEFAULT 0,
+                committed_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count   INTEGER NOT NULL DEFAULT 0,
+                summary_json    TEXT,
+                imported_at     TEXT,
+                created_at      TEXT    NOT NULL,
+                updated_at      TEXT    NOT NULL
+             );
+             INSERT INTO source_batches_v53 (id, source_type, source_name, file_fingerprint, parser_version, status, staged_count, committed_count, skipped_count, summary_json, imported_at, created_at, updated_at)
+                 SELECT id, source_type, source_name, file_fingerprint, parser_version, status, staged_count, committed_count, skipped_count, summary_json, imported_at, created_at, updated_at FROM source_batches;
+             DROP INDEX IF EXISTS idx_source_batches_fingerprint;
+             DROP TABLE source_batches;
+             ALTER TABLE source_batches_v53 RENAME TO source_batches;
+             CREATE INDEX IF NOT EXISTS idx_source_batches_fingerprint
+                 ON source_batches (file_fingerprint);",
+        // Reverse: the same rebuild with the v16 CHECK. A vault holding
+        // 'lunchflow' batches FAILS this copy (the narrower CHECK rejects the
+        // row) and the migration's transaction rolls back — refusing, rather
+        // than rewriting provenance to another token.
+        down: Some(
+            "CREATE TABLE source_batches_v53 (
+                id              BLOB    PRIMARY KEY,
+                source_type     TEXT    NOT NULL CHECK (source_type IN (
+                    'manual', 'csv', 'ofx', 'qfx', 'qif', 'pdf', 'image',
+                    'simplefin', 'teller', 'plaid', 'relay', 'other')),
+                source_name     TEXT,
+                file_fingerprint TEXT,
+                parser_version  TEXT,
+                status          TEXT    NOT NULL DEFAULT 'parsing' CHECK (status IN (
+                    'parsing', 'staged', 'committed', 'partially_committed',
+                    'discarded', 'failed', 'superseded')),
+                staged_count    INTEGER NOT NULL DEFAULT 0,
+                committed_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count   INTEGER NOT NULL DEFAULT 0,
+                summary_json    TEXT,
+                imported_at     TEXT,
+                created_at      TEXT    NOT NULL,
+                updated_at      TEXT    NOT NULL
+             );
+             INSERT INTO source_batches_v53 (id, source_type, source_name, file_fingerprint, parser_version, status, staged_count, committed_count, skipped_count, summary_json, imported_at, created_at, updated_at)
+                 SELECT id, source_type, source_name, file_fingerprint, parser_version, status, staged_count, committed_count, skipped_count, summary_json, imported_at, created_at, updated_at FROM source_batches;
+             DROP INDEX IF EXISTS idx_source_batches_fingerprint;
+             DROP TABLE source_batches;
+             ALTER TABLE source_batches_v53 RENAME TO source_batches;
+             CREATE INDEX IF NOT EXISTS idx_source_batches_fingerprint
+                 ON source_batches (file_fingerprint);",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: true,
     },
 ];
 
@@ -1671,19 +1807,18 @@ pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u
         if applied.iter().any(|(v, _)| *v == m.version) {
             continue;
         }
-        let tx = conn.transaction()?;
-        tx.execute_batch(m.up)?;
-        tx.execute(
-            "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                m.version,
-                m.name,
-                content_hash(m.up),
-                Utc::now().to_rfc3339()
-            ],
-        )?;
-        tx.commit()?;
+        run_step(conn, m, m.up, |tx| {
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    m.version,
+                    m.name,
+                    content_hash(m.up),
+                    Utc::now().to_rfc3339()
+                ],
+            )
+        })?;
         count += 1;
         needs_rebuild |= m.rebuilds_read_models;
     }
@@ -1693,6 +1828,52 @@ pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u
         projection::rebuild(conn)?;
     }
     Ok(count)
+}
+
+/// Run one migration step — `sql` plus its tracker update — in its own
+/// transaction. A step flagged [`Migration::foreign_keys_off`] follows SQLite's
+/// documented table-rebuild procedure: enforcement off before `BEGIN` (the
+/// pragma is a no-op inside a transaction), an empty `PRAGMA foreign_key_check`
+/// required before `COMMIT`, and the prior setting restored whether the step
+/// committed or rolled back.
+fn run_step(
+    conn: &mut Connection,
+    m: &Migration,
+    sql: &str,
+    track: impl FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<usize>,
+) -> Result<(), DbError> {
+    let restore_foreign_keys = if m.foreign_keys_off {
+        let was_on: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        was_on
+    } else {
+        false
+    };
+    let result = (|| -> Result<(), DbError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        if m.foreign_keys_off {
+            let dangling = tx
+                .prepare("PRAGMA foreign_key_check")?
+                .query([])?
+                .next()?
+                .is_some();
+            if dangling {
+                // Dropping `tx` rolls the step back.
+                return Err(DbError::SelfTestFailed(format!(
+                    "migration {} ({}) left foreign-key violations",
+                    m.version, m.name
+                )));
+            }
+        }
+        track(&tx)?;
+        tx.commit()?;
+        Ok(())
+    })();
+    if restore_foreign_keys {
+        conn.pragma_update(None, "foreign_keys", true)?;
+    }
+    result
 }
 
 /// Roll back applied migrations down to (and including) `to_version`'s state —
@@ -1716,13 +1897,12 @@ pub(crate) fn migrate_down(conn: &mut Connection, to_version: i64) -> Result<u64
                 m.version, m.name
             ))
         })?;
-        let tx = conn.transaction()?;
-        tx.execute_batch(down)?;
-        tx.execute(
-            "DELETE FROM schema_migrations WHERE version = ?1",
-            [m.version],
-        )?;
-        tx.commit()?;
+        run_step(conn, m, down, |tx| {
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version = ?1",
+                [m.version],
+            )
+        })?;
         count += 1;
     }
     conn.pragma_update(None, "user_version", to_version.max(0))?;
@@ -1904,6 +2084,161 @@ mod tests {
         assert_eq!(fb, "ignore_cashflow");
         assert_eq!(parent, transfers.to_vec(), "reparented under Transfers");
         assert!(integrity_ok(&conn));
+    }
+
+    /// Migration v53 rebuilds `source_batches` to admit the `lunchflow` token
+    /// (personal-cfo-r2pow, ADR 0076 decision 8). The round-trip loops cover it
+    /// against an empty table; this proves it on real rows: existing batches and
+    /// their child records survive, `lunchflow` round-trips, unknown tokens are
+    /// still refused, and the down refuses (atomically) while a `lunchflow`
+    /// batch exists rather than rewriting its provenance.
+    #[test]
+    fn v53_admits_lunchflow_and_preserves_existing_batches() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..52]).unwrap(); // schema through v52
+        let batch = |conn: &Connection, id: u8, source_type: &str| {
+            conn.execute(
+                "INSERT INTO source_batches (id, source_type, source_name, status,
+                    created_at, updated_at)
+                 VALUES (?1, ?2, 'fixture', 'staged', '2026-09-27T00:00:00Z',
+                    '2026-09-27T00:00:00Z')",
+                rusqlite::params![&[id; 16][..], source_type],
+            )
+        };
+        batch(&conn, 1, "simplefin").unwrap();
+        conn.execute(
+            "INSERT INTO source_records (id, source_batch_id, source_hash, normalized_json,
+                created_at)
+             VALUES (?1, ?2, 'sha256:fixture', '{}', '2026-09-27T00:00:00Z')",
+            rusqlite::params![&[9u8; 16][..], &[1u8; 16][..]],
+        )
+        .unwrap();
+        assert!(
+            batch(&conn, 2, "lunchflow").is_err(),
+            "v52 must refuse the token"
+        );
+
+        apply(&mut conn, &MIGRATIONS[52..53]).unwrap(); // v53
+
+        let kept: (String, String) = conn
+            .query_row(
+                "SELECT sb.source_type, sb.status FROM source_records sr
+                 JOIN source_batches sb ON sb.id = sr.source_batch_id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, ("simplefin".to_owned(), "staged".to_owned()));
+        batch(&conn, 2, "lunchflow").unwrap();
+        let token: String = conn
+            .query_row(
+                "SELECT source_type FROM source_batches WHERE id = ?1",
+                rusqlite::params![&[2u8; 16][..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(token, "lunchflow");
+        assert!(
+            batch(&conn, 3, "not-a-token").is_err(),
+            "CHECK still enforced"
+        );
+        let null_type = conn.execute(
+            "INSERT INTO source_batches (id, source_type, created_at, updated_at)
+             VALUES (?1, NULL, 'x', 'x')",
+            rusqlite::params![&[4u8; 16][..]],
+        );
+        assert!(null_type.is_err(), "NOT NULL kept, no default invented");
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_source_batches_fingerprint'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1, "fingerprint index recreated");
+        assert!(integrity_ok(&conn));
+        let enforced: bool = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            enforced,
+            "foreign-key enforcement restored after the rebuild"
+        );
+        let dangling = conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_some();
+        assert!(!dangling, "every child row still resolves");
+
+        // Down refuses while a lunchflow batch exists — and changes nothing.
+        assert!(migrate_down(&mut conn, 52).is_err());
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM source_batches", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "a refused down leaves every batch in place");
+
+        conn.execute(
+            "DELETE FROM source_batches WHERE source_type = 'lunchflow'",
+            [],
+        )
+        .unwrap();
+        migrate_down(&mut conn, 52).unwrap();
+        assert!(batch(&conn, 2, "lunchflow").is_err(), "v52 CHECK restored");
+        assert!(integrity_ok(&conn));
+    }
+
+    /// The `foreign_keys_off` runner path refuses a step that leaves a child
+    /// row dangling: the step rolls back, nothing is recorded, and enforcement
+    /// is restored anyway.
+    #[test]
+    fn foreign_keys_off_step_rolls_back_on_a_dangling_child() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..16]).unwrap(); // source_batches + children
+        conn.execute(
+            "INSERT INTO source_batches (id, source_type, created_at, updated_at)
+             VALUES (?1, 'csv', 'x', 'x')",
+            rusqlite::params![&[1u8; 16][..]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO source_records (id, source_batch_id, source_hash, normalized_json,
+                created_at)
+             VALUES (?1, ?2, 'sha256:x', '{}', 'x')",
+            rusqlite::params![&[2u8; 16][..], &[1u8; 16][..]],
+        )
+        .unwrap();
+        let orphaning = [super::Migration {
+            version: 9002,
+            name: "test_orphaning_rebuild",
+            up: "DELETE FROM source_batches;",
+            down: None,
+            rebuilds_read_models: false,
+            foreign_keys_off: true,
+        }];
+
+        assert!(apply(&mut conn, &orphaning).is_err());
+
+        let batches: i64 = conn
+            .query_row("SELECT count(*) FROM source_batches", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(batches, 1, "the orphaning step rolled back");
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM schema_migrations WHERE version = 9002",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 0, "a refused step is not recorded");
+        let enforced: bool = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert!(enforced, "enforcement restored after a refused step");
     }
 
     /// Every prior version → CURRENT up-migration preserves data, leaves the DB
