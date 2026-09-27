@@ -110,6 +110,8 @@ fn destructive_grants_stay_a_deliberate_short_list() {
 
 const DEFAULT_CAPABILITY: &str = include_str!("../capabilities/default.json");
 const DESTRUCTIVE_CAPABILITY: &str = include_str!("../capabilities/destructive.json");
+const DOCUMENT_PREVIEW_CAPABILITY: &str = include_str!("../capabilities/document-preview.json");
+const AGENT_REPORT_CAPABILITY: &str = include_str!("../capabilities/agent-report.json");
 const TAURI_CONF: &str = include_str!("../tauri.conf.json");
 
 /// The only URL pattern the main window may hand to the system browser: pages the
@@ -140,14 +142,16 @@ fn permissions(capability: &str) -> Vec<(String, serde_json::Value)> {
         .collect()
 }
 
-/// Every capability file the app ships, by name. Both target the `main` window
-/// today, and Tauri MERGES scopes across every capability that targets a window
+/// Every capability file the app ships, by name. `default` and `destructive` both
+/// target the `main` window, and Tauri MERGES scopes across every capability that targets a window
 /// (the opener's `open_url` checks the command scope chained with the global
 /// scope), so a grant in one file silently widens a grant in the other. Any test
 /// that pins "exactly one" of something must therefore look at the union.
-const CAPABILITIES: [(&str, &str); 2] = [
+const CAPABILITIES: [(&str, &str); 4] = [
     ("default.json", DEFAULT_CAPABILITY),
     ("destructive.json", DESTRUCTIVE_CAPABILITY),
+    ("document-preview.json", DOCUMENT_PREVIEW_CAPABILITY),
+    ("agent-report.json", AGENT_REPORT_CAPABILITY),
 ];
 
 #[test]
@@ -589,7 +593,7 @@ fn windows_load_only_the_bundled_app_and_no_capability_admits_a_remote_origin() 
 }
 
 #[test]
-fn the_capability_directory_holds_exactly_the_two_reviewed_files() {
+fn the_capability_directory_holds_exactly_the_reviewed_files() {
     // A new capability file is picked up by tauri-build automatically, so without this
     // a grant could land that none of the tests above ever look at.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
@@ -604,9 +608,13 @@ fn the_capability_directory_holds_exactly_the_two_reviewed_files() {
         })
         .collect();
     files.sort();
+    let mut reviewed: Vec<String> = CAPABILITIES
+        .iter()
+        .map(|(file, _)| (*file).to_owned())
+        .collect();
+    reviewed.sort();
     assert_eq!(
-        files,
-        vec!["default.json".to_owned(), "destructive.json".to_owned()],
+        files, reviewed,
         "capabilities/ changed — add the new file to CAPABILITIES so the drift tests cover it"
     );
 }
@@ -640,4 +648,172 @@ fn the_navigation_guard_is_registered_for_every_webview() {
         LIB_RS.contains(".plugin(navigation_guard::init())"),
         "lib.rs must register the navigation guard plugin (personal-cfo-2rf, ADR 0010)"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Window topology (personal-cfo-2no, ADR 0010 addendum 2026-09-27).
+//
+// Tauri serves one invoke handler to every webview, so an untrusted window is
+// isolated by an EMPTY capability that targets only its own label. These pin the
+// capability files to that shape; `tests/window_isolation.rs` proves the resulting
+// ACL decisions on the mock runtime.
+// ---------------------------------------------------------------------------
+
+const WINDOWS_RS: &str = include_str!("../src/windows.rs");
+
+fn targets(capability: &str) -> Vec<String> {
+    let cap: serde_json::Value = serde_json::from_str(capability).expect("valid JSON");
+    cap["windows"]
+        .as_array()
+        .expect("capability declares windows")
+        .iter()
+        .map(|w| w.as_str().expect("window label").to_owned())
+        .collect()
+}
+
+#[test]
+fn each_capability_targets_exactly_its_own_window() {
+    for (file, capability, label) in [
+        ("default.json", DEFAULT_CAPABILITY, "main"),
+        ("destructive.json", DESTRUCTIVE_CAPABILITY, "main"),
+        (
+            "document-preview.json",
+            DOCUMENT_PREVIEW_CAPABILITY,
+            "document_preview",
+        ),
+        ("agent-report.json", AGENT_REPORT_CAPABILITY, "agent_report"),
+    ] {
+        assert_eq!(
+            targets(capability),
+            vec![label.to_owned()],
+            "{file} must target only `{label}` — never a wildcard or a second window"
+        );
+        let cap: serde_json::Value = serde_json::from_str(capability).expect("valid JSON");
+        assert!(
+            cap.get("webviews").is_none() && cap.get("platforms").is_none(),
+            "{file} scopes by window label only"
+        );
+    }
+}
+
+#[test]
+fn the_untrusted_shells_are_granted_nothing() {
+    for (file, capability) in [
+        ("document-preview.json", DOCUMENT_PREVIEW_CAPABILITY),
+        ("agent-report.json", AGENT_REPORT_CAPABILITY),
+    ] {
+        assert!(
+            permissions(capability).is_empty(),
+            "{file} must grant nothing — any grant to an untrusted window needs its own \
+             dated ADR 0010 addendum first"
+        );
+    }
+}
+
+#[test]
+fn main_is_the_only_configured_window_and_is_built_in_rust() {
+    let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).expect("valid JSON");
+    let windows = conf["app"]["windows"].as_array().expect("app.windows");
+    assert_eq!(
+        windows.len(),
+        1,
+        "the shells are created on demand, never from config"
+    );
+    assert_eq!(windows[0]["label"], "main");
+    assert_eq!(
+        windows[0]["create"],
+        serde_json::Value::Bool(false),
+        "main is built by windows::build_main so it gets the new-window deny"
+    );
+    assert!(
+        LIB_RS.contains("windows::build_main(app)?"),
+        "setup() must build the main window"
+    );
+}
+
+#[test]
+fn every_window_builder_denies_new_windows() {
+    // A builder without the hook lets `window.open` create a popup on Windows.
+    let builders = WINDOWS_RS.matches("WebviewWindowBuilder::").count();
+    assert_eq!(
+        builders, 2,
+        "windows.rs builds main (from_config) and the shells (new)"
+    );
+    assert_eq!(
+        WINDOWS_RS
+            .matches(".on_new_window(deny_new_window)")
+            .count(),
+        builders,
+        "every WebviewWindowBuilder in windows.rs installs deny_new_window"
+    );
+    assert!(WINDOWS_RS.contains("NewWindowResponse::Deny"));
+    // Nothing else in the crate builds windows or webviews behind the module's back.
+    for (path, source) in rust_sources() {
+        if path.ends_with("windows.rs") {
+            continue;
+        }
+        for builder in ["WebviewWindowBuilder", "WebviewBuilder", "WindowBuilder"] {
+            assert!(
+                !source.contains(builder),
+                "{path} uses {builder} — every window is built in src/windows.rs"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_shell_smoke_fixture_is_compiled_out_of_release_builds() {
+    // AC: debug facilities stay development-only. Both the definition and its one
+    // call site sit behind `#[cfg(debug_assertions)]`, so a release binary has no
+    // code path that opens a shell from an environment variable.
+    assert!(
+        WINDOWS_RS.contains("#[cfg(debug_assertions)]\npub fn open_smoke_shells_if_requested"),
+        "the smoke fixture must be defined under #[cfg(debug_assertions)]"
+    );
+    assert!(
+        LIB_RS.contains(
+            "#[cfg(debug_assertions)]\n            windows::open_smoke_shells_if_requested(app)?;"
+        ),
+        "the smoke fixture must be called under #[cfg(debug_assertions)]"
+    );
+    assert_eq!(
+        LIB_RS.matches("open_smoke_shells_if_requested").count(),
+        1,
+        "exactly one call site"
+    );
+}
+
+#[test]
+fn app_code_sends_nothing_through_an_ipc_channel() {
+    // ADR 0010 addendum 2026-09-27 rule 7: Tauri's channel-fetch command skips the
+    // ACL and parks large Channel payloads in an app-wide queue under sequential
+    // ids, so an untrusted window could take one. Keep vault data off that path.
+    for (path, source) in rust_sources() {
+        assert!(
+            !source.contains("ipc::Channel"),
+            "{path} uses tauri::ipc::Channel — see ADR 0010 addendum 2026-09-27 rule 7"
+        );
+    }
+}
+
+/// Every `.rs` file under `src/`, as `(path, contents)`.
+fn rust_sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("readable dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("readable source");
+                out.push((path.display().to_string(), text));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut out,
+    );
+    assert!(out.len() > 5, "sanity: walked the real source tree");
+    out
 }

@@ -8,10 +8,11 @@
 mod backup_job;
 pub mod data_dir;
 pub mod ipc;
-mod navigation_guard;
+pub mod navigation_guard;
 pub mod state;
 pub mod update;
 pub mod vault_registry;
+pub mod windows;
 
 pub use state::AppState;
 
@@ -300,6 +301,16 @@ pub fn run() {
             let _ = registry.save(&data_dir);
             let controller = finance_kernel::VaultController::open(active_path);
             app.manage(AppState::with_registry(controller, registry, data_dir));
+
+            // The trusted main window is `"create": false` in tauri.conf.json and built
+            // here (personal-cfo-2no, ADR 0010 addendum 2026-09-27) so it gets the same
+            // new-window deny as the isolated shells — and only once `AppState` is
+            // managed, so its first IPC call can never outrun the state it reads.
+            windows::build_main(app)?;
+            // Debug builds only: PCFO_SMOKE_OPEN_SHELLS=1 opens the isolated shells for
+            // a hands-on isolation check. Not compiled into release builds.
+            #[cfg(debug_assertions)]
+            windows::open_smoke_shells_if_requested(app)?;
 
             // CI launch smoke (personal-cfo-rr0lm, DIST-5): a headless proof that
             // the binary starts and setup() completes without a display or a

@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "document-preview",
+  "description": "Untrusted document_preview shell (personal-cfo-2no, ADR 0010 addendum 2026-09-27): deliberately grants NOTHING. The app ACL manifest is active, so Tauri rejects every app, destructive, core and plugin command from this window in Rust before dispatch. Any future grant (e.g. how personal-cfo-vrng delivers content) needs its own dated ADR 0010 addendum first, and may never include an app or destructive command, opener, dialog, updater, process, shell, fs or http.",
+  "windows": [
+    "document_preview"
+  ],
+  "permissions": []
+}
