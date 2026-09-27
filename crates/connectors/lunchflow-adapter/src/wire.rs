@@ -14,10 +14,11 @@ use core_money::Currency;
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 
-/// `GET /accounts`.
+/// `GET /accounts`. The `accounts` array is REQUIRED: a 200 without it is a
+/// changed response shape, which must fail loudly — never read as "this key
+/// sees no accounts" (found by the owner's live drill, 2026-09-27).
 #[derive(Debug, Deserialize)]
 pub struct AccountList {
-    #[serde(default)]
     pub accounts: Vec<WireAccount>,
 }
 
@@ -51,7 +52,7 @@ impl WireAccount {
 /// `GET /accounts/{id}/transactions`.
 #[derive(Debug, Deserialize)]
 pub struct TransactionList {
-    #[serde(default)]
+    /// Required, like `AccountList::accounts`: missing is a shape change.
     pub transactions: Vec<WireTransaction>,
     /// How many transactions matched. More than were returned means the
     /// response was truncated — the caller holds that account's watermark.

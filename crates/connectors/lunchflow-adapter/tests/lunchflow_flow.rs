@@ -217,6 +217,31 @@ fn accounts_carry_stable_ids_names_and_their_native_currency() {
     assert!(accounts.iter().all(|a| a.proposed_subtype.is_none()));
 }
 
+#[test]
+fn a_changed_response_shape_fails_loudly_instead_of_reading_as_empty() {
+    // A 200 that lacks the documented array must never look like "no
+    // accounts" or "no transactions" — that would link a key that sees
+    // nothing, or silently skip a refresh window.
+    let transport =
+        FixtureTransport::with(&[("/accounts", 200, r#"{"data": [{"id": 1}], "total": 1}"#)]);
+    assert!(matches!(
+        link_with(&transport, KEY),
+        Err(ConnectorError::Provider(_))
+    ));
+
+    let transport = FixtureTransport::with(&[
+        ("/accounts", 200, include_str!("fixtures/accounts.json")),
+        (
+            "/accounts/101/transactions",
+            200,
+            r#"{"items": [], "total": 0}"#,
+        ),
+    ]);
+    assert!(adapter(&transport)
+        .fetch_transactions(&conn(), "101", None)
+        .is_err());
+}
+
 // --- transactions -----------------------------------------------------------
 
 #[test]
