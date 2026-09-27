@@ -26,6 +26,7 @@ use ofx_importer as _;
 // Source-app presets register the same way (personal-cfo-gvidg).
 use source_presets as _;
 // Connector adapters register the same way (personal-cfo-gglk, ADR 0060).
+use lunchflow_adapter as _;
 use simplefin_adapter as _;
 
 use tauri_specta::{collect_commands, Builder};

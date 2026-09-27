@@ -907,9 +907,18 @@ fn an_unknown_adapter_id_is_a_validation_error() {
 fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
     let listing = connector_adapters_impl(connector_core::all_registrations());
     let ids: Vec<&str> = listing.iter().map(|a| a.adapter_id.as_str()).collect();
-    assert_eq!(ids, ["simplefin"]);
+    assert_eq!(ids, ["lunchflow", "simplefin"]);
 
-    let simplefin = &listing[0];
+    let lunchflow = &listing[0];
+    assert!(!lunchflow.enabled, "implemented but not released");
+    let referral = lunchflow
+        .referral
+        .as_ref()
+        .expect("lunchflow carries its referral");
+    assert!(referral.disclosure.contains("may earn a commission"));
+
+    let simplefin = &listing[1];
+    assert!(simplefin.referral.is_none());
     assert!(simplefin.enabled);
     assert_eq!(simplefin.display_name, "SimpleFIN");
     assert!(simplefin.capabilities.transactions && !simplefin.capabilities.holdings);
@@ -962,4 +971,97 @@ fn the_adapters_listing_includes_disabled_providers_flagged() {
         .map(|a| (a.adapter_id.as_str(), a.enabled))
         .collect();
     assert_eq!(flags, [("mock-off", false), ("other", true)]);
+}
+
+// ---------------------------------------------------------------------------
+// LunchFlow (personal-cfo-r2pow): registered, disabled, refused before link
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lunchflow_is_refused_while_disabled_through_the_real_registry() {
+    let (_dir, state) = open_state();
+    // The production resolver. The refusal fires before the adapter's link,
+    // so no request is ever made with this key.
+    let err = connector_link_registered_impl(
+        &state,
+        connector_core::registration_by_id,
+        ConnectorLinkInput {
+            adapter_id: "lunchflow".to_owned(),
+            setup_token: "lf-not-a-real-key".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(msg) if msg.contains("not available")),
+        "got {err:?}"
+    );
+    assert!(connector_connections_impl(&state).unwrap().is_empty());
+}
+
+#[test]
+fn connector_spans_carry_the_adapter_and_never_the_token() {
+    use observability::RedactingMakeWriter;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    // The mock accepts exactly this token and issues a fixed credential —
+    // both stand in for the secrets that must never be logged.
+    let token = "mock-setup-token";
+    let buffer = Buffer::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    let subscriber = tracing_subscriber::registry().with(layer);
+    let (_dir, state) = open_state();
+    let adapter = mock();
+    tracing::subscriber::with_default(subscriber, || {
+        let linked = connector_link_impl(
+            &state,
+            &adapter,
+            ConnectorLinkInput {
+                adapter_id: "other".to_owned(),
+                setup_token: token.to_owned(),
+            },
+        )
+        .unwrap();
+        sync(&state, &adapter, &linked.connection_id);
+    });
+
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    for field in [
+        "connector_link",
+        "connector_sync",
+        "adapter_id",
+        "adapter_version",
+        "outcome",
+        "success",
+        "duration_ms",
+    ] {
+        assert!(logged.contains(field), "missing {field:?} in {logged}");
+    }
+    assert!(!logged.contains(token), "token leaked into logs: {logged}");
+    assert!(
+        !logged.contains("mock-access-url"),
+        "credential leaked into logs: {logged}"
+    );
 }

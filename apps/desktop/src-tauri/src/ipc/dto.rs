@@ -3910,8 +3910,19 @@ pub struct ConnectorAdapterDto {
     pub regions: Vec<String>,
     pub economics: ConnectorEconomicsDto,
     pub disclosure: ConnectorDisclosureDto,
+    /// A referral link DohFlow may earn from, with its FTC sentence (ADR 0076
+    /// §5). Render the URL as selectable text, never a link, with the
+    /// sentence beside it. `None` for most providers.
+    pub referral: Option<ConnectorReferralDto>,
     /// `false` = implemented but not released; `connector_link` refuses it.
     pub enabled: bool,
+}
+
+/// A provider's referral URL and the disclosure that must sit next to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorReferralDto {
+    pub url: String,
+    pub disclosure: String,
 }
 
 /// What the adapter's code can fetch (`connector_core::CapabilitySet`).

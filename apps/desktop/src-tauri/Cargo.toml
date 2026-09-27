@@ -119,6 +119,9 @@ source-presets = { path = "../../../crates/importers/source-presets" }
 # same way importers register. The adapter's ureq/rustls stack enters this
 # lockfile and is scanned by cargo audit.
 connector-core = { path = "../../../crates/connector-core" }
+# Registered disabled (personal-cfo-r2pow, ADR 0076): connector_link refuses it
+# until its release flips the registry flag.
+lunchflow-adapter = { path = "../../../crates/connectors/lunchflow-adapter" }
 simplefin-adapter = { path = "../../../crates/connectors/simplefin-adapter" }
 # Redacting tracing subscriber (personal-cfo-2vs): scrubs logs before any sink.
 observability = { path = "../../../crates/observability" }

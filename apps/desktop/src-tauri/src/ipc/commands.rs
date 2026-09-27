@@ -4550,7 +4550,8 @@ use crate::ipc::dto::{
     ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
     ConnectorCredentialTierDto, ConnectorDisclosureDto, ConnectorEconomicsDto,
     ConnectorExternalAccountDto, ConnectorForgetInput, ConnectorLinkInput, ConnectorLinkResultDto,
-    ConnectorPayerDto, ConnectorSetAccountLinkInput, ConnectorSyncInput, ConnectorSyncResultDto,
+    ConnectorPayerDto, ConnectorReferralDto, ConnectorSetAccountLinkInput, ConnectorSyncInput,
+    ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -4602,10 +4603,57 @@ fn connector_link_error(err: &ConnectorError) -> IpcError {
     }
 }
 
+/// The boundary span for one connector operation (DoD §2.1): which adapter
+/// and version ran, how long it took and how it ended — never the credential,
+/// the setup token, or a provider URL.
+fn connector_span(command: &'static str, adapter: &dyn ConnectorAdapter) -> tracing::Span {
+    tracing::info_span!(
+        "tauri_command",
+        command_id = %Uuid::now_v7(),
+        correlation_id = %Uuid::now_v7(),
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command,
+        adapter_id = adapter.id(),
+        adapter_version = %adapter.version(),
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    )
+}
+
+fn finish_connector_span<T>(
+    span: &tracing::Span,
+    started_at: std::time::Instant,
+    result: &Result<T, IpcError>,
+) {
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let outcome = match result {
+        Ok(_) => "success",
+        Err(error) => ipc_error_code(error),
+    };
+    span.record("duration_ms", duration_ms);
+    span.record("outcome", outcome);
+    tracing::info!(duration_ms, outcome, "connector operation completed");
+}
+
 /// Link through an already-resolved adapter. Skips the registry's enabled
 /// check — production goes through [`connector_link_registered_impl`]; this
 /// entry point exists for tests that drive an unregistered mock adapter.
 pub fn connector_link_impl(
+    state: &AppState,
+    adapter: &dyn ConnectorAdapter,
+    input: ConnectorLinkInput,
+) -> Result<ConnectorLinkResultDto, IpcError> {
+    let started_at = std::time::Instant::now();
+    let span = connector_span("connector_link", adapter);
+    let _entered = span.enter();
+    let result = connector_link_inner(state, adapter, input);
+    finish_connector_span(&span, started_at, &result);
+    result
+}
+
+fn connector_link_inner(
     state: &AppState,
     adapter: &dyn ConnectorAdapter,
     input: ConnectorLinkInput,
@@ -4807,6 +4855,10 @@ fn connector_adapter_dto(registration: &ConnectorRegistration) -> ConnectorAdapt
             cost_summary: metadata.disclosure.cost_summary.to_owned(),
             optional: metadata.disclosure.optional.to_owned(),
         },
+        referral: metadata.referral.map(|r| ConnectorReferralDto {
+            url: r.url.to_owned(),
+            disclosure: r.disclosure.to_owned(),
+        }),
         enabled: metadata.enabled,
     }
 }
@@ -4952,6 +5004,19 @@ fn record_connector_failure(
 }
 
 pub fn connector_sync_impl(
+    state: &AppState,
+    adapter: &dyn ConnectorAdapter,
+    input: ConnectorSyncInput,
+) -> Result<ConnectorSyncResultDto, IpcError> {
+    let started_at = std::time::Instant::now();
+    let span = connector_span("connector_sync", adapter);
+    let _entered = span.enter();
+    let result = connector_sync_inner(state, adapter, input);
+    finish_connector_span(&span, started_at, &result);
+    result
+}
+
+fn connector_sync_inner(
     state: &AppState,
     adapter: &dyn ConnectorAdapter,
     input: ConnectorSyncInput,

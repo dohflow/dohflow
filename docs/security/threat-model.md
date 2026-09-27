@@ -28,9 +28,10 @@ new surfaces land (import, documents, agents).
 - **TB2 — unlocked memory ↔ disk at rest.** While unlocked the DEK lives in memory;
   at rest everything is SQLCipher-encrypted. Parameters:
   [`docs/security/encryption-design.md`](encryption-design.md).
-- **TB3 — the app ↔ the outside world.** Three sanctioned egress paths exist
-  (added since R1; see [Revision history](#revision-history)). Two of the
-  three fire **automatically on every vault unlock**, not only when asked;
+- **TB3 — the app ↔ the outside world.** Four sanctioned egress paths exist
+  (added since R1; see [Revision history](#revision-history)). Three of the
+  four fire **automatically on every vault unlock** once in use, not only when
+  asked (the LunchFlow path is compiled in but cannot be used yet — item 4);
   none carries telemetry or any identifier beyond what the transport
   inherently exposes, and none is reachable from the WebView as a
   general-purpose network capability:
@@ -51,6 +52,17 @@ new surfaces land (import, documents, agents).
      verification happen Rust-side (`tauri-plugin-updater`, not a
      renderer-reachable `http:` grant). Only the **download-and-install**
      step requires an explicit user click, and is minisign-verified first.
+  4. **LunchFlow refresh** (ADR 0076, `personal-cfo-r2pow`) — the pinned
+     Personal API base `https://lunchflow.app/api/v1` (`GET /accounts`,
+     `/accounts/{id}/transactions`, `/accounts/{id}/balance`). Same triggers
+     as SimpleFIN once enabled: automatically on vault unlock (same debounce)
+     plus the manual refresh button. The user's own API key, sent only in an
+     `x-api-key` header; no project credential, no relay. The HTTPS fetch runs
+     Rust-side (`ureq` in `crates/connectors/lunchflow-adapter`, no redirects,
+     HTTPS only), never through a WebView-reachable capability. **Registered
+     disabled:** until its release flips the registry flag (ADR 0076 decision
+     3), `connector_link` refuses it, so no LunchFlow connection can be stored
+     and this path makes no request.
   Backup exports and imports are file operations, not app-managed network
   paths. A scheduled backup stays local unless the user chooses a
   cloud-synced folder; then the provider's own client carries the encrypted
@@ -79,6 +91,7 @@ new surfaces land (import, documents, agents).
 | Silent data corruption | disk faults, interrupted writes | `PRAGMA integrity_check` + read-model rebuild repair + a verified backup/restore drill | `n9w` / `5ivp` / `7pfu` |
 | Schema downgrade / tampered vault | an older/forked binary opening a vault | schema-version coherence check; up/down migration safety tests; pinned SQLCipher engine | `n9w` / `c545` / `7igv` |
 | Connector credential or synced data intercepted/misused | the SimpleFIN Bridge egress path (`connector_link`/`connector_sync`/`connector_forget`, on vault-open + manual refresh) | user's own token, claimed client-side, no project secret, no relay; access URL stored as an encrypted `connector_connections.credential` column (SQLCipher, round-trips via backup/restore, never logged or on the listing row type); fetch is Rust-side (`ureq`), not WebView-reachable. **Likelihood:** low — needs a compromised SimpleFIN Bridge account or a fully-compromised host (already accepted below). **Impact:** medium — scoped to synced account/transaction data plus provider access, not the vault password or DEK. | ADR 0060 · `gglk` · `crates/connectors/simplefin-adapter/src/transport.rs` · `simplefin_drill.rs` |
+| LunchFlow API key or synced data intercepted/misused | the LunchFlow egress path (`connector_link`/`connector_sync`/`connector_forget` against `https://lunchflow.app/api/v1`, on vault-open + manual refresh once enabled; refused while its registry entry is disabled) | user's own Personal API key, no project secret, no relay, never the OAuth Platform API; the key rides only in an `x-api-key` header (never a URL or query), is stored as the encrypted `connector_connections.credential` column exactly like the SimpleFIN access URL, and is never logged, on the listing row, or on any DTO (`lunchflow_flow.rs` leak test; `connector_ipc.rs` span test); no redirects are followed, so the header is never replayed to another host; revocation = forget locally + delete the API destination in the user's LunchFlow dashboard (the API has no revoke endpoint). **Likelihood:** low — needs a compromised LunchFlow account or a fully-compromised host. **Impact:** medium — scoped to synced account/transaction data plus LunchFlow access, not the vault password or DEK. | ADR 0076 · `r2pow` · `crates/connectors/lunchflow-adapter/src/transport.rs` · `lunchflow_drill.rs` |
 | WebView navigates to an attacker-controlled or unexpected origin | the opener grant behind the About card / Support row "open in browser" buttons | scope is exactly `https://dohflow.app/*` (enforced in Rust regardless of WebView request); `opener:default`/`allow-open-path`/`allow-reveal-item-in-dir` and the `shell`/`fs`/`http` plugins are never granted; anchor-click interceptor explicitly disabled, so `openExternal.ts` is the only path to the command and it pre-filters the URL; 4 `acl_coverage.rs` tests pin the grant shape, the disabled interceptor, the absence of wider grants, and an unchanged CSP. **Likelihood:** low — a widened grant must survive review and 4 drift tests. **Impact:** low — worst case opens the project's own domain, not an arbitrary URL. | ADR 0010 addendum 2026-09-06 · `n76x.18` · `apps/desktop/src-tauri/tests/acl_coverage.rs` |
 | Renderer replaces the trusted UI with a remote page | a compromised or buggy renderer setting `location.href`, following an `<a href>`, or submitting a form | a navigation-guard plugin cancels every webview navigation outside the bundled app origin (`tauri://localhost`, or `http(s)://tauri.localhost` on Windows/Android only, never with a port; the dev server only in `tauri dev` builds) — CSP governs what a page loads, not where it goes; blocked attempts log scheme + host only. **Likelihood:** low — requires a renderer compromise first. **Impact:** low — the navigation is cancelled and a remote page would reach no IPC anyway (no capability admits a remote origin). | ADR 0010 · `2rf` · `apps/desktop/src-tauri/src/navigation_guard.rs` |
 | Untrusted document or agent content reaches the command surface | a hostile document or LLM output rendered in the `document_preview` / `agent_report` window | those windows are built in Rust with their own capability files, which grant **nothing** — the app ACL rejects every app, destructive, core and plugin command from their labels before dispatch (Tauri serves one invoke handler to every webview, so the capability, not a missing handler, is the boundary); `default`/`destructive` target `main` only; navigation away and `window.open` are denied for every webview; a mock-runtime test proves the ACL decisions against the committed files. **Likelihood:** low — a grant to an untrusted window must survive an ADR addendum and the drift tests. **Impact:** high if it regressed, which is why it is pinned. | ADR 0010 addendum 2026-09-27 · `2no` · `apps/desktop/src-tauri/tests/window_isolation.rs` |
@@ -98,11 +111,13 @@ new surfaces land (import, documents, agents).
   no arbitrary-host egress — by design.** A user-selected cloud-synced backup
   folder is moved by the provider's own client as ciphertext, as described in
   TB3 and the threat row above; this is not an app-managed upload. The only
-  network egress by the app is the three narrow, pinned-endpoint paths in TB3
-  (SimpleFIN sync, the `dohflow.app`-scoped opener, and the pinned updater
-  endpoint), each with its own mitigations in the threats table above. This is
-  **not** "no background network activity": two of the three — SimpleFIN sync
-  and the updater's version check — fire automatically on every vault unlock,
+  network egress by the app is the four narrow, pinned-endpoint paths in TB3
+  (SimpleFIN sync, the `dohflow.app`-scoped opener, the pinned updater
+  endpoint, and LunchFlow refresh — the last registered but disabled until its
+  release), each with its own mitigations in the threats table above. This is
+  **not** "no background network activity": SimpleFIN sync and the updater's
+  version check — and LunchFlow refresh, once enabled — fire automatically on
+  every vault unlock,
   with no user action beyond entering the password; only the opener and the
   updater's download-and-install step require an explicit click. What this
   still eliminates is the broad class of background exfiltration to an
@@ -171,3 +186,8 @@ new surfaces land (import, documents, agents).
   client as a ciphertext egress path outside DohFlow's network stack, and the
   v2 header's accepted cross-backup linkability; clarified that no destination
   or cloud-folder demand data is reported to DohFlow.
+- **2026-09-27** (`personal-cfo-r2pow`, ADR 0076) — added the fourth TB3
+  egress path, LunchFlow refresh against the pinned
+  `https://lunchflow.app/api/v1`, stated as registered but disabled until its
+  release; added its threats-table row beside SimpleFIN's; corrected the
+  "three paths" wording in TB3 and the accepted-risks bullet.
