@@ -62,9 +62,9 @@ the relay, never an unlock inside the local app (ADR 0066 §2). The build bead
 is `personal-cfo-tpz9q`.
 
 **BYO-Plaid is rejected.** Plaid Link needs a `client_secret` held by a
-confidential server. Plaid's Limited Production access has no Item-count
-trial, and its production review evaluates the *developer*, not each end
-user. A "bring your own Plaid keys" path would put a server secret on the
+confidential server. The program plan's provider research (§10.3) also found
+that Plaid's Limited Production access offers no Item-count trial, and that its
+production review evaluates the *developer*, not each end user. A "bring your own Plaid keys" path would put a server secret on the
 desktop or make each user a Plaid developer. ADR 0004 §2 already declined to
 commit to it; this ADR closes it.
 
@@ -175,6 +175,8 @@ It appears, adjacent to the referral URL, in each of these **placements**:
   sentence above, written per provider for the same reason ADR 0015 §5 keeps
   every disclosure per provider. It is added by the first bead that registers
   a provider with a referral (`r2pow`). SimpleFIN's entry carries none.
+  ADR 0015's 2026-09-27 addendum records the field against the registry's
+  shape.
 
 ### 6. The OFX/CSV zero-adapter path stays first-class
 
@@ -189,10 +191,23 @@ exports already round-trip through the existing importers
 ### 7. The currency rule
 
 Multi-currency is a later milestone (`personal-cfo-d63`, `personal-cfo-rlx`,
-`personal-cfo-k2u3` and `personal-cfo-il6n`). Until it ships, the mapping surface **refuses** to map a
-provider account whose currency differs from the household's reporting
-currency. The refusal copy names the limitation. Until then, the site does not
-claim international coverage. Implemented by `personal-cfo-049p6`.
+`personal-cfo-k2u3` and `personal-cfo-il6n`). Until it ships, the mapping
+surface **refuses** to map a provider account whose currency differs from the
+household's reporting currency. The refusal copy names the limitation. Until
+then, the site does not claim international coverage. Implemented by
+`personal-cfo-049p6`.
+
+**The rule covers every route in, not just new adapters** (owner decision,
+2026-09-27). Some routes reach the app without any new adapter. LunchFlow's
+SimpleFIN Bridge destination, for example, brings a non-US bank in through the
+already-enabled SimpleFIN adapter, so none of decision 3's ship conditions
+apply to it. The refusal and the no-international-claim rule govern those
+routes the same way: the rule is about the account's currency, not about
+which adapter carried it. Until `049p6` ships, the site may describe such a
+route only with a plain currency caveat: an account in a currency other than
+the household's reporting currency can't be used yet. It must not present the
+route as international coverage. The site pages are brought into line by
+`personal-cfo-pxi.2`.
 
 ### 8. `source_type` tokens: one reviewed migration per adapter
 
@@ -257,6 +272,11 @@ provider's id would orphan its history.
   TB3 threat-model row (decision 3d), and ships `enabled: false`.
 - `personal-cfo-6evt` (on `yl5`) and `personal-cfo-049p6` are ship conditions
   for any second provider (decision 3).
+- `personal-cfo-pxi.2` caveats the site's existing descriptions of the
+  LunchFlow SimpleFIN-destination route for non-US banks until `049p6` ships
+  (decision 7).
+- ADR 0015 gains a dated addendum recording decision 5's optional referral
+  field on `ConnectorMetadata`.
 - The site's SimpleFIN features page is generalized into a per-provider
   template, and each page states that provider's own relationship to DohFlow
   (`wk0iv`).

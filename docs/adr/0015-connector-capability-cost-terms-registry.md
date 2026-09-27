@@ -18,8 +18,9 @@
   registry classifies each provider against), ADR 0060 (SimpleFIN-first
   strategy + the onboarding disclosure panel this registry's disclosure text
   feeds), ADR 0076 (`personal-cfo-m0kgx`, multi-provider strategy — decides
-  *which* providers ship and the affiliate/FTC stance; does not redefine this
-  registry's shape), ADR 0022 (parser/document isolation — the no-runtime-
+  *which* providers ship and the affiliate/FTC stance; its §5 adds one
+  optional referral field to this registry's shape, recorded in the
+  2026-09-27 addendum below), ADR 0022 (parser/document isolation — the no-runtime-
   dynamic-loading precedent this ADR's Rust-vs-TOML decision follows)
 
 ## Context
@@ -252,3 +253,24 @@ connectors layered on top of it.
   has no real user yet; when one exists, confirm the economics shape still
   fits a brokered provider's actual billing relationship (DohFlow may be the
   one setting the cost, not just relaying a third party's).
+
+## Addendum (2026-09-27, `personal-cfo-m0kgx`): an optional referral field
+
+ADR 0076 §5 records the owner's affiliate stance (D15, take and disclose). A
+provider that offers a referral fee needs somewhere to keep the referral URL
+and the FTC 16 CFR Part 255 sentence that must sit next to it.
+`ConnectorMetadata` (§2) gains **one optional field** for this: a referral,
+made of
+
+- the referral URL, rendered in the app as selectable text, never a link
+  (ADR 0076 §5; ADR 0010's opener grant is scoped to `https://dohflow.app/*`
+  only); and
+- that provider's disclosure sentence, written **per provider**, for the same
+  reason §5 keeps every `DisclosureText` field per provider. Whether DohFlow
+  can earn from a provider is a fact about that provider, never boilerplate.
+
+`None` means no referral, and SimpleFIN's entry carries none. The field is
+added by the first bead that registers a provider with a referral
+(`personal-cfo-r2pow`), not ahead of need. The picker (`personal-cfo-dto2j`)
+renders the sentence only when the field is present, and the field never
+affects picker order (ADR 0076 §4). Everything else in this ADR is unchanged.
