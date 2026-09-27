@@ -380,3 +380,263 @@ fn the_updater_pubkey_and_endpoint_are_exactly_the_committed_values() {
          signed .app.tar.gz + .sig pair"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Strict CSP + webview posture (personal-cfo-2rf, ADR 0010 and its addenda).
+//
+// The CI step only asserts the CSP is non-null, and the opener test above pins
+// three directives. These pin the WHOLE policy, plus the webview settings the ADR
+// relies on but nothing previously asserted: no exposed Tauri global, no release
+// devtools, no remote origin granted IPC, no remote window URL, the navigation
+// guard, and the general/destructive capability split.
+// ---------------------------------------------------------------------------
+
+const CARGO_TOML: &str = include_str!("../Cargo.toml");
+
+type Directives = std::collections::BTreeMap<String, Vec<String>>;
+
+/// A CSP string as `directive -> source list`, rejecting a repeated directive (the
+/// browser silently ignores the second copy, which would hide a loosened value).
+fn directives(csp: &str) -> Directives {
+    let mut map = Directives::new();
+    for part in csp.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let mut tokens = part.split_whitespace().map(str::to_owned);
+        let name = tokens.next().expect("directive name");
+        let previous = map.insert(name.clone(), tokens.collect());
+        assert!(previous.is_none(), "CSP repeats `{name}`: {csp}");
+    }
+    map
+}
+
+fn security() -> serde_json::Value {
+    let conf: serde_json::Value =
+        serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
+    conf["app"]["security"].clone()
+}
+
+/// The production policy exactly as ADR 0010 specifies it.
+fn adr_0010_production_csp() -> Directives {
+    [
+        ("default-src", &["'self'"][..]),
+        ("script-src", &["'self'"]),
+        ("style-src", &["'self'", "'unsafe-inline'"]),
+        ("connect-src", &["'self'", "ipc:", "http://ipc.localhost"]),
+        ("img-src", &["'self'", "data:"]),
+        ("font-src", &["'self'"]),
+        ("object-src", &["'none'"]),
+        ("frame-src", &["'none'"]),
+        ("base-uri", &["'self'"]),
+        ("form-action", &["'none'"]),
+    ]
+    .into_iter()
+    .map(|(name, sources)| {
+        (
+            name.to_owned(),
+            sources.iter().map(|s| (*s).to_owned()).collect(),
+        )
+    })
+    .collect()
+}
+
+#[test]
+fn the_production_csp_is_exactly_the_adr_0010_policy() {
+    let csp = security()["csp"]
+        .as_str()
+        .expect("app.security.csp is a string")
+        .to_owned();
+    let parsed = directives(&csp);
+
+    // Stated separately so a failure names the rule, not just a map diff.
+    let script = &parsed["script-src"];
+    for forbidden in [
+        "'unsafe-inline'",
+        "'unsafe-eval'",
+        "'wasm-unsafe-eval'",
+        "*",
+    ] {
+        assert!(
+            !script.contains(&forbidden.to_owned()),
+            "script-src must never allow {forbidden} (ADR 0010): {csp}"
+        );
+    }
+    // 'unsafe-inline' in style-src is the ADR's one accepted relaxation; nowhere else.
+    for (name, sources) in &parsed {
+        if name != "style-src" {
+            assert!(
+                !sources.iter().any(|s| s.starts_with("'unsafe-")),
+                "{name} carries an unsafe keyword — only style-src 'unsafe-inline' is accepted: {csp}"
+            );
+        }
+    }
+
+    assert_eq!(
+        parsed,
+        adr_0010_production_csp(),
+        "the production CSP drifted from ADR 0010 — changing it is an ADR addendum, not a config edit"
+    );
+}
+
+#[test]
+fn the_dev_csp_relaxes_only_script_and_connect_for_the_local_dev_server() {
+    let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).expect("valid JSON");
+    let dev_url = conf["build"]["devUrl"]
+        .as_str()
+        .expect("build.devUrl is set");
+    let dev_host = dev_url
+        .strip_prefix("http://")
+        .expect("devUrl is a plain local http URL")
+        .trim_end_matches('/');
+    assert!(
+        dev_host.starts_with("localhost:"),
+        "devUrl must be the local dev server: {dev_url}"
+    );
+
+    let dev = directives(security()["devCsp"].as_str().expect("devCsp is set"));
+    let mut expected = adr_0010_production_csp();
+    expected.insert(
+        "script-src".into(),
+        vec![
+            "'self'".into(),
+            "'unsafe-inline'".into(),
+            "'unsafe-eval'".into(),
+        ],
+    );
+    expected
+        .get_mut("connect-src")
+        .expect("connect-src")
+        .extend([format!("ws://{dev_host}"), format!("http://{dev_host}")]);
+    assert_eq!(
+        dev, expected,
+        "devCsp may only add HMR's script relaxations and the {dev_url} dev server to \
+         connect-src (ADR 0010); every other directive matches production"
+    );
+}
+
+#[test]
+fn the_webview_security_block_holds_only_the_two_policies() {
+    // Every other `app.security` key loosens something: `dangerousDisableAssetCspModification`
+    // stops Tauri hashing the bundle's scripts (pushing toward 'unsafe-inline'),
+    // `assetProtocol` exposes local files to the WebView, `capabilities` inlines grants
+    // outside the reviewed files, and `headers` can override the CSP.
+    let keys: Vec<String> = security()
+        .as_object()
+        .expect("app.security is an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["csp".to_owned(), "devCsp".to_owned()],
+        "app.security gained a key — review it against ADR 0010 and pin it here"
+    );
+}
+
+#[test]
+fn the_tauri_global_is_not_exposed_to_the_frontend() {
+    let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).expect("valid JSON");
+    assert!(
+        matches!(
+            conf["app"].get("withGlobalTauri"),
+            None | Some(serde_json::Value::Bool(false))
+        ),
+        "app.withGlobalTauri must stay off — the frontend reaches Rust only through the \
+         generated bindings (ADR 0010)"
+    );
+}
+
+#[test]
+fn release_builds_cannot_enable_webview_devtools() {
+    // Tauri enables devtools in debug builds only, unless the `devtools` cargo feature
+    // is on — which turns them on in release too.
+    let tauri_dep = CARGO_TOML
+        .lines()
+        .find(|line| line.trim_start().starts_with("tauri = "))
+        .expect("Cargo.toml declares the tauri dependency");
+    assert!(
+        !tauri_dep.contains("devtools"),
+        "the tauri `devtools` feature enables the inspector in release builds: {tauri_dep}"
+    );
+    let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).expect("valid JSON");
+    for window in conf["app"]["windows"].as_array().expect("app.windows") {
+        assert_ne!(
+            window.get("devtools"),
+            Some(&serde_json::Value::Bool(true)),
+            "a window opts into devtools: {window}"
+        );
+    }
+}
+
+#[test]
+fn windows_load_only_the_bundled_app_and_no_capability_admits_a_remote_origin() {
+    let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).expect("valid JSON");
+    for window in conf["app"]["windows"].as_array().expect("app.windows") {
+        if let Some(url) = window.get("url") {
+            let url = url.as_str().expect("window url is a string");
+            assert!(
+                !url.contains(':'),
+                "a window loads a non-app URL ({url}) — windows render the bundled app only"
+            );
+        }
+    }
+    for (file, capability) in CAPABILITIES {
+        let cap: serde_json::Value = serde_json::from_str(capability).expect("valid JSON");
+        assert!(
+            cap.get("remote").is_none(),
+            "{file} grants IPC to remote origins — no remote page may reach the command surface"
+        );
+    }
+}
+
+#[test]
+fn the_capability_directory_holds_exactly_the_two_reviewed_files() {
+    // A new capability file is picked up by tauri-build automatically, so without this
+    // a grant could land that none of the tests above ever look at.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .expect("capabilities/ is readable")
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        vec!["default.json".to_owned(), "destructive.json".to_owned()],
+        "capabilities/ changed — add the new file to CAPABILITIES so the drift tests cover it"
+    );
+}
+
+#[test]
+fn the_general_and_destructive_command_grants_stay_in_separate_capabilities() {
+    // ADR 0010 addendum 2026-07-04: the split is the seam that lets a future isolated
+    // window get the plain surface, or nothing, but never the destructive set.
+    let ids = |capability| -> Vec<String> {
+        permissions(capability)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    };
+    let general = ids(DEFAULT_CAPABILITY);
+    let destructive = ids(DESTRUCTIVE_CAPABILITY);
+    assert!(general.contains(&"allow-app-commands".to_owned()));
+    assert!(!general.contains(&"allow-destructive-commands".to_owned()));
+    assert!(destructive.contains(&"allow-destructive-commands".to_owned()));
+    assert!(!destructive.contains(&"allow-app-commands".to_owned()));
+    // The main window keeps Tauri's curated baseline (ADR 0010) — in the general file.
+    assert!(general.contains(&"core:default".to_owned()));
+    assert!(!destructive.iter().any(|id| id.starts_with("core:")));
+}
+
+#[test]
+fn the_navigation_guard_is_registered_for_every_webview() {
+    // CSP cannot stop a top-level navigation; `src/navigation_guard.rs` does, and it
+    // only works if the plugin is registered on the app builder.
+    assert!(
+        LIB_RS.contains(".plugin(navigation_guard::init())"),
+        "lib.rs must register the navigation guard plugin (personal-cfo-2rf, ADR 0010)"
+    );
+}

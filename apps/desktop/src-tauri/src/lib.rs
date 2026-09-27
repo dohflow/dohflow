@@ -8,6 +8,7 @@
 mod backup_job;
 pub mod data_dir;
 pub mod ipc;
+mod navigation_guard;
 pub mod state;
 pub mod update;
 pub mod vault_registry;
@@ -220,6 +221,11 @@ pub fn run() {
     let builder = ipc_builder();
 
     tauri::Builder::default()
+        // Cancels any webview navigation away from the app's own origin (personal-cfo-2rf,
+        // ADR 0010): the CSP limits what a page loads, not where it goes, so without this a
+        // renderer could replace the trusted UI with a remote page. External pages open in
+        // the system browser via the scoped opener grant below, never in a WebView.
+        .plugin(navigation_guard::init())
         // Native file dialogs for backup export/restore (personal-cfo-dvxm),
         // scoped to open/save in capabilities/default.json (ADR 0010).
         .plugin(tauri_plugin_dialog::init())
