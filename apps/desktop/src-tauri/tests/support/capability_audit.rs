@@ -435,6 +435,44 @@ fn production_csp_invariants(source: &str, csp: &Directives, out: &mut Vec<Viola
     }
 }
 
+/// No network egress beyond ADR 0010's list. Quoted keywords (`'self'`, `'none'`,
+/// hashes, …) are policed by the other rules; every other source — a host, a
+/// scheme, a wildcard — must be one ADR 0010 names for that directive:
+/// `ipc:` / `http://ipc.localhost` in `connect-src`, `data:` in `img-src`, and in
+/// development only, the local dev server in `connect-src`. A remote origin is a
+/// new egress policy: an ADR 0010 addendum and then a code change here, never a
+/// baseline edit alone.
+fn egress_invariants(
+    source: &str,
+    which: &str,
+    csp: &Directives,
+    dev_host: Option<&str>,
+    out: &mut Vec<Violation>,
+) {
+    for (name, sources) in csp {
+        let mut allowed: Vec<String> = match name.as_str() {
+            "connect-src" => vec!["ipc:".into(), "http://ipc.localhost".into()],
+            "img-src" => vec!["data:".into()],
+            _ => vec![],
+        };
+        if let (Some(host), "connect-src") = (dev_host, name.as_str()) {
+            allowed.extend([format!("ws://{host}"), format!("http://{host}")]);
+        }
+        for s in sources.iter().filter(|s| !s.starts_with('\'')) {
+            if !allowed.contains(s) {
+                out.push(v(
+                    "csp-egress",
+                    format!("{source} {which} {name}"),
+                    format!(
+                        "`{s}` is not a source ADR 0010 allows — new egress needs an ADR 0010 \
+                         addendum and a code change, not a baseline edit"
+                    ),
+                ));
+            }
+        }
+    }
+}
+
 /// Development may differ from production ONLY by HMR's script relaxations and the
 /// dev server in connect-src — and nothing development-only may appear in production.
 fn dev_csp_invariants(
@@ -641,6 +679,29 @@ pub fn audit(inputs: &Inputs) -> Vec<Violation> {
     }
     production_csp_invariants("tauri.conf.json", &prod, &mut out);
     production_csp_invariants("baseline", &baseline.production.csp, &mut out);
+    let dev_host = dev_url.trim_end_matches('/').trim_start_matches("http://");
+    egress_invariants("tauri.conf.json", "production", &prod, None, &mut out);
+    egress_invariants(
+        "tauri.conf.json",
+        "development",
+        &dev,
+        Some(dev_host),
+        &mut out,
+    );
+    egress_invariants(
+        "baseline",
+        "production",
+        &baseline.production.csp,
+        None,
+        &mut out,
+    );
+    egress_invariants(
+        "baseline",
+        "development",
+        &baseline.development.csp,
+        Some(dev_host),
+        &mut out,
+    );
     dev_csp_invariants("tauri.conf.json", &prod, &dev, dev_url, &mut out);
     dev_csp_invariants(
         "baseline",

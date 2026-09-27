@@ -17,8 +17,9 @@
 # 3. Some rules are not data and cannot be loosened by editing this file: the
 #    audit also checks the file itself against ADR 0010 (script-src never gets an
 #    unsafe keyword; untrusted windows get no grants; the destructive set only
-#    reaches trusted windows; no remote origin; no wildcard window; no devtools
-#    feature). Changing one of those is an ADR decision, then a code change.
+#    reaches trusted windows; no remote origin — in a capability OR as a CSP
+#    source, so no new network egress; no wildcard window; no devtools feature).
+#    Changing one of those is an ADR decision, then a code change.
 # 4. A new ordinary command needs no edit here: add it to collect_commands! and
 #    to permissions/app-commands.toml, and the ACL-coverage rule is satisfied. A
 #    new DESTRUCTIVE command goes in permissions/destructive-commands.toml AND in

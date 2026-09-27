@@ -1039,6 +1039,54 @@ fn a_baseline_edit_alone_cannot_approve_a_forbidden_grant() {
 }
 
 #[test]
+fn a_baseline_edit_alone_cannot_approve_network_egress() {
+    // 04a-review F1 (PR 40): a remote origin added to connect-src in BOTH the config
+    // and the baseline used to pass. Egress is now an ADR 0010 invariant in code.
+    let remote = "https://api.example.com";
+    let prod = audit_with(|i| {
+        replace_once(
+            &mut i.tauri_conf,
+            "connect-src 'self' ipc: http://ipc.localhost; img-src",
+            &format!("connect-src 'self' ipc: http://ipc.localhost {remote}; img-src"),
+        );
+        replace_once(
+            &mut i.baseline,
+            "\"connect-src\" = [\"'self'\", \"ipc:\", \"http://ipc.localhost\"]",
+            &format!(
+                "\"connect-src\" = [\"'self'\", \"ipc:\", \"http://ipc.localhost\", \"{remote}\"]"
+            ),
+        );
+    });
+    assert!(
+        !prod.iter().any(|v| v.rule == "csp"),
+        "drift agrees by construction:\n{}",
+        render(&prod)
+    );
+    assert_reports(
+        &prod,
+        "csp-egress",
+        "tauri.conf.json production connect-src",
+    );
+    assert_reports(&prod, "csp-egress", "baseline production connect-src");
+
+    // The same for the development policy, and for a directive other than connect-src.
+    let dev = audit_with(|i| {
+        replace_once(
+            &mut i.tauri_conf,
+            "http://localhost:1420; img-src 'self' data:;",
+            "http://localhost:1420; img-src 'self' data: https:;",
+        );
+        replace_once(
+            &mut i.baseline,
+            "\"img-src\" = [\"'self'\", \"data:\"]\n\"object-src\" = [\"'none'\"]\n\"script-src\" = [\"'self'\", \"'unsafe-inline'\"",
+            "\"img-src\" = [\"'self'\", \"data:\", \"https:\"]\n\"object-src\" = [\"'none'\"]\n\"script-src\" = [\"'self'\", \"'unsafe-inline'\"",
+        );
+    });
+    assert_reports(&dev, "csp-egress", "tauri.conf.json development img-src");
+    assert_reports(&dev, "csp-egress", "baseline development img-src");
+}
+
+#[test]
 fn the_baseline_rejects_unknown_fields() {
     // A typo in the baseline must not silently turn a check off.
     let found = audit_with(|i| {
