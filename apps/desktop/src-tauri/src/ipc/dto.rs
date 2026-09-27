@@ -3895,6 +3895,96 @@ pub struct ConnectorAccountLinkDto {
     pub last_synced_on: Option<String>,
 }
 
+/// One provider in the connector registry (ADR 0015) — the picker's input.
+/// Static, compiled-in configuration: there is no secret on this type, and
+/// none may be added (the registry holds no credentials).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorAdapterDto {
+    /// The stable adapter id `connector_link` takes.
+    pub adapter_id: String,
+    pub display_name: String,
+    pub capabilities: ConnectorCapabilitiesDto,
+    pub tier: ConnectorCredentialTierDto,
+    pub account_types: Vec<ConnectorAccountTypeDto>,
+    /// ISO 3166-1 alpha-2 codes.
+    pub regions: Vec<String>,
+    pub economics: ConnectorEconomicsDto,
+    pub disclosure: ConnectorDisclosureDto,
+    /// `false` = implemented but not released; `connector_link` refuses it.
+    pub enabled: bool,
+}
+
+/// What the adapter's code can fetch (`connector_core::CapabilitySet`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorCapabilitiesDto {
+    pub accounts: bool,
+    pub transactions: bool,
+    pub balances: bool,
+    pub holdings: bool,
+    pub liabilities: bool,
+}
+
+/// ADR 0004's credential tiers: what "connect" means for this provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum ConnectorCredentialTierDto {
+    UserToken,
+    ByoCredential,
+    Relay,
+}
+
+/// A class of account the provider reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum ConnectorAccountTypeDto {
+    Depository,
+    Credit,
+    Loan,
+    Investment,
+}
+
+/// Who pays the provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum ConnectorPayerDto {
+    UserDirect,
+    DohflowBrokered,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+pub enum ConnectorBillingPeriodDto {
+    Monthly,
+    Annual,
+}
+
+/// Cost and terms facts, with the dates they were last checked. Money is
+/// integer minor units in `currency`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorEconomicsDto {
+    pub payer: ConnectorPayerDto,
+    pub base_cost_minor_units: Option<u32>,
+    /// ISO 4217.
+    pub currency: Option<String>,
+    pub billing_period: Option<ConnectorBillingPeriodDto>,
+    pub included_connections: Option<u32>,
+    pub extra_connection_cost_minor_units: Option<u32>,
+    pub extra_connection_period: Option<ConnectorBillingPeriodDto>,
+    /// `YYYY-MM-DD`.
+    pub cost_reviewed_at: String,
+    pub terms_url: Option<String>,
+    /// `YYYY-MM-DD`.
+    pub terms_reviewed_at: String,
+    pub history_depth_expectation: String,
+}
+
+/// The four points shown before any credential is entered (ADR 0060), in
+/// this provider's own words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorDisclosureDto {
+    pub independent_party: String,
+    pub handles_credentials: String,
+    pub cost_summary: String,
+    pub optional: String,
+}
+
 /// A stored connection for listing — the credential never crosses the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct ConnectorConnectionDto {

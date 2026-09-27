@@ -167,6 +167,9 @@ commands.allow = [
   # non-main window — connector_link accepts a secret inbound and
   # connector_sync spends the provider request budget.
   "connector_link",
+  # Read-only, static provider registry (personal-cfo-5jjz, ADR 0015): no
+  # vault access, no secret on the DTO.
+  "connector_adapters",
   "connector_connections",
   "connector_set_account_link",
   "connector_sync",

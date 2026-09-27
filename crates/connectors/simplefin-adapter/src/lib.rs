@@ -29,8 +29,9 @@
 
 use chrono::{Days, NaiveDate};
 use connector_core::{
-    balance_record, register_connector, CapabilitySet, Connection, ConnectorAdapter,
-    ConnectorError, Credential, HealthStatus, LinkInput, LinkSession,
+    balance_record, register_connector, review_date, AccountType, BillingPeriod, CapabilitySet,
+    Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorMetadata,
+    Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput, LinkSession, Payer,
 };
 use importer_core::{
     content_fingerprint, ParseWarning, ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord,
@@ -78,7 +79,59 @@ fn real_now_epoch() -> i64 {
 }
 
 static SIMPLEFIN: SimpleFinAdapter = SimpleFinAdapter::new(UreqTransport::new(), real_now_epoch);
-register_connector!(SIMPLEFIN);
+
+/// SimpleFIN's registry entry (ADR 0015, personal-cfo-5jjz).
+///
+/// Cost and terms were checked against the live Bridge pages on the review
+/// dates below: $15.00/year (also offered at $1.50/month — the yearly plan is
+/// recorded because the shipped disclosure names a yearly fee), up to 25
+/// institutions and 25 apps, paid by the user to the Bridge. Coverage and
+/// history depth: docs/research/simplefin-feasibility.md.
+///
+/// The disclosure is the shipped onboarding copy (personal-cfo-kdw6,
+/// `apps/desktop/src/onboarding/BridgeEducation.tsx`) as rendered text,
+/// byte-for-byte; the app's `connector_registry` test pins the two together
+/// until the picker renders this entry directly. It is SimpleFIN's own
+/// wording — true of this provider, not a template for others.
+pub const SIMPLEFIN_METADATA: ConnectorMetadata = ConnectorMetadata {
+    tier: CredentialTier::UserToken,
+    account_types: &[
+        AccountType::Depository,
+        AccountType::Credit,
+        AccountType::Loan,
+        AccountType::Investment,
+    ],
+    regions: &["US"],
+    economics: ConnectorEconomics {
+        payer: Payer::UserDirect,
+        base_cost_minor_units: Some(1500),
+        currency: Some("USD"),
+        billing_period: Some(BillingPeriod::Annual),
+        included_connections: Some(25),
+        extra_connection_cost_minor_units: None,
+        extra_connection_period: None,
+        cost_reviewed_at: review_date(2026, 9, 27),
+        terms_url: Some("https://beta-bridge.simplefin.org/info/terms"),
+        terms_reviewed_at: review_date(2026, 9, 27),
+        history_depth_expectation: "About 2\u{2013}6 months at first link, depending on the bank.",
+    },
+    disclosure: DisclosureText {
+        independent_party: "Not affiliated with us. If you use it, the Bridge is a separate \
+                            service handling your bank connections under its own terms and \
+                            privacy policy.",
+        handles_credentials: "The SimpleFIN Bridge is an independent service that connects to \
+                              your banks and hands this app read-only account and transaction \
+                              data. Your bank credentials are given to the Bridge, never to \
+                              this app.",
+        cost_summary: "It costs money. The Bridge charges a small yearly fee, paid to them \
+                       \u{2014} nothing here is billed by this app.",
+        optional: "It is optional. Everything in this app works with manual entry and file \
+                   imports; a connection only saves the typing.",
+    },
+    enabled: true,
+};
+
+register_connector!(SIMPLEFIN, SIMPLEFIN_METADATA);
 
 impl<T: Transport> SimpleFinAdapter<T> {
     #[must_use]

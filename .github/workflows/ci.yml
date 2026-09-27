@@ -320,6 +320,14 @@ jobs:
           fi
           echo "connector mock stays out of production dependencies."
 
+      # Connector registry review cadence (ADR 0015 §7, personal-cfo-5jjz): a
+      # provider's cost or terms review older than six months is a WARNING
+      # annotation, never a failure — it asks a human to re-check the
+      # provider's pages without blocking unrelated releases.
+      - name: Connector registry review cadence (warning only)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: cargo run --quiet -p connector-core --example registry_review
+
       # Importer plugins register at COMPILE TIME (personal-cfo-eay) and parse
       # untrusted bytes behind the isolation boundary (ADR 0022): no runtime
       # dynamic loading, and no database / async runtime / Tauri shell in the

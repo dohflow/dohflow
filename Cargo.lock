@@ -222,6 +222,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "simplefin-adapter",
  "static_assertions",
  "thiserror",
  "zeroize",

@@ -522,13 +522,164 @@ pub trait ConnectorAdapter: Sync {
 }
 
 // ===========================================================================
+// Provider metadata — the capability/cost/terms registry (ADR 0015)
+// ===========================================================================
+
+/// Which ADR 0004 credential tier a provider uses — what "connect" means
+/// before any adapter code runs (paste a token vs. open the system browser).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialTier {
+    /// ADR 0004 §2 — the user pastes a provider-issued token.
+    UserToken,
+    /// ADR 0004 §2 — the user brings their own provider credentials.
+    ByoCredential,
+    /// ADR 0004 §3 — auth completes through the relay.
+    Relay,
+}
+
+/// A class of account a provider can reach. Coarse on purpose: this is the
+/// "what does this provider cover" fact a picker shows before connecting, not
+/// the ledger's own taxonomy (`core_ledger::AccountSubtype`), which the user
+/// assigns after mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountType {
+    /// Checking, savings, money-market.
+    Depository,
+    /// Credit cards and lines of credit.
+    Credit,
+    /// Mortgages and other term loans.
+    Loan,
+    /// Brokerage and retirement accounts.
+    Investment,
+}
+
+/// Who pays the provider (ADR 0015 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Payer {
+    /// The user pays the provider directly; nothing is billed by this app.
+    UserDirect,
+    /// The provider is paid through DohFlow (ADR 0004 §3 mode 3). No user yet.
+    DohflowBrokered,
+    /// No cost — every cost field must then be `None`.
+    None,
+}
+
+/// A billing cadence for a published price.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingPeriod {
+    Monthly,
+    Annual,
+}
+
+/// Who pays a provider, how much, and when those facts were last checked
+/// against the provider's own pages (ADR 0015 §4, §7). Money is integer minor
+/// units in `currency` — never a float.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorEconomics {
+    pub payer: Payer,
+    pub base_cost_minor_units: Option<u32>,
+    /// ISO 4217, e.g. `"USD"`.
+    pub currency: Option<&'static str>,
+    pub billing_period: Option<BillingPeriod>,
+    pub included_connections: Option<u32>,
+    pub extra_connection_cost_minor_units: Option<u32>,
+    pub extra_connection_period: Option<BillingPeriod>,
+    pub cost_reviewed_at: NaiveDate,
+    pub terms_url: Option<&'static str>,
+    pub terms_reviewed_at: NaiveDate,
+    /// Free text: what the user should expect on first link.
+    pub history_depth_expectation: &'static str,
+}
+
+/// How long a cost or terms review stays current before CI warns (ADR 0015 §7).
+pub const REVIEW_CADENCE_MONTHS: u32 = 6;
+
+/// One of the two reviewed facts ADR 0015 §7 puts on a cadence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewedFact {
+    Cost,
+    Terms,
+}
+
+impl ConnectorEconomics {
+    /// The reviewed facts older than [`REVIEW_CADENCE_MONTHS`] as of `today`.
+    /// `today` is injected (DoD: no wall clock in test paths); a stale review
+    /// is a CI *warning*, never a failure (ADR 0015 §7).
+    #[must_use]
+    pub fn overdue_reviews(&self, today: NaiveDate) -> Vec<ReviewedFact> {
+        let overdue = |reviewed: NaiveDate| {
+            reviewed
+                .checked_add_months(chrono::Months::new(REVIEW_CADENCE_MONTHS))
+                .is_none_or(|due| due < today)
+        };
+        let mut out = Vec::new();
+        if overdue(self.cost_reviewed_at) {
+            out.push(ReviewedFact::Cost);
+        }
+        if overdue(self.terms_reviewed_at) {
+            out.push(ReviewedFact::Terms);
+        }
+        out
+    }
+}
+
+/// What the user is told before any credential is entered — ADR 0060's four
+/// fixed points, one field each (ADR 0015 §5).
+///
+/// Every field is written **per provider**, at that provider's registration.
+/// There is deliberately no shared default: whether a provider is truly
+/// independent and unaffiliated is a fact about that provider (and, for a
+/// commissioned provider, a material-connection disclosure), never boilerplate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisclosureText {
+    pub independent_party: &'static str,
+    pub handles_credentials: &'static str,
+    pub cost_summary: &'static str,
+    pub optional: &'static str,
+}
+
+/// The static, business-facing half of a provider's registration (ADR 0015
+/// §2). What the adapter's code can fetch stays on
+/// [`ConnectorAdapter::capabilities`]; this is what the provider covers,
+/// charges and requires. Holds no secrets — it is compiled-in configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorMetadata {
+    pub tier: CredentialTier,
+    pub account_types: &'static [AccountType],
+    /// ISO 3166-1 alpha-2 codes.
+    pub regions: &'static [&'static str],
+    pub economics: ConnectorEconomics,
+    pub disclosure: DisclosureText,
+    /// `false` until a release bead flips it (ADR 0015 §6); a disabled adapter
+    /// is refused before its `link` is ever called.
+    pub enabled: bool,
+}
+
+/// A review date usable in a `const`/`static` registration. Panics — at
+/// compile time, in a const context — on an impossible date.
+#[must_use]
+pub const fn review_date(year: i32, month: u32, day: u32) -> NaiveDate {
+    match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(date) => date,
+        None => panic!("invalid review date"),
+    }
+}
+
+// ===========================================================================
 // Registry — compile-time, via `inventory` (mirrors importer-core)
 // ===========================================================================
 
-/// A compile-time adapter registration. Created by [`register_connector!`] —
-/// never constructed by hand.
+/// A compile-time adapter registration: the adapter plus its provider
+/// metadata, so an adapter cannot be registered without its registry entry
+/// (ADR 0015 §2). Created by [`register_connector!`] — never constructed by
+/// hand outside tests.
 pub struct ConnectorRegistration {
     pub adapter: &'static dyn ConnectorAdapter,
+    pub metadata: ConnectorMetadata,
 }
 
 inventory::collect!(ConnectorRegistration);
@@ -537,34 +688,136 @@ inventory::collect!(ConnectorRegistration);
 // downstream crate having to name `inventory` itself.
 pub use inventory;
 
-/// Register a connector adapter at compile time.
+/// Register a connector adapter, with its [`ConnectorMetadata`], at compile
+/// time.
 ///
 /// ```ignore
-/// use connector_core::{register_connector, ConnectorAdapter};
+/// use connector_core::{register_connector, ConnectorAdapter, ConnectorMetadata};
 /// struct SimpleFin;
 /// impl ConnectorAdapter for SimpleFin { /* … */ }
-/// register_connector!(SimpleFin);
+/// const SIMPLEFIN_METADATA: ConnectorMetadata = ConnectorMetadata { /* … */ };
+/// register_connector!(SimpleFin, SIMPLEFIN_METADATA);
 /// ```
 #[macro_export]
 macro_rules! register_connector {
-    ($adapter:expr) => {
+    ($adapter:expr, $metadata:expr) => {
         $crate::inventory::submit! {
-            $crate::ConnectorRegistration { adapter: &$adapter }
+            $crate::ConnectorRegistration { adapter: &$adapter, metadata: $metadata }
         }
     };
 }
 
+/// Every registration (adapter + metadata), in registration order.
+pub fn all_registrations() -> impl Iterator<Item = &'static ConnectorRegistration> {
+    inventory::iter::<ConnectorRegistration>.into_iter()
+}
+
+/// Look up a registration by its adapter's stable id.
+#[must_use]
+pub fn registration_by_id(id: &str) -> Option<&'static ConnectorRegistration> {
+    all_registrations().find(|r| r.adapter.id() == id)
+}
+
 /// Every registered adapter, in registration order.
 pub fn all_connectors() -> impl Iterator<Item = &'static dyn ConnectorAdapter> {
-    inventory::iter::<ConnectorRegistration>
-        .into_iter()
-        .map(|r| r.adapter)
+    all_registrations().map(|r| r.adapter)
 }
 
 /// Look up an adapter by its stable id.
 #[must_use]
 pub fn connector_by_id(id: &str) -> Option<&'static dyn ConnectorAdapter> {
-    all_connectors().find(|a| a.id() == id)
+    registration_by_id(id).map(|r| r.adapter)
+}
+
+/// Structural checks over a set of registrations: unique adapter ids, and
+/// metadata that is internally consistent (ADR 0015 §4–§6). Run over
+/// [`all_registrations`] by the registry-membership tests.
+///
+/// # Errors
+/// Every problem found, each naming the adapter id.
+pub fn validate_registrations<'a>(
+    registrations: impl IntoIterator<Item = &'a ConnectorRegistration>,
+) -> Result<(), Vec<String>> {
+    let mut problems = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for registration in registrations {
+        let id = registration.adapter.id();
+        if !seen.insert(id) {
+            problems.push(format!("{id}: registered more than once"));
+        }
+        validate_metadata(id, &registration.metadata, &mut problems);
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
+}
+
+fn validate_metadata(id: &str, metadata: &ConnectorMetadata, problems: &mut Vec<String>) {
+    let economics = &metadata.economics;
+    let mut problem = |message: &str| problems.push(format!("{id}: {message}"));
+
+    if metadata.regions.is_empty() {
+        problem("regions must name at least one country");
+    }
+    if !metadata
+        .regions
+        .iter()
+        .all(|r| r.len() == 2 && r.bytes().all(|b| b.is_ascii_uppercase()))
+    {
+        problem("regions must be ISO 3166-1 alpha-2 codes");
+    }
+    if metadata.account_types.is_empty() {
+        problem("account_types must name at least one account type");
+    }
+    let disclosure = &metadata.disclosure;
+    if [
+        disclosure.independent_party,
+        disclosure.handles_credentials,
+        disclosure.cost_summary,
+        disclosure.optional,
+    ]
+    .iter()
+    .any(|text| text.trim().is_empty())
+    {
+        problem("every disclosure point must be written");
+    }
+    if economics.history_depth_expectation.trim().is_empty() {
+        problem("history_depth_expectation must be written");
+    }
+    if metadata.enabled && economics.terms_url.is_none() {
+        problem("an enabled provider must link its terms");
+    }
+
+    let has_cost = economics.base_cost_minor_units.is_some()
+        || economics.extra_connection_cost_minor_units.is_some();
+    if economics.payer == Payer::None {
+        if has_cost
+            || economics.currency.is_some()
+            || economics.billing_period.is_some()
+            || economics.extra_connection_period.is_some()
+        {
+            problem("payer None carries no cost fields");
+        }
+    } else if economics.base_cost_minor_units.is_none() {
+        problem("a paid provider must state its base cost");
+    }
+    if economics.base_cost_minor_units.is_some() != economics.billing_period.is_some() {
+        problem("base cost and billing period go together");
+    }
+    if economics.extra_connection_cost_minor_units.is_some()
+        != economics.extra_connection_period.is_some()
+    {
+        problem("extra-connection cost and period go together");
+    }
+    match economics.currency {
+        Some(code) if code.len() != 3 || !code.bytes().all(|b| b.is_ascii_uppercase()) => {
+            problem("currency must be an ISO 4217 code");
+        }
+        None if has_cost => problem("a cost needs a currency"),
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -678,6 +931,91 @@ mod tests {
         );
         let parsed: serde_json::Value = serde_json::from_str(&first.normalized_json).unwrap();
         assert!(parsed.get("observed_at").is_some());
+    }
+
+    fn registration(id: &'static str, metadata: ConnectorMetadata) -> ConnectorRegistration {
+        ConnectorRegistration {
+            adapter: Box::leak(Box::new(mock::MockConnector::with_fixture().with_id(id))),
+            metadata,
+        }
+    }
+
+    #[test]
+    fn a_consistent_registry_validates() {
+        let regs = [
+            registration("a", mock::mock_metadata(true)),
+            registration("b", mock::mock_metadata(false)),
+        ];
+        assert_eq!(validate_registrations(&regs), Ok(()));
+    }
+
+    #[test]
+    fn duplicate_adapter_ids_are_rejected() {
+        let regs = [
+            registration("dup", mock::mock_metadata(true)),
+            registration("dup", mock::mock_metadata(false)),
+        ];
+        let problems = validate_registrations(&regs).unwrap_err();
+        assert_eq!(problems, vec!["dup: registered more than once".to_owned()]);
+    }
+
+    #[test]
+    fn inconsistent_metadata_is_rejected_with_the_adapter_named() {
+        let mut free_with_cost = mock::mock_metadata(false);
+        free_with_cost.economics.base_cost_minor_units = Some(100);
+        let mut paid_without_price = mock::mock_metadata(false);
+        paid_without_price.economics.payer = Payer::UserDirect;
+        let mut bad_codes = mock::mock_metadata(false);
+        bad_codes.regions = &["usa"];
+        bad_codes.economics.payer = Payer::UserDirect;
+        bad_codes.economics.base_cost_minor_units = Some(150);
+        bad_codes.economics.billing_period = Some(BillingPeriod::Monthly);
+        bad_codes.economics.currency = Some("usd");
+        let mut enabled_without_terms = mock::mock_metadata(true);
+        enabled_without_terms.economics.terms_url = None;
+        let mut blank_disclosure = mock::mock_metadata(false);
+        blank_disclosure.disclosure.independent_party = "  ";
+
+        let cases = [
+            (free_with_cost, "payer None carries no cost fields"),
+            (
+                paid_without_price,
+                "a paid provider must state its base cost",
+            ),
+            (bad_codes, "regions must be ISO 3166-1 alpha-2 codes"),
+            (bad_codes, "currency must be an ISO 4217 code"),
+            (
+                enabled_without_terms,
+                "an enabled provider must link its terms",
+            ),
+            (blank_disclosure, "every disclosure point must be written"),
+        ];
+        for (metadata, expected) in cases {
+            let problems = validate_registrations(&[registration("x", metadata)]).unwrap_err();
+            assert!(
+                problems.contains(&format!("x: {expected}")),
+                "expected {expected:?} in {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reviews_go_overdue_after_six_months_not_before() {
+        let mut economics = mock::mock_metadata(true).economics;
+        economics.cost_reviewed_at = review_date(2026, 1, 15);
+        economics.terms_reviewed_at = review_date(2026, 3, 1);
+
+        assert!(economics
+            .overdue_reviews(review_date(2026, 7, 15))
+            .is_empty());
+        assert_eq!(
+            economics.overdue_reviews(review_date(2026, 7, 16)),
+            vec![ReviewedFact::Cost]
+        );
+        assert_eq!(
+            economics.overdue_reviews(review_date(2026, 9, 2)),
+            vec![ReviewedFact::Cost, ReviewedFact::Terms]
+        );
     }
 
     #[test]
