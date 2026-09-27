@@ -30,8 +30,9 @@
 use chrono::{Days, NaiveDate};
 use connector_core::{
     balance_record, register_connector, review_date, AccountType, BillingPeriod, CapabilitySet,
-    Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorMetadata,
-    Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput, LinkSession, Payer,
+    Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorLinkGuide,
+    ConnectorMetadata, Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput,
+    LinkSession, Payer,
 };
 use importer_core::{
     content_fingerprint, ParseWarning, ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord,
@@ -127,6 +128,23 @@ pub const SIMPLEFIN_METADATA: ConnectorMetadata = ConnectorMetadata {
                        \u{2014} nothing here is billed by this app.",
         optional: "It is optional. Everything in this app works with manual entry and file \
                    imports; a connection only saves the typing.",
+    },
+    link_guide: ConnectorLinkGuide {
+        title: "About the SimpleFIN Bridge",
+        refresh_note: "Data refreshes about daily. The Bridge pulls from your banks roughly \
+                       once a day; this app refreshes it on open and on demand.",
+        setup_steps: &[
+            "Create an account at https://bridge.simplefin.org (copy it into your browser) \
+             and connect each bank there.",
+            "Under Apps, choose New app connection to get a setup token.",
+            "Paste the token below. Tokens are single-use; make a new one if a link fails.",
+        ],
+        provider_url: "https://bridge.simplefin.org",
+        credential_label: "Setup token",
+        credential_noun: "setup token",
+        credential_placeholder: "Paste the setup token",
+        paste_instructions: "Create the token in the SimpleFIN Bridge under Apps, then paste \
+                             it here. Tokens are single-use.",
     },
     // SimpleFIN pays DohFlow nothing: no referral (ADR 0076 §5).
     referral: None,

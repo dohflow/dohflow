@@ -907,9 +907,10 @@ fn an_unknown_adapter_id_is_a_validation_error() {
 fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
     let listing = connector_adapters_impl(connector_core::all_registrations());
     let ids: Vec<&str> = listing.iter().map(|a| a.adapter_id.as_str()).collect();
-    assert_eq!(ids, ["lunchflow", "simplefin"]);
+    // ADR 0076 §4: the launch provider first, then alphabetical.
+    assert_eq!(ids, ["simplefin", "lunchflow"]);
 
-    let lunchflow = &listing[0];
+    let lunchflow = &listing[1];
     assert!(!lunchflow.enabled, "implemented but not released");
     let referral = lunchflow
         .referral
@@ -917,7 +918,7 @@ fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
         .expect("lunchflow carries its referral");
     assert!(referral.disclosure.contains("may earn a commission"));
 
-    let simplefin = &listing[1];
+    let simplefin = &listing[0];
     assert!(simplefin.referral.is_none());
     assert!(simplefin.enabled);
     assert_eq!(simplefin.display_name, "SimpleFIN");
@@ -941,9 +942,19 @@ fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
     }
     let mut all_keys = Vec::new();
     keys(&serde_json::to_value(&listing).unwrap(), &mut all_keys);
-    // `handles_credentials` is disclosure prose ABOUT credentials — the one
-    // key the substring scan must let through.
-    for key in all_keys.iter().filter(|k| *k != "handles_credentials") {
+    // These keys hold copy ABOUT the credential (disclosure prose, the link
+    // guide's label/noun/placeholder) — never a credential. The allowlist is
+    // exact names, so any other credential-shaped key still fails.
+    const COPY_ABOUT_CREDENTIALS: [&str; 4] = [
+        "handles_credentials",
+        "credential_label",
+        "credential_noun",
+        "credential_placeholder",
+    ];
+    for key in all_keys
+        .iter()
+        .filter(|k| !COPY_ABOUT_CREDENTIALS.contains(&k.as_str()))
+    {
         for forbidden in [
             "token",
             "secret",
@@ -970,6 +981,7 @@ fn the_adapters_listing_includes_disabled_providers_flagged() {
         .iter()
         .map(|a| (a.adapter_id.as_str(), a.enabled))
         .collect();
+    // No launch provider among the mocks: alphabetical by display name, then id.
     assert_eq!(flags, [("mock-off", false), ("other", true)]);
 }
 

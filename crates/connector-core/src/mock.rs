@@ -18,8 +18,9 @@ use semver::Version;
 
 use crate::{
     review_date, AccountType, Capability, CapabilitySet, Connection, ConnectorAdapter,
-    ConnectorEconomics, ConnectorError, ConnectorMetadata, ConnectorRegistration, Credential,
-    CredentialTier, DisclosureText, HealthStatus, LinkInput, LinkSession, Payer,
+    ConnectorEconomics, ConnectorError, ConnectorLinkGuide, ConnectorMetadata,
+    ConnectorRegistration, Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput,
+    LinkSession, Payer,
 };
 
 /// Registry metadata for the mock provider — free, US-only, with obviously
@@ -49,6 +50,16 @@ pub const fn mock_metadata(enabled: bool) -> ConnectorMetadata {
             handles_credentials: "mock: credential-handling point",
             cost_summary: "mock: cost point",
             optional: "mock: optional point",
+        },
+        link_guide: ConnectorLinkGuide {
+            title: "mock: guide title",
+            refresh_note: "mock: refresh note",
+            setup_steps: &["mock: step at https://mock.invalid"],
+            provider_url: "https://mock.invalid",
+            credential_label: "mock: credential",
+            credential_noun: "mock credential",
+            credential_placeholder: "mock: paste",
+            paste_instructions: "mock: paste instructions",
         },
         referral: None,
         enabled,

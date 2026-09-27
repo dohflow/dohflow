@@ -642,6 +642,30 @@ pub struct DisclosureText {
     pub optional: &'static str,
 }
 
+/// How to connect one provider, as the picker walks the user through it (ADR
+/// 0015's 2026-09-27 link-guide addendum). Every field is written per
+/// provider. `provider_url` is rendered as selectable text wherever it
+/// appears in a step, never as a link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorLinkGuide {
+    /// The disclosure panel's heading.
+    pub title: &'static str,
+    /// How often the provider pulls from the user's banks, and when the app
+    /// refreshes.
+    pub refresh_note: &'static str,
+    /// What the user does at the provider to get a credential, in order.
+    pub setup_steps: &'static [&'static str],
+    /// The provider's own site (https).
+    pub provider_url: &'static str,
+    /// The credential field's label, e.g. "Setup token".
+    pub credential_label: &'static str,
+    /// The credential in running text, e.g. "setup token".
+    pub credential_noun: &'static str,
+    pub credential_placeholder: &'static str,
+    /// Shown above the credential field.
+    pub paste_instructions: &'static str,
+}
+
 /// A provider's referral link and the FTC 16 CFR Part 255 sentence that must
 /// sit next to it wherever it appears (ADR 0076 §5; ADR 0015's 2026-09-27
 /// addendum). The URL is rendered as selectable text, never a link. The
@@ -664,6 +688,8 @@ pub struct ConnectorMetadata {
     pub regions: &'static [&'static str],
     pub economics: ConnectorEconomics,
     pub disclosure: DisclosureText,
+    /// How to connect this provider (the 2026-09-27 link-guide addendum).
+    pub link_guide: ConnectorLinkGuide,
     /// A referral link DohFlow may earn from, with its disclosure; `None` for
     /// most providers. Never affects picker order (ADR 0076 §4).
     pub referral: Option<ConnectorReferral>,
@@ -798,6 +824,25 @@ fn validate_metadata(id: &str, metadata: &ConnectorMetadata, problems: &mut Vec<
     }
     if economics.history_depth_expectation.trim().is_empty() {
         problem("history_depth_expectation must be written");
+    }
+    let guide = &metadata.link_guide;
+    if [
+        guide.title,
+        guide.refresh_note,
+        guide.credential_label,
+        guide.credential_noun,
+        guide.credential_placeholder,
+        guide.paste_instructions,
+    ]
+    .iter()
+    .chain(guide.setup_steps)
+    .any(|text| text.trim().is_empty())
+        || guide.setup_steps.is_empty()
+    {
+        problem("every link-guide field and at least one setup step must be written");
+    }
+    if !guide.provider_url.starts_with("https://") {
+        problem("a provider URL must be https");
     }
     if let Some(referral) = &metadata.referral {
         if !referral.url.starts_with("https://") {
@@ -996,6 +1041,9 @@ mod tests {
         enabled_without_terms.economics.terms_url = None;
         let mut blank_disclosure = mock::mock_metadata(false);
         blank_disclosure.disclosure.independent_party = "  ";
+        let mut blank_guide = mock::mock_metadata(false);
+        blank_guide.link_guide.setup_steps = &[];
+        blank_guide.link_guide.provider_url = "http://mock.invalid";
         let mut undisclosed_referral = mock::mock_metadata(false);
         undisclosed_referral.referral = Some(ConnectorReferral {
             url: "http://mock.invalid/?ref=x",
@@ -1015,6 +1063,11 @@ mod tests {
                 "an enabled provider must link its terms",
             ),
             (blank_disclosure, "every disclosure point must be written"),
+            (
+                blank_guide,
+                "every link-guide field and at least one setup step must be written",
+            ),
+            (blank_guide, "a provider URL must be https"),
             (undisclosed_referral, "a referral URL must be https"),
             (
                 undisclosed_referral,

@@ -4549,9 +4549,9 @@ use crate::ipc::dto::{
     ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto,
     ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
     ConnectorCredentialTierDto, ConnectorDisclosureDto, ConnectorEconomicsDto,
-    ConnectorExternalAccountDto, ConnectorForgetInput, ConnectorLinkInput, ConnectorLinkResultDto,
-    ConnectorPayerDto, ConnectorReferralDto, ConnectorSetAccountLinkInput, ConnectorSyncInput,
-    ConnectorSyncResultDto,
+    ConnectorExternalAccountDto, ConnectorForgetInput, ConnectorLinkGuideDto, ConnectorLinkInput,
+    ConnectorLinkResultDto, ConnectorPayerDto, ConnectorReferralDto, ConnectorSetAccountLinkInput,
+    ConnectorSyncInput, ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -4786,10 +4786,26 @@ pub fn connector_adapters_impl<'a>(
         .into_iter()
         .map(connector_adapter_dto)
         .collect();
-    // inventory's collection order is unspecified — keep the wire stable.
-    out.sort_by(|a, b| a.adapter_id.cmp(&b.adapter_id));
+    // ADR 0076 §4 (owner decision 2026-09-27): SimpleFIN first as the launch
+    // provider, then every other provider alphabetically by display name.
+    // Nothing in the registry can reorder this — no weight, no referral.
+    out.sort_by(|a, b| {
+        (
+            a.adapter_id != LAUNCH_PROVIDER,
+            a.display_name.to_lowercase(),
+            &a.adapter_id,
+        )
+            .cmp(&(
+                b.adapter_id != LAUNCH_PROVIDER,
+                b.display_name.to_lowercase(),
+                &b.adapter_id,
+            ))
+    });
     out
 }
+
+/// The picker's first entry (ADR 0076 §4).
+const LAUNCH_PROVIDER: &str = "simplefin";
 
 #[tauri::command]
 #[specta::specta]
@@ -4854,6 +4870,21 @@ fn connector_adapter_dto(registration: &ConnectorRegistration) -> ConnectorAdapt
             handles_credentials: metadata.disclosure.handles_credentials.to_owned(),
             cost_summary: metadata.disclosure.cost_summary.to_owned(),
             optional: metadata.disclosure.optional.to_owned(),
+        },
+        link_guide: ConnectorLinkGuideDto {
+            title: metadata.link_guide.title.to_owned(),
+            refresh_note: metadata.link_guide.refresh_note.to_owned(),
+            setup_steps: metadata
+                .link_guide
+                .setup_steps
+                .iter()
+                .map(|step| (*step).to_owned())
+                .collect(),
+            provider_url: metadata.link_guide.provider_url.to_owned(),
+            credential_label: metadata.link_guide.credential_label.to_owned(),
+            credential_noun: metadata.link_guide.credential_noun.to_owned(),
+            credential_placeholder: metadata.link_guide.credential_placeholder.to_owned(),
+            paste_instructions: metadata.link_guide.paste_instructions.to_owned(),
         },
         referral: metadata.referral.map(|r| ConnectorReferralDto {
             url: r.url.to_owned(),

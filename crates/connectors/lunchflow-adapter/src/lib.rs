@@ -24,9 +24,9 @@
 use chrono::{Days, NaiveDate};
 use connector_core::{
     balance_record, register_connector, review_date, AccountType, BillingPeriod, CapabilitySet,
-    Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorMetadata,
-    ConnectorReferral, Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput,
-    LinkSession, Payer,
+    Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorLinkGuide,
+    ConnectorMetadata, ConnectorReferral, Credential, CredentialTier, DisclosureText, HealthStatus,
+    LinkInput, LinkSession, Payer,
 };
 use importer_core::{
     content_fingerprint, ParseWarning, ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord,
@@ -134,6 +134,25 @@ pub const LUNCHFLOW_METADATA: ConnectorMetadata = ConnectorMetadata {
         optional: "It is optional. Everything in this app works with manual entry and file \
                    imports, including LunchFlow's own CSV and OFX exports; a connection only \
                    saves the typing.",
+    },
+    link_guide: ConnectorLinkGuide {
+        title: "About LunchFlow",
+        refresh_note: "Data refreshes on LunchFlow's schedule. LunchFlow pulls from your banks \
+                       through its own data providers; this app refreshes it on open and on \
+                       demand.",
+        setup_steps: &[
+            "Create an account at https://www.lunchflow.app (copy it into your browser) and \
+             connect each bank there.",
+            "Create an API destination and add the accounts this app should see \u{2014} a new \
+             destination starts with none.",
+            "Copy the destination's API key and paste it below.",
+        ],
+        provider_url: "https://www.lunchflow.app",
+        credential_label: "API key",
+        credential_noun: "API key",
+        credential_placeholder: "Paste the API key",
+        paste_instructions: "Copy the API key from your API destination in the LunchFlow \
+                             dashboard, then paste it here.",
     },
     referral: Some(ConnectorReferral {
         url: "https://www.lunchflow.app/?atp=dohflow",
