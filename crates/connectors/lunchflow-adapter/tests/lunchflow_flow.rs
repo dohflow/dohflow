@@ -419,6 +419,53 @@ fn a_truncated_response_holds_that_accounts_watermark() {
         .any(|w| w.message.contains("only part of account 101")));
 }
 
+#[test]
+fn a_balance_currency_override_never_relabels_the_account() {
+    // LunchFlow lets a user display an account's balance in another currency
+    // (Configure > Balance). The transactions stay in the account's real
+    // currency, so they decide it; the overridden balance is reported and
+    // left out rather than anchoring the account.
+    let transport = FixtureTransport::with(&[
+        ("/accounts", 200, include_str!("fixtures/accounts.json")),
+        (
+            "/accounts/101/transactions",
+            200,
+            include_str!("fixtures/transactions_101.json"),
+        ),
+        (
+            "/accounts/101/balance",
+            200,
+            r#"{ "balance": { "amount": 1100.00, "currency": "EUR" } }"#,
+        ),
+        (
+            "/accounts/102/transactions",
+            200,
+            include_str!("fixtures/transactions_102.json"),
+        ),
+        (
+            "/accounts/102/balance",
+            200,
+            include_str!("fixtures/balance_102.json"),
+        ),
+    ]);
+    let synced = adapter(&transport).sync(&conn(), None).unwrap();
+    assert_eq!(synced.batch.accounts[0].currency.as_deref(), Some("USD"));
+    let staged_txns = synced
+        .batch
+        .records
+        .iter()
+        .filter(|r| r.transaction.is_some())
+        .count();
+    assert_eq!(staged_txns, 3, "the USD rows all stage");
+    assert!(
+        !synced.batch.records.iter().any(|r| r.balance.is_some()),
+        "the EUR-labelled balance does not stage"
+    );
+    assert!(synced.batch.warnings.iter().any(|w| w
+        .message
+        .contains("is in EUR, but its transactions are in USD")));
+}
+
 // --- balances ---------------------------------------------------------------
 
 #[test]

@@ -473,6 +473,13 @@ fn map_balance(
     })
 }
 
+/// The currency an account's transactions are in: the first row stating a
+/// valid ISO code (a row that disagrees is warned about when it is mapped).
+fn rows_currency(rows: &[WireTransaction]) -> Option<String> {
+    rows.iter()
+        .find_map(|t| t.currency.as_deref().and_then(wire::iso_code))
+}
+
 /// The ISO currency code a balance response states, if any.
 fn balance_currency(body: &str) -> Option<String> {
     serde_json::from_str::<BalanceEnvelope>(body)
@@ -580,6 +587,9 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
     /// one takes its balance's currency: one extra request per such account,
     /// because the mapping surface needs the currency to refuse one the app
     /// cannot hold (ADR 0076 decision 7). A failed lookup leaves it `None`.
+    /// A user's balance-currency override in LunchFlow shows up here as the
+    /// override; refresh corrects it from the transactions themselves and
+    /// never stages a balance whose currency disagrees with them.
     fn fetch_accounts(&self, conn: &Connection) -> Result<Vec<ParsedAccount>, ConnectorError> {
         let mut accounts = self.accounts(conn)?;
         for account in accounts.iter_mut().filter(|a| a.currency.is_none()) {
@@ -716,45 +726,13 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                     None
                 }
             };
-            if account.currency.is_none() {
-                account.currency = balance
-                    .as_ref()
-                    .and_then(|e| e.balance.currency.as_deref().and_then(wire::iso_code));
-            }
-            let account = account;
-            accounts.push(map_account(&account));
-            if !account.is_active() {
-                warn(&mut warnings, needs_attention(&account));
-                held_account_ids.push(account.id.clone());
-            }
-
-            match self.transactions(conn, &account.id, since) {
-                Ok((transactions, truncated)) => {
-                    if truncated {
-                        warn(
-                            &mut warnings,
-                            format!(
-                                "LunchFlow returned only part of account {}'s transactions; \
-                                 the next refresh asks again",
-                                sanitize(&account.id)
-                            ),
-                        );
-                        held_account_ids.push(account.id.clone());
-                    }
-                    let mut seen = std::collections::HashSet::new();
-                    for txn in &transactions {
-                        if !seen.insert(&txn.id) {
-                            continue;
-                        }
-                        match map_transaction(&account, txn, txn_index) {
-                            Ok(record) => {
-                                records.push(record);
-                                txn_index += 1;
-                            }
-                            Err(reason) => warn(&mut warnings, reason),
-                        }
-                    }
-                }
+            // Rows first, then decide the account's currency: the API states
+            // none on live accounts, and a balance can carry a currency the
+            // user chose in LunchFlow's balance override (Configure >
+            // Balance, observed 2026-09-27). The transactions' own currency
+            // is the ground truth; the balance's is only a fallback.
+            let fetched = match self.transactions(conn, &account.id, since) {
+                Ok(fetched) => Some(fetched),
                 Err(err) if is_connection_level(&err) => return Err(err),
                 Err(err) => {
                     warn(
@@ -765,8 +743,71 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                         ),
                     );
                     held_account_ids.push(account.id.clone());
+                    None
+                }
+            };
+            let balance_code = balance
+                .as_ref()
+                .and_then(|e| e.balance.currency.as_deref().and_then(wire::iso_code));
+            if account.currency.is_none() {
+                account.currency = fetched
+                    .as_ref()
+                    .and_then(|(rows, _)| rows_currency(rows))
+                    .or_else(|| balance_code.clone());
+            }
+            let account = account;
+            accounts.push(map_account(&account));
+            if !account.is_active() {
+                warn(&mut warnings, needs_attention(&account));
+                held_account_ids.push(account.id.clone());
+            }
+
+            if let Some((transactions, truncated)) = fetched {
+                if truncated {
+                    warn(
+                        &mut warnings,
+                        format!(
+                            "LunchFlow returned only part of account {}'s transactions; \
+                             the next refresh asks again",
+                            sanitize(&account.id)
+                        ),
+                    );
+                    held_account_ids.push(account.id.clone());
+                }
+                let mut seen = std::collections::HashSet::new();
+                for txn in &transactions {
+                    if !seen.insert(&txn.id) {
+                        continue;
+                    }
+                    match map_transaction(&account, txn, txn_index) {
+                        Ok(record) => {
+                            records.push(record);
+                            txn_index += 1;
+                        }
+                        Err(reason) => warn(&mut warnings, reason),
+                    }
                 }
             }
+
+            // A balance in a different currency from the account's
+            // transactions is a display override, not the account's
+            // currency: report it and leave the balance out rather than
+            // anchor the account with it.
+            let balance = match (&balance_code, &account.currency) {
+                (Some(balance_code), Some(account_code)) if balance_code != account_code => {
+                    warn(
+                        &mut warnings,
+                        format!(
+                            "the balance for account {} is in {balance_code}, but its \
+                             transactions are in {account_code} — a currency override in \
+                             LunchFlow's balance settings? The balance was not refreshed",
+                            sanitize(&account.id)
+                        ),
+                    );
+                    None
+                }
+                _ => balance,
+            };
 
             if let Some(envelope) = balance {
                 match map_balance(&account.id, &envelope, today) {
