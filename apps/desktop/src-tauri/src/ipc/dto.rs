@@ -3851,7 +3851,7 @@ impl From<finance_kernel::SpendBreakdown> for SpendBreakdownDto {
 // (pinned by a static assertion in the commands tests).
 #[derive(Clone, PartialEq, Eq, Deserialize, Type)]
 pub struct ConnectorLinkInput {
-    /// Registry id of the adapter (`"simplefin"`).
+    /// Registry id of the adapter (e.g. `simplefin`).
     pub adapter_id: String,
     pub setup_token: String,
 }
@@ -3910,12 +3910,28 @@ pub struct ConnectorAdapterDto {
     pub regions: Vec<String>,
     pub economics: ConnectorEconomicsDto,
     pub disclosure: ConnectorDisclosureDto,
+    pub link_guide: ConnectorLinkGuideDto,
     /// A referral link DohFlow may earn from, with its FTC sentence (ADR 0076
     /// §5). Render the URL as selectable text, never a link, with the
     /// sentence beside it. `None` for most providers.
     pub referral: Option<ConnectorReferralDto>,
     /// `false` = implemented but not released; `connector_link` refuses it.
     pub enabled: bool,
+}
+
+/// How to connect one provider (ADR 0015's link-guide addendum). Render
+/// `provider_url` as selectable text wherever a step contains it — never a
+/// link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorLinkGuideDto {
+    pub title: String,
+    pub refresh_note: String,
+    pub setup_steps: Vec<String>,
+    pub provider_url: String,
+    pub credential_label: String,
+    pub credential_noun: String,
+    pub credential_placeholder: String,
+    pub paste_instructions: String,
 }
 
 /// A provider's referral URL and the disclosure that must sit next to it.

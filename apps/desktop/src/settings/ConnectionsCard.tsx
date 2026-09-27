@@ -1,11 +1,13 @@
-// The Connections card (personal-cfo-ul5d, ADR 0060): link a SimpleFIN Bridge
-// connection from a pasted setup token, map its external accounts onto real
-// accounts, refresh on demand, and read connection health at a glance. The
-// health surface the connector engine (gglk) feeds.
+// The Connections card (personal-cfo-ul5d, ADR 0060): link a bank connection
+// through the provider picker (personal-cfo-dto2j, ADR 0076 §4), map its
+// external accounts onto real accounts, refresh on demand, and read connection
+// health at a glance. The health surface the connector engine (gglk) feeds.
+// Provider names and credential wording come from the connector registry —
+// this card carries no provider-specific copy.
 //
-// The setup token is a one-time secret: it lives in local state only until
-// submit (zeroed in a finally, even on a thrown rejection), rides a masked
-// input, and goes straight to Rust (FRONTEND.md §1).
+// The pasted credential is a one-time secret: ConnectProviderFlow holds it in
+// local state only until submit (zeroed on every path), rides a masked input,
+// and it goes straight to Rust (FRONTEND.md §1).
 
 import { useQuery } from "@tanstack/react-query";
 import { Cable, Loader2, Plug } from "lucide-react";
@@ -26,7 +28,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,6 +35,8 @@ import { formatDateTime, formatIsoDate } from "@/lib/format";
 import { ipcQuery, queryKeys } from "@/lib/query";
 import { describeIpcError } from "@/vault/useVault";
 
+import { ConnectProviderFlow } from "./connections/ConnectProviderFlow";
+import { useConnectorAdapters } from "./connections/useConnectorAdapters";
 import { syncOutcomeCopy, syncOutcomeTone } from "./connectorSync";
 import { NewMappedAccountDialog } from "./NewMappedAccountDialog";
 import { useBaseCurrency } from "./useBaseCurrency";
@@ -45,8 +48,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/// Beyond this, a "Refreshed" badge stops being reassuring: the Bridge
-/// refreshes about daily, so a few missed days means refreshes are not
+/// Beyond this, a "Refreshed" badge stops being reassuring: providers
+/// refresh about daily, so a few missed days means refreshes are not
 /// happening.
 const STALE_AFTER_DAYS = 3;
 
@@ -135,6 +138,8 @@ function AccountLinkRow({
 
 function ConnectionRow({
   connection,
+  providerName,
+  credentialNoun,
   accounts,
   accountsPending,
   onMap,
@@ -144,6 +149,10 @@ function ConnectionRow({
   onForget,
 }: {
   connection: ConnectorConnectionDto;
+  /// The provider's display name, from the registry.
+  providerName: string;
+  /// What re-linking asks for ("setup token", "API key").
+  credentialNoun: string;
   accounts: { id: string; name: string }[];
   accountsPending: boolean;
   onMap: (externalId: string, accountId: string | null) => void;
@@ -158,9 +167,9 @@ function ConnectionRow({
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">
-            {connection.display_hint ?? "SimpleFIN connection"}
+            {connection.display_hint ?? `${providerName} connection`}
           </p>
-          <p className="text-xs text-muted-foreground">SimpleFIN Bridge</p>
+          <p className="text-xs text-muted-foreground">{providerName}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <HealthBadge connection={connection} />
@@ -208,7 +217,8 @@ function ConnectionRow({
           <div className="flex items-center gap-2 rounded-md border border-loss/40 bg-loss/5 p-2">
             <p className="flex-1 text-xs text-muted-foreground">
               Forgetting removes the stored credential. Transactions already
-              refreshed stay in the ledger. Re-linking needs a fresh setup token.
+              refreshed stay in the ledger. Re-linking needs a fresh{" "}
+              {credentialNoun}.
             </p>
             <Button size="sm" variant="destructive" onClick={onForget}>
               Forget
@@ -238,7 +248,14 @@ function ConnectionRow({
 
 const VAULT_UNREACHABLE = "Could not reach the vault service.";
 
-export function ConnectionsCard() {
+export function ConnectionsCard({
+  startLinking = false,
+}: {
+  /// Open the connect flow on mount — onboarding's connected branch shows the
+  /// provider disclosure up front, as its dedicated panel used to.
+  startLinking?: boolean;
+} = {}) {
+  const providers = useConnectorAdapters();
   const {
     connections,
     error: loadError,
@@ -265,16 +282,15 @@ export function ConnectionsCard() {
     externalName: string;
   } | null>(null);
 
-  const [linking, setLinking] = useState(false);
-  const [token, setToken] = useState("");
+  const [linking, setLinking] = useState(startLinking);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const submitLink = async () => {
+  const submitLink = async (adapterId: string, credential: string) => {
     setActionError(null);
     setNotice(null);
     try {
-      const result = await link(token.trim());
+      const result = await link(adapterId, credential);
       if (isRecord(result) && "connection_id" in result) {
         setLinking(false);
         setNotice(
@@ -287,9 +303,6 @@ export function ConnectionsCard() {
       }
     } catch {
       setActionError(VAULT_UNREACHABLE);
-    } finally {
-      // Zero the pasted secret from component state on every path.
-      setToken("");
     }
   };
 
@@ -340,9 +353,9 @@ export function ConnectionsCard() {
       <CardHeader className="pb-3">
         <CardTitle className="text-sm">Connections</CardTitle>
         <CardDescription>
-          Bank connections via the SimpleFIN Bridge. The Bridge refreshes bank
-          data about daily; the app refreshes it on open and on demand, and
-          everything stays in this vault.
+          Bank connections through an independent provider you choose. The app
+          refreshes them on open and on demand, and everything stays in this
+          vault.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -358,7 +371,7 @@ export function ConnectionsCard() {
           <EmptyState
             icon={Cable}
             title="No connections yet"
-            description="Link a SimpleFIN Bridge connection to refresh transactions automatically."
+            description="Link a bank connection to refresh transactions automatically."
           />
         ) : accountsQuery.error ? (
           <p role="alert" className="text-sm text-loss">
@@ -369,6 +382,11 @@ export function ConnectionsCard() {
             <ConnectionRow
               key={connection.id}
               connection={connection}
+              providerName={providers.displayName(connection.adapter_id)}
+              credentialNoun={
+                providers.adapter(connection.adapter_id)?.link_guide.credential_noun ??
+                "credential"
+              }
               accounts={accounts}
               accountsPending={accountsQuery.isPending}
               onMap={(externalId, accountId) =>
@@ -396,43 +414,11 @@ export function ConnectionsCard() {
         ) : null}
 
         {linking ? (
-          <div className="rounded-md border p-3">
-            <Label htmlFor="setup-token" className="text-sm">
-              Setup token
-            </Label>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Create the token in the SimpleFIN Bridge under Apps, then paste
-              it here. Tokens are single-use.
-            </p>
-            <div className="mt-2 flex items-center gap-2">
-              <Input
-                id="setup-token"
-                type="password"
-                autoComplete="off"
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-                placeholder="Paste the setup token"
-              />
-              <Button
-                size="sm"
-                disabled={token.trim().length === 0 || linkPending}
-                onClick={() => void submitLink()}
-              >
-                {linkPending ? <Loader2 className="animate-spin" /> : null}
-                Connect
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setToken("");
-                  setLinking(false);
-                }}
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
+          <ConnectProviderFlow
+            linkPending={linkPending}
+            onLink={submitLink}
+            onCancel={() => setLinking(false)}
+          />
         ) : (
           <div>
             <Button size="sm" variant="outline" onClick={() => setLinking(true)}>

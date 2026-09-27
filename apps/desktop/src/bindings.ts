@@ -928,6 +928,7 @@ export type ConnectorAdapterDto = {
 	regions: string[],
 	economics: ConnectorEconomicsDto,
 	disclosure: ConnectorDisclosureDto,
+	link_guide: ConnectorLinkGuideDto,
 	/**
 	 *  A referral link DohFlow may earn from, with its FTC sentence (ADR 0076
 	 *  §5). Render the URL as selectable text, never a link, with the
@@ -1007,13 +1008,29 @@ export type ConnectorForgetInput = {
 };
 
 /**
+ *  How to connect one provider (ADR 0015's link-guide addendum). Render
+ *  `provider_url` as selectable text wherever a step contains it — never a
+ *  link.
+ */
+export type ConnectorLinkGuideDto = {
+	title: string,
+	refresh_note: string,
+	setup_steps: string[],
+	provider_url: string,
+	credential_label: string,
+	credential_noun: string,
+	credential_placeholder: string,
+	paste_instructions: string,
+};
+
+/**
  *  Link a new aggregator connection from a user-pasted setup token.
  * 
  *  LEAK RULE: `setup_token` is a one-time secret — the manual `Debug` impl
  *  redacts it, mirroring `connector_core::Credential`'s posture.
  */
 export type ConnectorLinkInput = {
-	/**  Registry id of the adapter (`"simplefin"`). */
+	/**  Registry id of the adapter (e.g. `simplefin`). */
 	adapter_id: string,
 	setup_token: string,
 };
