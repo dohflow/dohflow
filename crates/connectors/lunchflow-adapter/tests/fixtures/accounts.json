@@ -1,0 +1,25 @@
+{
+  "accounts": [
+    {
+      "id": 101,
+      "connection_id": 7,
+      "name": "Everyday Checking",
+      "institution_name": "Fixture Bank",
+      "institution_logo": "https://logo.invalid/fixture.png",
+      "provider": "mx",
+      "currency": "USD",
+      "status": "ACTIVE"
+    },
+    {
+      "id": 102,
+      "connection_id": 8,
+      "name": "Current Account",
+      "institution_name": "Fixture Bank UK",
+      "institution_logo": null,
+      "provider": "gocardless",
+      "currency": "GBP",
+      "status": "ACTIVE"
+    }
+  ],
+  "total": 2
+}

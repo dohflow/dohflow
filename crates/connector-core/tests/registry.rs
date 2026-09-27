@@ -5,6 +5,7 @@
 
 // Link every shipped adapter crate so its `register_connector!` submission is
 // collected (see this crate's dev-dependencies).
+use lunchflow_adapter as _;
 use simplefin_adapter as _;
 
 use std::collections::BTreeSet;
@@ -15,7 +16,7 @@ use connector_core::{
 };
 
 /// The shipped adapter ids. Adding an adapter is a deliberate edit here.
-const SHIPPED: &[&str] = &["simplefin"];
+const SHIPPED: &[&str] = &["lunchflow", "simplefin"];
 
 #[test]
 fn every_shipped_adapter_has_exactly_one_registry_entry() {
@@ -75,6 +76,7 @@ fn every_workspace_adapter_crate_is_linked_into_this_roster() {
         .filter_map(|s| s.strip_prefix("crates/connectors/"))
         .collect();
     assert!(members.contains(&"simplefin-adapter"), "parsed {members:?}");
+    assert!(members.contains(&"lunchflow-adapter"), "parsed {members:?}");
     for member in members {
         assert!(
             THIS_CRATE.contains(&format!(
@@ -83,4 +85,28 @@ fn every_workspace_adapter_crate_is_linked_into_this_roster() {
             "{member} must be a connector-core dev-dependency so the registry tests see it"
         );
     }
+}
+
+#[test]
+fn lunchflow_ships_disabled_with_its_referral_disclosed() {
+    let entry = registration_by_id("lunchflow").expect("lunchflow registered");
+    let metadata = &entry.metadata;
+    assert!(
+        !metadata.enabled,
+        "ships disabled until its release flips it"
+    );
+    let economics = &metadata.economics;
+    assert_eq!(economics.payer, Payer::UserDirect);
+    assert!(economics.included_connections.is_some());
+    assert!(economics.extra_connection_cost_minor_units.is_some());
+    assert!(economics.extra_connection_period.is_some());
+    assert!(economics.terms_url.is_some());
+    assert!(!metadata.regions.is_empty());
+    // A provider DohFlow can earn from is never described as unaffiliated
+    // (ADR 0076 §5), and its referral carries the FTC sentence.
+    let independence = metadata.disclosure.independent_party.to_lowercase();
+    assert!(!independence.contains("unaffiliated") && !independence.contains("not affiliated"));
+    let referral = metadata.referral.expect("lunchflow carries its referral");
+    assert!(referral.url.starts_with("https://"));
+    assert!(referral.disclosure.contains("may earn a commission"));
 }

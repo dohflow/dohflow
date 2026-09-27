@@ -1,0 +1,15 @@
+{
+  "transactions": [
+    {
+      "id": "txn_b1",
+      "accountId": 102,
+      "amount": -12.00,
+      "currency": "GBP",
+      "date": "2026-09-19",
+      "merchant": "Fixture Shop",
+      "description": "FIXTURE SHOP LONDON",
+      "isPending": false
+    }
+  ],
+  "total": 1
+}
