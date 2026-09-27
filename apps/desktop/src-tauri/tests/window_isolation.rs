@@ -129,6 +129,14 @@ fn untrusted_windows_cannot_navigate_to_a_remote_origin() {
     // each untrusted window exactly as the navigation chain does.
     let app = app();
     let mut guard = navigation_guard::init::<MockRuntime>();
+    // The bundled origin is platform-specific (Tauri's `tauri_protocol_url`): the
+    // wry workaround `http://tauri.localhost` on Windows/Android, `tauri://localhost`
+    // elsewhere (0hp6, from the 2no review's advisory).
+    let own_shell_page = if cfg!(windows) || cfg!(target_os = "android") {
+        "http://tauri.localhost/isolated-shell.html"
+    } else {
+        "tauri://localhost/isolated-shell.html"
+    };
     for label in UNTRUSTED {
         let window = app.get_webview_window(label).expect("shell window");
         let webview: &tauri::Webview<MockRuntime> = window.as_ref();
@@ -144,12 +152,7 @@ fn untrusted_windows_cannot_navigate_to_a_remote_origin() {
             );
         }
         assert!(
-            guard.on_navigation(
-                webview,
-                &"tauri://localhost/isolated-shell.html"
-                    .parse()
-                    .expect("url")
-            ),
+            guard.on_navigation(webview, &own_shell_page.parse().expect("url")),
             "{label} may load its own bundled shell page"
         );
     }

@@ -380,6 +380,7 @@ jobs:
             code:
               - 'apps/desktop/**'
               - '!apps/desktop/src-tauri/**'
+              - 'scripts/check-dist-csp.mjs'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
@@ -413,6 +414,14 @@ jobs:
       - name: Build
         if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: pnpm -r build
+
+      # personal-cfo-0hp6, ADR 0010: the built HTML must not contain anything that
+      # changes the EFFECTIVE CSP — a <style> element (Tauri would add a style-src
+      # nonce, which disables the accepted 'unsafe-inline'), an inline script, or a
+      # remote script/stylesheet.
+      - name: Built HTML keeps the CSP effective (ADR 0010)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: node scripts/check-dist-csp.mjs apps/desktop/dist
 
   # The IPC command surface (personal-cfo-40t): compile the standalone desktop
   # crate, run its Rust gates, and prove the generated TypeScript bindings are
@@ -450,6 +459,7 @@ jobs:
             code:
               - 'apps/desktop/src-tauri/**'
               - 'apps/desktop/src/bindings.ts'
+              - 'apps/desktop/public/isolated-shell.html'
               - 'crates/**'
               - '.github/workflows/ci.yml'
 
@@ -481,7 +491,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            xvfb
 
       # The pinned toolchain comes from rust-toolchain.toml (rustup honors it).
       - name: Show toolchain
@@ -523,6 +534,32 @@ jobs:
             echo "::error::apps/desktop/src/bindings.ts is stale — run 'cargo run --bin export_bindings --features export-bindings' in apps/desktop/src-tauri and commit the result."
             exit 1
           fi
+
+      # personal-cfo-0hp6, ADR 0010: prove isolation in a REAL WebView, not just in
+      # configuration. A debug build with Tauri's `custom-protocol` feature serves
+      # the bundled origin (tauri://localhost) under the production CSP; the
+      # debug-only probe (src/isolation_probe.rs) opens main and both untrusted
+      # shells, and in each checks IPC rejection, the effective CSP (inline script,
+      # eval and remote fetch refused; inline style still applied), window.open and
+      # remote navigation (which must be cancelled by the navigation guard itself,
+      # counted per window), then exits non-zero on any failure. The placeholder
+      # dist is enough — the probe injects its own script — plus the shells' page.
+      # Scratch data directory only. No remote host is contacted: every target is
+      # in the reserved .invalid domain, and every check requires positive
+      # evidence of a refusal, so none depends on the network.
+      - name: Runtime isolation probe (real WebView, ADR 0010)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          set -euo pipefail
+          cp ../public/isolated-shell.html ../dist/isolated-shell.html
+          cargo build --features tauri/custom-protocol
+          report="$RUNNER_TEMP/isolation-probe.json"
+          PCFO_DATA_DIR="$(mktemp -d)" PCFO_ISOLATION_PROBE="$report" \
+          GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+            timeout 180 xvfb-run --auto-servernum --server-args='-screen 0 1280x900x24' \
+            ./target/debug/personal-cfo-desktop
+          echo "Isolation probe passed; report: $report"
 
   # personal-cfo-xcrsk (LIN-1): exploratory Linux AppImage proof. This is
   # deliberately manual and is NOT a required check: the result feeds ADR
