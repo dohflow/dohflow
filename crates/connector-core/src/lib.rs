@@ -642,6 +642,16 @@ pub struct DisclosureText {
     pub optional: &'static str,
 }
 
+/// A provider's referral link and the FTC 16 CFR Part 255 sentence that must
+/// sit next to it wherever it appears (ADR 0076 §5; ADR 0015's 2026-09-27
+/// addendum). The URL is rendered as selectable text, never a link. The
+/// sentence is written per provider, like every [`DisclosureText`] field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorReferral {
+    pub url: &'static str,
+    pub disclosure: &'static str,
+}
+
 /// The static, business-facing half of a provider's registration (ADR 0015
 /// §2). What the adapter's code can fetch stays on
 /// [`ConnectorAdapter::capabilities`]; this is what the provider covers,
@@ -654,6 +664,9 @@ pub struct ConnectorMetadata {
     pub regions: &'static [&'static str],
     pub economics: ConnectorEconomics,
     pub disclosure: DisclosureText,
+    /// A referral link DohFlow may earn from, with its disclosure; `None` for
+    /// most providers. Never affects picker order (ADR 0076 §4).
+    pub referral: Option<ConnectorReferral>,
     /// `false` until a release bead flips it (ADR 0015 §6); a disabled adapter
     /// is refused before its `link` is ever called.
     pub enabled: bool,
@@ -785,6 +798,14 @@ fn validate_metadata(id: &str, metadata: &ConnectorMetadata, problems: &mut Vec<
     }
     if economics.history_depth_expectation.trim().is_empty() {
         problem("history_depth_expectation must be written");
+    }
+    if let Some(referral) = &metadata.referral {
+        if !referral.url.starts_with("https://") {
+            problem("a referral URL must be https");
+        }
+        if referral.disclosure.trim().is_empty() {
+            problem("a referral needs its disclosure sentence");
+        }
     }
     if metadata.enabled && economics.terms_url.is_none() {
         problem("an enabled provider must link its terms");
@@ -975,6 +996,11 @@ mod tests {
         enabled_without_terms.economics.terms_url = None;
         let mut blank_disclosure = mock::mock_metadata(false);
         blank_disclosure.disclosure.independent_party = "  ";
+        let mut undisclosed_referral = mock::mock_metadata(false);
+        undisclosed_referral.referral = Some(ConnectorReferral {
+            url: "http://mock.invalid/?ref=x",
+            disclosure: " ",
+        });
 
         let cases = [
             (free_with_cost, "payer None carries no cost fields"),
@@ -989,6 +1015,11 @@ mod tests {
                 "an enabled provider must link its terms",
             ),
             (blank_disclosure, "every disclosure point must be written"),
+            (undisclosed_referral, "a referral URL must be https"),
+            (
+                undisclosed_referral,
+                "a referral needs its disclosure sentence",
+            ),
         ];
         for (metadata, expected) in cases {
             let problems = validate_registrations(&[registration("x", metadata)]).unwrap_err();
