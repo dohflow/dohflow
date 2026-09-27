@@ -58,6 +58,9 @@ export const queryKeys = {
   /// Linking, mapping, syncing, and forgetting invalidate this; a sync also
   /// writes the ledger, so it invalidates transactions / inbox / forecast too.
   connections: ["connections"] as const,
+  // The connector registry (static, compiled in — never invalidated by a
+  // mutation; the vault-lock cache clear is its only reset).
+  connectorAdapters: ["connectorAdapters"] as const,
   transactions: ["transactions"] as const,
   /// Spend rolled up by category (ADR 0052, personal-cfo-4d8.27.8.4). Under the
   /// `["transactions"]` prefix on purpose: it is derived from transactions, their

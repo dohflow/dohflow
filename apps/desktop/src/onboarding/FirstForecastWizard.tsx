@@ -25,7 +25,6 @@ import { ExportGuidance } from "@/imports/ExportGuidance";
 import { ImportFileDialog } from "@/money-inbox/ImportFileDialog";
 import { SuggestedIncome } from "@/income/SuggestedIncome";
 
-import { BridgeEducation } from "./BridgeEducation";
 import { IncomeForm } from "@/income/IncomeView";
 import { BillForm } from "@/bills/BillsView";
 import { useAccounts } from "@/accounts/useAccounts";
@@ -52,8 +51,8 @@ function today(): string {
 
 const STEPS = ["Welcome", "Path", "Accounts", "Income", "Bills", "Forecast"] as const;
 
-/// Which way money gets in (personal-cfo-kdw6): connect banks through the
-/// SimpleFIN Bridge, or enter and import by hand. Persisted per viewer so the
+/// Which way money gets in (personal-cfo-kdw6): connect banks through a
+/// bank-connection provider (dto2j's picker), or enter and import by hand. Persisted per viewer so the
 /// guide reopens on the last choice; either branch remains reachable.
 export type OnboardingPath = "connected" | "manual";
 const PATH_KEY = "pcfo.onboardingPath";
@@ -142,14 +141,16 @@ export function FirstForecastWizard({ onClose }: { onClose: () => void }) {
         {step === 2 && path === "connected" && (
           <StepShell
             title="Connect your banks"
-            description="Link the SimpleFIN Bridge, then map each connected account onto an account here — or create one on the spot. Accounts you add by hand work alongside them."
+            description="Link a bank connection, then map each connected account onto an account here — or create one on the spot. Accounts you add by hand work alongside them."
             items={liveAccounts.map(
               (account) =>
                 `${account.name} · ${formatMoney(account.balance)}`,
             )}
           >
-            <BridgeEducation />
-            <ConnectionsCard />
+            {/* The same provider picker + disclosure as Settings (dto2j):
+                one link surface, opened up front so the disclosure shows
+                before anything else. */}
+            <ConnectionsCard startLinking />
             <div className="flex flex-col gap-2">
               {liveAccounts.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
@@ -422,7 +423,7 @@ function PathStep({
     {
       value: "connected",
       title: "Connect my banks",
-      body: "Link accounts through the SimpleFIN Bridge — an optional, paid, independent service — so balances and transactions arrive when you open the app.",
+      body: "Link accounts through an independent bank-connection service — optional and paid — so balances and transactions arrive when you open the app.",
     },
     {
       value: "manual",

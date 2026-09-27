@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient } from "@/test/renderWithClient";
 
 const mocks = vi.hoisted(() => ({
+  connectorAdapters: vi.fn(),
   connectorConnections: vi.fn(),
   connectorLink: vi.fn(),
   connectorSetAccountLink: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock("@/vault/useVault", () => ({
 }));
 
 import { ConnectionsCard } from "./ConnectionsCard";
+import { exampleflow, simplefin } from "./connections/fixtures/adapters";
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 
@@ -58,6 +60,7 @@ const account = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.connectorAdapters.mockResolvedValue([simplefin]);
   mocks.connectorConnections.mockResolvedValue(ok([]));
   mocks.accountList.mockResolvedValue(ok([account]));
   mocks.baseCurrency.mockResolvedValue(ok("USD"));
@@ -125,6 +128,8 @@ describe("ConnectionsCard", () => {
       <ConnectionsCard />,
     );
     fireEvent.click(await findByText("Link a connection…"));
+    // The provider's disclosure comes first (one provider: no picker).
+    fireEvent.click(await findByText("Continue"));
     fireEvent.change(getByLabelText("Setup token"), {
       target: { value: "  base64token  " },
     });
@@ -138,6 +143,44 @@ describe("ConnectionsCard", () => {
     expect(
       await findByText("Connected — 2 account(s) discovered. Map them below."),
     ).toBeInTheDocument();
+  });
+
+  it("links the provider chosen in the picker", async () => {
+    mocks.connectorAdapters.mockResolvedValue([simplefin, exampleflow]);
+    mocks.connectorLink.mockResolvedValue(
+      ok({
+        connection_id: "33333333-3333-7333-8333-333333333333",
+        display_hint: null,
+        accounts: [],
+        fetch_error: null,
+      }),
+    );
+    const { findByText, getByLabelText, getByText } = renderWithClient(
+      <ConnectionsCard />,
+    );
+    fireEvent.click(await findByText("Link a connection…"));
+    fireEvent.click(await findByText("Choose ExampleFlow"));
+    fireEvent.click(getByText("Continue"));
+    fireEvent.change(getByLabelText("API key"), { target: { value: "key-9" } });
+    fireEvent.click(getByText("Connect"));
+    await waitFor(() =>
+      expect(mocks.connectorLink).toHaveBeenCalledWith({
+        adapter_id: "exampleflow",
+        setup_token: "key-9",
+      }),
+    );
+  });
+
+  it("names each connection's provider from the registry, never hardcoded", async () => {
+    mocks.connectorAdapters.mockResolvedValue([simplefin, exampleflow]);
+    mocks.connectorConnections.mockResolvedValue(
+      ok([connection({ adapter_id: "exampleflow", display_hint: null })]),
+    );
+    const { findByText, getByText, container } = renderWithClient(<ConnectionsCard />);
+    expect(await findByText("ExampleFlow connection")).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/SimpleFIN/);
+    fireEvent.click(getByText("Forget connection…"));
+    expect(getByText(/Re-linking needs a fresh API key\./)).toBeInTheDocument();
   });
 
   it("maps an external account onto a real account", async () => {

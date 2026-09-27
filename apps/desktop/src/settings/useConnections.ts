@@ -3,10 +3,10 @@
 // writes real ledger rows, so its success invalidates the financial caches the
 // same way an import does.
 //
-// LEAK RULE: the setup token never enters a useMutation — TanStack retains
+// LEAK RULE: the pasted credential never enters a useMutation — TanStack retains
 // mutation variables in its cache (and exposes them via devtools), so link()
 // is a direct command call with hand-rolled pending state (the
-// ChangePasswordCard precedent). The token exists only for the call's
+// ChangePasswordCard precedent). The credential exists only for the call's
 // duration.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -26,7 +26,12 @@ interface UseConnections {
   connections: ConnectorConnectionDto[] | null;
   error: string | null;
   refreshing: boolean;
-  link: (setupToken: string) => Promise<ConnectorLinkResultDto | IpcError>;
+  /// Link the provider `adapterId` (a registry id — ADR 0076 §4) with the
+  /// credential the user pasted.
+  link: (
+    adapterId: string,
+    credential: string,
+  ) => Promise<ConnectorLinkResultDto | IpcError>;
   linkPending: boolean;
   setAccountLink: (
     connectionId: string,
@@ -76,12 +81,12 @@ export function useConnections(): UseConnections {
 
   const [linkPending, setLinkPending] = useState(false);
   const link = useCallback(
-    async (setupToken: string) => {
+    async (adapterId: string, credential: string) => {
       setLinkPending(true);
       try {
         const result = await commands.connectorLink({
-          adapter_id: "simplefin",
-          setup_token: setupToken,
+          adapter_id: adapterId,
+          setup_token: credential,
         });
         if (result.status === "ok") {
           void invalidateConnections();
