@@ -176,8 +176,8 @@ impl<T: Transport> LunchFlowAdapter<T> {
         let response = self
             .transport
             .get(&format!("{BASE_URL}{path}"), key, query)
-            .map_err(|e| ConnectorError::Network(e.0))?;
-        triage(&response)
+            .map_err(|e| ConnectorError::Network(scrub(&e.0, key)))?;
+        triage(&response, key)
     }
 
     fn accounts(&self, conn: &Connection) -> Result<Vec<WireAccount>, ConnectorError> {
@@ -211,9 +211,12 @@ impl<T: Transport> LunchFlowAdapter<T> {
         ];
         let body = self.get(conn, &account_path(account_id, "transactions"), &query)?;
         let list: TransactionList = serde_json::from_str(&body).map_err(|_| {
-            ConnectorError::Provider(format!(
-                "LunchFlow returned unreadable transactions for account {}",
-                sanitize(account_id)
+            ConnectorError::Provider(scrub(
+                &format!(
+                    "LunchFlow returned unreadable transactions for account {}",
+                    sanitize(account_id)
+                ),
+                conn.credential.expose_secret(),
             ))
         })?;
         let truncated = list
@@ -229,9 +232,12 @@ impl<T: Transport> LunchFlowAdapter<T> {
     ) -> Result<Result<ParsedBalance, String>, ConnectorError> {
         let body = self.get(conn, &account_path(account_id, "balance"), &[])?;
         let envelope: BalanceEnvelope = serde_json::from_str(&body).map_err(|_| {
-            ConnectorError::Provider(format!(
-                "LunchFlow returned an unreadable balance for account {}",
-                sanitize(account_id)
+            ConnectorError::Provider(scrub(
+                &format!(
+                    "LunchFlow returned an unreadable balance for account {}",
+                    sanitize(account_id)
+                ),
+                conn.credential.expose_secret(),
             ))
         })?;
         Ok(map_balance(account_id, &envelope, self.today()))
@@ -279,13 +285,25 @@ fn sanitize(raw: &str) -> String {
 // Error triage
 // ===========================================================================
 
-/// The provider's own `{error, message}` text, sanitized, for enriching a
-/// status-level error.
-fn provider_detail(body: &str) -> String {
+/// Replace every occurrence of the connection's key in `text`. Provider
+/// text is hostile input and may echo the key it was sent (an error body
+/// quoting the rejected key, say); anything that reaches an error, a warning,
+/// `last_error` or a log passes through here first.
+fn scrub(text: &str, key: &str) -> String {
+    if key.is_empty() {
+        text.to_owned()
+    } else {
+        text.replace(key, "[redacted]")
+    }
+}
+
+/// The provider's own `{error, message}` text — sanitized, and scrubbed of
+/// the key — for enriching a status-level error.
+fn provider_detail(body: &str, key: &str) -> String {
     serde_json::from_str::<ErrorBody>(body)
         .ok()
         .and_then(|e| e.message.or(e.error))
-        .map(|m| format!(" (LunchFlow says: {})", sanitize(&m)))
+        .map(|m| format!(" (LunchFlow says: {})", scrub(&sanitize(&m), key)))
         .unwrap_or_default()
 }
 
@@ -293,14 +311,19 @@ fn provider_detail(body: &str) -> String {
 /// a **healthy** state. A 401 (no key) or a 403 (a key LunchFlow refuses —
 /// observed live for a wrong key, 2026-09-27; also a deleted API destination
 /// or a lapsed plan) both mean this key no longer works: re-link.
-fn triage(response: &HttpResponse) -> Result<String, ConnectorError> {
+///
+/// An auth failure carries NO provider text at all: a body answering a
+/// rejected key is the likeliest place for that key to be echoed back, and
+/// the message flows into `last_error`, the connection DTO and logs. Other
+/// statuses keep the provider's detail, scrubbed of `key`.
+fn triage(response: &HttpResponse, key: &str) -> Result<String, ConnectorError> {
     match response.status {
         200..=299 => Ok(response.body.clone()),
-        401 | 403 => Err(ConnectorError::Expired(format!(
+        401 | 403 => Err(ConnectorError::Expired(
             "LunchFlow refused this API key — it may have been deleted, or your LunchFlow \
-             plan may have lapsed; paste a new key or check your plan{}",
-            provider_detail(&response.body)
-        ))),
+             plan may have lapsed; paste a new key or check your plan"
+                .to_owned(),
+        )),
         429 => Err(ConnectorError::RateLimited(
             "LunchFlow asked the app to slow down".to_owned(),
         )),
@@ -312,7 +335,7 @@ fn triage(response: &HttpResponse) -> Result<String, ConnectorError> {
         ))),
         status => Err(ConnectorError::Provider(format!(
             "unexpected status {status} from LunchFlow{}",
-            provider_detail(&response.body)
+            provider_detail(&response.body, key)
         ))),
     }
 }
@@ -612,9 +635,9 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
         // request, same as the listing sync() already holds.
         let accounts = self.accounts(conn)?;
         let Some(account) = accounts.iter().find(|a| a.id == account_external_id) else {
-            return Err(ConnectorError::Provider(format!(
-                "LunchFlow has no account {}",
-                sanitize(account_external_id)
+            return Err(ConnectorError::Provider(scrub(
+                &format!("LunchFlow has no account {}", sanitize(account_external_id)),
+                conn.credential.expose_secret(),
             )));
         };
         let (transactions, _) = self.transactions(conn, &account.id, since)?;
@@ -820,6 +843,12 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
             }
         }
 
+        // Every warning quotes provider-controlled text (ids, status strings,
+        // error details): scrub the key out of all of it before it leaves.
+        let key = conn.credential.expose_secret();
+        for warning in &mut warnings {
+            warning.message = scrub(&warning.message, key);
+        }
         held_account_ids.sort();
         held_account_ids.dedup();
         Ok(connector_core::SyncBatch {
@@ -883,6 +912,44 @@ mod tests {
         assert_eq!(to_ledger_sign(500), 500);
     }
 
+    fn triage_(response: &HttpResponse) -> Result<String, ConnectorError> {
+        triage(response, "test-key")
+    }
+
+    #[test]
+    fn auth_failures_carry_no_provider_text_and_others_are_scrubbed() {
+        let echo = r#"{"error":"Forbidden","message":"invalid key lf-SECRET-123"}"#;
+        for status in [401, 403] {
+            let err = triage(
+                &HttpResponse {
+                    status,
+                    body: echo.to_owned(),
+                },
+                "lf-SECRET-123",
+            )
+            .unwrap_err();
+            let text = format!("{err} {err:?}");
+            assert!(
+                !text.contains("SECRET") && !text.contains("invalid key"),
+                "{text}"
+            );
+        }
+        let err = triage(
+            &HttpResponse {
+                status: 400,
+                body: echo.to_owned(),
+            },
+            "lf-SECRET-123",
+        )
+        .unwrap_err();
+        let text = format!("{err} {err:?}");
+        assert!(!text.contains("SECRET"), "{text}");
+        assert!(
+            text.contains("[redacted]"),
+            "detail kept, key scrubbed: {text}"
+        );
+    }
+
     #[test]
     fn statuses_triage_into_the_taxonomy() {
         let r = |status: u16, body: &str| HttpResponse {
@@ -890,27 +957,27 @@ mod tests {
             body: body.to_owned(),
         };
         assert!(matches!(
-            triage(&r(401, r#"{"error":"Unauthorized"}"#)),
+            triage_(&r(401, r#"{"error":"Unauthorized"}"#)),
             Err(ConnectorError::Expired(_))
         ));
         assert!(matches!(
-            triage(&r(403, r#"{"error":"Forbidden","message":"invalid key"}"#)),
+            triage_(&r(403, r#"{"error":"Forbidden","message":"invalid key"}"#)),
             Err(ConnectorError::Expired(_))
         ));
         assert!(matches!(
-            triage(&r(429, "")),
+            triage_(&r(429, "")),
             Err(ConnectorError::RateLimited(_))
         ));
         assert!(matches!(
-            triage(&r(503, "")),
+            triage_(&r(503, "")),
             Err(ConnectorError::Network(_))
         ));
         assert!(matches!(
-            triage(&r(302, "")),
+            triage_(&r(302, "")),
             Err(ConnectorError::Provider(_))
         ));
         let Err(ConnectorError::Provider(message)) =
-            triage(&r(400, r#"{"message":"bad\u001b[31m range"}"#))
+            triage_(&r(400, r#"{"message":"bad\u001b[31m range"}"#))
         else {
             panic!("400 is a provider error");
         };

@@ -661,13 +661,49 @@ fn nothing_the_adapter_emits_contains_the_key() {
         assert!(!request.query.iter().any(|(_, v)| v.contains("CFO-CANARY")));
     }
 
-    for status in [400, 401, 403, 404, 429, 500, 503] {
-        let transport = FixtureTransport::with(&[("/accounts", status, "{}")]);
+    // A provider that ECHOES the key in its error body, at every status the
+    // adapter triages — on discovery, link, health, and the balance and
+    // transactions paths (review F1, 2026-09-27).
+    let echo = format!(r#"{{"error":"Rejected","message":"key {KEY} is not valid"}}"#);
+    for status in [300, 302, 400, 401, 403, 404, 409, 429, 500, 502, 503] {
+        let transport = FixtureTransport::with(&[("/accounts", status, &echo)]);
         let err = adapter(&transport).fetch_accounts(&conn()).unwrap_err();
         assert!(
             !format!("{err} {err:?}").contains("CFO-CANARY"),
             "status {status}"
         );
+        let link = link_with(&transport, KEY).unwrap_err();
+        assert!(
+            !format!("{link} {link:?}").contains("CFO-CANARY"),
+            "link {status}"
+        );
+        let health = adapter(&transport).health(&conn());
+        assert!(
+            !format!("{health:?}").contains("CFO-CANARY"),
+            "health {status}"
+        );
+
+        let per_account = FixtureTransport::with(&[
+            ("/accounts", 200, include_str!("fixtures/accounts.json")),
+            ("/accounts/101/balance", status, &echo),
+            ("/accounts/101/transactions", status, &echo),
+            ("/accounts/102/balance", status, &echo),
+            ("/accounts/102/transactions", status, &echo),
+        ]);
+        let refreshed = format!("{:?}", adapter(&per_account).sync(&conn(), None));
+        assert!(
+            !refreshed.contains("CFO-CANARY"),
+            "sync {status}: {refreshed}"
+        );
+        for result in [
+            format!("{:?}", adapter(&per_account).fetch_balances(&conn(), "101")),
+            format!(
+                "{:?}",
+                adapter(&per_account).fetch_transactions(&conn(), "101", None)
+            ),
+        ] {
+            assert!(!result.contains("CFO-CANARY"), "status {status}: {result}");
+        }
     }
 }
 
