@@ -1,0 +1,139 @@
+# Reviewed capability baseline (personal-cfo-cjd, ADR 0010 and all its addenda).
+#
+# `tests/acl_coverage.rs` parses tauri.conf.json, capabilities/*.json,
+# permissions/*.toml, the collect_commands! list in src/lib.rs and Cargo.toml,
+# works out what each window is actually granted, and fails — naming the rule and
+# the window — whenever that differs from this file. CI runs it on every PR that
+# touches apps/desktop/src-tauri/**.
+#
+# HOW TO UPDATE THIS FILE
+#
+# 1. Edit it BY HAND, in the same PR as the change it describes. There is no
+#    regenerate command and there must never be one: a baseline that can be
+#    rewritten from the code approves whatever the code says.
+# 2. Only the grant itself goes here. Why it is acceptable goes in ADR 0010 (a
+#    dated addendum for any new permission, scope, origin, window or CSP source)
+#    and in the PR description.
+# 3. Some rules are not data and cannot be loosened by editing this file: the
+#    audit also checks the file itself against ADR 0010 (script-src never gets an
+#    unsafe keyword; untrusted windows get no grants; the destructive set only
+#    reaches trusted windows; no remote origin — in a capability OR as a CSP
+#    source, so no new network egress; no wildcard window; no devtools feature).
+#    Changing one of those is an ADR decision, then a code change.
+# 4. A new ordinary command needs no edit here: add it to collect_commands! and
+#    to permissions/app-commands.toml, and the ACL-coverage rule is satisfied. A
+#    new DESTRUCTIVE command goes in permissions/destructive-commands.toml AND in
+#    [permission_sets.allow-destructive-commands] below.
+#
+# Entries are sorted so a diff shows exactly what moved.
+
+# ---------------------------------------------------------------------------
+# Production webview policy (what `tauri build` ships).
+# ---------------------------------------------------------------------------
+[production]
+# `app.withGlobalTauri` — the frontend reaches Rust only through generated bindings.
+with_global_tauri = false
+# The only keys allowed under `app.security`.
+security_keys = ["csp", "devCsp"]
+# Cargo features enabled on the `tauri` dependency for release builds, from any
+# dependency table or crate [features] entry. `devtools` is never allowed.
+tauri_features = []
+
+[production.csp]
+"base-uri" = ["'self'"]
+"connect-src" = ["'self'", "ipc:", "http://ipc.localhost"]
+"default-src" = ["'self'"]
+"font-src" = ["'self'"]
+"form-action" = ["'none'"]
+"frame-src" = ["'none'"]
+"img-src" = ["'self'", "data:"]
+"object-src" = ["'none'"]
+"script-src" = ["'self'"]
+# ADR 0010's one accepted relaxation (Radix/Tailwind runtime styles).
+"style-src" = ["'self'", "'unsafe-inline'"]
+
+# ---------------------------------------------------------------------------
+# Development-only policy (`tauri dev` against the local Vite server). The audit
+# also checks it differs from production only in script-src's HMR relaxations and
+# the dev server in connect-src, and that none of it appears in production.
+# ---------------------------------------------------------------------------
+[development.csp]
+"base-uri" = ["'self'"]
+"connect-src" = ["'self'", "ipc:", "http://ipc.localhost", "ws://localhost:1420", "http://localhost:1420"]
+"default-src" = ["'self'"]
+"font-src" = ["'self'"]
+"form-action" = ["'none'"]
+"frame-src" = ["'none'"]
+"img-src" = ["'self'", "data:"]
+"object-src" = ["'none'"]
+"script-src" = ["'self'", "'unsafe-inline'", "'unsafe-eval'"]
+"style-src" = ["'self'", "'unsafe-inline'"]
+
+# ---------------------------------------------------------------------------
+# Window topology: every window any config or capability names, the capability
+# files that target it, and the union of what those grant (Tauri merges them).
+# ---------------------------------------------------------------------------
+[windows.main]
+trust = "trusted"
+# Declared in tauri.conf.json ("create": false; built by src/windows.rs).
+in_config = true
+# Two named capabilities on purpose (ADR 0010 addendum 2026-07-04).
+capabilities = ["default", "destructive"]
+grants = [
+  "allow-app-commands",
+  "allow-destructive-commands",
+  "core:default",
+  "core:window:allow-set-theme",
+  "dialog:allow-open",
+  "dialog:allow-save",
+  "opener:allow-open-url",
+  "process:allow-restart",
+  "updater:default",
+]
+
+[windows.document_preview]
+trust = "untrusted"
+in_config = false
+capabilities = ["document-preview"]
+grants = []
+
+[windows.agent_report]
+trust = "untrusted"
+in_config = false
+capabilities = ["agent-report"]
+grants = []
+
+# ---------------------------------------------------------------------------
+# Scoped grants: every object-form permission, per window it reaches.
+# ---------------------------------------------------------------------------
+[[scopes]]
+window = "main"
+permission = "opener:allow-open-url"
+allow = [{ url = "https://dohflow.app/*" }]
+
+# ---------------------------------------------------------------------------
+# App-defined permission sets (permissions/*.toml). `lockstep` means the set's
+# commands are "every registered command not in another set", enforced by the
+# ACL-coverage rule; `exact` means the command list below is the reviewed
+# inventory.
+# ---------------------------------------------------------------------------
+[permission_sets.allow-app-commands]
+file = "app-commands.toml"
+inventory = "lockstep"
+
+[permission_sets.allow-destructive-commands]
+file = "destructive-commands.toml"
+inventory = "exact"
+commands = [
+  "apply_update",
+  "configure_backup",
+  # Hard, un-op-logged DELETE of a stored connector credential (personal-cfo-gglk).
+  "connector_forget",
+  "delete_vault",
+  "export_backup",
+  "export_transactions_csv",
+  "relaunch_app",
+  "restore_backup",
+  "restore_backup_as_new_vault",
+  "run_backup_now",
+]
