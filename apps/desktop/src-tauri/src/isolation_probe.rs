@@ -18,8 +18,9 @@
 //!   refused, a remote `fetch` is refused by `connect-src`, and an inline `style`
 //!   attribute still applies (the accepted `style-src 'unsafe-inline'` exception —
 //!   which a nonce in `style-src` would silently switch off);
-//! * that `window.open` creates nothing and a remote navigation leaves the page on
-//!   the app origin.
+//! * that `window.open` creates nothing, and that a remote navigation is cancelled
+//!   by the navigation guard itself (its per-window count must rise) and leaves the
+//!   page on the app origin.
 //!
 //! Run it from a bundled-origin debug build (`tauri build --debug`, or
 //! `cargo build --features tauri/custom-protocol`) with a scratch data directory:
@@ -36,13 +37,18 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
+use crate::navigation_guard::probe_evidence;
 use crate::windows::{self, IsolatedSurface, MAIN};
 
 /// Environment variable naming the report path; the probe runs only when set.
 pub const PROBE_ENV: &str = "PCFO_ISOLATION_PROBE";
 
-/// A remote origin every check points at. Nothing is ever expected to reach it.
-const REMOTE: &str = "https://example.com";
+/// A remote origin every check points at. It is in the reserved `.invalid` domain
+/// (RFC 6761), which never resolves, so no host is contacted even if a control
+/// failed — and so no check can pass merely because a real page loaded or not:
+/// each one requires positive evidence of the refusal (a CSP violation report, an
+/// ACL rejection, or the navigation guard's own count).
+const REMOTE: &str = "https://probe.invalid";
 
 /// The origin Tauri serves the bundle from on this platform.
 fn app_origin() -> &'static str {
@@ -161,7 +167,7 @@ fn page_script(trusted: bool) -> String {
   const violated = (directive) => P.violations.some((v) => v.directive === directive || v.directive.startsWith(directive + '-'));
   const expectRejected = async (name, cmd, args) => {{
     const ipc = window.__TAURI_INTERNALS__;
-    if (!ipc || typeof ipc.invoke !== 'function') {{ rec(name, true, 'no IPC bridge'); return; }}
+    if (!ipc || typeof ipc.invoke !== 'function') {{ rec(name, false, 'no IPC bridge — nothing was actually tried'); return; }}
     try {{ await withTimeout(ipc.invoke(cmd, args || {{}}), 5000); rec(name, false, 'resolved — the ACL let it through'); }}
     catch (e) {{ const m = msg(e); rec(name, /not allowed/i.test(m), m); }}
   }};
@@ -169,6 +175,10 @@ fn page_script(trusted: bool) -> String {
     try {{
       rec('page_origin', true, location.origin);
       rec('no_tauri_global', typeof window.__TAURI__ === 'undefined', typeof window.__TAURI__);
+      // Tauri injects the IPC bridge into every webview; the rejections below only
+      // mean something if a call was really made through it.
+      const bridge = window.__TAURI_INTERNALS__;
+      rec('ipc_bridge_present', !!bridge && typeof bridge.invoke === 'function', typeof (bridge && bridge.invoke));
       if ({trusted}) {{
         try {{ await withTimeout(window.__TAURI_INTERNALS__.invoke('vault_status'), 5000); rec('invoke_general_allowed', true, 'resolved'); }}
         catch (e) {{ rec('invoke_general_allowed', false, msg(e)); }}
@@ -253,8 +263,11 @@ fn probe_window<R: Runtime>(
         "detail": format!("{origin} (expected {})", app_origin()),
     });
 
-    // Last, because a failure would leave the page: try to navigate away, then read
-    // the origin back. A blocked navigation leaves it on the app origin.
+    // Last, because a failure would leave the page: try to navigate away. Passing
+    // needs BOTH the guard's own record of cancelling it for this window (positive
+    // evidence — "the page did not move" alone also holds when the remote simply
+    // fails to load) AND the page still on the app origin.
+    let blocked_before = probe_evidence::blocked_count(label);
     let _ = eval(
         &window,
         &format!("location.href = '{REMOTE}/probe-navigation'; 'navigating'"),
@@ -264,9 +277,10 @@ fn probe_window<R: Runtime>(
     let after = eval(&window, "location.origin", Duration::from_secs(5))
         .map(|v| v.as_str().unwrap_or("").to_owned())
         .unwrap_or_else(|e| format!("<{e}>"));
+    let blocked_by_guard = probe_evidence::blocked_count(label) - blocked_before;
     probe["checks"]["remote_navigation_blocked"] = json!({
-        "pass": after == app_origin(),
-        "detail": after,
+        "pass": blocked_by_guard >= 1 && after == app_origin(),
+        "detail": format!("guard cancelled {blocked_by_guard} navigation(s); origin after: {after}"),
     });
     Ok(probe)
 }

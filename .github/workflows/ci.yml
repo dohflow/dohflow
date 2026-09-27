@@ -541,9 +541,12 @@ jobs:
       # debug-only probe (src/isolation_probe.rs) opens main and both untrusted
       # shells, and in each checks IPC rejection, the effective CSP (inline script,
       # eval and remote fetch refused; inline style still applied), window.open and
-      # remote navigation, then exits non-zero on any failure. The placeholder dist
-      # is enough — the probe injects its own script — plus the shells' page.
-      # Scratch data directory only; no network is needed (every check is a refusal).
+      # remote navigation (which must be cancelled by the navigation guard itself,
+      # counted per window), then exits non-zero on any failure. The placeholder
+      # dist is enough — the probe injects its own script — plus the shells' page.
+      # Scratch data directory only. No remote host is contacted: every target is
+      # in the reserved .invalid domain, and every check requires positive
+      # evidence of a refusal, so none depends on the network.
       - name: Runtime isolation probe (real WebView, ADR 0010)
         if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         working-directory: apps/desktop/src-tauri

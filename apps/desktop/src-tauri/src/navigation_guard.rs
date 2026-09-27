@@ -63,10 +63,40 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
                     host = url.host_str().unwrap_or(""),
                     "blocked webview navigation outside the app origin"
                 );
+                #[cfg(debug_assertions)]
+                probe_evidence::record_block(webview.label());
             }
             allowed
         })
         .build()
+}
+
+/// Positive evidence for the runtime isolation probe (personal-cfo-0hp6): how many
+/// navigations the guard itself cancelled, per webview label. A probe that only
+/// checks "the page did not move" also passes when the remote simply fails to load,
+/// so it requires this count to rise instead. Debug builds only — compiled out of
+/// release builds entirely.
+#[cfg(debug_assertions)]
+pub mod probe_evidence {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    static BLOCKED: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
+
+    pub(super) fn record_block(label: &str) {
+        if let Ok(mut blocked) = BLOCKED.lock() {
+            *blocked.entry(label.to_owned()).or_default() += 1;
+        }
+    }
+
+    /// Navigations the guard has cancelled for `label` so far.
+    #[must_use]
+    pub fn blocked_count(label: &str) -> usize {
+        BLOCKED
+            .lock()
+            .map(|blocked| blocked.get(label).copied().unwrap_or(0))
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]

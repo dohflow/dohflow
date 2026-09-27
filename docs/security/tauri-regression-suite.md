@@ -16,7 +16,7 @@ evidence for one commit; this suite is what keeps later commits honest.
 | **1. Static pins** | `apps/desktop/src-tauri/tests/acl_coverage.rs` | Individual ADR rules on the committed files: every registered command has exactly one ACL grant; the opener, updater, process and theme grants are exactly what the addenda allow; no `shell`/`fs`/`http`; the untrusted shells are granted nothing; every window builder denies new windows; nothing uses `ipc::Channel` or `add_capability`; the debug-only fixtures are compiled out of release builds | `cargo test` (the desktop Rust gate) |
 | **2. Drift audit** | `tests/support/capability_audit.rs` + the hand-edited baseline `expected-capabilities.toml` | What each window is *effectively* granted (the union of its capability files), scoped grants, the destructive command inventory, production and dev CSP and the `tauri` features, compared with the reviewed baseline. It also applies code invariants to both the configuration and the baseline (strict `script-src`, no egress, untrusted windows get nothing, destructive commands reach only `main`, no wildcard window, no devtools). Negative tests break one input at a time. | `cargo test` |
 | **3. Mock-runtime ACL** | `tests/window_isolation.rs` | The real resolved ACL on Tauri's mock runtime, with windows built by the app's own `windows` module: `main` reaches the general and destructive surfaces; `document_preview` and `agent_report` are rejected for app, destructive, core and plugin commands; the navigation guard refuses remote, `file:` and `data:` navigation from each shell | `cargo test` |
-| **4. Real-WebView probe** | `src/isolation_probe.rs` (debug builds only) | What static tests cannot: in each **real** WebView (`main` and both shells) the first-load origin, no Tauri global, `invoke` accepted or rejected as above, and the **effective** CSP, read from the browser's own `securitypolicyviolation` reports. An injected inline script and `eval` are refused, a remote `fetch` is refused by `connect-src`, and an inline `style` attribute still applies. `window.open` creates nothing, and a remote navigation leaves the page on the app origin. | CI step "Runtime isolation probe (real WebView, ADR 0010)" (Ubuntu, WebKitGTK under Xvfb); on demand locally (macOS WKWebView) |
+| **4. Real-WebView probe** | `src/isolation_probe.rs` (debug builds only) | What static tests cannot: in each **real** WebView (`main` and both shells) the first-load origin, no Tauri global, `invoke` accepted or rejected as above, and the **effective** CSP, read from the browser's own `securitypolicyviolation` reports. An injected inline script and `eval` are refused, a remote `fetch` is refused by `connect-src`, and an inline `style` attribute still applies. `window.open` creates nothing, and a remote navigation is cancelled by the guard itself (its per-window count must rise) and leaves the page on the app origin. | CI step "Runtime isolation probe (real WebView, ADR 0010)" (Ubuntu, WebKitGTK under Xvfb); on demand locally (macOS WKWebView) |
 
 Two build-output checks complete the picture:
 
@@ -62,9 +62,16 @@ node scripts/check-dist-csp.mjs apps/desktop/dist
 ```
 
 The probe refuses to run without `PCFO_DATA_DIR`, and refuses a dev-server build
-(which would test `devCsp` and the dev origin instead of the shipped ones). It
-makes no network requests: every check is a refusal. No real financial fixtures
-are involved.
+(which would test `devCsp` and the dev origin instead of the shipped ones). No
+remote host is contacted: every target is in the reserved `.invalid` domain, and
+every check requires positive evidence of the refusal, so none can pass just
+because a remote page failed to load:
+- a `securitypolicyviolation` report, for the CSP checks;
+- an ACL rejection message, for `invoke`;
+- the navigation guard's own per-window count of cancelled navigations, for
+  navigation.
+
+No real financial fixtures are involved.
 
 **What triggers CI.** The desktop job's path filter watches
 `apps/desktop/src-tauri/**` (configuration, capabilities, permissions, command

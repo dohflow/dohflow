@@ -725,6 +725,17 @@ fn the_isolation_probe_is_compiled_out_of_release_builds() {
         1,
         "exactly one call site"
     );
+    // The guard's evidence counter the probe reads is debug-only too, so a release
+    // build's guard does nothing but block and log.
+    let guard = std::fs::read_to_string(manifest_dir().join("src/navigation_guard.rs"))
+        .expect("navigation_guard.rs is readable");
+    assert!(
+        guard.contains("#[cfg(debug_assertions)]\npub mod probe_evidence")
+            && guard.contains(
+                "#[cfg(debug_assertions)]\n                probe_evidence::record_block("
+            ),
+        "the navigation guard's probe_evidence counter must be #[cfg(debug_assertions)]"
+    );
 }
 
 #[test]
