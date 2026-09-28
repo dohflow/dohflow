@@ -73,7 +73,7 @@ The `observability` crate (`crates/observability/src/lib.rs`) holds one redactor
   | 4 | `password=` / `passwd` / `secret` / `token` / `api_key` / `vault_key` / `private_key` followed by `=` or `:` and a value | key kept, value `[REDACTED]` |
   | 5 | `Bearer …`, `sk-…`, `pk-…`, `sk_live_`/`sk_test_`/`pk_live_`/`pk_test_` tokens | `[TOKEN]` |
   | 6 | `$` amounts, or thousands-grouped numbers (`98,765.43`) | `[BALANCE]` |
-  | 7 | 12–19 digit runs, contiguous or grouped by single spaces/dashes (`4111 1111 1111 1111`) | `[ACCT_NUMBER]` |
+  | 7 | 12–19 digit runs, contiguous or grouped by single spaces or dashes (a card number written in four groups of four) | `[ACCT_NUMBER]` |
 
   UUIDs (hyphenated, with letters), op-log sequence numbers, counts and
   durations are shorter or differently shaped, and pass through.
