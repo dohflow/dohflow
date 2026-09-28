@@ -1,5 +1,9 @@
 //! Logging redaction for DohFlow (plan §6.6, personal-cfo-2vs).
 //!
+//! Policy: `docs/security/logging-policy.md` — what may be logged, this crate's
+//! pattern table, the span schema, the never-log corpus and the rule that every
+//! sink goes through this one redactor. Change it together with this crate.
+//!
 //! Default logs must be safe to share in a bug report. This crate provides a
 //! defense-in-depth backstop: [`redact`] rewrites sensitive substrings to typed
 //! placeholders, and [`RedactingMakeWriter`] wraps any `tracing` writer so

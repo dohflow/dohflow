@@ -1,5 +1,9 @@
 //! Logging-redaction gate (personal-cfo-zobt, §6.6, release-blocking).
 //!
+//! Policy: `docs/security/logging-policy.md` §4 — this file's POSITIVE/NEGATIVE
+//! lists and the `observability` unit corpus are the two halves of the
+//! never-log corpus and must be extended together.
+//!
 //! Proves that no §6.6 sensitive value reaches a log sink. A realistic Finance
 //! Kernel workload runs **under the production redacting subscriber**
 //! (`observability::RedactingMakeWriter` over the `tracing` fmt layer) so every
