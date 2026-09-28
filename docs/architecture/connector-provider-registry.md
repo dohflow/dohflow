@@ -161,10 +161,19 @@ in `apps/desktop/src/settings/connections/fixtures/simplefin-panel.shipped.txt`.
 It is pinned in two links:
 
 - `apps/desktop/src-tauri/tests/connector_registry.rs` checks that every
-  registry string appears in the frozen text, and that the frontend's SimpleFIN
-  fixture equals what the registry emits;
-- `ProviderDisclosure.test.tsx` checks that rendering that fixture reproduces
-  the frozen text byte for byte.
+  registry string appears in the frozen text, and that the frontend's registry
+  fixture (`fixtures/registry.json`, every registered provider, disabled ones
+  included) equals what the registry emits;
+- `ProviderDisclosure.test.tsx` checks that rendering that fixture's SimpleFIN
+  entry reproduces the frozen text byte for byte.
+
+The same fixture puts every provider's registry wording under the advice
+boundary (ADR 0018). `apps/desktop/src/copy-review.test.ts` runs its
+advice-phrase list over each provider's display name, disclosure points, link
+guide, history note and referral sentence. It also checks that every provider
+in the fixture was scanned, and the Rust pin above fails if the fixture is
+stale or missing a provider. The referral sentence renders at the panel's full
+text color, directly under its URL in the same note (ADR 0076 §5).
 
 ## 7. Adding a provider
 
@@ -191,7 +200,19 @@ enables it.
    the threats table in `docs/security/threat-model.md` (ADR 0076 decision 3d).
 6. **Tests:**
    - the adapter's own fixture tests;
+   - **key-echo tests.** A provider error body, id or other string that
+     echoes the API key must not leak it into an error, a warning,
+     `last_error`, a DTO or a log. LunchFlow's are the model:
+     `nothing_the_adapter_emits_contains_the_key`,
+     `a_key_straddling_the_truncation_boundary_is_removed_whole` and its
+     zero-width variants in the adapter, and
+     `a_key_echoing_refusal_never_reaches_last_error_the_dto_or_logs` in
+     `connector_ipc.rs`;
    - the registry roster and validation tests;
+   - **regenerate the registry fixture**
+     (`REGENERATE_FIXTURES=1 cargo test --test connector_registry` in
+     `apps/desktop/src-tauri`), so `copy-review.test.ts` scans the new
+     provider's wording, and review the diff;
    - a check that `connector_link` refuses the provider while it is disabled;
    - an env-gated live drill modelled on
      `apps/desktop/src-tauri/tests/lunchflow_drill.rs`.
@@ -210,6 +231,8 @@ reminder when nobody has looked for six months.
 | Every shipped adapter has exactly one entry; only SimpleFIN is enabled; LunchFlow ships disabled with its referral; every workspace adapter crate is in the roster | `crates/connector-core/tests/registry.rs` |
 | Inconsistent metadata is rejected; the six-month boundary | unit tests in `crates/connector-core/src/lib.rs` |
 | A disabled provider is refused before link (mock and the real registry); the DTO has no secret fields; disabled entries are listed and flagged; registry order | `apps/desktop/src-tauri/tests/connector_ipc.rs` |
-| SimpleFIN's copy in the registry is the shipped text; the frontend fixture matches the registry | `apps/desktop/src-tauri/tests/connector_registry.rs` |
-| The picker shows enabled entries only, in order, with details; one provider skips it; disclosure comes before any credential field; referral slot; no links | `apps/desktop/src/settings/connections/*.test.tsx` |
+| SimpleFIN's copy in the registry is the shipped text; the frontend registry fixture holds every provider and matches the registry | `apps/desktop/src-tauri/tests/connector_registry.rs` |
+| Every provider's registry wording (disclosure, link guide, referral sentence) passes the ADR 0018 advice-phrase list, and every provider is scanned | `apps/desktop/src/copy-review.test.ts` |
+| A provider that echoes the API key (error bodies, ids, statuses, split or zero-width-hidden) never leaks it into errors, warnings, stored ids, `last_error`, DTOs or logs | `crates/connectors/lunchflow-adapter/src/lib.rs` (unit), `crates/connectors/lunchflow-adapter/tests/lunchflow_flow.rs`, `apps/desktop/src-tauri/tests/connector_ipc.rs` |
+| The picker shows enabled entries only, in order, with details; one provider skips it; disclosure comes before any credential field; referral slot at full contrast under its URL; no links | `apps/desktop/src/settings/connections/*.test.tsx` |
 | The command is granted | `apps/desktop/src-tauri/tests/acl_coverage.rs` |
