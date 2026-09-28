@@ -73,6 +73,9 @@ pub use vault_crypto::CANONICAL_NO_RESET_WARNING;
 pub const NO_RESET_WARNING_ACKNOWLEDGED: &str = "no_reset_warning_acknowledged";
 
 use db_worker::{DbError, DbWorker, WriteCommand};
+use observability::diagnostics::{
+    Diagnostics, FailureCategory, Metric, Outcome as DiagnosticOutcome,
+};
 use uuid::Uuid;
 
 mod vault;
@@ -2619,6 +2622,11 @@ impl From<DbError> for KernelError {
 /// financial state.
 pub struct Kernel {
     worker: DbWorker,
+    /// This unlocked session's local diagnostic capture (personal-cfo-lyd,
+    /// `docs/security/logging-policy.md` §6). Owned by the kernel so that vault
+    /// lock, vault switch and app exit — which all drop the kernel — drop every
+    /// record and any pending preview with it. Never persisted.
+    diagnostics: Diagnostics,
 }
 
 impl Kernel {
@@ -2631,13 +2639,25 @@ impl Kernel {
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, KernelError> {
         Ok(Self {
             worker: DbWorker::open(path, key)?,
+            diagnostics: Diagnostics::new(),
         })
     }
 
     /// Build a kernel over an already-open db-worker.
     #[must_use]
     pub fn with_worker(worker: DbWorker) -> Self {
-        Self { worker }
+        Self {
+            worker,
+            diagnostics: Diagnostics::new(),
+        }
+    }
+
+    /// This session's local diagnostic capture (personal-cfo-lyd). Callers
+    /// record typed measurements; the only way out is a previewed, redacted
+    /// bundle the user saves (ADR 0066-A §5).
+    #[must_use]
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
     }
 
     /// The health of the underlying writer.
@@ -2713,8 +2733,12 @@ impl Kernel {
         executor: &E,
         cancellation: &CancellationToken,
     ) -> Result<JobRunReport, KernelError> {
+        let timed = TimedExecutor {
+            inner: executor,
+            diagnostics: &self.diagnostics,
+        };
         self.worker
-            .run_due_jobs(now, unlock_window, self, executor, cancellation)
+            .run_due_jobs(now, unlock_window, self, &timed, cancellation)
             .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
     }
 
@@ -2727,8 +2751,12 @@ impl Kernel {
         cancellation: &CancellationToken,
         clock: &dyn Clock,
     ) -> Result<JobRunReport, KernelError> {
+        let timed = TimedExecutor {
+            inner: executor,
+            diagnostics: &self.diagnostics,
+        };
         self.worker
-            .run_due_jobs_with_clock(now, unlock_window, self, executor, cancellation, clock)
+            .run_due_jobs_with_clock(now, unlock_window, self, &timed, cancellation, clock)
             .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
     }
 
@@ -4116,6 +4144,75 @@ impl Kernel {
     /// Returns [`KernelError`] on a persistence failure.
     pub fn operation_count(&self) -> Result<u64, KernelError> {
         Ok(self.worker.operation_count()?)
+    }
+}
+
+/// The fixed diagnostic category for a kernel error (personal-cfo-lyd). Only the
+/// variant is used — never its message — so no path, value or text from the
+/// error can reach a diagnostic record.
+#[must_use]
+pub fn failure_category(error: &KernelError) -> FailureCategory {
+    match error {
+        KernelError::Validation(_) => FailureCategory::Validation,
+        KernelError::Persistence(_) => FailureCategory::Storage,
+        KernelError::Unavailable(_) => FailureCategory::Unavailable,
+        KernelError::VaultExists
+        | KernelError::VaultNotFound
+        | KernelError::VaultInUse
+        | KernelError::NewerVaultSchema { .. }
+        | KernelError::UnsupportedVaultSchema
+        | KernelError::VaultUnlockFailed
+        | KernelError::Vault(_)
+        | KernelError::IllegalVaultTransition { .. } => FailureCategory::Vault,
+        _ => FailureCategory::Internal,
+    }
+}
+
+/// The diagnostic outcome of a kernel result.
+fn outcome_of<T>(result: &Result<T, KernelError>) -> DiagnosticOutcome {
+    match result {
+        Ok(_) => DiagnosticOutcome::Success,
+        Err(error) => DiagnosticOutcome::Failure(failure_category(error)),
+    }
+}
+
+/// Times each durable-job execution into the session's diagnostics
+/// (`job_duration`, a coarse bucket) without changing what runs.
+struct TimedExecutor<'a, E: ?Sized> {
+    inner: &'a E,
+    diagnostics: &'a Diagnostics,
+}
+
+impl<E: JobExecutor<Kernel> + ?Sized> JobExecutor<Kernel> for TimedExecutor<'_, E> {
+    fn should_run(&self, job: &JobRecord, context: &Kernel) -> bool {
+        self.inner.should_run(job, context)
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        context: &Kernel,
+    ) -> JobExecution {
+        let started = std::time::Instant::now();
+        let execution = self.inner.execute(job, cancellation, context);
+        self.diagnostics
+            .record_duration(Metric::JobDuration, started.elapsed());
+        execution
+    }
+}
+
+impl Kernel {
+    /// Record a backup attempt's outcome (personal-cfo-lyd).
+    pub(crate) fn record_backup_outcome<T>(&self, result: &Result<T, KernelError>) {
+        self.diagnostics
+            .record_outcome(Metric::BackupOutcome, outcome_of(result));
+    }
+
+    /// Record a completed restore in the restored vault's new session.
+    pub(crate) fn record_restore_success(&self) {
+        self.diagnostics
+            .record_outcome(Metric::RestoreOutcome, DiagnosticOutcome::Success);
     }
 }
 

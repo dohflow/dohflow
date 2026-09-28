@@ -288,6 +288,8 @@ changed and reviewed first.
 **Where capture enters (a requirement on `lyd`).** Rust call sites must
 construct records directly from the enums. UI render timings must arrive through
 one typed IPC command that accepts only `(ui_render_timing, duration bucket)`.
+`lyd` does not add that command; frontend timing capture is
+`personal-cfo-6s97`'s, and it must follow this rule.
 That command is granted to `main` only, and the untrusted windows cannot reach
 it (ADR 0010). Anything that doesn't fit the types is rejected at the boundary,
 and the rejection is counted, never stored.
@@ -366,8 +368,8 @@ this section, and the plan now points here.
 | Surface | State |
 |---|---|
 | Rust logs | Redacted `tracing` output to **stdout only**. The app writes no log file. |
-| Local capture ring | **Not built** (`personal-cfo-lyd`) |
-| Diagnostic bundle export | **Not built** (`lyd`; round-trip test `personal-cfo-ryjx`) |
+| Local capture ring | **Ships** (`personal-cfo-lyd`): `observability::diagnostics::Diagnostics`, owned by the unlocked `Kernel` (`Kernel::diagnostics`), so lock, switch and exit drop it. Sources today are durable-job durations (`job_duration`, timed around each execution) and backup and restore outcomes (`backup_outcome`, `restore_outcome`). The other §7 metrics are wired by their per-area structured-logging beads. |
+| Diagnostic bundle export | **Ships** (`lyd`): Settings → Diagnostics → Preview → Save. IPC: `diagnostics_preview` and `diagnostics_discard` (general set), and `diagnostics_save` (destructive set: `main` only). Save writes exactly the previewed bytes to an absolute `.json` path and returns a fixed result. The bundle format is `dohflow-diagnostics` v1, parsed by `observability::diagnostics::parse_bundle`. The adversarial round-trip suite is `personal-cfo-ryjx`. |
 | Crash reporting | **None** (`personal-cfo-fps` covers crash-path redaction; ADR 0066-A rules out automatic crash reports) |
 | Network egress for any of the above | **None**. The WebView CSP allows no remote origin (ADR 0010, `csp-egress`), and no Rust-side telemetry client exists. |
 | WebView console | Not persisted or collected anywhere. But it sits **outside** the redactor: frontend `console.*` calls (failed IPC calls, a refused external link) must follow §1 at the call site. Logging a user-entered value or a financial field there is a policy violation. |

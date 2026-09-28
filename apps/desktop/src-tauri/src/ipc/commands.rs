@@ -46,19 +46,20 @@ use crate::ipc::dto::{
     CreateIncomeSourceInput, CreateManualFutureEntryInput, CreateRecurringBillInput,
     CreateRecurringBillResult, CreateRecurringTransferInput, CreateRecurringTransferResult,
     CreateScenarioInput, CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult,
-    DebtPayoffPlanDto, DebtTermsDto, DismissRecurringSuggestionInput, ForecastReadinessDto,
-    ForecastViewDto, ImportBatchInput, ImportedTransactionFieldsDto, IncomeSourceDto,
-    LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
-    MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
-    RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
-    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind,
-    RestoreRecoveryStatusDto, ScenarioDto, SetBillAutopayInput, SetCardStatementBalanceInput,
-    SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto, SpendBreakdownDto,
-    SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto, TransactionPageDto,
-    TransactionPageInput, TransactionRowDto, UnconfirmObligationInput, UnconfirmedOccurrenceDto,
-    UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput, UpdateIncomeSourceInput,
-    UpdateManualFutureEntryInput, UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto,
-    VaultHealthDto, VaultListDto, VaultStatusDto, VaultSummaryDto,
+    DebtPayoffPlanDto, DebtTermsDto, DiagnosticsPreviewDto, DiagnosticsSaveResult,
+    DismissRecurringSuggestionInput, ForecastReadinessDto, ForecastViewDto, ImportBatchInput,
+    ImportedTransactionFieldsDto, IncomeSourceDto, LoanDoubleCountWarningDto, ManualFutureEntryDto,
+    MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto, MutationResult,
+    RecordTransactionInput, RecordTransactionResult, RecordTransferInput, RecurringBillDto,
+    RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
+    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, ScenarioDto, SetBillAutopayInput,
+    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
+    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
+    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
+    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
+    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
+    UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto, VaultStatusDto,
+    VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
@@ -785,6 +786,167 @@ pub fn export_transactions_csv(
     out_path: String,
 ) -> Result<u32, IpcError> {
     export_transactions_csv_impl(state.inner(), out_path)
+}
+
+// ---- local diagnostics (personal-cfo-lyd) -------------------------------------
+//
+// The capture lives on the unlocked kernel's session (`Kernel::diagnostics`), so
+// vault lock / switch / exit drop it and any pending preview by construction.
+// The only way out is: preview (an immutable redacted snapshot) → the user picks
+// a file in the native Save dialog → save writes exactly those bytes. No
+// background export, no upload, no unredacted mode (ADR 0066-A §5,
+// docs/security/logging-policy.md §6–§8).
+
+fn diagnostics_header(created_on: &str) -> observability::diagnostics::BundleHeader {
+    observability::diagnostics::BundleHeader {
+        build_version: env!("CARGO_PKG_VERSION").to_owned(),
+        build_channel: crate::update::BUILD_CHANNEL.to_owned(),
+        platform: std::env::consts::OS.to_owned(),
+        created_on: created_on.to_owned(),
+    }
+}
+
+const DIAGNOSTICS_UNAVAILABLE: &str = "Diagnostics couldn't be prepared. Nothing was saved.";
+
+pub fn diagnostics_preview_impl(state: &AppState) -> Result<DiagnosticsPreviewDto, IpcError> {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    with_kernel(state, |kernel| {
+        let snapshot = kernel
+            .diagnostics()
+            .preview(&diagnostics_header(&today))
+            .map_err(|_| IpcError::Validation(DIAGNOSTICS_UNAVAILABLE.to_owned()))?;
+        let bundle = observability::diagnostics::parse_bundle(snapshot.bytes())
+            .map_err(|_| IpcError::Validation(DIAGNOSTICS_UNAVAILABLE.to_owned()))?;
+        let clamp = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
+        Ok(DiagnosticsPreviewDto {
+            snapshot_id: u32::try_from(snapshot.id()).unwrap_or(u32::MAX),
+            text: snapshot.text().to_owned(),
+            records: bundle.records_retained,
+            dropped: clamp(bundle.dropped_by_capacity.values().sum()),
+            rejected: clamp(bundle.rejected_at_admission),
+            suggested_file_name: format!("dohflow-diagnostics-{today}.json"),
+        })
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_preview(
+    state: tauri::State<'_, AppState>,
+) -> Result<DiagnosticsPreviewDto, IpcError> {
+    diagnostics_preview_impl(state.inner())
+}
+
+/// The fixed result for an OS write failure — never the error's text or path.
+fn diagnostics_write_failure(error: &std::io::Error) -> DiagnosticsSaveResult {
+    // ENOSPC is 28 on macOS and Linux; `ErrorKind::StorageFull` is newer than
+    // the crate's MSRV.
+    if error.raw_os_error() == Some(28) {
+        DiagnosticsSaveResult::DiskFull
+    } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+        DiagnosticsSaveResult::PermissionDenied
+    } else {
+        DiagnosticsSaveResult::Failed
+    }
+}
+
+#[cfg(test)]
+mod diagnostics_write_failure_tests {
+    use super::{diagnostics_write_failure, DiagnosticsSaveResult};
+
+    #[test]
+    fn os_write_failures_map_to_fixed_results() {
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::from_raw_os_error(28)),
+            DiagnosticsSaveResult::DiskFull
+        );
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            DiagnosticsSaveResult::PermissionDenied
+        );
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::other("/Users/jane/secret path")),
+            DiagnosticsSaveResult::Failed
+        );
+    }
+}
+
+pub fn diagnostics_save_impl(
+    state: &AppState,
+    snapshot_id: u32,
+    out_path: String,
+) -> Result<DiagnosticsSaveResult, IpcError> {
+    let started_at = std::time::Instant::now();
+    // The boundary span records the command and outcome only — never the path.
+    let span = tracing::info_span!(
+        "tauri_command",
+        command_id = %Uuid::now_v7(),
+        correlation_id = %Uuid::now_v7(),
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command = "diagnostics_save",
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    let result = with_kernel(state, |kernel| {
+        let diagnostics = kernel.diagnostics();
+        let Some(snapshot) = diagnostics.pending(u64::from(snapshot_id)) else {
+            return Ok(DiagnosticsSaveResult::PreviewExpired);
+        };
+        let path = std::path::Path::new(&out_path);
+        // Only a `.json` file in an existing folder: a diagnostics save can never
+        // overwrite a vault, envelope or backup file.
+        let valid = path.is_absolute()
+            && path.extension().and_then(|e| e.to_str()) == Some("json")
+            && path.parent().is_some_and(std::path::Path::is_dir);
+        if !valid {
+            return Ok(DiagnosticsSaveResult::InvalidDestination);
+        }
+        match std::fs::write(path, snapshot.bytes()) {
+            Ok(()) => {
+                diagnostics.discard(u64::from(snapshot_id));
+                Ok(DiagnosticsSaveResult::Saved)
+            }
+            Err(error) => Ok(diagnostics_write_failure(&error)),
+        }
+    });
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let outcome = match &result {
+        Ok(DiagnosticsSaveResult::Saved) => "success",
+        Ok(_) => "not_saved",
+        Err(error) => ipc_error_code(error),
+    };
+    span.record("duration_ms", duration_ms);
+    span.record("outcome", outcome);
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_save(
+    state: tauri::State<'_, AppState>,
+    snapshot_id: u32,
+    out_path: String,
+) -> Result<DiagnosticsSaveResult, IpcError> {
+    diagnostics_save_impl(state.inner(), snapshot_id, out_path)
+}
+
+pub fn diagnostics_discard_impl(state: &AppState, snapshot_id: u32) -> Result<(), IpcError> {
+    with_kernel(state, |kernel| {
+        kernel.diagnostics().discard(u64::from(snapshot_id));
+        Ok(())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_discard(
+    state: tauri::State<'_, AppState>,
+    snapshot_id: u32,
+) -> Result<(), IpcError> {
+    diagnostics_discard_impl(state.inner(), snapshot_id)
 }
 
 pub fn export_backup_impl(state: &AppState, out_path: String) -> Result<(), IpcError> {

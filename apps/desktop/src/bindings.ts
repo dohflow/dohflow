@@ -274,6 +274,9 @@ export const commands = {
 	configureBackup: (cadence: BackupCadenceDto, destination: string | null) => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("configure_backup", { cadence, destination })),
 	runBackupNow: () => typedError<BackupHistoryEntryDto, IpcError>(__TAURI_INVOKE("run_backup_now")),
 	exportTransactionsCsv: (outPath: string) => typedError<number, IpcError>(__TAURI_INVOKE("export_transactions_csv", { outPath })),
+	diagnosticsPreview: () => typedError<DiagnosticsPreviewDto, IpcError>(__TAURI_INVOKE("diagnostics_preview")),
+	diagnosticsSave: (snapshotId: number, outPath: string) => typedError<DiagnosticsSaveResult, IpcError>(__TAURI_INVOKE("diagnostics_save", { snapshotId, outPath })),
+	diagnosticsDiscard: (snapshotId: number) => typedError<null, IpcError>(__TAURI_INVOKE("diagnostics_discard", { snapshotId })),
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
 	restoreBackupAsNewVault: (packagePath: string, password: string, name: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup_as_new_vault", { packagePath, password, name })),
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
@@ -1405,6 +1408,52 @@ export type DebtTermsDto = {
 	/**  The loan's original principal in minor units (ADR 0044), or `null`. */
 	original_principal_minor: number | null,
 };
+
+/**
+ *  A previewed local diagnostics bundle (personal-cfo-lyd,
+ *  `docs/security/logging-policy.md` §8). `text` is **exactly** what
+ *  `diagnostics_save` writes for this `snapshot_id`; records captured after the
+ *  preview never enter it.
+ */
+export type DiagnosticsPreviewDto = {
+	/**  Names this preview; a save must name the preview the user saw. */
+	snapshot_id: number,
+	/**  The exact bundle text (redacted JSON). */
+	text: string,
+	/**  Records the bundle holds. */
+	records: number,
+	/**  Records evicted because the session reached its capacity. */
+	dropped: number,
+	/**  Values rejected at admission (wrong shape for their metric). */
+	rejected: number,
+	/**  A suggested file name for the Save dialog (no directory). */
+	suggested_file_name: string,
+};
+
+/**
+ *  How a diagnostics save ended (personal-cfo-lyd). Every expected outcome is a
+ *  fixed variant — never a path or an OS error message — so the UI shows safe
+ *  copy for each.
+ */
+export type DiagnosticsSaveResult =
+/**  The previewed bytes were written. */
+"saved" |
+/**
+ *  The preview is gone (a newer preview replaced it, or the vault was locked
+ *  or switched). Nothing was written.
+ */
+"preview_expired" |
+/**
+ *  The destination is not an absolute `.json` file in an existing folder.
+ *  Nothing was written.
+ */
+"invalid_destination" |
+/**  The OS refused the write. */
+"permission_denied" |
+/**  The disk is full. */
+"disk_full" |
+/**  The write failed for another reason. */
+"failed";
 
 /**
  *  Input to dismiss a recurring-bill suggestion (ADR 0046, personal-cfo-4d8.24.6): the

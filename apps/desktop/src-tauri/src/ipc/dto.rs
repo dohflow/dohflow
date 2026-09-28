@@ -4064,3 +4064,45 @@ pub struct ConnectorSyncResultDto {
 pub struct ConnectorForgetInput {
     pub connection_id: String,
 }
+
+/// A previewed local diagnostics bundle (personal-cfo-lyd,
+/// `docs/security/logging-policy.md` §8). `text` is **exactly** what
+/// `diagnostics_save` writes for this `snapshot_id`; records captured after the
+/// preview never enter it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct DiagnosticsPreviewDto {
+    /// Names this preview; a save must name the preview the user saw.
+    pub snapshot_id: u32,
+    /// The exact bundle text (redacted JSON).
+    pub text: String,
+    /// Records the bundle holds.
+    pub records: u32,
+    /// Records evicted because the session reached its capacity.
+    pub dropped: u32,
+    /// Values rejected at admission (wrong shape for their metric).
+    pub rejected: u32,
+    /// A suggested file name for the Save dialog (no directory).
+    pub suggested_file_name: String,
+}
+
+/// How a diagnostics save ended (personal-cfo-lyd). Every expected outcome is a
+/// fixed variant — never a path or an OS error message — so the UI shows safe
+/// copy for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticsSaveResult {
+    /// The previewed bytes were written.
+    Saved,
+    /// The preview is gone (a newer preview replaced it, or the vault was locked
+    /// or switched). Nothing was written.
+    PreviewExpired,
+    /// The destination is not an absolute `.json` file in an existing folder.
+    /// Nothing was written.
+    InvalidDestination,
+    /// The OS refused the write.
+    PermissionDenied,
+    /// The disk is full.
+    DiskFull,
+    /// The write failed for another reason.
+    Failed,
+}
