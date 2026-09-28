@@ -907,6 +907,15 @@ export type ConnectorAccountLinkDto = {
 	account_id: string | null,
 	/**  `YYYY-MM-DD`; `None` = never synced (next sync fetches full history). */
 	last_synced_on: string | null,
+	/**  The provider account's ISO 4217 currency; `None` = not known yet. */
+	currency: string | null,
+	/**
+	 *  Why this account can't be mapped, in the currency guard's own words
+	 *  (personal-cfo-049p6; ADR 0076 decision 7) — `None` when it can. Set
+	 *  for an unknown currency or one other than the base currency; a mapped
+	 *  link with a known foreign currency has its transactions held.
+	 */
+	currency_refusal: string | null,
 };
 
 /**  A class of account the provider reaches. */

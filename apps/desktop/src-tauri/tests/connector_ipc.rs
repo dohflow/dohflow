@@ -12,7 +12,8 @@ use app_lib::ipc::commands::{
     connector_link_registered_impl, connector_set_account_link_impl, connector_sync_impl,
     create_account_impl, create_category_impl, create_manual_future_entry_impl, import_batch_impl,
     manual_future_entry_list_impl, money_inbox_list_impl, recategorize_transaction_impl,
-    record_transaction_impl, set_auto_categorize_on_import_impl, transaction_page_impl,
+    record_transaction_impl, set_auto_categorize_on_import_impl, set_base_currency_impl,
+    transaction_page_impl,
 };
 use app_lib::ipc::dto::{
     AccountFlagsDto, CashflowRoleDto, ConnectorForgetInput, ConnectorLinkInput,
@@ -1107,7 +1108,7 @@ impl lunchflow_adapter::transport::Transport for EchoingLunchFlow {
             .find(|(p, _)| *p == path)
             .map_or(404, |(_, status)| *status);
         let body = if status == 200 && path == "/accounts" {
-            r#"{"accounts":[{"id":101,"name":"Checking","status":"ACTIVE"}],"total":1}"#.to_owned()
+            r#"{"accounts":[{"id":101,"name":"Checking","currency":"USD","status":"ACTIVE"}],"total":1}"#.to_owned()
         } else if status == 200 && path.ends_with("/balance") {
             r#"{"balance":{"amount":1.00,"currency":"USD"}}"#.to_owned()
         } else {
@@ -1280,4 +1281,207 @@ fn key_echoing_per_account_errors_never_reach_sync_warnings() {
     for text in [&rendered, &dto, &logged] {
         assert!(!text.contains(ECHO_KEY), "leaked the key: {text}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// The connector currency guard (personal-cfo-049p6; ADR 0076 decision 7)
+// ---------------------------------------------------------------------------
+
+/// Link `adapter` and return the connection id (any account count).
+fn link_any(state: &AppState, adapter: &dyn ConnectorAdapter) -> String {
+    connector_link_impl(
+        state,
+        adapter,
+        ConnectorLinkInput {
+            adapter_id: "other".to_owned(),
+            setup_token: "mock-setup-token".to_owned(),
+        },
+    )
+    .unwrap()
+    .connection_id
+}
+
+fn try_map(
+    state: &AppState,
+    connection_id: &str,
+    external_id: &str,
+    account_id: Option<&str>,
+) -> Result<(), app_lib::ipc::IpcError> {
+    connector_set_account_link_impl(
+        state,
+        ConnectorSetAccountLinkInput {
+            connection_id: connection_id.to_owned(),
+            external_id: external_id.to_owned(),
+            account_id: account_id.map(str::to_owned),
+        },
+    )
+}
+
+fn link_dto(state: &AppState, external_id: &str) -> app_lib::ipc::dto::ConnectorAccountLinkDto {
+    connector_connections_impl(state).unwrap()[0]
+        .links
+        .iter()
+        .find(|l| l.external_id == external_id)
+        .cloned()
+        .unwrap()
+}
+
+#[test]
+fn a_foreign_currency_account_is_discovered_then_refused_on_both_mapping_paths() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_foreign_account();
+    let connection_id = link_any(&state, &adapter);
+
+    // Discovery records every account's currency; the guard's verdict rides
+    // the link DTO.
+    let euro = link_dto(&state, "mock-acct-euro");
+    assert_eq!(euro.currency.as_deref(), Some("EUR"));
+    let refusal = euro
+        .currency_refusal
+        .expect("a EUR account is refused in a USD household");
+    assert!(
+        refusal.contains("EUR") && refusal.contains("USD"),
+        "{refusal}"
+    );
+    let checking = link_dto(&state, "mock-acct-checking");
+    assert_eq!(checking.currency.as_deref(), Some("USD"));
+    assert!(checking.currency_refusal.is_none());
+
+    // Map-to-existing: refused, with the same copy, Rust-side.
+    let existing = make_account(&state, "Checking");
+    let err = try_map(&state, &connection_id, "mock-acct-euro", Some(&existing)).unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(m) if m == &refusal),
+        "{err:?}"
+    );
+    // Create-from-mapping ends in the same call: the new account can't be mapped either.
+    let created = make_account(&state, "Mock Euro Account");
+    assert!(try_map(&state, &connection_id, "mock-acct-euro", Some(&created)).is_err());
+    assert!(link_dto(&state, "mock-acct-euro").account_id.is_none());
+
+    // Same currency maps; unmapping is always allowed.
+    try_map(
+        &state,
+        &connection_id,
+        "mock-acct-checking",
+        Some(&existing),
+    )
+    .unwrap();
+    try_map(&state, &connection_id, "mock-acct-checking", None).unwrap();
+}
+
+#[test]
+fn an_unknown_currency_is_refused_never_assumed() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_account_currency(None);
+    let connection_id = link_any(&state, &adapter);
+    let dto = link_dto(&state, "mock-acct-checking");
+    assert!(dto.currency.is_none(), "unknown stays unknown");
+    let refusal = dto.currency_refusal.expect("unknown is refused");
+    assert!(refusal.contains("hasn't reported"), "{refusal}");
+    let account = make_account(&state, "Checking");
+    let err = try_map(&state, &connection_id, "mock-acct-checking", Some(&account)).unwrap_err();
+    assert!(matches!(err, app_lib::ipc::IpcError::Validation(_)));
+}
+
+#[test]
+fn the_base_currency_setting_is_what_the_guard_compares_against() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_foreign_account();
+    let connection_id = link_any(&state, &adapter);
+    set_base_currency_impl(&state, "EUR".to_owned()).unwrap();
+    // Now the EUR account matches and the USD ones are foreign.
+    assert!(link_dto(&state, "mock-acct-euro")
+        .currency_refusal
+        .is_none());
+    assert!(link_dto(&state, "mock-acct-checking")
+        .currency_refusal
+        .is_some());
+    let account = make_account(&state, "Checking");
+    assert!(try_map(&state, &connection_id, "mock-acct-checking", Some(&account)).is_err());
+}
+
+#[test]
+fn a_mapped_account_later_reported_in_another_currency_is_held_not_committed() {
+    let (_dir, state) = open_state();
+    let connection_id = link(&state, &mock());
+    let checking = make_account(&state, "Checking");
+    map_account(&state, &connection_id, "mock-acct-checking", &checking);
+
+    // The provider now reports the account in EUR (the same path a legacy
+    // link with no recorded currency takes when its first refresh backfills
+    // a foreign one).
+    let result = sync(
+        &state,
+        &mock().with_account_currency(Some("EUR")),
+        &connection_id,
+    );
+    assert_eq!(
+        result.committed, 0,
+        "nothing in another currency is committed"
+    );
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("EUR") && w.contains("held and not imported")),
+        "{:?}",
+        result.warnings
+    );
+    let dto = link_dto(&state, "mock-acct-checking");
+    assert_eq!(dto.currency.as_deref(), Some("EUR"));
+    assert!(
+        dto.currency_refusal.is_some(),
+        "flagged on the connection surface"
+    );
+    assert_eq!(
+        dto.account_id.as_deref(),
+        Some(checking.as_str()),
+        "the mapping is kept"
+    );
+    assert!(
+        dto.last_synced_on.is_none(),
+        "the watermark doesn't advance"
+    );
+    assert_eq!(
+        transaction_page_impl(&state, page_query())
+            .unwrap()
+            .rows
+            .len(),
+        0,
+        "no rows were summed"
+    );
+    // A remap attempt is refused; unmapping is allowed.
+    let other = make_account(&state, "Other");
+    assert!(try_map(&state, &connection_id, "mock-acct-checking", Some(&other)).is_err());
+    try_map(&state, &connection_id, "mock-acct-checking", None).unwrap();
+}
+
+#[test]
+fn a_failed_refresh_leaves_currencies_alone_and_discovery_backfills_them() {
+    let (_dir, state) = open_state();
+    let connection_id = link_any(&state, &mock().with_account_currency(None));
+    assert!(link_dto(&state, "mock-acct-checking").currency.is_none());
+
+    // A throttled refresh changes nothing (retry-safe).
+    let throttled = MockConnector::failing_with(connector_core::mock::FailureMode::RateLimited)
+        .with_id("other");
+    let _ = connector_sync_impl(
+        &state,
+        &throttled,
+        ConnectorSyncInput {
+            connection_id: connection_id.clone(),
+            idempotency_key: uuid::Uuid::now_v7().to_string(),
+        },
+    );
+    assert!(link_dto(&state, "mock-acct-checking").currency.is_none());
+
+    // The next successful refresh (discovery, since nothing is mapped)
+    // records the currency, and the account becomes mappable.
+    sync(&state, &mock(), &connection_id);
+    let dto = link_dto(&state, "mock-acct-checking");
+    assert_eq!(dto.currency.as_deref(), Some("USD"));
+    assert!(dto.currency_refusal.is_none());
+    let account = make_account(&state, "Checking");
+    try_map(&state, &connection_id, "mock-acct-checking", Some(&account)).unwrap();
 }

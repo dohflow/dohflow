@@ -3893,6 +3893,13 @@ pub struct ConnectorAccountLinkDto {
     pub account_id: Option<String>,
     /// `YYYY-MM-DD`; `None` = never synced (next sync fetches full history).
     pub last_synced_on: Option<String>,
+    /// The provider account's ISO 4217 currency; `None` = not known yet.
+    pub currency: Option<String>,
+    /// Why this account can't be mapped, in the currency guard's own words
+    /// (personal-cfo-049p6; ADR 0076 decision 7) — `None` when it can. Set
+    /// for an unknown currency or one other than the base currency; a mapped
+    /// link with a known foreign currency has its transactions held.
+    pub currency_refusal: Option<String>,
 }
 
 /// One provider in the connector registry (ADR 0015) — the picker's input.

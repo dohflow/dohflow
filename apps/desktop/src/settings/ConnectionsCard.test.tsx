@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient } from "@/test/renderWithClient";
 
 const mocks = vi.hoisted(() => ({
+  openUrl: vi.fn(),
   connectorAdapters: vi.fn(),
   connectorConnections: vi.fn(),
   connectorLink: vi.fn(),
@@ -22,6 +23,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/bindings", () => ({
   commands: { ...mocks },
 }));
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 
 vi.mock("@/vault/useVault", () => ({
   describeIpcError: (error: unknown) =>
@@ -46,6 +49,8 @@ function connection(over: Record<string, unknown> = {}) {
         external_name: "Demo Checking",
         account_id: null,
         last_synced_on: null,
+        currency: "USD",
+        currency_refusal: null,
       },
     ],
     ...over,
@@ -364,5 +369,101 @@ describe("ConnectionsCard", () => {
       queryByRole("dialog", { name: /new account for this connection/i }),
     ).toBeInTheDocument();
     expect(getByRole("button", { name: /close/i })).toBeDisabled();
+  });
+
+  // --- the currency guard (personal-cfo-049p6) ---------------------------
+
+  const EUR_REFUSAL =
+    "This account is in EUR, but your base currency is USD. Accounts in a currency other than your base currency aren't supported yet.";
+  const UNKNOWN_REFUSAL =
+    "The provider hasn't reported this account's currency yet. Refresh the connection, then map it.";
+
+  function linkWith(over: Record<string, unknown>) {
+    return connection({
+      links: [
+        {
+          external_id: "ACT-EU",
+          external_name: "Euro Savings",
+          account_id: null,
+          last_synced_on: null,
+          currency: "EUR",
+          currency_refusal: EUR_REFUSAL,
+          ...over,
+        },
+      ],
+    });
+  }
+
+  it("refuses to map a foreign-currency account and says why", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([linkWith({})]));
+    const { findByLabelText, getByText, getByRole } = renderWithClient(<ConnectionsCard />);
+    const select = (await findByLabelText("Account for Euro Savings")) as HTMLSelectElement;
+    expect(select).toBeDisabled();
+    expect(getByText(EUR_REFUSAL, { exact: false })).toBeInTheDocument();
+    expect(select.getAttribute("aria-describedby")).toBeTruthy();
+    // No way to create an account that could never be mapped.
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Not mapped"]);
+    // The row names the account's currency.
+    expect(
+      getByText((_, el) => el?.tagName === "P" && el.textContent === "Euro Savings · EUR"),
+    ).toBeInTheDocument();
+    // The help link opens the page that states the limitation.
+    fireEvent.click(getByRole("button", { name: "About currencies" }));
+    await waitFor(() =>
+      expect(mocks.openUrl).toHaveBeenCalledWith(
+        "https://dohflow.app/help/known-limitations#bank-connections",
+      ),
+    );
+    expect(mocks.connectorSetAccountLink).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown currency and never shows it as the base currency", async () => {
+    mocks.connectorConnections.mockResolvedValue(
+      ok([linkWith({ currency: null, currency_refusal: UNKNOWN_REFUSAL })]),
+    );
+    const { findByLabelText, getByText, queryByText } = renderWithClient(<ConnectionsCard />);
+    expect(await findByLabelText("Account for Euro Savings")).toBeDisabled();
+    expect(getByText(UNKNOWN_REFUSAL, { exact: false })).toBeInTheDocument();
+    expect(queryByText(/· USD/)).toBeNull();
+  });
+
+  it("flags a mapped account whose currency turned out foreign as held", async () => {
+    mocks.connectorConnections.mockResolvedValue(
+      ok([linkWith({ account_id: account.id, last_synced_on: null })]),
+    );
+    const { findByText, getByText, getByLabelText } = renderWithClient(<ConnectionsCard />);
+    expect(await findByText("Needs attention")).toBeInTheDocument();
+    expect(getByText(/Its transactions are held and not imported/)).toBeInTheDocument();
+    expect(getByText(/Held — this account/)).toBeInTheDocument();
+    const select = getByLabelText("Account for Euro Savings") as HTMLSelectElement;
+    // It can be unmapped, not remapped or recreated.
+    expect(select).not.toBeDisabled();
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Not mapped", "Checking"]);
+    mocks.connectorSetAccountLink.mockResolvedValue(ok(null));
+    fireEvent.change(select, { target: { value: "" } });
+    await waitFor(() =>
+      expect(mocks.connectorSetAccountLink).toHaveBeenCalledWith({
+        connection_id: connection().id,
+        external_id: "ACT-EU",
+        account_id: null,
+      }),
+    );
+  });
+
+  it("labels a legacy mapped link with no recorded currency as unconfirmed", async () => {
+    mocks.connectorConnections.mockResolvedValue(
+      ok([
+        linkWith({
+          account_id: account.id,
+          currency: null,
+          currency_refusal: UNKNOWN_REFUSAL,
+        }),
+      ]),
+    );
+    const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+    expect(await findByText(/Currency not confirmed yet/)).toBeInTheDocument();
+    // Unknown is not foreign: nothing is held, and no false base-currency label.
+    expect(queryByText("Needs attention")).toBeNull();
+    expect(queryByText(/· USD/)).toBeNull();
   });
 });
