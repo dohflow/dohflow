@@ -66,8 +66,27 @@ or, in the browser, add `?template=tauri-upgrade.md` to the compare URL.
    them). CI must be green, including "Runtime isolation probe (real WebView,
    ADR 0010)". Also run the probe locally on macOS: CI runs it on WebKitGTK, but
    the shipped engine is WKWebView.
-7. **Build and smoke the release artifact:** `pnpm tauri build`, then the launch
-   smoke, then an update check against the signed updater (ADR 0068).
+7. **Build and smoke the release artifact under a THROWAWAY identity.** Never
+   smoke-launch an upgrade build as the real app. A release-profile build
+   **ignores `PCFO_DATA_DIR`** (ADR 0070: `data_dir::resolve_data_dir` returns
+   the identifier's own data directory before it looks at the override). Run
+   under the real identifier, `setup()` would write into the owner's real DohFlow
+   data. The throwaway identifier is what keeps the smoke away from the real vault:
+   ```bash
+   cd apps/desktop
+   pnpm tauri build --bundles app --config \
+     '{"identifier":"ai.personalcfo.upgradesmoke","productName":"DohFlowUpgradeSmoke","bundle":{"createUpdaterArtifacts":false}}'
+   # Launch that bundle's binary directly (never /Applications, never `open` on the real app):
+   PCFO_SMOKE_TEST_EXIT=1 \
+     src-tauri/target/release/bundle/macos/DohFlowUpgradeSmoke.app/Contents/MacOS/personal-cfo-desktop
+   ```
+   It must print `setup() completed successfully` and exit 0. For a hands-on
+   check (UI, update check), launch the same throwaway bundle without
+   `PCFO_SMOKE_TEST_EXIT`. Check for updates, but do **not** install one from a
+   smoke build. The smoke data lands in
+   `~/Library/Application Support/ai.personalcfo.upgradesmoke`, which the owner
+   removes afterwards. A debug build (`tauri build --debug`) additionally honors
+   a scratch `PCFO_DATA_DIR`; a release build does not.
 8. **Review, then re-audit.** Independent review binds to the PR's SHA. The next
    pre-release review re-audits the release SHA against ADR 0010, as the dated
    audit requires.

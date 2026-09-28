@@ -630,4 +630,20 @@ fn the_upgrade_procedure_and_pr_template_stay_complete() {
         "the vendored-source checklist shrank"
     );
     assert!(read("../../../scripts/tauri-acl-expansion.mjs").contains("acl-manifests.json"));
+    // The release smoke must run under a throwaway identity: a release-profile
+    // build ignores PCFO_DATA_DIR (ADR 0070), so the real identifier would write
+    // into the owner's real data directory (io42 review F1).
+    for (file, text) in [("TAURI_UPGRADES.md", &doc), ("tauri-upgrade.md", &template)] {
+        assert!(
+            text.contains("ai.personalcfo.upgradesmoke")
+                && text.contains("ignores `PCFO_DATA_DIR`"),
+            "{file} lost the throwaway-identity rule for the release smoke"
+        );
+    }
+    assert!(
+        doc.contains(
+            r#""identifier":"ai.personalcfo.upgradesmoke","productName":"DohFlowUpgradeSmoke""#
+        ),
+        "TAURI_UPGRADES.md step 7 must build the smoke under the throwaway identifier"
+    );
 }

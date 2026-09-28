@@ -119,7 +119,7 @@ appears.
 | Runtime isolation probe, **macOS locally** (`cargo build --features tauri/custom-protocol` + `PCFO_ISOLATION_PROBE`) | |
 | CI "Runtime isolation probe (real WebView, ADR 0010)" (Linux) | |
 | `node scripts/check-dist-csp.mjs apps/desktop/dist` after `pnpm build` | |
-| `pnpm tauri build` + launch smoke + signed-updater check (ADR 0068) | |
+| `pnpm tauri build` under the **throwaway identity** `ai.personalcfo.upgradesmoke` (TAURI_UPGRADES.md step 7 — a release build ignores `PCFO_DATA_DIR`, so the real identifier would write into the owner's real data) + launch smoke + update check, no install (ADR 0068) | |
 
 **Checks not run, and why:**
 
