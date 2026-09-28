@@ -35,6 +35,7 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 
 [dev-dependencies]
+base64 = "=0.22.1" # Frozen encrypted cross-version fixtures (text only).
 tempfile = "3"
 tracing-test = "0.2"
 # Build a test ImporterPlugin's version in the ingest-pipeline e2e (personal-cfo-cmx).
