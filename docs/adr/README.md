@@ -24,7 +24,7 @@ when the ADR was written (owner-confirmed).
 
 | # | Title | Tier | Status |
 |---|---|---|---|
-| 0001 | [Tauri v2 + Rust core + React/TypeScript frontend](0001-tauri-rust-react.md) | Public | Accepted |
+| 0001 | [Tauri v2 + Rust core + React/TypeScript frontend](0001-tauri-rust-react.md) | Public | Accepted (compiler-support addendum) |
 | 0002 | [Local encrypted vault model](0002-local-encrypted-vault.md) | Public | Accepted |
 | 0003 | [Frontend / backend trust boundary](0003-trust-boundary.md) | Public | Accepted (amended twice) |
 | 0004 | [Connector relay boundary](0004-connector-relay-boundary.md) | Public | Accepted |

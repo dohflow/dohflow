@@ -80,3 +80,40 @@ Use **Tauri v2** as the desktop shell, with a **Rust** trusted core (the "Financ
 - `personal-cfo-dily` (React + TypeScript frontend shell)
 - `personal-cfo-tif` (ADR 0010: Tauri window/capability isolation)
 - `personal-cfo-1al` (ADR 0003: trust boundary)
+
+## Accepted addendum (2026-09-28): verified Rust compiler support
+
+- **Status:** Accepted
+- **Tier:** Public — contributor build requirements and security engineering.
+- **Decider:** Project owner
+- **Bead:** `personal-cfo-g3m.5`
+
+The supported bundled SQLCipher update requires a newer Rust compiler than the
+previously declared minimum of 1.82. The upstream `rusqlite` 0.40 releases use
+[`cfg_select!`](https://doc.rust-lang.org/stable/releases.html#version-1950-2026-04-16),
+stabilized in Rust 1.95. Prefer a supported upstream security update over a
+locally maintained database fork or source patch.
+
+The declared minimum may advance to the **lowest verified compiler version in
+the range 1.95–1.96**. Verification must use that actual compiler against the
+complete locked workspace and standalone desktop dependency graphs, including
+the relevant supported targets. A successful 1.96 build does not demonstrate
+1.95 compatibility. Record the selected floor and its verification in
+`docs/architecture/stack.md`, keep both manifests consistent, and enforce it in
+CI. If the graph needs a compiler above 1.96, a supported target regresses, or
+the required evidence cannot be obtained, obtain a new decision before
+continuing. This addendum authorizes the bounded policy change; it does not
+assert an untested minimum already works.
+
+The **pinned build toolchain remains 1.96.0**. Contributors using older Rust
+must update their compiler to build the updated dependency graph. This changes
+source-build support only, not the supported OS or hardware floor. The bundled
+SQLCipher/vendored OpenSSL architecture, Tauri pins, vault and backup formats,
+key hierarchy, KDF, migration rules, and compatibility/security gates remain
+unchanged. Preserve outgoing-engine synthetic fixtures before updating the
+engine. Compiler approval is not permission to convert user data, waive a
+release gate, or ship an unreviewed artifact.
+
+Revisit this addendum if a later dependency requires a higher compiler floor
+or changes platform support. Do not silently raise `rust-version` to make a
+dependency build pass.
