@@ -18,6 +18,9 @@
   the program plan's invariant 6.
 - **Research:** `docs/research/simplefin-feasibility.md`,
   `docs/research/lunchflow-feasibility.md`
+- **Documented in:** [`docs/architecture/connector-provider-registry.md`](../architecture/connector-provider-registry.md)
+  — the implemented registry, its IPC, the picker flow, and how to add a
+  provider.
 
 ## Context
 

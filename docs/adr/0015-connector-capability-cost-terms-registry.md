@@ -22,6 +22,9 @@
   optional referral field to this registry's shape, recorded in the
   2026-09-27 addendum below), ADR 0022 (parser/document isolation — the no-runtime-
   dynamic-loading precedent this ADR's Rust-vs-TOML decision follows)
+- **Documented in:** [`docs/architecture/connector-provider-registry.md`](../architecture/connector-provider-registry.md)
+  — the implemented registry, its IPC, the picker flow, and how to add a
+  provider.
 
 ## Context
 
