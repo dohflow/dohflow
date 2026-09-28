@@ -252,6 +252,10 @@ export function describeIpcError(error: IpcError): string {
     switch (error) {
       case "VaultUnlockFailed":
         return "Incorrect password. Please try again.";
+      case "NewerVaultSchema":
+        return "This vault requires a newer version of DohFlow. Open it with a compatible newer version.";
+      case "UnsupportedVaultSchema":
+        return "This vault's format could not be verified. It was not changed. Open it with a compatible version of DohFlow or restore a known-good backup.";
       case "VaultLocked":
         return "The vault is locked.";
       case "WriterPanicked":

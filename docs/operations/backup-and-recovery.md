@@ -93,6 +93,57 @@ available. A successful new restore can be attempted separately.
 - **No silent downgrade.** A backup from a newer app version is refused rather
   than corrupted; an older-schema backup is migrated forward on open.
 
+## Existing-vault compatibility gate
+
+Ordinary unlock and restored-vault reopening share the db-worker guard; the
+optional health check is not the gate. With the ADR 0070 cooperative runner
+lock held, an existing-only read-only SQLCipher connection inspects a single
+read transaction before a writable connection is opened. It reads committed
+WAL state, not just the main database page. It independently checks
+`PRAGMA user_version`, `schema_migrations.version`, and
+`vault_metadata.schema_version`; credible newer evidence in any marker is a
+typed refusal even if another marker is missing, damaged, or lowered.
+
+Caller inventory: `Kernel::open` uses the passphrase open-or-create API;
+`Kernel::create_vault` uses raw-DEK creation (preflight if a DB already exists);
+`Kernel::unlock_vault` uses the existing-only raw-DEK API. Controller/IPC unlock
+and backup restore's verified-payload reopening reach that same unlock gate.
+Worker read/maintenance connections retain its ownership boundary and omit
+SQLite's CREATE flag, so a disappearing path is never a replacement vault.
+No alternate credential-based vault unlock surface is added.
+
+The guard also verifies known migration hashes, a contiguous applied prefix,
+and readable existing metadata. The supported historical matrix is the known
+versioned migration prefixes, including lower/zero stale stamps and completed
+per-migration transactions interrupted before the next migration. No verified
+pre-framework/no-tracker fixture exists; such layouts fail closed rather than
+being guessed to be the baseline. Missing DB/metadata on existing unlock is
+not creation. Genuinely new vault creation still bootstraps normally.
+
+The runner lock remains held across inspection, pathname file-identity checks,
+writer-handle revalidation, and bootstrap. On supported macOS/Unix targets,
+identity checks compare filesystem device/inode to the held original file.
+This is a cooperative single-owner boundary, not protection against malicious
+non-cooperating writers or pathname swaps. Before `configure_conn` requests
+WAL or `ensure_tracker` creates a table, the writer handle is rechecked;
+the migration runner independently rechecks all version witnesses before any
+tracker/migration/version-stamp write.
+
+Refusal leaves no usable worker/kernel and does not start forecast persistence
+or local jobs. It does not write the DB, envelope, or blobs or checkpoint,
+truncate, delete, or lose existing committed WAL data. SQLite may create
+previously absent WAL/SHM coordination files or rebuild its disposable SHM
+index, and the advisory runner lock file may exist afterward; file-set equality
+is deliberately not claimed. No immutable/no-WAL shortcut, engine/crypto
+format change, automatic repair, or downgrade is performed.
+
+Synthetic evidence lives in `db-worker`'s newer-marker/layout/WAL and historical
+prefix tests, `raw_key_vault`, and the desktop `vault_commands` refusal tests.
+Tests compare settled encrypted DB/envelope/blob bytes and committed WAL bytes,
+retain independent SQLCipher observers, and verify locked state, repeated
+refusal, and other-vault preservation. Never reproduce this by stamping a real
+vault. Keep its files intact and obtain a separately approved recovery plan.
+
 ## Recommended practice: a periodic restore drill
 
 Treat a backup as untested until you have restored it. Periodically restore your

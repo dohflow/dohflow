@@ -100,6 +100,8 @@ impl Kernel {
     /// - [`KernelError::Persistence`] if the database cannot be opened.
     /// - [`KernelError::VaultInUse`] if another process already owns the
     ///   unlocked vault.
+    /// - [`KernelError::NewerVaultSchema`] or [`KernelError::UnsupportedVaultSchema`]
+    ///   before migrations/seed writes when existing schema inspection refuses.
     pub fn unlock_vault(path: impl AsRef<Path>, password: &[u8]) -> Result<Self, KernelError> {
         let db_path = path.as_ref();
         let sidecar = sidecar_path(db_path);
@@ -114,7 +116,7 @@ impl Kernel {
         let envelope = VaultEnvelope::from_bytes(&bytes)?;
         let kek = derive_kek(password, &envelope.salt, &envelope.kdf)?;
         let dek = unwrap_dek(&kek, &envelope.wrapped)?;
-        let worker = DbWorker::open_with_raw_key(db_path, dek)?;
+        let worker = DbWorker::open_existing_with_raw_key(db_path, dek)?;
         Ok(Self::with_worker(worker))
     }
 

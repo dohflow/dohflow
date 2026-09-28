@@ -213,6 +213,17 @@ pub fn export_bindings(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     use specta_typescript::Typescript;
 
     ipc_builder().export(Typescript::default(), path)?;
+    // Specta emits spaces after union separators. Keep this committed artifact
+    // deterministic and compatible with git diff --check, including on a fresh
+    // regeneration in CI; this does not alter the generated TypeScript types.
+    let generated = std::fs::read_to_string(path)?;
+    let normalized = generated
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(path, normalized)?;
     Ok(())
 }
 

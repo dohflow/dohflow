@@ -117,6 +117,8 @@ fn ipc_error_code(error: &IpcError) -> &'static str {
         IpcError::Validation(_) => "validation",
         IpcError::VaultLocked => "vault_locked",
         IpcError::VaultUnlockFailed => "vault_unlock_failed",
+        IpcError::NewerVaultSchema => "newer_vault_schema",
+        IpcError::UnsupportedVaultSchema => "unsupported_vault_schema",
         IpcError::Unavailable(_) => "unavailable",
         IpcError::WriterPanicked => "writer_panicked",
         IpcError::Persistence(_) => "persistence",
@@ -5581,6 +5583,8 @@ mod release_update_failure_tests {
 
         tracing::subscriber::with_default(subscriber, || {
             record_durable_job_unlock_failure(&error);
+            record_durable_job_unlock_failure(&IpcError::NewerVaultSchema);
+            record_durable_job_unlock_failure(&IpcError::UnsupportedVaultSchema);
         });
 
         let logged = String::from_utf8(buffer.0.lock().expect("test log buffer lock").clone())
@@ -5588,6 +5592,8 @@ mod release_update_failure_tests {
         assert!(logged.contains("durable jobs on unlock failed"));
         assert!(logged.contains("error_code") && logged.contains("persistence"));
         assert!(logged.contains("outcome") && logged.contains("failed"));
+        assert!(logged.contains("newer_vault_schema"));
+        assert!(logged.contains("unsupported_vault_schema"));
         assert!(!logged.contains(&sensitive_payload));
         assert!(!logged.contains("opaque durable payload"));
     }

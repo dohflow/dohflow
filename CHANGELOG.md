@@ -7,6 +7,13 @@ record until the first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Existing vaults with a newer schema are refused before migrations or
+  post-unlock writes (`personal-cfo-g3m.4`). The unlock screen asks for a
+  compatible newer DohFlow version instead of opening or stamping the vault
+  down. Unverified or incomplete existing layouts also fail closed.
+
 ## [0.2.0] - 2026-09-18
 
 ### Added
