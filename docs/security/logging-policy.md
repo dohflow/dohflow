@@ -10,11 +10,16 @@
   default), `personal-cfo-3cw` (privacy modes and redacted export),
   `personal-cfo-fps` (crash-report redaction), `personal-cfo-ryjx` (telemetry
   export round-trip)
+- **Source decisions:** plan §6.6; ADR 0066-A §5 (no client telemetry; the only
+  diagnostic export is a user-initiated, previewed, redacted bundle; seven-day
+  service logs); the session-only capture decision recorded on
+  `personal-cfo-vkda`. §6–§8 are the contract `personal-cfo-lyd` implements.
 - Formerly `docs/security/logging-redaction.md`, which now points here.
 
 **Default logs must be safe to paste into a public bug report.** This page is
-what that means, how the code enforces it, where it does not yet, and what a
-change to logging has to update.
+what that means, how the code enforces it, where it does not yet, the contract
+for the planned local capture and diagnostic export, and what a change to
+logging has to update.
 
 ## 1. What may and may not be logged (§6.6)
 
@@ -198,56 +203,199 @@ The redactor has no fuzz or property tests today.
 **both** files and a pattern to §2.2 in the same PR. Anything that must pass
 through untouched goes in both known-negative lists.
 
-## 5. Local observability (§6.6.1)
+## 5. Five kinds of record, and who owns each
 
-**The policy.** The app may collect local-only operational telemetry for
-reliability, with export disabled by default:
-- **Allowed metrics:** job durations, import row counts, dedupe candidate counts,
-  forecast and query duration buckets, UI render timing buckets, redacted
-  connector status codes, retry counts, migration durations, and backup/restore
-  success or failure.
-- **Where it lives:** telemetry stays inside the encrypted vault or in ephemeral
-  memory.
-- **Leaving the device:** nothing leaves unless the user previews it and
-  explicitly exports it.
-- **Diagnostic export:** has a **redacted** mode and a **full-local** mode, and
-  full-local stays encrypted and user-controlled.
-- **CI:** redaction tests are part of CI (§2.3).
+"Logging" covers five different things with different rules. They must not be
+confused, and no record moves from one kind to another.
 
-**What ships today (the conservative subset of the policy):**
+| Kind | What it is | Where it lives | Lifetime | Owner (bead) | Source decision |
+|---|---|---|---|---|---|
+| **Stdout tracing** | redacted `tracing` output from the running app | process stdout | the process | `personal-cfo-2vs` (ships) | plan §6.6; this doc §1–§4 |
+| **Local capture** | typed operational metrics collected for reliability | **process memory only**, one bounded ring per unlocked-vault session | until lock, vault switch or exit (§6.2) | `personal-cfo-lyd` (planned) | vkda session-only decision (§6.1); ADR 0066-A §5 |
+| **Exported diagnostic bundle** | a redacted, previewed snapshot of the local capture that **the user chooses to save** | a file the user picks | until the user deletes it | `personal-cfo-lyd` (exporter), `personal-cfo-ryjx` (round-trip test), `personal-cfo-fps` (crash-path redaction), `personal-cfo-3cw` (the "redacted export" mode *is* this exporter) | ADR 0066-A §5 ("the only diagnostic export is a user-initiated, previewed, redacted bundle") |
+| **Service operational logs** | failure and lifecycle events kept by a future DohFlow service (Sync, backup upload, AI proxy, extension registry) | the service | deleted **within seven days** | each service's bead; none ship today | ADR 0066-A §5 |
+| **Protocol records** | the ciphertext-safe records a Sync service needs to work (encrypted snapshots, envelopes, receipts, retry index) | the service | ADR 0074's recovery windows; **not** subject to the seven-day rule | Sync beads | ADR 0074, ADR 0066-A §5 |
+
+The desktop app sends **no** client telemetry, analytics, automatic crash report
+or automatic diagnostic bundle anywhere (ADR 0066-A §5). The only way diagnostic
+data leaves a device is a user saving a bundle and choosing to share that file.
+
+## 6. Local capture: storage and lifecycle (for `personal-cfo-lyd`)
+
+### 6.1 The decision
+
+**Local capture is session-only, bounded, in-memory capture. There is no
+automatic diagnostic history on disk.** The owner asked for the best long-term
+option. Planning selected this on 2026-09-27 (recorded on `personal-cfo-vkda`
+and `personal-cfo-lyd`), and ADR 0066-A §5 limits export to user-initiated,
+previewed, redacted bundles. It is a deliberate privacy decision, not a
+temporary shortcut:
+- Nothing captured survives an unexpected exit or a crash. That is the stated
+  trade-off, and the fix is not to persist silently.
+- The durable artifact is a bundle the user explicitly saves.
+
+The numeric limits in §6.2 were proposed in `personal-cfo-vkda`'s PR and are
+approved with it. A limit is an engineering bound. It never permits capturing a
+field §7 excludes.
+
+### 6.2 Limits and lifecycle
+
+| Property | Rule | Testable as |
+|---|---|---|
+| Scope | One capture ring per **unlocked-vault session**. Capture starts at unlock; events before unlock are not captured (they exist only as stdout tracing). | a record emitted while locked is not in the ring |
+| Capacity | **2,000 records.** Records are fixed-size (§7), so the ring's memory is bounded; the ring must stay under **256 KiB**. | fill past 2,000 → length stays 2,000; a size assertion stays under 256 KiB |
+| Eviction | Oldest-first. Every evicted record increments a **per-metric dropped counter** (a count only). | overflow → the oldest record is gone and `dropped[metric]` is incremented |
+| Vault lock | Clears the ring and the dropped counters, and **invalidates any pending preview**. | after lock, the ring is empty and the preview is gone |
+| Vault switch | Same as lock: the old vault's capture never follows into the new vault's session. | switch → empty ring, no preview |
+| App exit (normal or crash) | Nothing is flushed to disk. The ring is lost. | no diagnostic file exists after exit |
+| Restart | Nothing survives except bundles the user saved (§8). | a fresh launch has an empty ring |
+| Preview snapshot | Created when the user opens Preview: an **immutable copy** of the ring and counters, rendered to the exact bytes Save would write. It lives until Save completes, Cancel, vault lock/switch, app exit, or a new Preview replaces it. Records captured after the snapshot never enter it. | a record added after Preview is absent from the saved file |
+
+**What memory clearing does not promise.** Dropping the ring frees process
+memory. It does **not** guarantee the bytes are erased from OS swap, a
+hibernation image or a core dump. Keeping sensitive values out of the capture
+(§7) is what protects them. `personal-cfo-fps` documents what cannot be
+guaranteed about OS crash artifacts.
+
+## 7. Admission: the typed field allowlist
+
+**Admission is by type, not by redaction.** A record can hold only these fields.
+There is no string, path or free-form message field, so a sensitive value has
+nowhere to go:
+
+| Field | Type | Values |
+|---|---|---|
+| `at_s` | integer | whole seconds since this capture session began (no wall-clock time) |
+| `metric` | closed enum | `job_duration`, `import_rows`, `dedupe_candidates`, `forecast_duration`, `query_duration`, `ui_render_timing`, `connector_status`, `retry_count`, `migration_duration`, `backup_outcome`, `restore_outcome` (plan §6.6.1's list) |
+| `value` | closed enum, one of: | |
+| · `duration` | bucket | `<10ms`, `10–100ms`, `100ms–1s`, `1–10s`, `>10s` |
+| · `count` | integer | saturates at 1,000,000 (shown as `≥1000000`) |
+| · `status` | closed enum | a fixed category per source (for example connector `ok`, `auth_failed`, `rate_limited`, `provider_error`, `network_unavailable`), mapped from typed errors, **never** a raw HTTP status line, body, URL or error message |
+| · `outcome` | closed enum | `success`, or `failure` with a fixed error category |
+
+**Excluded, whatever the value:**
+- arbitrary strings, and messages or error text;
+- filesystem paths;
+- any financial data (amounts, balances, account, merchant or payee names,
+  descriptions);
+- credentials and tokens;
+- **stable identifiers** (vault, account, device and connection ids, and
+  command or correlation UUIDs), plus hashes of any excluded value.
+
+A metric source that needs anything outside this table needs this section
+changed and reviewed first.
+
+**Where capture enters (a requirement on `lyd`).** Rust call sites must
+construct records directly from the enums. UI render timings must arrive through
+one typed IPC command that accepts only `(ui_render_timing, duration bucket)`.
+That command is granted to `main` only, and the untrusted windows cannot reach
+it (ADR 0010). Anything that doesn't fit the types is rejected at the boundary,
+and the rejection is counted, never stored.
+
+**Defense in depth.** The export serializer's output must also pass through
+`observability::redact()` (§2.2). For allowlisted records that is a no-op, and
+`personal-cfo-ryjx`'s round-trip test proves both.
+
+**Honest completeness.** Every bundle states what it is *not*. Its header
+carries:
+- the build version and channel, and the platform;
+- the bundle's creation **date** (UTC day, no time);
+- how many records it holds, how many were **dropped by capacity** (per
+  metric), and how many were **rejected at admission**;
+- a fixed sentence: the bundle covers only the current unlocked session since its
+  last unlock, and excludes earlier sessions, other vaults, and anything before a
+  crash.
+
+It never claims lossless capture.
+
+## 8. Export contract
+
+1. **Preview first.** The user opens Diagnostics and chooses Preview, which
+   renders the **exact redacted snapshot** (§6.2), byte for byte what Save would
+   write.
+2. **Explicit save consent.** Saving requires a separate user action after
+   preview, through the native Save dialog (the existing `dialog:allow-save`
+   grant). The user picks the location.
+3. **Nothing in the background.** No automatic disk export, no scheduled
+   bundle, no upload, and no network request of any kind. The WebView has no
+   remote origin (ADR 0010), and the exporter has no endpoint.
+4. **Cancel writes nothing.** Cancelling the preview or the Save dialog creates
+   no file.
+5. **Safe failure.** A failed save reports a fixed category (for example
+   permission denied or disk full), with no path and no payload.
+6. **Redacted only.** There is **no full-local or unredacted mode.** The saved
+   bundle is plaintext, deliberately: it is already redacted, the user created
+   it on purpose, and it is the only durable diagnostic artifact.
+7. **Lock or switch while previewing** discards the preview (§6.2); nothing is
+   saved.
+
+Plan §6.6.1 used to require "redacted and full-local modes" and allow telemetry
+"inside the encrypted vault". That wording is superseded by ADR 0066-A §5 and
+this section, and the plan now points here.
+
+## 9. Local capture versus service logs
+
+- **Local capture** (§6) is session-only and never leaves the device except
+  through a user-saved bundle.
+- **Service operational logs** (ADR 0066-A §5) belong to future DohFlow
+  services, not to the desktop app. They record only failures and lifecycle
+  events, and only a timestamp, service/build version, fixed operation name,
+  status or error category, and a coarse duration bucket. They exclude
+  identifiers, sizes, IP addresses, credentials, URLs, payloads and raw
+  exception text, and they are **deleted within seven days**, with no archive.
+  None ship today.
+- **The seven-day rule never applies to local capture.** Local capture keeps
+  nothing across sessions at all, and its rules are the shorter ones.
+
+**How the related beads fit:**
+- **`personal-cfo-lyd`** builds §6–§8: the capture ring, admission, preview and
+  save, and the UI.
+- **`personal-cfo-ryjx`** proves the production path, capture → admission →
+  preview → packaging → parse, drops every seeded sensitive value and accounts
+  for eviction.
+- **`personal-cfo-fps`** covers crash paths: app-owned crash and error sinks
+  stay redacted, there is no automatic crash report, and after a crash the
+  session capture is simply gone (§6.1).
+- **`personal-cfo-3cw`** lists "redacted export" as one of its privacy modes.
+  That mode **is** the §8 exporter, reused and not a second path. 3cw's other
+  modes (hide balances, blur, copy-safe) are display features for the main UI.
+  They are not part of this policy and add no capture or export.
+
+## 10. What ships today
 
 | Surface | State |
 |---|---|
 | Rust logs | Redacted `tracing` output to **stdout only**. The app writes no log file. |
-| Telemetry and metrics collection | **None** (`personal-cfo-lyd` builds the local-only metrics store) |
-| Telemetry or diagnostic export | **None** (`lyd`, with privacy modes and redacted export from `personal-cfo-3cw`, and the round-trip test from `personal-cfo-ryjx`) |
-| Crash reporting | **None** (`personal-cfo-fps` owns crash-report redaction before any reporter ships) |
+| Local capture ring | **Not built** (`personal-cfo-lyd`) |
+| Diagnostic bundle export | **Not built** (`lyd`; round-trip test `personal-cfo-ryjx`) |
+| Crash reporting | **None** (`personal-cfo-fps` covers crash-path redaction; ADR 0066-A rules out automatic crash reports) |
 | Network egress for any of the above | **None**. The WebView CSP allows no remote origin (ADR 0010, `csp-egress`), and no Rust-side telemetry client exists. |
 | WebView console | Not persisted or collected anywhere. But it sits **outside** the redactor: frontend `console.*` calls (failed IPC calls, a refused external link) must follow §1 at the call site. Logging a user-entered value or a financial field there is a policy violation. |
 
-Adding any row, a file sink, a metric store, an exporter or a crash reporter, is
-a change to this policy (§6).
-
-## 6. Changing logging
+## 11. Changing logging
 
 In the same PR as the change:
 
 - **A new log field or span** follows §1 and §3.1. If it could carry user data,
   it is redacted at the call site (§2.1).
-- **A new sink** (file, crash report, telemetry, diagnostic export) routes
-  through the one redactor (§2.2), gets a known-positive round-trip test, and
-  updates §5's table. Anything leaving the device also needs the user-preview
-  and explicit-export flow of §6.6.1, and its own review against ADR 0003 and
-  ADR 0010.
+- **A new sink** routes through the one redactor (§2.2) and gets a
+  known-positive round-trip test. It must fit §5's five kinds; a new kind of
+  record is an ADR change first. Anything leaving the device follows §8, and ADR
+  0066-A requires explicit approval **before** collection for any new egress or
+  service log field.
+- **A new capture metric or field** changes §7's table and is reviewed first.
+  Changing §6's limits updates this doc and `lyd`'s tests together.
 - **A new sensitive class or secret format** extends both corpora (§4) and the
   pattern table (§2.2).
 - **This document** is updated. Security-sensitive changes follow the full review
   path (AGENTS.md §16).
 
-## 7. Related
+## 12. Related
 
+- `docs/adr/0066-A-dohflow-endpoints-pinned-credential-not-unlock.md` §5: no
+  client telemetry, the single diagnostic export, and service-log retention.
+- `docs/adr/0074-dohflow-sync-architecture.md`: protocol records.
 - `docs/security/threat-model.md`, row "Financial data leaks into logs".
 - `docs/security/capability-audit-2026-09-27.md` and
-  `docs/security/tauri-regression-suite.md`: the WebView egress controls that
-  keep anything logged in the frontend from leaving the device.
+  `docs/security/tauri-regression-suite.md`: the WebView egress controls.
 - `docs/architecture/definition-of-done.md` §2: logging obligations per feature.
