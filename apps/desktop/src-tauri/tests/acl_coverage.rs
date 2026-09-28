@@ -8,29 +8,19 @@
 
 use std::collections::BTreeSet;
 
+#[path = "support/capability_audit.rs"]
+mod capability_audit;
+
+use capability_audit::{audit, Inputs, Violation};
+
 const LIB_RS: &str = include_str!("../src/lib.rs");
 const APP_COMMANDS: &str = include_str!("../permissions/app-commands.toml");
 const DESTRUCTIVE_COMMANDS: &str = include_str!("../permissions/destructive-commands.toml");
 
-/// Command idents out of the `collect_commands![...]` block. Parses by scanning for
-/// every `ipc::commands::` occurrence rather than line-by-line, so a rustfmt reflow
-/// (several commands on one line, wrapped items, comments) can never silently drop a
-/// command from the comparison (review fold, 2026-07-05).
+/// Command idents out of the `collect_commands![...]` block — the audit's parser,
+/// so there is one command inventory, not two.
 fn registered_commands() -> BTreeSet<String> {
-    let start = LIB_RS
-        .find("collect_commands![")
-        .expect("collect_commands! block");
-    let end = LIB_RS[start..].find(']').expect("block end") + start;
-    LIB_RS[start..end]
-        .split("ipc::commands::")
-        .skip(1)
-        .map(|rest| {
-            rest.chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect::<String>()
-        })
-        .filter(|ident| !ident.is_empty())
-        .collect()
+    capability_audit::registered_commands(LIB_RS)
 }
 
 /// Quoted command names out of a permissions TOML's allow list.
@@ -73,30 +63,16 @@ fn every_registered_command_has_exactly_one_acl_grant() {
 
 #[test]
 fn destructive_grants_stay_a_deliberate_short_list() {
-    let destructive = granted(DESTRUCTIVE_COMMANDS);
-    // Growing this list is fine — but it must be a conscious decision, so the test
-    // names the expected set instead of just counting.
-    let expected: BTreeSet<String> = [
-        "delete_vault",
-        "export_backup",
-        "configure_backup",
-        "run_backup_now",
-        "restore_backup",
-        "restore_backup_as_new_vault",
-        "apply_update",
-        "relaunch_app",
-        "export_transactions_csv",
-        // Hard, un-op-logged DELETE of a stored connector credential
-        // (personal-cfo-gglk) — deliberate addition, 2026-08-22.
-        "connector_forget",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    assert_eq!(
-        destructive, expected,
-        "the destructive/exfiltration capability changed — update this test deliberately"
+    // The reviewed inventory is `[permission_sets.allow-destructive-commands]` in
+    // expected-capabilities.toml (personal-cfo-cjd): growing it is a conscious,
+    // reviewed edit there, not a count here.
+    let drift = violations_for(&["permission-commands", "permission-set"]);
+    assert!(
+        drift.is_empty(),
+        "the destructive/exfiltration set drifted:\n{}",
+        render(&drift)
     );
+    assert!(granted(DESTRUCTIVE_COMMANDS).contains("delete_vault"));
 }
 
 // ---------------------------------------------------------------------------
@@ -398,122 +374,32 @@ fn the_updater_pubkey_and_endpoint_are_exactly_the_committed_values() {
 
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
 
-type Directives = std::collections::BTreeMap<String, Vec<String>>;
-
-/// A CSP string as `directive -> source list`, rejecting a repeated directive (the
-/// browser silently ignores the second copy, which would hide a loosened value).
-fn directives(csp: &str) -> Directives {
-    let mut map = Directives::new();
-    for part in csp.split(';').map(str::trim).filter(|p| !p.is_empty()) {
-        let mut tokens = part.split_whitespace().map(str::to_owned);
-        let name = tokens.next().expect("directive name");
-        let previous = map.insert(name.clone(), tokens.collect());
-        assert!(previous.is_none(), "CSP repeats `{name}`: {csp}");
-    }
-    map
-}
-
 fn security() -> serde_json::Value {
     let conf: serde_json::Value =
         serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
     conf["app"]["security"].clone()
 }
 
-/// The production policy exactly as ADR 0010 specifies it.
-fn adr_0010_production_csp() -> Directives {
-    [
-        ("default-src", &["'self'"][..]),
-        ("script-src", &["'self'"]),
-        ("style-src", &["'self'", "'unsafe-inline'"]),
-        ("connect-src", &["'self'", "ipc:", "http://ipc.localhost"]),
-        ("img-src", &["'self'", "data:"]),
-        ("font-src", &["'self'"]),
-        ("object-src", &["'none'"]),
-        ("frame-src", &["'none'"]),
-        ("base-uri", &["'self'"]),
-        ("form-action", &["'none'"]),
-    ]
-    .into_iter()
-    .map(|(name, sources)| {
-        (
-            name.to_owned(),
-            sources.iter().map(|s| (*s).to_owned()).collect(),
-        )
-    })
-    .collect()
-}
-
 #[test]
 fn the_production_csp_is_exactly_the_adr_0010_policy() {
-    let csp = security()["csp"]
-        .as_str()
-        .expect("app.security.csp is a string")
-        .to_owned();
-    let parsed = directives(&csp);
-
-    // Stated separately so a failure names the rule, not just a map diff.
-    let script = &parsed["script-src"];
-    for forbidden in [
-        "'unsafe-inline'",
-        "'unsafe-eval'",
-        "'wasm-unsafe-eval'",
-        "*",
-    ] {
-        assert!(
-            !script.contains(&forbidden.to_owned()),
-            "script-src must never allow {forbidden} (ADR 0010): {csp}"
-        );
-    }
-    // 'unsafe-inline' in style-src is the ADR's one accepted relaxation; nowhere else.
-    for (name, sources) in &parsed {
-        if name != "style-src" {
-            assert!(
-                !sources.iter().any(|s| s.starts_with("'unsafe-")),
-                "{name} carries an unsafe keyword — only style-src 'unsafe-inline' is accepted: {csp}"
-            );
-        }
-    }
-
-    assert_eq!(
-        parsed,
-        adr_0010_production_csp(),
-        "the production CSP drifted from ADR 0010 — changing it is an ADR addendum, not a config edit"
+    // Exact directives: [production.csp] in expected-capabilities.toml. The rules the
+    // baseline itself may not break (script-src exactly 'self'; 'unsafe-inline' only
+    // in style-src) are invariants in the audit, checked against both.
+    let drift = violations_for(&["csp", "csp-invariant"]);
+    assert!(
+        drift.is_empty(),
+        "production CSP drifted:\n{}",
+        render(&drift)
     );
 }
 
 #[test]
 fn the_dev_csp_relaxes_only_script_and_connect_for_the_local_dev_server() {
-    let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).expect("valid JSON");
-    let dev_url = conf["build"]["devUrl"]
-        .as_str()
-        .expect("build.devUrl is set");
-    let dev_host = dev_url
-        .strip_prefix("http://")
-        .expect("devUrl is a plain local http URL")
-        .trim_end_matches('/');
+    let drift = violations_for(&["dev-csp", "dev-csp-invariant", "dev-leak"]);
     assert!(
-        dev_host.starts_with("localhost:"),
-        "devUrl must be the local dev server: {dev_url}"
-    );
-
-    let dev = directives(security()["devCsp"].as_str().expect("devCsp is set"));
-    let mut expected = adr_0010_production_csp();
-    expected.insert(
-        "script-src".into(),
-        vec![
-            "'self'".into(),
-            "'unsafe-inline'".into(),
-            "'unsafe-eval'".into(),
-        ],
-    );
-    expected
-        .get_mut("connect-src")
-        .expect("connect-src")
-        .extend([format!("ws://{dev_host}"), format!("http://{dev_host}")]);
-    assert_eq!(
-        dev, expected,
-        "devCsp may only add HMR's script relaxations and the {dev_url} dev server to \
-         connect-src (ADR 0010); every other directive matches production"
+        drift.is_empty(),
+        "development CSP drifted:\n{}",
+        render(&drift)
     );
 }
 
@@ -552,14 +438,13 @@ fn the_tauri_global_is_not_exposed_to_the_frontend() {
 #[test]
 fn release_builds_cannot_enable_webview_devtools() {
     // Tauri enables devtools in debug builds only, unless the `devtools` cargo feature
-    // is on — which turns them on in release too.
-    let tauri_dep = CARGO_TOML
-        .lines()
-        .find(|line| line.trim_start().starts_with("tauri = "))
-        .expect("Cargo.toml declares the tauri dependency");
+    // is on — which turns them on in release too. Read through the TOML, so the table
+    // form (`[dependencies.tauri]`) and a crate `[features]` entry naming
+    // `tauri/devtools` are caught as well as the inline form (2rf review F2).
+    let features = capability_audit::tauri_release_features(CARGO_TOML).expect("Cargo.toml parses");
     assert!(
-        !tauri_dep.contains("devtools"),
-        "the tauri `devtools` feature enables the inspector in release builds: {tauri_dep}"
+        !features.contains("devtools"),
+        "the tauri `devtools` feature enables the inspector in release builds: {features:?}"
     );
     let conf: serde_json::Value = serde_json::from_str(TAURI_CONF).expect("valid JSON");
     for window in conf["app"]["windows"].as_array().expect("app.windows") {
@@ -788,11 +673,120 @@ fn app_code_sends_nothing_through_an_ipc_channel() {
     // ADR 0010 addendum 2026-09-27 rule 7: Tauri's channel-fetch command skips the
     // ACL and parks large Channel payloads in an app-wide queue under sequential
     // ids, so an untrusted window could take one. Keep vault data off that path.
+    //
+    // A whole-word scan for the type name, not for the `ipc::Channel` path: an
+    // alias (`use tauri::ipc::Channel as C`), a grouped import
+    // (`use tauri::ipc::{Channel, …}`) or a glob plus a bare `Channel<…>` all still
+    // name `Channel` (0hp6, hardening the 2no review's advisory). No app source
+    // uses the word for anything else.
+    for (path, source) in rust_sources() {
+        let named = source
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|word| word == "Channel");
+        assert!(
+            !named,
+            "{path} names `Channel` — tauri::ipc::Channel is off-limits (ADR 0010 addendum \
+             2026-09-27 rule 7); rename an unrelated type rather than weaken this scan"
+        );
+    }
+}
+
+#[test]
+fn app_code_never_grants_capabilities_at_runtime() {
+    // Tauri's default `dynamic-acl` feature enables `Manager::add_capability`, which
+    // would grant permissions outside the reviewed capability files and the drift
+    // audit (8ea audit §7.3, 0hp6). Every grant is static and reviewed.
     for (path, source) in rust_sources() {
         assert!(
-            !source.contains("ipc::Channel"),
-            "{path} uses tauri::ipc::Channel — see ADR 0010 addendum 2026-09-27 rule 7"
+            !source.contains("add_capability"),
+            "{path} calls add_capability — grants live in capabilities/*.json, reviewed \
+             against expected-capabilities.toml, never at run time"
         );
+    }
+}
+
+#[test]
+fn the_isolation_probe_is_compiled_out_of_release_builds() {
+    // The runtime probe (src/isolation_probe.rs) evaluates script in every window;
+    // it must not exist in a release binary. Both the module and its one call site
+    // sit behind `#[cfg(debug_assertions)]`.
+    assert!(
+        LIB_RS.contains("#[cfg(debug_assertions)]\nmod isolation_probe;"),
+        "the isolation probe module must be declared under #[cfg(debug_assertions)]"
+    );
+    assert!(
+        LIB_RS.contains(
+            "#[cfg(debug_assertions)]\n            isolation_probe::start_if_requested(app.handle())?;"
+        ),
+        "the isolation probe must be started under #[cfg(debug_assertions)]"
+    );
+    assert_eq!(
+        LIB_RS.matches("isolation_probe::").count(),
+        1,
+        "exactly one call site"
+    );
+    // The guard's evidence counter the probe reads is debug-only too, so a release
+    // build's guard does nothing but block and log.
+    let guard = std::fs::read_to_string(manifest_dir().join("src/navigation_guard.rs"))
+        .expect("navigation_guard.rs is readable");
+    assert!(
+        guard.contains("#[cfg(debug_assertions)]\npub mod probe_evidence")
+            && guard.contains(
+                "#[cfg(debug_assertions)]\n                probe_evidence::record_block("
+            ),
+        "the navigation guard's probe_evidence counter must be #[cfg(debug_assertions)]"
+    );
+}
+
+#[test]
+fn ci_runs_the_runtime_probe_and_the_built_html_check_on_pull_requests() {
+    // The static suite cannot prove runtime isolation; these two CI steps do
+    // (0hp6). Pin that they exist, in the PR-time jobs, with the switches that make
+    // them meaningful.
+    let ci = std::fs::read_to_string(manifest_dir().join("../../../.github/workflows/ci.yml"))
+        .expect("ci.yml is readable");
+    // The lines of one top-level job: from `  <name>:` up to the next line that
+    // starts another job (two-space indent, then a key — not a comment).
+    let job = |name: &str| -> String {
+        let header = format!("  {name}:");
+        let mut lines = ci.lines().skip_while(|line| *line != header);
+        let first = lines
+            .next()
+            .unwrap_or_else(|| panic!("ci.yml has no job `{name}`"));
+        let body = lines.take_while(|line| {
+            let starts_next_job = line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#')
+                && line.trim_end().ends_with(':');
+            !starts_next_job
+        });
+        std::iter::once(first)
+            .chain(body)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let codegen = job("ipc-codegen");
+    for needle in [
+        "- 'apps/desktop/src-tauri/**'",
+        "- 'apps/desktop/public/isolated-shell.html'",
+        "- name: Runtime isolation probe (real WebView, ADR 0010)",
+        "cargo build --features tauri/custom-protocol",
+        "PCFO_ISOLATION_PROBE=",
+        "PCFO_DATA_DIR=\"$(mktemp -d)\"",
+        "xvfb-run",
+    ] {
+        assert!(codegen.contains(needle), "ipc-codegen job lost `{needle}`");
+    }
+    let frontend = job("frontend");
+    // The slicer stops at the job boundary: the codegen job's probe is not "found"
+    // in the frontend job, and vice versa.
+    assert!(!frontend.contains("Runtime isolation probe") && !codegen.contains("check-dist-csp"));
+    for needle in [
+        "- 'scripts/check-dist-csp.mjs'",
+        "run: pnpm -r build",
+        "run: node scripts/check-dist-csp.mjs apps/desktop/dist",
+    ] {
+        assert!(frontend.contains(needle), "frontend job lost `{needle}`");
     }
 }
 
@@ -816,4 +810,431 @@ fn rust_sources() -> Vec<(String, String)> {
     );
     assert!(out.len() > 5, "sanity: walked the real source tree");
     out
+}
+
+// ---------------------------------------------------------------------------
+// Capability drift audit (personal-cfo-cjd, ADR 0010 and all its addenda).
+//
+// `tests/support/capability_audit.rs` works out what every window is actually
+// granted and compares it with the hand-reviewed `expected-capabilities.toml`.
+// The capability and permission directories are read at run time, so a NEW file
+// is audited without anyone remembering to list it. The negative tests below
+// break one input at a time, in memory, and prove the audit names the failure.
+// ---------------------------------------------------------------------------
+
+fn manifest_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// `(file name, contents)` for every file in `dir` with extension `ext`, sorted.
+fn read_dir_files(dir: &str, ext: &str) -> Vec<(String, String)> {
+    let mut files: Vec<(String, String)> = std::fs::read_dir(manifest_dir().join(dir))
+        .unwrap_or_else(|e| panic!("{dir}/ is readable: {e}"))
+        .map(|entry| entry.expect("dir entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == ext))
+        .map(|path| {
+            (
+                path.file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .into_owned(),
+                std::fs::read_to_string(&path).expect("readable file"),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+fn real_inputs() -> Inputs {
+    let read = |file: &str| {
+        std::fs::read_to_string(manifest_dir().join(file)).unwrap_or_else(|e| panic!("{file}: {e}"))
+    };
+    Inputs {
+        tauri_conf: read("tauri.conf.json"),
+        capabilities: read_dir_files("capabilities", "json"),
+        permissions: read_dir_files("permissions", "toml"),
+        lib_rs: read("src/lib.rs"),
+        cargo_toml: read("Cargo.toml"),
+        baseline: read("expected-capabilities.toml"),
+    }
+}
+
+fn render(violations: &[Violation]) -> String {
+    violations.iter().map(|v| format!("  {v}\n")).collect()
+}
+
+/// The real configuration's violations of the given rules.
+fn violations_for(rules: &[&str]) -> Vec<Violation> {
+    audit(&real_inputs())
+        .into_iter()
+        .filter(|v| rules.contains(&v.rule))
+        .collect()
+}
+
+#[test]
+fn the_configuration_matches_the_reviewed_capability_baseline() {
+    let violations = audit(&real_inputs());
+    assert!(
+        violations.is_empty(),
+        "capability drift — fix the configuration, or (for an INTENTIONAL change) edit \
+         expected-capabilities.toml by hand in this PR, per its header:\n{}",
+        render(&violations)
+    );
+}
+
+/// Apply `edit` to one input, run the audit, and return what it reported.
+fn audit_with(edit: impl FnOnce(&mut Inputs)) -> Vec<Violation> {
+    let mut inputs = real_inputs();
+    edit(&mut inputs);
+    audit(&inputs)
+}
+
+/// Replace exactly one occurrence of `from` in the named capability file.
+fn edit_capability(inputs: &mut Inputs, file: &str, from: &str, to: &str) {
+    let (_, text) = inputs
+        .capabilities
+        .iter_mut()
+        .find(|(name, _)| name == file)
+        .unwrap_or_else(|| panic!("{file} exists"));
+    assert_eq!(
+        text.matches(from).count(),
+        1,
+        "`{from}` occurs once in {file}"
+    );
+    *text = text.replacen(from, to, 1);
+}
+
+fn replace_once(text: &mut String, from: &str, to: &str) {
+    assert_eq!(
+        text.matches(from).count(),
+        1,
+        "`{from}` occurs exactly once"
+    );
+    *text = text.replacen(from, to, 1);
+}
+
+/// The audit reported `rule` against `subject` (substring match on the subject).
+fn assert_reports(violations: &[Violation], rule: &str, subject: &str) {
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.rule == rule && v.subject.contains(subject)),
+        "expected a `{rule}` violation naming `{subject}`, got:\n{}",
+        render(violations)
+    );
+}
+
+#[test]
+fn audit_fails_on_a_forbidden_grant_to_an_untrusted_window() {
+    let found = audit_with(|i| {
+        edit_capability(
+            i,
+            "document-preview.json",
+            r#""permissions": []"#,
+            r#""permissions": ["fs:default"]"#,
+        )
+    });
+    assert_reports(&found, "window-grants", "document_preview");
+    assert_reports(&found, "untrusted-grant", "document_preview");
+    assert_reports(&found, "forbidden-grant", "document_preview");
+}
+
+#[test]
+fn audit_fails_when_a_capability_is_broadened_to_another_window() {
+    let found = audit_with(|i| {
+        edit_capability(
+            i,
+            "destructive.json",
+            "\"main\"\n  ]",
+            "\"main\", \"agent_report\"\n  ]",
+        )
+    });
+    assert_reports(&found, "window-capabilities", "agent_report");
+    assert_reports(&found, "window-grants", "agent_report");
+    assert_reports(&found, "destructive-reach", "agent_report");
+}
+
+#[test]
+fn audit_fails_on_a_wildcard_window() {
+    let found = audit_with(|i| edit_capability(i, "default.json", "\"main\"\n  ]", "\"*\"\n  ]"));
+    assert_reports(&found, "wildcard-window", "default.json");
+    assert_reports(&found, "window-set", "topology");
+}
+
+#[test]
+fn audit_fails_on_a_new_unreviewed_window() {
+    let found = audit_with(|i| {
+        i.capabilities.push((
+            "debug.json".into(),
+            r#"{"identifier":"debug","windows":["debug"],"permissions":["core:default"]}"#.into(),
+        ));
+    });
+    assert_reports(&found, "window-set", "topology");
+}
+
+#[test]
+fn audit_fails_on_a_broadened_origin() {
+    let widened = audit_with(|i| {
+        edit_capability(
+            i,
+            "default.json",
+            r#""url": "https://dohflow.app/*""#,
+            r#""url": "https://*""#,
+        )
+    });
+    assert_reports(&widened, "scope", "scoped grants");
+
+    let remote = audit_with(|i| {
+        edit_capability(
+            i,
+            "default.json",
+            "\"windows\": [",
+            "\"remote\": {\"urls\": [\"https://*.example.com\"]},\n  \"windows\": [",
+        )
+    });
+    assert_reports(&remote, "remote-origin", "default.json");
+}
+
+#[test]
+fn audit_fails_on_a_production_csp_regression() {
+    let found = audit_with(|i| {
+        replace_once(
+            &mut i.tauri_conf,
+            "\"csp\": \"default-src 'self'; script-src 'self';",
+            "\"csp\": \"default-src 'self'; script-src 'self' 'unsafe-eval';",
+        )
+    });
+    assert_reports(&found, "csp", "script-src");
+    assert_reports(&found, "csp-invariant", "script-src");
+}
+
+#[test]
+fn audit_fails_when_development_policy_leaks_into_production() {
+    let found = audit_with(|i| {
+        replace_once(
+            &mut i.tauri_conf,
+            "\"csp\": \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost;",
+            "\"csp\": \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420;",
+        )
+    });
+    assert_reports(&found, "dev-leak", "connect-src");
+}
+
+#[test]
+fn audit_fails_when_the_dev_policy_relaxes_more_than_hmr_needs() {
+    let found = audit_with(|i| {
+        replace_once(
+            &mut i.tauri_conf,
+            "form-action 'none'\"\n    }",
+            "form-action 'self'\"\n    }",
+        )
+    });
+    assert_reports(&found, "dev-csp", "form-action");
+    assert_reports(&found, "dev-csp-invariant", "form-action");
+}
+
+#[test]
+fn audit_fails_on_missing_acl_coverage() {
+    let found = audit_with(|i| {
+        replace_once(
+            &mut i.lib_rs,
+            "collect_commands![",
+            "collect_commands![\n        ipc::commands::brand_new_command,",
+        )
+    });
+    assert_reports(&found, "acl-coverage", "brand_new_command");
+}
+
+#[test]
+fn audit_fails_when_a_destructive_command_moves_to_the_general_set() {
+    let found = audit_with(|i| {
+        let (_, destructive) = i
+            .permissions
+            .iter_mut()
+            .find(|(name, _)| name == "destructive-commands.toml")
+            .expect("destructive set");
+        replace_once(destructive, "  \"delete_vault\",\n", "");
+        let (_, general) = i
+            .permissions
+            .iter_mut()
+            .find(|(name, _)| name == "app-commands.toml")
+            .expect("general set");
+        replace_once(
+            general,
+            "commands.allow = [\n",
+            "commands.allow = [\n  \"delete_vault\",\n",
+        );
+    });
+    assert_reports(&found, "permission-commands", "allow-destructive-commands");
+}
+
+#[test]
+fn audit_fails_on_the_devtools_feature_in_any_form() {
+    // 2rf review F2: the table form and a crate [features] entry, not only the
+    // inline `tauri = { ... }` line.
+    let table_form = audit_with(|i| {
+        replace_once(
+            &mut i.cargo_toml,
+            "tauri = { version = \"2.11.2\", features = [] }\n",
+            "",
+        );
+        i.cargo_toml
+            .push_str("\n[dependencies.tauri]\nversion = \"2.11.2\"\nfeatures = [\"devtools\"]\n");
+    });
+    let crate_feature = audit_with(|i| {
+        replace_once(
+            &mut i.cargo_toml,
+            "export-bindings = []",
+            "export-bindings = [\"tauri/devtools\"]",
+        )
+    });
+    for (form, found) in [("table", table_form), ("crate feature", crate_feature)] {
+        assert_reports(&found, "devtools", "tauri dependency");
+        assert!(
+            found.iter().any(|v| v.rule == "tauri-features"),
+            "{form}: {}",
+            render(&found)
+        );
+    }
+}
+
+#[test]
+fn a_baseline_edit_alone_cannot_approve_a_forbidden_grant() {
+    // Editing BOTH the configuration and the baseline to agree on a forbidden grant
+    // still fails: the ADR 0010 invariants are code, not data.
+    let found = audit_with(|i| {
+        edit_capability(
+            i,
+            "agent-report.json",
+            r#""permissions": []"#,
+            r#""permissions": ["allow-app-commands"]"#,
+        );
+        replace_once(
+            &mut i.baseline,
+            "capabilities = [\"agent-report\"]\ngrants = []",
+            "capabilities = [\"agent-report\"]\ngrants = [\"allow-app-commands\"]",
+        );
+    });
+    assert!(
+        !found.iter().any(|v| v.rule == "window-grants"),
+        "drift agrees by construction:\n{}",
+        render(&found)
+    );
+    assert_reports(&found, "untrusted-grant", "agent_report");
+
+    let relabelled = audit_with(|i| {
+        replace_once(
+            &mut i.baseline,
+            "[windows.agent_report]\ntrust = \"untrusted\"",
+            "[windows.agent_report]\ntrust = \"trusted\"",
+        )
+    });
+    assert_reports(&relabelled, "untrusted-grant", "agent_report");
+
+    let unsafe_script = audit_with(|i| {
+        replace_once(
+            &mut i.baseline,
+            "\"script-src\" = [\"'self'\"]",
+            "\"script-src\" = [\"'self'\", \"'unsafe-inline'\"]",
+        );
+        replace_once(
+            &mut i.tauri_conf,
+            "\"csp\": \"default-src 'self'; script-src 'self';",
+            "\"csp\": \"default-src 'self'; script-src 'self' 'unsafe-inline';",
+        );
+    });
+    assert_reports(&unsafe_script, "csp-invariant", "script-src");
+}
+
+#[test]
+fn a_baseline_edit_alone_cannot_approve_network_egress() {
+    // 04a-review F1 (PR 40): a remote origin added to connect-src in BOTH the config
+    // and the baseline used to pass. Egress is now an ADR 0010 invariant in code.
+    let remote = "https://api.example.com";
+    let prod = audit_with(|i| {
+        replace_once(
+            &mut i.tauri_conf,
+            "connect-src 'self' ipc: http://ipc.localhost; img-src",
+            &format!("connect-src 'self' ipc: http://ipc.localhost {remote}; img-src"),
+        );
+        replace_once(
+            &mut i.baseline,
+            "\"connect-src\" = [\"'self'\", \"ipc:\", \"http://ipc.localhost\"]",
+            &format!(
+                "\"connect-src\" = [\"'self'\", \"ipc:\", \"http://ipc.localhost\", \"{remote}\"]"
+            ),
+        );
+    });
+    assert!(
+        !prod.iter().any(|v| v.rule == "csp"),
+        "drift agrees by construction:\n{}",
+        render(&prod)
+    );
+    assert_reports(
+        &prod,
+        "csp-egress",
+        "tauri.conf.json production connect-src",
+    );
+    assert_reports(&prod, "csp-egress", "baseline production connect-src");
+
+    // The same for the development policy, and for a directive other than connect-src.
+    let dev = audit_with(|i| {
+        replace_once(
+            &mut i.tauri_conf,
+            "http://localhost:1420; img-src 'self' data:;",
+            "http://localhost:1420; img-src 'self' data: https:;",
+        );
+        replace_once(
+            &mut i.baseline,
+            "\"img-src\" = [\"'self'\", \"data:\"]\n\"object-src\" = [\"'none'\"]\n\"script-src\" = [\"'self'\", \"'unsafe-inline'\"",
+            "\"img-src\" = [\"'self'\", \"data:\", \"https:\"]\n\"object-src\" = [\"'none'\"]\n\"script-src\" = [\"'self'\", \"'unsafe-inline'\"",
+        );
+    });
+    assert_reports(&dev, "csp-egress", "tauri.conf.json development img-src");
+    assert_reports(&dev, "csp-egress", "baseline development img-src");
+}
+
+#[test]
+fn the_baseline_rejects_unknown_fields() {
+    // A typo in the baseline must not silently turn a check off.
+    let found = audit_with(|i| {
+        replace_once(
+            &mut i.baseline,
+            "[production]\n",
+            "[production]\nwith_global_tauri_typo = true\n",
+        )
+    });
+    assert_reports(&found, "baseline-shape", "expected-capabilities.toml");
+}
+
+#[test]
+fn ci_runs_the_audit_on_every_change_it_covers() {
+    // Config, capabilities, permissions, command registration (src/lib.rs), the
+    // baseline and the audit itself all live under apps/desktop/src-tauri/, which the
+    // desktop job's path filter watches and whose gate runs the whole `cargo test`.
+    let ci = std::fs::read_to_string(manifest_dir().join("../../../.github/workflows/ci.yml"))
+        .expect("ci.yml is readable");
+    assert!(
+        ci.contains("- 'apps/desktop/src-tauri/**'"),
+        "the desktop job's path filter must watch apps/desktop/src-tauri/**"
+    );
+    let gate = ci
+        .split("- name: Rust gates (desktop crate)")
+        .nth(1)
+        .expect("the desktop Rust gate step exists");
+    let gate = &gate[..gate.find("- name:").unwrap_or(gate.len())];
+    assert!(
+        gate.contains("working-directory: apps/desktop/src-tauri") && gate.contains("cargo test\n"),
+        "the desktop gate runs the full `cargo test`, which includes this audit"
+    );
+    for file in [
+        "expected-capabilities.toml",
+        "tests/support/capability_audit.rs",
+    ] {
+        assert!(
+            manifest_dir().join(file).is_file(),
+            "{file} lives under src-tauri/"
+        );
+    }
 }
