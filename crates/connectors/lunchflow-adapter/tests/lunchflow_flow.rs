@@ -707,6 +707,107 @@ fn nothing_the_adapter_emits_contains_the_key() {
     }
 }
 
+/// No run of 8 or more characters of the key survives in `text`.
+fn assert_no_key_fragment(text: &str) {
+    let key: Vec<char> = KEY.chars().collect();
+    for window in key.windows(8) {
+        let fragment: String = window.iter().collect();
+        assert!(
+            !text.contains(&fragment),
+            "fragment {fragment:?} leaked: {text}"
+        );
+    }
+}
+
+#[test]
+fn provider_ids_echoing_the_key_never_reach_warnings_or_stored_ids() {
+    // personal-cfo-pxi.4: ids and statuses are provider-controlled. An
+    // account id that embeds the key, plainly or hidden behind zero-width
+    // characters, is refused (ids are used verbatim, so they can't be
+    // scrubbed). A status that quotes an obfuscated key across the
+    // 200-character cut is quoted in a warning, and never leaks.
+    let hidden: String = KEY.chars().flat_map(|c| [c, '\u{200B}']).collect();
+    let straddling = format!("{}{hidden}{}", "x".repeat(195), "y".repeat(20));
+    let accounts = serde_json::json!({
+        "accounts": [
+            { "id": format!("acct-{KEY}"), "name": "Echo", "status": "ACTIVE" },
+            { "id": format!("zw-{hidden}"), "name": "Hidden", "status": "ACTIVE" },
+            { "id": "acct-3", "name": "Checking", "status": straddling }
+        ],
+        "total": 3
+    })
+    .to_string();
+    // Per-account paths are unrouted, so they 404 and their warnings quote ids.
+    let transport = FixtureTransport::with(&[("/accounts", 200, &accounts)]);
+    let synced = adapter(&transport).sync(&conn(), None).unwrap();
+
+    let messages: Vec<&str> = synced
+        .batch
+        .warnings
+        .iter()
+        .map(|w| w.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("2 account(s) from LunchFlow had an id containing your API key")),
+        "{messages:?}"
+    );
+    assert_eq!(
+        synced.batch.accounts.len(),
+        1,
+        "both key-bearing accounts are refused"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("reconnect it in your LunchFlow dashboard")),
+        "the long status is quoted: {messages:?}"
+    );
+    assert_no_key_fragment(&format!("{synced:?}"));
+
+    // Discovery refuses it too.
+    let discovered = adapter(&transport).fetch_accounts(&conn()).unwrap();
+    assert_eq!(discovered.len(), 1);
+    assert_no_key_fragment(&format!("{discovered:?}"));
+}
+
+#[test]
+fn a_transaction_id_bearing_the_key_is_refused_not_stored() {
+    let rows = serde_json::json!({
+        "transactions": [
+            { "id": format!("t-{KEY}"), "amount": -1.00, "currency": "USD", "date": "2026-09-20" },
+            { "id": "ok-1", "amount": -2.00, "currency": "USD", "date": "2026-09-20" }
+        ],
+        "total": 2
+    })
+    .to_string();
+    let transport = FixtureTransport::with(&[
+        ("/accounts", 200, include_str!("fixtures/accounts.json")),
+        ("/accounts/101/transactions", 200, &rows),
+        (
+            "/accounts/101/balance",
+            200,
+            include_str!("fixtures/balance_101.json"),
+        ),
+    ]);
+    let synced = adapter(&transport).sync(&conn(), None).unwrap();
+    let staged: Vec<&str> = synced
+        .batch
+        .records
+        .iter()
+        .filter(|r| r.transaction.is_some())
+        .filter_map(|r| r.external_id.as_deref())
+        .collect();
+    assert_eq!(staged, ["ok-1"]);
+    assert!(synced
+        .batch
+        .warnings
+        .iter()
+        .any(|w| w.message.contains("id contains your API key")));
+    assert_no_key_fragment(&format!("{synced:?}"));
+}
+
 #[test]
 fn the_adapter_is_registered_disabled_under_its_schema_token() {
     let registration =
