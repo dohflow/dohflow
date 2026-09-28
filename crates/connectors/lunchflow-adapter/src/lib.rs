@@ -19,7 +19,9 @@
 //!
 //! LEAK RULE: the API key lives in [`connector_core::Credential`] and travels
 //! only in a request header. No error message, warning or log carries it, and
-//! every provider-controlled string entering a message is sanitized first.
+//! every provider-controlled string entering a message goes through `clean()`
+//! first (forgery characters stripped, the key removed in every shape, then
+//! shortened).
 
 use chrono::{Days, NaiveDate};
 use connector_core::{
@@ -200,11 +202,32 @@ impl<T: Transport> LunchFlowAdapter<T> {
     }
 
     fn accounts(&self, conn: &Connection) -> Result<Vec<WireAccount>, ConnectorError> {
+        Ok(self.accounts_counting_refused(conn)?.0)
+    }
+
+    /// The account list, minus any account whose id carries key material,
+    /// and how many were refused. An id is used verbatim to fetch and to key
+    /// the account (it reaches the connection's DTO), so it can't be scrubbed
+    /// like message text; an id bearing the key is refused instead
+    /// (personal-cfo-pxi.4). `sync` reports the count; the other fetches
+    /// have no warning channel.
+    fn accounts_counting_refused(
+        &self,
+        conn: &Connection,
+    ) -> Result<(Vec<WireAccount>, usize), ConnectorError> {
         let body = self.get(conn, "/accounts", &[])?;
         let list: AccountList = serde_json::from_str(&body).map_err(|_| {
             ConnectorError::Provider("LunchFlow returned an unreadable account list".to_owned())
         })?;
-        Ok(list.accounts)
+        let key = conn.credential.expose_secret();
+        let total = list.accounts.len();
+        let accounts: Vec<WireAccount> = list
+            .accounts
+            .into_iter()
+            .filter(|a| !carries_key(&a.id, key))
+            .collect();
+        let refused = total - accounts.len();
+        Ok((accounts, refused))
     }
 
     /// One account's transactions over the refresh window, plus whether the
@@ -230,12 +253,9 @@ impl<T: Transport> LunchFlowAdapter<T> {
         ];
         let body = self.get(conn, &account_path(account_id, "transactions"), &query)?;
         let list: TransactionList = serde_json::from_str(&body).map_err(|_| {
-            ConnectorError::Provider(scrub(
-                &format!(
-                    "LunchFlow returned unreadable transactions for account {}",
-                    sanitize(account_id)
-                ),
-                conn.credential.expose_secret(),
+            ConnectorError::Provider(format!(
+                "LunchFlow returned unreadable transactions for account {}",
+                clean(account_id, conn.credential.expose_secret())
             ))
         })?;
         let truncated = list
@@ -251,15 +271,17 @@ impl<T: Transport> LunchFlowAdapter<T> {
     ) -> Result<Result<ParsedBalance, String>, ConnectorError> {
         let body = self.get(conn, &account_path(account_id, "balance"), &[])?;
         let envelope: BalanceEnvelope = serde_json::from_str(&body).map_err(|_| {
-            ConnectorError::Provider(scrub(
-                &format!(
-                    "LunchFlow returned an unreadable balance for account {}",
-                    sanitize(account_id)
-                ),
-                conn.credential.expose_secret(),
+            ConnectorError::Provider(format!(
+                "LunchFlow returned an unreadable balance for account {}",
+                clean(account_id, conn.credential.expose_secret())
             ))
         })?;
-        Ok(map_balance(account_id, &envelope, self.today()))
+        Ok(map_balance(
+            account_id,
+            &envelope,
+            self.today(),
+            conn.credential.expose_secret(),
+        ))
     }
 }
 
@@ -280,49 +302,138 @@ fn account_path(account_id: &str, what: &str) -> String {
 // ===========================================================================
 // Provider-string hygiene
 // ===========================================================================
+//
+// Provider text is hostile input: it can forge what a message visually says
+// (control, bidi and zero-width characters), and it can echo the API key it
+// was sent — whole, split across a truncation point, hidden behind zero-width
+// characters, or partly. Every provider-controlled string that reaches an
+// error, a warning, `last_error`, a DTO or a log goes through [`clean`], which
+// removes the key in all of those shapes BEFORE shortening anything
+// (personal-cfo-pxi.4). It does not claim to catch arbitrary re-encodings of
+// the key (base64, URL-encoding, case changes); those are out of scope and
+// recorded on the bead.
 
-/// Sanitize a provider-controlled string before it enters any warning or
-/// error message: control characters and the bidi/zero-width forgery set are
-/// stripped, and the result is truncated (simplefin-adapter's floor).
-fn sanitize(raw: &str) -> String {
-    let forged = |c: &char| {
-        c.is_control()
-            || matches!(
-                c,
-                '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
-            )
-    };
-    let cleaned: String = raw.chars().filter(|c| !forged(c)).take(200).collect();
-    if raw.chars().count() > 200 {
-        format!("{cleaned}…")
-    } else {
-        cleaned
+/// The longest provider string any message carries, in characters.
+const MAX_PROVIDER_CHARS: usize = 200;
+/// Hard bound on how much provider text is examined, however long the body:
+/// cleaning work is bounded no matter what the provider sends.
+const SCAN_LIMIT_CHARS: usize = 16 * 1024;
+/// A run of this many characters shared with the key is treated as key
+/// material and redacted, even when the whole key is not present.
+const KEY_FRAGMENT_CHARS: usize = 8;
+const REDACTED: &str = "[redacted]";
+
+/// Control characters and the bidi / zero-width forgery set.
+fn is_forged(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+        )
+}
+
+/// Replace every whole occurrence of `key` in `text`, both as sent and with
+/// forgery characters removed.
+fn scrub(text: &str, key: &str) -> String {
+    let normalized_key: String = key.chars().filter(|c| !is_forged(*c)).collect();
+    let mut out = text.to_owned();
+    for candidate in [key, normalized_key.as_str()] {
+        if !candidate.is_empty() {
+            out = out.replace(candidate, REDACTED);
+        }
     }
+    out
+}
+
+/// Redact every run of at least [`KEY_FRAGMENT_CHARS`] characters (or the
+/// whole key, if shorter) that also appears in the key: the invariant is
+/// that no such run of the key survives, whatever split, overlap or partial
+/// echo produced it. Quadratic in bounded inputs only (a message window and
+/// a key).
+fn redact_key_fragments(text: &str, key: &str) -> String {
+    let key: Vec<char> = key.chars().filter(|c| !is_forged(*c)).collect();
+    if key.is_empty() {
+        return text.to_owned();
+    }
+    let min = KEY_FRAGMENT_CHARS.min(key.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // The longest run starting at `i` that also occurs somewhere in the key.
+        let longest = (0..key.len())
+            .map(|j| {
+                chars[i..]
+                    .iter()
+                    .zip(&key[j..])
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        if longest >= min {
+            out.push_str(REDACTED);
+            i += longest;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether `text` holds key material in any shape [`clean`] would redact.
+fn carries_key(text: &str, key: &str) -> bool {
+    let normalized: String = text.chars().filter(|c| !is_forged(*c)).collect();
+    redact_key_fragments(&scrub(&normalized, key), key) != normalized
+}
+
+/// A provider-controlled string, safe to put in a message: forgery characters
+/// stripped, the key removed in every shape above, and at most
+/// [`MAX_PROVIDER_CHARS`] characters (plus an ellipsis when cut).
+///
+/// Order matters. The text is normalized and the key scrubbed over a window
+/// long enough to hold any key that starts before the cut, and only then
+/// shortened. Scrubbing after the cut would miss a key that straddles it, and
+/// scrubbing before normalizing would miss one hidden behind zero-width
+/// characters.
+fn clean(raw: &str, key: &str) -> String {
+    let key_chars = key.chars().filter(|c| !is_forged(*c)).count();
+    let window_chars = MAX_PROVIDER_CHARS + key_chars;
+    let mut window = String::new();
+    let mut kept = 0;
+    let mut cut = false;
+    for (scanned, c) in raw.chars().enumerate() {
+        if scanned == SCAN_LIMIT_CHARS || kept == window_chars {
+            cut = true;
+            break;
+        }
+        if !is_forged(c) {
+            window.push(c);
+            kept += 1;
+        }
+    }
+    let redacted = redact_key_fragments(&scrub(&window, key), key);
+    let mut text: String = redacted.chars().take(MAX_PROVIDER_CHARS).collect();
+    if cut || redacted.chars().count() > MAX_PROVIDER_CHARS {
+        // The cut can only shorten a fragment; redact again, then mark it.
+        text = redact_key_fragments(&text, key);
+        text.push('…');
+    }
+    scrub(&text, key)
 }
 
 // ===========================================================================
 // Error triage
 // ===========================================================================
 
-/// Replace every occurrence of the connection's key in `text`. Provider
-/// text is hostile input and may echo the key it was sent (an error body
-/// quoting the rejected key, say); anything that reaches an error, a warning,
-/// `last_error` or a log passes through here first.
-fn scrub(text: &str, key: &str) -> String {
-    if key.is_empty() {
-        text.to_owned()
-    } else {
-        text.replace(key, "[redacted]")
-    }
-}
-
-/// The provider's own `{error, message}` text — sanitized, and scrubbed of
-/// the key — for enriching a status-level error.
+/// The provider's own `{error, message}` text, through [`clean`], for
+/// enriching a status-level error.
 fn provider_detail(body: &str, key: &str) -> String {
     serde_json::from_str::<ErrorBody>(body)
         .ok()
         .and_then(|e| e.message.or(e.error))
-        .map(|m| format!(" (LunchFlow says: {})", scrub(&sanitize(&m), key)))
+        .map(|m| format!(" (LunchFlow says: {})", clean(&m, key)))
         .unwrap_or_default()
 }
 
@@ -363,9 +474,13 @@ fn triage(response: &HttpResponse, key: &str) -> Result<String, ConnectorError> 
 // Mapping — wire → staged candidates
 // ===========================================================================
 
-fn map_account(account: &WireAccount) -> ParsedAccount {
-    let name = account.name.as_deref().map(sanitize).unwrap_or_default();
-    let institution = account.institution_name.as_deref().map(sanitize);
+fn map_account(account: &WireAccount, key: &str) -> ParsedAccount {
+    let name = account
+        .name
+        .as_deref()
+        .map(|n| clean(n, key))
+        .unwrap_or_default();
+    let institution = account.institution_name.as_deref().map(|n| clean(n, key));
     ParsedAccount {
         external_id: Some(account.id.clone()),
         external_name: Some(match institution {
@@ -401,8 +516,14 @@ fn map_transaction(
     account: &WireAccount,
     txn: &WireTransaction,
     index: usize,
+    key: &str,
 ) -> Result<ParsedRecord, String> {
-    let id = sanitize(&txn.id);
+    let id = clean(&txn.id, key);
+    if carries_key(&txn.id, key) {
+        // A transaction id is stored verbatim as the record's provider id,
+        // so one bearing the key is refused rather than scrubbed.
+        return Err("a transaction whose id contains your API key was not staged".to_owned());
+    }
     if txn.is_pending {
         return Err(format!(
             "pending transaction {id} not staged (posted-only scope)"
@@ -438,7 +559,7 @@ fn map_transaction(
         .as_deref()
         .filter(|d| !d.trim().is_empty())
         .or_else(|| txn.merchant.as_deref().filter(|m| !m.trim().is_empty()))
-        .map(sanitize);
+        .map(|d| clean(d, key));
     let normalized = NormalizedTxn {
         account_id: &account.id,
         txn_id: &txn.id,
@@ -448,7 +569,9 @@ fn map_transaction(
         merchant: txn.merchant.as_deref(),
         description: txn.description.as_deref(),
     };
+    // The replayable record keeps the provider's full text, minus the key.
     let normalized_json = serde_json::to_string(&normalized)
+        .map(|json| scrub(&json, key))
         .map_err(|_| format!("transaction {id} failed normalization"))?;
 
     Ok(ParsedRecord {
@@ -493,8 +616,9 @@ fn map_balance(
     account_id: &str,
     envelope: &BalanceEnvelope,
     today: NaiveDate,
+    key: &str,
 ) -> Result<ParsedBalance, String> {
-    let id = sanitize(account_id);
+    let id = clean(account_id, key);
     let code = envelope
         .balance
         .currency
@@ -529,11 +653,11 @@ fn balance_currency(body: &str) -> Option<String> {
         .and_then(|e| e.balance.currency.as_deref().and_then(wire::iso_code))
 }
 
-fn needs_attention(account: &WireAccount) -> String {
+fn needs_attention(account: &WireAccount, key: &str) -> String {
     format!(
         "LunchFlow reports account {} as {} — reconnect it in your LunchFlow dashboard",
-        sanitize(&account.id),
-        sanitize(account.status.as_deref().unwrap_or("inactive"))
+        clean(&account.id, key),
+        clean(account.status.as_deref().unwrap_or("inactive"), key)
     )
 }
 
@@ -641,7 +765,8 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                 Err(_) => {}
             }
         }
-        Ok(accounts.iter().map(map_account).collect())
+        let key = conn.credential.expose_secret();
+        Ok(accounts.iter().map(|a| map_account(a, key)).collect())
     }
 
     fn fetch_transactions(
@@ -655,7 +780,10 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
         let accounts = self.accounts(conn)?;
         let Some(account) = accounts.iter().find(|a| a.id == account_external_id) else {
             return Err(ConnectorError::Provider(scrub(
-                &format!("LunchFlow has no account {}", sanitize(account_external_id)),
+                &format!(
+                    "LunchFlow has no account {}",
+                    clean(account_external_id, conn.credential.expose_secret())
+                ),
                 conn.credential.expose_secret(),
             )));
         };
@@ -667,7 +795,9 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
             .iter()
             .filter(|t| seen.insert(t.id.clone()))
             .enumerate()
-            .filter_map(|(index, txn)| map_transaction(account, txn, index).ok())
+            .filter_map(|(index, txn)| {
+                map_transaction(account, txn, index, conn.credential.expose_secret()).ok()
+            })
             .collect())
     }
 
@@ -687,7 +817,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
             Ok(accounts) => Ok(match accounts.iter().find(|a| !a.is_active()) {
                 Some(account) => HealthStatus::NeedsUserAction {
                     code: "lunchflow.account_status".to_owned(),
-                    message: needs_attention(account),
+                    message: needs_attention(account, conn.credential.expose_secret()),
                     help_url: None,
                 },
                 None => HealthStatus::Healthy,
@@ -726,7 +856,8 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
         conn: &Connection,
         since: Option<NaiveDate>,
     ) -> Result<connector_core::SyncBatch, ConnectorError> {
-        let wire_accounts = self.accounts(conn)?;
+        let key = conn.credential.expose_secret();
+        let (wire_accounts, refused) = self.accounts_counting_refused(conn)?;
         let today = self.today();
         let mut accounts = Vec::new();
         let mut records = Vec::new();
@@ -737,6 +868,15 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
         let warn = |warnings: &mut Vec<ParseWarning>, message: String| {
             warnings.push(ParseWarning { row: None, message });
         };
+        if refused > 0 {
+            warn(
+                &mut warnings,
+                format!(
+                    "{refused} account(s) from LunchFlow had an id containing your API key and \
+                     were skipped — check the API destination in your LunchFlow dashboard"
+                ),
+            );
+        }
 
         for listed in &wire_accounts {
             // The balance first: it is also where an account without a
@@ -750,7 +890,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                             &mut warnings,
                             format!(
                                 "LunchFlow returned an unreadable balance for account {}",
-                                sanitize(&account.id)
+                                clean(&account.id, key)
                             ),
                         );
                         None
@@ -762,7 +902,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                         &mut warnings,
                         format!(
                             "the balance for account {} was not refreshed: {err}",
-                            sanitize(&account.id)
+                            clean(&account.id, key)
                         ),
                     );
                     None
@@ -781,7 +921,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                         &mut warnings,
                         format!(
                             "transactions for account {} were not refreshed: {err}",
-                            sanitize(&account.id)
+                            clean(&account.id, key)
                         ),
                     );
                     held_account_ids.push(account.id.clone());
@@ -798,9 +938,9 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                     .or_else(|| balance_code.clone());
             }
             let account = account;
-            accounts.push(map_account(&account));
+            accounts.push(map_account(&account, key));
             if !account.is_active() {
-                warn(&mut warnings, needs_attention(&account));
+                warn(&mut warnings, needs_attention(&account, key));
                 held_account_ids.push(account.id.clone());
             }
 
@@ -811,7 +951,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                         format!(
                             "LunchFlow returned only part of account {}'s transactions; \
                              the next refresh asks again",
-                            sanitize(&account.id)
+                            clean(&account.id, key)
                         ),
                     );
                     held_account_ids.push(account.id.clone());
@@ -821,7 +961,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                     if !seen.insert(&txn.id) {
                         continue;
                     }
-                    match map_transaction(&account, txn, txn_index) {
+                    match map_transaction(&account, txn, txn_index, key) {
                         Ok(record) => {
                             records.push(record);
                             txn_index += 1;
@@ -843,7 +983,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                             "the balance for account {} is in {balance_code}, but its \
                              transactions are in {account_code} — a currency override in \
                              LunchFlow's balance settings? The balance was not refreshed",
-                            sanitize(&account.id)
+                            clean(&account.id, key)
                         ),
                     );
                     None
@@ -852,7 +992,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
             };
 
             if let Some(envelope) = balance {
-                match map_balance(&account.id, &envelope, today) {
+                match map_balance(&account.id, &envelope, today, key) {
                     Ok(balance) => {
                         records.push(balance_record(balance_index, balance));
                         balance_index += 1;
@@ -862,11 +1002,10 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
             }
         }
 
-        // Every warning quotes provider-controlled text (ids, status strings,
-        // error details): scrub the key out of all of it before it leaves.
-        let key = conn.credential.expose_secret();
+        // Every provider string in a warning already went through clean();
+        // this last pass is defense in depth over the assembled messages.
         for warning in &mut warnings {
-            warning.message = scrub(&warning.message, key);
+            warning.message = redact_key_fragments(&scrub(&warning.message, key), key);
         }
         held_account_ids.sort();
         held_account_ids.dedup();
@@ -902,11 +1041,153 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_strings_are_sanitized() {
+    fn provider_strings_are_cleaned_of_forgery_and_length() {
         let forged = "Coffee\u{202E}evil\nnext\u{200B}line";
-        assert_eq!(sanitize(forged), "Coffeeevilnextline");
+        assert_eq!(clean(forged, "k-irrelevant-key"), "Coffeeevilnextline");
         let long = "x".repeat(300);
-        assert_eq!(sanitize(&long).chars().count(), 201);
+        let cut = clean(&long, "k-irrelevant-key");
+        assert_eq!(cut.chars().count(), MAX_PROVIDER_CHARS + 1);
+        assert!(cut.ends_with('…'));
+        // Benign provider text stays readable, untouched.
+        assert_eq!(
+            clean(
+                "Invalid date range: from must precede to",
+                "k-irrelevant-key"
+            ),
+            "Invalid date range: from must precede to"
+        );
+    }
+
+    // --- personal-cfo-pxi.4: the key never survives, whatever its shape ---
+
+    const KEY: &str = "lf-SYNTH-7c1e9d0b4a2f";
+
+    /// No run of KEY_FRAGMENT_CHARS or more characters of the key survives.
+    fn assert_no_key_fragment(text: &str, key: &str) {
+        let key: Vec<char> = key.chars().collect();
+        for window in key.windows(KEY_FRAGMENT_CHARS) {
+            let fragment: String = window.iter().collect();
+            assert!(
+                !text.contains(&fragment),
+                "key fragment {fragment:?} survived in {text:?}"
+            );
+        }
+    }
+
+    /// The key with a zero-width space after every third character.
+    fn zero_width_key() -> String {
+        KEY.chars()
+            .enumerate()
+            .flat_map(|(i, c)| {
+                if i % 3 == 2 {
+                    vec![c, '\u{200B}']
+                } else {
+                    vec![c]
+                }
+            })
+            .collect()
+    }
+
+    fn error_text(body_message: &str) -> String {
+        let body = serde_json::json!({ "error": "Bad Request", "message": body_message });
+        let err = triage(
+            &HttpResponse {
+                status: 400,
+                body: body.to_string(),
+            },
+            KEY,
+        )
+        .unwrap_err();
+        format!("{err} {err:?}")
+    }
+
+    #[test]
+    fn a_key_straddling_the_truncation_boundary_is_removed_whole() {
+        // Scrubbing happens before the cut, so the key goes whole: not even a
+        // short prefix of it is left at the boundary (a scrub-after-cut
+        // ordering would leave one).
+        let key_prefix: String = KEY.chars().take(4).collect();
+        for offset in 180..=MAX_PROVIDER_CHARS + 2 {
+            let message = format!("{}{KEY}{}", "a".repeat(offset), "z".repeat(50));
+            let cleaned = clean(&message, KEY);
+            assert_no_key_fragment(&cleaned, KEY);
+            assert!(
+                !cleaned.contains(&key_prefix),
+                "offset {offset}: {cleaned:?}"
+            );
+            assert_no_key_fragment(&error_text(&message), KEY);
+        }
+    }
+
+    #[test]
+    fn a_zero_width_obfuscated_key_is_still_scrubbed() {
+        let message = format!("invalid key {} supplied", zero_width_key());
+        let cleaned = clean(&message, KEY);
+        assert_no_key_fragment(&cleaned, KEY);
+        assert_eq!(cleaned, "invalid key [redacted] supplied");
+        assert_no_key_fragment(&error_text(&message), KEY);
+    }
+
+    #[test]
+    fn a_zero_width_key_revealed_by_cleaning_and_crossing_the_cut_is_removed() {
+        // Raw, the key sits past the cut; zero-width padding makes it land
+        // across the cut only once the forgery characters are stripped.
+        for offset in 180..=MAX_PROVIDER_CHARS + 2 {
+            let message = format!(
+                "{}{}{}{}",
+                "\u{200B}".repeat(500),
+                "b".repeat(offset),
+                zero_width_key(),
+                "\u{FEFF}".repeat(40)
+            );
+            assert_no_key_fragment(&clean(&message, KEY), KEY);
+            assert_no_key_fragment(&error_text(&message), KEY);
+        }
+    }
+
+    #[test]
+    fn repeated_edge_overlapping_and_partial_echoes_are_all_removed() {
+        let prefix: String = KEY.chars().take(12).collect();
+        let suffix: String = KEY.chars().skip(5).collect();
+        for message in [
+            KEY.to_owned(),
+            format!("{KEY} at the start"),
+            format!("at the end {KEY}"),
+            format!("{KEY}{KEY}{KEY}"),
+            format!("twice: {KEY} and {} again", zero_width_key()),
+            // A partial echo followed by the whole key: the plain replace
+            // alone would leave the 12-character prefix behind.
+            format!("{prefix}{KEY}"),
+            format!("partial {suffix} only"),
+            format!("é—{KEY}—ü multibyte neighbours"),
+        ] {
+            assert_no_key_fragment(&clean(&message, KEY), KEY);
+            assert_no_key_fragment(&error_text(&message), KEY);
+        }
+    }
+
+    #[test]
+    fn cleaning_is_bounded_however_long_the_provider_text() {
+        let huge = format!("{}{KEY}", "\u{200B}".repeat(2_000_000));
+        let started = std::time::Instant::now();
+        let cleaned = clean(&huge, KEY);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(cleaned.chars().count() <= MAX_PROVIDER_CHARS + 1);
+        assert_no_key_fragment(&cleaned, KEY);
+    }
+
+    #[test]
+    fn auth_failures_stay_generic() {
+        for status in [401, 403] {
+            let body = format!(r#"{{"message":"key {KEY} rejected"}}"#);
+            let err = triage(&HttpResponse { status, body }, KEY).unwrap_err();
+            let text = format!("{err} {err:?}");
+            assert!(
+                !text.contains("rejected"),
+                "auth errors carry no provider text: {text}"
+            );
+            assert_no_key_fragment(&text, KEY);
+        }
     }
 
     #[test]
