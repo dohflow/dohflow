@@ -83,6 +83,11 @@ removed.
 
 ## Changing the policy on purpose
 
+A **Tauri upgrade** is also a policy event, since a new version can change what
+a grant allows without any file here changing. It has its own procedure and PR
+template: [docs/agent/TAURI_UPGRADES.md](../agent/TAURI_UPGRADES.md)
+(`personal-cfo-io42`).
+
 A grant, scope, origin, window or CSP source is never widened by editing a test
 until it passes. The order is:
 
