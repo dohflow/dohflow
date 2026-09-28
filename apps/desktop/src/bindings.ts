@@ -1444,8 +1444,9 @@ export type DiagnosticsSaveResult =
  */
 "preview_expired" |
 /**
- *  The destination is not an absolute `.json` file in an existing folder.
- *  Nothing was written.
+ *  The destination is not an absolute `.json` file in an existing folder
+ *  outside the app-data and active-vault folders (a symlink or `..` that
+ *  resolves inside them counts as inside). Nothing was written.
  */
 "invalid_destination" |
 /**  The OS refused the write. */

@@ -4096,8 +4096,9 @@ pub enum DiagnosticsSaveResult {
     /// The preview is gone (a newer preview replaced it, or the vault was locked
     /// or switched). Nothing was written.
     PreviewExpired,
-    /// The destination is not an absolute `.json` file in an existing folder.
-    /// Nothing was written.
+    /// The destination is not an absolute `.json` file in an existing folder
+    /// outside the app-data and active-vault folders (a symlink or `..` that
+    /// resolves inside them counts as inside). Nothing was written.
     InvalidDestination,
     /// The OS refused the write.
     PermissionDenied,

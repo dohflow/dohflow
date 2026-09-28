@@ -839,15 +839,60 @@ pub fn diagnostics_preview(
 
 /// The fixed result for an OS write failure — never the error's text or path.
 fn diagnostics_write_failure(error: &std::io::Error) -> DiagnosticsSaveResult {
-    // ENOSPC is 28 on macOS and Linux; `ErrorKind::StorageFull` is newer than
+    // ENOSPC is 28 on macOS and Linux; ERROR_HANDLE_DISK_FULL (39) and
+    // ERROR_DISK_FULL (112) on Windows. `ErrorKind::StorageFull` is newer than
     // the crate's MSRV.
-    if error.raw_os_error() == Some(28) {
+    let disk_full: &[i32] = if cfg!(windows) { &[39, 112] } else { &[28] };
+    if error
+        .raw_os_error()
+        .is_some_and(|code| disk_full.contains(&code))
+    {
         DiagnosticsSaveResult::DiskFull
     } else if error.kind() == std::io::ErrorKind::PermissionDenied {
         DiagnosticsSaveResult::PermissionDenied
     } else {
         DiagnosticsSaveResult::Failed
     }
+}
+
+/// Where a diagnostics save may write, or `None` (personal-cfo-lyd review F1).
+///
+/// Only an absolute `.json` file, in a folder that exists, that is **not** inside
+/// an app-owned directory: the app-data root (the vault registry `vaults.json`,
+/// managed vaults, settings) or the active vault's own folder. The parent is
+/// canonicalized, so `..` segments and symlinked folders are resolved before the
+/// check; an existing target must be a plain file, not a symlink (which
+/// `fs::write` would follow) or a directory. The returned path is the resolved
+/// one, so what is checked is what is written.
+fn diagnostics_destination(state: &AppState, out_path: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(out_path);
+    if !path.is_absolute() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+        return None;
+    }
+    let parent = std::fs::canonicalize(path.parent()?).ok()?;
+    if !parent.is_dir() {
+        return None;
+    }
+    let target = parent.join(path.file_name()?);
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        if !meta.file_type().is_file() {
+            return None;
+        }
+    }
+    let mut protected: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(root) = state.vaults_root() {
+        protected.push(root.to_path_buf());
+    }
+    if let Ok(controller) = state.lock_controller() {
+        if let Some(folder) = controller.path().parent() {
+            protected.push(folder.to_path_buf());
+        }
+    }
+    let inside_app_data = protected
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(dir).ok())
+        .any(|dir| target.starts_with(&dir));
+    (!inside_app_data).then_some(target)
 }
 
 #[cfg(test)]
@@ -890,21 +935,18 @@ pub fn diagnostics_save_impl(
         outcome = tracing::field::Empty,
     );
     let _entered = span.enter();
+    // Resolved BEFORE `with_kernel`: it reads the controller's vault path, and the
+    // controller mutex is not reentrant.
+    let destination = diagnostics_destination(state, &out_path);
     let result = with_kernel(state, |kernel| {
         let diagnostics = kernel.diagnostics();
         let Some(snapshot) = diagnostics.pending(u64::from(snapshot_id)) else {
             return Ok(DiagnosticsSaveResult::PreviewExpired);
         };
-        let path = std::path::Path::new(&out_path);
-        // Only a `.json` file in an existing folder: a diagnostics save can never
-        // overwrite a vault, envelope or backup file.
-        let valid = path.is_absolute()
-            && path.extension().and_then(|e| e.to_str()) == Some("json")
-            && path.parent().is_some_and(std::path::Path::is_dir);
-        if !valid {
+        let Some(target) = destination else {
             return Ok(DiagnosticsSaveResult::InvalidDestination);
-        }
-        match std::fs::write(path, snapshot.bytes()) {
+        };
+        match std::fs::write(&target, snapshot.bytes()) {
             Ok(()) => {
                 diagnostics.discard(u64::from(snapshot_id));
                 Ok(DiagnosticsSaveResult::Saved)

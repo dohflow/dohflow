@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use app_lib::ipc::commands::{
     create_vault_impl, create_vault_named_impl, diagnostics_discard_impl, diagnostics_preview_impl,
-    diagnostics_save_impl, export_backup_impl, lock_vault_impl, run_due_jobs_on_unlock_impl,
-    unlock_vault_impl,
+    diagnostics_save_impl, export_backup_impl, list_vaults_impl, lock_vault_impl,
+    run_due_jobs_on_unlock_impl, unlock_vault_impl,
 };
 use app_lib::ipc::dto::DiagnosticsSaveResult;
 use app_lib::ipc::IpcError;
@@ -46,9 +46,16 @@ fn out(dir: &Path, name: &str) -> String {
     dir.join(name).to_string_lossy().into_owned()
 }
 
+/// A folder OUTSIDE the vault and app-data directories — where a user's saved
+/// bundle legitimately goes. (Saving into the vault's own folder is refused.)
+fn outside() -> TempDir {
+    TempDir::new().expect("output folder")
+}
+
 #[test]
 fn the_saved_file_is_exactly_the_preview_and_later_records_never_enter_it() {
     let (dir, state) = unlocked();
+    let saves = outside();
     backup(&state, dir.path(), "one.pcfobk");
 
     let preview = diagnostics_preview_impl(&state).expect("preview");
@@ -61,7 +68,7 @@ fn the_saved_file_is_exactly_the_preview_and_later_records_never_enter_it() {
     // Captured AFTER the preview: must not appear in what gets saved.
     backup(&state, dir.path(), "two.pcfobk");
 
-    let target = out(dir.path(), "diag.json");
+    let target = out(saves.path(), "diag.json");
     let result = diagnostics_save_impl(&state, preview.snapshot_id, target.clone()).expect("save");
     assert_eq!(result, DiagnosticsSaveResult::Saved);
     let written = std::fs::read(&target).expect("saved file");
@@ -78,7 +85,8 @@ fn the_saved_file_is_exactly_the_preview_and_later_records_never_enter_it() {
 
     // A save completes the preview: the same snapshot cannot be saved again.
     assert_eq!(
-        diagnostics_save_impl(&state, preview.snapshot_id, out(dir.path(), "again.json")).unwrap(),
+        diagnostics_save_impl(&state, preview.snapshot_id, out(saves.path(), "again.json"))
+            .unwrap(),
         DiagnosticsSaveResult::PreviewExpired
     );
     // A fresh preview now includes the later record.
@@ -145,10 +153,11 @@ fn durable_job_runs_are_captured_as_duration_buckets() {
 
 #[test]
 fn cancelling_writes_nothing_and_the_preview_cannot_be_saved_afterwards() {
-    let (dir, state) = unlocked();
+    let (_dir, state) = unlocked();
+    let saves = outside();
     let preview = diagnostics_preview_impl(&state).unwrap();
     diagnostics_discard_impl(&state, preview.snapshot_id).unwrap();
-    let target = out(dir.path(), "cancelled.json");
+    let target = out(saves.path(), "cancelled.json");
     assert_eq!(
         diagnostics_save_impl(&state, preview.snapshot_id, target.clone()).unwrap(),
         DiagnosticsSaveResult::PreviewExpired
@@ -162,11 +171,12 @@ fn cancelling_writes_nothing_and_the_preview_cannot_be_saved_afterwards() {
 #[test]
 fn locking_the_vault_invalidates_the_pending_preview() {
     let (dir, state) = unlocked();
+    let saves = outside();
     backup(&state, dir.path(), "b.pcfobk");
     let preview = diagnostics_preview_impl(&state).unwrap();
 
     lock_vault_impl(&state).unwrap();
-    let target = out(dir.path(), "locked.json");
+    let target = out(saves.path(), "locked.json");
     assert!(matches!(
         diagnostics_save_impl(&state, preview.snapshot_id, target.clone()),
         Err(IpcError::VaultLocked)
@@ -192,6 +202,7 @@ fn locking_the_vault_invalidates_the_pending_preview() {
 #[test]
 fn switching_vaults_invalidates_the_preview_and_starts_an_empty_session() {
     let root = TempDir::new().unwrap();
+    let saves = outside();
     let registry = VaultRegistry::load(root.path());
     let path = registry
         .active_path(root.path())
@@ -209,7 +220,7 @@ fn switching_vaults_invalidates_the_preview_and_starts_an_empty_session() {
     // Creating a second vault switches to it: the first vault is locked (its
     // kernel, capture and pending preview dropped) and the new one is unlocked.
     create_vault_named_impl(&state, "Second".into(), PASSWORD.into()).expect("switch to second");
-    let target = out(root.path(), "switched.json");
+    let target = out(saves.path(), "switched.json");
     assert_eq!(
         diagnostics_save_impl(&state, preview.snapshot_id, target.clone())
             .expect("second vault is unlocked"),
@@ -228,6 +239,7 @@ fn switching_vaults_invalidates_the_preview_and_starts_an_empty_session() {
 #[test]
 fn bad_destinations_write_nothing() {
     let (dir, state) = unlocked();
+    let saves = outside();
     let preview = diagnostics_preview_impl(&state).unwrap();
     for bad in [
         "relative.json".to_owned(),
@@ -249,7 +261,7 @@ fn bad_destinations_write_nothing() {
     assert!(!dir.path().join("notes.txt").exists());
     // The preview is still pending after a rejected destination: the user can pick again.
     assert_eq!(
-        diagnostics_save_impl(&state, preview.snapshot_id, out(dir.path(), "ok.json")).unwrap(),
+        diagnostics_save_impl(&state, preview.snapshot_id, out(saves.path(), "ok.json")).unwrap(),
         DiagnosticsSaveResult::Saved
     );
 }
@@ -258,8 +270,9 @@ fn bad_destinations_write_nothing() {
 #[test]
 fn a_denied_write_is_a_fixed_result_with_no_file() {
     use std::os::unix::fs::PermissionsExt;
-    let (dir, state) = unlocked();
-    let read_only = dir.path().join("read-only");
+    let (_dir, state) = unlocked();
+    let saves = outside();
+    let read_only = saves.path().join("read-only");
     std::fs::create_dir(&read_only).unwrap();
     std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555)).unwrap();
     let preview = diagnostics_preview_impl(&state).unwrap();
@@ -273,6 +286,7 @@ fn a_denied_write_is_a_fixed_result_with_no_file() {
 #[test]
 fn sensitive_inputs_never_reach_the_preview_or_the_saved_file() {
     let (dir, state) = unlocked();
+    let saves = outside();
     // A failing backup whose path carries an email, an account-number sentinel
     // and a person's folder name.
     let hostile = dir
@@ -286,7 +300,7 @@ fn sensitive_inputs_never_reach_the_preview_or_the_saved_file() {
     tracing::warn!("password=SENTINEL-PASS token=SENTINEL-TOKEN balance $98,765.43");
 
     let preview = diagnostics_preview_impl(&state).unwrap();
-    let target = out(dir.path(), "diag.json");
+    let target = out(saves.path(), "diag.json");
     assert_eq!(
         diagnostics_save_impl(&state, preview.snapshot_id, target.clone()).unwrap(),
         DiagnosticsSaveResult::Saved
@@ -312,4 +326,82 @@ fn sensitive_inputs_never_reach_the_preview_or_the_saved_file() {
         .iter()
         .any(|r| r.metric == Metric::BackupOutcome
             && matches!(r.value, Value::Outcome(Outcome::Failure(_)))));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_can_never_land_inside_app_data_or_the_vault_folder() {
+    // Review F1 (PR 52): `<data_dir>/vaults.json` is the vault registry. Writing a
+    // bundle over it orphaned every named vault. No destination inside the
+    // app-data root or the active vault's folder is allowed — directly, through
+    // `..`, through a symlinked folder, or through a symlinked target file.
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new().unwrap();
+    let registry = VaultRegistry::load(root.path());
+    let path = registry
+        .active_path(root.path())
+        .unwrap_or_else(|| root.path().join("vault.db"));
+    let state = AppState::with_registry(
+        VaultController::open(path),
+        registry,
+        root.path().to_path_buf(),
+    );
+    create_vault_named_impl(&state, "Household".into(), PASSWORD.into()).expect("named vault");
+    let registry_file = root.path().join("vaults.json");
+    let registry_before = std::fs::read(&registry_file).expect("registry exists");
+
+    let saves = outside();
+    std::fs::create_dir(root.path().join("sub")).unwrap();
+    symlink(root.path(), saves.path().join("linked-root")).unwrap();
+    symlink(&registry_file, saves.path().join("looks-harmless.json")).unwrap();
+    let vault_folder = {
+        let guard = state.lock_controller().unwrap();
+        guard.path().parent().unwrap().to_path_buf()
+    };
+
+    let preview = diagnostics_preview_impl(&state).unwrap();
+    for attempt in [
+        out(root.path(), "vaults.json"),
+        root.path()
+            .join("sub")
+            .join("..")
+            .join("vaults.json")
+            .to_string_lossy()
+            .into_owned(),
+        saves
+            .path()
+            .join("linked-root")
+            .join("vaults.json")
+            .to_string_lossy()
+            .into_owned(),
+        out(saves.path(), "looks-harmless.json"),
+        out(&vault_folder, "diagnostics.json"),
+        out(root.path(), "anything-else.json"),
+    ] {
+        assert_eq!(
+            diagnostics_save_impl(&state, preview.snapshot_id, attempt.clone()).unwrap(),
+            DiagnosticsSaveResult::InvalidDestination,
+            "{attempt}"
+        );
+    }
+
+    assert_eq!(
+        std::fs::read(&registry_file).unwrap(),
+        registry_before,
+        "the registry is byte-identical"
+    );
+    let listed = list_vaults_impl(&state).expect("list vaults");
+    assert!(
+        listed.vaults.iter().any(|v| v.name == "Household"),
+        "the vault is still registered: {listed:?}"
+    );
+    assert!(!vault_folder.join("diagnostics.json").exists());
+    assert!(!root.path().join("anything-else.json").exists());
+
+    // A normal destination outside app data still works with the same preview.
+    assert_eq!(
+        diagnostics_save_impl(&state, preview.snapshot_id, out(saves.path(), "ok.json")).unwrap(),
+        DiagnosticsSaveResult::Saved
+    );
 }

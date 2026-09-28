@@ -507,6 +507,15 @@ pub fn parse_bundle(bytes: &[u8]) -> Result<Bundle, ParseError> {
     {
         return Err(ParseError::Inconsistent);
     }
+    // The same admission rules as capture: each metric's own shape, and counts
+    // within the ceiling (review F2, PR 52).
+    let admissible = |r: &Record| {
+        r.metric.shape() == r.value.shape()
+            && !matches!(r.value, Value::Count(n) if n > COUNT_CEILING)
+    };
+    if !bundle.records.iter().all(admissible) {
+        return Err(ParseError::Inconsistent);
+    }
     Ok(bundle)
 }
 
@@ -719,6 +728,20 @@ mod tests {
         let lying = text.replacen("\"records_retained\": 1", "\"records_retained\": 5", 1);
         assert_eq!(
             parse_bundle(lying.as_bytes()),
+            Err(ParseError::Inconsistent)
+        );
+
+        // retry_count admits a count, not a duration.
+        let wrong_shape = text.replacen("\"count\": 1", "\"duration\": \"<10ms\"", 1);
+        assert_ne!(wrong_shape, text, "fixture holds a count record");
+        assert_eq!(
+            parse_bundle(wrong_shape.as_bytes()),
+            Err(ParseError::Inconsistent)
+        );
+
+        let over_ceiling = text.replacen("\"count\": 1", "\"count\": 1000001", 1);
+        assert_eq!(
+            parse_bundle(over_ceiling.as_bytes()),
             Err(ParseError::Inconsistent)
         );
     }
