@@ -13,7 +13,7 @@
 // is scoped to https://dohflow.app/* (ADR 0010), and a provider or referral
 // URL must never become a click-through (ADR 0076 §5).
 
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 import type { ConnectorAdapterDto } from "@/bindings";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,7 +22,10 @@ import { splitLead } from "./providerCopy";
 
 function SelectableUrl({ url }: { url: string }) {
   return (
-    <code className="select-all rounded bg-muted px-1 font-mono text-xs">{url}</code>
+    // break-all: a long URL wraps at narrow widths instead of overflowing.
+    <code className="select-all break-all rounded bg-muted px-1 font-mono text-xs">
+      {url}
+    </code>
   );
 }
 
@@ -64,6 +67,7 @@ export function ProviderDisclosure({
   titleId?: string;
 }) {
   const { disclosure, link_guide: guide, referral } = adapter;
+  const referralId = useId();
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -80,15 +84,19 @@ export function ProviderDisclosure({
           <Point text={guide.refresh_note} />
         </ul>
         {referral ? (
+          // The FTC 16 CFR Part 255 sentence sits directly under the URL it
+          // discloses, in the same note and at the panel's full text color
+          // and size — never muted (ADR 0076 §5, personal-cfo-pxi.5).
           <div
             role="note"
             aria-label={`Referral disclosure for ${adapter.display_name}`}
+            aria-describedby={referralId}
             className="flex flex-col gap-1.5 rounded-md border p-3"
           >
             <p>
               Referral link: <SelectableUrl url={referral.url} />
             </p>
-            <p className="text-muted-foreground">{referral.disclosure}</p>
+            <p id={referralId}>{referral.disclosure}</p>
           </div>
         ) : null}
         <div className="flex flex-col gap-1.5 rounded-md border bg-muted/30 p-3">
