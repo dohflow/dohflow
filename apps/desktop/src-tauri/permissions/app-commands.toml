@@ -157,6 +157,10 @@ commands.allow = [
   "duplicate_candidates",
   "backup_schedule_settings",
   "backup_history",
+  # Local diagnostics (personal-cfo-lyd): build/forget an in-memory redacted preview.
+  # Writing it to disk is diagnostics_save, in destructive-commands.toml.
+  "diagnostics_preview",
+  "diagnostics_discard",
   # Pre-listed for the in-flight paged-transaction-read work (wave2 Part A);
   # remove if that command lands under a different name.
   "transaction_page",

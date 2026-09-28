@@ -188,6 +188,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::configure_backup,
         ipc::commands::run_backup_now,
         ipc::commands::export_transactions_csv,
+        // Local diagnostics (personal-cfo-lyd).
+        ipc::commands::diagnostics_preview,
+        ipc::commands::diagnostics_save,
+        ipc::commands::diagnostics_discard,
         ipc::commands::restore_backup,
         ipc::commands::restore_backup_as_new_vault,
         // Connectors (personal-cfo-gglk, ADR 0060).
