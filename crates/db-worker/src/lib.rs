@@ -89,8 +89,8 @@ pub use commitments::CommitmentView;
 pub use money_inbox::MoneyInboxItem;
 
 /// The schema version a fully-migrated vault is at — the highest migration this
-/// build knows. A backup whose `schema_version` exceeds this is from a newer app
-/// and cannot be restored (personal-cfo-au3, ADR 0024 §5).
+/// build knows. Newer backups and ordinary existing-vault version witnesses
+/// cannot be opened by this build (ADR 0024, personal-cfo-g3m.4).
 pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
@@ -1211,7 +1211,7 @@ impl DbWorker {
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         let runner_lock = acquire_runner_lock(&path)?;
-        let conn = if path.exists() {
+        let conn = if path.try_exists()? {
             open_existing_keyed(&path, key)?
         } else {
             open_keyed(&path, key)?
@@ -1240,7 +1240,7 @@ impl DbWorker {
     pub fn open_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         let runner_lock = acquire_runner_lock(&path)?;
-        let conn = if path.exists() {
+        let conn = if path.try_exists()? {
             open_existing_keyed_raw(&path, &dek)?
         } else {
             open_keyed_raw(&path, &dek)?
@@ -1250,6 +1250,11 @@ impl DbWorker {
 
     /// Open an existing envelope-backed vault. Unlike creation, a missing DB
     /// must never be silently initialized during unlock.
+    ///
+    /// # Errors
+    /// Returns [`DbError::NewerSchema`] for a newer version marker,
+    /// [`DbError::UnsupportedSchema`] for an unverified/missing layout, or the
+    /// normal keying, filesystem and exclusive-owner errors.
     pub fn open_existing_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         let runner_lock = acquire_runner_lock(&path)?;
@@ -1302,10 +1307,17 @@ impl DbWorker {
     /// # Errors
     /// Returns [`DbError`] if the connection cannot be opened or keyed.
     pub fn read_connection(&self) -> Result<Connection, DbError> {
+        // A worker already owns a supported vault. Reads must never create a
+        // replacement if its path disappears during that lifetime.
+        let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         match &self.key {
-            KeyMaterial::Passphrase(passphrase) => open_keyed(&self.path, passphrase.as_str()),
-            KeyMaterial::Raw(dek) => open_keyed_raw(&self.path, dek),
+            KeyMaterial::Passphrase(passphrase) => {
+                conn.pragma_update(None, "key", passphrase.as_str())?
+            }
+            KeyMaterial::Raw(dek) => key_raw(&conn, dek)?,
         }
+        configure_conn(&conn)?;
+        Ok(conn)
     }
 
     /// A consistent snapshot of the encrypted `vault.db` bytes, for backup
@@ -3997,8 +4009,9 @@ pub fn sqlite_version() -> &'static str {
 }
 
 /// The baseline schema (migration `0001`, personal-cfo-wkn). Defined as a `&str`
-/// const consumed by [`migrations::MIGRATIONS`]; `CREATE TABLE IF NOT EXISTS`
-/// keeps it a safe no-op on a pre-framework vault that already has these tables.
+/// const consumed by [`migrations::MIGRATIONS`]. `CREATE TABLE IF NOT EXISTS`
+/// supports known migration prefixes; it is not evidence that an unverified
+/// existing no-tracker layout is compatible.
 ///
 /// operation_log (ADR 0011, personal-cfo-0s0): immutable append-only audit
 /// trail. Provenance UUIDs are 16-byte BLOBs; idempotency_key stays TEXT (an
@@ -4332,10 +4345,9 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
     )?;
     if exists {
         // Advance the write-once stamp to the version we just migrated to. Only
-        // move it FORWARD: if the stored stamp is already higher (a vault created
-        // by a newer build, opened here by an older one), leave it so the health
-        // check still surfaces the genuine "opened by a newer version" mismatch
-        // instead of masking it.
+        // move it FORWARD. Existing-vault open refuses a higher stamp before
+        // bootstrap; this predicate also prevents accidental down-stamping by
+        // any future internal caller.
         conn.execute(
             "UPDATE vault_metadata SET schema_version = ?1
              WHERE singleton = 1 AND schema_version < ?1",

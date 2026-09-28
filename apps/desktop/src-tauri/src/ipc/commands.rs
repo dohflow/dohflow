@@ -5487,6 +5487,8 @@ mod release_update_failure_tests {
 
         tracing::subscriber::with_default(subscriber, || {
             record_durable_job_unlock_failure(&error);
+            record_durable_job_unlock_failure(&IpcError::NewerVaultSchema);
+            record_durable_job_unlock_failure(&IpcError::UnsupportedVaultSchema);
         });
 
         let logged = String::from_utf8(buffer.0.lock().expect("test log buffer lock").clone())
@@ -5494,6 +5496,8 @@ mod release_update_failure_tests {
         assert!(logged.contains("durable jobs on unlock failed"));
         assert!(logged.contains("error_code") && logged.contains("persistence"));
         assert!(logged.contains("outcome") && logged.contains("failed"));
+        assert!(logged.contains("newer_vault_schema"));
+        assert!(logged.contains("unsupported_vault_schema"));
         assert!(!logged.contains(&sensitive_payload));
         assert!(!logged.contains("opaque durable payload"));
     }

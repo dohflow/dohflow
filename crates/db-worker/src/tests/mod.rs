@@ -6348,11 +6348,15 @@ fn newer_migration_is_refused_before_stamping_the_vault_down() {
     .unwrap();
     drop(conn);
 
-    assert!(matches!(
-        DbWorker::open(&path, KEY),
-        Err(DbError::NewerSchema { observed, supported })
-            if observed == future && supported == migrations::CURRENT_VERSION
-    ));
+    let before_db = std::fs::read(&path).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            DbWorker::open(&path, KEY),
+            Err(DbError::NewerSchema { observed, supported })
+                if observed == future && supported == migrations::CURRENT_VERSION
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before_db);
+    }
     let observer = open_keyed(&path, KEY).unwrap();
     let stamped: i64 = observer
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -6362,6 +6366,33 @@ fn newer_migration_is_refused_before_stamping_the_vault_down() {
 
 #[test]
 fn every_independent_newer_marker_refuses_without_changing_committed_wal() {
+    fn logical_state(conn: &Connection) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            "accounts",
+            "ledger_accounts",
+            "operation_log",
+            "audit_events",
+            "categories",
+            "forecast_runs",
+            "forecast_rows",
+            "schema_migrations",
+            "vault_metadata",
+        ]
+        .iter()
+        .map(|table| {
+            let mut statement = conn
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .unwrap();
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..columns).map(|column| row.get(column)).collect()
+                })
+                .unwrap();
+            rows.map(Result::unwrap).collect()
+        })
+        .collect()
+    }
     for (name, tracker, pragma, metadata) in [
         ("tracker", true, false, false),
         ("pragma", false, true, false),
@@ -6397,9 +6428,16 @@ fn every_independent_newer_marker_refuses_without_changing_committed_wal() {
                 )
                 .unwrap();
         }
+        if name == "lowered-stamps" {
+            writer.pragma_update(None, "user_version", 0).unwrap();
+            writer
+                .execute_batch("UPDATE vault_metadata SET schema_version = 0")
+                .unwrap();
+        }
         let wal_path = path.with_extension("vault-wal");
         let before_db = std::fs::read(&path).unwrap();
         let before_wal = std::fs::read(&wal_path).unwrap();
+        let before_state = logical_state(&writer);
         assert!(
             matches!(
                 DbWorker::open(&path, KEY),
@@ -6426,13 +6464,24 @@ fn every_independent_newer_marker_refuses_without_changing_committed_wal() {
             )
             .unwrap();
         assert_eq!(seen_tracker, i64::from(tracker), "{name}");
+        assert_eq!(
+            logical_state(&writer),
+            before_state,
+            "{name}: logical state changed"
+        );
         drop(writer);
     }
 }
 
 #[test]
 fn existing_unverified_layouts_fail_before_tracker_creation_or_metadata_repair() {
-    for layout in ["no-tracker", "no-metadata-row", "malformed-metadata"] {
+    for layout in [
+        "no-tracker",
+        "no-metadata-row",
+        "malformed-metadata",
+        "unreadable-marker",
+        "checksum",
+    ] {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(format!("{layout}.vault"));
         drop(DbWorker::open(&path, KEY).unwrap());
@@ -6442,6 +6491,14 @@ fn existing_unverified_layouts_fail_before_tracker_creation_or_metadata_repair()
                 .execute_batch("DROP TABLE schema_migrations")
                 .unwrap(),
             "no-metadata-row" => writer.execute_batch("DELETE FROM vault_metadata").unwrap(),
+            "unreadable-marker" => writer
+                .execute_batch("UPDATE vault_metadata SET schema_version = 'not-an-integer'")
+                .unwrap(),
+            "checksum" => writer
+                .execute_batch(
+                    "UPDATE schema_migrations SET content_hash = 'tampered' WHERE version = 1",
+                )
+                .unwrap(),
             _ => writer
                 .execute_batch("UPDATE vault_metadata SET vault_id = X'00' WHERE singleton = 1")
                 .unwrap(),
@@ -6494,6 +6551,88 @@ fn read_only_sqlcipher_inspection_observes_committed_wal_marker() {
     assert_eq!(std::fs::read(&path).unwrap(), before_db);
     assert_eq!(std::fs::read(&wal_path).unwrap(), before_wal);
     drop(writer);
+}
+
+#[test]
+fn credible_newer_metadata_is_not_hidden_by_a_missing_tracker() {
+    let (_dir, worker) = worker();
+    let observer = worker.read_connection().unwrap();
+    let future = migrations::CURRENT_VERSION + 1;
+    observer
+        .execute_batch("DROP TABLE schema_migrations")
+        .unwrap();
+    observer
+        .execute("UPDATE vault_metadata SET schema_version = ?1", [future])
+        .unwrap();
+    assert!(
+        matches!(migrations::inspect_existing(&observer), Err(DbError::NewerSchema { observed, .. }) if observed == future)
+    );
+}
+
+#[test]
+fn migration_runner_refuses_newer_markers_before_recreating_a_missing_tracker() {
+    let (_dir, worker) = worker();
+    let mut observer = worker.read_connection().unwrap();
+    observer
+        .execute_batch("DROP TABLE schema_migrations")
+        .unwrap();
+    observer
+        .pragma_update(None, "user_version", migrations::CURRENT_VERSION + 1)
+        .unwrap();
+    assert!(matches!(
+        migrations::run_migrations(&mut observer),
+        Err(DbError::NewerSchema { .. })
+    ));
+    let exists: bool = observer
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'schema_migrations')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!exists);
+}
+
+#[test]
+fn existing_known_prefixes_and_zero_stamps_upgrade_without_changing_vault_identity() {
+    let dir = TempDir::new().unwrap();
+    for count in 1..migrations::MIGRATIONS.len() {
+        let path = dir.path().join(format!("prefix-{count}.vault"));
+        let mut conn = open_keyed(&path, KEY).unwrap();
+        migrations::apply(&mut conn, &migrations::MIGRATIONS[..count]).unwrap();
+        ensure_vault_metadata(&conn, count as i64).unwrap();
+        let identity = read_vault_metadata(&conn).unwrap().vault_id;
+        // A completed prefix is also the durable state after a crash between
+        // supported migration transactions. Lower/zero stamps are not alone
+        // evidence of an unsupported layout.
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        conn.execute_batch("UPDATE vault_metadata SET schema_version = 0")
+            .unwrap();
+        drop(conn);
+        let reopened = DbWorker::open(&path, KEY).unwrap();
+        assert_eq!(reopened.schema_version(), migrations::CURRENT_VERSION);
+        assert_eq!(reopened.vault_metadata().unwrap().vault_id, identity);
+        assert_eq!(
+            reopened.vault_metadata().unwrap().schema_version,
+            migrations::CURRENT_VERSION
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn file_identity_check_refuses_a_replaced_path() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+    let original = File::open(&path).unwrap();
+    let preserved = dir.path().join("preserved.vault");
+    std::fs::rename(&path, &preserved).unwrap();
+    std::fs::copy(&preserved, &path).unwrap();
+    assert!(matches!(
+        verify_file_identity(&original, &path),
+        Err(DbError::UnsupportedSchema)
+    ));
 }
 
 #[test]

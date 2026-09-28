@@ -2989,6 +2989,7 @@ dependencies = [
  "chrono",
  "connector-core",
  "csv-importer",
+ "db-worker",
  "finance-kernel",
  "iana-time-zone",
  "job-runtime",
@@ -3015,6 +3016,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "vault-crypto",
  "zeroize",
 ]
 

@@ -100,6 +100,8 @@ impl Kernel {
     /// - [`KernelError::Persistence`] if the database cannot be opened.
     /// - [`KernelError::VaultInUse`] if another process already owns the
     ///   unlocked vault.
+    /// - [`KernelError::NewerVaultSchema`] or [`KernelError::UnsupportedVaultSchema`]
+    ///   before migrations/seed writes when existing schema inspection refuses.
     pub fn unlock_vault(path: impl AsRef<Path>, password: &[u8]) -> Result<Self, KernelError> {
         let db_path = path.as_ref();
         let sidecar = sidecar_path(db_path);

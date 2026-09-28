@@ -112,3 +112,17 @@ fn newer_schema_error_keeps_its_identity_across_the_kernel_boundary() {
             if observed == supported + 1
     ));
 }
+
+#[test]
+fn existing_envelope_with_missing_db_never_creates_a_replacement_on_unlock() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    Kernel::create_vault(&path, PASSWORD).unwrap().lock();
+    std::fs::rename(&path, dir.path().join("preserved.db")).unwrap();
+    assert!(matches!(
+        Kernel::unlock_vault(&path, PASSWORD),
+        Err(KernelError::UnsupportedVaultSchema)
+    ));
+    assert!(!path.exists());
+    assert!(dir.path().join("preserved.db").exists());
+}

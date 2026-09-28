@@ -763,19 +763,19 @@ export type CashTiersDto = {
  *  How an account participates in household cashflow. Mirrors the kernel
  *  [`CashflowRole`] so the generated bindings expose a clean string union.
  */
-export type CashflowRoleDto = 
+export type CashflowRoleDto =
 /**  Checking, savings — spendable now. */
-"LiquidCash" | 
+"LiquidCash" |
 /**  Credit cards and lines of credit. */
-"CreditFacility" | 
+"CreditFacility" |
 /**  Term loans, mortgages. */
-"LoanLiability" | 
+"LoanLiability" |
 /**  Brokerage, retirement balances. */
-"InvestmentAsset" | 
+"InvestmentAsset" |
 /**  Property, vehicles. */
-"RealAsset" | 
+"RealAsset" |
 /**  In-transit / clearing / suspense. */
-"ExternalClearing" | 
+"ExternalClearing" |
 /**  Virtual income/expense categorization account. */
 "IncomeExpenseVirtual";
 
@@ -1002,7 +1002,7 @@ export type ConnectorForgetInput = {
 
 /**
  *  Link a new aggregator connection from a user-pasted setup token.
- * 
+ *
  *  LEAK RULE: `setup_token` is a one-time secret — the manual `Debug` impl
  *  redacts it, mirroring `connector_core::Credential`'s posture.
  */
@@ -1575,31 +1575,35 @@ export type IncomeSourceDto = {
  *  An error crossing the Tauri IPC boundary. Serialized to the frontend as an
  *  externally-tagged union (e.g. `{ "Validation": "..." }` or `"VaultLocked"`).
  */
-export type IpcError = 
+export type IpcError =
 /**
  *  The request failed domain or input validation (bad UUID, unknown
  *  currency, empty name, …). Safe to show the message to the user.
  */
-({ Validation: string }) & { Persistence?: never; Unavailable?: never } | 
+({ Validation: string }) & { Persistence?: never; Unavailable?: never } |
 /**
  *  No vault is open. The caller must open/unlock a vault first. This is the
  *  steady state of a locked app.
  */
-"VaultLocked" | 
+"VaultLocked" |
 /**
  *  Unlocking failed because the password was wrong (the wrapped DEK failed
  *  to authenticate). Carries no detail — there is no oracle distinguishing a
  *  wrong password from a tampered envelope. The unlock screen surfaces this
  *  as "incorrect password".
  */
-"VaultUnlockFailed" | 
+"VaultUnlockFailed" |
+/**  This vault was written by a newer schema; do not offer a downgrade. */
+"NewerVaultSchema" |
+/**  This existing vault is not a verified supported migration layout. */
+"UnsupportedVaultSchema" |
 /**
  *  The vault is open but not accepting writes (e.g. restoring a backup or
  *  awaiting recovery). Carries the worker state as a non-sensitive label.
  */
-({ Unavailable: string }) & { Persistence?: never; Validation?: never } | 
+({ Unavailable: string }) & { Persistence?: never; Validation?: never } |
 /**  A writer panic rolled back the transaction; the vault needs recovery. */
-"WriterPanicked" | 
+"WriterPanicked" |
 /**
  *  Any other persistence failure, flattened to a message so no database
  *  type is exposed.
@@ -1644,7 +1648,7 @@ export type ManualFutureEntryDto = {
 
 /**
  *  A monetary amount on the wire: integer minor units + ISO currency code.
- * 
+ *
  *  `minor_units` is an `i64` cast to a TypeScript `number` via
  *  `#[specta(type = Number)]` on the field. A personal vault's balances stay
  *  far below 2^53 minor units, so no precision is lost.
@@ -1938,17 +1942,17 @@ export type RecurringTransferDto = {
 export type ReleaseUpdateFailureKind = "download" | "signature" | "install";
 
 /**  How a liability is repaid (ADR 0035 §1), on the wire as a snake_case token. */
-export type RepaymentPhilosophyDto = 
+export type RepaymentPhilosophyDto =
 /**  Pay the full balance. */
-"pay_in_full" | 
+"pay_in_full" |
 /**  Pay the projected statement balance. */
-"pay_statement_balance" | 
+"pay_statement_balance" |
 /**  Pay the current owed balance. */
-"pay_current_balance" | 
+"pay_current_balance" |
 /**  Pay the computed minimum. */
-"pay_minimum" | 
+"pay_minimum" |
 /**  Pay a stored fixed amount. */
-"pay_fixed_amount" | 
+"pay_fixed_amount" |
 /**  Not set — the forecast assumes the minimum. */
 "unknown";
 
@@ -2080,7 +2084,7 @@ export type SourcePresetDto = {
 
 /**
  *  The spend chart's rows plus what the same query excluded (personal-cfo-90eg).
- * 
+ *
  *  The exclusions travel WITH the rows so the surface can explain the gap between this
  *  chart and the list beside it, rather than letting the two silently disagree.
  */
@@ -2093,7 +2097,7 @@ export type SpendBreakdownDto = {
 /**
  *  Input to the spend-by-category read (ADR 0052). The date range is inclusive; `parent`
  *  is the level to roll up to (`None` = the taxonomy roots).
- * 
+ *
  *  The facets below mirror `TransactionPageInput` because ADR 0052 §2 makes the chart and
  *  the list read ONE filter state: a bar the user clicks has to list exactly the rows it
  *  counted. There is deliberately **no category facet** — a category selection is the

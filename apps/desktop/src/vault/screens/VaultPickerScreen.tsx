@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   ChevronRight,
@@ -231,6 +231,7 @@ function UnlockVaultModal({
   const [error, setError] = useState<string | null>(null);
   const [forgot, setForgot] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const passwordInput = useRef<HTMLInputElement>(null);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -244,6 +245,7 @@ function UnlockVaultModal({
     if (failure) {
       setError(describeIpcError(failure));
       setSubmitting(false);
+      passwordInput.current?.focus();
     }
   }
 
@@ -253,7 +255,7 @@ function UnlockVaultModal({
       role="dialog"
       aria-modal="true"
       aria-label={`Unlock ${vault.name}`}
-      onClick={onBack}
+      onClick={submitting ? undefined : onBack}
     >
       <div
         className="relative w-[414px] max-w-[calc(100vw-44px)] rounded-2xl border bg-popover p-8 pb-7 shadow-2xl"
@@ -263,6 +265,7 @@ function UnlockVaultModal({
           type="button"
           title="Back"
           onClick={onBack}
+          disabled={submitting}
           className="absolute left-4 top-4 flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <ArrowLeft className="size-[19px]" aria-hidden />
@@ -286,6 +289,7 @@ function UnlockVaultModal({
           <div className="relative">
             <Input
               id="picker-password"
+              ref={passwordInput}
               type={show ? "text" : "password"}
               autoComplete="current-password"
               autoFocus
