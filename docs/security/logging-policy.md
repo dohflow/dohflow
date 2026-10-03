@@ -177,6 +177,7 @@ must stay in step:
 |---|---|---|
 | Unit known-positive / known-negative | `crates/observability/src/lib.rs` tests | every pattern class in §2.2 is replaced, including credential URLs and SimpleFIN claim tokens; innocuous strings (module names, command kinds, error codes, counts, `duration_ms`, `op_seq`) pass unchanged |
 | Live known-positive / known-negative (`POSITIVE` / `NEGATIVE`) | `crates/finance-kernel/tests/log_redaction.rs` | the same classes, through the **production** subscriber, alongside a real kernel workload, with none surviving and nothing over-redacted |
+| Diagnostic export corpus (`FORBIDDEN`) and allowlist | `apps/desktop/src-tauri/tests/diagnostics_export_roundtrip.rs` | account and routing numbers, descriptions, balances, the vault password, a connector setup token, a provider body, raw error text and paths, fed through real vault operations, never reach a saved diagnostic bundle; the bundle holds only §7's fields and values |
 
 **Classes covered by both corpora:**
 - account, card and routing numbers;
@@ -369,7 +370,7 @@ this section, and the plan now points here.
 |---|---|
 | Rust logs | Redacted `tracing` output to **stdout only**. The app writes no log file. |
 | Local capture ring | **Ships** (`personal-cfo-lyd`): `observability::diagnostics::Diagnostics`, owned by the unlocked `Kernel` (`Kernel::diagnostics`), so lock, switch and exit drop it. Sources today are durable-job durations (`job_duration`, timed around each execution), backup outcomes (`backup_outcome`, success or a fixed failure category), and **successful** restores (`restore_outcome`, recorded as the restored vault's first record; a failed restore has no session to record in). The other §7 metrics are wired by their per-area structured-logging beads. |
-| Diagnostic bundle export | **Ships** (`lyd`): Settings → Diagnostics → Preview → Save. IPC: `diagnostics_preview` and `diagnostics_discard` (general set), and `diagnostics_save` (destructive set: `main` only). Save writes exactly the previewed bytes to an absolute `.json` path **outside the app-data and active-vault folders**. The parent is resolved with `..` and symlinks followed, and a symlinked target is refused. Save returns a fixed result. The bundle format is `dohflow-diagnostics` v1, parsed by `observability::diagnostics::parse_bundle`. The adversarial round-trip suite is `personal-cfo-ryjx`. |
+| Diagnostic bundle export | **Ships** (`lyd`): Settings → Diagnostics → Preview → Save. IPC: `diagnostics_preview` and `diagnostics_discard` (general set), and `diagnostics_save` (destructive set: `main` only). Save writes exactly the previewed bytes to an absolute `.json` path **outside the app-data and active-vault folders**. The parent is resolved with `..` and symlinks followed, and a symlinked target is refused. Save returns a fixed result. The bundle format is `dohflow-diagnostics` v1, parsed by `observability::diagnostics::parse_bundle`. The adversarial round-trip suite (`personal-cfo-ryjx`) is `apps/desktop/src-tauri/tests/diagnostics_export_roundtrip.rs`, run by CI's desktop `cargo test` job: a seeded synthetic corpus through real vault operations must not reach the preview, the saved file or any other artifact; every key and string must come from §7's closed sets (listed in the suite independently of the Rust enums); retained records match the approved `insta` snapshots; eviction and rejection are counted exactly. |
 | Crash reporting | **None** (`personal-cfo-fps` covers crash-path redaction; ADR 0066-A rules out automatic crash reports) |
 | Network egress for any of the above | **None**. The WebView CSP allows no remote origin (ADR 0010, `csp-egress`), and no Rust-side telemetry client exists. |
 | WebView console | Not persisted or collected anywhere. But it sits **outside** the redactor: frontend `console.*` calls (failed IPC calls, a refused external link) must follow §1 at the call site. Logging a user-entered value or a financial field there is a policy violation. |
@@ -385,8 +386,10 @@ In the same PR as the change:
   record is an ADR change first. Anything leaving the device follows §8, and ADR
   0066-A requires explicit approval **before** collection for any new egress or
   service log field.
-- **A new capture metric or field** changes §7's table and is reviewed first.
-  Changing §6's limits updates this doc and `lyd`'s tests together.
+- **A new capture metric or field** changes §7's table and is reviewed first,
+  and extends the allowlist in `diagnostics_export_roundtrip.rs` in the same PR
+  (that suite fails on anything outside it). Changing §6's limits updates this
+  doc and `lyd`'s tests together.
 - **A new sensitive class or secret format** extends both corpora (§4) and the
   pattern table (§2.2).
 - **This document** is updated. Security-sensitive changes follow the full review
