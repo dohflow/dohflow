@@ -115,6 +115,19 @@ any batch is auditable and re-derivable. The transaction-level matcher is the sa
 that powers progressive reconciliation (ADR 0027): imported transactions explain — and
 shrink — the additive-balance "plug" (`dyy4`).
 
+**Addendum (2026-10-03, `personal-cfo-xu3`): the file layer writes no row.** An exact
+re-upload is caught *before* any batch exists. The importer entry point compares the
+whole-file fingerprint with batches that are `committed` or `partially_committed` and
+still have a non-voided committed row. On a match it returns `already_imported` without
+parsing and without creating a `source_batches` row. Every `dedupe_decisions` row belongs
+to a batch, so there is nothing for a file-layer row to belong to. Creating an empty batch
+only to record a non-event would add one per accidental re-upload. The audit record of a
+file-layer skip is therefore the **original batch**, which carries the `file_fingerprint`
+and its `created_at`. The user is told through the "already imported" notice. No
+`layer = 'file'` decision row is written. The `file` token stays valid in the schema for a
+future source that dedupes inside an existing batch. The transaction layer is unchanged:
+every transaction-level outcome (`committed`, `flagged`, `skipped`) is recorded.
+
 ### 6. Commit goes through the kernel, idempotently
 
 Promoting staged rows to the ledger is a **kernel command** (ADR 0006) and is
