@@ -36,6 +36,7 @@ import { ipcQuery, queryKeys } from "@/lib/query";
 import { describeIpcError } from "@/vault/useVault";
 
 import { ConnectProviderFlow } from "./connections/ConnectProviderFlow";
+import { CurrencyRefusal } from "./connections/CurrencyRefusal";
 import { useConnectorAdapters } from "./connections/useConnectorAdapters";
 import { syncOutcomeCopy, syncOutcomeTone } from "./connectorSync";
 import { NewMappedAccountDialog } from "./NewMappedAccountDialog";
@@ -53,8 +54,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /// happening.
 const STALE_AFTER_DAYS = 3;
 
+/// A mapped link whose currency is KNOWN to differ from the base currency:
+/// its transactions are held on refresh (personal-cfo-049p6).
+function isHeld(link: ConnectorAccountLinkDto): boolean {
+  return (
+    link.account_id !== null &&
+    (link.currency ?? null) !== null &&
+    (link.currency_refusal ?? null) !== null
+  );
+}
+
 function HealthBadge({ connection }: { connection: ConnectorConnectionDto }) {
-  if (connection.last_error) {
+  if (connection.last_error || connection.links.some(isHeld)) {
     return <Badge variant="warning">Needs attention</Badge>;
   }
   const stamp = formatDateTime(connection.last_synced_at);
@@ -86,23 +97,54 @@ function AccountLinkRow({
   link: ConnectorAccountLinkDto;
   accounts: { id: string; name: string }[];
   onMap: (externalId: string, accountId: string | null) => void;
-  onCreateNew: (externalId: string, externalName: string) => void;
+  onCreateNew: (
+    externalId: string,
+    externalName: string,
+    currencyRefusal: string | null,
+  ) => void;
 }) {
   // Namespaced by connection: external ids are only connection-scoped.
   const selectId = `map-${connectionId}-${link.external_id}`;
+  const refusalId = `${selectId}-currency`;
+  const refusal = link.currency_refusal ?? null;
+  const currency = link.currency ?? null;
+  const mapped = link.account_id !== null;
+  // The currency guard (personal-cfo-049p6): an unmapped account it refuses
+  // can't be mapped; a mapped one it refuses can only be unmapped. Unknown
+  // and known-foreign read differently — unknown is never shown as the base
+  // currency.
+  const held = isHeld(link);
+  const unconfirmed = mapped && currency === null;
+  const blocked = !mapped && refusal !== null;
+  const mappedAccount = accounts.find((account) => account.id === link.account_id);
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
         <p className="truncate text-sm">
           {link.external_name ?? link.external_id}
+          {currency ? (
+            <span className="text-muted-foreground"> · {currency}</span>
+          ) : null}
         </p>
-        <p className="text-xs text-muted-foreground">
-          {link.account_id
-            ? link.last_synced_on
-              ? `Refreshed through ${formatIsoDate(link.last_synced_on)}`
-              : "Mapped — next refresh fetches full history"
-            : "Not mapped — transactions from this account are not imported"}
-        </p>
+        {held ? (
+          <>
+            <p className="text-xs text-warning">
+              Held — this account&rsquo;s transactions are not imported.
+            </p>
+            <CurrencyRefusal id={refusalId} message={refusal ?? ""} />
+          </>
+        ) : blocked ? (
+          <CurrencyRefusal id={refusalId} message={refusal ?? ""} />
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {mapped
+              ? link.last_synced_on
+                ? `Refreshed through ${formatIsoDate(link.last_synced_on)}`
+                : "Mapped — next refresh fetches full history"
+              : "Not mapped — transactions from this account are not imported"}
+            {unconfirmed ? " · Currency not confirmed yet — the next refresh records it" : ""}
+          </p>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <Label htmlFor={selectId} className="sr-only">
@@ -112,24 +154,39 @@ function AccountLinkRow({
           id={selectId}
           size="sm"
           value={link.account_id ?? ""}
+          disabled={blocked}
+          aria-describedby={refusal !== null ? refusalId : undefined}
           onChange={(event) => {
             const value = event.target.value;
             if (value === CREATE_NEW) {
               // The select is controlled by the stored mapping, so it snaps
               // back on re-render; the dialog maps on success.
-              onCreateNew(link.external_id, link.external_name ?? link.external_id);
+              onCreateNew(
+                link.external_id,
+                link.external_name ?? link.external_id,
+                refusal,
+              );
               return;
             }
             onMap(link.external_id, value || null);
           }}
         >
           <option value="">Not mapped</option>
-          {accounts.map((account) => (
-            <option key={account.id} value={account.id}>
-              {account.name}
-            </option>
-          ))}
-          <option value={CREATE_NEW}>Create new account…</option>
+          {refusal !== null ? (
+            // Refused: only the current mapping (to unmap from), no new ones.
+            mappedAccount ? (
+              <option value={mappedAccount.id}>{mappedAccount.name}</option>
+            ) : null
+          ) : (
+            <>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}
+                </option>
+              ))}
+              <option value={CREATE_NEW}>Create new account…</option>
+            </>
+          )}
         </NativeSelect>
       </div>
     </div>
@@ -156,7 +213,11 @@ function ConnectionRow({
   accounts: { id: string; name: string }[];
   accountsPending: boolean;
   onMap: (externalId: string, accountId: string | null) => void;
-  onCreateNew: (externalId: string, externalName: string) => void;
+  onCreateNew: (
+    externalId: string,
+    externalName: string,
+    currencyRefusal: string | null,
+  ) => void;
   onSync: () => void;
   syncPending: boolean;
   onForget: () => void;
@@ -187,6 +248,12 @@ function ConnectionRow({
       {connection.last_error ? (
         <p role="alert" className="mt-2 text-sm text-loss">
           Last refresh failed: {connection.last_error}
+        </p>
+      ) : null}
+      {connection.links.some(isHeld) ? (
+        <p role="status" className="mt-2 text-sm text-warning">
+          An account on this connection is in a currency other than your base
+          currency. Its transactions are held and not imported.
         </p>
       ) : null}
       <div className="mt-3 flex flex-col gap-2">
@@ -280,6 +347,7 @@ export function ConnectionsCard({
     connectionId: string;
     externalId: string;
     externalName: string;
+    currencyRefusal: string | null;
   } | null>(null);
 
   const [linking, setLinking] = useState(startLinking);
@@ -392,8 +460,13 @@ export function ConnectionsCard({
               onMap={(externalId, accountId) =>
                 void runMap(connection.id, externalId, accountId)
               }
-              onCreateNew={(externalId, externalName) =>
-                setCreatingFor({ connectionId: connection.id, externalId, externalName })
+              onCreateNew={(externalId, externalName, currencyRefusal) =>
+                setCreatingFor({
+                  connectionId: connection.id,
+                  externalId,
+                  externalName,
+                  currencyRefusal,
+                })
               }
               onSync={() => void runSync(connection.id)}
               syncPending={syncingId === connection.id}
@@ -435,6 +508,7 @@ export function ConnectionsCard({
           key={`${creatingFor.connectionId}:${creatingFor.externalId}`}
           externalName={creatingFor.externalName}
           currency={baseCurrency}
+          currencyRefusal={creatingFor.currencyRefusal}
           onCreated={(id) =>
             void runMap(creatingFor.connectionId, creatingFor.externalId, id)
           }

@@ -4749,6 +4749,9 @@ use connector_core::{
     Credential as ProviderCredential, CredentialTier as ProviderCredentialTier,
     LinkInput as ProviderLinkInput, LinkSession, Payer as ProviderPayer,
 };
+use finance_kernel::connector_currency_guard::{
+    connector_currency_guard, ConnectorCurrencyRefusal,
+};
 use tauri::Manager as _;
 
 use crate::ipc::dto::{
@@ -4916,6 +4919,7 @@ fn connector_link_inner(
                         connection_id,
                         external_id,
                         acct.external_name.as_deref(),
+                        acct.currency.as_deref(),
                     )?;
                     accounts.push(ConnectorExternalAccountDto {
                         external_id: external_id.to_owned(),
@@ -5104,16 +5108,24 @@ pub fn connector_connections_impl(
     state: &AppState,
 ) -> Result<Vec<ConnectorConnectionDto>, IpcError> {
     with_kernel(state, |kernel| {
+        let base_currency = kernel.base_currency_code()?;
         let mut out = Vec::new();
         for row in kernel.connector_connections()? {
             let links = kernel
                 .connector_links(row.id)?
                 .into_iter()
                 .map(|l| ConnectorAccountLinkDto {
+                    currency_refusal: connector_currency_guard(
+                        l.currency.as_deref(),
+                        &base_currency,
+                    )
+                    .err()
+                    .map(|refusal| refusal.to_string()),
                     external_id: l.external_id,
                     external_name: l.external_name,
                     account_id: l.account_id.map(|a| a.to_string()),
                     last_synced_on: l.last_synced_on,
+                    currency: l.currency,
                 })
                 .collect();
             out.push(ConnectorConnectionDto {
@@ -5327,6 +5339,7 @@ fn connector_sync_inner(
                                 connection_id,
                                 external_id,
                                 acct.external_name.as_deref(),
+                                acct.currency.as_deref(),
                             )?;
                             count += 1;
                         }
@@ -5409,7 +5422,34 @@ fn connector_sync_inner(
                             connection_id,
                             external_id,
                             acct.external_name.as_deref(),
+                            acct.currency.as_deref(),
                         )?;
+                    }
+                }
+                // The currency guard (personal-cfo-049p6; ADR 0076 decision
+                // 7): a mapped link now KNOWN to be in another currency —
+                // backfilled just above, for links saved before currencies
+                // were recorded — is held for this refresh: left out of the
+                // map, so its rows are counted but not committed, nothing is
+                // deleted or remapped, and its watermark stays put so the
+                // same window is fetched again. A still-unknown legacy
+                // mapping keeps refreshing (owner decision 2026-09-28); the
+                // commit path's own currency check still stands behind it.
+                let base_currency = kernel.base_currency_code()?;
+                let mut effective_map = account_map.clone();
+                let mut held_foreign: Vec<String> = Vec::new();
+                for link in kernel.connector_links(connection_id)? {
+                    if !effective_map.contains_key(&link.external_id) {
+                        continue;
+                    }
+                    if let Err(refusal @ ConnectorCurrencyRefusal::Foreign { .. }) =
+                        connector_currency_guard(link.currency.as_deref(), &base_currency)
+                    {
+                        effective_map.remove(&link.external_id);
+                        held_foreign.push(format!(
+                            "{}: {refusal} Its transactions were held and not imported.",
+                            link.external_name.as_deref().unwrap_or(&link.external_id)
+                        ));
                     }
                 }
                 let source_name = format!("{} sync", adapter.display_name());
@@ -5418,7 +5458,7 @@ fn connector_sync_inner(
                     &synced.adapter_version,
                     &source_name,
                     &synced.batch,
-                    &account_map,
+                    &effective_map,
                     &user_meta(&input.idempotency_key),
                 )?;
                 // Watermarks advance ONLY for links that (a) were mapped when
@@ -5429,7 +5469,7 @@ fn connector_sync_inner(
                 // retry-held (structured SyncBatch scopes, ADR 0060 §5).
                 if !synced.hold_all_watermarks {
                     let held = held_link_ids(&synced.held_account_ids, &links);
-                    let advance: Vec<String> = account_map
+                    let advance: Vec<String> = effective_map
                         .keys()
                         .filter(|key| response_keys.contains(*key))
                         .filter(|key| !held.contains(*key))
@@ -5441,10 +5481,10 @@ fn connector_sync_inner(
                     }
                 }
                 kernel.record_connector_sync(connection_id, None)?;
-                Ok(result)
+                Ok((result, held_foreign))
             });
-            let result = match ingested {
-                Ok(result) => result,
+            let (result, held_foreign) = match ingested {
+                Ok(outcome) => outcome,
                 Err(err) => {
                     // Ingest failures (e.g. a poisoned mapping) must reach the
                     // health surface, not vanish into a tracing::warn loop.
@@ -5456,11 +5496,9 @@ fn connector_sync_inner(
                     return Err(err);
                 }
             };
-            let warnings: Vec<String> = synced
-                .batch
-                .warnings
-                .iter()
-                .map(|w| w.message.clone())
+            let warnings: Vec<String> = held_foreign
+                .into_iter()
+                .chain(synced.batch.warnings.iter().map(|w| w.message.clone()))
                 .collect();
             let status = if result.batch.status == "committed" {
                 "synced".to_owned()
@@ -5622,6 +5660,7 @@ mod connector_tests {
             external_name: None,
             account_id: Some(Uuid::nil()),
             last_synced_on: None,
+            currency: Some("USD".to_owned()),
         }
     }
 

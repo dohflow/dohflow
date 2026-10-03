@@ -83,6 +83,7 @@ pub use vault::{classify_vault, VaultController, VaultHealth, VaultState};
 
 pub mod backup;
 mod backup_jobs;
+pub mod connector_currency_guard;
 pub use backup_jobs::{BackupCadence, BackupScheduleSettings, BACKUP_JOB_ID, BACKUP_JOB_KIND};
 
 mod sealed {
@@ -3081,22 +3082,60 @@ impl Kernel {
         connection_id: uuid::Uuid,
         external_id: &str,
         external_name: Option<&str>,
+        currency: Option<&str>,
     ) -> Result<(), KernelError> {
+        Ok(self.worker.upsert_connector_link(
+            connection_id,
+            external_id,
+            external_name,
+            currency,
+        )?)
+    }
+
+    /// The household's base (reporting) currency, as the app shows it: the
+    /// stored setting, or USD when none is stored (matching the IPC
+    /// `base_currency` read).
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a persistence failure.
+    pub fn base_currency_code(&self) -> Result<String, KernelError> {
         Ok(self
-            .worker
-            .upsert_connector_link(connection_id, external_id, external_name)?)
+            .get_setting(REPORTING_CURRENCY_KEY)?
+            .unwrap_or_else(|| "USD".to_owned()))
     }
 
     /// Map (or unmap) an external account onto a real account.
     ///
     /// # Errors
     /// Returns [`KernelError`] on a persistence failure.
+    ///
+    /// Mapping (`Some`) passes through [`connector_currency_guard`] first: an
+    /// account whose currency is unknown or differs from the base currency is
+    /// refused with [`KernelError::Validation`] carrying the guard's message
+    /// (personal-cfo-049p6). Unmapping (`None`) is always allowed.
+    ///
+    /// [`connector_currency_guard`]: connector_currency_guard::connector_currency_guard
     pub fn set_connector_link_account(
         &self,
         connection_id: uuid::Uuid,
         external_id: &str,
         account_id: Option<uuid::Uuid>,
     ) -> Result<(), KernelError> {
+        if account_id.is_some() {
+            let Some(link_currency) = self
+                .worker
+                .connector_link_currency(connection_id, external_id)?
+            else {
+                return Err(KernelError::Validation(
+                    "unknown connector account link".to_owned(),
+                ));
+            };
+            connector_currency_guard::connector_currency_guard(
+                link_currency.as_deref(),
+                &self.base_currency_code()?,
+            )
+            .map_err(|refusal| KernelError::Validation(refusal.to_string()))?;
+        }
         Ok(self
             .worker
             .set_connector_link_account(connection_id, external_id, account_id)?)

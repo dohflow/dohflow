@@ -16,6 +16,8 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { mintIdempotencyKey } from "@/lib/idempotency";
 import { describeIpcError } from "@/vault/useVault";
 
+import { CurrencyRefusal } from "./connections/CurrencyRefusal";
+
 const ROLE_OPTIONS: { value: CashflowRoleDto; label: string }[] = [
   { value: "LiquidCash", label: "Cash / bank" },
   { value: "CreditFacility", label: "Credit card" },
@@ -27,12 +29,17 @@ const ROLE_OPTIONS: { value: CashflowRoleDto; label: string }[] = [
 export function NewMappedAccountDialog({
   externalName,
   currency,
+  currencyRefusal = null,
   onCreated,
   onClose,
 }: {
   /// The provider's name for the account — the natural default name.
   externalName: string;
   currency: string;
+  /// The currency guard's refusal for this provider account, when it can't
+  /// be mapped (personal-cfo-049p6). Creating is disabled: an account made
+  /// here could never be mapped, so none is created.
+  currencyRefusal?: string | null;
   onCreated: (id: string) => void;
   onClose: () => void;
 }) {
@@ -56,6 +63,7 @@ export function NewMappedAccountDialog({
   const subtypes = subtypesForRoleToken(ROLE_DTO_TO_TOKEN[role] ?? "");
 
   async function create() {
+    if (currencyRefusal) return;
     if (name.trim() === "") {
       setError("Enter a name for the account.");
       return;
@@ -156,6 +164,11 @@ export function NewMappedAccountDialog({
           </div>
         ) : null}
 
+        {currencyRefusal ? (
+          <div role="alert">
+            <CurrencyRefusal message={currencyRefusal} className="text-sm text-warning" />
+          </div>
+        ) : null}
         {error ? (
           <p role="alert" className="text-sm text-loss">
             {error}
@@ -166,7 +179,11 @@ export function NewMappedAccountDialog({
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button size="sm" onClick={() => void create()} disabled={busy}>
+          <Button
+            size="sm"
+            onClick={() => void create()}
+            disabled={busy || currencyRefusal !== null}
+          >
             {busy ? <Loader2 className="animate-spin" aria-hidden /> : null}
             Create and map
           </Button>

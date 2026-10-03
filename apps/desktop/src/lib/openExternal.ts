@@ -17,6 +17,9 @@ export const DOHFLOW_LINKS = {
   security: `${DOHFLOW_ORIGIN}security`,
   license: `${DOHFLOW_ORIGIN}license`,
   sponsor: `${DOHFLOW_ORIGIN}sponsor`,
+  // Where the connected-account currency limitation is stated (personal-cfo-
+  // 049p6; the "Bank connections" section carries it).
+  currencyLimitation: `${DOHFLOW_ORIGIN}help/known-limitations#bank-connections`,
 } as const;
 
 /// Whether `url` may leave the app. A plain prefix check on purpose: no URL

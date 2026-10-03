@@ -1758,6 +1758,21 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: true,
     },
+    // Provider account currency on each connector link (personal-cfo-049p6,
+    // ADR 0076 decision 7). Nullable: links saved before this migration stay
+    // NULL until their next refresh records the provider's currency — NULL
+    // means "not known", never "the base currency". The CHECK admits only an
+    // uppercase ISO 4217-shaped code. Additive, so no rebuild and no
+    // read-model impact.
+    Migration {
+        version: 54,
+        name: "connector_link_currency",
+        up: "ALTER TABLE connector_account_links ADD COLUMN currency TEXT
+                 CHECK (currency IS NULL OR (length(currency) = 3 AND currency = upper(currency)));",
+        down: Some("ALTER TABLE connector_account_links DROP COLUMN currency;"),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 const fn max_version() -> i64 {
