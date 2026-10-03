@@ -797,6 +797,17 @@ pub(crate) fn flag_staged_duplicate(conn: &Connection, staged_id: Uuid) -> Resul
     Ok(())
 }
 
+/// Flag a staged transaction for review **without** calling it a duplicate:
+/// the row cannot be committed as it stands (personal-cfo-pxi.9), so it waits
+/// in the Money Inbox. `dedupe_status` is left as it was.
+pub(crate) fn flag_staged_for_review(conn: &Connection, staged_id: Uuid) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE staged_transactions SET commit_status = 'flagged' WHERE id = ?1",
+        params![staged_id],
+    )?;
+    Ok(())
+}
+
 /// Mark a staged transaction as skipped — the Money Inbox "skip" resolution
 /// (ADR 0014 §7). No ledger write; the row leaves `flagged`, so the next inbox
 /// rebuild drops it.

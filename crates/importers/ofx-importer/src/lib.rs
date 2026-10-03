@@ -261,6 +261,13 @@ impl ImporterPlugin for OfxImporter {
                 skipped.push(warn(idx, "unparseable amount"));
                 continue;
             };
+            // A 0.00 TRNAMT moves no money and the ledger refuses it; skip it with
+            // a reason rather than stage a block that can never commit
+            // (personal-cfo-pxi.9).
+            if amount_minor == 0 {
+                skipped.push(warn(idx, "zero amount"));
+                continue;
+            }
 
             let trntype = value("trntype");
             let fitid = value("fitid");
@@ -636,6 +643,20 @@ NEWFILEUID:NONE
         assert_eq!(batch.skipped[0].row, Some(1));
         assert_eq!(batch.skipped[0].message, "unparseable date");
         assert!(!format!("{:?}", batch.skipped).contains("bogus"));
+    }
+
+    #[test]
+    fn a_zero_amount_block_is_skipped_with_a_reason() {
+        // personal-cfo-pxi.9: the second block's TRNAMT becomes 0.00.
+        let mutated = OFX_V1.replace("<TRNAMT>1500.00", "<TRNAMT>0.00");
+        assert_ne!(mutated, OFX_V1);
+        let batch = OfxImporter
+            .parse(&input(&mutated), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 3, "the other blocks are staged");
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].row, Some(1));
+        assert_eq!(batch.skipped[0].message, "zero amount");
     }
 
     #[test]

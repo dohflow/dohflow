@@ -376,6 +376,12 @@ impl ImporterPlugin for GenericCsv {
                 skipped.push(warn(idx, "unparseable / missing amount"));
                 continue;
             };
+            // A 0.00 row moves no money and the ledger refuses it; skip it with a
+            // reason rather than stage a row that can never commit (personal-cfo-pxi.9).
+            if amount_minor == 0 {
+                skipped.push(warn(idx, "zero amount"));
+                continue;
+            }
 
             // The secondary transaction/authorization date (ADR 0045) — parsed leniently:
             // a bad value is simply dropped (it never blocks the row or warns). Dropped
@@ -749,6 +755,26 @@ mod tests {
         for value in ["SENTINEL", "EUR", "Payee", "2026-06"] {
             assert!(!reported.contains(value), "{value} leaked: {reported}");
         }
+    }
+
+    #[test]
+    fn a_zero_amount_row_is_skipped_with_a_reason() {
+        // personal-cfo-pxi.9: 0.00 in the amount column, and in a debit/credit pair.
+        let csv = "Date,Description,Amount\n2026-06-20,Fee waived,0.00\n2026-06-21,Coffee,-3.50\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 1, "only the non-zero row is staged");
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].row, Some(0));
+        assert_eq!(batch.skipped[0].message, "zero amount");
+
+        let csv = "Date,Description,Amount\n2026-06-20,Adjustment,-0.00\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert!(batch.records.is_empty());
+        assert_eq!(batch.skipped[0].message, "zero amount");
     }
 
     #[test]

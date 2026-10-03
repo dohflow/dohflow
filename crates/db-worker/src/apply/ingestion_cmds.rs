@@ -113,6 +113,94 @@ fn cross_source_reason(
     )
 }
 
+/// Why a staged row cannot become a ledger transaction (personal-cfo-pxi.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowProblem {
+    NoAccount,
+    UnknownAccount,
+    CurrencyMismatch,
+    ZeroAmount,
+    UnreadableDate,
+}
+
+impl RowProblem {
+    /// The Money Inbox reason: fixed text, never the row's own values.
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::NoAccount => "not imported: no account was matched for this row",
+            Self::UnknownAccount => "not imported: the matched account no longer exists",
+            Self::CurrencyMismatch => {
+                "not imported: its currency differs from the account's currency"
+            }
+            Self::ZeroAmount => "not imported: the amount is zero",
+            Self::UnreadableDate => "not imported: its date could not be read",
+        }
+    }
+
+    /// The error an explicit commit (import anyway) returns for this row.
+    fn error(self) -> DbError {
+        DbError::InvalidCommand(
+            match self {
+                Self::NoAccount => "staged transaction has no matched account to commit to",
+                Self::UnknownAccount => "staged transaction references an unknown account",
+                Self::CurrencyMismatch => "staged transaction currency does not match its account",
+                Self::ZeroAmount => "staged transaction amount must be non-zero",
+                Self::UnreadableDate => "staged transaction has an unparseable posted_at",
+            }
+            .to_owned(),
+        )
+    }
+}
+
+/// Where and how a valid staged row posts.
+struct CommitTarget {
+    ledger_uuid: Uuid,
+    amount: Money,
+    occurred_at: DateTime<Utc>,
+}
+
+/// Resolve the staged row's account, amount and date, or say which check it
+/// fails. The outer `Result` is a storage error, which always propagates.
+fn commit_target(
+    tx: &Connection,
+    staged: &ingestion::StagedTransaction,
+) -> Result<Result<CommitTarget, RowProblem>, DbError> {
+    let Some(account_id) = staged.proposed_account_id else {
+        return Ok(Err(RowProblem::NoAccount));
+    };
+    let row: Option<(Uuid, String)> = tx
+        .query_row(
+            "SELECT ledger_account_id, currency FROM accounts WHERE id = ?1",
+            [account_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((ledger_uuid, currency_code)) = row else {
+        return Ok(Err(RowProblem::UnknownAccount));
+    };
+    if staged.currency != currency_code {
+        return Ok(Err(RowProblem::CurrencyMismatch));
+    }
+    let amount = Money::new(staged.amount_minor, currency_from_code(&currency_code)?);
+    if amount.is_zero() {
+        return Ok(Err(RowProblem::ZeroAmount));
+    }
+    let occurred_at = DateTime::parse_from_rfc3339(&staged.posted_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDate::parse_from_str(&staged.posted_at, "%Y-%m-%d")
+                .map(|d| d.and_hms_opt(12, 0, 0).expect("noon is valid").and_utc())
+        });
+    let Ok(occurred_at) = occurred_at else {
+        return Ok(Err(RowProblem::UnreadableDate));
+    };
+    Ok(Ok(CommitTarget {
+        ledger_uuid,
+        amount,
+        occurred_at,
+    }))
+}
+
 pub(crate) fn apply_commit_staged(
     tx: &Connection,
     meta: &CommandMeta,
@@ -184,47 +272,37 @@ pub(crate) fn apply_commit_staged(
             ingestion::flag_staged_duplicate(tx, staged.id)?;
             staged.id
         } else {
-            // Resolve the matched account + its ledger account / currency.
-            let account_id = staged.proposed_account_id.ok_or_else(|| {
-                DbError::InvalidCommand(
-                    "staged transaction has no matched account to commit to".to_owned(),
-                )
-            })?;
-            let row: Option<(Uuid, String)> = tx
-                .query_row(
-                    "SELECT ledger_account_id, currency FROM accounts WHERE id = ?1",
-                    [account_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            let Some((ledger_uuid, currency_code)) = row else {
-                return Err(DbError::InvalidCommand(
-                    "staged transaction references an unknown account".to_owned(),
-                ));
+            let target = match commit_target(tx, &staged)? {
+                Ok(target) => target,
+                // A row the ledger cannot accept never aborts its batch: on the
+                // pipeline path it is FLAGGED for the Money Inbox with a fixed
+                // reason and no ledger write, and the batch moves on (ADR 0014
+                // §2, personal-cfo-pxi.9). An explicit commit (import anyway)
+                // still refuses it, and the whole command rolls back.
+                Err(problem) if !*force => {
+                    ingestion::record_dedupe_decision(
+                        tx,
+                        &ingestion::NewDedupeDecision {
+                            source_batch_id: batch_id,
+                            layer: "transaction",
+                            staged_transaction_id: Some(staged.id),
+                            matched_entity_type: None,
+                            matched_entity_id: None,
+                            decision: "flagged",
+                            reason: problem.reason(),
+                        },
+                    )?;
+                    ingestion::flag_staged_for_review(tx, staged.id)?;
+                    money_inbox::rebuild_in(tx)?;
+                    return Ok(staged.id);
+                }
+                Err(problem) => return Err(problem.error()),
             };
-            if staged.currency != currency_code {
-                return Err(DbError::InvalidCommand(
-                    "staged transaction currency does not match its account".to_owned(),
-                ));
-            }
-            let amount = Money::new(staged.amount_minor, currency_from_code(&currency_code)?);
-            if amount.is_zero() {
-                return Err(DbError::InvalidCommand(
-                    "staged transaction amount must be non-zero".to_owned(),
-                ));
-            }
-            let occurred_at = DateTime::parse_from_rfc3339(&staged.posted_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .or_else(|_| {
-                    NaiveDate::parse_from_str(&staged.posted_at, "%Y-%m-%d")
-                        .map(|d| d.and_hms_opt(12, 0, 0).expect("noon is valid").and_utc())
-                })
-                .map_err(|e| {
-                    DbError::InvalidCommand(format!(
-                        "staged transaction has an unparseable posted_at {:?}: {e}",
-                        staged.posted_at
-                    ))
-                })?;
+            let CommitTarget {
+                ledger_uuid,
+                amount,
+                occurred_at,
+            } = target;
 
             // Balance the signed amount against the sign-routed system
             // counter-account (mirrors RecordTransaction).
