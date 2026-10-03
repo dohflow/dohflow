@@ -1888,6 +1888,61 @@ fn import_batch_imports_a_csv_through_the_pipeline() {
     assert_eq!(balance.minor_units, -5499);
 }
 
+/// personal-cfo-pxi.10: a row the parser cannot use is reported, not silently
+/// absent — the result carries the skipped count and the reason, with the
+/// row's position and none of its values. A clean file reports nothing extra.
+#[test]
+fn import_batch_reports_a_skipped_row_with_its_reason() {
+    use app_lib::ipc::dto::ImportWarningDto;
+
+    let (_dir, state) = open_state();
+    let account_id = create_account_impl(&state, create_input("Checking"))
+        .unwrap()
+        .account_id;
+    let import = |csv: &str| {
+        import_batch_impl(
+            &state,
+            ImportBatchInput {
+                data: csv.as_bytes().to_vec(),
+                filename: Some("statement.csv".to_owned()),
+                target_account_id: account_id.clone(),
+                plugin_id: None,
+                preset_id: None,
+                column_mapping: None,
+                default_currency: Some("USD".to_owned()),
+                date_format: None,
+                idempotency_key: String::new(),
+            },
+        )
+        .unwrap()
+    };
+
+    let result = import(
+        "Date,Description,Amount\n\
+         2026-06-20,Coffee,-12.99\n\
+         2026-06-21,SENTINEL-PAYEE,not-a-number\n\
+         2026-06-22,Lunch,-42.00\n",
+    );
+    assert_eq!(result.status, "committed");
+    assert_eq!(result.committed, 2);
+    assert_eq!(result.skipped_rows, 1);
+    assert_eq!(
+        result.warnings,
+        vec![ImportWarningDto {
+            row: Some(2),
+            message: "unparseable / missing amount".to_owned(),
+            skipped: true,
+        }]
+    );
+    let wire = serde_json::to_string(&result).unwrap();
+    for value in ["SENTINEL", "not-a-number", "2026-06-21"] {
+        assert!(!wire.contains(value), "{value} reached the summary: {wire}");
+    }
+
+    let clean = import("Date,Description,Amount\n2026-07-01,Rent,-900.00\n");
+    assert_eq!((clean.skipped_rows, clean.warnings.len()), (0, 0));
+}
+
 /// dsq: importing a CSV with an overlapping (duplicate) row flags it, and the
 /// flagged row surfaces as a Money Inbox item through the IPC — the end-to-end
 /// import → triage path the user sees.

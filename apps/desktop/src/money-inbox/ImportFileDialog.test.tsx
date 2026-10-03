@@ -93,6 +93,8 @@ it("imports a chosen file into the selected account and shows the outcome", asyn
       committed: 2,
       flagged: 1,
       auto_categorized: 0,
+      skipped_rows: 0,
+      warnings: [],
     }),
   );
 
@@ -135,6 +137,8 @@ it("surfaces how many rows were auto-categorized on import (5n4.2)", async () =>
       committed: 4,
       flagged: 0,
       auto_categorized: 3,
+      skipped_rows: 0,
+      warnings: [],
     }),
   );
 
@@ -153,6 +157,110 @@ it("surfaces how many rows were auto-categorized on import (5n4.2)", async () =>
   ).toBeInTheDocument();
 });
 
+/// Pick the CSV fixture and press Import (personal-cfo-pxi.10 helpers).
+async function importWith(result: unknown) {
+  mocks.importBatch.mockResolvedValue(ok(result));
+  const { container } = renderWithClient(
+    <ImportFileDialog accounts={[account()]} onClose={vi.fn()} />,
+  );
+  const input = container.querySelector(
+    'input[type="file"]',
+  ) as HTMLInputElement;
+  Object.defineProperty(input, "files", { value: [csvFile()] });
+  fireEvent.change(input);
+  fireEvent.click(screen.getByRole("button", { name: /^import$/i }));
+  await screen.findByText(/Imported \d+ transaction/i);
+}
+
+it("shows no skipped-rows note when every row was imported (pxi.10)", async () => {
+  await importWith({
+    source_batch_id: "0190b000-0000-7000-8000-000000000010",
+    status: "committed",
+    staged: 2,
+    committed: 2,
+    flagged: 0,
+    auto_categorized: 0,
+    skipped_rows: 0,
+    // A note on an imported row is not a skip and adds nothing here.
+    warnings: [
+      { row: 1, message: "ambiguous date (assumed US M/D/Y)", skipped: false },
+    ],
+  });
+  expect(
+    screen.getByText("Imported 2 transactions. All clean — nothing to review."),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/skipped/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/ambiguous/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole("list", { name: /skipped rows/i })).not.toBeInTheDocument();
+});
+
+it("says how many rows were skipped and why, by row (pxi.10)", async () => {
+  await importWith({
+    source_batch_id: "0190b000-0000-7000-8000-000000000011",
+    status: "committed",
+    staged: 3,
+    committed: 3,
+    flagged: 0,
+    auto_categorized: 0,
+    skipped_rows: 2,
+    warnings: [
+      { row: 2, message: "unparseable / missing amount", skipped: true },
+      { row: 5, message: "unparseable date", skipped: true },
+      { row: 1, message: "ambiguous date (assumed US M/D/Y)", skipped: false },
+    ],
+  });
+  expect(screen.getByText("Imported 3 transactions.")).toBeInTheDocument();
+  expect(
+    screen.getByText(/2 rows skipped — nothing was imported for them\./),
+  ).toBeInTheDocument();
+  const reasons = screen.getByRole("list", { name: /skipped rows/i });
+  expect(
+    Array.from(reasons.querySelectorAll("li")).map((li) => li.textContent),
+  ).toEqual(["Row 2: unparseable / missing amount", "Row 5: unparseable date"]);
+});
+
+it("counts every skipped row even when the reason list is cut short (pxi.10)", async () => {
+  await importWith({
+    source_batch_id: "0190b000-0000-7000-8000-000000000012",
+    status: "committed",
+    staged: 1,
+    committed: 1,
+    flagged: 0,
+    auto_categorized: 0,
+    skipped_rows: 23,
+    warnings: Array.from({ length: 20 }, (_, i) => ({
+      row: i + 2,
+      message: "unparseable / missing amount",
+      skipped: true,
+    })),
+  });
+  expect(screen.getByText(/23 rows skipped/)).toBeInTheDocument();
+  const items = screen
+    .getByRole("list", { name: /skipped rows/i })
+    .querySelectorAll("li");
+  expect(items).toHaveLength(21);
+  expect(items[20]).toHaveTextContent("…and 3 more");
+});
+
+it("names one skipped row in the singular (pxi.10)", async () => {
+  await importWith({
+    source_batch_id: "0190b000-0000-7000-8000-000000000013",
+    status: "committed",
+    staged: 1,
+    committed: 1,
+    flagged: 0,
+    auto_categorized: 0,
+    skipped_rows: 1,
+    warnings: [{ row: null, message: "unreadable row", skipped: true }],
+  });
+  expect(
+    screen.getByText(/1 row skipped — nothing was imported for it\./),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("list", { name: /skipped rows/i }).querySelector("li"),
+  ).toHaveTextContent(/^unreadable row$/);
+});
+
 it("lets the user remap a column and passes the mapping to import (4d8.24.1.2)", async () => {
   mocks.importPreviewColumns.mockResolvedValue(
     ok(["Txn Date", "Details", "Value"]),
@@ -165,6 +273,8 @@ it("lets the user remap a column and passes the mapping to import (4d8.24.1.2)",
       committed: 1,
       flagged: 0,
       auto_categorized: 0,
+      skipped_rows: 0,
+      warnings: [],
     }),
   );
 
@@ -203,6 +313,8 @@ it("imports with no mapping (auto-detect) when the user overrides nothing", asyn
       committed: 1,
       flagged: 0,
       auto_categorized: 0,
+      skipped_rows: 0,
+      warnings: [],
     }),
   );
 
@@ -232,6 +344,8 @@ it("reports an already-imported file without claiming new rows", async () => {
       committed: 0,
       flagged: 0,
       auto_categorized: 0,
+      skipped_rows: 0,
+      warnings: [],
     }),
   );
 
@@ -283,6 +397,8 @@ it("skips the mapping step when a chosen preset's columns fully match the file",
       committed: 1,
       flagged: 0,
       auto_categorized: 0,
+      skipped_rows: 0,
+      warnings: [],
     }),
   );
 
@@ -360,6 +476,8 @@ it("pre-fills the mapping and leaves a gap visible when a preset's columns parti
       committed: 1,
       flagged: 0,
       auto_categorized: 0,
+      skipped_rows: 0,
+      warnings: [],
     }),
   );
 

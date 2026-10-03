@@ -516,6 +516,7 @@ pub trait ConnectorAdapter: Sync {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }

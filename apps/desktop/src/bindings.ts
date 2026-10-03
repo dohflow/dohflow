@@ -574,6 +574,17 @@ export type BatchResultDto = {
 	 *  addendum, personal-cfo-5n4.2). 0 when the setting is off or nothing matched.
 	 */
 	auto_categorized: number,
+	/**
+	 *  Rows in the file the parser could not use, so nothing was imported for
+	 *  them (personal-cfo-pxi.10). The full count, even when `warnings` is cut short.
+	 */
+	skipped_rows: number,
+	/**
+	 *  What the parser reported, at most 20: skipped rows first, then notes on
+	 *  rows that were imported. Each is a row number and a fixed reason — never
+	 *  the row's own values.
+	 */
+	warnings: ImportWarningDto[],
 };
 
 /**
@@ -1604,6 +1615,19 @@ export type ImportBatchInput = {
 	date_format: string | null,
 	/**  Idempotency key; empty → generated server-side. */
 	idempotency_key: string,
+};
+
+/**  One issue the parser reported for an import (personal-cfo-pxi.10). */
+export type ImportWarningDto = {
+	/**
+	 *  The row's 1-based position among the file's data rows (a CSV header
+	 *  is not counted; for OFX, the transaction's position), when known.
+	 */
+	row: number | null,
+	/**  A fixed reason, for example `"unparseable / missing amount"`. */
+	message: string,
+	/**  `true` when nothing was imported for this row. */
+	skipped: boolean,
 };
 
 /**

@@ -1615,6 +1615,25 @@ pub struct BatchResultDto {
     /// Transactions auto-categorized from merchant memory after the import (ADR 0030
     /// addendum, personal-cfo-5n4.2). 0 when the setting is off or nothing matched.
     pub auto_categorized: u32,
+    /// Rows in the file the parser could not use, so nothing was imported for
+    /// them (personal-cfo-pxi.10). The full count, even when `warnings` is cut short.
+    pub skipped_rows: u32,
+    /// What the parser reported, at most 20: skipped rows first, then notes on
+    /// rows that were imported. Each is a row number and a fixed reason — never
+    /// the row's own values.
+    pub warnings: Vec<ImportWarningDto>,
+}
+
+/// One issue the parser reported for an import (personal-cfo-pxi.10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ImportWarningDto {
+    /// The row's 1-based position among the file's data rows (a CSV header
+    /// is not counted; for OFX, the transaction's position), when known.
+    pub row: Option<u32>,
+    /// A fixed reason, for example `"unparseable / missing amount"`.
+    pub message: String,
+    /// `true` when nothing was imported for this row.
+    pub skipped: bool,
 }
 
 impl From<BatchResult> for BatchResultDto {
@@ -1626,6 +1645,19 @@ impl From<BatchResult> for BatchResultDto {
             committed: result.committed,
             flagged: result.flagged,
             auto_categorized: result.auto_categorized,
+            skipped_rows: result.skipped_rows,
+            warnings: result
+                .warnings
+                .into_iter()
+                .map(|w| ImportWarningDto {
+                    row: w
+                        .row
+                        .and_then(|r| u32::try_from(r).ok())
+                        .and_then(|r| r.checked_add(1)),
+                    message: w.message,
+                    skipped: w.skipped,
+                })
+                .collect(),
         }
     }
 }

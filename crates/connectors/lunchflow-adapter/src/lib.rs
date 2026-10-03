@@ -1082,6 +1082,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }

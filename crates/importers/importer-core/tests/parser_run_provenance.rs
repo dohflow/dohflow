@@ -37,6 +37,7 @@ impl ImporterPlugin for DummyCsv {
             accounts: vec![],
             records: vec![],
             warnings: vec![],
+            skipped: Vec::new(),
         })
     }
 }

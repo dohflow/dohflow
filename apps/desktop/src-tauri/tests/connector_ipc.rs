@@ -502,6 +502,7 @@ fn a_1k_record_sync_batch_stages_and_commits_every_row() {
         accounts: vec![],
         records,
         warnings: vec![],
+        skipped: Vec::new(),
     };
     let map = BTreeMap::from([("EXT-BULK".to_owned(), account_uuid)]);
 
