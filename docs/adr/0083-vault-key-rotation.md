@@ -90,25 +90,40 @@ The live vault is never converted in place. Rotation runs in the existing
 - Inside that copy, in one transaction, for every attachment row:
   - re-wrap the content key under the new DEK;
   - recompute the storage ID under the new addressing subkey (§3).
+- **Finalize the copy as one closed file.** All of the copy's writes must be in
+  `vault.db.rekey-new` itself, never stranded in side files that a later rename
+  would leave behind. Before anything hashes or renames it:
+  - every write to the copy uses rollback-journal mode (`journal_mode = DELETE`),
+    or is checkpointed with `PRAGMA wal_checkpoint(TRUNCATE)` before closing;
+  - every connection to the copy is closed;
+  - no `-wal`, `-shm` or `-journal` file exists beside it (asserted).
+
+  The normal vault open re-enables WAL once the file is in place, as it does
+  for every vault.
+- Write a journal file `vault.db.rekey` in state `preparing`, **before any blob
+  link exists**. It lists:
+  - every new blob name that prepare is about to create;
+  - every old blob name.
+
+  Blob names are opaque HMACs that are already visible in a directory listing,
+  so recording them reveals nothing new. Because the journal lists them first,
+  recovery can always find every link prepare created.
 - Create each re-addressed blob file under its new name. The blob ciphertext
   does not change, because the content keys do not change, so a hard link to
   the existing file is enough. Fall back to a copy where hard links are
   unavailable.
 - Write the new envelope to `vault.db.envelope.rekey-new`.
 - Verify before committing:
-  - open the copy with the new DEK;
+  - open the copy read-only with the new DEK, without changing its journal mode;
   - `PRAGMA integrity_check` returns `ok`;
   - the schema and version markers match the original;
   - every attachment row unwraps under the new DEK and names a present file.
 
-  Then `fsync` the new files and the vault directory.
-- Write a journal file `vault.db.rekey` recording:
-  - the state `prepared`;
-  - the hashes of the new database and the new envelope;
-  - the old and new blob names.
-
-  Blob names are opaque HMACs that are already visible in a directory listing,
-  so recording them reveals nothing new.
+  Close it again and re-assert that there are no side files. Then `fsync` the
+  new files and the vault directory.
+- Advance the journal to state `prepared`, now also recording the hashes of the
+  finalized new database and the new envelope. Like every journal change, this
+  is a write to a temp file, `fsync`, a rename, and an `fsync` of the directory.
 
 **Commit**: atomically replace the journal with state `committed` (write a
 temp file, `fsync`, rename, `fsync` the directory). This rename is the **only**
@@ -118,11 +133,18 @@ is.
 **Apply** (every step idempotent, so it can be re-run after a crash):
 
 1. Close the kernel. This drops every connection and releases the runner lock.
-2. Move `vault.db` to `vault.db.rekey-old` and move `vault.db.rekey-new` into
+2. Remove the old database's `-wal` and `-shm` files. This comes before the
+   swap so that an old side file can never sit beside the new `vault.db`. Their
+   contents are not needed: the export read a checkpointed database, and the
+   controller lock (§5) let nothing write to it afterwards. Re-running this
+   step during roll-forward is safe: while the journal exists the new database
+   has never been opened (it was finalized with no side files and is only
+   reopened after the journal is removed), so any side file beside `vault.db`
+   belongs to the old database.
+3. Move `vault.db` to `vault.db.rekey-old` and move `vault.db.rekey-new` into
    place.
-3. Move `vault.db.envelope.rekey-new` over `vault.db.envelope`.
-4. Remove the old WAL/SHM side files.
-5. Remove the old blob names.
+4. Move `vault.db.envelope.rekey-new` over `vault.db.envelope`.
+5. Remove the old blob names, skipping any name the journal also lists as new.
 6. Remove `vault.db.rekey-old`.
 7. Remove the journal last.
 
@@ -143,14 +165,15 @@ out of scope (see Alternatives).
 
 `classify_vault` checks for the journal before anything else.
 
-- **No journal:** classify as today, and remove stray `*.rekey-new` files, which
-  are left from a prepare that never reached its journal. Blob links that prepare
-  created before the crash cannot be identified while the vault is locked, so the
-  next unlock removes files in that vault's own blob directory that no attachment
-  row references.
-- **Journal `prepared`:** roll back. Delete `vault.db.rekey-new`, the new
-  envelope and the new blob links, then the journal. The old vault is untouched
-  and the result is `Locked`.
+- **No journal:** classify as today, and remove stray `*.rekey-new` files (with
+  any side files beside them). These are left from a prepare that crashed before
+  writing its `preparing` journal. No blob link can exist yet at that point,
+  because links are only created after the journal lists them. Recovery never
+  sweeps the blob directory.
+- **Journal `preparing` or `prepared`:** roll back. Delete
+  `vault.db.rekey-new` (with any side files), the new envelope, and every new
+  blob name the journal lists, except a name it also lists as old. Then delete
+  the journal. The old vault is untouched and the result is `Locked`.
 - **Journal `committed`:** roll forward. Re-run the idempotent apply steps,
   checking what already exists at each step. The result is `Locked`; the next
   unlock uses the new DEK with the unchanged password.
@@ -166,12 +189,30 @@ reopen cannot be done safely.
 
 ### 5. Preconditions and serialization
 
-- Rotation requires `Unlocked` and holds the vault controller mutex for its
-  whole run. That already serializes it against scheduled backups and other
-  jobs.
-- Before prepare, rotation checks free disk space for one full copy of the
-  database plus margin, and refuses with a clear message if there is not
-  enough.
+- Rotation requires `Unlocked` and holds the vault controller mutex
+  (`lock_controller`) from the start of prepare until it has reopened or
+  reached `Locked`. **Every** kernel access goes through that mutex: IPC
+  commands, scheduled jobs and backups, and every database phase of a
+  connector sync. Connector network calls run outside it, but they hold no
+  kernel handle. So nothing can read or write the vault while a rotation runs,
+  which is what guarantees that no write lands between the export and the
+  commit. A connector sync whose network fetch overlaps a rotation waits for the
+  mutex and then writes into the rotated vault. The implementation keeps this
+  invariant and pins it with a test, e.g.
+  `rotation_blocks_kernel_access_and_an_overlapping_sync_lands_in_the_rotated_vault`.
+- **What the user sees while other commands wait:** any other IPC command
+  blocks until the rotation finishes, because it is waiting on the same mutex.
+  That includes `vault_status`, so the frontend cannot observe `Rekeying`
+  mid-run, and the existing state-driven busy screen would never appear. The
+  rotate card therefore shows its own blocking, app-wide overlay ("Re-encrypting
+  your vault…") for as long as its `rotate_vault_key` call is pending. That keeps
+  the user from starting other actions, which would only queue. A background
+  job, or a connector's database phase, simply runs after the rotation.
+- Before prepare, rotation checks free disk space and refuses with a clear
+  message if there is not enough. It needs room for one full copy of the
+  database plus margin. It first probes whether the blob directory supports
+  hard links; if it does not, the requirement also includes the total size of
+  the blob files, since every blob would then be copied.
 - The progress UI is deliberately coarse ("Re-encrypting your vault…"), and
   the action cannot be cancelled once it reaches commit.
 
