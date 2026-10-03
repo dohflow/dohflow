@@ -8,6 +8,7 @@ import {
   ChevronRight,
   FileText,
   Info,
+  RotateCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -102,17 +103,24 @@ export function DuplicateReviewPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const candidates = candidatesQuery.data ?? [];
+  // A failed fetch is NOT "no match": it says nothing about the ledger, so the
+  // panel must not steer toward Import anyway (personal-cfo-pxi.11). It wins
+  // over stale data too — after a void, the old list may no longer be true.
+  const fetchFailed = candidatesQuery.isError;
+  const candidates = fetchFailed ? [] : (candidatesQuery.data ?? []);
   const single = candidates.length === 1 ? candidates[0] : null;
   const amountDiffers = single
     ? single.amount.minor_units !== incoming.amount.minor_units
     : false;
   // The mock's suggestion logic: a single exact match leans Skip; anything else
   // (amount mismatch, multiple matches, or no match left) leans Import anyway.
+  // With no answer from the ledger, neither action is promoted.
   const importPrimary =
     candidates.length !== 1 || amountDiffers || candidatesQuery.isLoading;
+  const skipVariant = fetchFailed || importPrimary ? "outline" : "default";
+  const importVariant = fetchFailed || !importPrimary ? "outline" : "default";
 
-  const suggestion = candidatesQuery.isLoading
+  const suggestion = fetchFailed || candidatesQuery.isLoading
     ? null
     : candidates.length === 0
       ? "The matching entry is no longer in your ledger — safe to import."
@@ -171,7 +179,37 @@ export function DuplicateReviewPanel({
 
         {/* body */}
         <div className="flex-1 overflow-auto p-5">
-          {candidatesQuery.isLoading ? (
+          {fetchFailed ? (
+            <div className="flex flex-col gap-3">
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-md border border-loss/30 bg-loss/5 px-3 py-2 text-sm"
+              >
+                <AlertTriangle
+                  className="mt-0.5 size-4 shrink-0 text-loss"
+                  aria-hidden
+                />
+                <div className="flex flex-col gap-2">
+                  <span>
+                    Couldn't check your ledger for a match, so this can't say
+                    whether it's a duplicate.{" "}
+                    {candidatesQuery.error.message}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="self-start"
+                    disabled={candidatesQuery.isFetching}
+                    onClick={() => void candidatesQuery.refetch()}
+                  >
+                    <RotateCw aria-hidden />
+                    {candidatesQuery.isFetching ? "Retrying…" : "Retry"}
+                  </Button>
+                </div>
+              </div>
+              <IncomingCard incoming={incoming} />
+            </div>
+          ) : candidatesQuery.isLoading ? (
             <p className="text-sm text-muted-foreground">
               Loading the matching transaction…
             </p>
@@ -325,22 +363,7 @@ export function DuplicateReviewPanel({
             // MULTI: incoming card + stacked candidate list
             <div className="flex flex-col gap-3">
               <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
-                <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
-                  <div className="font-semibold">{incoming.merchant}</div>
-                  <div
-                    className={`text-lg font-bold tabular-nums ${signedAmountClass(incoming.amount)}`}
-                  >
-                    {formatMoney(incoming.amount)}
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Date</span>
-                    <span>{formatIsoDate(incoming.date)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Account</span>
-                    <span>{incoming.account ?? "—"}</span>
-                  </div>
-                </div>
+                <IncomingCard incoming={incoming} />
                 <div className="flex w-16 items-center justify-center pt-12">
                   <ArrowRight className="size-4 text-muted-foreground" aria-hidden />
                 </div>
@@ -409,7 +432,7 @@ export function DuplicateReviewPanel({
           )}
           <div className="flex flex-col gap-2">
             <Button
-              variant={importPrimary ? "outline" : "default"}
+              variant={skipVariant}
               disabled={pending !== null}
               onClick={() => void run("skip", onSkip)}
             >
@@ -417,7 +440,7 @@ export function DuplicateReviewPanel({
               {pending === "skip" ? "Skipping…" : "Skip (it's a duplicate)"}
             </Button>
             <Button
-              variant={importPrimary ? "default" : "outline"}
+              variant={importVariant}
               disabled={pending !== null}
               onClick={() => void run("import", onImportAnyway)}
             >
@@ -429,6 +452,31 @@ export function DuplicateReviewPanel({
           </div>
         </div>
       </aside>
+    </div>
+  );
+}
+
+/// The incoming (not yet committed) transaction as a summary card.
+function IncomingCard({ incoming }: { incoming: IncomingDuplicate }) {
+  return (
+    <div
+      aria-label="Incoming transaction"
+      className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3"
+    >
+      <div className="font-semibold">{incoming.merchant}</div>
+      <div
+        className={`text-lg font-bold tabular-nums ${signedAmountClass(incoming.amount)}`}
+      >
+        {formatMoney(incoming.amount)}
+      </div>
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">Date</span>
+        <span>{formatIsoDate(incoming.date)}</span>
+      </div>
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">Account</span>
+        <span>{incoming.account ?? "—"}</span>
+      </div>
     </div>
   );
 }
