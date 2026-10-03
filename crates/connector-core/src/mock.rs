@@ -443,6 +443,7 @@ impl ConnectorAdapter for MockConnector {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }

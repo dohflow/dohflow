@@ -4,6 +4,7 @@ import {
   ChevronRight,
   FileUp,
   Loader2,
+  TriangleAlert,
   Upload,
   X,
 } from "lucide-react";
@@ -126,7 +127,41 @@ function summaryMessage(batch: BatchResultDto): string {
       batch.flagged === 1 ? "needs" : "need"
     } review in the Money Inbox.${autoCategorized}`;
   }
-  return `${committed} All clean — nothing to review.${autoCategorized}`;
+  // "All clean" would contradict a skipped-rows note shown beside it.
+  const clean = batch.skipped_rows > 0 ? "" : " All clean — nothing to review.";
+  return `${committed}${clean}${autoCategorized}`;
+}
+
+/// Rows the parser could not use, so nothing was imported for them
+/// (personal-cfo-pxi.10; ADR 0014 §3 "never silently drop"): the count, then
+/// each reason by row. Renders nothing when no row was skipped. The reasons are
+/// fixed text from the parser — never the row's own values.
+function SkippedRowsNote({ batch }: { batch: BatchResultDto }) {
+  if (batch.skipped_rows === 0) {
+    return null;
+  }
+  const listed = batch.warnings.filter((warning) => warning.skipped);
+  const unlisted = batch.skipped_rows - listed.length;
+  return (
+    <div className="flex items-start gap-2 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <div className="flex flex-col gap-1">
+        <p>
+          {batch.skipped_rows} {batch.skipped_rows === 1 ? "row" : "rows"} skipped —
+          nothing was imported for {batch.skipped_rows === 1 ? "it" : "them"}.
+        </p>
+        <ul aria-label="Skipped rows" className="list-disc pl-4 text-xs">
+          {listed.map((warning, index) => (
+            <li key={index}>
+              {warning.row === null ? "" : `Row ${warning.row}: `}
+              {warning.message}
+            </li>
+          ))}
+          {unlisted > 0 && <li>…and {unlisted} more</li>}
+        </ul>
+      </div>
+    </div>
+  );
 }
 
 /// Import a statement file into the ledger (personal-cfo-zl8f): choose a target
@@ -263,6 +298,7 @@ export function ImportFileDialog({
               <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
               <span>{summaryMessage(summary)}</span>
             </div>
+            <SkippedRowsNote batch={summary} />
             <div className="flex justify-end">
               <Button onClick={onClose}>Done</Button>
             </div>

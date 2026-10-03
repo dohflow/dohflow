@@ -2494,6 +2494,48 @@ pub struct BatchResult {
     /// Transactions auto-categorized from merchant memory after the import (ADR 0030
     /// addendum, personal-cfo-5n4.2). `0` when the setting is off or nothing matched.
     pub auto_categorized: u32,
+    /// Source rows the parse could not use, so they were never staged
+    /// (personal-cfo-pxi.10; ADR 0014 §3 "never silently drop"). The full count,
+    /// even when `warnings` is truncated.
+    pub skipped_rows: u32,
+    /// What the parse reported, bounded to [`MAX_IMPORT_WARNINGS`]: skipped rows
+    /// first (in source order), then notes on staged rows. Each message is a
+    /// fixed reason, never the row's own values.
+    pub warnings: Vec<ImportWarning>,
+}
+
+/// The most [`ImportWarning`]s a [`BatchResult`] carries. A file with more
+/// still reports its full [`BatchResult::skipped_rows`] count.
+pub const MAX_IMPORT_WARNINGS: usize = 20;
+
+/// One issue the parse reported for an import (personal-cfo-pxi.10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportWarning {
+    /// The source row's 0-based data index (header excluded), when known.
+    pub row: Option<usize>,
+    /// A fixed reason, for example `"unparseable / missing amount"`.
+    pub message: String,
+    /// `true` when the row was not staged; `false` for a note on a staged row.
+    pub skipped: bool,
+}
+
+/// The skipped-row count and the bounded warning list for `parsed`.
+fn import_warnings(parsed: &ParsedBatch) -> (u32, Vec<ImportWarning>) {
+    let skipped = parsed.skipped.iter().map(|w| (w, true));
+    let notes = parsed.warnings.iter().map(|w| (w, false));
+    let warnings = skipped
+        .chain(notes)
+        .take(MAX_IMPORT_WARNINGS)
+        .map(|(w, skipped)| ImportWarning {
+            row: w.row,
+            message: w.message.clone(),
+            skipped,
+        })
+        .collect();
+    (
+        u32::try_from(parsed.skipped.len()).unwrap_or(u32::MAX),
+        warnings,
+    )
 }
 
 /// [`Kernel::ingest_sync_batch`]'s result: the standard batch outcome plus
@@ -2791,6 +2833,8 @@ impl Kernel {
                 committed: 0,
                 flagged: 0,
                 auto_categorized: 0,
+                skipped_rows: 0,
+                warnings: Vec::new(),
             });
         }
 
@@ -2829,6 +2873,8 @@ impl Kernel {
                     committed: 0,
                     flagged: 0,
                     auto_categorized: 0,
+                    skipped_rows: 0,
+                    warnings: Vec::new(),
                 });
             }
         };
@@ -2883,6 +2929,7 @@ impl Kernel {
             }
         }
 
+        let (skipped_rows, warnings) = import_warnings(&parsed);
         Ok(BatchResult {
             source_batch_id: Some(batch_id.to_string()),
             status: status.to_owned(),
@@ -2890,6 +2937,8 @@ impl Kernel {
             committed,
             flagged,
             auto_categorized,
+            skipped_rows,
+            warnings,
         })
     }
 
@@ -2999,13 +3048,18 @@ impl Kernel {
         }
 
         Ok(SyncBatchResult {
-            batch: BatchResult {
-                source_batch_id: Some(batch_id.to_string()),
-                status: status.to_owned(),
-                staged: total,
-                committed,
-                flagged,
-                auto_categorized,
+            batch: {
+                let (skipped_rows, warnings) = import_warnings(parsed);
+                BatchResult {
+                    source_batch_id: Some(batch_id.to_string()),
+                    status: status.to_owned(),
+                    staged: total,
+                    committed,
+                    flagged,
+                    auto_categorized,
+                    skipped_rows,
+                    warnings,
+                }
             },
             skipped_unmapped,
         })

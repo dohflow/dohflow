@@ -144,8 +144,16 @@ pub struct ParsedBatch {
     pub accounts: Vec<ParsedAccount>,
     /// One entry per parsed row / object.
     pub records: Vec<ParsedRecord>,
-    /// Non-fatal issues a human may want to review (ambiguous date, odd row).
+    /// Non-fatal issues a human may want to review (an ambiguous date). The
+    /// row they name **was** staged.
     pub warnings: Vec<ParseWarning>,
+    /// Source rows that were **not** staged, one entry per row, each with the
+    /// reason (personal-cfo-pxi.10; ADR 0014 §3 "never silently drop"). The
+    /// import summary reports these, so a row a parser cannot use is visible
+    /// rather than silently absent. Adapters that have not classified their
+    /// own skips yet leave this empty and keep reporting through `warnings`.
+    #[serde(default)]
+    pub skipped: Vec<ParseWarning>,
 }
 
 /// One parsed row / provider object → a `source_record`.
@@ -230,10 +238,15 @@ pub struct ParsedBalance {
     pub external_account: Option<String>,
 }
 
-/// A non-fatal parse issue surfaced for human review.
+/// A parse issue surfaced for human review.
+///
+/// File importers keep `message` to a **fixed reason** (for example
+/// `"unparseable amount"`) and never echo the row's own values — the row
+/// number locates it (personal-cfo-pxi.10, logging-policy §1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParseWarning {
-    /// Source row number, when applicable.
+    /// Source row number, when applicable: the 0-based index of the data row
+    /// (a CSV header is not counted; for OFX, the transaction's position).
     pub row: Option<usize>,
     pub message: String,
 }
@@ -613,11 +626,24 @@ mod tests {
                 }),
                 balance: None,
             }],
-            warnings: vec![],
+            warnings: vec![ParseWarning {
+                row: Some(0),
+                message: "ambiguous date (assumed US M/D/Y)".to_owned(),
+            }],
+            skipped: vec![ParseWarning {
+                row: Some(1),
+                message: "unparseable amount".to_owned(),
+            }],
         };
         let json = serde_json::to_string(&batch).unwrap();
         let back: ParsedBatch = serde_json::from_str(&json).unwrap();
         assert_eq!(batch, back);
+
+        // A batch serialized before `skipped` existed still reads, as no skips.
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        legacy.as_object_mut().unwrap().remove("skipped");
+        let back: ParsedBatch = serde_json::from_value(legacy).unwrap();
+        assert!(back.skipped.is_empty());
     }
 
     /// Deliberately does NOT override `help_published()` — the whole point

@@ -962,6 +962,7 @@ impl<T: Transport> ConnectorAdapter for SimpleFinAdapter<T> {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }

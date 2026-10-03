@@ -8,9 +8,9 @@
 use chrono::NaiveDate;
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, CashflowRole, CommandEnvelope, CommandMeta,
-    CreateAccount, Currency, ImporterPlugin, Kernel, LedgerAccountId, Money, ParseError,
-    ParsedBatch, ParsedRecord, ParsedTransaction, ParserHints, ParserInput, ParserLimits,
-    RecategorizeTransaction,
+    CreateAccount, Currency, ImportWarning, ImporterPlugin, Kernel, LedgerAccountId, Money,
+    ParseError, ParseWarning, ParsedBatch, ParsedRecord, ParsedTransaction, ParserHints,
+    ParserInput, ParserLimits, RecategorizeTransaction, MAX_IMPORT_WARNINGS,
 };
 use semver::Version;
 use uuid::Uuid;
@@ -93,6 +93,7 @@ impl ImporterPlugin for ThreeRowCsv {
                 record(2, "fp-a", -1299, "Coffee"), // duplicate of row 0
             ],
             warnings: vec![],
+            skipped: Vec::new(),
         })
     }
 }
@@ -130,6 +131,7 @@ impl ImporterPlugin for OneRowCsv {
             accounts: vec![],
             records: vec![record(0, self.fingerprint, -1299, self.merchant)],
             warnings: vec![],
+            skipped: Vec::new(),
         })
     }
 }
@@ -478,4 +480,141 @@ fn voided_transactions_do_not_block_reimporting_the_same_file() {
         Some(Money::new(-5499, Currency::Usd)),
         "the restore lands the same balance as the original import"
     );
+}
+
+/// A test importer that stages `good` rows and reports `skips` rows it could
+/// not use, plus one note on a staged row (personal-cfo-pxi.10).
+struct SkippingCsv {
+    good: usize,
+    skips: usize,
+}
+
+impl ImporterPlugin for SkippingCsv {
+    fn id(&self) -> &'static str {
+        "skipping-csv"
+    }
+    fn display_name(&self) -> &'static str {
+        "Skipping CSV"
+    }
+    fn version(&self) -> Version {
+        Version::new(1, 0, 0)
+    }
+    fn supported_extensions(&self) -> &'static [&'static str] {
+        &["csv"]
+    }
+    fn detect_confidence(&self, _: &ParserInput) -> u16 {
+        10_000
+    }
+    fn parse(&self, _: &ParserInput, _: &ParserHints) -> Result<ParsedBatch, ParseError> {
+        Ok(ParsedBatch {
+            source_format: "csv".to_owned(),
+            accounts: vec![],
+            records: (0..self.good)
+                .map(|i| record(i, &format!("fp-good-{i}"), -100, "Store"))
+                .collect(),
+            warnings: vec![ParseWarning {
+                row: Some(0),
+                message: "ambiguous date (assumed US M/D/Y)".to_owned(),
+            }],
+            skipped: (0..self.skips)
+                .map(|i| ParseWarning {
+                    row: Some(self.good + i),
+                    message: "unparseable / missing amount".to_owned(),
+                })
+                .collect(),
+        })
+    }
+}
+
+#[test]
+fn ingest_batch_reports_skipped_rows_before_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Kernel::create_vault(dir.path().join("vault.db"), PW).unwrap();
+    let checking = account("Checking");
+    let account_id = checking.id();
+    kernel
+        .dispatch(CommandEnvelope::new(meta(), CreateAccount::new(checking)))
+        .unwrap();
+
+    let result = kernel
+        .ingest_batch(
+            &SkippingCsv { good: 2, skips: 1 },
+            tagged_input("skips"),
+            &ParserHints::default(),
+            account_id,
+            &ParserLimits::default(),
+            &meta(),
+        )
+        .unwrap();
+    assert_eq!(result.status, "committed");
+    assert_eq!(result.committed, 2);
+    assert_eq!(result.skipped_rows, 1);
+    assert_eq!(
+        result.warnings,
+        vec![
+            ImportWarning {
+                row: Some(2),
+                message: "unparseable / missing amount".to_owned(),
+                skipped: true,
+            },
+            ImportWarning {
+                row: Some(0),
+                message: "ambiguous date (assumed US M/D/Y)".to_owned(),
+                skipped: false,
+            },
+        ]
+    );
+}
+
+#[test]
+fn ingest_batch_bounds_the_warning_list_but_counts_every_skip() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Kernel::create_vault(dir.path().join("vault.db"), PW).unwrap();
+    let checking = account("Checking");
+    let account_id = checking.id();
+    kernel
+        .dispatch(CommandEnvelope::new(meta(), CreateAccount::new(checking)))
+        .unwrap();
+
+    let skips = MAX_IMPORT_WARNINGS + 5;
+    let result = kernel
+        .ingest_batch(
+            &SkippingCsv {
+                good: 1,
+                skips: MAX_IMPORT_WARNINGS + 5,
+            },
+            tagged_input("many-skips"),
+            &ParserHints::default(),
+            account_id,
+            &ParserLimits::default(),
+            &meta(),
+        )
+        .unwrap();
+    assert_eq!(
+        result.skipped_rows as usize, skips,
+        "the count is never truncated"
+    );
+    assert_eq!(result.warnings.len(), MAX_IMPORT_WARNINGS);
+    assert!(
+        result.warnings.iter().all(|w| w.skipped),
+        "skips fill the list first"
+    );
+    assert_eq!(result.warnings[0].row, Some(1));
+
+    // A re-upload of the same file reports nothing new.
+    let again = kernel
+        .ingest_batch(
+            &SkippingCsv {
+                good: 1,
+                skips: MAX_IMPORT_WARNINGS + 5,
+            },
+            tagged_input("many-skips"),
+            &ParserHints::default(),
+            account_id,
+            &ParserLimits::default(),
+            &meta(),
+        )
+        .unwrap();
+    assert_eq!(again.status, "already_imported");
+    assert_eq!((again.skipped_rows, again.warnings.len()), (0, 0));
 }
