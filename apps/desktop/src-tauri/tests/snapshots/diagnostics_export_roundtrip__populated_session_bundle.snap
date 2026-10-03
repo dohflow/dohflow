@@ -1,0 +1,57 @@
+---
+source: tests/diagnostics_export_roundtrip.rs
+expression: "normalized(&saved, &approved)"
+---
+{
+  "format": "dohflow-diagnostics",
+  "version": 1,
+  "created_on": "<utc-date>",
+  "build": {
+    "version": "<app-version>",
+    "channel": "<build-channel>"
+  },
+  "platform": "<os>",
+  "coverage": "Covers only the current unlocked session since its last unlock. Earlier sessions, other vaults and anything before a crash are not included. Oldest records are dropped once the session holds 2000.",
+  "records_retained": 5,
+  "dropped_by_capacity": {},
+  "rejected_at_admission": 2,
+  "records": [
+    {
+      "at_s": "<session-seconds>",
+      "metric": "backup_outcome",
+      "value": {
+        "outcome": "success"
+      }
+    },
+    {
+      "at_s": "<session-seconds>",
+      "metric": "backup_outcome",
+      "value": {
+        "outcome": {
+          "failure": "validation"
+        }
+      }
+    },
+    {
+      "at_s": "<session-seconds>",
+      "metric": "connector_status",
+      "value": {
+        "status": "rate_limited"
+      }
+    },
+    {
+      "at_s": "<session-seconds>",
+      "metric": "import_rows",
+      "value": {
+        "count": 42
+      }
+    },
+    {
+      "at_s": "<session-seconds>",
+      "metric": "query_duration",
+      "value": {
+        "duration": "100ms-1s"
+      }
+    }
+  ]
+}
