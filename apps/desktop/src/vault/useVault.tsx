@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { onlineManager, useQueryClient } from "@tanstack/react-query";
 
 import {
   commands,
@@ -171,7 +171,19 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   }, [run, queryClient, refresh, refreshVaults]);
   const rotateVaultKey = useCallback(
     async (password: string) => {
-      const error = await run(commands.rotateVaultKey({ password }));
+      // A rotation holds the vault lock for its whole run (ADR 0083 §5), and
+      // most commands are synchronous: one issued meanwhile would block the main
+      // thread on that lock and freeze the window under the overlay. Pause every
+      // query (polling included) until it finishes; paused queries resume
+      // afterwards. Queries use the default `online` network mode, so marking
+      // the manager offline is what pauses them.
+      onlineManager.setOnline(false);
+      let error: IpcError | null;
+      try {
+        error = await run(commands.rotateVaultKey({ password }));
+      } finally {
+        onlineManager.setOnline(true);
+      }
       // No visible data changes on success, so the cache stays valid. On error
       // re-read the real on-disk status so the gate reflects it.
       if (error !== null) await refresh();
