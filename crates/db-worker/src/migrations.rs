@@ -553,7 +553,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // of truth); the role↔subtype match is validated in the kernel, because a column
     // CHECK cannot reference `cashflow_role` under SQLite's `ALTER ... ADD COLUMN`.
     // Only the liquid subtypes drive cash-tier rollups; the rest are foundation for
-    // later grouping. Down drops the column (SQLite >= 3.35; pinned at 3.45.3).
+    // later grouping. Down drops the column (SQLite >= 3.35; pinned at 3.51.3).
     Migration {
         version: 14,
         name: "account_subtype",

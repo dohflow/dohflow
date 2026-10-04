@@ -2644,7 +2644,7 @@ impl DbWorker {
     }
 
     /// The linked SQLCipher version string (`PRAGMA cipher_version`), e.g.
-    /// `"4.5.7 community"`. Pinned in `docs/architecture/stack.md`; the
+    /// `"4.14.0 community"`. Pinned in `docs/architecture/stack.md`; the
     /// cross-version vault test (personal-cfo-7igv) asserts it so a silent
     /// SQLCipher upgrade that could break vault compatibility (risk
     /// personal-cfo-aia0) fails CI instead of shipping.
@@ -4029,7 +4029,7 @@ fn configure_conn(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-/// The bundled SQLite version string (`rusqlite::version()`), e.g. `"3.45.3"`.
+/// The bundled SQLite version string (`rusqlite::version()`), e.g. `"3.51.3"`.
 /// Pinned in `docs/architecture/stack.md` and asserted by the cross-version vault
 /// test (personal-cfo-7igv); see also [`DbWorker::cipher_version`].
 #[must_use]

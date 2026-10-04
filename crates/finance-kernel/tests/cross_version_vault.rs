@@ -13,8 +13,11 @@
 //!    password path, reproduces its canonical state on the pinned engine.
 //!
 //! ## How the cross-version corpus grows
-//! There is one pinned engine today, so the golden vault is generated with the
-//! current one. When the pin is **intentionally** bumped, the bumping PR must:
+//! The golden vault below is generated with the current engine. The outgoing
+//! SQLCipher 4.5.7 / SQLite 3.45.3 corpus (frozen before the `personal-cfo-g3m.5`
+//! bump) lives in `tests/fixtures/sqlcipher-4.5.7.json` and is opened by
+//! `tests/engine_compatibility.rs`. When the pin is **intentionally** bumped,
+//! the bumping PR must:
 //!   1. update `EXPECTED_SQLCIPHER` / `EXPECTED_SQLITE` here, plus
 //!      `docs/architecture/stack.md` and the release notes; and
 //!   2. capture the *outgoing* version's vault (`vault.db` + `.envelope`) and add
@@ -32,8 +35,8 @@ use uuid::Uuid;
 
 /// The pinned engine versions — **must** match `docs/architecture/stack.md`.
 /// Changing these is a deliberate act; see the module-level corpus note.
-const EXPECTED_SQLCIPHER: &str = "4.5.7 community";
-const EXPECTED_SQLITE: &str = "3.45.3";
+const EXPECTED_SQLCIPHER: &str = "4.14.0 community";
+const EXPECTED_SQLITE: &str = "3.51.3";
 
 const PW: &[u8] = b"golden vault cross-version password";
 
