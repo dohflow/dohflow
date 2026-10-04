@@ -149,3 +149,53 @@ fn golden_vault_round_trips_on_the_pinned_engine() {
     assert_eq!(reopened.cipher_version().unwrap(), EXPECTED_SQLCIPHER);
     assert_eq!(sqlite_version(), EXPECTED_SQLITE);
 }
+
+/// A vault whose DEK has been rotated (ADR 0083, personal-cfo-2y8) is an
+/// ordinary vault on the pinned engine: it closes, reopens cold through the
+/// password path with the unchanged password, and keeps its canonical state.
+#[test]
+fn a_rotated_vault_round_trips_on_the_pinned_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("vault.db");
+    let mut controller = finance_kernel::VaultController::open(&db_path);
+    controller.create(PW).unwrap();
+    let (accounts, checksum) = {
+        let kernel = controller.kernel().unwrap();
+        let checking = account("Checking");
+        let checking_id = checking.id();
+        kernel
+            .dispatch(CommandEnvelope::new(
+                meta(),
+                CreateAccount::with_opening_balance(checking, Money::new(250_000, Currency::Usd)),
+            ))
+            .unwrap();
+        kernel
+            .dispatch(CommandEnvelope::new(
+                meta(),
+                RecordTransaction::new(
+                    TransactionId::new(),
+                    checking_id,
+                    Money::new(-4_500, Currency::Usd),
+                    at("2026-06-05T00:00:00Z"),
+                ),
+            ))
+            .unwrap();
+        kernel.rebuild_transaction_display().unwrap();
+        (
+            kernel.account_count().unwrap(),
+            kernel.transaction_display_checksum().unwrap(),
+        )
+    };
+    controller.rotate_key(PW).unwrap();
+    assert_eq!(
+        controller.kernel().unwrap().cipher_version().unwrap(),
+        EXPECTED_SQLCIPHER
+    );
+    drop(controller);
+
+    let reopened = Kernel::unlock_vault(&db_path, PW).unwrap();
+    assert_eq!(reopened.account_count().unwrap(), accounts);
+    assert_eq!(reopened.transaction_display_checksum().unwrap(), checksum);
+    assert_eq!(reopened.cipher_version().unwrap(), EXPECTED_SQLCIPHER);
+    assert_eq!(sqlite_version(), EXPECTED_SQLITE);
+}

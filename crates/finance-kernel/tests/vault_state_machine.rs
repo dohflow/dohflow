@@ -47,6 +47,13 @@ fn transition_graph_allows_legal_edges_and_rejects_illegal_ones() {
     assert!(Unlocking.can_transition_to(Locked));
     assert!(Unlocked.can_transition_to(Locking));
     assert!(Locking.can_transition_to(Locked));
+    // Key rotation (ADR 0083): enter from Unlocked; leave Unlocked (reopened),
+    // or Locked when the rotated vault is not reopened in the same call.
+    assert!(Unlocked.can_transition_to(Rekeying));
+    assert!(Rekeying.can_transition_to(Unlocked));
+    assert!(Rekeying.can_transition_to(Locked));
+    assert!(!Locked.can_transition_to(Rekeying)); // rotation needs the open vault
+    assert!(!Rekeying.can_transition_to(NoVault));
     // A fault can be detected from anywhere.
     for from in [
         NoVault,
