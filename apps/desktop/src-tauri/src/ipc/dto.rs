@@ -4059,6 +4059,9 @@ pub struct ConnectorConnectionDto {
     pub display_hint: Option<String>,
     pub last_synced_at: Option<String>,
     pub last_error: Option<String>,
+    /// How often this connection refreshes (lqk): `every_open`, `daily`,
+    /// `weekly` or `manual`.
+    pub refresh_cadence: String,
     pub links: Vec<ConnectorAccountLinkDto>,
 }
 
@@ -4104,6 +4107,14 @@ pub struct ConnectorFeedDto {
     pub display_hint: Option<String>,
     pub external_id: String,
     pub external_name: Option<String>,
+}
+
+/// Change how often a connection refreshes (lqk).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ConnectorSetRefreshCadenceInput {
+    pub connection_id: String,
+    /// `every_open`, `daily`, `weekly` or `manual`.
+    pub cadence: String,
 }
 
 /// Run one sync for a connection.

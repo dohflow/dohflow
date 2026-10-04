@@ -101,7 +101,7 @@ const RECORD_TRANSACTION_ID_NAMESPACE: Uuid = Uuid::from_bytes([
 
 /// Run `f` with the open kernel, or return [`IpcError::VaultLocked`] when the
 /// vault is not unlocked. The kernel is reached through the [`VaultController`].
-fn with_kernel<T>(
+pub(crate) fn with_kernel<T>(
     state: &AppState,
     f: impl FnOnce(&Kernel) -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
@@ -334,27 +334,25 @@ pub fn unlock_vault(
     // the successful unlock response.
     let executor = state.inner().job_dispatcher();
     let unlock_window = format!("unlock-{}", Uuid::now_v7());
-    let job_app = app.clone();
+    // One post-unlock task, never blocking the unlock: the durable-job sweep
+    // first (its crash recovery must run before anything is claimed), then
+    // connector refresh on the same runtime, which releases the vault lock
+    // around every provider fetch (lqk; ADR 0060 addendum 2026-10-04).
     tauri::async_runtime::spawn(async move {
         let _ = tauri::async_runtime::spawn_blocking(move || {
-            let app_state = job_app.state::<AppState>();
+            let app_state = app.state::<AppState>();
             if let Err(err) =
                 run_due_jobs_on_unlock_impl(&app_state, executor.as_ref(), &unlock_window)
             {
                 record_durable_job_unlock_failure(&err);
             }
-        })
-        .await;
-    });
-    // Sync-on-open (personal-cfo-gglk, ADR 0060 §4): fire-and-forget so the
-    // network NEVER blocks the unlock; debounced inside; outcomes land on the
-    // connection rows for the health surface. Lives in the wrapper — the impl
-    // stays synchronous and test-drivable without an AppHandle.
-    tauri::async_runtime::spawn(async move {
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            let state = app.state::<AppState>();
-            if let Err(err) = connector_auto_sync_impl(&state, connector_core::connector_by_id) {
-                tracing::warn!(error = %err, "connector auto-sync on open failed");
+            if let Err(err) = crate::connector_refresh::run_due_connector_refresh(
+                &app_state,
+                connector_core::connector_by_id,
+                &unlock_window,
+                &SystemClock,
+            ) {
+                tracing::warn!(error = %err, "connector refresh after unlock failed");
             }
         })
         .await;
@@ -4768,7 +4766,7 @@ use crate::ipc::dto::{
     ConnectorEconomicsDto, ConnectorExternalAccountDto, ConnectorFeedDto, ConnectorForgetInput,
     ConnectorLinkGuideDto, ConnectorLinkInput, ConnectorLinkResultDto, ConnectorPayerDto,
     ConnectorReferralDto, ConnectorSetAccountLinkInput, ConnectorSetAccountLinkResultDto,
-    ConnectorSyncInput, ConnectorSyncResultDto,
+    ConnectorSetRefreshCadenceInput, ConnectorSyncInput, ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -4905,6 +4903,13 @@ fn connector_link_inner(
             adapter.id(),
             credential.expose_secret(),
             display_hint.as_deref(),
+        )?;
+        // Its refresh job, at the provider's suggested cadence (lqk).
+        crate::connector_refresh::ensure_refresh_job(
+            kernel,
+            connection_id,
+            adapter.id(),
+            chrono::Utc::now(),
         )?;
         Ok(())
     })?;
@@ -5136,12 +5141,15 @@ pub fn connector_connections_impl(
                     currency: l.currency,
                 })
                 .collect();
+            let refresh_cadence = crate::connector_refresh::cadence_of(kernel, row.id)?
+                .unwrap_or_else(|| crate::connector_refresh::suggested_cadence(&row.adapter_id));
             out.push(ConnectorConnectionDto {
                 id: row.id.to_string(),
                 adapter_id: row.adapter_id,
                 display_hint: row.display_hint,
                 last_synced_at: row.last_synced_at,
                 last_error: row.last_error,
+                refresh_cadence: refresh_cadence.token().to_owned(),
                 links,
             });
         }
@@ -5701,8 +5709,43 @@ pub fn connector_forget_impl(
     // relay tier. Past synced ledger data deliberately survives.
     with_kernel(state, |kernel| {
         kernel.delete_connector_connection(connection_id)?;
+        crate::connector_refresh::remove_refresh_job(kernel, connection_id)?;
         Ok(())
     })
+}
+
+/// Change how often a connection refreshes (lqk; ADR 0060 addendum
+/// 2026-10-04): `every_open`, `daily`, `weekly` or `manual`.
+pub fn connector_set_refresh_cadence_impl(
+    state: &AppState,
+    input: ConnectorSetRefreshCadenceInput,
+) -> Result<(), IpcError> {
+    let connection_id = parse_connector_connection_id(&input.connection_id)?;
+    let cadence = connector_core::RefreshCadence::from_token(&input.cadence)
+        .ok_or_else(|| IpcError::Validation("unknown refresh cadence".to_owned()))?;
+    with_kernel(state, |kernel| {
+        if !kernel.connector_connection_exists(connection_id)? {
+            return Err(IpcError::Validation(
+                "unknown connector connection".to_owned(),
+            ));
+        }
+        crate::connector_refresh::set_refresh_cadence(
+            kernel,
+            connection_id,
+            cadence,
+            chrono::Utc::now(),
+        )?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn connector_set_refresh_cadence(
+    state: tauri::State<'_, AppState>,
+    input: ConnectorSetRefreshCadenceInput,
+) -> Result<(), IpcError> {
+    connector_set_refresh_cadence_impl(state.inner(), input)
 }
 
 #[tauri::command]

@@ -164,6 +164,9 @@ finance-kernel = { path = "../../../crates/finance-kernel" }
 db-worker = { path = "../../../crates/db-worker" }
 vault-crypto = { path = "../../../crates/vault-crypto" }
 tempfile = "3"
+# Names the adapter version in a test-only blocking provider (personal-cfo-lqk);
+# already in the lock through connector-core.
+semver = "1"
 tracing-subscriber = "0.3"
 # Approved-snapshot tests for the redacted diagnostic bundle (personal-cfo-ryjx;
 # DoD §1.4 requires insta for redacted exports). Same major as the root workspace.
