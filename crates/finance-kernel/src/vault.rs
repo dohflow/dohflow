@@ -15,8 +15,9 @@
 //! Out of scope here (their own beads): the vault state machine + startup
 //! self-test (`personal-cfo-tg5`), the Tauri create/unlock/lock commands + UI
 //! (`personal-cfo-3ry` / `-8v2`), encrypted attachments (`-bcj`), backup/restore
-//! (`-ef3` / `-au3`), rekey + envelope v1→v2 (`-2y8`), and KDF calibration
-//! (`-0sqk`).
+//! (`-ef3` / `-au3`), envelope v1→v2, and KDF calibration (`-0sqk`). Key
+//! rotation (`-2y8`, ADR 0083) is driven from here; its crash-safe file
+//! protocol lives in `crate::rekey`.
 
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
@@ -28,6 +29,7 @@ use vault_crypto::{
     VaultEnvelope,
 };
 
+use crate::rekey::{self, CrashPoint, RekeyPaths, RekeyRecovery};
 use crate::{Kernel, KernelError};
 
 /// The sidecar that holds a vault's unlock material, derived from the DB path by
@@ -452,6 +454,10 @@ impl VaultState {
                 | (Locking, Locked)
                 | (Unlocked, Rekeying)
                 | (Rekeying, Unlocked)
+                // Key rotation (ADR 0083 §4): after the commit point the kernel
+                // is closed; if the rotated vault cannot be safely reopened in
+                // the same call, the vault is left sealed for a normal unlock.
+                | (Rekeying, Locked)
                 | (Unlocked, Migrating)
                 | (Migrating, Unlocked)
                 | (Locked, RestoringBackup)
@@ -474,9 +480,17 @@ impl VaultState {
 /// neither → [`NoVault`](VaultState::NoVault); both → [`Locked`](VaultState::Locked);
 /// exactly one → [`CorruptNeedsRecovery`](VaultState::CorruptNeedsRecovery) (an
 /// interrupted create, or a DB whose envelope was lost — unopenable as-is).
+///
+/// A key-rotation journal still on disk (ADR 0083 §4) also means
+/// `CorruptNeedsRecovery`: [`VaultController::open`] runs rotation recovery
+/// first, and a journal survives it only when the files contradict it.
+/// Classification itself never modifies the disk.
 #[must_use]
 pub fn classify_vault(path: impl AsRef<Path>) -> VaultState {
     let db_path = path.as_ref();
+    if rekey::journal_present(db_path) {
+        return VaultState::CorruptNeedsRecovery;
+    }
     let sidecar = sidecar_path(db_path);
     match (db_path.exists(), sidecar.exists()) {
         (false, false) => VaultState::NoVault,
@@ -526,20 +540,36 @@ pub struct VaultController {
     path: PathBuf,
     state: VaultState,
     kernel: Option<Kernel>,
+    /// What startup recovery did with an interrupted key rotation.
+    rekey_recovery: RekeyRecovery,
 }
 
 impl VaultController {
     /// Inspect the vault on disk at `path` and enter the matching initial state
     /// (`NoVault` / `Locked` / `CorruptNeedsRecovery`).
+    ///
+    /// Before classifying, finishes or undoes a key rotation that a crash
+    /// interrupted (ADR 0083 §4): an uncommitted one is rolled back, a committed
+    /// one rolled forward; if the journal and the files disagree nothing is
+    /// deleted and the vault classifies as `CorruptNeedsRecovery`.
     #[must_use]
     pub fn open(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
+        let rekey_recovery = rekey::recover_interrupted_rekey(&path);
         let state = classify_vault(&path);
         Self {
             path,
             state,
             kernel: None,
+            rekey_recovery,
         }
+    }
+
+    /// What startup recovery did with an interrupted key rotation when this
+    /// controller was opened.
+    #[must_use]
+    pub fn rekey_recovery(&self) -> RekeyRecovery {
+        self.rekey_recovery
     }
 
     /// The vault file this controller is bound to. Stable across
@@ -686,6 +716,71 @@ impl VaultController {
         result
     }
 
+    /// Rotate the vault's DEK (ADR 0083): a new random DEK, re-wrapped under a
+    /// KEK derived from `password` at the current `InteractiveDefault` profile
+    /// with a fresh salt; the database re-encrypted and every attachment
+    /// re-wrapped and re-addressed. The password does not change. Requires
+    /// `Unlocked` and ends `Unlocked` on the rotated vault.
+    ///
+    /// Everything is prepared beside the live vault; one journal rename is the
+    /// commit point. A failure before it leaves the vault unchanged and
+    /// `Unlocked` on the old DEK. A failure after it (the kernel is already
+    /// closed) finishes or reports the rotation through recovery and leaves the
+    /// vault `Locked` (or `CorruptNeedsRecovery` if the files contradict the
+    /// journal).
+    ///
+    /// # Errors
+    /// - [`KernelError::IllegalVaultTransition`] if the vault is not `Unlocked`.
+    /// - [`KernelError::VaultUnlockFailed`] if `password` is wrong (nothing written).
+    /// - [`KernelError::InsufficientDiskSpace`] if the disk precheck fails.
+    /// - [`KernelError::Vault`] / [`KernelError::Persistence`] on an I/O, crypto
+    ///   or database failure.
+    pub fn rotate_key(&mut self, password: &[u8]) -> Result<(), KernelError> {
+        self.rotate_key_with(password, None)
+    }
+
+    /// [`Self::rotate_key`] with a test-only crash point: at `stop` the rotation
+    /// returns immediately, leaving the files as a process death would.
+    pub(crate) fn rotate_key_with(
+        &mut self,
+        password: &[u8],
+        stop: Option<CrashPoint>,
+    ) -> Result<(), KernelError> {
+        self.transition_to(VaultState::Rekeying)?;
+        let Some(kernel) = self.kernel.as_ref() else {
+            self.state = VaultState::Unlocked;
+            return Err(KernelError::Vault(
+                "key rotation requires an unlocked vault".to_owned(),
+            ));
+        };
+        if let Err(error) = rekey::prepare_and_commit(kernel, password, stop) {
+            // Not committed: the live vault and its kernel are untouched.
+            self.transition_to(VaultState::Unlocked)?;
+            return Err(error);
+        }
+        // Committed. Close the kernel so no connection or runner lock remains
+        // on the old database, then apply.
+        self.kernel = None;
+        if let Err(error) = rekey::finish_rotation(&self.path, stop) {
+            if !rekey::is_simulated_crash(&error) {
+                self.rekey_recovery = rekey::recover_interrupted_rekey(&self.path);
+                self.state = classify_vault(&self.path);
+            }
+            return Err(error);
+        }
+        match Kernel::unlock_vault(&self.path, password) {
+            Ok(kernel) => {
+                self.transition_to(VaultState::Unlocked)?;
+                self.kernel = Some(kernel);
+                Ok(())
+            }
+            Err(error) => {
+                self.transition_to(VaultState::Locked)?;
+                Err(error)
+            }
+        }
+    }
+
     /// Permanently delete the vault (personal-cfo-j0cg.5): drop the in-memory kernel (zeroizing the
     /// DEK) and remove the vault's files from disk — the DB, its `.envelope` sidecar (the unlock
     /// material), the SQLite WAL/SHM, and the blob store — leaving the controller in `NoVault`.
@@ -720,6 +815,10 @@ impl VaultController {
         let _ = std::fs::remove_file(with_suffix("-shm"));
         let _ = std::fs::remove_file(with_suffix("-journal"));
         let _ = std::fs::remove_dir_all(&blobs);
+        // Key-rotation artifacts (ADR 0083): best-effort like the side files.
+        for artifact in RekeyPaths::new(&db).all_artifacts() {
+            let _ = std::fs::remove_file(artifact);
+        }
 
         // The envelope (the unlock material) and the DB are what make the vault readable/
         // recoverable, so removing either is a real failure to surface. Whatever happens, re-derive
