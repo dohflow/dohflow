@@ -32,7 +32,7 @@ use connector_core::{
     balance_record, register_connector, review_date, AccountType, BillingPeriod, CapabilitySet,
     Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorLinkGuide,
     ConnectorMetadata, Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput,
-    LinkSession, Payer,
+    LinkSession, Payer, RefreshCadence,
 };
 use importer_core::{
     content_fingerprint, ParseWarning, ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord,
@@ -149,6 +149,7 @@ pub const SIMPLEFIN_METADATA: ConnectorMetadata = ConnectorMetadata {
     // SimpleFIN pays DohFlow nothing: no referral (ADR 0076 §5).
     referral: None,
     enabled: true,
+    suggested_refresh: RefreshCadence::EveryOpen,
 };
 
 register_connector!(SIMPLEFIN, SIMPLEFIN_METADATA);

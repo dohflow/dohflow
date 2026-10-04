@@ -284,6 +284,7 @@ export const commands = {
 	connectorAdapters: () => __TAURI_INVOKE<ConnectorAdapterDto[]>("connector_adapters"),
 	connectorConnections: () => typedError<ConnectorConnectionDto[], IpcError>(__TAURI_INVOKE("connector_connections")),
 	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<ConnectorSetAccountLinkResultDto, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
+	connectorSetRefreshCadence: (input: ConnectorSetRefreshCadenceInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_set_refresh_cadence", { input })),
 	connectorCreateMappedAccount: (input: ConnectorCreateMappedAccountInput) => typedError<CreateAccountResult, IpcError>(__TAURI_INVOKE("connector_create_mapped_account", { input })),
 	connectorSync: (input: ConnectorSyncInput) => typedError<ConnectorSyncResultDto, IpcError>(__TAURI_INVOKE("connector_sync", { input })),
 	connectorAutoSync: () => typedError<ConnectorSyncResultDto[], IpcError>(__TAURI_INVOKE("connector_auto_sync")),
@@ -982,6 +983,11 @@ export type ConnectorConnectionDto = {
 	display_hint: string | null,
 	last_synced_at: string | null,
 	last_error: string | null,
+	/**
+	 *  How often this connection refreshes (lqk): `every_open`, `daily`,
+	 *  `weekly` or `manual`.
+	 */
+	refresh_cadence: string,
 	links: ConnectorAccountLinkDto[],
 };
 
@@ -1126,6 +1132,13 @@ export type ConnectorSetAccountLinkResultDto = {
 	 *  chosen account. Nothing was changed.
 	 */
 	existing_feeds: ConnectorFeedDto[],
+};
+
+/**  Change how often a connection refreshes (lqk). */
+export type ConnectorSetRefreshCadenceInput = {
+	connection_id: string,
+	/**  `every_open`, `daily`, `weekly` or `manual`. */
+	cadence: string,
 };
 
 /**  Run one sync for a connection. */

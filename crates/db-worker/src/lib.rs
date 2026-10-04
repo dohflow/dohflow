@@ -62,7 +62,9 @@ mod forecast_overrides;
 mod forecast_persist;
 mod ingestion;
 mod jobs;
-pub use jobs::{DurableJobView, JobStoreError};
+pub use jobs::{
+    DurableJobView, JobStoreError, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
+};
 mod loan_overlap;
 mod manual_entry;
 mod merchant_grouping;

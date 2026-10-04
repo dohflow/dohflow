@@ -51,6 +51,7 @@ pub use db_worker::{
     AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
     FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
+pub use db_worker::{CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS};
 pub use importer_core::{
     all_presets, content_fingerprint, detect_best, plugin_by_id, preset_by_id, run_bounded,
     AccountHandling, CategoryHandling, ColumnMapping, ImporterPlugin, ParseError, ParseWarning,
@@ -59,9 +60,9 @@ pub use importer_core::{
     SourceQuirk,
 };
 pub use job_runtime::{
-    BackoffPolicy, CancellationToken, Clock, JobDispatcher, JobExecution, JobExecutor, JobFailure,
-    JobFinishResult, JobHandler, JobOutcome, JobRecord, JobRunReport, JobRunnerError, JobSpec,
-    JobSpecError, JobState, Schedule, SystemClock,
+    BackoffPolicy, CancellationToken, ClaimedJob, Clock, JobDispatcher, JobExecution, JobExecutor,
+    JobFailure, JobFinishResult, JobHandler, JobOutcome, JobRecord, JobRunReport, JobRunnerError,
+    JobSpec, JobSpecError, JobState, Schedule, SystemClock,
 };
 pub use pay_schedule::{Frequency, PaySchedule};
 // Canonical onboarding warning (ADR 0002 / personal-cfo-n7bo): re-exported so the
@@ -2772,6 +2773,58 @@ impl Kernel {
     pub fn schedule_job(&self, spec: &JobSpec) -> Result<(), KernelError> {
         self.worker.schedule_job(spec)?;
         Ok(())
+    }
+
+    /// Replace a durable job's configuration, resetting terminal state so new
+    /// settings take effect (refused while the job is running).
+    ///
+    /// # Errors
+    /// [`KernelError`] if the spec is invalid, the job is running, or the
+    /// write fails.
+    pub fn reconfigure_job(&self, spec: &JobSpec) -> Result<(), KernelError> {
+        self.worker.reconfigure_job(spec)?;
+        Ok(())
+    }
+
+    /// Remove a durable schedule (not while it is running).
+    ///
+    /// # Errors
+    /// [`KernelError`] on a write failure.
+    pub fn delete_job(&self, id: Uuid) -> Result<bool, KernelError> {
+        Ok(self.worker.delete_job(id)?)
+    }
+
+    /// Claim the due jobs of a lock-releasing `kind` (ADR 0060 addendum
+    /// 2026-10-04): the caller runs them without holding the vault, then
+    /// reports through [`Self::finish_claimed_job`].
+    ///
+    /// # Errors
+    /// [`KernelError::Persistence`] on a store failure.
+    pub fn claim_due_jobs_of_kind(
+        &self,
+        kind: &str,
+        now: DateTime<Utc>,
+        unlock_window: &str,
+        clock: &dyn Clock,
+    ) -> Result<(Vec<ClaimedJob>, JobRunReport), KernelError> {
+        self.worker
+            .claim_due_jobs_of_kind(kind, now, unlock_window, clock)
+            .map_err(|error| KernelError::Persistence(error.to_string()))
+    }
+
+    /// Record a claimed job's outcome with the runtime's usual terminal rules.
+    ///
+    /// # Errors
+    /// [`KernelError::Persistence`] on a store failure.
+    pub fn finish_claimed_job(
+        &self,
+        claimed: &ClaimedJob,
+        execution: JobExecution,
+        clock: &dyn Clock,
+    ) -> Result<JobRunReport, KernelError> {
+        self.worker
+            .finish_claimed_job(claimed, execution, clock)
+            .map_err(|error| KernelError::Persistence(error.to_string()))
     }
 
     /// Read the local durable-job history for a Settings/status surface.
