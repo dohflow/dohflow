@@ -3,7 +3,7 @@
 // account name. No opening balance is asked for — the next refresh brings the
 // provider's balance (yl53), so the user maps and moves on.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Loader2, X } from "lucide-react";
 
 import type { CashflowRoleDto, CreateAccountInput, IpcError } from "@/bindings";
@@ -32,6 +32,9 @@ export function NewMappedAccountDialog({
   onCreate,
   onCreated,
   onClose,
+  dialogLabel = "New account for this connection",
+  description,
+  createLabel = "Create and map",
 }: {
   /// The provider's name for the account — the natural default name.
   externalName: string;
@@ -48,6 +51,12 @@ export function NewMappedAccountDialog({
   ) => Promise<{ id: string | null; error: IpcError | null }>;
   onCreated: (id: string) => void;
   onClose: () => void;
+  /// Reused outside the connection mapping step (personal-cfo-tulv: a file
+  /// import's per-account mapping), where the connector wording below would
+  /// be wrong — the caller supplies its own. Defaults keep the connector copy.
+  dialogLabel?: string;
+  description?: ReactNode;
+  createLabel?: string;
 }) {
   const [name, setName] = useState(externalName);
   const [role, setRole] = useState<CashflowRoleDto>("LiquidCash");
@@ -104,7 +113,7 @@ export function NewMappedAccountDialog({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="New account for this connection"
+        aria-label={dialogLabel}
         className="relative flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-background p-6 shadow-xl"
       >
         <div className="flex items-center justify-between">
@@ -120,9 +129,13 @@ export function NewMappedAccountDialog({
           </button>
         </div>
         <p className="text-sm text-muted-foreground">
-          Tracks the provider&rsquo;s &ldquo;{externalName}&rdquo;, created in{" "}
-          {currency} (your base currency). Its balance and history arrive with
-          the next refresh.
+          {description ?? (
+            <>
+              Tracks the provider&rsquo;s &ldquo;{externalName}&rdquo;, created in{" "}
+              {currency} (your base currency). Its balance and history arrive with
+              the next refresh.
+            </>
+          )}
         </p>
 
         <div className="flex flex-col gap-1.5">
@@ -190,7 +203,7 @@ export function NewMappedAccountDialog({
             disabled={busy || currencyRefusal !== null}
           >
             {busy ? <Loader2 className="animate-spin" aria-hidden /> : null}
-            Create and map
+            {createLabel}
           </Button>
         </div>
       </div>

@@ -8,14 +8,18 @@ import { ImportFileDialog } from "./ImportFileDialog";
 const mocks = vi.hoisted(() => ({
   importBatch: vi.fn(),
   importPreviewColumns: vi.fn(),
+  importPreviewAccounts: vi.fn(),
   listSourcePresets: vi.fn(),
+  createAccount: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
   commands: {
     importBatch: mocks.importBatch,
     importPreviewColumns: mocks.importPreviewColumns,
+    importPreviewAccounts: mocks.importPreviewAccounts,
     listSourcePresets: mocks.listSourcePresets,
+    createAccount: mocks.createAccount,
   },
 }));
 
@@ -70,6 +74,7 @@ function preset(over: Partial<SourcePresetDto> = {}): SourcePresetDto {
     // published. Tests that specifically cover the guide link opt in with
     // `preset({ help_published: true })`.
     help_published: false,
+    importer_id: "ynab-register",
     ...over,
   };
 }
@@ -78,6 +83,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default: no mappable columns (auto-detect); the mapping test overrides this.
   mocks.importPreviewColumns.mockResolvedValue(ok([]));
+  // Default: no account column — the single "Import into" path (personal-cfo-tulv
+  // tests override this).
+  mocks.importPreviewAccounts.mockResolvedValue(ok([]));
   // Default: no presets registered — the picker stays hidden, matching every
   // test written before personal-cfo-gvidg existed. Preset-specific tests
   // override this.
@@ -95,6 +103,7 @@ it("imports a chosen file into the selected account and shows the outcome", asyn
       auto_categorized: 0,
       skipped_rows: 0,
       warnings: [],
+      skipped_unmapped: 0,
     }),
   );
 
@@ -139,6 +148,7 @@ it("surfaces how many rows were auto-categorized on import (5n4.2)", async () =>
       auto_categorized: 3,
       skipped_rows: 0,
       warnings: [],
+      skipped_unmapped: 0,
     }),
   );
 
@@ -275,6 +285,7 @@ it("lets the user remap a column and passes the mapping to import (4d8.24.1.2)",
       auto_categorized: 0,
       skipped_rows: 0,
       warnings: [],
+      skipped_unmapped: 0,
     }),
   );
 
@@ -315,6 +326,7 @@ it("imports with no mapping (auto-detect) when the user overrides nothing", asyn
       auto_categorized: 0,
       skipped_rows: 0,
       warnings: [],
+      skipped_unmapped: 0,
     }),
   );
 
@@ -346,6 +358,7 @@ it("reports an already-imported file without claiming new rows", async () => {
       auto_categorized: 0,
       skipped_rows: 0,
       warnings: [],
+      skipped_unmapped: 0,
     }),
   );
 
@@ -399,6 +412,7 @@ it("skips the mapping step when a chosen preset's columns fully match the file",
       auto_categorized: 0,
       skipped_rows: 0,
       warnings: [],
+      skipped_unmapped: 0,
     }),
   );
 
@@ -478,6 +492,7 @@ it("pre-fills the mapping and leaves a gap visible when a preset's columns parti
       auto_categorized: 0,
       skipped_rows: 0,
       warnings: [],
+      skipped_unmapped: 0,
     }),
   );
 
@@ -517,4 +532,191 @@ it("pre-fills the mapping and leaves a gap visible when a preset's columns parti
       }),
     }),
   );
+});
+
+// --- personal-cfo-tulv: a file spanning several accounts (YNAB) ---
+
+const CHECKING_ID = "0190a000-0000-7000-8000-000000000001";
+const CARD_ID = "0190a000-0000-7000-8000-000000000002";
+const YNAB_HEADERS = [
+  "Account",
+  "Flag",
+  "Date",
+  "Payee",
+  "Category Group/Category",
+  "Category Group",
+  "Category",
+  "Memo",
+  "Outflow",
+  "Inflow",
+  "Cleared",
+];
+
+function ynabAccounts(): AccountViewDto[] {
+  return [
+    account(),
+    account({ id: CARD_ID, name: "Rewards Card", cashflow_role: "credit_facility" }),
+  ];
+}
+
+/// Choose "Import from YNAB", then pick a file whose YNAB accounts are `labels`.
+async function pickYnabFile(accounts: AccountViewDto[], labels: string[]) {
+  mocks.listSourcePresets.mockResolvedValue([preset()]);
+  mocks.importPreviewColumns.mockResolvedValue(ok(YNAB_HEADERS));
+  mocks.importPreviewAccounts.mockResolvedValue(ok(labels));
+  const view = renderWithClient(<ImportFileDialog accounts={accounts} onClose={vi.fn()} />);
+  fireEvent.change(await screen.findByLabelText("Import from"), {
+    target: { value: "ynab" },
+  });
+  const input = view.container.querySelector('input[type="file"]') as HTMLInputElement;
+  Object.defineProperty(input, "files", { value: [csvFile()] });
+  fireEvent.change(input);
+  await screen.findByRole("region", { name: /accounts in this file/i });
+  return view;
+}
+
+it("reads the file through the preset's own importer", async () => {
+  await pickYnabFile(ynabAccounts(), ["Checking", "Credit Card"]);
+  expect(mocks.importPreviewColumns).toHaveBeenCalledWith(
+    expect.any(Array),
+    "statement.csv",
+    "ynab-register",
+  );
+  expect(mocks.importPreviewAccounts).toHaveBeenCalledWith(
+    expect.any(Array),
+    "statement.csv",
+    null,
+    "ynab",
+    null,
+  );
+});
+
+it("asks where each account in the file goes and imports with that map", async () => {
+  mocks.importBatch.mockResolvedValue(
+    ok({
+      source_batch_id: "0190b000-0000-7000-8000-000000000020",
+      status: "partially_committed",
+      staged: 10,
+      committed: 9,
+      flagged: 1,
+      auto_categorized: 0,
+      skipped_rows: 0,
+      warnings: [
+        {
+          row: null,
+          message:
+            "2 rows are each a transfer between YNAB accounts — each side was imported as its own transaction, not linked as a transfer.",
+          skipped: false,
+        },
+        { row: 4, message: "ambiguous date (assumed US M/D/Y)", skipped: false },
+      ],
+      skipped_unmapped: 1,
+    }),
+  );
+  await pickYnabFile(ynabAccounts(), ["Checking", "Credit Card", "Savings"]);
+
+  // One "Import into" for the whole file would put every account's rows in one
+  // account — it gives way to a choice per account.
+  expect(screen.queryByLabelText("Import into")).not.toBeInTheDocument();
+  // Pre-selected by matching name; the rest start as "Don't import".
+  expect((screen.getByLabelText("Import Checking into") as HTMLSelectElement).value).toBe(
+    CHECKING_ID,
+  );
+  const card = screen.getByLabelText("Import Credit Card into") as HTMLSelectElement;
+  expect(card.value).toBe("");
+  expect((screen.getByLabelText("Import Savings into") as HTMLSelectElement).value).toBe("");
+  fireEvent.change(card, { target: { value: CARD_ID } });
+
+  fireEvent.click(screen.getByRole("button", { name: /^import$/i }));
+  await waitFor(() => expect(mocks.importBatch).toHaveBeenCalledTimes(1));
+  expect(mocks.importBatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      preset_id: "ynab",
+      target_account_id: null,
+      account_map: [
+        { source_account: "Checking", account_id: CHECKING_ID },
+        { source_account: "Credit Card", account_id: CARD_ID },
+        { source_account: "Savings", account_id: null },
+      ],
+      default_currency: "USD",
+    }),
+  );
+
+  // The outcome names what was left out and the file's own notes; a note
+  // about one row is still not listed (pxi.10).
+  expect(await screen.findByText(/Imported 9 transactions/)).toBeInTheDocument();
+  const notes = screen.getByRole("list", { name: /import notes/i });
+  expect(Array.from(notes.querySelectorAll("li")).map((li) => li.textContent)).toEqual([
+    "1 row from accounts you chose not to import was left out.",
+    "2 rows are each a transfer between YNAB accounts — each side was imported as its own transaction, not linked as a transfer.",
+  ]);
+  expect(screen.queryByText(/ambiguous/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/All clean/)).not.toBeInTheDocument();
+});
+
+it("won't import until at least one account in the file is mapped", async () => {
+  await pickYnabFile([account({ name: "Main" })], ["Checking", "Savings"]);
+  const importButton = screen.getByRole("button", { name: /^import$/i });
+  expect(importButton).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Import Savings into"), {
+    target: { value: CHECKING_ID },
+  });
+  expect(importButton).toBeEnabled();
+});
+
+it("refuses to mix currencies in one import", async () => {
+  await pickYnabFile(
+    [
+      account(),
+      account({ id: CARD_ID, name: "Euro Card", balance: { minor_units: 0, currency: "EUR" } }),
+    ],
+    ["Checking", "Credit Card"],
+  );
+  fireEvent.change(screen.getByLabelText("Import Credit Card into"), {
+    target: { value: CARD_ID },
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent(/different currencies/i);
+  expect(screen.getByRole("button", { name: /^import$/i })).toBeDisabled();
+});
+
+it("creates a new account from the mapping step and maps it", async () => {
+  const NEW_ID = "0190a000-0000-7000-8000-000000000009";
+  mocks.createAccount.mockResolvedValue(ok({ account_id: NEW_ID, mutation: {} }));
+  await pickYnabFile(ynabAccounts(), ["Checking", "Savings"]);
+
+  fireEvent.change(screen.getByLabelText("Import Savings into"), {
+    target: { value: "__create_new__" },
+  });
+  const dialog = await screen.findByRole("dialog", { name: /new account for this import/i });
+  expect(dialog).toHaveTextContent(/“Savings” from this file/);
+  expect(dialog).not.toHaveTextContent(/refresh/i);
+  fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+  await waitFor(() =>
+    expect(mocks.createAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Savings", currency: "USD", opening_balance: null }),
+    ),
+  );
+  await waitFor(() =>
+    expect((screen.getByLabelText("Import Savings into") as HTMLSelectElement).value).toBe(
+      NEW_ID,
+    ),
+  );
+});
+
+it("keeps the single Import-into choice for a file with one account", async () => {
+  mocks.importPreviewColumns.mockResolvedValue(ok(YNAB_HEADERS));
+  mocks.importPreviewAccounts.mockResolvedValue(ok(["Checking"]));
+  const { container } = renderWithClient(
+    <ImportFileDialog accounts={[account()]} onClose={vi.fn()} />,
+  );
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+  Object.defineProperty(input, "files", { value: [csvFile()] });
+  fireEvent.change(input);
+  await screen.findByText("statement.csv");
+  await waitFor(() => expect(mocks.importPreviewAccounts).toHaveBeenCalled());
+  expect(screen.getByLabelText("Import into")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("region", { name: /accounts in this file/i }),
+  ).not.toBeInTheDocument();
 });

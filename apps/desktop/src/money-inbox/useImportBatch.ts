@@ -4,6 +4,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   commands,
   type BatchResultDto,
+  type ColumnMappingDto,
+  type CreateAccountInput,
   type ImportBatchInput,
   type IpcError,
   type SourcePresetDto,
@@ -49,11 +51,52 @@ export function useImportBatch() {
   /// (personal-cfo-4d8.24.1.2). Empty for formats without mappable columns (OFX) or
   /// an unrecognized file; the caller then just imports with auto-detect.
   const previewColumns = useCallback(
-    async (data: number[], filename: string | null): Promise<string[]> => {
-      const result = await commands.importPreviewColumns(data, filename, null);
+    async (
+      data: number[],
+      filename: string | null,
+      pluginId: string | null = null,
+    ): Promise<string[]> => {
+      const result = await commands.importPreviewColumns(data, filename, pluginId);
       return result.status === "ok" ? result.data : [];
     },
     [],
+  );
+
+  /// The distinct source accounts in a file (personal-cfo-tulv) — read the way
+  /// the import will read it (the preset's importer and hints, the user's
+  /// mapping on top). Empty for a file with no account column; the dialog then
+  /// imports everything into the one chosen account, as before.
+  const previewAccounts = useCallback(
+    async (
+      data: number[],
+      filename: string | null,
+      presetId: string | null,
+      columnMapping: ColumnMappingDto | null,
+    ): Promise<string[]> => {
+      const result = await commands.importPreviewAccounts(
+        data,
+        filename,
+        null,
+        presetId,
+        columnMapping,
+      );
+      return result.status === "ok" ? result.data : [];
+    },
+    [],
+  );
+
+  /// Create an account from the import's account-mapping step
+  /// (personal-cfo-tulv), refreshing the account list so it can be picked.
+  const createAccount = useCallback(
+    async (
+      input: CreateAccountInput,
+    ): Promise<{ id: string | null; error: IpcError | null }> => {
+      const result = await commands.createAccount(input);
+      if (result.status !== "ok") return { id: null, error: result.error };
+      void queryClient.invalidateQueries({ queryKey: queryKeys.accounts });
+      return { id: result.data.account_id, error: null };
+    },
+    [queryClient],
   );
 
   /// Every registered source-app preset (personal-cfo-gvidg), for the
@@ -65,5 +108,5 @@ export function useImportBatch() {
     return commands.listSourcePresets();
   }, []);
 
-  return { importFile, previewColumns, listPresets };
+  return { importFile, previewColumns, previewAccounts, listPresets, createAccount };
 }

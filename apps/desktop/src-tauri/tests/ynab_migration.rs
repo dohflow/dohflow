@@ -16,7 +16,7 @@ use app_lib::ipc::dto::{
 };
 use app_lib::ipc::IpcError;
 use app_lib::AppState;
-use finance_kernel::{SourcePreset as _, VaultController};
+use finance_kernel::VaultController;
 use tempfile::TempDir;
 
 fn open_state() -> (TempDir, AppState) {
