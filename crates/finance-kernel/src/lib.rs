@@ -2515,6 +2515,19 @@ pub struct BatchResult {
     /// first (in source order), then notes on staged rows. Each message is a
     /// fixed reason, never the row's own values.
     pub warnings: Vec<ImportWarning>,
+    /// Rows left out because their source account was not mapped to a real
+    /// account (personal-cfo-tulv, [`Kernel::ingest_batch_routed`]) — the
+    /// user chose not to import that account. Not counted in `skipped_rows`,
+    /// which is about rows the parse could not read. `0` on every other path.
+    pub skipped_unmapped: u32,
+}
+
+/// Where a file import's rows land (personal-cfo-tulv).
+enum FileImportTarget<'a> {
+    /// Every row into one account (the original file-import path).
+    Single(AccountId),
+    /// Each row by its source account label; unmapped labels are left out.
+    Routed(&'a std::collections::BTreeMap<String, uuid::Uuid>),
 }
 
 /// The most [`ImportWarning`]s a [`BatchResult`] carries. A file with more
@@ -2886,6 +2899,56 @@ impl Kernel {
         limits: &ParserLimits,
         meta: &CommandMeta,
     ) -> Result<BatchResult, KernelError> {
+        self.ingest_file(
+            plugin,
+            input,
+            hints,
+            &FileImportTarget::Single(target_account),
+            limits,
+            meta,
+        )
+    }
+
+    /// [`Self::ingest_batch`] for a file whose rows span several accounts
+    /// (personal-cfo-tulv — a YNAB register export): `account_map` sends each
+    /// source account label to the real account its rows land in. Rows whose
+    /// label the map does not name are left out and counted in
+    /// [`BatchResult::skipped_unmapped`], never committed elsewhere. Same
+    /// file-level and transaction-level dedupe as `ingest_batch`; the
+    /// transaction-level check is per account, so a duplicate surfaces in the
+    /// Money Inbox against the account it belongs to.
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] if a command fails to apply or persistence errors.
+    pub fn ingest_batch_routed(
+        &self,
+        plugin: &'static dyn ImporterPlugin,
+        input: ParserInput,
+        hints: &ParserHints,
+        account_map: &std::collections::BTreeMap<String, uuid::Uuid>,
+        limits: &ParserLimits,
+        meta: &CommandMeta,
+    ) -> Result<BatchResult, KernelError> {
+        self.ingest_file(
+            plugin,
+            input,
+            hints,
+            &FileImportTarget::Routed(account_map),
+            limits,
+            meta,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn ingest_file(
+        &self,
+        plugin: &'static dyn ImporterPlugin,
+        input: ParserInput,
+        hints: &ParserHints,
+        target: &FileImportTarget<'_>,
+        limits: &ParserLimits,
+        meta: &CommandMeta,
+    ) -> Result<BatchResult, KernelError> {
         let fingerprint = content_fingerprint(&input.bytes);
 
         // File-level dedupe (ADR 0014 §3): an exact re-upload is skipped without
@@ -2900,6 +2963,7 @@ impl Kernel {
                 auto_categorized: 0,
                 skipped_rows: 0,
                 warnings: Vec::new(),
+                skipped_unmapped: 0,
             });
         }
 
@@ -2940,16 +3004,23 @@ impl Kernel {
                     auto_categorized: 0,
                     skipped_rows: 0,
                     warnings: Vec::new(),
+                    skipped_unmapped: 0,
                 });
             }
         };
 
         // Bulk-stage, then commit each clean transaction (duplicates self-flag).
-        let staged_ids = self.worker.stage_parsed_batch(
-            batch_id.as_uuid(),
-            &parsed,
-            target_account.as_uuid(),
-        )?;
+        let (staged_ids, not_routed) = match target {
+            FileImportTarget::Single(account) => (
+                self.worker
+                    .stage_parsed_batch(batch_id.as_uuid(), &parsed, account.as_uuid())?,
+                0,
+            ),
+            FileImportTarget::Routed(map) => {
+                self.worker
+                    .stage_parsed_batch_routed(batch_id.as_uuid(), &parsed, map)?
+            }
+        };
         for staged_id in &staged_ids {
             self.dispatch(CommandEnvelope::new(
                 next_meta(meta),
@@ -3004,6 +3075,7 @@ impl Kernel {
             auto_categorized,
             skipped_rows,
             warnings,
+            skipped_unmapped: u32::try_from(not_routed).unwrap_or(u32::MAX),
         })
     }
 
@@ -3134,6 +3206,9 @@ impl Kernel {
                     auto_categorized,
                     skipped_rows,
                     warnings,
+                    // Connector syncs report their unmapped count on
+                    // SyncBatchResult::skipped_unmapped below.
+                    skipped_unmapped: 0,
                 }
             },
             skipped_unmapped,

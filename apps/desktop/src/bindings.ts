@@ -32,6 +32,22 @@ export const commands = {
 	updateBatchState: (input: UpdateBatchStateInput) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("update_batch_state", { input })),
 	importBatch: (input: ImportBatchInput) => typedError<BatchResultDto, IpcError>(__TAURI_INVOKE("import_batch", { input })),
 	importPreviewColumns: (data: number[], filename: string | null, pluginId: string | null) => typedError<string[], IpcError>(__TAURI_INVOKE("import_preview_columns", { data, filename, pluginId })),
+	importPreviewAccounts: (data: number[], filename: string | null, pluginId: string | null, presetId: string | null, columnMapping: {
+	date: string | null,
+	description: string | null,
+	amount: string | null,
+	debit: string | null,
+	credit: string | null,
+	account: string | null,
+	category: string | null,
+	/**
+	 *  A second, coarser category column (personal-cfo-gvidg) — see
+	 *  `ColumnMapping::category_group`.
+	 */
+	category_group: string | null,
+	currency: string | null,
+	memo: string | null,
+} | null) => typedError<string[], IpcError>(__TAURI_INVOKE("import_preview_accounts", { data, filename, pluginId, presetId, columnMapping })),
 	listSourcePresets: () => __TAURI_INVOKE<SourcePresetDto[]>("list_source_presets"),
 	updateAccount: (input: UpdateAccountInput) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("update_account", { input })),
 	setAccountSubtype: (accountId: string, subtype: string | null, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_account_subtype", { accountId, subtype, idempotencyKey })),
@@ -587,6 +603,11 @@ export type BatchResultDto = {
 	 *  the row's own values.
 	 */
 	warnings: ImportWarningDto[],
+	/**
+	 *  Rows left out because the user chose not to import their source
+	 *  account (personal-cfo-tulv `account_map`). Not part of `skipped_rows`.
+	 */
+	skipped_unmapped: number,
 };
 
 /**
@@ -1637,6 +1658,20 @@ export type HistoryDayDto = {
 };
 
 /**
+ *  One source account in a multi-account file, and where its rows go
+ *  (personal-cfo-tulv).
+ */
+export type ImportAccountMapEntryDto = {
+	/**  The account label exactly as `import_preview_accounts` returned it. */
+	source_account: string,
+	/**
+	 *  The real account (UUID string) its rows land in; `None` = don't
+	 *  import this account's rows (they are counted, not dropped silently).
+	 */
+	account_id: string | null,
+};
+
+/**
  *  Input for importing a file through the ingestion pipeline (personal-cfo-cu8).
  *  The raw bytes cross the wire as a `number[]` and are parsed in the bounded
  *  host; nothing is persisted unencrypted (ADR 0014 shred-after-parse).
@@ -1646,8 +1681,18 @@ export type ImportBatchInput = {
 	data: number[],
 	/**  Original filename — drives plugin detection + the batch name. */
 	filename: string | null,
-	/**  The account (UUID string) to import the transactions into. */
-	target_account_id: string,
+	/**
+	 *  The account (UUID string) to import every transaction into. Exactly
+	 *  one of this and `account_map` is given.
+	 */
+	target_account_id: string | null,
+	/**
+	 *  For a file spanning several accounts (personal-cfo-tulv): where each
+	 *  source account's rows go, keyed by the labels `import_preview_accounts`
+	 *  returned. A row whose label is missing here, or mapped to `None`, is
+	 *  not imported and is counted in `BatchResultDto::skipped_unmapped`.
+	 */
+	account_map: ImportAccountMapEntryDto[] | null,
 	/**  An explicit importer plugin id; if omitted, the best-detected one is used. */
 	plugin_id: string | null,
 	/**
@@ -2245,6 +2290,13 @@ export type SourcePresetDto = {
 	 *  not render a guide link when this is `false`.
 	 */
 	help_published: boolean,
+	/**
+	 *  The importer plugin this preset's files go through, when it has its
+	 *  own (personal-cfo-tulv: `"ynab-register"`) — pass it as
+	 *  `import_preview_columns`' `plugin_id` so the headers are read the
+	 *  way the import will read them. `None` = the generic CSV importer.
+	 */
+	importer_id: string | null,
 };
 
 /**

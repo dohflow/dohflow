@@ -65,6 +65,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::update_batch_state,
         ipc::commands::import_batch,
         ipc::commands::import_preview_columns,
+        ipc::commands::import_preview_accounts,
         ipc::commands::list_source_presets,
         ipc::commands::update_account,
         ipc::commands::set_account_subtype,

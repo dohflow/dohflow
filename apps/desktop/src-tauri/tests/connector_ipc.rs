@@ -799,7 +799,8 @@ fn csv_backfill_flags_already_synced_rows() {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("backfill.csv".to_owned()),
-            target_account_id: checking,
+            target_account_id: Some(checking),
+            account_map: None,
             plugin_id: Some("generic-csv".to_owned()),
             preset_id: None,
             column_mapping: None,

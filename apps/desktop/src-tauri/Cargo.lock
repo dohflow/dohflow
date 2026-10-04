@@ -4096,7 +4096,10 @@ dependencies = [
 name = "source-presets"
 version = "0.1.0"
 dependencies = [
+ "csv-importer",
  "importer-core",
+ "semver",
+ "serde_json",
 ]
 
 [[package]]

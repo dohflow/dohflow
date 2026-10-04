@@ -116,7 +116,8 @@ fn import(state: &AppState, account_id: &str, data: Vec<u8>, filename: &str) -> 
         ImportBatchInput {
             data,
             filename: Some(filename.to_owned()),
-            target_account_id: account_id.to_owned(),
+            target_account_id: Some(account_id.to_owned()),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,

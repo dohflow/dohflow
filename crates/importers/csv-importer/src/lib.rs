@@ -684,11 +684,9 @@ pub fn parse_with_dialect(
                 normalized_merchant,
                 // The account column's raw label, when the source has one
                 // (personal-cfo-gvidg) — doubles as the matching
-                // `ParsedAccount::external_id` below, so a per-account
-                // commit path (e.g. `stage_sync_batch`) can correlate the
-                // two by the same string. `stage_parsed_batch` (today's
-                // only file-import commit path) does not read this field
-                // yet — see this crate's `SourcePreset` docs.
+                // `ParsedAccount::external_id` below; a routed file import
+                // (`stage_parsed_batch_routed`, personal-cfo-tulv) sends the
+                // row to the account the user mapped this label to.
                 external_account: account_label.clone(),
                 txn_fingerprint,
             }),
