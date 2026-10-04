@@ -77,13 +77,13 @@ fn canonical(kernel: &Kernel) -> Value {
 /// build runs the supported forward migrations, so the expected state is the
 /// frozen one with only `schema_version` advanced to the current version.
 const CORPUS_SCHEMA_VERSION: i64 = 53;
+const _: () = assert!(CURRENT_SCHEMA_VERSION >= CORPUS_SCHEMA_VERSION);
 
 /// The frozen canonical state carried forward to the current schema: every
 /// field must still match byte-for-byte, and `schema_version` must equal
 /// [`CURRENT_SCHEMA_VERSION`] (proving the forward migrations ran on the
 /// outgoing engine's vault rather than being skipped).
 fn at_current_schema(frozen: &Value) -> Value {
-    assert!(CURRENT_SCHEMA_VERSION >= CORPUS_SCHEMA_VERSION);
     let mut expected = frozen.clone();
     let metadata = frozen["metadata"].as_str().unwrap();
     let captured = format!("schema_version: {CORPUS_SCHEMA_VERSION},");
