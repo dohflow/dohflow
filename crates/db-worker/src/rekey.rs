@@ -97,10 +97,23 @@ impl DbWorker {
         dest: &Path,
     ) -> Result<Vec<BlobRename>, DbError> {
         let old_dek = self.dek()?;
-        if dest.exists() {
-            return Err(DbError::InvalidCommand(
-                "rekey copy destination already exists".to_owned(),
-            ));
+        // Create the destination as an empty file first, atomically refusing an
+        // existing one. The writer of an unlocked vault is opened without
+        // SQLITE_OPEN_CREATE, and an ATTACH inherits its connection's flags, so
+        // it cannot create the file itself; SQLCipher treats an empty file as a
+        // new, empty database to key and export into.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(DbError::InvalidCommand(
+                    "rekey copy destination already exists".to_owned(),
+                ))
+            }
+            Err(error) => return Err(error.into()),
         }
         let blobs = attachments::blobs_dir(&self.path);
         let guard = self.lock();

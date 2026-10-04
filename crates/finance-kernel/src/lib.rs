@@ -78,6 +78,8 @@ use observability::diagnostics::{
 };
 use uuid::Uuid;
 
+mod rekey;
+pub use rekey::RekeyRecovery;
 mod vault;
 pub use vault::{classify_vault, VaultController, VaultHealth, VaultState};
 
@@ -2619,6 +2621,16 @@ pub enum KernelError {
     /// message (never embeds key, password, or salt material).
     #[error("vault error: {0}")]
     Vault(String),
+    /// A key rotation needs more free disk space than is available (ADR 0083
+    /// §5): room for one database copy plus a margin, plus the attachment bytes
+    /// where hard links are unavailable. Nothing was written.
+    #[error("not enough free disk space for key rotation (need {needed} bytes, have {available})")]
+    InsufficientDiskSpace {
+        /// Bytes required.
+        needed: u64,
+        /// Bytes available.
+        available: u64,
+    },
     /// A vault state transition not permitted by the §6.2.1 state machine
     /// (`personal-cfo-tg5`).
     #[error("illegal vault transition from {from:?} to {to:?}")]

@@ -34,7 +34,9 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(os)
 }
 
-/// A raw-keyed vault with an account and two attachments.
+/// A raw-keyed vault with an account and two attachments, reopened through the
+/// unlock path (`open_existing_with_raw_key`, whose writer has no
+/// SQLITE_OPEN_CREATE flag — the state a real rotation starts from).
 fn seeded() -> (
     tempfile::TempDir,
     PathBuf,
@@ -45,7 +47,8 @@ fn seeded() -> (
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("vault.db");
     let dek = generate_dek().unwrap();
-    let worker = DbWorker::open_with_raw_key(&path, duplicate(&dek)).unwrap();
+    drop(DbWorker::open_with_raw_key(&path, duplicate(&dek)).unwrap());
+    let worker = DbWorker::open_existing_with_raw_key(&path, duplicate(&dek)).unwrap();
     worker.dispatch(meta(), create_account_cmd()).unwrap();
     let a = worker
         .import_attachment(PDF, Some("application/pdf"), Some("one.pdf"))
