@@ -425,12 +425,10 @@ pub enum AccountHandling {
     /// behavior for `generic-csv`, unchanged).
     OneFilePerAccount,
     /// An account column present — the importer stages one [`ParsedAccount`]
-    /// per distinct value and stamps each row's `external_account`.
-    /// Routing those into DIFFERENT real DohFlow accounts at commit time is
-    /// NOT part of this preset mechanism (see this crate's module docs) —
-    /// today every row still commits into whichever single account the user
-    /// picked, the same as `OneFilePerAccount`; only the *parsed* data is
-    /// richer.
+    /// per distinct value and stamps each row's `external_account`. The
+    /// import then routes each row by that label through the account map
+    /// the user chose (personal-cfo-tulv); a row whose account the user did
+    /// not map is reported, never committed into some other account.
     AccountColumn,
 }
 
@@ -471,17 +469,9 @@ pub enum SourceQuirk {
 /// [`ImporterPlugin`]/`ConnectorAdapter` are traits returning owned data
 /// from methods rather than struct literals.
 ///
-/// SCOPE NOTE on [`AccountHandling::AccountColumn`]: this mechanism parses
-/// and stages an account column's distinct values as [`ParsedAccount`]s and
-/// stamps `external_account` on each row — but does not itself route
-/// different rows into different *real* DohFlow accounts at commit time.
-/// `crates/db-worker`'s `stage_parsed_batch` (the file-import commit path)
-/// still targets one account for the whole batch, same as today;
-/// `stage_sync_batch` (the connector-sync path) already supports true
-/// per-row account routing via an external-key → real-account map, and is
-/// the natural mechanism to reuse for this — deliberately left to whichever
-/// bead does the first `AccountColumn`-handling preset's full end-to-end
-/// commit path (e.g. `personal-cfo-tulv`'s YNAB guide), not built here.
+/// [`AccountHandling::AccountColumn`] sources span several accounts in one
+/// file: the import routes each row to the real account the user mapped its
+/// label to (personal-cfo-tulv — `stage_parsed_batch_routed` in `db-worker`).
 pub trait SourcePreset: Sync {
     /// Stable, unique id (e.g. `"ynab"`). Never changes.
     fn id(&self) -> &'static str;
@@ -536,6 +526,15 @@ pub trait SourcePreset: Sync {
     /// The frontend must not render a guide link when this is `false`.
     fn help_published(&self) -> bool {
         false
+    }
+
+    /// The [`ImporterPlugin`] this preset's files go through, when the
+    /// source needs logic beyond a column mapping (personal-cfo-tulv: YNAB's
+    /// tab-separated decimal-comma export, its whole-file date order, and
+    /// its transfer/split/cleared notes). `None` — the default — means the
+    /// generic CSV importer with [`Self::hints`], the MIGRATE-0 path.
+    fn importer_id(&self) -> Option<&'static str> {
+        None
     }
 
     /// A synthesized fixture (never a real user file) exercising this
@@ -702,5 +701,12 @@ mod tests {
         // be a draft," not the safer "a preset's guide link stays hidden
         // one release longer than necessary."
         assert!(!PresetWithNoOpinionOnPublishStatus.help_published());
+    }
+
+    #[test]
+    fn importer_id_defaults_to_the_generic_csv_path() {
+        // personal-cfo-tulv: a preset routes through its own importer only by
+        // opting in; the default keeps the MIGRATE-0 generic CSV path.
+        assert_eq!(PresetWithNoOpinionOnPublishStatus.importer_id(), None);
     }
 }
