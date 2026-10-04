@@ -4,7 +4,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, AttachmentId, CashflowRole, CommandEnvelope,
     CommandMeta, CreateAccount, Currency, Kernel, LedgerAccountId, Money, RecordTransaction,
-    TransactionId, VaultController, NO_RESET_WARNING_ACKNOWLEDGED,
+    TransactionId, VaultController, CURRENT_SCHEMA_VERSION, NO_RESET_WARNING_ACKNOWLEDGED,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -71,6 +71,28 @@ fn canonical(kernel: &Kernel) -> Value {
         "metadata": format!("{:?}", kernel.vault_metadata().unwrap()),
         "projection_checksum": kernel.transaction_display_checksum().unwrap(),
     })
+}
+
+/// The schema version the outgoing corpus was frozen at. Opening it on a newer
+/// build runs the supported forward migrations, so the expected state is the
+/// frozen one with only `schema_version` advanced to the current version.
+const CORPUS_SCHEMA_VERSION: i64 = 53;
+
+/// The frozen canonical state carried forward to the current schema: every
+/// field must still match byte-for-byte, and `schema_version` must equal
+/// [`CURRENT_SCHEMA_VERSION`] (proving the forward migrations ran on the
+/// outgoing engine's vault rather than being skipped).
+fn at_current_schema(frozen: &Value) -> Value {
+    assert!(CURRENT_SCHEMA_VERSION >= CORPUS_SCHEMA_VERSION);
+    let mut expected = frozen.clone();
+    let metadata = frozen["metadata"].as_str().unwrap();
+    let captured = format!("schema_version: {CORPUS_SCHEMA_VERSION},");
+    assert_eq!(metadata.matches(&captured).count(), 1, "{metadata}");
+    expected["metadata"] = Value::String(metadata.replace(
+        &captured,
+        &format!("schema_version: {CURRENT_SCHEMA_VERSION},"),
+    ));
+    expected
 }
 
 fn corpus() -> Corpus {
@@ -223,7 +245,10 @@ fn outgoing_settled_vault_and_attachment_open_repeatedly() {
     for _ in 0..2 {
         let mut controller = VaultController::open(dir.path().join("vault.db"));
         controller.unlock(PASSWORD).unwrap();
-        assert_eq!(canonical(controller.kernel().unwrap()), corpus.settled);
+        assert_eq!(
+            canonical(controller.kernel().unwrap()),
+            at_current_schema(&corpus.settled)
+        );
         assert_eq!(
             controller
                 .kernel()
@@ -245,7 +270,7 @@ fn outgoing_committed_wal_recovers_without_a_shared_memory_index() {
     assert!(!dir.path().join("vault.db-shm").exists());
     let path = dir.path().join("vault.db");
     let kernel = Kernel::unlock_vault(&path, PASSWORD).unwrap();
-    assert_eq!(canonical(&kernel), corpus.committed_wal);
+    assert_eq!(canonical(&kernel), at_current_schema(&corpus.committed_wal));
     assert_eq!(
         kernel.read_attachment_bytes(corpus.attachment_id).unwrap(),
         ATTACHMENT
@@ -262,11 +287,17 @@ fn outgoing_committed_wal_recovers_without_a_shared_memory_index() {
         .unwrap();
     drop(kernel);
     let reopened = Kernel::unlock_vault(&path, PASSWORD).unwrap();
-    assert_eq!(canonical(&reopened), corpus.committed_wal);
+    assert_eq!(
+        canonical(&reopened),
+        at_current_schema(&corpus.committed_wal)
+    );
     let target = tempfile::tempdir().unwrap();
     let restored =
         Kernel::restore_backup(&package, PASSWORD, &target.path().join("vault.db")).unwrap();
-    assert_eq!(canonical(&restored), corpus.committed_wal);
+    assert_eq!(
+        canonical(&restored),
+        at_current_schema(&corpus.committed_wal)
+    );
 }
 
 #[test]
@@ -283,7 +314,7 @@ fn outgoing_v2_package_restores_with_original_key_and_state() {
     assert!(!destination.exists());
     fs::create_dir_all(destination.parent().unwrap()).unwrap();
     let restored = Kernel::restore_backup(&package, PASSWORD, &destination).unwrap();
-    assert_eq!(canonical(&restored), corpus.settled);
+    assert_eq!(canonical(&restored), at_current_schema(&corpus.settled));
     assert_eq!(
         restored
             .read_attachment_bytes(corpus.attachment_id)
