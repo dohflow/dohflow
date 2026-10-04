@@ -46,19 +46,20 @@ use crate::ipc::dto::{
     CreateIncomeSourceInput, CreateManualFutureEntryInput, CreateRecurringBillInput,
     CreateRecurringBillResult, CreateRecurringTransferInput, CreateRecurringTransferResult,
     CreateScenarioInput, CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult,
-    DebtPayoffPlanDto, DebtTermsDto, DismissRecurringSuggestionInput, ForecastReadinessDto,
-    ForecastViewDto, ImportBatchInput, ImportedTransactionFieldsDto, IncomeSourceDto,
-    LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
-    MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
-    RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
-    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind,
-    RestoreRecoveryStatusDto, ScenarioDto, SetBillAutopayInput, SetCardStatementBalanceInput,
-    SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto, SpendBreakdownDto,
-    SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto, TransactionPageDto,
-    TransactionPageInput, TransactionRowDto, UnconfirmObligationInput, UnconfirmedOccurrenceDto,
-    UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput, UpdateIncomeSourceInput,
-    UpdateManualFutureEntryInput, UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto,
-    VaultHealthDto, VaultListDto, VaultStatusDto, VaultSummaryDto,
+    DebtPayoffPlanDto, DebtTermsDto, DiagnosticsPreviewDto, DiagnosticsSaveResult,
+    DismissRecurringSuggestionInput, ForecastReadinessDto, ForecastViewDto, ImportBatchInput,
+    ImportedTransactionFieldsDto, IncomeSourceDto, LoanDoubleCountWarningDto, ManualFutureEntryDto,
+    MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto, MutationResult,
+    RecordTransactionInput, RecordTransactionResult, RecordTransferInput, RecurringBillDto,
+    RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
+    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, ScenarioDto, SetBillAutopayInput,
+    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
+    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
+    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
+    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
+    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
+    UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto, VaultStatusDto,
+    VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
@@ -785,6 +786,209 @@ pub fn export_transactions_csv(
     out_path: String,
 ) -> Result<u32, IpcError> {
     export_transactions_csv_impl(state.inner(), out_path)
+}
+
+// ---- local diagnostics (personal-cfo-lyd) -------------------------------------
+//
+// The capture lives on the unlocked kernel's session (`Kernel::diagnostics`), so
+// vault lock / switch / exit drop it and any pending preview by construction.
+// The only way out is: preview (an immutable redacted snapshot) → the user picks
+// a file in the native Save dialog → save writes exactly those bytes. No
+// background export, no upload, no unredacted mode (ADR 0066-A §5,
+// docs/security/logging-policy.md §6–§8).
+
+fn diagnostics_header(created_on: &str) -> observability::diagnostics::BundleHeader {
+    observability::diagnostics::BundleHeader {
+        build_version: env!("CARGO_PKG_VERSION").to_owned(),
+        build_channel: crate::update::BUILD_CHANNEL.to_owned(),
+        platform: std::env::consts::OS.to_owned(),
+        created_on: created_on.to_owned(),
+    }
+}
+
+const DIAGNOSTICS_UNAVAILABLE: &str = "Diagnostics couldn't be prepared. Nothing was saved.";
+
+pub fn diagnostics_preview_impl(state: &AppState) -> Result<DiagnosticsPreviewDto, IpcError> {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    with_kernel(state, |kernel| {
+        let snapshot = kernel
+            .diagnostics()
+            .preview(&diagnostics_header(&today))
+            .map_err(|_| IpcError::Validation(DIAGNOSTICS_UNAVAILABLE.to_owned()))?;
+        let bundle = observability::diagnostics::parse_bundle(snapshot.bytes())
+            .map_err(|_| IpcError::Validation(DIAGNOSTICS_UNAVAILABLE.to_owned()))?;
+        let clamp = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
+        Ok(DiagnosticsPreviewDto {
+            snapshot_id: u32::try_from(snapshot.id()).unwrap_or(u32::MAX),
+            text: snapshot.text().to_owned(),
+            records: bundle.records_retained,
+            dropped: clamp(bundle.dropped_by_capacity.values().sum()),
+            rejected: clamp(bundle.rejected_at_admission),
+            suggested_file_name: format!("dohflow-diagnostics-{today}.json"),
+        })
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_preview(
+    state: tauri::State<'_, AppState>,
+) -> Result<DiagnosticsPreviewDto, IpcError> {
+    diagnostics_preview_impl(state.inner())
+}
+
+/// The fixed result for an OS write failure — never the error's text or path.
+fn diagnostics_write_failure(error: &std::io::Error) -> DiagnosticsSaveResult {
+    // ENOSPC is 28 on macOS and Linux; ERROR_HANDLE_DISK_FULL (39) and
+    // ERROR_DISK_FULL (112) on Windows. `ErrorKind::StorageFull` is newer than
+    // the crate's MSRV.
+    let disk_full: &[i32] = if cfg!(windows) { &[39, 112] } else { &[28] };
+    if error
+        .raw_os_error()
+        .is_some_and(|code| disk_full.contains(&code))
+    {
+        DiagnosticsSaveResult::DiskFull
+    } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+        DiagnosticsSaveResult::PermissionDenied
+    } else {
+        DiagnosticsSaveResult::Failed
+    }
+}
+
+/// Where a diagnostics save may write, or `None` (personal-cfo-lyd review F1).
+///
+/// Only an absolute `.json` file, in a folder that exists, that is **not** inside
+/// an app-owned directory: the app-data root (the vault registry `vaults.json`,
+/// managed vaults, settings) or the active vault's own folder. The parent is
+/// canonicalized, so `..` segments and symlinked folders are resolved before the
+/// check; an existing target must be a plain file, not a symlink (which
+/// `fs::write` would follow) or a directory. The returned path is the resolved
+/// one, so what is checked is what is written.
+fn diagnostics_destination(state: &AppState, out_path: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(out_path);
+    if !path.is_absolute() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+        return None;
+    }
+    let parent = std::fs::canonicalize(path.parent()?).ok()?;
+    if !parent.is_dir() {
+        return None;
+    }
+    let target = parent.join(path.file_name()?);
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        if !meta.file_type().is_file() {
+            return None;
+        }
+    }
+    let mut protected: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(root) = state.vaults_root() {
+        protected.push(root.to_path_buf());
+    }
+    if let Ok(controller) = state.lock_controller() {
+        if let Some(folder) = controller.path().parent() {
+            protected.push(folder.to_path_buf());
+        }
+    }
+    let inside_app_data = protected
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(dir).ok())
+        .any(|dir| target.starts_with(&dir));
+    (!inside_app_data).then_some(target)
+}
+
+#[cfg(test)]
+mod diagnostics_write_failure_tests {
+    use super::{diagnostics_write_failure, DiagnosticsSaveResult};
+
+    #[test]
+    fn os_write_failures_map_to_fixed_results() {
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::from_raw_os_error(28)),
+            DiagnosticsSaveResult::DiskFull
+        );
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            DiagnosticsSaveResult::PermissionDenied
+        );
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::other("/Users/jane/secret path")),
+            DiagnosticsSaveResult::Failed
+        );
+    }
+}
+
+pub fn diagnostics_save_impl(
+    state: &AppState,
+    snapshot_id: u32,
+    out_path: String,
+) -> Result<DiagnosticsSaveResult, IpcError> {
+    let started_at = std::time::Instant::now();
+    // The boundary span records the command and outcome only — never the path.
+    let span = tracing::info_span!(
+        "tauri_command",
+        command_id = %Uuid::now_v7(),
+        correlation_id = %Uuid::now_v7(),
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command = "diagnostics_save",
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    // Resolved BEFORE `with_kernel`: it reads the controller's vault path, and the
+    // controller mutex is not reentrant.
+    let destination = diagnostics_destination(state, &out_path);
+    let result = with_kernel(state, |kernel| {
+        let diagnostics = kernel.diagnostics();
+        let Some(snapshot) = diagnostics.pending(u64::from(snapshot_id)) else {
+            return Ok(DiagnosticsSaveResult::PreviewExpired);
+        };
+        let Some(target) = destination else {
+            return Ok(DiagnosticsSaveResult::InvalidDestination);
+        };
+        match std::fs::write(&target, snapshot.bytes()) {
+            Ok(()) => {
+                diagnostics.discard(u64::from(snapshot_id));
+                Ok(DiagnosticsSaveResult::Saved)
+            }
+            Err(error) => Ok(diagnostics_write_failure(&error)),
+        }
+    });
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let outcome = match &result {
+        Ok(DiagnosticsSaveResult::Saved) => "success",
+        Ok(_) => "not_saved",
+        Err(error) => ipc_error_code(error),
+    };
+    span.record("duration_ms", duration_ms);
+    span.record("outcome", outcome);
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_save(
+    state: tauri::State<'_, AppState>,
+    snapshot_id: u32,
+    out_path: String,
+) -> Result<DiagnosticsSaveResult, IpcError> {
+    diagnostics_save_impl(state.inner(), snapshot_id, out_path)
+}
+
+pub fn diagnostics_discard_impl(state: &AppState, snapshot_id: u32) -> Result<(), IpcError> {
+    with_kernel(state, |kernel| {
+        kernel.diagnostics().discard(u64::from(snapshot_id));
+        Ok(())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_discard(
+    state: tauri::State<'_, AppState>,
+    snapshot_id: u32,
+) -> Result<(), IpcError> {
+    diagnostics_discard_impl(state.inner(), snapshot_id)
 }
 
 pub fn export_backup_impl(state: &AppState, out_path: String) -> Result<(), IpcError> {
@@ -4545,6 +4749,9 @@ use connector_core::{
     Credential as ProviderCredential, CredentialTier as ProviderCredentialTier,
     LinkInput as ProviderLinkInput, LinkSession, Payer as ProviderPayer,
 };
+use finance_kernel::connector_currency_guard::{
+    connector_currency_guard, ConnectorCurrencyRefusal,
+};
 use tauri::Manager as _;
 
 use crate::ipc::dto::{
@@ -4712,6 +4919,7 @@ fn connector_link_inner(
                         connection_id,
                         external_id,
                         acct.external_name.as_deref(),
+                        acct.currency.as_deref(),
                     )?;
                     accounts.push(ConnectorExternalAccountDto {
                         external_id: external_id.to_owned(),
@@ -4900,16 +5108,24 @@ pub fn connector_connections_impl(
     state: &AppState,
 ) -> Result<Vec<ConnectorConnectionDto>, IpcError> {
     with_kernel(state, |kernel| {
+        let base_currency = kernel.base_currency_code()?;
         let mut out = Vec::new();
         for row in kernel.connector_connections()? {
             let links = kernel
                 .connector_links(row.id)?
                 .into_iter()
                 .map(|l| ConnectorAccountLinkDto {
+                    currency_refusal: connector_currency_guard(
+                        l.currency.as_deref(),
+                        &base_currency,
+                    )
+                    .err()
+                    .map(|refusal| refusal.to_string()),
                     external_id: l.external_id,
                     external_name: l.external_name,
                     account_id: l.account_id.map(|a| a.to_string()),
                     last_synced_on: l.last_synced_on,
+                    currency: l.currency,
                 })
                 .collect();
             out.push(ConnectorConnectionDto {
@@ -5123,6 +5339,7 @@ fn connector_sync_inner(
                                 connection_id,
                                 external_id,
                                 acct.external_name.as_deref(),
+                                acct.currency.as_deref(),
                             )?;
                             count += 1;
                         }
@@ -5205,7 +5422,34 @@ fn connector_sync_inner(
                             connection_id,
                             external_id,
                             acct.external_name.as_deref(),
+                            acct.currency.as_deref(),
                         )?;
+                    }
+                }
+                // The currency guard (personal-cfo-049p6; ADR 0076 decision
+                // 7): a mapped link now KNOWN to be in another currency —
+                // backfilled just above, for links saved before currencies
+                // were recorded — is held for this refresh: left out of the
+                // map, so its rows are counted but not committed, nothing is
+                // deleted or remapped, and its watermark stays put so the
+                // same window is fetched again. A still-unknown legacy
+                // mapping keeps refreshing (owner decision 2026-09-28); the
+                // commit path's own currency check still stands behind it.
+                let base_currency = kernel.base_currency_code()?;
+                let mut effective_map = account_map.clone();
+                let mut held_foreign: Vec<String> = Vec::new();
+                for link in kernel.connector_links(connection_id)? {
+                    if !effective_map.contains_key(&link.external_id) {
+                        continue;
+                    }
+                    if let Err(refusal @ ConnectorCurrencyRefusal::Foreign { .. }) =
+                        connector_currency_guard(link.currency.as_deref(), &base_currency)
+                    {
+                        effective_map.remove(&link.external_id);
+                        held_foreign.push(format!(
+                            "{}: {refusal} Its transactions were held and not imported.",
+                            link.external_name.as_deref().unwrap_or(&link.external_id)
+                        ));
                     }
                 }
                 let source_name = format!("{} sync", adapter.display_name());
@@ -5214,7 +5458,7 @@ fn connector_sync_inner(
                     &synced.adapter_version,
                     &source_name,
                     &synced.batch,
-                    &account_map,
+                    &effective_map,
                     &user_meta(&input.idempotency_key),
                 )?;
                 // Watermarks advance ONLY for links that (a) were mapped when
@@ -5225,7 +5469,7 @@ fn connector_sync_inner(
                 // retry-held (structured SyncBatch scopes, ADR 0060 §5).
                 if !synced.hold_all_watermarks {
                     let held = held_link_ids(&synced.held_account_ids, &links);
-                    let advance: Vec<String> = account_map
+                    let advance: Vec<String> = effective_map
                         .keys()
                         .filter(|key| response_keys.contains(*key))
                         .filter(|key| !held.contains(*key))
@@ -5237,10 +5481,10 @@ fn connector_sync_inner(
                     }
                 }
                 kernel.record_connector_sync(connection_id, None)?;
-                Ok(result)
+                Ok((result, held_foreign))
             });
-            let result = match ingested {
-                Ok(result) => result,
+            let (result, held_foreign) = match ingested {
+                Ok(outcome) => outcome,
                 Err(err) => {
                     // Ingest failures (e.g. a poisoned mapping) must reach the
                     // health surface, not vanish into a tracing::warn loop.
@@ -5252,11 +5496,9 @@ fn connector_sync_inner(
                     return Err(err);
                 }
             };
-            let warnings: Vec<String> = synced
-                .batch
-                .warnings
-                .iter()
-                .map(|w| w.message.clone())
+            let warnings: Vec<String> = held_foreign
+                .into_iter()
+                .chain(synced.batch.warnings.iter().map(|w| w.message.clone()))
                 .collect();
             let status = if result.batch.status == "committed" {
                 "synced".to_owned()
@@ -5418,6 +5660,7 @@ mod connector_tests {
             external_name: None,
             account_id: Some(Uuid::nil()),
             last_synced_on: None,
+            currency: Some("USD".to_owned()),
         }
     }
 

@@ -274,6 +274,9 @@ export const commands = {
 	configureBackup: (cadence: BackupCadenceDto, destination: string | null) => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("configure_backup", { cadence, destination })),
 	runBackupNow: () => typedError<BackupHistoryEntryDto, IpcError>(__TAURI_INVOKE("run_backup_now")),
 	exportTransactionsCsv: (outPath: string) => typedError<number, IpcError>(__TAURI_INVOKE("export_transactions_csv", { outPath })),
+	diagnosticsPreview: () => typedError<DiagnosticsPreviewDto, IpcError>(__TAURI_INVOKE("diagnostics_preview")),
+	diagnosticsSave: (snapshotId: number, outPath: string) => typedError<DiagnosticsSaveResult, IpcError>(__TAURI_INVOKE("diagnostics_save", { snapshotId, outPath })),
+	diagnosticsDiscard: (snapshotId: number) => typedError<null, IpcError>(__TAURI_INVOKE("diagnostics_discard", { snapshotId })),
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
 	restoreBackupAsNewVault: (packagePath: string, password: string, name: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup_as_new_vault", { packagePath, password, name })),
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
@@ -571,6 +574,17 @@ export type BatchResultDto = {
 	 *  addendum, personal-cfo-5n4.2). 0 when the setting is off or nothing matched.
 	 */
 	auto_categorized: number,
+	/**
+	 *  Rows in the file the parser could not use, so nothing was imported for
+	 *  them (personal-cfo-pxi.10). The full count, even when `warnings` is cut short.
+	 */
+	skipped_rows: number,
+	/**
+	 *  What the parser reported, at most 20: skipped rows first, then notes on
+	 *  rows that were imported. Each is a row number and a fixed reason — never
+	 *  the row's own values.
+	 */
+	warnings: ImportWarningDto[],
 };
 
 /**
@@ -907,6 +921,15 @@ export type ConnectorAccountLinkDto = {
 	account_id: string | null,
 	/**  `YYYY-MM-DD`; `None` = never synced (next sync fetches full history). */
 	last_synced_on: string | null,
+	/**  The provider account's ISO 4217 currency; `None` = not known yet. */
+	currency: string | null,
+	/**
+	 *  Why this account can't be mapped, in the currency guard's own words
+	 *  (personal-cfo-049p6; ADR 0076 decision 7) — `None` when it can. Set
+	 *  for an unknown currency or one other than the base currency; a mapped
+	 *  link with a known foreign currency has its transactions held.
+	 */
+	currency_refusal: string | null,
 };
 
 /**  A class of account the provider reaches. */
@@ -1407,6 +1430,53 @@ export type DebtTermsDto = {
 };
 
 /**
+ *  A previewed local diagnostics bundle (personal-cfo-lyd,
+ *  `docs/security/logging-policy.md` §8). `text` is **exactly** what
+ *  `diagnostics_save` writes for this `snapshot_id`; records captured after the
+ *  preview never enter it.
+ */
+export type DiagnosticsPreviewDto = {
+	/**  Names this preview; a save must name the preview the user saw. */
+	snapshot_id: number,
+	/**  The exact bundle text (redacted JSON). */
+	text: string,
+	/**  Records the bundle holds. */
+	records: number,
+	/**  Records evicted because the session reached its capacity. */
+	dropped: number,
+	/**  Values rejected at admission (wrong shape for their metric). */
+	rejected: number,
+	/**  A suggested file name for the Save dialog (no directory). */
+	suggested_file_name: string,
+};
+
+/**
+ *  How a diagnostics save ended (personal-cfo-lyd). Every expected outcome is a
+ *  fixed variant — never a path or an OS error message — so the UI shows safe
+ *  copy for each.
+ */
+export type DiagnosticsSaveResult =
+/**  The previewed bytes were written. */
+"saved" |
+/**
+ *  The preview is gone (a newer preview replaced it, or the vault was locked
+ *  or switched). Nothing was written.
+ */
+"preview_expired" |
+/**
+ *  The destination is not an absolute `.json` file in an existing folder
+ *  outside the app-data and active-vault folders (a symlink or `..` that
+ *  resolves inside them counts as inside). Nothing was written.
+ */
+"invalid_destination" |
+/**  The OS refused the write. */
+"permission_denied" |
+/**  The disk is full. */
+"disk_full" |
+/**  The write failed for another reason. */
+"failed";
+
+/**
  *  Input to dismiss a recurring-bill suggestion (ADR 0046, personal-cfo-4d8.24.6): the
  *  suggestion's identity + inferred pattern, recorded so detection stops offering it until
  *  the pattern materially changes.
@@ -1545,6 +1615,19 @@ export type ImportBatchInput = {
 	date_format: string | null,
 	/**  Idempotency key; empty → generated server-side. */
 	idempotency_key: string,
+};
+
+/**  One issue the parser reported for an import (personal-cfo-pxi.10). */
+export type ImportWarningDto = {
+	/**
+	 *  The row's 1-based position among the file's data rows (a CSV header
+	 *  is not counted; for OFX, the transaction's position), when known.
+	 */
+	row: number | null,
+	/**  A fixed reason, for example `"unparseable / missing amount"`. */
+	message: string,
+	/**  `true` when nothing was imported for this row. */
+	skipped: boolean,
 };
 
 /**

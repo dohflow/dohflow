@@ -130,6 +130,9 @@ commands = [
   # Hard, un-op-logged DELETE of a stored connector credential (personal-cfo-gglk).
   "connector_forget",
   "delete_vault",
+  # Writes the previewed, redacted diagnostics bundle to a user-chosen .json file
+  # (personal-cfo-lyd; ADR 0066-A §5, logging-policy §8).
+  "diagnostics_save",
   "export_backup",
   "export_transactions_csv",
   "relaunch_app",

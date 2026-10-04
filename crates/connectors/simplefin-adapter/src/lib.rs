@@ -516,6 +516,12 @@ struct NormalizedTxn<'a> {
     transacted_at: Option<i64>,
 }
 
+/// An uppercase ISO 4217-shaped code (three ASCII letters), or `None`.
+fn iso_currency(raw: &str) -> Option<String> {
+    let code = raw.trim().to_ascii_uppercase();
+    (code.len() == 3 && code.bytes().all(|b| b.is_ascii_uppercase())).then_some(code)
+}
+
 fn map_account(account: &WireAccount, set: &AccountSet) -> ParsedAccount {
     // Institution display name: the v2 Connection's name, else the v1 org.
     let institution = account
@@ -544,7 +550,10 @@ fn map_account(account: &WireAccount, set: &AccountSet) -> ParsedAccount {
         }),
         external_number_hash: None,
         proposed_subtype: None,
-        currency: None,
+        // The account's ISO 4217 code, or unknown: SimpleFIN also allows a
+        // custom-currency URL here, which is not a currency the app can check
+        // (personal-cfo-049p6 — never assumed to be the base currency).
+        currency: iso_currency(&account.currency),
     }
 }
 
@@ -953,6 +962,7 @@ impl<T: Transport> ConnectorAdapter for SimpleFinAdapter<T> {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }
@@ -1007,6 +1017,17 @@ mod tests {
         // A short range is a single chunk; None = the 365-day lookback.
         assert_eq!(chunk_ranges(Some(today), today).len(), 1);
         assert_eq!(chunk_ranges(None, today).len(), 10);
+    }
+
+    #[test]
+    fn account_currency_is_an_iso_code_or_unknown() {
+        // personal-cfo-049p6: a custom-currency URL or garbage is unknown,
+        // never assumed to be the base currency.
+        assert_eq!(iso_currency("usd"), Some("USD".to_owned()));
+        assert_eq!(iso_currency(" EUR "), Some("EUR".to_owned()));
+        assert_eq!(iso_currency("https://www.example.com/flight-miles"), None);
+        assert_eq!(iso_currency(""), None);
+        assert_eq!(iso_currency("U$D"), None);
     }
 
     #[test]

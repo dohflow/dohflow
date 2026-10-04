@@ -335,13 +335,16 @@ impl ImporterPlugin for GenericCsv {
         let currency = hints.default_currency.unwrap_or(Currency::Usd);
         let mut records = Vec::new();
         let mut warnings = Vec::new();
+        // Rows not staged. Each reason is fixed text: a skipped row's own
+        // values never travel into the import summary (personal-cfo-pxi.10).
+        let mut skipped = Vec::new();
         let mut seen_accounts = BTreeSet::new();
 
         for (idx, result) in reader.records().enumerate() {
             let row = match result {
                 Ok(row) => row,
-                Err(e) => {
-                    warnings.push(warn(idx, format!("unreadable row: {e}")));
+                Err(_) => {
+                    skipped.push(warn(idx, "unreadable row"));
                     continue;
                 }
             };
@@ -353,10 +356,7 @@ impl ImporterPlugin for GenericCsv {
                 .filter(|c| !c.is_empty())
             {
                 if currency_from_code(code) != Some(currency) {
-                    warnings.push(warn(
-                        idx,
-                        format!("currency {code:?} differs from the import currency — skipped"),
-                    ));
+                    skipped.push(warn(idx, "currency differs from the import currency"));
                     continue;
                 }
             }
@@ -365,20 +365,23 @@ impl ImporterPlugin for GenericCsv {
             let Some((posted_date, date_confidence_bps)) =
                 parse_date(&raw_date, hints.date_format.as_deref())
             else {
-                warnings.push(warn(idx, format!("unparseable date {raw_date:?}")));
+                skipped.push(warn(idx, "unparseable date"));
                 continue;
             };
             if date_confidence_bps < 7_000 {
-                warnings.push(warn(
-                    idx,
-                    format!("ambiguous date {raw_date:?} (assumed US M/D/Y)"),
-                ));
+                warnings.push(warn(idx, "ambiguous date (assumed US M/D/Y)"));
             }
 
             let Some(amount_minor) = resolve_amount(&row, &cols, currency.exponent()) else {
-                warnings.push(warn(idx, "unparseable / missing amount"));
+                skipped.push(warn(idx, "unparseable / missing amount"));
                 continue;
             };
+            // A 0.00 row moves no money and the ledger refuses it; skip it with a
+            // reason rather than stage a row that can never commit (personal-cfo-pxi.9).
+            if amount_minor == 0 {
+                skipped.push(warn(idx, "zero amount"));
+                continue;
+            }
 
             // The secondary transaction/authorization date (ADR 0045) — parsed leniently:
             // a bad value is simply dropped (it never blocks the row or warns). Dropped
@@ -470,6 +473,7 @@ impl ImporterPlugin for GenericCsv {
             accounts,
             records,
             warnings,
+            skipped,
         })
     }
 }
@@ -708,14 +712,81 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_row_becomes_a_warning_not_a_transaction() {
+    fn a_malformed_row_is_reported_as_skipped_not_a_transaction() {
         let csv = "Date,Description,Amount\n2026-06-20,Good,-10.00\nbogus,Bad Row,xyz\n";
         let batch = GenericCsv
             .parse(&input(csv), &ParserHints::default())
             .unwrap();
         assert_eq!(batch.records.len(), 1, "only the valid row is staged");
-        assert_eq!(batch.warnings.len(), 1, "the bad row is flagged");
-        assert_eq!(batch.warnings[0].row, Some(1));
+        assert_eq!(batch.skipped.len(), 1, "the bad row is reported");
+        assert_eq!(batch.skipped[0].row, Some(1));
+        assert!(batch.warnings.is_empty(), "a skip is not a staged-row note");
+    }
+
+    #[test]
+    fn every_skipped_row_is_reported_with_a_fixed_reason_and_none_of_its_values() {
+        // personal-cfo-pxi.10: one skip per reason, each row carrying values
+        // that must not reach the summary.
+        let csv = "Date,Description,Amount,Currency\n\
+                   2026-06-20,Good,-10.00,USD\n\
+                   2026-06-21,SENTINEL-MERCHANT,-12.00,EUR\n\
+                   SENTINEL-DATE,Payee Two,-13.00,USD\n\
+                   2026-06-22,Payee Three,SENTINEL-NOT-A-NUMBER,USD\n\
+                   2026-06-23,Payee Four,,USD\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 1, "{:#?}", batch.records);
+        let skipped: Vec<(Option<usize>, &str)> = batch
+            .skipped
+            .iter()
+            .map(|w| (w.row, w.message.as_str()))
+            .collect();
+        assert_eq!(
+            skipped,
+            vec![
+                (Some(1), "currency differs from the import currency"),
+                (Some(2), "unparseable date"),
+                (Some(3), "unparseable / missing amount"),
+                (Some(4), "unparseable / missing amount"),
+            ]
+        );
+        let reported = format!("{:?}{:?}", batch.skipped, batch.warnings);
+        for value in ["SENTINEL", "EUR", "Payee", "2026-06"] {
+            assert!(!reported.contains(value), "{value} leaked: {reported}");
+        }
+    }
+
+    #[test]
+    fn a_zero_amount_row_is_skipped_with_a_reason() {
+        // personal-cfo-pxi.9: 0.00 in the amount column, and in a debit/credit pair.
+        let csv = "Date,Description,Amount\n2026-06-20,Fee waived,0.00\n2026-06-21,Coffee,-3.50\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 1, "only the non-zero row is staged");
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].row, Some(0));
+        assert_eq!(batch.skipped[0].message, "zero amount");
+
+        let csv = "Date,Description,Amount\n2026-06-20,Adjustment,-0.00\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert!(batch.records.is_empty());
+        assert_eq!(batch.skipped[0].message, "zero amount");
+    }
+
+    #[test]
+    fn an_unreadable_row_is_skipped_without_echoing_it() {
+        let mut bytes = b"Date,Description,Amount\n2026-06-20,Good,-10.00\n2026-06-21,".to_vec();
+        bytes.extend_from_slice(b"SENTINEL\xff\xfe,-1.00\n");
+        let batch = GenericCsv
+            .parse(&ParserInput::new(bytes), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].message, "unreadable row");
     }
 
     #[test]
@@ -737,6 +808,14 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.message.contains("ambiguous")));
+        assert!(
+            batch.warnings.iter().all(|w| !w.message.contains("05/06")),
+            "the note names the reason, not the row's date"
+        );
+        assert!(
+            batch.skipped.is_empty(),
+            "an ambiguous date is still staged"
+        );
     }
 
     #[test]

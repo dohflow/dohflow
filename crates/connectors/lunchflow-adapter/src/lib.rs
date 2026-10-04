@@ -205,28 +205,37 @@ impl<T: Transport> LunchFlowAdapter<T> {
         Ok(self.accounts_counting_refused(conn)?.0)
     }
 
-    /// The account list, minus any account whose id carries key material,
-    /// and how many were refused. An id is used verbatim to fetch and to key
-    /// the account (it reaches the connection's DTO), so it can't be scrubbed
-    /// like message text; an id bearing the key is refused instead
-    /// (personal-cfo-pxi.4). `sync` reports the count; the other fetches
-    /// have no warning channel.
+    /// The account list, minus any account whose id can't be used verbatim
+    /// (too long, or carrying key material — see [`check_provider_id`]), and
+    /// how many were refused for each reason. An id is used verbatim to fetch
+    /// and to key the account (it reaches the connection's DTO), so it can't
+    /// be scrubbed like message text (personal-cfo-pxi.4, pxi.6). `sync`
+    /// reports the counts; the other fetches have no warning channel.
     fn accounts_counting_refused(
         &self,
         conn: &Connection,
-    ) -> Result<(Vec<WireAccount>, usize), ConnectorError> {
+    ) -> Result<(Vec<WireAccount>, RefusedIds), ConnectorError> {
         let body = self.get(conn, "/accounts", &[])?;
         let list: AccountList = serde_json::from_str(&body).map_err(|_| {
             ConnectorError::Provider("LunchFlow returned an unreadable account list".to_owned())
         })?;
         let key = conn.credential.expose_secret();
-        let total = list.accounts.len();
+        let mut refused = RefusedIds::default();
         let accounts: Vec<WireAccount> = list
             .accounts
             .into_iter()
-            .filter(|a| !carries_key(&a.id, key))
+            .filter(|a| match check_provider_id(&a.id, key) {
+                Ok(()) => true,
+                Err(IdRefusal::TooLong) => {
+                    refused.too_long += 1;
+                    false
+                }
+                Err(IdRefusal::CarriesKey) => {
+                    refused.carries_key += 1;
+                    false
+                }
+            })
             .collect();
-        let refused = total - accounts.len();
         Ok((accounts, refused))
     }
 
@@ -382,7 +391,43 @@ fn redact_key_fragments(text: &str, key: &str) -> String {
     out
 }
 
+/// The longest provider id used verbatim, in characters. Real ids are short
+/// (LunchFlow's are integers and short strings); anything longer is refused
+/// before any other work, which bounds the key check and the stored id
+/// columns alike (personal-cfo-pxi.6).
+const MAX_PROVIDER_ID_CHARS: usize = 256;
+
+/// Why a provider id can't be used verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdRefusal {
+    TooLong,
+    CarriesKey,
+}
+
+/// How many account ids were refused, per reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RefusedIds {
+    too_long: usize,
+    carries_key: usize,
+}
+
+/// Whether a provider id can be used verbatim (fetched with, stored, shown).
+/// Examines at most `MAX_PROVIDER_ID_CHARS + 1` characters, whatever the
+/// provider sent: the length is checked first, so [`carries_key`] only ever
+/// sees a bounded id.
+fn check_provider_id(id: &str, key: &str) -> Result<(), IdRefusal> {
+    if id.chars().nth(MAX_PROVIDER_ID_CHARS).is_some() {
+        return Err(IdRefusal::TooLong);
+    }
+    if carries_key(id, key) {
+        return Err(IdRefusal::CarriesKey);
+    }
+    Ok(())
+}
+
 /// Whether `text` holds key material in any shape [`clean`] would redact.
+/// Unbounded by itself — call it on bounded input only (see
+/// [`check_provider_id`]).
 fn carries_key(text: &str, key: &str) -> bool {
     let normalized: String = text.chars().filter(|c| !is_forged(*c)).collect();
     redact_key_fragments(&scrub(&normalized, key), key) != normalized
@@ -518,12 +563,19 @@ fn map_transaction(
     index: usize,
     key: &str,
 ) -> Result<ParsedRecord, String> {
-    let id = clean(&txn.id, key);
-    if carries_key(&txn.id, key) {
-        // A transaction id is stored verbatim as the record's provider id,
-        // so one bearing the key is refused rather than scrubbed.
-        return Err("a transaction whose id contains your API key was not staged".to_owned());
+    // A transaction id is stored verbatim as the record's provider id, so an
+    // unusable one is refused rather than scrubbed — and the message quotes
+    // none of it.
+    match check_provider_id(&txn.id, key) {
+        Ok(()) => {}
+        Err(IdRefusal::TooLong) => {
+            return Err("a transaction with an id too long to use was not staged".to_owned())
+        }
+        Err(IdRefusal::CarriesKey) => {
+            return Err("a transaction whose id contains your API key was not staged".to_owned())
+        }
     }
+    let id = clean(&txn.id, key);
     if txn.is_pending {
         return Err(format!(
             "pending transaction {id} not staged (posted-only scope)"
@@ -868,12 +920,22 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
         let warn = |warnings: &mut Vec<ParseWarning>, message: String| {
             warnings.push(ParseWarning { row: None, message });
         };
-        if refused > 0 {
+        if refused.carries_key > 0 {
             warn(
                 &mut warnings,
                 format!(
-                    "{refused} account(s) from LunchFlow had an id containing your API key and \
-                     were skipped — check the API destination in your LunchFlow dashboard"
+                    "{} account(s) from LunchFlow had an id containing your API key and were \
+                     skipped — check the API destination in your LunchFlow dashboard",
+                    refused.carries_key
+                ),
+            );
+        }
+        if refused.too_long > 0 {
+            warn(
+                &mut warnings,
+                format!(
+                    "{} account(s) from LunchFlow had an id too long to use and were skipped",
+                    refused.too_long
                 ),
             );
         }
@@ -1020,6 +1082,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }
@@ -1174,6 +1237,34 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         assert!(cleaned.chars().count() <= MAX_PROVIDER_CHARS + 1);
         assert_no_key_fragment(&cleaned, KEY);
+    }
+
+    #[test]
+    fn provider_ids_are_bounded_before_any_key_check() {
+        // personal-cfo-pxi.6: at most MAX_PROVIDER_ID_CHARS + 1 characters are
+        // examined, however long the id.
+        let at_limit = "i".repeat(MAX_PROVIDER_ID_CHARS);
+        assert_eq!(check_provider_id(&at_limit, KEY), Ok(()));
+        let over = "i".repeat(MAX_PROVIDER_ID_CHARS + 1);
+        assert_eq!(check_provider_id(&over, KEY), Err(IdRefusal::TooLong));
+        assert_eq!(
+            check_provider_id(&format!("acct-{KEY}"), KEY),
+            Err(IdRefusal::CarriesKey)
+        );
+
+        // Multi-megabyte ids, with and without key material at the far end.
+        for huge in [
+            "q".repeat(4_000_000),
+            format!("{}{KEY}", "\u{200B}".repeat(2_000_000)),
+        ] {
+            let started = std::time::Instant::now();
+            assert_eq!(check_provider_id(&huge, KEY), Err(IdRefusal::TooLong));
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(50),
+                "took {:?}",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]

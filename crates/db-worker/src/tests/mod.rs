@@ -5602,6 +5602,135 @@ fn a_duplicate_fingerprint_is_flagged_not_committed() {
         )
         .unwrap();
     assert_eq!(flagged, 1);
+
+    // The flag names its committed counterpart (personal-cfo-yl5), as the
+    // cross-source layer does, rather than leaving review to re-derive it.
+    let committed_txn: Uuid = conn
+        .query_row(
+            "SELECT committed_transaction_id FROM staged_transactions WHERE id = ?1",
+            rusqlite::params![first.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (layer, matched_type, matched_id): (String, Option<String>, Option<Uuid>) = conn
+        .query_row(
+            "SELECT layer, matched_entity_type, matched_entity_id FROM dedupe_decisions
+              WHERE decision = 'flagged' AND staged_transaction_id = ?1",
+            rusqlite::params![second.as_uuid()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(layer, "transaction", "no new historical layer name");
+    assert_eq!(matched_type.as_deref(), Some("ledger_transaction"));
+    assert_eq!(matched_id, Some(committed_txn));
+}
+
+/// Counterpart reads follow the flagging rule (personal-cfo-yl5): only a
+/// committed row with the same fingerprint **in the same account**, and never
+/// a voided one — both in the review panel's candidates and in the inbox
+/// payload's suspected counterpart.
+#[test]
+fn duplicate_counterparts_are_account_scoped_and_never_voided() {
+    let (_dir, worker) = worker();
+    let create = |name: &str| {
+        let account = Account::new(
+            AccountId::new(),
+            LedgerAccountId::new(),
+            name,
+            CashflowRole::LiquidCash,
+            Currency::Usd,
+            AccountFlags::default(),
+        );
+        let id = account.id();
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::CreateAccount {
+                    account: Box::new(account),
+                    opening_balance: None,
+                },
+            )
+            .unwrap();
+        id
+    };
+    let checking = create("Checking");
+    let savings = create("Savings");
+    let commit = |staged: StagedTransactionId| {
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::CommitStaged {
+                    staged_transaction_id: staged,
+                    force: false,
+                },
+            )
+            .unwrap();
+    };
+    // The same fingerprint committed in BOTH accounts (two real transactions).
+    let in_savings = stage_a_transaction(&worker, savings, -1299, "shared-fp");
+    commit(in_savings);
+    let in_checking = stage_a_transaction(&worker, checking, -1299, "shared-fp");
+    commit(in_checking);
+    // A re-import into Checking is flagged against Checking's row only.
+    let incoming = stage_a_transaction(&worker, checking, -1299, "shared-fp");
+    commit(incoming);
+
+    let conn = worker.read_connection().unwrap();
+    let committed_of = |staged: StagedTransactionId| -> Uuid {
+        conn.query_row(
+            "SELECT committed_transaction_id FROM staged_transactions WHERE id = ?1",
+            rusqlite::params![staged.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let checking_txn = committed_of(in_checking);
+    let savings_txn = committed_of(in_savings);
+    assert_ne!(checking_txn, savings_txn);
+
+    let candidates = worker.duplicate_candidates(incoming).unwrap();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|c| c.transaction_id.as_uuid())
+            .collect::<Vec<_>>(),
+        vec![checking_txn],
+        "Savings' row is not a counterpart of a Checking import"
+    );
+    let payload = || {
+        worker
+            .money_inbox_list()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.target_id == incoming.as_uuid())
+            .expect("the flagged row is in the inbox")
+            .payload_json
+    };
+    assert!(
+        payload().contains(&format!(
+            "\"suspected_committed_txn_id\":\"{checking_txn}\""
+        )),
+        "{}",
+        payload()
+    );
+
+    // Voiding the counterpart: it is no longer offered, and the payload does
+    // not name a voided transaction.
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::VoidTransaction {
+                transaction_id: TransactionId::from_uuid(checking_txn),
+            },
+        )
+        .unwrap();
+    worker.rebuild_money_inbox().unwrap();
+    assert!(worker.duplicate_candidates(incoming).unwrap().is_empty());
+    assert!(
+        payload().contains("\"suspected_committed_txn_id\":null"),
+        "{}",
+        payload()
+    );
 }
 
 /// dsq: a flagged staged duplicate surfaces exactly one Money Inbox item of
@@ -5975,6 +6104,30 @@ fn skip_clears_a_flagged_duplicate_without_a_ledger_write() {
         )
         .unwrap();
     assert_eq!(status, "skipped");
+    // The audit trail keeps both decisions for the row: the flag, then the
+    // user's skip (personal-cfo-yl5).
+    let decisions: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT decision, reason FROM dedupe_decisions
+              WHERE staged_transaction_id = ?1 ORDER BY decided_at, id",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![second.as_uuid()], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        decisions,
+        vec![
+            (
+                "flagged".to_owned(),
+                "duplicate of an already-committed transaction".to_owned()
+            ),
+            ("skipped".to_owned(), "user skipped".to_owned()),
+        ]
+    );
 }
 
 /// byxe: a committed import carries its source detail onto the transactions

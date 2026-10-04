@@ -3,7 +3,7 @@
 // replaced; the referral slot appears only for a provider that carries one;
 // and no URL is ever a link (ADR 0010, ADR 0076 §5).
 
-import { render } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -43,6 +43,22 @@ describe("ProviderDisclosure", () => {
     const without = render(<ProviderDisclosure adapter={simplefin} />);
     expect(without.queryByRole("note")).toBeNull();
     expect(without.container.textContent).not.toMatch(/commission|referral/i);
+  });
+
+  it("shows the referral sentence at full contrast, right under its URL", () => {
+    const { getByRole } = render(<ProviderDisclosure adapter={exampleflow} />);
+    const note = getByRole("note", { name: "Referral disclosure for ExampleFlow" });
+    const sentence = within(note).getByText(/may earn a commission/);
+    // Clear and conspicuous (ADR 0076 §5): the panel's normal text, not muted.
+    expect(sentence.className).not.toMatch(/text-muted-foreground/);
+    expect(sentence.closest("[class*='text-muted-foreground']")).toBeNull();
+    // Adjacent: the URL comes first, the sentence directly after it, both
+    // inside the one note that describes itself with the sentence.
+    const url = within(note).getByText(REFERRAL_URL);
+    expect(url.compareDocumentPosition(sentence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(note.getAttribute("aria-describedby")).toBe(sentence.id);
+    // Narrow widths: the URL wraps instead of overflowing.
+    expect(url.className).toMatch(/break-all/);
   });
 
   it("never renders a URL as a link", () => {

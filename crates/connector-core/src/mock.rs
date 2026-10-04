@@ -115,6 +115,13 @@ pub struct MockConnector {
     /// Bridge right after an app connection is created, personal-cfo-k025).
     /// `sync` still returns the full fixture.
     empty_discovery: bool,
+    /// The currency the checking and card accounts report (and their rows are
+    /// in). Defaults to `Some("USD")`, the test household's base currency;
+    /// `None` models a provider that states no currency (personal-cfo-049p6).
+    account_currency: Option<&'static str>,
+    /// When set, the fixture adds `mock-acct-euro`: an account in EUR, with
+    /// EUR rows and balance — a non-household currency (049p6 AC1).
+    include_foreign_account: bool,
 }
 
 impl MockConnector {
@@ -135,6 +142,8 @@ impl MockConnector {
             include_unnamed_account: false,
             held_accounts: &[],
             empty_discovery: false,
+            account_currency: Some("USD"),
+            include_foreign_account: false,
         }
     }
 
@@ -180,6 +189,34 @@ impl MockConnector {
         }
     }
 
+    /// The checking and card accounts report `currency` (and their rows are
+    /// in it when it is USD or EUR). `None` = the provider states none.
+    #[must_use]
+    pub fn with_account_currency(mut self, currency: Option<&'static str>) -> Self {
+        self.account_currency = currency;
+        self
+    }
+
+    /// The fixture plus `mock-acct-euro`, an account in EUR.
+    #[must_use]
+    pub fn with_foreign_account(mut self) -> Self {
+        self.include_foreign_account = true;
+        self
+    }
+
+    /// The currency one fixture account's money is in.
+    fn money_currency(&self, account: &str) -> core_money::Currency {
+        let code = if account == "mock-acct-euro" {
+            Some("EUR")
+        } else {
+            self.account_currency
+        };
+        match code {
+            Some("EUR") => core_money::Currency::Eur,
+            _ => core_money::Currency::Usd,
+        }
+    }
+
     /// The fixture plus one account with no external id or name.
     #[must_use]
     pub fn with_unnamed_account() -> Self {
@@ -213,16 +250,25 @@ impl MockConnector {
                 external_name: Some("Mock Checking".to_owned()),
                 external_number_hash: Some("sha256:mock-checking".to_owned()),
                 proposed_subtype: Some("checking".to_owned()),
-                currency: None,
+                currency: self.account_currency.map(str::to_owned),
             },
             ParsedAccount {
                 external_id: Some("mock-acct-card".to_owned()),
                 external_name: Some("Mock Card".to_owned()),
                 external_number_hash: Some("sha256:mock-card".to_owned()),
                 proposed_subtype: Some("credit_card".to_owned()),
-                currency: None,
+                currency: self.account_currency.map(str::to_owned),
             },
         ];
+        if self.include_foreign_account {
+            accounts.push(ParsedAccount {
+                external_id: Some("mock-acct-euro".to_owned()),
+                external_name: Some("Mock Euro Account".to_owned()),
+                external_number_hash: Some("sha256:mock-euro".to_owned()),
+                proposed_subtype: Some("checking".to_owned()),
+                currency: Some("EUR".to_owned()),
+            });
+        }
         if self.include_unnamed_account {
             accounts.push(ParsedAccount {
                 external_id: None,
@@ -237,8 +283,9 @@ impl MockConnector {
 
     /// Three deterministic transactions per account, dated relative to a fixed
     /// anchor so `since` filtering is exercised.
-    fn fixture_transactions(account: &str, since: Option<NaiveDate>) -> Vec<ParsedRecord> {
-        use core_money::{Currency, Money};
+    fn fixture_transactions(&self, account: &str, since: Option<NaiveDate>) -> Vec<ParsedRecord> {
+        use core_money::Money;
+        let currency = self.money_currency(account);
         let anchor = NaiveDate::from_ymd_opt(2026, 7, 15).expect("valid fixture anchor");
         [(0_u64, -1250_i64), (10, -4599), (20, 250_000)]
             .into_iter()
@@ -259,7 +306,7 @@ impl MockConnector {
                         transaction_date: None,
                         raw_date: posted.to_string(),
                         date_confidence_bps: 10_000,
-                        amount: Money::new(minor, Currency::Usd),
+                        amount: Money::new(minor, currency),
                         description: Some(format!("Mock purchase {i}")),
                         category: None,
                         normalized_merchant: Some(merchant.clone()),
@@ -330,7 +377,7 @@ impl ConnectorAdapter for MockConnector {
     ) -> Result<Vec<ParsedRecord>, ConnectorError> {
         self.check_failure()?;
         self.capabilities.ensure(Capability::Transactions)?;
-        Ok(Self::fixture_transactions(account_external_id, since))
+        Ok(self.fixture_transactions(account_external_id, since))
     }
 
     fn fetch_balances(
@@ -338,12 +385,12 @@ impl ConnectorAdapter for MockConnector {
         _conn: &Connection,
         account_external_id: &str,
     ) -> Result<Vec<ParsedBalance>, ConnectorError> {
-        use core_money::{Currency, Money};
+        use core_money::Money;
         self.check_failure()?;
         self.capabilities.ensure(Capability::Balances)?;
         Ok(vec![ParsedBalance {
             observed_at: NaiveDate::from_ymd_opt(2026, 8, 4).expect("valid fixture date"),
-            amount: Money::new(123_456, Currency::Usd),
+            amount: Money::new(123_456, self.money_currency(account_external_id)),
             external_account: Some(account_external_id.to_owned()),
         }])
     }
@@ -396,6 +443,7 @@ impl ConnectorAdapter for MockConnector {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }

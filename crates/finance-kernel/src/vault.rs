@@ -273,7 +273,11 @@ impl Kernel {
 
         // 4. Reopen the restored vault to verify it works on a fresh instance —
         //    this also runs any pending migrations for an older-schema backup.
-        Self::unlock_vault(dest_db_path, password)
+        let kernel = Self::unlock_vault(dest_db_path, password)?;
+        // The restore's success is the first record of the restored vault's
+        // session (personal-cfo-lyd). A failed restore has no session to record in.
+        kernel.record_restore_success();
+        Ok(kernel)
     }
 }
 

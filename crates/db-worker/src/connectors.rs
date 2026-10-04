@@ -74,6 +74,10 @@ pub struct ConnectorLinkRow {
     /// Per-account since-watermark (`YYYY-MM-DD`), held back on
     /// retry-required provider errors.
     pub last_synced_on: Option<String>,
+    /// The provider account's ISO 4217 currency as the provider reported it;
+    /// `None` = not known yet (a link saved before migration 54, or a
+    /// provider that stated none). Never assumed to be the base currency.
+    pub currency: Option<String>,
 }
 
 impl DbWorker {
@@ -205,28 +209,56 @@ impl DbWorker {
     }
 
     /// Upsert a discovered external account. A re-discovery refreshes the
-    /// display name but never clobbers the user's mapping or the watermark.
+    /// display name and records the provider's currency when it states one
+    /// (the backfill for links saved before migration 54), but never
+    /// clobbers the user's mapping, the watermark, or a known currency with
+    /// an unknown one.
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError::Sqlite`] on a write failure (including a currency that is
+    /// not an uppercase three-letter code — callers pass ISO codes only).
     pub fn upsert_connector_link(
         &self,
         connection_id: Uuid,
         external_id: &str,
         external_name: Option<&str>,
+        currency: Option<&str>,
     ) -> Result<(), DbError> {
         let now = Utc::now().to_rfc3339();
         let guard = self.lock();
         guard.conn.execute(
             "INSERT INTO connector_account_links
-                (connection_id, external_id, external_name, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)
+                (connection_id, external_id, external_name, currency, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
              ON CONFLICT(connection_id, external_id) DO UPDATE SET
                  external_name = excluded.external_name,
+                 currency = COALESCE(excluded.currency, connector_account_links.currency),
                  updated_at = excluded.updated_at",
-            params![connection_id, external_id, external_name, now],
+            params![connection_id, external_id, external_name, currency, now],
         )?;
         Ok(())
+    }
+
+    /// The recorded currency of one link: `Ok(None)` when the link doesn't
+    /// exist, `Ok(Some(None))` when its currency isn't known yet.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a read failure.
+    pub fn connector_link_currency(
+        &self,
+        connection_id: Uuid,
+        external_id: &str,
+    ) -> Result<Option<Option<String>>, DbError> {
+        let conn = self.read_connection()?;
+        let currency = conn
+            .query_row(
+                "SELECT currency FROM connector_account_links
+                  WHERE connection_id = ?1 AND external_id = ?2",
+                params![connection_id, external_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        Ok(currency)
     }
 
     /// Map (or unmap, with `None`) an external account onto a real account.
@@ -270,7 +302,8 @@ impl DbWorker {
     pub fn connector_links(&self, connection_id: Uuid) -> Result<Vec<ConnectorLinkRow>, DbError> {
         let conn = self.read_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT connection_id, external_id, external_name, account_id, last_synced_on
+            "SELECT connection_id, external_id, external_name, account_id, last_synced_on,
+                    currency
                FROM connector_account_links
               WHERE connection_id = ?1
               ORDER BY external_name, external_id",
@@ -283,6 +316,7 @@ impl DbWorker {
                     external_name: r.get(2)?,
                     account_id: r.get(3)?,
                     last_synced_on: r.get(4)?,
+                    currency: r.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

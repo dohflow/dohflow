@@ -1,17 +1,28 @@
 // Registry fixtures for the provider-picker tests (personal-cfo-dto2j).
 //
-// `simplefin` is the REAL registry entry: simplefin-adapter.json is written by
-// the Rust registry and pinned to it by apps/desktop/src-tauri/tests/
-// connector_registry.rs, so these tests render exactly what the app ships.
+// `registry` is the REAL registry — every registered provider, disabled ones
+// included. registry.json is written by the Rust registry and pinned to it
+// (complete and current) by apps/desktop/src-tauri/tests/connector_registry.rs,
+// so these tests render exactly what the app ships, and copy-review.test.ts
+// holds every provider's copy to the advice boundary (personal-cfo-pxi.5).
 // The other two are synthetic, shaped like any registry entry, to exercise a
 // second enabled provider (with a referral) and a disabled one.
 
 import type { ConnectorAdapterDto } from "@/bindings";
 
-import simplefinJson from "./simplefin-adapter.json";
+import registryJson from "./registry.json";
 import shippedPanel from "./simplefin-panel.shipped.txt?raw";
 
-export const simplefin = simplefinJson as ConnectorAdapterDto;
+/// Every registered provider, in the registry's order.
+export const registry = registryJson as ConnectorAdapterDto[];
+
+function registered(adapterId: string): ConnectorAdapterDto {
+  const adapter = registry.find((entry) => entry.adapter_id === adapterId);
+  if (!adapter) throw new Error(`${adapterId} is not in the registry fixture`);
+  return adapter;
+}
+
+export const simplefin = registered("simplefin");
 
 /// The onboarding panel's rendered text as shipped (personal-cfo-kdw6), frozen
 /// before the panel was generalized.

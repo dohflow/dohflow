@@ -19,6 +19,7 @@ import { ComfortBandCard } from "./ComfortBandCard";
 import { AutoCategorizeOnImportCard } from "./AutoCategorizeOnImportCard";
 import { ConnectionsCard } from "./ConnectionsCard";
 import { VaultHealthCard } from "./VaultHealthCard";
+import { DiagnosticsCard } from "./DiagnosticsCard";
 import { ChangePasswordCard } from "./ChangePasswordCard";
 import { SoftwareUpdateCard } from "./SoftwareUpdateCard";
 import { AboutCard } from "./AboutCard";
@@ -136,6 +137,8 @@ export function SettingsView({
       <ConnectionsCard />
 
       <VaultHealthCard />
+
+      <DiagnosticsCard />
 
       <ChangePasswordCard />
 

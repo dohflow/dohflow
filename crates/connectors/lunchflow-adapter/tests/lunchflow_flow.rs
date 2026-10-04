@@ -809,6 +809,89 @@ fn a_transaction_id_bearing_the_key_is_refused_not_stored() {
 }
 
 #[test]
+fn multi_megabyte_provider_ids_are_refused_quickly_and_never_quoted() {
+    // personal-cfo-pxi.6: an absurdly long id costs a bounded amount of
+    // work, is refused like a key-bearing one, and the warning quotes none
+    // of it.
+    let huge_account = "q".repeat(3_000_000);
+    let huge_txn = "r".repeat(3_000_000);
+    let accounts = serde_json::json!({
+        "accounts": [
+            { "id": huge_account, "name": "Huge", "status": "ACTIVE" },
+            { "id": 101, "name": "Everyday Checking", "status": "ACTIVE" }
+        ],
+        "total": 2
+    })
+    .to_string();
+    let rows = serde_json::json!({
+        "transactions": [
+            { "id": huge_txn, "amount": -1.00, "currency": "USD", "date": "2026-09-20" },
+            { "id": "ok-1", "amount": -2.00, "currency": "USD", "date": "2026-09-20" }
+        ],
+        "total": 2
+    })
+    .to_string();
+    let transport = FixtureTransport::with(&[
+        ("/accounts", 200, &accounts),
+        ("/accounts/101/transactions", 200, &rows),
+        (
+            "/accounts/101/balance",
+            200,
+            include_str!("fixtures/balance_101.json"),
+        ),
+    ]);
+
+    let started = std::time::Instant::now();
+    let synced = adapter(&transport).sync(&conn(), None).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "took {:?}",
+        started.elapsed()
+    );
+
+    assert_eq!(
+        synced.batch.accounts.len(),
+        1,
+        "the huge account id is refused"
+    );
+    let staged: Vec<&str> = synced
+        .batch
+        .records
+        .iter()
+        .filter(|r| r.transaction.is_some())
+        .filter_map(|r| r.external_id.as_deref())
+        .collect();
+    assert_eq!(staged, ["ok-1"], "the huge transaction id is refused");
+    let messages: Vec<&str> = synced
+        .batch
+        .warnings
+        .iter()
+        .map(|w| w.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .contains(&"1 account(s) from LunchFlow had an id too long to use and were skipped"),
+        "{messages:?}"
+    );
+    assert!(
+        messages.contains(&"a transaction with an id too long to use was not staged"),
+        "{messages:?}"
+    );
+    for message in &messages {
+        assert!(
+            !message.contains("qqqq") && !message.contains("rrrr"),
+            "{message}"
+        );
+    }
+
+    // Discovery refuses the huge account id too.
+    assert_eq!(
+        adapter(&transport).fetch_accounts(&conn()).unwrap().len(),
+        1
+    );
+}
+
+#[test]
 fn the_adapter_is_registered_disabled_under_its_schema_token() {
     let registration =
         connector_core::registration_by_id("lunchflow").expect("lunchflow registered");

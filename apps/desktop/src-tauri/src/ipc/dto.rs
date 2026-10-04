@@ -1615,6 +1615,25 @@ pub struct BatchResultDto {
     /// Transactions auto-categorized from merchant memory after the import (ADR 0030
     /// addendum, personal-cfo-5n4.2). 0 when the setting is off or nothing matched.
     pub auto_categorized: u32,
+    /// Rows in the file the parser could not use, so nothing was imported for
+    /// them (personal-cfo-pxi.10). The full count, even when `warnings` is cut short.
+    pub skipped_rows: u32,
+    /// What the parser reported, at most 20: skipped rows first, then notes on
+    /// rows that were imported. Each is a row number and a fixed reason — never
+    /// the row's own values.
+    pub warnings: Vec<ImportWarningDto>,
+}
+
+/// One issue the parser reported for an import (personal-cfo-pxi.10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ImportWarningDto {
+    /// The row's 1-based position among the file's data rows (a CSV header
+    /// is not counted; for OFX, the transaction's position), when known.
+    pub row: Option<u32>,
+    /// A fixed reason, for example `"unparseable / missing amount"`.
+    pub message: String,
+    /// `true` when nothing was imported for this row.
+    pub skipped: bool,
 }
 
 impl From<BatchResult> for BatchResultDto {
@@ -1626,6 +1645,19 @@ impl From<BatchResult> for BatchResultDto {
             committed: result.committed,
             flagged: result.flagged,
             auto_categorized: result.auto_categorized,
+            skipped_rows: result.skipped_rows,
+            warnings: result
+                .warnings
+                .into_iter()
+                .map(|w| ImportWarningDto {
+                    row: w
+                        .row
+                        .and_then(|r| u32::try_from(r).ok())
+                        .and_then(|r| r.checked_add(1)),
+                    message: w.message,
+                    skipped: w.skipped,
+                })
+                .collect(),
         }
     }
 }
@@ -3893,6 +3925,13 @@ pub struct ConnectorAccountLinkDto {
     pub account_id: Option<String>,
     /// `YYYY-MM-DD`; `None` = never synced (next sync fetches full history).
     pub last_synced_on: Option<String>,
+    /// The provider account's ISO 4217 currency; `None` = not known yet.
+    pub currency: Option<String>,
+    /// Why this account can't be mapped, in the currency guard's own words
+    /// (personal-cfo-049p6; ADR 0076 decision 7) — `None` when it can. Set
+    /// for an unknown currency or one other than the base currency; a mapped
+    /// link with a known foreign currency has its transactions held.
+    pub currency_refusal: Option<String>,
 }
 
 /// One provider in the connector registry (ADR 0015) — the picker's input.
@@ -4063,4 +4102,47 @@ pub struct ConnectorSyncResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ConnectorForgetInput {
     pub connection_id: String,
+}
+
+/// A previewed local diagnostics bundle (personal-cfo-lyd,
+/// `docs/security/logging-policy.md` §8). `text` is **exactly** what
+/// `diagnostics_save` writes for this `snapshot_id`; records captured after the
+/// preview never enter it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct DiagnosticsPreviewDto {
+    /// Names this preview; a save must name the preview the user saw.
+    pub snapshot_id: u32,
+    /// The exact bundle text (redacted JSON).
+    pub text: String,
+    /// Records the bundle holds.
+    pub records: u32,
+    /// Records evicted because the session reached its capacity.
+    pub dropped: u32,
+    /// Values rejected at admission (wrong shape for their metric).
+    pub rejected: u32,
+    /// A suggested file name for the Save dialog (no directory).
+    pub suggested_file_name: String,
+}
+
+/// How a diagnostics save ended (personal-cfo-lyd). Every expected outcome is a
+/// fixed variant — never a path or an OS error message — so the UI shows safe
+/// copy for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticsSaveResult {
+    /// The previewed bytes were written.
+    Saved,
+    /// The preview is gone (a newer preview replaced it, or the vault was locked
+    /// or switched). Nothing was written.
+    PreviewExpired,
+    /// The destination is not an absolute `.json` file in an existing folder
+    /// outside the app-data and active-vault folders (a symlink or `..` that
+    /// resolves inside them counts as inside). Nothing was written.
+    InvalidDestination,
+    /// The OS refused the write.
+    PermissionDenied,
+    /// The disk is full.
+    DiskFull,
+    /// The write failed for another reason.
+    Failed,
 }

@@ -73,6 +73,9 @@ pub use vault_crypto::CANONICAL_NO_RESET_WARNING;
 pub const NO_RESET_WARNING_ACKNOWLEDGED: &str = "no_reset_warning_acknowledged";
 
 use db_worker::{DbError, DbWorker, WriteCommand};
+use observability::diagnostics::{
+    Diagnostics, FailureCategory, Metric, Outcome as DiagnosticOutcome,
+};
 use uuid::Uuid;
 
 mod vault;
@@ -80,6 +83,7 @@ pub use vault::{classify_vault, VaultController, VaultHealth, VaultState};
 
 pub mod backup;
 mod backup_jobs;
+pub mod connector_currency_guard;
 pub use backup_jobs::{BackupCadence, BackupScheduleSettings, BACKUP_JOB_ID, BACKUP_JOB_KIND};
 
 mod sealed {
@@ -2490,6 +2494,48 @@ pub struct BatchResult {
     /// Transactions auto-categorized from merchant memory after the import (ADR 0030
     /// addendum, personal-cfo-5n4.2). `0` when the setting is off or nothing matched.
     pub auto_categorized: u32,
+    /// Source rows the parse could not use, so they were never staged
+    /// (personal-cfo-pxi.10; ADR 0014 §3 "never silently drop"). The full count,
+    /// even when `warnings` is truncated.
+    pub skipped_rows: u32,
+    /// What the parse reported, bounded to [`MAX_IMPORT_WARNINGS`]: skipped rows
+    /// first (in source order), then notes on staged rows. Each message is a
+    /// fixed reason, never the row's own values.
+    pub warnings: Vec<ImportWarning>,
+}
+
+/// The most [`ImportWarning`]s a [`BatchResult`] carries. A file with more
+/// still reports its full [`BatchResult::skipped_rows`] count.
+pub const MAX_IMPORT_WARNINGS: usize = 20;
+
+/// One issue the parse reported for an import (personal-cfo-pxi.10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportWarning {
+    /// The source row's 0-based data index (header excluded), when known.
+    pub row: Option<usize>,
+    /// A fixed reason, for example `"unparseable / missing amount"`.
+    pub message: String,
+    /// `true` when the row was not staged; `false` for a note on a staged row.
+    pub skipped: bool,
+}
+
+/// The skipped-row count and the bounded warning list for `parsed`.
+fn import_warnings(parsed: &ParsedBatch) -> (u32, Vec<ImportWarning>) {
+    let skipped = parsed.skipped.iter().map(|w| (w, true));
+    let notes = parsed.warnings.iter().map(|w| (w, false));
+    let warnings = skipped
+        .chain(notes)
+        .take(MAX_IMPORT_WARNINGS)
+        .map(|(w, skipped)| ImportWarning {
+            row: w.row,
+            message: w.message.clone(),
+            skipped,
+        })
+        .collect();
+    (
+        u32::try_from(parsed.skipped.len()).unwrap_or(u32::MAX),
+        warnings,
+    )
 }
 
 /// [`Kernel::ingest_sync_batch`]'s result: the standard batch outcome plus
@@ -2619,6 +2665,11 @@ impl From<DbError> for KernelError {
 /// financial state.
 pub struct Kernel {
     worker: DbWorker,
+    /// This unlocked session's local diagnostic capture (personal-cfo-lyd,
+    /// `docs/security/logging-policy.md` §6). Owned by the kernel so that vault
+    /// lock, vault switch and app exit — which all drop the kernel — drop every
+    /// record and any pending preview with it. Never persisted.
+    diagnostics: Diagnostics,
 }
 
 impl Kernel {
@@ -2631,13 +2682,25 @@ impl Kernel {
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, KernelError> {
         Ok(Self {
             worker: DbWorker::open(path, key)?,
+            diagnostics: Diagnostics::new(),
         })
     }
 
     /// Build a kernel over an already-open db-worker.
     #[must_use]
     pub fn with_worker(worker: DbWorker) -> Self {
-        Self { worker }
+        Self {
+            worker,
+            diagnostics: Diagnostics::new(),
+        }
+    }
+
+    /// This session's local diagnostic capture (personal-cfo-lyd). Callers
+    /// record typed measurements; the only way out is a previewed, redacted
+    /// bundle the user saves (ADR 0066-A §5).
+    #[must_use]
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
     }
 
     /// The health of the underlying writer.
@@ -2713,8 +2776,12 @@ impl Kernel {
         executor: &E,
         cancellation: &CancellationToken,
     ) -> Result<JobRunReport, KernelError> {
+        let timed = TimedExecutor {
+            inner: executor,
+            diagnostics: &self.diagnostics,
+        };
         self.worker
-            .run_due_jobs(now, unlock_window, self, executor, cancellation)
+            .run_due_jobs(now, unlock_window, self, &timed, cancellation)
             .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
     }
 
@@ -2727,8 +2794,12 @@ impl Kernel {
         cancellation: &CancellationToken,
         clock: &dyn Clock,
     ) -> Result<JobRunReport, KernelError> {
+        let timed = TimedExecutor {
+            inner: executor,
+            diagnostics: &self.diagnostics,
+        };
         self.worker
-            .run_due_jobs_with_clock(now, unlock_window, self, executor, cancellation, clock)
+            .run_due_jobs_with_clock(now, unlock_window, self, &timed, cancellation, clock)
             .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
     }
 
@@ -2762,6 +2833,8 @@ impl Kernel {
                 committed: 0,
                 flagged: 0,
                 auto_categorized: 0,
+                skipped_rows: 0,
+                warnings: Vec::new(),
             });
         }
 
@@ -2800,6 +2873,8 @@ impl Kernel {
                     committed: 0,
                     flagged: 0,
                     auto_categorized: 0,
+                    skipped_rows: 0,
+                    warnings: Vec::new(),
                 });
             }
         };
@@ -2854,6 +2929,7 @@ impl Kernel {
             }
         }
 
+        let (skipped_rows, warnings) = import_warnings(&parsed);
         Ok(BatchResult {
             source_batch_id: Some(batch_id.to_string()),
             status: status.to_owned(),
@@ -2861,6 +2937,8 @@ impl Kernel {
             committed,
             flagged,
             auto_categorized,
+            skipped_rows,
+            warnings,
         })
     }
 
@@ -2970,13 +3048,18 @@ impl Kernel {
         }
 
         Ok(SyncBatchResult {
-            batch: BatchResult {
-                source_batch_id: Some(batch_id.to_string()),
-                status: status.to_owned(),
-                staged: total,
-                committed,
-                flagged,
-                auto_categorized,
+            batch: {
+                let (skipped_rows, warnings) = import_warnings(parsed);
+                BatchResult {
+                    source_batch_id: Some(batch_id.to_string()),
+                    status: status.to_owned(),
+                    staged: total,
+                    committed,
+                    flagged,
+                    auto_categorized,
+                    skipped_rows,
+                    warnings,
+                }
             },
             skipped_unmapped,
         })
@@ -3053,22 +3136,60 @@ impl Kernel {
         connection_id: uuid::Uuid,
         external_id: &str,
         external_name: Option<&str>,
+        currency: Option<&str>,
     ) -> Result<(), KernelError> {
+        Ok(self.worker.upsert_connector_link(
+            connection_id,
+            external_id,
+            external_name,
+            currency,
+        )?)
+    }
+
+    /// The household's base (reporting) currency, as the app shows it: the
+    /// stored setting, or USD when none is stored (matching the IPC
+    /// `base_currency` read).
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a persistence failure.
+    pub fn base_currency_code(&self) -> Result<String, KernelError> {
         Ok(self
-            .worker
-            .upsert_connector_link(connection_id, external_id, external_name)?)
+            .get_setting(REPORTING_CURRENCY_KEY)?
+            .unwrap_or_else(|| "USD".to_owned()))
     }
 
     /// Map (or unmap) an external account onto a real account.
     ///
     /// # Errors
     /// Returns [`KernelError`] on a persistence failure.
+    ///
+    /// Mapping (`Some`) passes through [`connector_currency_guard`] first: an
+    /// account whose currency is unknown or differs from the base currency is
+    /// refused with [`KernelError::Validation`] carrying the guard's message
+    /// (personal-cfo-049p6). Unmapping (`None`) is always allowed.
+    ///
+    /// [`connector_currency_guard`]: connector_currency_guard::connector_currency_guard
     pub fn set_connector_link_account(
         &self,
         connection_id: uuid::Uuid,
         external_id: &str,
         account_id: Option<uuid::Uuid>,
     ) -> Result<(), KernelError> {
+        if account_id.is_some() {
+            let Some(link_currency) = self
+                .worker
+                .connector_link_currency(connection_id, external_id)?
+            else {
+                return Err(KernelError::Validation(
+                    "unknown connector account link".to_owned(),
+                ));
+            };
+            connector_currency_guard::connector_currency_guard(
+                link_currency.as_deref(),
+                &self.base_currency_code()?,
+            )
+            .map_err(|refusal| KernelError::Validation(refusal.to_string()))?;
+        }
         Ok(self
             .worker
             .set_connector_link_account(connection_id, external_id, account_id)?)
@@ -4116,6 +4237,75 @@ impl Kernel {
     /// Returns [`KernelError`] on a persistence failure.
     pub fn operation_count(&self) -> Result<u64, KernelError> {
         Ok(self.worker.operation_count()?)
+    }
+}
+
+/// The fixed diagnostic category for a kernel error (personal-cfo-lyd). Only the
+/// variant is used — never its message — so no path, value or text from the
+/// error can reach a diagnostic record.
+#[must_use]
+pub fn failure_category(error: &KernelError) -> FailureCategory {
+    match error {
+        KernelError::Validation(_) => FailureCategory::Validation,
+        KernelError::Persistence(_) => FailureCategory::Storage,
+        KernelError::Unavailable(_) => FailureCategory::Unavailable,
+        KernelError::VaultExists
+        | KernelError::VaultNotFound
+        | KernelError::VaultInUse
+        | KernelError::NewerVaultSchema { .. }
+        | KernelError::UnsupportedVaultSchema
+        | KernelError::VaultUnlockFailed
+        | KernelError::Vault(_)
+        | KernelError::IllegalVaultTransition { .. } => FailureCategory::Vault,
+        _ => FailureCategory::Internal,
+    }
+}
+
+/// The diagnostic outcome of a kernel result.
+fn outcome_of<T>(result: &Result<T, KernelError>) -> DiagnosticOutcome {
+    match result {
+        Ok(_) => DiagnosticOutcome::Success,
+        Err(error) => DiagnosticOutcome::Failure(failure_category(error)),
+    }
+}
+
+/// Times each durable-job execution into the session's diagnostics
+/// (`job_duration`, a coarse bucket) without changing what runs.
+struct TimedExecutor<'a, E: ?Sized> {
+    inner: &'a E,
+    diagnostics: &'a Diagnostics,
+}
+
+impl<E: JobExecutor<Kernel> + ?Sized> JobExecutor<Kernel> for TimedExecutor<'_, E> {
+    fn should_run(&self, job: &JobRecord, context: &Kernel) -> bool {
+        self.inner.should_run(job, context)
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        context: &Kernel,
+    ) -> JobExecution {
+        let started = std::time::Instant::now();
+        let execution = self.inner.execute(job, cancellation, context);
+        self.diagnostics
+            .record_duration(Metric::JobDuration, started.elapsed());
+        execution
+    }
+}
+
+impl Kernel {
+    /// Record a backup attempt's outcome (personal-cfo-lyd).
+    pub(crate) fn record_backup_outcome<T>(&self, result: &Result<T, KernelError>) {
+        self.diagnostics
+            .record_outcome(Metric::BackupOutcome, outcome_of(result));
+    }
+
+    /// Record a completed restore in the restored vault's new session.
+    pub(crate) fn record_restore_success(&self) {
+        self.diagnostics
+            .record_outcome(Metric::RestoreOutcome, DiagnosticOutcome::Success);
     }
 }
 

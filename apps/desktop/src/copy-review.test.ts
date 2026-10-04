@@ -18,6 +18,8 @@
  * surfaces (e.g. agent reports) are added to the globbed directories below.
  */
 
+import { registry } from "./settings/connections/fixtures/adapters";
+
 const SOURCES: Record<string, string> = {
   ...(import.meta.glob("./future-cash/**/*.{ts,tsx}", {
     query: "?raw",
@@ -151,5 +153,69 @@ describe("forecast/dashboard copy is descriptive, not prescriptive (ADR 0018)", 
   it("actually scans some source (guards against an empty sweep)", () => {
     const scanned = Object.keys(SOURCES).filter(isScannable);
     expect(scanned.length).toBeGreaterThan(0);
+  });
+});
+
+/// Connector registry copy (personal-cfo-pxi.5). Since the provider picker
+/// (dto2j), each provider's disclosure points, link guide and referral
+/// sentence live in the Rust registry, not in scanned source. The registry
+/// fixture holds EVERY registered provider, disabled ones included, and is
+/// pinned complete and current against the registry by
+/// src-tauri/tests/connector_registry.rs — so this holds every provider's
+/// user-facing copy to the same advice boundary as the source above.
+
+/// Every user-facing string a registry entry supplies, labelled for errors.
+function registryCopy(): { where: string; text: string }[] {
+  return registry.flatMap((adapter) => {
+    const at = (field: string) => `${adapter.adapter_id}.${field}`;
+    const guide = adapter.link_guide;
+    return [
+      { where: at("display_name"), text: adapter.display_name },
+      ...Object.entries(adapter.disclosure).map(([field, text]) => ({
+        where: at(`disclosure.${field}`),
+        text,
+      })),
+      { where: at("link_guide.title"), text: guide.title },
+      { where: at("link_guide.refresh_note"), text: guide.refresh_note },
+      ...guide.setup_steps.map((text, i) => ({ where: at(`link_guide.setup_steps[${i}]`), text })),
+      { where: at("link_guide.credential_label"), text: guide.credential_label },
+      { where: at("link_guide.credential_noun"), text: guide.credential_noun },
+      { where: at("link_guide.credential_placeholder"), text: guide.credential_placeholder },
+      { where: at("link_guide.paste_instructions"), text: guide.paste_instructions },
+      { where: at("economics.history_depth_expectation"), text: adapter.economics.history_depth_expectation },
+      ...(adapter.referral
+        ? [{ where: at("referral.disclosure"), text: adapter.referral.disclosure }]
+        : []),
+    ];
+  });
+}
+
+describe("connector registry copy is descriptive, not prescriptive (ADR 0018)", () => {
+  it("contains no advice phrases in any registered provider's copy", () => {
+    const violations: string[] = [];
+    for (const { where, text } of registryCopy()) {
+      for (const { pattern, why } of FORBIDDEN) {
+        const match = pattern.exec(text);
+        if (match) violations.push(`${where}: ${why} — found “${match[0]}”`);
+      }
+    }
+    expect(
+      violations,
+      "Registry copy is user-facing (the provider picker) and follows ADR 0018. " +
+        "Rephrase descriptively in the provider's ConnectorMetadata, then " +
+        "regenerate the fixture:\n" +
+        violations.join("\n"),
+    ).toEqual([]);
+  });
+
+  it("scans every provider's copy, disabled providers included", () => {
+    expect(registry.length).toBeGreaterThan(0);
+    expect(registry.some((adapter) => !adapter.enabled)).toBe(true);
+    const scannedProviders = new Set(
+      registryCopy().map(({ where }) => where.split(".")[0]),
+    );
+    expect([...scannedProviders].sort()).toEqual(
+      registry.map((adapter) => adapter.adapter_id).sort(),
+    );
   });
 });

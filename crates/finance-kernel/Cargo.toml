@@ -9,6 +9,9 @@ repository.workspace = true
 description = "The Finance Kernel: the single internal boundary for all financial state changes. Typed, sealed commands lowered onto the db-worker; no raw database types in its public API."
 
 [dependencies]
+# The session's local diagnostic capture lives on the kernel (personal-cfo-lyd);
+# the redactor + typed capture types come from here.
+observability = { path = "../observability" }
 core-ledger = { path = "../core-ledger" }
 core-money = { path = "../core-money" }
 db-worker = { path = "../db-worker" }
@@ -46,6 +49,5 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 # Logging-redaction gate (personal-cfo-zobt): capture the kernel's tracing spans
 # through the production redacting subscriber and assert no §6.6 value leaks.
-observability = { path = "../observability" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

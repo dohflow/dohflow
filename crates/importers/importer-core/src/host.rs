@@ -202,6 +202,7 @@ mod tests {
             accounts: vec![],
             records,
             warnings: vec![],
+            skipped: Vec::new(),
         }
     }
 

@@ -23,6 +23,12 @@
 //! corpus. Crash-report redaction (`personal-cfo-fps`), exhaustive/fuzz corpora
 //! (`q5ko`/`64st`/`mt6s`), the release-blocking CI gate (`zobt`), and the
 //! telemetry-export emitter (`lyd`/`3cw`) build on this.
+//!
+//! [`diagnostics`] is that emitter's capture side: session-only typed records,
+//! the previewed redacted bundle, and its parser (personal-cfo-lyd,
+//! `docs/security/logging-policy.md` §5–§9).
+
+pub mod diagnostics;
 
 use std::io::{self, Write};
 use std::sync::OnceLock;

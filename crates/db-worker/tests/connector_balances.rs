@@ -64,6 +64,7 @@ fn balance_batch(external: &str, observed: chrono::NaiveDate, minor: i64) -> Par
             }),
         }],
         warnings: Vec::new(),
+        skipped: Vec::new(),
     }
 }
 

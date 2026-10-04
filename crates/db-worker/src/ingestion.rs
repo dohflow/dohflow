@@ -752,21 +752,34 @@ pub(crate) fn fingerprint_already_committed(
     account: Option<Uuid>,
     excluding: Uuid,
 ) -> Result<bool, DbError> {
-    let found = conn
+    Ok(committed_fingerprint_match(conn, txn_fingerprint, account, excluding)?.is_some())
+}
+
+/// The ledger transaction an exact fingerprint already committed to at
+/// `account` (non-voided; the earliest, if several), so a fingerprint-layer
+/// flag can record its counterpart (personal-cfo-yl5).
+pub(crate) fn committed_fingerprint_match(
+    conn: &Connection,
+    txn_fingerprint: &str,
+    account: Option<Uuid>,
+    excluding: Uuid,
+) -> Result<Option<Uuid>, DbError> {
+    Ok(conn
         .query_row(
-            "SELECT 1 FROM staged_transactions st
+            "SELECT st.committed_transaction_id FROM staged_transactions st
               WHERE st.txn_fingerprint = ?1 AND st.commit_status = 'committed' AND st.id != ?2
                 AND st.proposed_account_id IS ?3
+                AND st.committed_transaction_id IS NOT NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM ledger_transactions lt
                    WHERE lt.id = st.committed_transaction_id AND lt.voided_at IS NOT NULL
-                )",
+                )
+              ORDER BY st.created_at, st.id
+              LIMIT 1",
             params![txn_fingerprint, excluding, account],
-            |_| Ok(()),
+            |r| r.get(0),
         )
-        .optional()?
-        .is_some();
-    Ok(found)
+        .optional()?)
 }
 
 /// Mark a staged transaction committed and link it to its ledger transaction.
@@ -792,6 +805,17 @@ pub(crate) fn flag_staged_duplicate(conn: &Connection, staged_id: Uuid) -> Resul
         "UPDATE staged_transactions
             SET commit_status = 'flagged', dedupe_status = 'suspected_duplicate'
           WHERE id = ?1",
+        params![staged_id],
+    )?;
+    Ok(())
+}
+
+/// Flag a staged transaction for review **without** calling it a duplicate:
+/// the row cannot be committed as it stands (personal-cfo-pxi.9), so it waits
+/// in the Money Inbox. `dedupe_status` is left as it was.
+pub(crate) fn flag_staged_for_review(conn: &Connection, staged_id: Uuid) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE staged_transactions SET commit_status = 'flagged' WHERE id = ?1",
         params![staged_id],
     )?;
     Ok(())
