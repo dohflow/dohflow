@@ -2718,25 +2718,48 @@ impl DbWorker {
         Ok(())
     }
 
-    /// File-level dedupe (ADR 0014 §3): the id of an already-committed batch with
+    /// File-level dedupe (ADR 0014 §3): the id of an already-imported batch with
     /// this whole-file `fingerprint`, if any — an exact re-upload can be skipped.
     ///
-    /// A batch stops counting once none of its committed rows survive in the ledger
-    /// (every one voided): the user deleted that import, and re-uploading the same
-    /// file is a deliberate restore, not an accidental duplicate (feedback 2026-07-03).
+    /// A batch counts while one of its committed rows survives in the ledger
+    /// (not voided). It also counts while a row is still flagged for review in
+    /// the Money Inbox, unless the user has voided any of its committed rows
+    /// (personal-cfo-yl5): re-uploading a file whose rows are all awaiting
+    /// review must not flag them all again, but voiding an import's rows means
+    /// the user deleted it, and re-uploading the same file is then a deliberate
+    /// restore, not an accidental duplicate (feedback 2026-07-03). Skipped rows
+    /// keep nothing counted. ADR 0008 §5 addendum.
     pub fn batch_with_fingerprint(&self, fingerprint: &str) -> Result<Option<Uuid>, DbError> {
         self.read_connection()?
             .query_row(
                 "SELECT sb.id FROM source_batches sb
                   WHERE sb.file_fingerprint = ?1
                     AND sb.status IN ('committed', 'partially_committed')
-                    AND EXISTS (
-                      SELECT 1 FROM staged_transactions st
-                      JOIN source_records sr ON sr.id = st.source_record_id
-                      JOIN ledger_transactions lt ON lt.id = st.committed_transaction_id
-                       WHERE sr.source_batch_id = sb.id
-                         AND st.commit_status = 'committed'
-                         AND lt.voided_at IS NULL
+                    AND (
+                      EXISTS (
+                        SELECT 1 FROM staged_transactions st
+                        JOIN source_records sr ON sr.id = st.source_record_id
+                        JOIN ledger_transactions lt ON lt.id = st.committed_transaction_id
+                         WHERE sr.source_batch_id = sb.id
+                           AND st.commit_status = 'committed'
+                           AND lt.voided_at IS NULL
+                      )
+                      OR (
+                        EXISTS (
+                          SELECT 1 FROM staged_transactions st
+                          JOIN source_records sr ON sr.id = st.source_record_id
+                           WHERE sr.source_batch_id = sb.id
+                             AND st.commit_status = 'flagged'
+                        )
+                        AND NOT EXISTS (
+                          SELECT 1 FROM staged_transactions st
+                          JOIN source_records sr ON sr.id = st.source_record_id
+                          JOIN ledger_transactions lt ON lt.id = st.committed_transaction_id
+                           WHERE sr.source_batch_id = sb.id
+                             AND st.commit_status = 'committed'
+                             AND lt.voided_at IS NOT NULL
+                        )
+                      )
                     )
                   LIMIT 1",
                 params![fingerprint],
@@ -5835,6 +5858,7 @@ fn read_duplicate_candidates(
              FROM staged_transactions c
              JOIN staged_transactions s ON s.id = ?1
              WHERE c.txn_fingerprint = s.txn_fingerprint
+               AND c.proposed_account_id IS s.proposed_account_id
                AND c.commit_status = 'committed'
                AND c.committed_transaction_id IS NOT NULL
              UNION
