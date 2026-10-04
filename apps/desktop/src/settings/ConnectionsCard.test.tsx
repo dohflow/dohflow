@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   connectorLink: vi.fn(),
   connectorSetAccountLink: vi.fn(),
   connectorCreateMappedAccount: vi.fn(),
+  connectorSetRefreshCadence: vi.fn(),
   connectorSync: vi.fn(),
   connectorForget: vi.fn(),
   accountList: vi.fn(),
@@ -46,6 +47,7 @@ function connection(over: Record<string, unknown> = {}) {
     display_hint: "SimpleFIN Bridge connection",
     last_synced_at: "2026-08-22T10:00:00Z",
     last_error: null,
+    refresh_cadence: "every_open",
     links: [
       {
         external_id: "ACT-1",
@@ -577,5 +579,41 @@ describe("ConnectionsCard", () => {
     expect(await findByRole("status")).toHaveTextContent(
       "A transaction both connections report with the same date and amount waits in the Money Inbox; one reported on different dates is imported twice.",
     );
+  });
+
+  // ---- refresh cadence (personal-cfo-lqk) ----
+
+  it("shows each connection's refresh cadence and changes it", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    mocks.connectorSetRefreshCadence.mockResolvedValue(ok(null));
+    const { findByLabelText } = renderWithClient(<ConnectionsCard />);
+    const select = (await findByLabelText("Refresh automatically")) as HTMLSelectElement;
+    expect(select.value).toBe("every_open");
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+      "Every time you open the vault",
+      "Daily",
+      "Weekly",
+      "Only when I press Refresh now",
+    ]);
+    fireEvent.change(select, { target: { value: "daily" } });
+    await waitFor(() =>
+      expect(mocks.connectorSetRefreshCadence).toHaveBeenCalledWith({
+        connection_id: connection().id,
+        cadence: "daily",
+      }),
+    );
+  });
+
+  it("a refused cadence change says why", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    mocks.connectorSetRefreshCadence.mockResolvedValue({
+      status: "error",
+      error: "cannot reconfigure a running job",
+    });
+    const { findByLabelText, findByRole } = renderWithClient(<ConnectionsCard />);
+    fireEvent.change(await findByLabelText("Refresh automatically"), {
+      target: { value: "manual" },
+    });
+    expect(await findByRole("alert")).toHaveTextContent("cannot reconfigure a running job");
   });
 });

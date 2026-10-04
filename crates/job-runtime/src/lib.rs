@@ -738,6 +738,18 @@ pub enum JobRunnerError<E: std::error::Error + Send + Sync + 'static> {
 /// Stateless runner for one unlocked sweep.
 pub struct JobRunner<'store, S> {
     store: &'store S,
+    /// Kinds this runner's sweep leaves alone: their host runs them in its
+    /// own sweep (see [`Self::claim_due_of_kind`]).
+    excluded_kinds: &'static [&'static str],
+}
+
+/// A job claimed by [`JobRunner::claim_due_of_kind`], awaiting its outcome.
+#[derive(Debug, Clone)]
+pub struct ClaimedJob {
+    /// The claimed row as it was due.
+    pub job: JobRecord,
+    /// The attempt number the claim recorded.
+    pub attempt: u32,
 }
 
 impl<'store, S> JobRunner<'store, S>
@@ -747,7 +759,166 @@ where
     /// Construct a runner over a durable store.
     #[must_use]
     pub fn new(store: &'store S) -> Self {
-        Self { store }
+        Self {
+            store,
+            excluded_kinds: &[],
+        }
+    }
+
+    /// Leave jobs of `kinds` to their own sweep. A host whose handler must not
+    /// hold the host's lock while it runs (a network fetch, ADR 0060 addendum
+    /// 2026-10-04) runs such kinds through [`Self::claim_due_of_kind`] and
+    /// [`Self::finish_claimed`] instead.
+    #[must_use]
+    pub const fn excluding_kinds(mut self, kinds: &'static [&'static str]) -> Self {
+        self.excluded_kinds = kinds;
+        self
+    }
+
+    /// Claim every due row of `kind` in `unlock_window`, under the same rules
+    /// as [`Self::run_due`]: a row past its attempt budget fails permanently,
+    /// a row with a cancellation request is cancelled, and the claim is the
+    /// store's atomic unlock-window-guarded transition. It does not recover
+    /// running rows; the main sweep does that, and must run first. The caller
+    /// executes each claimed job however it needs to, then reports through
+    /// [`Self::finish_claimed`].
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn claim_due_of_kind(
+        &self,
+        now: DateTime<Utc>,
+        unlock_window: &str,
+        kind: &str,
+        clock: &dyn Clock,
+    ) -> Result<(Vec<ClaimedJob>, JobRunReport), JobRunnerError<S::Error>> {
+        let jobs = self
+            .store
+            .due_jobs(now, unlock_window)
+            .map_err(JobRunnerError::Store)?;
+        let mut report = JobRunReport::default();
+        let mut claimed = Vec::new();
+        for job in jobs.into_iter().filter(|job| job.kind == kind) {
+            let attempt = job.attempts.saturating_add(1);
+            if attempt > job.max_attempts {
+                let failure = JobFailure::permanent("maximum attempts reached");
+                let finish = self
+                    .store
+                    .finish_failure(&job, now, &failure, None)
+                    .map_err(JobRunnerError::Store)?;
+                if finish == JobFinishResult::Cancelled {
+                    self.store
+                        .finish_cancelled(&job, clock.now(), "job cancelled")
+                        .map_err(JobRunnerError::Store)?;
+                    report.cancelled += 1;
+                } else {
+                    report.failed += 1;
+                }
+                continue;
+            }
+            if !self
+                .store
+                .claim_job(job.id, attempt, now, unlock_window)
+                .map_err(JobRunnerError::Store)?
+            {
+                continue;
+            }
+            if self
+                .store
+                .cancellation_requested(job.id)
+                .map_err(JobRunnerError::Store)?
+            {
+                self.store
+                    .finish_cancelled(&job, clock.now(), "job cancelled")
+                    .map_err(JobRunnerError::Store)?;
+                report.cancelled += 1;
+                continue;
+            }
+            report.attempted += 1;
+            claimed.push(ClaimedJob { job, attempt });
+        }
+        Ok((claimed, report))
+    }
+
+    /// Record a claimed job's outcome exactly as [`Self::run_due`] records an
+    /// executed one: success schedules the next run, a retryable failure
+    /// within budget retries after the backoff, anything else is terminal.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn finish_claimed(
+        &self,
+        claimed: &ClaimedJob,
+        execution: JobExecution,
+        clock: &dyn Clock,
+    ) -> Result<JobRunReport, JobRunnerError<S::Error>> {
+        let mut report = JobRunReport::default();
+        self.apply_execution(
+            &claimed.job,
+            claimed.attempt,
+            execution,
+            clock.now(),
+            &mut report,
+        )?;
+        Ok(report)
+    }
+
+    /// Persist one execution's terminal transition and count it. Returns the
+    /// outcome label for the invocation span.
+    fn apply_execution(
+        &self,
+        job: &JobRecord,
+        attempt: u32,
+        execution: JobExecution,
+        completed_at: DateTime<Utc>,
+        report: &mut JobRunReport,
+    ) -> Result<&'static str, JobRunnerError<S::Error>> {
+        let cancelled =
+            |report: &mut JobRunReport| -> Result<&'static str, JobRunnerError<S::Error>> {
+                self.store
+                    .finish_cancelled(job, completed_at, "job cancelled")
+                    .map_err(JobRunnerError::Store)?;
+                report.cancelled += 1;
+                Ok("cancelled")
+            };
+        match execution {
+            JobExecution::Succeeded => {
+                let finish = self
+                    .store
+                    .finish_success(job, completed_at, job.schedule.next_due_after(completed_at))
+                    .map_err(JobRunnerError::Store)?;
+                if finish == JobFinishResult::Cancelled {
+                    return cancelled(report);
+                }
+                report.succeeded += 1;
+                Ok("succeeded")
+            }
+            JobExecution::Failed(failure) => {
+                let retry_at = (failure.retryable && attempt < job.max_attempts)
+                    .then(|| completed_at + job.backoff.delay_for_attempt(attempt));
+                let finish = self
+                    .store
+                    .finish_failure(job, completed_at, &failure, retry_at)
+                    .map_err(JobRunnerError::Store)?;
+                if finish == JobFinishResult::Cancelled {
+                    return cancelled(report);
+                }
+                report.failed += 1;
+                Ok("failed")
+            }
+            JobExecution::Cancelled => cancelled(report),
+            JobExecution::Skipped => {
+                let finish = self
+                    .store
+                    .finish_skipped(job, completed_at)
+                    .map_err(JobRunnerError::Store)?;
+                if finish == JobFinishResult::Cancelled {
+                    return cancelled(report);
+                }
+                report.skipped += 1;
+                Ok("skipped")
+            }
+        }
     }
 
     /// Run all rows due in one unlock window.  The method is synchronous by
@@ -787,7 +958,10 @@ where
             ..JobRunReport::default()
         };
 
-        for job in jobs {
+        for job in jobs
+            .into_iter()
+            .filter(|job| !self.excluded_kinds.contains(&job.kind.as_str()))
+        {
             if cancellation.is_cancelled() {
                 break;
             }
@@ -902,69 +1076,9 @@ where
                 execution
             };
             let completed_at = clock.now();
-            match execution {
-                JobExecution::Succeeded => {
-                    span.record("outcome", "succeeded");
-                    let finish = self
-                        .store
-                        .finish_success(
-                            &job,
-                            completed_at,
-                            job.schedule.next_due_after(completed_at),
-                        )
-                        .map_err(JobRunnerError::Store)?;
-                    if finish == JobFinishResult::Cancelled {
-                        self.store
-                            .finish_cancelled(&job, completed_at, "job cancelled")
-                            .map_err(JobRunnerError::Store)?;
-                        span.record("outcome", "cancelled");
-                        report.cancelled += 1;
-                    } else {
-                        report.succeeded += 1;
-                    }
-                }
-                JobExecution::Failed(failure) => {
-                    span.record("outcome", "failed");
-                    let retry_at = (failure.retryable && attempt < job.max_attempts)
-                        .then(|| completed_at + job.backoff.delay_for_attempt(attempt));
-                    let finish = self
-                        .store
-                        .finish_failure(&job, completed_at, &failure, retry_at)
-                        .map_err(JobRunnerError::Store)?;
-                    if finish == JobFinishResult::Cancelled {
-                        self.store
-                            .finish_cancelled(&job, completed_at, "job cancelled")
-                            .map_err(JobRunnerError::Store)?;
-                        span.record("outcome", "cancelled");
-                        report.cancelled += 1;
-                    } else {
-                        report.failed += 1;
-                    }
-                }
-                JobExecution::Cancelled => {
-                    span.record("outcome", "cancelled");
-                    self.store
-                        .finish_cancelled(&job, completed_at, "job cancelled")
-                        .map_err(JobRunnerError::Store)?;
-                    report.cancelled += 1;
-                }
-                JobExecution::Skipped => {
-                    let finish = self
-                        .store
-                        .finish_skipped(&job, completed_at)
-                        .map_err(JobRunnerError::Store)?;
-                    if finish == JobFinishResult::Cancelled {
-                        self.store
-                            .finish_cancelled(&job, completed_at, "job cancelled")
-                            .map_err(JobRunnerError::Store)?;
-                        span.record("outcome", "cancelled");
-                        report.cancelled += 1;
-                    } else {
-                        span.record("outcome", "skipped");
-                        report.skipped += 1;
-                    }
-                }
-            }
+            let outcome =
+                self.apply_execution(&job, attempt, execution, completed_at, &mut report)?;
+            span.record("outcome", outcome);
         }
         Ok(report)
     }
@@ -1314,6 +1428,108 @@ mod tests {
 
         spec.payload_json = None;
         assert!(format!("{spec:?}").contains("payload_json: None"));
+    }
+
+    /// A sweep that must not hold its host's lock while a job runs leaves the
+    /// kind to its own sweep: excluded here, claimed and finished there, with
+    /// the same terminal rules (ADR 0060 addendum 2026-10-04).
+    #[test]
+    fn an_excluded_kind_is_claimed_and_finished_by_its_own_sweep() {
+        let store = FakeStore::default();
+        let mut refresh = job(Schedule::Interval { seconds: 3600 });
+        refresh.kind = "lock_releasing".to_owned();
+        let refresh_id = refresh.id;
+        let other = job(Schedule::Once);
+        let other_id = other.id;
+        store.jobs.lock().unwrap().insert(refresh_id, refresh);
+        store.jobs.lock().unwrap().insert(other_id, other);
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = FixedClock(now);
+
+        // The main sweep runs everything but the excluded kind.
+        let report = JobRunner::new(&store)
+            .excluding_kinds(&["lock_releasing"])
+            .run_due_with_clock(
+                now,
+                "window-1",
+                &(),
+                &Succeed,
+                &CancellationToken::new(),
+                &clock,
+            )
+            .unwrap();
+        assert_eq!(report.succeeded, 1);
+        assert_eq!(
+            store.jobs.lock().unwrap()[&refresh_id].state,
+            JobState::Queued
+        );
+
+        // Its own sweep claims only that kind...
+        let runner = JobRunner::new(&store);
+        let (claimed, claim_report) = runner
+            .claim_due_of_kind(now, "window-1", "lock_releasing", &clock)
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!((claimed[0].job.id, claimed[0].attempt), (refresh_id, 1));
+        assert_eq!(claim_report.attempted, 1);
+        assert_eq!(
+            store.jobs.lock().unwrap()[&refresh_id].state,
+            JobState::Running
+        );
+        // ...never twice in one unlock window...
+        let (again, _) = runner
+            .claim_due_of_kind(now, "window-1", "lock_releasing", &clock)
+            .unwrap();
+        assert!(again.is_empty());
+
+        // ...and success schedules the next run from the schedule.
+        let finished = runner
+            .finish_claimed(&claimed[0], JobExecution::Succeeded, &clock)
+            .unwrap();
+        assert_eq!(finished.succeeded, 1);
+        let row = store.jobs.lock().unwrap()[&refresh_id].clone();
+        assert_eq!(row.state, JobState::Succeeded);
+        assert_eq!(row.next_due_at, Some(now + Duration::seconds(3600)));
+    }
+
+    #[test]
+    fn a_claimed_jobs_failure_retries_then_is_terminal_like_any_other() {
+        let store = FakeStore::default();
+        let mut refresh = job(Schedule::Interval { seconds: 3600 });
+        refresh.kind = "lock_releasing".to_owned();
+        refresh.max_attempts = 2;
+        let id = refresh.id;
+        store.jobs.lock().unwrap().insert(id, refresh);
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = FixedClock(now);
+        let runner = JobRunner::new(&store);
+
+        let (claimed, _) = runner
+            .claim_due_of_kind(now, "w1", "lock_releasing", &clock)
+            .unwrap();
+        let report = runner
+            .finish_claimed(
+                &claimed[0],
+                JobExecution::Failed(JobFailure::retryable("vault unavailable")),
+                &clock,
+            )
+            .unwrap();
+        assert_eq!(report.failed, 1);
+        assert_eq!(
+            store.jobs.lock().unwrap()[&id].state,
+            JobState::Queued,
+            "retry queued"
+        );
+
+        // Past the attempt budget the sweep fails it permanently without running it.
+        store.jobs.lock().unwrap().get_mut(&id).unwrap().attempts = 2;
+        store.jobs.lock().unwrap().get_mut(&id).unwrap().next_due_at = Some(now);
+        let (claimed, report) = runner
+            .claim_due_of_kind(now, "w2", "lock_releasing", &clock)
+            .unwrap();
+        assert!(claimed.is_empty());
+        assert_eq!(report.failed, 1);
+        assert_eq!(store.jobs.lock().unwrap()[&id].state, JobState::Failed);
     }
 
     #[test]

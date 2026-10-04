@@ -176,6 +176,8 @@ commands.allow = [
   "connector_adapters",
   "connector_connections",
   "connector_set_account_link",
+  # Per-connection refresh cadence (personal-cfo-lqk, ADR 0060 addendum).
+  "connector_set_refresh_cadence",
   # Create-and-map in one step: guard first, so a refusal creates nothing
   # (personal-cfo-pxi.8).
   "connector_create_mapped_account",

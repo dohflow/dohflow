@@ -6,6 +6,7 @@
 //! binding exporter ([`export_bindings`] / the `export_bindings` binary).
 
 mod backup_job;
+pub mod connector_refresh;
 pub mod data_dir;
 pub mod ipc;
 // Runtime isolation probe (personal-cfo-0hp6) — debug builds only.
@@ -199,6 +200,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::connector_adapters,
         ipc::commands::connector_connections,
         ipc::commands::connector_set_account_link,
+        ipc::commands::connector_set_refresh_cadence,
         ipc::commands::connector_create_mapped_account,
         ipc::commands::connector_sync,
         ipc::commands::connector_auto_sync,

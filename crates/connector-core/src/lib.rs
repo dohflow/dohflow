@@ -697,6 +697,60 @@ pub struct ConnectorMetadata {
     /// `false` until a release bead flips it (ADR 0015 §6); a disabled adapter
     /// is refused before its `link` is ever called.
     pub enabled: bool,
+    /// The refresh cadence a new connection to this provider starts with,
+    /// until the user changes it (ADR 0060 addendum 2026-10-04).
+    pub suggested_refresh: RefreshCadence,
+}
+
+/// How often a connection refreshes (ADR 0060 addendum 2026-10-04). Refresh
+/// only ever runs after the vault is unlocked; a cadence is the least time
+/// since the connection's last refresh of any kind before the next one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefreshCadence {
+    /// Every unlock, at most once every six hours (ADR 0060 §4's debounce).
+    EveryOpen,
+    /// At the first unlock a day or more after the last refresh.
+    Daily,
+    /// At the first unlock a week or more after the last refresh.
+    Weekly,
+    /// Never automatically; only the refresh button fetches.
+    Manual,
+}
+
+impl RefreshCadence {
+    /// Every cadence, in the order the Connections card offers them.
+    pub const ALL: [Self; 4] = [Self::EveryOpen, Self::Daily, Self::Weekly, Self::Manual];
+
+    /// The stable token stored and sent over IPC.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::EveryOpen => "every_open",
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Manual => "manual",
+        }
+    }
+
+    /// Parse a [`Self::token`].
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|cadence| cadence.token() == token)
+    }
+
+    /// The least time between automatic refreshes, in seconds; `None` for
+    /// manual only.
+    #[must_use]
+    pub const fn min_interval_seconds(self) -> Option<i64> {
+        match self {
+            Self::EveryOpen => Some(6 * 60 * 60),
+            Self::Daily => Some(24 * 60 * 60),
+            Self::Weekly => Some(7 * 24 * 60 * 60),
+            Self::Manual => None,
+        }
+    }
 }
 
 /// A review date usable in a `const`/`static` registration. Panics — at

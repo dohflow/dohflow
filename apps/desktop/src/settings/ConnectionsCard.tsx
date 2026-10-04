@@ -195,6 +195,15 @@ function AccountLinkRow({
   );
 }
 
+/// How often a connection refreshes on its own (personal-cfo-lqk; ADR 0060
+/// addendum 2026-10-04). Refresh only ever runs after the vault is unlocked.
+const CADENCE_OPTIONS: { value: string; label: string }[] = [
+  { value: "every_open", label: "Every time you open the vault" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "manual", label: "Only when I press Refresh now" },
+];
+
 function ConnectionRow({
   connection,
   providerName,
@@ -203,6 +212,7 @@ function ConnectionRow({
   accountsPending,
   onMap,
   onCreateNew,
+  onSetCadence,
   onSync,
   syncPending,
   onForget,
@@ -220,11 +230,13 @@ function ConnectionRow({
     externalName: string,
     currencyRefusal: string | null,
   ) => void;
+  onSetCadence: (cadence: string) => void;
   onSync: () => void;
   syncPending: boolean;
   onForget: () => void;
 }) {
   const [confirmingForget, setConfirmingForget] = useState(false);
+  const cadenceId = `refresh-cadence-${connection.id}`;
   return (
     <div className="rounded-md border p-3">
       <div className="flex items-center justify-between gap-3">
@@ -246,6 +258,23 @@ function ConnectionRow({
             Refresh now
           </Button>
         </div>
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <Label htmlFor={cadenceId} className="text-xs text-muted-foreground">
+          Refresh automatically
+        </Label>
+        <NativeSelect
+          id={cadenceId}
+          size="sm"
+          value={connection.refresh_cadence}
+          onChange={(event) => onSetCadence(event.target.value)}
+        >
+          {CADENCE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </NativeSelect>
       </div>
       {connection.last_error ? (
         <p role="alert" className="mt-2 text-sm text-loss">
@@ -332,6 +361,7 @@ export function ConnectionsCard({
     linkPending,
     setAccountLink,
     createMappedAccount,
+    setRefreshCadence,
     sync,
     syncingId,
     forget,
@@ -480,6 +510,16 @@ export function ConnectionsCard({
     closeSharedFeed();
   };
 
+  const runSetCadence = async (connectionId: string, cadence: string) => {
+    setActionError(null);
+    try {
+      const failure = await setRefreshCadence(connectionId, cadence);
+      if (failure) setActionError(describeIpcError(failure));
+    } catch {
+      setActionError(VAULT_UNREACHABLE);
+    }
+  };
+
   const runForget = async (connectionId: string) => {
     setActionError(null);
     setNotice(null);
@@ -543,6 +583,7 @@ export function ConnectionsCard({
                   currencyRefusal,
                 })
               }
+              onSetCadence={(cadence) => void runSetCadence(connection.id, cadence)}
               onSync={() => void runSync(connection.id)}
               syncPending={syncingId === connection.id}
               onForget={() => void runForget(connection.id)}

@@ -59,6 +59,9 @@ interface UseConnections {
     externalId: string,
     account: CreateAccountInput,
   ) => Promise<{ id: string | null; error: IpcError | null }>;
+  /// Change how often a connection refreshes on its own (personal-cfo-lqk):
+  /// `every_open`, `daily`, `weekly` or `manual`.
+  setRefreshCadence: (connectionId: string, cadence: string) => Promise<IpcError | null>;
   sync: (connectionId: string) => Promise<ConnectorSyncResultDto | IpcError>;
   /// The connection currently syncing, or null — per-row pending state (the
   /// backend's in-flight claim is per-connection, so other rows stay live).
@@ -198,6 +201,22 @@ export function useConnections(): UseConnections {
     [createMappedMutation],
   );
 
+  const cadenceMutation = useMutation({
+    mutationFn: (input: { connectionId: string; cadence: string }) =>
+      commands.connectorSetRefreshCadence({
+        connection_id: input.connectionId,
+        cadence: input.cadence,
+      }),
+    onSuccess: invalidateConnections,
+  });
+  const setRefreshCadence = useCallback(
+    async (connectionId: string, cadence: string) => {
+      const result = await cadenceMutation.mutateAsync({ connectionId, cadence });
+      return result.status === "ok" ? null : result.error;
+    },
+    [cadenceMutation],
+  );
+
   const syncMutation = useMutation({
     mutationFn: (connectionId: string) =>
       commands.connectorSync({
@@ -237,6 +256,7 @@ export function useConnections(): UseConnections {
     linkPending,
     setAccountLink,
     createMappedAccount,
+    setRefreshCadence,
     sync,
     syncingId: syncMutation.isPending ? (syncMutation.variables ?? null) : null,
     forget,

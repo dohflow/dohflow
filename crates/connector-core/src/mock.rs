@@ -63,6 +63,7 @@ pub const fn mock_metadata(enabled: bool) -> ConnectorMetadata {
         },
         referral: None,
         enabled,
+        suggested_refresh: crate::RefreshCadence::EveryOpen,
     }
 }
 
