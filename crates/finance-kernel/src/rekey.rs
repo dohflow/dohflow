@@ -162,9 +162,12 @@ fn fsync_file(path: &Path) -> Result<(), KernelError> {
         .map_err(io("syncing rekey file"))
 }
 
+/// SHA-256 of a file, streamed so a large database is never read into memory.
 fn sha256_file(path: &Path) -> Result<String, KernelError> {
-    let bytes = fs::read(path).map_err(io("hashing rekey file"))?;
-    Ok(format!("{:x}", Sha256::digest(&bytes)))
+    let mut file = File::open(path).map_err(io("hashing rekey file"))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(io("hashing rekey file"))?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Write the journal by temp file, `fsync`, rename, directory `fsync` — the
@@ -199,6 +202,7 @@ fn read_journal(paths: &RekeyPaths) -> Result<Option<Journal>, ()> {
 /// journal. The live vault is untouched. Missing files are fine: rollback must
 /// tolerate links that were never created (ADR 0083 §4).
 fn roll_back(paths: &RekeyPaths, journal: Option<&Journal>) -> Result<(), KernelError> {
+    remove_if_present(&paths.blobs.join(LINK_PROBE))?;
     remove_if_present(&paths.new_db)?;
     for suffix in SIDE_SUFFIXES {
         remove_if_present(&with_suffix(&paths.new_db, suffix))?;
@@ -315,6 +319,7 @@ pub fn recover_interrupted_rekey(db_path: &Path) -> RekeyRecovery {
             let stray = paths.new_db.exists()
                 || paths.new_envelope.exists()
                 || paths.journal_tmp.exists()
+                || paths.blobs.join(LINK_PROBE).exists()
                 || SIDE_SUFFIXES
                     .iter()
                     .any(|s| with_suffix(&paths.new_db, s).exists());
@@ -398,6 +403,10 @@ fn link_or_copy(from: &Path, to: &Path) -> Result<(), KernelError> {
     }
 }
 
+/// The hard-link probe's file name in `blobs/` (it has an extension, so backups
+/// and blob listings skip it; recovery removes a stray one).
+const LINK_PROBE: &str = "rekey-probe.tmp";
+
 /// Whether the blob directory supports hard links (ADR 0083 §5 probe).
 fn hard_links_supported(blobs: &Path) -> bool {
     let Ok(entries) = fs::read_dir(blobs) else {
@@ -410,7 +419,7 @@ fn hard_links_supported(blobs: &Path) -> bool {
     else {
         return true;
     };
-    let probe = blobs.join("rekey-probe.tmp");
+    let probe = blobs.join(LINK_PROBE);
     let _ = fs::remove_file(&probe);
     let ok = fs::hard_link(&sample, &probe).is_ok();
     let _ = fs::remove_file(&probe);
@@ -628,6 +637,7 @@ mod protocol_tests {
 
     const PASSWORD: &[u8] = b"rotation test password";
     const PDF: &[u8] = b"%PDF-1.4\nrotation attachment\n%%EOF\n";
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nsecond rotation attachment";
 
     fn meta(index: u8) -> CommandMeta {
         CommandMeta {
@@ -685,6 +695,11 @@ mod protocol_tests {
             .attach_document(txn, PDF, Some("application/pdf"), Some("r.pdf"))
             .unwrap()
             .id;
+        // A second blob, so a crash between the two links (one created, one
+        // not) is exercised by the Linked/PreparingJournalWritten points.
+        kernel
+            .attach_document(txn, PNG, Some("image/png"), Some("r.png"))
+            .unwrap();
         (dir, path, controller, attachment)
     }
 
@@ -711,7 +726,7 @@ mod protocol_tests {
         for artifact in RekeyPaths::new(path).all_artifacts() {
             assert!(!artifact.exists(), "left behind: {}", artifact.display());
         }
-        assert!(!RekeyPaths::new(path).blobs.join("rekey-probe.tmp").exists());
+        assert!(!RekeyPaths::new(path).blobs.join(LINK_PROBE).exists());
     }
 
     #[test]
@@ -1020,6 +1035,7 @@ mod protocol_tests {
         fs::write(&paths.new_db, b"copy").unwrap();
         fs::write(with_suffix(&paths.new_db, "-journal"), b"j").unwrap();
         fs::write(&paths.journal_tmp, b"{").unwrap();
+        fs::write(paths.blobs.join(LINK_PROBE), b"probe").unwrap();
         // An unreferenced file in blobs/ is not prepare's to remove without a journal.
         fs::write(paths.blobs.join("ffff"), b"unrelated").unwrap();
         let reopened = VaultController::open(&path);
@@ -1066,6 +1082,34 @@ mod protocol_tests {
         // And a retry after the cause is fixed succeeds.
         controller.rotate_key(PASSWORD).unwrap();
         assert_eq!(canonical(&controller), before);
+    }
+
+    #[test]
+    fn switching_to_a_vault_with_an_interrupted_rotation_recovers_it() {
+        let (_dir, path, mut controller, attachment) = seeded();
+        let before = canonical(&controller);
+        let error = controller
+            .rotate_key_with(PASSWORD, Some(CrashPoint::DbSwapped))
+            .unwrap_err();
+        assert!(is_simulated_crash(&error));
+        // Another controller (another vault) switches to this path.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut other = VaultController::open(elsewhere.path().join("vault.db"));
+        other.switch_to(path.clone()).unwrap();
+        assert_eq!(other.rekey_recovery(), RekeyRecovery::RolledForward);
+        assert_eq!(other.state(), VaultState::Locked);
+        assert_no_artifacts(&path);
+        other.unlock(PASSWORD).unwrap();
+        assert_eq!(canonical(&other), before);
+        assert_eq!(
+            other
+                .kernel()
+                .unwrap()
+                .read_attachment_bytes(attachment)
+                .unwrap(),
+            PDF
+        );
+        drop(controller);
     }
 
     #[test]
