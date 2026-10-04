@@ -89,9 +89,12 @@ export function SharedFeedDialog({
           <p className="text-muted-foreground">
             If &ldquo;{externalName}&rdquo; is the same bank account (a joint
             account you can both see, say), import it from one connection only.
-            Importing from both is allowed: any transaction that appears in both
-            waits in the Money Inbox for you to review, and is never counted
-            twice.
+          </p>
+          <p className="text-muted-foreground">
+            Importing from both is allowed. A transaction both connections report
+            with the same date and amount waits in the Money Inbox for you to
+            review. If they report it on different dates, both copies are
+            imported, so one connection is safer.
           </p>
         </div>
         <div className="flex flex-col gap-2">

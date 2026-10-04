@@ -505,6 +505,13 @@ describe("ConnectionsCard", () => {
       "Alex's SimpleFIN — Joint Checking ••1234",
     );
     expect(dialog).toHaveTextContent("Demo Checking");
+    // The copy states the real guarantee: exact date + amount overlaps are
+    // reviewed; different dates are not caught (review F1, PR 63).
+    expect(dialog).toHaveTextContent(
+      "A transaction both connections report with the same date and amount waits in the Money Inbox",
+    );
+    expect(dialog).toHaveTextContent("If they report it on different dates, both copies are imported");
+    expect(dialog).not.toHaveTextContent(/never\s+counted\s+twice/i);
     // The default action is the safe one.
     expect(document.activeElement).toHaveTextContent("Don’t import this one");
     expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
@@ -550,7 +557,7 @@ describe("ConnectionsCard", () => {
       }),
     );
     expect(await findByRole("status")).toHaveTextContent(
-      "Any transaction both connections report waits in the Money Inbox.",
+      "A transaction both connections report with the same date and amount waits in the Money Inbox; one reported on different dates is imported twice.",
     );
   });
 });

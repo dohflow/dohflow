@@ -463,7 +463,7 @@ export function ConnectionsCard({
       saved = await runMap(connectionId, externalId, accountId, true);
       if (saved) {
         setNotice(
-          `“${externalName}” now also updates ${accountName}. Any transaction both connections report waits in the Money Inbox.`,
+          `“${externalName}” now also updates ${accountName}. A transaction both connections report with the same date and amount waits in the Money Inbox; one reported on different dates is imported twice.`,
         );
       }
     } else {
