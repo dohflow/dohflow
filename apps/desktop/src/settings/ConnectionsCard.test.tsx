@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   connectorConnections: vi.fn(),
   connectorLink: vi.fn(),
   connectorSetAccountLink: vi.fn(),
+  connectorCreateMappedAccount: vi.fn(),
   connectorSync: vi.fn(),
   connectorForget: vi.fn(),
   accountList: vi.fn(),
@@ -313,11 +314,10 @@ describe("ConnectionsCard", () => {
 
   it("creates a new account from the mapping step and maps it (07bn)", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection()]));
-    mocks.createAccount.mockResolvedValue(
+    mocks.connectorCreateMappedAccount.mockResolvedValue(
       ok({ account_id: "44444444-4444-7444-8444-444444444444" }),
     );
-    mocks.connectorSetAccountLink.mockResolvedValue(ok(LINKED));
-    const { findByLabelText, findByRole, getByRole, getByLabelText } =
+    const { findByLabelText, findByRole, getByRole, getByLabelText, queryByRole } =
       renderWithClient(<ConnectionsCard />);
     const select = await findByLabelText("Account for Demo Checking");
     fireEvent.change(select, { target: { value: "__create_new__" } });
@@ -336,9 +336,13 @@ describe("ConnectionsCard", () => {
     );
     fireEvent.click(getByRole("button", { name: /create and map/i }));
 
+    // ONE call creates and maps, with the guard first (personal-cfo-pxi.8):
+    // no separate create, no separate map.
     await waitFor(() =>
-      expect(mocks.createAccount).toHaveBeenCalledWith(
-        expect.objectContaining({
+      expect(mocks.connectorCreateMappedAccount).toHaveBeenCalledWith({
+        connection_id: connection().id,
+        external_id: "ACT-1",
+        account: expect.objectContaining({
           name: "Demo Checking",
           cashflow_role: "LiquidCash",
           subtype: null,
@@ -346,22 +350,36 @@ describe("ConnectionsCard", () => {
           currency: "USD",
           opening_balance: null,
         }),
-      ),
-    );
-    // …and the new account is mapped onto the external one in the same flow.
-    await waitFor(() =>
-      expect(mocks.connectorSetAccountLink).toHaveBeenCalledWith({
-        connection_id: connection().id,
-        external_id: "ACT-1",
-        account_id: "44444444-4444-7444-8444-444444444444",
-        allow_shared_feed: false,
       }),
     );
+    expect(mocks.createAccount).not.toHaveBeenCalled();
+    expect(mocks.connectorSetAccountLink).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(queryByRole("dialog", { name: /new account for this connection/i })).toBeNull(),
+    );
+  });
+
+  it("a stale dialog's create is refused by the guard and leaves no account (pxi.8)", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    const refusal =
+      "This account is in USD, but your base currency is EUR. Accounts in a currency other than your base currency aren't supported yet.";
+    mocks.connectorCreateMappedAccount.mockResolvedValue({
+      status: "error",
+      error: refusal,
+    });
+    const { findByLabelText, findByRole, getByRole } = renderWithClient(<ConnectionsCard />);
+    const select = await findByLabelText("Account for Demo Checking");
+    fireEvent.change(select, { target: { value: "__create_new__" } });
+    const dialog = await findByRole("dialog", { name: /new account for this connection/i });
+    fireEvent.click(getByRole("button", { name: /create and map/i }));
+    await waitFor(() => expect(dialog).toHaveTextContent(refusal));
+    expect(mocks.createAccount).not.toHaveBeenCalled();
+    expect(mocks.connectorSetAccountLink).not.toHaveBeenCalled();
   });
 
   it("cannot be dismissed while a create is in flight (07bn review)", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection()]));
-    mocks.createAccount.mockReturnValue(new Promise(() => {}));
+    mocks.connectorCreateMappedAccount.mockReturnValue(new Promise(() => {}));
     const { findByLabelText, findByRole, getByRole, queryByRole } =
       renderWithClient(<ConnectionsCard />);
     const select = await findByLabelText("Account for Demo Checking");

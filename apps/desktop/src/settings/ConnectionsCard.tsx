@@ -331,6 +331,7 @@ export function ConnectionsCard({
     link,
     linkPending,
     setAccountLink,
+    createMappedAccount,
     sync,
     syncingId,
     forget,
@@ -604,9 +605,12 @@ export function ConnectionsCard({
           externalName={creatingFor.externalName}
           currency={baseCurrency}
           currencyRefusal={creatingFor.currencyRefusal}
-          onCreated={(id) =>
-            void runMap(creatingFor.connectionId, creatingFor.externalId, id)
+          // One call: guard, then create, then map (personal-cfo-pxi.8), so a
+          // stale refusal state can never leave an empty account behind.
+          onCreate={(account) =>
+            createMappedAccount(creatingFor.connectionId, creatingFor.externalId, account)
           }
+          onCreated={() => setActionError(null)}
           onClose={() => {
             const selectId = `map-${creatingFor.connectionId}-${creatingFor.externalId}`;
             setCreatingFor(null);

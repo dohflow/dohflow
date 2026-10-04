@@ -3198,23 +3198,40 @@ impl Kernel {
         account_id: Option<uuid::Uuid>,
     ) -> Result<(), KernelError> {
         if account_id.is_some() {
-            let Some(link_currency) = self
-                .worker
-                .connector_link_currency(connection_id, external_id)?
-            else {
-                return Err(KernelError::Validation(
-                    "unknown connector account link".to_owned(),
-                ));
-            };
-            connector_currency_guard::connector_currency_guard(
-                link_currency.as_deref(),
-                &self.base_currency_code()?,
-            )
-            .map_err(|refusal| KernelError::Validation(refusal.to_string()))?;
+            self.ensure_connector_link_mappable(connection_id, external_id)?;
         }
         Ok(self
             .worker
             .set_connector_link_account(connection_id, external_id, account_id)?)
+    }
+
+    /// Whether `external_id` on `connection_id` may be mapped onto an account
+    /// right now: the link exists and the connector currency guard accepts
+    /// its currency against the CURRENT base currency (personal-cfo-049p6).
+    /// Callers that create an account to map run this first, so a refusal
+    /// never leaves an empty account behind (personal-cfo-pxi.8).
+    ///
+    /// # Errors
+    /// [`KernelError::Validation`] with the guard's message, or for an unknown
+    /// link; [`KernelError`] on a read failure.
+    pub fn ensure_connector_link_mappable(
+        &self,
+        connection_id: uuid::Uuid,
+        external_id: &str,
+    ) -> Result<(), KernelError> {
+        let Some(link_currency) = self
+            .worker
+            .connector_link_currency(connection_id, external_id)?
+        else {
+            return Err(KernelError::Validation(
+                "unknown connector account link".to_owned(),
+            ));
+        };
+        connector_currency_guard::connector_currency_guard(
+            link_currency.as_deref(),
+            &self.base_currency_code()?,
+        )
+        .map_err(|refusal| KernelError::Validation(refusal.to_string()))
     }
 
     /// Every connector link that feeds `account_id`, across all connections

@@ -1323,26 +1323,33 @@ pub fn create_account_impl(
     state: &AppState,
     input: CreateAccountInput,
 ) -> Result<CreateAccountResult, IpcError> {
-    with_kernel(state, |kernel| {
-        let account = input.to_account()?;
-        let account_id = account.id();
+    with_kernel(state, |kernel| create_account_in(kernel, &input))
+}
 
-        let command = match input.opening_balance.as_ref() {
-            Some(opening) => {
-                let money: Money = opening.to_money()?;
-                CreateAccount::with_opening_balance(account, money)
-            }
-            None => CreateAccount::new(account),
-        };
+/// The body of [`create_account_impl`], for callers already holding the kernel
+/// (the controller mutex is not reentrant).
+fn create_account_in(
+    kernel: &Kernel,
+    input: &CreateAccountInput,
+) -> Result<CreateAccountResult, IpcError> {
+    let account = input.to_account()?;
+    let account_id = account.id();
 
-        let outcome = kernel.dispatch(CommandEnvelope::new(
-            user_meta(&input.idempotency_key),
-            command,
-        ))?;
-        Ok(CreateAccountResult {
-            account_id: account_id.to_string(),
-            mutation: outcome.into(),
-        })
+    let command = match input.opening_balance.as_ref() {
+        Some(opening) => {
+            let money: Money = opening.to_money()?;
+            CreateAccount::with_opening_balance(account, money)
+        }
+        None => CreateAccount::new(account),
+    };
+
+    let outcome = kernel.dispatch(CommandEnvelope::new(
+        user_meta(&input.idempotency_key),
+        command,
+    ))?;
+    Ok(CreateAccountResult {
+        account_id: account_id.to_string(),
+        mutation: outcome.into(),
     })
 }
 
@@ -4757,11 +4764,11 @@ use tauri::Manager as _;
 use crate::ipc::dto::{
     ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto,
     ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
-    ConnectorCredentialTierDto, ConnectorDisclosureDto, ConnectorEconomicsDto,
-    ConnectorExternalAccountDto, ConnectorFeedDto, ConnectorForgetInput, ConnectorLinkGuideDto,
-    ConnectorLinkInput, ConnectorLinkResultDto, ConnectorPayerDto, ConnectorReferralDto,
-    ConnectorSetAccountLinkInput, ConnectorSetAccountLinkResultDto, ConnectorSyncInput,
-    ConnectorSyncResultDto,
+    ConnectorCreateMappedAccountInput, ConnectorCredentialTierDto, ConnectorDisclosureDto,
+    ConnectorEconomicsDto, ConnectorExternalAccountDto, ConnectorFeedDto, ConnectorForgetInput,
+    ConnectorLinkGuideDto, ConnectorLinkInput, ConnectorLinkResultDto, ConnectorPayerDto,
+    ConnectorReferralDto, ConnectorSetAccountLinkInput, ConnectorSetAccountLinkResultDto,
+    ConnectorSyncInput, ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -5205,6 +5212,41 @@ pub fn connector_set_account_link_impl(
             existing_feeds: Vec::new(),
         })
     })
+}
+
+/// Create a new account and map a connector account onto it, in one step
+/// (personal-cfo-pxi.8). The currency guard runs FIRST, against the current
+/// base currency and the link's current currency, so a refusal creates
+/// nothing — the mapping dialog's own copy of the link may be stale (the base
+/// currency changed, or a refresh recorded a foreign or unknown currency).
+/// Everything runs under one kernel lock, so neither can change in between.
+/// A brand-new account has no other feed, so the one-feed guard (6evt) has
+/// nothing to say here.
+pub fn connector_create_mapped_account_impl(
+    state: &AppState,
+    input: ConnectorCreateMappedAccountInput,
+) -> Result<CreateAccountResult, IpcError> {
+    let connection_id = parse_connector_connection_id(&input.connection_id)?;
+    with_kernel(state, |kernel| {
+        kernel.ensure_connector_link_mappable(connection_id, &input.external_id)?;
+        let created = create_account_in(kernel, &input.account)?;
+        let account_id = parse_account_id(&created.account_id)?;
+        kernel.set_connector_link_account(
+            connection_id,
+            &input.external_id,
+            Some(account_id.as_uuid()),
+        )?;
+        Ok(created)
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn connector_create_mapped_account(
+    state: tauri::State<'_, AppState>,
+    input: ConnectorCreateMappedAccountInput,
+) -> Result<CreateAccountResult, IpcError> {
+    connector_create_mapped_account_impl(state.inner(), input)
 }
 
 #[tauri::command]

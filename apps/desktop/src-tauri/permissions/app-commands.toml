@@ -176,6 +176,9 @@ commands.allow = [
   "connector_adapters",
   "connector_connections",
   "connector_set_account_link",
+  # Create-and-map in one step: guard first, so a refusal creates nothing
+  # (personal-cfo-pxi.8).
+  "connector_create_mapped_account",
   "connector_sync",
   "connector_auto_sync",
 ]
