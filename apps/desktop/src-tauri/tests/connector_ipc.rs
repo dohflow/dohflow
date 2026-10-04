@@ -1589,3 +1589,166 @@ fn a_failed_refresh_leaves_currencies_alone_and_discovery_backfills_them() {
     let account = make_account(&state, "Checking");
     try_map(&state, &connection_id, "mock-acct-checking", Some(&account)).unwrap();
 }
+
+// ---- key rotation interleaving (personal-cfo-2y8, ADR 0083 §5) ---------------
+
+/// Wraps the mock connector so the first transaction fetch (a network phase,
+/// run outside the controller lock) blocks until the test releases it.
+struct GatedConnector {
+    inner: MockConnector,
+    started: std::sync::atomic::AtomicBool,
+    gate: (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+
+impl GatedConnector {
+    fn release(&self) {
+        *self.gate.0.lock().unwrap() = true;
+        self.gate.1.notify_all();
+    }
+}
+
+impl ConnectorAdapter for GatedConnector {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+    fn display_name(&self) -> &'static str {
+        self.inner.display_name()
+    }
+    fn version(&self) -> semver::Version {
+        self.inner.version()
+    }
+    fn capabilities(&self) -> connector_core::CapabilitySet {
+        self.inner.capabilities()
+    }
+    fn link(
+        &self,
+        input: &connector_core::LinkInput,
+    ) -> Result<connector_core::LinkSession, connector_core::ConnectorError> {
+        self.inner.link(input)
+    }
+    fn fetch_accounts(
+        &self,
+        conn: &connector_core::Connection,
+    ) -> Result<Vec<importer_core::ParsedAccount>, connector_core::ConnectorError> {
+        self.inner.fetch_accounts(conn)
+    }
+    fn fetch_transactions(
+        &self,
+        conn: &connector_core::Connection,
+        account_external_id: &str,
+        since: Option<chrono::NaiveDate>,
+    ) -> Result<Vec<importer_core::ParsedRecord>, connector_core::ConnectorError> {
+        if !self.started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let mut released = self.gate.0.lock().unwrap();
+            while !*released {
+                released = self.gate.1.wait(released).unwrap();
+            }
+        }
+        self.inner
+            .fetch_transactions(conn, account_external_id, since)
+    }
+    fn fetch_balances(
+        &self,
+        conn: &connector_core::Connection,
+        account_external_id: &str,
+    ) -> Result<Vec<importer_core::ParsedBalance>, connector_core::ConnectorError> {
+        self.inner.fetch_balances(conn, account_external_id)
+    }
+    fn health(
+        &self,
+        conn: &connector_core::Connection,
+    ) -> Result<connector_core::HealthStatus, connector_core::ConnectorError> {
+        self.inner.health(conn)
+    }
+}
+
+/// ADR 0083 §5: every kernel access goes through the controller lock, which a
+/// rotation holds for its whole run. A connector sync whose network fetch
+/// overlaps the rotation waits for the lock and then writes into the rotated
+/// vault — no write lands between the export and the commit, and nothing is lost.
+#[test]
+fn rotation_blocks_kernel_access_and_an_overlapping_sync_lands_in_the_rotated_vault() {
+    use app_lib::ipc::commands::{lock_vault_impl, rotate_vault_key_impl, unlock_vault_impl};
+    use app_lib::ipc::dto::RotateVaultKeyInput;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    let (dir, state) = open_state();
+    let gated = GatedConnector {
+        inner: mock(),
+        started: std::sync::atomic::AtomicBool::new(false),
+        gate: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+    };
+    let connection_id = link(&state, &gated);
+    let checking = make_account(&state, "Checking");
+    let card = make_account(&state, "Card");
+    map_account(&state, &connection_id, "mock-acct-checking", &checking);
+    map_account(&state, &connection_id, "mock-acct-card", &card);
+    let envelope = dir.path().join("vault.db.envelope");
+    let envelope_before = std::fs::read(&envelope).unwrap();
+    let rekey_files = [
+        dir.path().join("vault.db.rekey-new"),
+        dir.path().join("vault.db.rekey"),
+        dir.path().join("vault.db.rekey-old"),
+    ];
+
+    let (sync_result, sync_done, rotate_result, rotate_done) = std::thread::scope(|scope| {
+        let syncing = scope.spawn(|| {
+            let result = sync(&state, &gated, &connection_id);
+            (result, Instant::now())
+        });
+        // Wait until the sync is inside its (unlocked) network phase.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !gated.started.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "sync never reached its fetch");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let rotating = scope.spawn(|| {
+            let result = rotate_vault_key_impl(
+                &state,
+                RotateVaultKeyInput {
+                    password: "test-key".to_owned(),
+                },
+            );
+            (result, Instant::now())
+        });
+        // Release the fetch only once the rotation is observably inside its
+        // locked section (its files exist), so the sync's database phase must
+        // queue behind it.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !rekey_files.iter().any(|f| f.exists()) && !rotating.is_finished() {
+            assert!(Instant::now() < deadline, "rotation never started");
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        gated.release();
+        let (rotate_result, rotate_done) = rotating.join().unwrap();
+        let (sync_result, sync_done) = syncing.join().unwrap();
+        (sync_result, sync_done, rotate_result, rotate_done)
+    });
+
+    let status = rotate_result.unwrap();
+    assert_eq!(status.state, app_lib::ipc::dto::VaultStateDto::Unlocked);
+    assert_ne!(
+        std::fs::read(&envelope).unwrap(),
+        envelope_before,
+        "rotated"
+    );
+    assert_eq!(sync_result.status, "synced");
+    assert_eq!(sync_result.committed, 6);
+    assert!(
+        sync_done >= rotate_done,
+        "the sync's write waited for the rotation"
+    );
+    for file in &rekey_files {
+        assert!(!file.exists(), "rotation artifact left: {}", file.display());
+    }
+
+    // The synced rows live in the rotated vault: they survive a lock and an
+    // unlock with the unchanged password.
+    lock_vault_impl(&state).unwrap();
+    unlock_vault_impl(&state, "test-key".to_owned()).unwrap();
+    assert_eq!(
+        transaction_page_impl(&state, page_query()).unwrap().total,
+        6
+    );
+}

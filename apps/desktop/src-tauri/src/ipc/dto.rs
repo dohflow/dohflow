@@ -1800,6 +1800,22 @@ pub struct VaultStatusDto {
     pub account_count: Option<u32>,
 }
 
+/// Input to rotate the vault's encryption key (personal-cfo-2y8, ADR 0083). The
+/// current password re-derives the KEK that wraps the new DEK; the command wraps
+/// it in `Zeroizing` on use. `Debug` is redacted so it can never reach a log
+/// line (§6.6).
+#[derive(Clone, Deserialize, Type)]
+pub struct RotateVaultKeyInput {
+    /// The current master password (unchanged by rotation).
+    pub password: String,
+}
+
+impl std::fmt::Debug for RotateVaultKeyInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RotateVaultKeyInput([REDACTED])")
+    }
+}
+
 /// Input to change the vault master password (personal-cfo-zxq). Carries both
 /// passwords across the IPC boundary; the command wraps each in `Zeroizing` on
 /// use, mirroring create/unlock. `Debug` is redacted so neither password can
