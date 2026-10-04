@@ -100,14 +100,36 @@ enum AmountProblem {
 }
 
 /// The currency marker written around an amount (`$`, `C$`, `€`, `US$`), if
-/// it carries a currency sign — letters alone (`CR`, `DR`, `USD`) are not
-/// treated as a currency here, matching the importer's behavior before
-/// personal-cfo-tulv for bank files that suffix a debit/credit marker.
+/// it carries a currency sign — letters alone (`USD`) are not treated as a
+/// currency here, and a debit/credit indicator (`CR`, `DR`, any case) is not
+/// part of the marker: `$1,234.56 CR` is a dollar amount, as it was before
+/// personal-cfo-tulv. A letter run touching the sign (`C$`) is kept, so it
+/// still names its own currency.
 fn currency_marker(raw: &str) -> Option<String> {
-    let marker: String = raw
+    // Split into letter runs and everything else, dropping a whole run that
+    // is a debit/credit indicator. Whitespace separates runs, then goes.
+    let mut marker = String::new();
+    let mut run = String::new();
+    let flush = |run: &mut String, marker: &mut String| {
+        if !(run.eq_ignore_ascii_case("cr") || run.eq_ignore_ascii_case("dr")) {
+            marker.push_str(run);
+        }
+        run.clear();
+    };
+    for c in raw
         .chars()
-        .filter(|c| !c.is_ascii_digit() && !c.is_whitespace() && !"+-().,'\u{a0}".contains(*c))
-        .collect();
+        .filter(|c| !c.is_ascii_digit() && !"+-().,'".contains(*c))
+    {
+        if c.is_ascii_alphabetic() {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut marker);
+            if !c.is_whitespace() {
+                marker.push(c);
+            }
+        }
+    }
+    flush(&mut run, &mut marker);
     marker.contains(CURRENCY_SIGNS).then_some(marker)
 }
 
@@ -795,6 +817,26 @@ mod tests {
             parse_amount_cell("12.00 CR", Currency::Usd, false),
             Ok(1200)
         );
+        // A debit/credit indicator beside a sign is not part of the currency
+        // (04-review F1, PR #70): these imported before personal-cfo-tulv.
+        for (raw, minor) in [
+            ("$1,234.56 CR", 123_456),
+            ("$1,234.56 DR", 123_456),
+            ("$12.00CR", 1200),
+            ("$12.00 cr", 1200),
+            ("CR $12.00", 1200),
+        ] {
+            assert_eq!(
+                parse_amount_cell(raw, Currency::Usd, false),
+                Ok(minor),
+                "{raw} must stay a dollar amount"
+            );
+        }
+        // A letter run touching the sign still names its own currency.
+        assert_eq!(
+            parse_amount_cell("C$12.00 CR", Currency::Usd, false),
+            Err(AmountProblem::ForeignCurrency)
+        );
     }
 
     #[test]
@@ -892,6 +934,27 @@ mod tests {
         assert_eq!(
             batch.records[0].transaction.as_ref().unwrap().amount,
             Money::new(-500, Currency::Usd)
+        );
+    }
+
+    #[test]
+    fn a_bank_file_s_cr_dr_suffix_still_imports() {
+        // 04-review F1 (PR #70): a generic bank CSV writing a debit/credit
+        // indicator after a dollar amount imported on main and must still.
+        let csv = "Date,Description,Amount\n\
+                   2026-06-20,Deposit,\"$1,234.56 CR\"\n\
+                   2026-06-21,Payment,\"$1,234.56 DR\"\n\
+                   2026-06-22,Refund,$12.00CR\n\
+                   2026-06-23,Abroad,C$12.00\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 3, "{:?}", batch.skipped);
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].row, Some(3));
+        assert_eq!(
+            batch.skipped[0].message,
+            "currency differs from the import currency"
         );
     }
 
