@@ -4074,6 +4074,16 @@ pub struct ConnectorSetAccountLinkInput {
     pub allow_shared_feed: bool,
 }
 
+/// Create a new account and map a connector account onto it, in one step
+/// (personal-cfo-pxi.8): the currency guard runs before anything is created.
+#[derive(Debug, Clone, Deserialize, Type)]
+pub struct ConnectorCreateMappedAccountInput {
+    pub connection_id: String,
+    pub external_id: String,
+    /// The account to create; it is mapped once created.
+    pub account: CreateAccountInput,
+}
+
 /// What a mapping did (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct ConnectorSetAccountLinkResultDto {

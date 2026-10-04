@@ -199,6 +199,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::connector_adapters,
         ipc::commands::connector_connections,
         ipc::commands::connector_set_account_link,
+        ipc::commands::connector_create_mapped_account,
         ipc::commands::connector_sync,
         ipc::commands::connector_auto_sync,
         ipc::commands::connector_forget,

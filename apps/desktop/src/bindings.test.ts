@@ -82,6 +82,7 @@ describe("generated IPC bindings", () => {
     "connectorAdapters",
     "connectorConnections",
     "connectorSetAccountLink",
+    "connectorCreateMappedAccount",
     "connectorSync",
     "connectorAutoSync",
     "connectorForget",

@@ -6,8 +6,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, X } from "lucide-react";
 
-import type { CashflowRoleDto } from "@/bindings";
-import { useAccounts } from "@/accounts/useAccounts";
+import type { CashflowRoleDto, CreateAccountInput, IpcError } from "@/bindings";
 import { ROLE_DTO_TO_TOKEN, subtypesForRoleToken } from "@/accounts/subtypes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +29,7 @@ export function NewMappedAccountDialog({
   externalName,
   currency,
   currencyRefusal = null,
+  onCreate,
   onCreated,
   onClose,
 }: {
@@ -40,10 +40,15 @@ export function NewMappedAccountDialog({
   /// be mapped (personal-cfo-049p6). Creating is disabled: an account made
   /// here could never be mapped, so none is created.
   currencyRefusal?: string | null;
+  /// Create the account AND map it, in one call that runs the currency guard
+  /// first (personal-cfo-pxi.8): a refusal comes back as an error and no
+  /// account is created, even if `currencyRefusal` above is stale.
+  onCreate: (
+    account: CreateAccountInput,
+  ) => Promise<{ id: string | null; error: IpcError | null }>;
   onCreated: (id: string) => void;
   onClose: () => void;
 }) {
-  const { createAccount } = useAccounts();
   const [name, setName] = useState(externalName);
   const [role, setRole] = useState<CashflowRoleDto>("LiquidCash");
   const [subtype, setSubtype] = useState("");
@@ -70,7 +75,7 @@ export function NewMappedAccountDialog({
     }
     setBusy(true);
     setError(null);
-    const { id, error: failure } = await createAccount({
+    const { id, error: failure } = await onCreate({
       name: name.trim(),
       cashflow_role: role,
       subtype: subtype || null,

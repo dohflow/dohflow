@@ -283,6 +283,7 @@ export const commands = {
 	connectorAdapters: () => __TAURI_INVOKE<ConnectorAdapterDto[]>("connector_adapters"),
 	connectorConnections: () => typedError<ConnectorConnectionDto[], IpcError>(__TAURI_INVOKE("connector_connections")),
 	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<ConnectorSetAccountLinkResultDto, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
+	connectorCreateMappedAccount: (input: ConnectorCreateMappedAccountInput) => typedError<CreateAccountResult, IpcError>(__TAURI_INVOKE("connector_create_mapped_account", { input })),
 	connectorSync: (input: ConnectorSyncInput) => typedError<ConnectorSyncResultDto, IpcError>(__TAURI_INVOKE("connector_sync", { input })),
 	connectorAutoSync: () => typedError<ConnectorSyncResultDto[], IpcError>(__TAURI_INVOKE("connector_auto_sync")),
 	connectorForget: (input: ConnectorForgetInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_forget", { input })),
@@ -981,6 +982,17 @@ export type ConnectorConnectionDto = {
 	last_synced_at: string | null,
 	last_error: string | null,
 	links: ConnectorAccountLinkDto[],
+};
+
+/**
+ *  Create a new account and map a connector account onto it, in one step
+ *  (personal-cfo-pxi.8): the currency guard runs before anything is created.
+ */
+export type ConnectorCreateMappedAccountInput = {
+	connection_id: string,
+	external_id: string,
+	/**  The account to create; it is mapped once created. */
+	account: CreateAccountInput,
 };
 
 /**  ADR 0004's credential tiers: what "connect" means for this provider. */

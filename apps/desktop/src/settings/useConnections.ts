@@ -14,6 +14,7 @@ import { useCallback, useState } from "react";
 
 import {
   commands,
+  type CreateAccountInput,
   type ConnectorConnectionDto,
   type ConnectorFeedDto,
   type ConnectorLinkResultDto,
@@ -51,6 +52,13 @@ interface UseConnections {
     accountId: string | null,
     allowSharedFeed?: boolean,
   ) => Promise<SetLinkOutcome>;
+  /// Create a new account and map `externalId` onto it in one call; the
+  /// currency guard runs first, so a refusal creates nothing (personal-cfo-pxi.8).
+  createMappedAccount: (
+    connectionId: string,
+    externalId: string,
+    account: CreateAccountInput,
+  ) => Promise<{ id: string | null; error: IpcError | null }>;
   sync: (connectionId: string) => Promise<ConnectorSyncResultDto | IpcError>;
   /// The connection currently syncing, or null — per-row pending state (the
   /// backend's in-flight claim is per-connection, so other rows stay live).
@@ -150,6 +158,46 @@ export function useConnections(): UseConnections {
     [setLinkMutation],
   );
 
+  const createMappedMutation = useMutation({
+    mutationFn: (input: {
+      connectionId: string;
+      externalId: string;
+      account: CreateAccountInput;
+    }) =>
+      commands.connectorCreateMappedAccount({
+        connection_id: input.connectionId,
+        external_id: input.externalId,
+        account: input.account,
+      }),
+    onSuccess: (result) => {
+      if (result.status !== "ok") return;
+      // A new account now exists and a link points at it.
+      for (const key of [
+        queryKeys.connections,
+        queryKeys.accounts,
+        queryKeys.cashTiers,
+        queryKeys.cashAvailability,
+        queryKeys.forecastReadiness,
+        ["forecast"] as const,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    },
+  });
+  const createMappedAccount = useCallback(
+    async (connectionId: string, externalId: string, account: CreateAccountInput) => {
+      const result = await createMappedMutation.mutateAsync({
+        connectionId,
+        externalId,
+        account,
+      });
+      return result.status === "ok"
+        ? { id: result.data.account_id, error: null }
+        : { id: null, error: result.error };
+    },
+    [createMappedMutation],
+  );
+
   const syncMutation = useMutation({
     mutationFn: (connectionId: string) =>
       commands.connectorSync({
@@ -188,6 +236,7 @@ export function useConnections(): UseConnections {
     link,
     linkPending,
     setAccountLink,
+    createMappedAccount,
     sync,
     syncingId: syncMutation.isPending ? (syncMutation.variables ?? null) : null,
     forget,

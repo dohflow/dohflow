@@ -8,17 +8,17 @@ use std::collections::BTreeMap;
 
 use app_lib::ipc::commands::{
     account_count_impl, account_list_impl, connector_adapters_impl, connector_auto_sync_impl,
-    connector_connections_impl, connector_forget_impl, connector_link_impl,
-    connector_link_registered_impl, connector_set_account_link_impl, connector_sync_impl,
-    create_account_impl, create_category_impl, create_manual_future_entry_impl, import_batch_impl,
-    manual_future_entry_list_impl, money_inbox_list_impl, recategorize_transaction_impl,
-    record_transaction_impl, set_auto_categorize_on_import_impl, set_base_currency_impl,
-    transaction_page_impl,
+    connector_connections_impl, connector_create_mapped_account_impl, connector_forget_impl,
+    connector_link_impl, connector_link_registered_impl, connector_set_account_link_impl,
+    connector_sync_impl, create_account_impl, create_category_impl,
+    create_manual_future_entry_impl, import_batch_impl, manual_future_entry_list_impl,
+    money_inbox_list_impl, recategorize_transaction_impl, record_transaction_impl,
+    set_auto_categorize_on_import_impl, set_base_currency_impl, transaction_page_impl,
 };
 use app_lib::ipc::dto::{
-    AccountFlagsDto, CashflowRoleDto, ConnectorForgetInput, ConnectorLinkInput,
-    ConnectorSetAccountLinkInput, ConnectorSyncInput, CreateAccountInput, CreateCategoryInput,
-    ImportBatchInput, MoneyDto, RecordTransactionInput, TransactionPageInput,
+    AccountFlagsDto, CashflowRoleDto, ConnectorCreateMappedAccountInput, ConnectorForgetInput,
+    ConnectorLinkInput, ConnectorSetAccountLinkInput, ConnectorSyncInput, CreateAccountInput,
+    CreateCategoryInput, ImportBatchInput, MoneyDto, RecordTransactionInput, TransactionPageInput,
 };
 use app_lib::AppState;
 use connector_core::mock::{mock_registration, MockConnector};
@@ -1359,9 +1359,21 @@ fn a_foreign_currency_account_is_discovered_then_refused_on_both_mapping_paths()
         matches!(&err, app_lib::ipc::IpcError::Validation(m) if m == &refusal),
         "{err:?}"
     );
-    // Create-from-mapping ends in the same call: the new account can't be mapped either.
-    let created = make_account(&state, "Mock Euro Account");
-    assert!(try_map(&state, &connection_id, "mock-acct-euro", Some(&created)).is_err());
+    // Create-from-mapping is one call that checks first (personal-cfo-pxi.8):
+    // refused with the same copy, and no account is created.
+    let before = account_count_impl(&state).unwrap();
+    let err = create_and_map(
+        &state,
+        &connection_id,
+        "mock-acct-euro",
+        "Mock Euro Account",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(m) if m == &refusal),
+        "{err:?}"
+    );
+    assert_eq!(account_count_impl(&state).unwrap(), before);
     assert!(link_dto(&state, "mock-acct-euro").account_id.is_none());
 
     // Same currency maps; unmapping is always allowed.
@@ -1373,6 +1385,93 @@ fn a_foreign_currency_account_is_discovered_then_refused_on_both_mapping_paths()
     )
     .unwrap();
     try_map(&state, &connection_id, "mock-acct-checking", None).unwrap();
+}
+
+/// The account the mapping dialog creates: named after the provider's account,
+/// in the household's base currency as the dialog last knew it.
+fn create_and_map(
+    state: &AppState,
+    connection_id: &str,
+    external_id: &str,
+    name: &str,
+) -> Result<app_lib::ipc::dto::CreateAccountResult, app_lib::ipc::IpcError> {
+    connector_create_mapped_account_impl(
+        state,
+        ConnectorCreateMappedAccountInput {
+            connection_id: connection_id.to_owned(),
+            external_id: external_id.to_owned(),
+            account: CreateAccountInput {
+                name: name.to_owned(),
+                cashflow_role: CashflowRoleDto::LiquidCash,
+                currency: "USD".to_owned(),
+                flags: None,
+                opening_balance: None,
+                subtype: None,
+                idempotency_key: String::new(),
+            },
+        },
+    )
+}
+
+/// personal-cfo-pxi.8: the mapping dialog's link DTO said "mappable", then the
+/// base currency changed before the user pressed Create. The guard runs against
+/// the CURRENT state first, so nothing is created and its message comes back.
+#[test]
+fn create_from_mapping_checks_the_guard_first_even_when_the_dialog_is_stale() {
+    let (_dir, state) = open_state();
+    let adapter = mock();
+    let connection_id = link_any(&state, &adapter);
+    let stale = link_dto(&state, "mock-acct-checking");
+    assert!(stale.currency_refusal.is_none(), "USD in a USD household");
+
+    set_base_currency_impl(&state, "EUR".to_owned()).unwrap();
+    let refusal = link_dto(&state, "mock-acct-checking")
+        .currency_refusal
+        .expect("now foreign");
+
+    let before = account_count_impl(&state).unwrap();
+    let err = create_and_map(&state, &connection_id, "mock-acct-checking", "Checking").unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(m) if m == &refusal),
+        "{err:?}"
+    );
+    assert_eq!(
+        account_count_impl(&state).unwrap(),
+        before,
+        "no empty account left behind"
+    );
+    assert!(link_dto(&state, "mock-acct-checking").account_id.is_none());
+}
+
+#[test]
+fn create_from_mapping_refuses_an_unknown_currency_without_creating() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_account_currency(None);
+    let connection_id = link_any(&state, &adapter);
+    let before = account_count_impl(&state).unwrap();
+    assert!(matches!(
+        create_and_map(&state, &connection_id, "mock-acct-checking", "Checking"),
+        Err(app_lib::ipc::IpcError::Validation(_))
+    ));
+    assert_eq!(account_count_impl(&state).unwrap(), before);
+}
+
+#[test]
+fn create_from_mapping_creates_and_maps_in_one_call() {
+    let (_dir, state) = open_state();
+    let adapter = mock();
+    let connection_id = link_any(&state, &adapter);
+    let before = account_count_impl(&state).unwrap();
+    let created = create_and_map(&state, &connection_id, "mock-acct-checking", "Checking")
+        .expect("same currency");
+    assert_eq!(account_count_impl(&state).unwrap(), before + 1);
+    assert_eq!(
+        link_dto(&state, "mock-acct-checking").account_id.as_deref(),
+        Some(created.account_id.as_str())
+    );
+    // An unknown link is refused before anything is created.
+    assert!(create_and_map(&state, &connection_id, "no-such-account", "Ghost").is_err());
+    assert_eq!(account_count_impl(&state).unwrap(), before + 1);
 }
 
 #[test]
