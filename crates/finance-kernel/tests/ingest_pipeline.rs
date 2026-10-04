@@ -809,7 +809,15 @@ fn a_sync_batch_with_an_invalid_row_still_reaches_a_terminal_state() {
     let account_map =
         std::collections::BTreeMap::from([("acct-1".to_owned(), account_id.as_uuid())]);
     let synced = kernel
-        .ingest_sync_batch("simplefin", "1.0.0", "Test", &parsed, &account_map, &meta())
+        .ingest_sync_batch(
+            "simplefin",
+            "1.0.0",
+            "Test",
+            None,
+            &parsed,
+            &account_map,
+            &meta(),
+        )
         .expect("one bad row never fails the sync");
     assert_eq!((synced.batch.committed, synced.batch.flagged), (2, 1));
     assert_eq!(synced.batch.status, "partially_committed");

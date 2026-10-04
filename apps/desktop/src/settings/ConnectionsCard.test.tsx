@@ -35,6 +35,8 @@ import { ConnectionsCard } from "./ConnectionsCard";
 import { exampleflow, simplefin } from "./connections/fixtures/adapters";
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
+/// A mapping that was saved (personal-cfo-6evt result shape).
+const LINKED = { linked: true, existing_feeds: [] };
 
 function connection(over: Record<string, unknown> = {}) {
   return {
@@ -190,7 +192,7 @@ describe("ConnectionsCard", () => {
 
   it("maps an external account onto a real account", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection()]));
-    mocks.connectorSetAccountLink.mockResolvedValue(ok(null));
+    mocks.connectorSetAccountLink.mockResolvedValue(ok(LINKED));
     const { findByLabelText } = renderWithClient(<ConnectionsCard />);
     const select = await findByLabelText("Account for Demo Checking");
     fireEvent.change(select, { target: { value: account.id } });
@@ -199,6 +201,7 @@ describe("ConnectionsCard", () => {
         connection_id: connection().id,
         external_id: "ACT-1",
         account_id: account.id,
+        allow_shared_feed: false,
       }),
     );
   });
@@ -313,7 +316,7 @@ describe("ConnectionsCard", () => {
     mocks.createAccount.mockResolvedValue(
       ok({ account_id: "44444444-4444-7444-8444-444444444444" }),
     );
-    mocks.connectorSetAccountLink.mockResolvedValue(ok(null));
+    mocks.connectorSetAccountLink.mockResolvedValue(ok(LINKED));
     const { findByLabelText, findByRole, getByRole, getByLabelText } =
       renderWithClient(<ConnectionsCard />);
     const select = await findByLabelText("Account for Demo Checking");
@@ -351,6 +354,7 @@ describe("ConnectionsCard", () => {
         connection_id: connection().id,
         external_id: "ACT-1",
         account_id: "44444444-4444-7444-8444-444444444444",
+        allow_shared_feed: false,
       }),
     );
   });
@@ -439,13 +443,14 @@ describe("ConnectionsCard", () => {
     // It can be unmapped, not remapped or recreated.
     expect(select).not.toBeDisabled();
     expect([...select.options].map((o) => o.textContent)).toEqual(["Not mapped", "Checking"]);
-    mocks.connectorSetAccountLink.mockResolvedValue(ok(null));
+    mocks.connectorSetAccountLink.mockResolvedValue(ok(LINKED));
     fireEvent.change(select, { target: { value: "" } });
     await waitFor(() =>
       expect(mocks.connectorSetAccountLink).toHaveBeenCalledWith({
         connection_id: connection().id,
         external_id: "ACT-EU",
         account_id: null,
+        allow_shared_feed: false,
       }),
     );
   });
@@ -465,5 +470,87 @@ describe("ConnectionsCard", () => {
     // Unknown is not foreign: nothing is held, and no false base-currency label.
     expect(queryByText("Needs attention")).toBeNull();
     expect(queryByText(/· USD/)).toBeNull();
+  });
+  // ---- one account, one feed by default (personal-cfo-6evt) ----
+
+  const ALREADY_FED = {
+    linked: false,
+    existing_feeds: [
+      {
+        connection_id: "33333333-3333-7333-8333-333333333333",
+        adapter_id: "simplefin",
+        display_hint: "Alex's SimpleFIN",
+        external_id: "ALEX-JOINT",
+        external_name: "Joint Checking ••1234",
+      },
+    ],
+  };
+
+  async function pickAccountAlreadyFed() {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    mocks.connectorSetAccountLink
+      .mockResolvedValueOnce(ok(ALREADY_FED))
+      .mockResolvedValue(ok(LINKED));
+    const view = renderWithClient(<ConnectionsCard />);
+    const select = await view.findByLabelText("Account for Demo Checking");
+    fireEvent.change(select, { target: { value: account.id } });
+    const dialog = await view.findByRole("alertdialog");
+    return { ...view, dialog, select };
+  }
+
+  it("warns before a second connection feeds an account, naming the existing link", async () => {
+    const { dialog, getByLabelText } = await pickAccountAlreadyFed();
+    expect(dialog).toHaveTextContent("Checking is already updated by another connection");
+    expect(getByLabelText("Already updating this account")).toHaveTextContent(
+      "Alex's SimpleFIN — Joint Checking ••1234",
+    );
+    expect(dialog).toHaveTextContent("Demo Checking");
+    // The default action is the safe one.
+    expect(document.activeElement).toHaveTextContent("Don’t import this one");
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("choosing another account changes nothing and returns to the picker", async () => {
+    const { findByRole, queryByRole, getByRole, select } = await pickAccountAlreadyFed();
+    fireEvent.click(getByRole("button", { name: /map it to a different account/i }));
+    await waitFor(() => expect(queryByRole("alertdialog")).toBeNull());
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+    expect(select).toHaveValue("");
+    expect(document.activeElement).toBe(select);
+    expect(await findByRole("combobox", { name: /account for demo checking/i })).toBeTruthy();
+  });
+
+  it("Escape is the same as choosing another account", async () => {
+    const { queryByRole } = await pickAccountAlreadyFed();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(queryByRole("alertdialog")).toBeNull());
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("don't import leaves the account listed and feeding nothing", async () => {
+    const { getByRole, findByRole, getByText } = await pickAccountAlreadyFed();
+    fireEvent.click(getByRole("button", { name: /don.t import this one/i }));
+    expect(await findByRole("status")).toHaveTextContent(
+      "“Demo Checking” is not imported. Checking keeps its existing connection.",
+    );
+    // It was never mapped, so nothing needed saving.
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+    expect(getByText(/not mapped — transactions from this account are not imported/i)).toBeTruthy();
+  });
+
+  it("import from both saves the mapping on request and says overlaps are reviewed", async () => {
+    const { getByRole, findByRole } = await pickAccountAlreadyFed();
+    fireEvent.click(getByRole("button", { name: /import from both/i }));
+    await waitFor(() =>
+      expect(mocks.connectorSetAccountLink).toHaveBeenLastCalledWith({
+        connection_id: connection().id,
+        external_id: "ACT-1",
+        account_id: account.id,
+        allow_shared_feed: true,
+      }),
+    );
+    expect(await findByRole("status")).toHaveTextContent(
+      "Any transaction both connections report waits in the Money Inbox.",
+    );
   });
 });

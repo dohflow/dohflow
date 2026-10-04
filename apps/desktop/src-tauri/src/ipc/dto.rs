@@ -4068,6 +4068,32 @@ pub struct ConnectorSetAccountLinkInput {
     pub connection_id: String,
     pub external_id: String,
     pub account_id: Option<String>,
+    /// `true` once the user chose "Import from both" for an account another
+    /// connector link already feeds (personal-cfo-6evt). With `false`, such a
+    /// mapping is not saved; the result names the existing feed instead.
+    pub allow_shared_feed: bool,
+}
+
+/// What a mapping did (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorSetAccountLinkResultDto {
+    /// `true` if the link now points where asked (or was unmapped).
+    pub linked: bool,
+    /// When `linked` is `false`: the other connector links already feeding the
+    /// chosen account. Nothing was changed.
+    pub existing_feeds: Vec<ConnectorFeedDto>,
+}
+
+/// A connector link that already feeds an account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorFeedDto {
+    pub connection_id: String,
+    /// The connection's provider id; the UI names it from the registry.
+    pub adapter_id: String,
+    /// The provider's own label for the connection, if it gave one.
+    pub display_hint: Option<String>,
+    pub external_id: String,
+    pub external_name: Option<String>,
 }
 
 /// Run one sync for a connection.

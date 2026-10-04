@@ -17,6 +17,7 @@ import {
   commands,
   type ConnectorAccountLinkDto,
   type ConnectorConnectionDto,
+  type ConnectorFeedDto,
 } from "@/bindings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import { describeIpcError } from "@/vault/useVault";
 
 import { ConnectProviderFlow } from "./connections/ConnectProviderFlow";
 import { CurrencyRefusal } from "./connections/CurrencyRefusal";
+import { SharedFeedDialog } from "./connections/SharedFeedDialog";
 import { useConnectorAdapters } from "./connections/useConnectorAdapters";
 import { syncOutcomeCopy, syncOutcomeTone } from "./connectorSync";
 import { NewMappedAccountDialog } from "./NewMappedAccountDialog";
@@ -350,6 +352,16 @@ export function ConnectionsCard({
     currencyRefusal: string | null;
   } | null>(null);
 
+  // A mapping refused because another connector link already feeds the
+  // account (personal-cfo-6evt): the user decides in SharedFeedDialog.
+  const [sharedFeed, setSharedFeed] = useState<{
+    connectionId: string;
+    externalId: string;
+    accountId: string;
+    existingFeeds: ConnectorFeedDto[];
+  } | null>(null);
+  const [sharedFeedBusy, setSharedFeedBusy] = useState(false);
+
   const [linking, setLinking] = useState(startLinking);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -395,14 +407,76 @@ export function ConnectionsCard({
     connectionId: string,
     externalId: string,
     accountId: string | null,
-  ) => {
+    allowSharedFeed = false,
+  ): Promise<boolean> => {
     setActionError(null);
     try {
-      const failure = await setAccountLink(connectionId, externalId, accountId);
-      if (failure) setActionError(describeIpcError(failure));
+      const outcome = await setAccountLink(
+        connectionId,
+        externalId,
+        accountId,
+        allowSharedFeed,
+      );
+      if (outcome.kind === "error") {
+        setActionError(describeIpcError(outcome.error));
+        return false;
+      }
+      if (outcome.kind === "already_fed" && accountId !== null) {
+        setSharedFeed({
+          connectionId,
+          externalId,
+          accountId,
+          existingFeeds: outcome.existingFeeds,
+        });
+        return false;
+      }
+      return true;
     } catch {
       setActionError(VAULT_UNREACHABLE);
+      return false;
     }
+  };
+
+  const linkFor = (connectionId: string, externalId: string) =>
+    connections
+      ?.find((connection) => connection.id === connectionId)
+      ?.links.find((link) => link.external_id === externalId) ?? null;
+
+  const closeSharedFeed = () => {
+    if (sharedFeed) {
+      const selectId = `map-${sharedFeed.connectionId}-${sharedFeed.externalId}`;
+      document.getElementById(selectId)?.focus();
+    }
+    setSharedFeed(null);
+  };
+
+  const chooseSharedFeed = async (choice: "dont_import" | "import_both") => {
+    if (!sharedFeed) return;
+    const { connectionId, externalId, accountId } = sharedFeed;
+    const link = linkFor(connectionId, externalId);
+    const externalName = link?.external_name ?? externalId;
+    const accountName =
+      accounts.find((account) => account.id === accountId)?.name ?? "That account";
+    setSharedFeedBusy(true);
+    let saved = true;
+    if (choice === "import_both") {
+      saved = await runMap(connectionId, externalId, accountId, true);
+      if (saved) {
+        setNotice(
+          `“${externalName}” now also updates ${accountName}. Any transaction both connections report waits in the Money Inbox.`,
+        );
+      }
+    } else {
+      // Leave it unmapped: listed under its connection, feeding nothing.
+      if (link?.account_id) saved = await runMap(connectionId, externalId, null);
+      if (saved) {
+        setNotice(
+          `“${externalName}” is not imported. ${accountName} keeps its existing connection.`,
+        );
+      }
+    }
+    setSharedFeedBusy(false);
+    closeSharedFeed();
   };
 
   const runForget = async (connectionId: string) => {
@@ -501,6 +575,27 @@ export function ConnectionsCard({
           </div>
         )}
       </CardContent>
+      {sharedFeed ? (
+        <SharedFeedDialog
+          accountName={
+            accounts.find((account) => account.id === sharedFeed.accountId)?.name ??
+            "This account"
+          }
+          externalName={
+            linkFor(sharedFeed.connectionId, sharedFeed.externalId)?.external_name ??
+            sharedFeed.externalId
+          }
+          existingFeeds={sharedFeed.existingFeeds.map((feed) => ({
+            connection:
+              feed.display_hint ?? `${providers.displayName(feed.adapter_id)} connection`,
+            account: feed.external_name ?? null,
+          }))}
+          busy={sharedFeedBusy}
+          onDontImport={() => void chooseSharedFeed("dont_import")}
+          onChooseOther={closeSharedFeed}
+          onImportBoth={() => void chooseSharedFeed("import_both")}
+        />
+      ) : null}
       {creatingFor ? (
         <NewMappedAccountDialog
           // Keyed per row so choosing another row's "Create new account…"

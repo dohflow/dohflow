@@ -1773,6 +1773,22 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // The connector connection a sync batch came from (personal-cfo-6evt, ADR
+    // 0014 §3 addendum 2026-10-04): a connector's identity is its connection,
+    // so dedupe can tell two connections to one provider apart. Nullable:
+    // file imports have no connection, and batches synced before this
+    // migration stay NULL, which dedupe treats as "the same connection as any
+    // later batch of the source type" (today's behavior). No foreign key: the
+    // id is provenance and outlives a removed connection. Additive, so no
+    // rebuild and no read-model impact.
+    Migration {
+        version: 55,
+        name: "source_batch_connector_connection",
+        up: "ALTER TABLE source_batches ADD COLUMN connector_connection_id BLOB;",
+        down: Some("ALTER TABLE source_batches DROP COLUMN connector_connection_id;"),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 const fn max_version() -> i64 {

@@ -1472,6 +1472,7 @@ pub struct CreateSourceBatch {
     source_name: Option<String>,
     file_fingerprint: Option<String>,
     parser_version: Option<String>,
+    connector_connection_id: Option<uuid::Uuid>,
 }
 
 impl CreateSourceBatch {
@@ -1492,7 +1493,17 @@ impl CreateSourceBatch {
             source_name,
             file_fingerprint,
             parser_version,
+            connector_connection_id: None,
         }
+    }
+
+    /// Record the connector connection this sync batch comes from
+    /// (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04): dedupe treats a
+    /// connector's connection, not just its provider, as its identity.
+    #[must_use]
+    pub const fn with_connector_connection(mut self, connection_id: uuid::Uuid) -> Self {
+        self.connector_connection_id = Some(connection_id);
+        self
     }
 }
 
@@ -1519,6 +1530,7 @@ impl KernelCommand for CreateSourceBatch {
             source_name: self.source_name,
             file_fingerprint: self.file_fingerprint,
             parser_version: self.parser_version,
+            connector_connection_id: self.connector_connection_id,
         }
     }
 }
@@ -2955,29 +2967,38 @@ impl Kernel {
     /// records with no mapping are counted in `skipped_unmapped`, never
     /// silently dropped.
     ///
+    /// `connection_id` is the connector connection the batch came from
+    /// (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04). It is recorded on
+    /// the batch, and the silent refetch skip below trusts a provider id only
+    /// within that connection's own history. `None` records no connection and
+    /// keeps the type-wide behavior.
+    ///
     /// # Errors
     /// Returns [`KernelError`] on a persistence or dispatch failure.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub fn ingest_sync_batch(
         &self,
         adapter_id: &str,
         adapter_version: &str,
         source_name: &str,
+        connection_id: Option<uuid::Uuid>,
         parsed: &ParsedBatch,
         account_map: &std::collections::BTreeMap<String, uuid::Uuid>,
         meta: &CommandMeta,
     ) -> Result<SyncBatchResult, KernelError> {
         let batch_id = SourceBatchId::new();
-        self.dispatch(CommandEnvelope::new(
-            next_meta(meta),
-            CreateSourceBatch::new(
-                batch_id,
-                adapter_id.to_owned(),
-                Some(source_name.to_owned()),
-                None,
-                Some(adapter_version.to_owned()),
-            ),
-        ))?;
+        let create = CreateSourceBatch::new(
+            batch_id,
+            adapter_id.to_owned(),
+            Some(source_name.to_owned()),
+            None,
+            Some(adapter_version.to_owned()),
+        );
+        let create = match connection_id {
+            Some(connection) => create.with_connector_connection(connection),
+            None => create,
+        };
+        self.dispatch(CommandEnvelope::new(next_meta(meta), create))?;
         self.worker.record_connector_run(
             batch_id.as_uuid(),
             adapter_id,
@@ -2998,6 +3019,7 @@ impl Kernel {
                 &row.txn_fingerprint,
                 row.account_id,
                 row.staged_id,
+                connection_id,
             )?;
             let staged = StagedTransactionId::from_uuid(row.staged_id);
             if duplicate {
@@ -3193,6 +3215,18 @@ impl Kernel {
         Ok(self
             .worker
             .set_connector_link_account(connection_id, external_id, account_id)?)
+    }
+
+    /// Every connector link that feeds `account_id`, across all connections
+    /// (personal-cfo-6evt mapping guard).
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a read failure.
+    pub fn connector_feeds_for_account(
+        &self,
+        account_id: uuid::Uuid,
+    ) -> Result<Vec<db_worker::ConnectorFeed>, KernelError> {
+        Ok(self.worker.connector_feeds_for_account(account_id)?)
     }
 
     /// Every account link for a connection.

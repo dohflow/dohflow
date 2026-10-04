@@ -112,6 +112,7 @@ fn demo_token_end_to_end_sync_stages_and_commits() {
                 connection_id: connection_id.to_string(),
                 external_id: account.external_id.clone().unwrap(),
                 account_id: Some(real),
+                allow_shared_feed: false,
             },
         )
         .unwrap();

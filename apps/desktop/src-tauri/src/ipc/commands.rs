@@ -4758,9 +4758,10 @@ use crate::ipc::dto::{
     ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto,
     ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
     ConnectorCredentialTierDto, ConnectorDisclosureDto, ConnectorEconomicsDto,
-    ConnectorExternalAccountDto, ConnectorForgetInput, ConnectorLinkGuideDto, ConnectorLinkInput,
-    ConnectorLinkResultDto, ConnectorPayerDto, ConnectorReferralDto, ConnectorSetAccountLinkInput,
-    ConnectorSyncInput, ConnectorSyncResultDto,
+    ConnectorExternalAccountDto, ConnectorFeedDto, ConnectorForgetInput, ConnectorLinkGuideDto,
+    ConnectorLinkInput, ConnectorLinkResultDto, ConnectorPayerDto, ConnectorReferralDto,
+    ConnectorSetAccountLinkInput, ConnectorSetAccountLinkResultDto, ConnectorSyncInput,
+    ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -5152,7 +5153,7 @@ pub fn connector_connections(
 pub fn connector_set_account_link_impl(
     state: &AppState,
     input: ConnectorSetAccountLinkInput,
-) -> Result<(), IpcError> {
+) -> Result<ConnectorSetAccountLinkResultDto, IpcError> {
     let connection_id = parse_connector_connection_id(&input.connection_id)?;
     let account = match input.account_id.as_deref() {
         Some(raw) => Some(parse_account_id(raw)?),
@@ -5167,13 +5168,42 @@ pub fn connector_set_account_link_impl(
             if !kernel.account_exists(account)? {
                 return Err(IpcError::Validation("unknown account".to_owned()));
             }
+            // One account, one feed by default (personal-cfo-6evt, ADR 0014
+            // §3 addendum 2026-10-04): a second connector link onto an account
+            // is saved only once the user chose "Import from both".
+            if !input.allow_shared_feed {
+                let existing_feeds: Vec<ConnectorFeedDto> = kernel
+                    .connector_feeds_for_account(account.as_uuid())?
+                    .into_iter()
+                    .filter(|feed| {
+                        !(feed.connection_id == connection_id
+                            && feed.external_id == input.external_id)
+                    })
+                    .map(|feed| ConnectorFeedDto {
+                        connection_id: feed.connection_id.to_string(),
+                        adapter_id: feed.adapter_id,
+                        display_hint: feed.display_hint,
+                        external_id: feed.external_id,
+                        external_name: feed.external_name,
+                    })
+                    .collect();
+                if !existing_feeds.is_empty() {
+                    return Ok(ConnectorSetAccountLinkResultDto {
+                        linked: false,
+                        existing_feeds,
+                    });
+                }
+            }
         }
         kernel.set_connector_link_account(
             connection_id,
             &input.external_id,
             account.map(|a| a.as_uuid()),
         )?;
-        Ok(())
+        Ok(ConnectorSetAccountLinkResultDto {
+            linked: true,
+            existing_feeds: Vec::new(),
+        })
     })
 }
 
@@ -5182,7 +5212,7 @@ pub fn connector_set_account_link_impl(
 pub fn connector_set_account_link(
     state: tauri::State<'_, AppState>,
     input: ConnectorSetAccountLinkInput,
-) -> Result<(), IpcError> {
+) -> Result<ConnectorSetAccountLinkResultDto, IpcError> {
     connector_set_account_link_impl(state.inner(), input)
 }
 
@@ -5457,6 +5487,7 @@ fn connector_sync_inner(
                     adapter.id(),
                     &synced.adapter_version,
                     &source_name,
+                    Some(connection_id),
                     &synced.batch,
                     &effective_map,
                     &user_meta(&input.idempotency_key),
