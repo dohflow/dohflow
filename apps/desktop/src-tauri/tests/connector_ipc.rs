@@ -85,6 +85,7 @@ fn map_account(state: &AppState, connection_id: &str, external_id: &str, account
             connection_id: connection_id.to_owned(),
             external_id: external_id.to_owned(),
             account_id: Some(account_id.to_owned()),
+            allow_shared_feed: false,
         },
     )
     .unwrap();
@@ -517,7 +518,7 @@ fn a_1k_record_sync_batch_stages_and_commits_every_row() {
         idempotency_key: format!("bulk-{}", uuid::Uuid::now_v7()),
     };
     let result = kernel
-        .ingest_sync_batch("simplefin", "0.1.0", "bulk test", &batch, &map, &meta)
+        .ingest_sync_batch("simplefin", "0.1.0", "bulk test", None, &batch, &map, &meta)
         .unwrap();
     assert_eq!(result.batch.staged, 1000);
     assert_eq!(result.batch.committed, 1000);
@@ -616,6 +617,7 @@ fn mapping_to_a_nonexistent_account_is_rejected() {
             connection_id,
             external_id: "mock-acct-checking".to_owned(),
             account_id: Some(uuid::Uuid::now_v7().to_string()),
+            allow_shared_feed: false,
         },
     )
     .unwrap_err();
@@ -1314,8 +1316,10 @@ fn try_map(
             connection_id: connection_id.to_owned(),
             external_id: external_id.to_owned(),
             account_id: account_id.map(str::to_owned),
+            allow_shared_feed: false,
         },
     )
+    .map(|result| assert!(result.linked, "{result:?}"))
 }
 
 fn link_dto(state: &AppState, external_id: &str) -> app_lib::ipc::dto::ConnectorAccountLinkDto {

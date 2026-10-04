@@ -15,12 +15,21 @@ import { useCallback, useState } from "react";
 import {
   commands,
   type ConnectorConnectionDto,
+  type ConnectorFeedDto,
   type ConnectorLinkResultDto,
   type ConnectorSyncResultDto,
   type IpcError,
 } from "@/bindings";
 import { mintIdempotencyKey } from "@/lib/idempotency";
 import { ipcQuery, queryKeys } from "@/lib/query";
+
+/// What a mapping did (personal-cfo-6evt): saved; not saved because another
+/// connector link already feeds that account (one feed per account by
+/// default, ADR 0014 §3 addendum 2026-10-04); or an error.
+export type SetLinkOutcome =
+  | { kind: "linked" }
+  | { kind: "already_fed"; existingFeeds: ConnectorFeedDto[] }
+  | { kind: "error"; error: IpcError };
 
 interface UseConnections {
   connections: ConnectorConnectionDto[] | null;
@@ -33,11 +42,15 @@ interface UseConnections {
     credential: string,
   ) => Promise<ConnectorLinkResultDto | IpcError>;
   linkPending: boolean;
+  /// Map (or unmap, with `null`) an external account. A second connector feed
+  /// onto an account is saved only with `allowSharedFeed` (personal-cfo-6evt);
+  /// otherwise the outcome names the existing feed and nothing changes.
   setAccountLink: (
     connectionId: string,
     externalId: string,
     accountId: string | null,
-  ) => Promise<IpcError | null>;
+    allowSharedFeed?: boolean,
+  ) => Promise<SetLinkOutcome>;
   sync: (connectionId: string) => Promise<ConnectorSyncResultDto | IpcError>;
   /// The connection currently syncing, or null — per-row pending state (the
   /// backend's in-flight claim is per-connection, so other rows stay live).
@@ -106,22 +119,33 @@ export function useConnections(): UseConnections {
       connectionId: string;
       externalId: string;
       accountId: string | null;
+      allowSharedFeed: boolean;
     }) =>
       commands.connectorSetAccountLink({
         connection_id: input.connectionId,
         external_id: input.externalId,
         account_id: input.accountId,
+        allow_shared_feed: input.allowSharedFeed,
       }),
     onSuccess: invalidateConnections,
   });
   const setAccountLink = useCallback(
-    async (connectionId: string, externalId: string, accountId: string | null) => {
+    async (
+      connectionId: string,
+      externalId: string,
+      accountId: string | null,
+      allowSharedFeed = false,
+    ): Promise<SetLinkOutcome> => {
       const result = await setLinkMutation.mutateAsync({
         connectionId,
         externalId,
         accountId,
+        allowSharedFeed,
       });
-      return result.status === "ok" ? null : result.error;
+      if (result.status === "error") return { kind: "error", error: result.error };
+      return result.data.linked
+        ? { kind: "linked" }
+        : { kind: "already_fed", existingFeeds: result.data.existing_feeds };
     },
     [setLinkMutation],
   );

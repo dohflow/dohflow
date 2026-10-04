@@ -29,6 +29,7 @@ pub(crate) fn apply_create_source_batch(
     source_name: &Option<String>,
     file_fingerprint: &Option<String>,
     parser_version: &Option<String>,
+    connector_connection_id: &Option<Uuid>,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
         ingestion::create_source_batch(
@@ -39,6 +40,7 @@ pub(crate) fn apply_create_source_batch(
                 source_name: source_name.as_deref(),
                 file_fingerprint: file_fingerprint.as_deref(),
                 parser_version: parser_version.as_deref(),
+                connector_connection_id: *connector_connection_id,
             },
         )?;
         id.as_uuid()
@@ -94,12 +96,12 @@ fn cross_source_reason(
     else {
         return Ok(None);
     };
-    let own_source_type: String = tx.query_row(
-        "SELECT sb.source_type FROM source_records sr
+    let (own_source_type, own_connection): (String, Option<Uuid>) = tx.query_row(
+        "SELECT sb.source_type, sb.connector_connection_id FROM source_records sr
          JOIN source_batches sb ON sb.id = sr.source_batch_id
          WHERE sr.id = ?1",
         [staged.source_record_id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let posted_date: String = staged.posted_at.chars().take(10).collect();
     ingestion::cross_source_duplicate_reason(
@@ -109,6 +111,7 @@ fn cross_source_reason(
         staged.amount_minor,
         &posted_date,
         &own_source_type,
+        own_connection,
         staged.id,
     )
 }

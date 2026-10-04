@@ -62,6 +62,19 @@ pub struct StagedSyncTxn {
     pub account_id: Uuid,
 }
 
+/// A connector link that feeds a real account, with the connection it belongs
+/// to (personal-cfo-6evt: the mapping guard names the existing feed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectorFeed {
+    pub connection_id: Uuid,
+    /// The connection's provider (`simplefin`, `lunchflow`, …).
+    pub adapter_id: String,
+    /// The provider's own label for the connection, if it gave one.
+    pub display_hint: Option<String>,
+    pub external_id: String,
+    pub external_name: Option<String>,
+}
+
 /// One external-account → real-account link, with its sync watermark.
 #[derive(Debug, Clone)]
 pub struct ConnectorLinkRow {
@@ -317,6 +330,38 @@ impl DbWorker {
                     account_id: r.get(3)?,
                     last_synced_on: r.get(4)?,
                     currency: r.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every connector link mapped onto `account_id`, across all connections
+    /// (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04: one account has one
+    /// feed by default, so mapping a second one is warned about first).
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a read failure.
+    pub fn connector_feeds_for_account(
+        &self,
+        account_id: Uuid,
+    ) -> Result<Vec<ConnectorFeed>, DbError> {
+        let conn = self.read_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT l.connection_id, c.adapter_id, c.display_hint, l.external_id, l.external_name
+               FROM connector_account_links l
+               JOIN connector_connections c ON c.id = l.connection_id
+              WHERE l.account_id = ?1
+              ORDER BY c.created_at, c.id, l.external_name, l.external_id",
+        )?;
+        let rows = stmt
+            .query_map(params![account_id], |r| {
+                Ok(ConnectorFeed {
+                    connection_id: r.get(0)?,
+                    adapter_id: r.get(1)?,
+                    display_hint: r.get(2)?,
+                    external_id: r.get(3)?,
+                    external_name: r.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

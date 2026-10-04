@@ -399,6 +399,7 @@ fn stage_a_transaction_dated(
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -5150,6 +5151,7 @@ fn imported_transaction_fields_returns_the_captured_source_columns() {
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -5269,6 +5271,7 @@ fn stage_with_imported_category(
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -6158,6 +6161,7 @@ fn a_committed_import_shows_its_detail_in_the_transactions_list() {
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();

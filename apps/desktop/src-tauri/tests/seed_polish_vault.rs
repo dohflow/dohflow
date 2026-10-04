@@ -1130,6 +1130,7 @@ fn seed_demo_vault(root: &Path, anchor: NaiveDate) -> SeededVault {
                 connection_id: link.connection_id.clone(),
                 external_id: external_id.to_owned(),
                 account_id: Some(account_id.clone()),
+                allow_shared_feed: false,
             },
         )
         .expect("map external account");

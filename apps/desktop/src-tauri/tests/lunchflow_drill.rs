@@ -135,6 +135,7 @@ fn live_key_end_to_end_refresh_stages_and_commits() {
                 connection_id: linked.connection_id.clone(),
                 external_id: account.external_id.clone().unwrap(),
                 account_id: Some(real),
+                allow_shared_feed: false,
             },
         )
         .unwrap();

@@ -282,7 +282,7 @@ export const commands = {
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
 	connectorAdapters: () => __TAURI_INVOKE<ConnectorAdapterDto[]>("connector_adapters"),
 	connectorConnections: () => typedError<ConnectorConnectionDto[], IpcError>(__TAURI_INVOKE("connector_connections")),
-	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
+	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<ConnectorSetAccountLinkResultDto, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
 	connectorSync: (input: ConnectorSyncInput) => typedError<ConnectorSyncResultDto, IpcError>(__TAURI_INVOKE("connector_sync", { input })),
 	connectorAutoSync: () => typedError<ConnectorSyncResultDto[], IpcError>(__TAURI_INVOKE("connector_auto_sync")),
 	connectorForget: (input: ConnectorForgetInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_forget", { input })),
@@ -1025,6 +1025,17 @@ export type ConnectorExternalAccountDto = {
 	external_name: string | null,
 };
 
+/**  A connector link that already feeds an account. */
+export type ConnectorFeedDto = {
+	connection_id: string,
+	/**  The connection's provider id; the UI names it from the registry. */
+	adapter_id: string,
+	/**  The provider's own label for the connection, if it gave one. */
+	display_hint: string | null,
+	external_id: string,
+	external_name: string | null,
+};
+
 /**  Forget a stored connection (its past synced data stays in the ledger). */
 export type ConnectorForgetInput = {
 	connection_id: string,
@@ -1085,6 +1096,23 @@ export type ConnectorSetAccountLinkInput = {
 	connection_id: string,
 	external_id: string,
 	account_id: string | null,
+	/**
+	 *  `true` once the user chose "Import from both" for an account another
+	 *  connector link already feeds (personal-cfo-6evt). With `false`, such a
+	 *  mapping is not saved; the result names the existing feed instead.
+	 */
+	allow_shared_feed: boolean,
+};
+
+/**  What a mapping did (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04). */
+export type ConnectorSetAccountLinkResultDto = {
+	/**  `true` if the link now points where asked (or was unmapped). */
+	linked: boolean,
+	/**
+	 *  When `linked` is `false`: the other connector links already feeding the
+	 *  chosen account. Nothing was changed.
+	 */
+	existing_feeds: ConnectorFeedDto[],
 };
 
 /**  Run one sync for a connection. */

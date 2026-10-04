@@ -51,7 +51,7 @@ mod backup_history;
 mod band_drift;
 mod categories;
 mod connectors;
-pub use connectors::{ConnectorConnectionRow, ConnectorLinkRow};
+pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
 mod forecast;
@@ -519,6 +519,9 @@ pub enum WriteCommand {
         file_fingerprint: Option<String>,
         /// Parser version, if known at open time.
         parser_version: Option<String>,
+        /// The connector connection a sync batch came from (personal-cfo-6evt,
+        /// ADR 0014 §3 addendum 2026-10-04); `None` for file imports.
+        connector_connection_id: Option<Uuid>,
     },
     /// Attach a parsed `source_record` to a batch (ADR 0008, personal-cfo-3bb).
     /// Idempotent on `(batch, source_hash)`: re-attaching the same content adds no
@@ -3065,12 +3068,14 @@ impl DbWorker {
     /// fingerprint sitting flagged or skipped from an earlier batch — the
     /// connector pre-check (tevp): a rewind re-fetch of an UNRESOLVED (or
     /// deliberately skipped) collision must not mint a fresh inbox item on
-    /// every sync.
+    /// every sync. `connection` scopes the certainty to that connection's own
+    /// history (personal-cfo-6evt); `None` keeps the type-wide check.
     pub fn txn_fingerprint_already_tracked(
         &self,
         txn_fingerprint: &str,
         account: Uuid,
         excluding_staged_id: Uuid,
+        connection: Option<Uuid>,
     ) -> Result<bool, DbError> {
         let conn = self.read_connection()?;
         ingestion::fingerprint_already_tracked(
@@ -3078,6 +3083,7 @@ impl DbWorker {
             txn_fingerprint,
             Some(account),
             excluding_staged_id,
+            connection,
         )
     }
 
@@ -6457,6 +6463,7 @@ fn apply_command(
             source_name,
             file_fingerprint,
             parser_version,
+            connector_connection_id,
         } => apply::ingestion_cmds::apply_create_source_batch(
             &tx,
             id,
@@ -6464,6 +6471,7 @@ fn apply_command(
             source_name,
             file_fingerprint,
             parser_version,
+            connector_connection_id,
         )?,
         WriteCommand::AttachSourceRecord {
             id,

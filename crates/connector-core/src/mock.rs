@@ -122,6 +122,18 @@ pub struct MockConnector {
     /// When set, the fixture adds `mock-acct-euro`: an account in EUR, with
     /// EUR rows and balance — a non-household currency (049p6 AC1).
     include_foreign_account: bool,
+    /// `(namespace, id prefix)`: give rows provider-shaped ids and
+    /// fingerprints (`date|minor|namespace:id`) like the real adapters, so two
+    /// connections can report the same or different ids for the same
+    /// transactions (personal-cfo-6evt).
+    provider_ids: Option<(&'static str, &'static str)>,
+    /// Fixture row indexes the provider still reports as pending: not staged,
+    /// reported as a warning, like the posted-only real adapters.
+    pending_rows: &'static [usize],
+    /// When set, every sync re-delivers the whole fixture whatever `since`
+    /// says — the overlap window real adapters rewind into, so a repeat
+    /// refresh genuinely re-fetches rows it has seen before.
+    refetch_everything: bool,
 }
 
 impl MockConnector {
@@ -144,7 +156,43 @@ impl MockConnector {
             empty_discovery: false,
             account_currency: Some("USD"),
             include_foreign_account: false,
+            provider_ids: None,
+            pending_rows: &[],
+            refetch_everything: false,
         }
+    }
+
+    /// Same fixture, re-delivered in full on every sync regardless of
+    /// `since` — models the overlap window real adapters rewind into
+    /// (personal-cfo-6evt), so repeat-refresh tests re-fetch real rows.
+    #[must_use]
+    pub const fn refetching_everything(mut self) -> Self {
+        self.refetch_everything = true;
+        self
+    }
+
+    /// Same fixture, with provider-shaped row ids and fingerprints
+    /// (`date|minor|{namespace}:{prefix}-{account}-{row}`), as the real
+    /// adapters build them. Two mocks with the same `namespace` and `prefix`
+    /// report the same ids; a different `prefix` models a second connection
+    /// whose provider assigned its own ids (personal-cfo-6evt).
+    #[must_use]
+    pub const fn with_provider_ids(
+        mut self,
+        namespace: &'static str,
+        prefix: &'static str,
+    ) -> Self {
+        self.provider_ids = Some((namespace, prefix));
+        self
+    }
+
+    /// Same fixture, but these row indexes (0..3) are still pending: not
+    /// staged, and each reported as a warning (posted-only, like the real
+    /// adapters).
+    #[must_use]
+    pub const fn with_pending(mut self, rows: &'static [usize]) -> Self {
+        self.pending_rows = rows;
+        self
     }
 
     /// Same fixture, reporting these raw account ids retry-required so
@@ -292,12 +340,24 @@ impl MockConnector {
             .enumerate()
             .filter_map(|(i, (day_offset, minor))| {
                 let posted = anchor + chrono::Days::new(day_offset);
-                if since.is_some_and(|s| posted < s) {
+                let before_window = !self.refetch_everything && since.is_some_and(|s| posted < s);
+                if before_window || self.pending_rows.contains(&i) {
                     return None;
                 }
                 let merchant = format!("mock merchant {i}");
+                let (external_id, txn_fingerprint) = match self.provider_ids {
+                    Some((namespace, prefix)) => {
+                        let id = format!("{prefix}-{account}-{i}");
+                        let fingerprint = format!("{posted}|{minor}|{namespace}:{id}");
+                        (id, fingerprint)
+                    }
+                    None => (
+                        format!("mock-{account}-{i}"),
+                        format!("{posted}|{minor}|{merchant}|{account}"),
+                    ),
+                };
                 Some(ParsedRecord {
-                    external_id: Some(format!("mock-{account}-{i}")),
+                    external_id: Some(external_id),
                     source_hash: format!("sha256:mock-{account}-{i}"),
                     normalized_json: format!("{{\"mock_row\":{i}}}"),
                     parse_confidence_bps: Some(10_000),
@@ -311,7 +371,7 @@ impl MockConnector {
                         category: None,
                         normalized_merchant: Some(merchant.clone()),
                         external_account: Some(account.to_owned()),
-                        txn_fingerprint: format!("{posted}|{minor}|{merchant}|{account}"),
+                        txn_fingerprint,
                     }),
                     balance: None,
                 })
@@ -424,6 +484,14 @@ impl ConnectorAdapter for MockConnector {
             };
             if capabilities.supports(crate::Capability::Transactions) {
                 records.extend(self.fetch_transactions(conn, key, since)?);
+                for row in self.pending_rows {
+                    warnings.push(importer_core::ParseWarning {
+                        row: None,
+                        message: format!(
+                            "pending transaction {row} on {key} not staged (posted-only scope)"
+                        ),
+                    });
+                }
             }
             if capabilities.supports(crate::Capability::Balances) {
                 for balance in self.fetch_balances(conn, key)? {
