@@ -6104,6 +6104,30 @@ fn skip_clears_a_flagged_duplicate_without_a_ledger_write() {
         )
         .unwrap();
     assert_eq!(status, "skipped");
+    // The audit trail keeps both decisions for the row: the flag, then the
+    // user's skip (personal-cfo-yl5).
+    let decisions: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT decision, reason FROM dedupe_decisions
+              WHERE staged_transaction_id = ?1 ORDER BY decided_at, id",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![second.as_uuid()], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        decisions,
+        vec![
+            (
+                "flagged".to_owned(),
+                "duplicate of an already-committed transaction".to_owned()
+            ),
+            ("skipped".to_owned(), "user skipped".to_owned()),
+        ]
+    );
 }
 
 /// byxe: a committed import carries its source detail onto the transactions
