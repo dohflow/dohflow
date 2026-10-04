@@ -74,6 +74,44 @@ that are not hand-typed entries (opening balances, early-confirmed
 obligations, void reversals) can also match; the reason copy says "already
 in this account's ledger" rather than claiming a manual entry.
 
+**Addendum (2026-10-04, `personal-cfo-6evt`, owner decision): a connector's
+identity is its connection, and one account has one feed by default.** The
+tevp layer treats "same source type" as "same source". For connectors that is
+too coarse. A household can hold several connections to one provider, one per
+person, each with that person's own credentials. If two of them reach the same
+bank account (a joint account both people can see), their rows share a source
+type. When the two links report different provider ids for one transaction,
+both rows commit and the balance double-counts. When they report the same id,
+the second row is silently skipped, although nothing proves the two links share
+an id namespace. Three rules close this:
+
+- **The guard is per ledger account, not per connection.** Any number of
+  connections is allowed, including several to one provider. Mapping a
+  connector account onto a ledger account that another connector link already
+  feeds shows a warning naming that link (its connection and account). The
+  user chooses: **don't import this one** (the default; the account stays
+  listed under its connection and feeds nothing), **map it to a different
+  account**, or **import from both**.
+- **A connector source is its connection.** Each sync batch records the
+  connection it came from. On commit, the cross-source layer treats rows from a
+  *different connection* like rows from a different source type: an account +
+  posted date + signed amount match is flagged for review, never dropped or
+  merged. The same-source exemption applies only within one connection. File
+  imports carry no connection and keep the source-type rule.
+- **A provider id is certain only within its connection.** The silent
+  refetch pre-check (gglk) skips a row only when the matching fingerprint was
+  committed, flagged or skipped by the *same* connection. A match from another
+  connection is not skipped. It reaches commit, where the fingerprint and
+  cross-source layers flag it for review.
+
+Batches synced before the connection was recorded carry none. Such a batch
+counts as the same connection as any later batch of its source type, which
+keeps today's behavior for existing single-connection vaults. Without that, the
+first refresh after upgrading would flag every row it re-fetches. Different
+providers on one account were already safe: their fingerprints are namespaced
+per provider (`sfin:`, `lflow:`) and the tevp layer flags their overlap. They
+get the mapping warning too.
+
 ### 4. Shred after parse: keep the fingerprint, not the file (ratified)
 
 The raw uploaded file is **transient**: read into memory, parsed in an isolated worker
