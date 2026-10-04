@@ -118,7 +118,9 @@ shrink — the additive-balance "plug" (`dyy4`).
 **Addendum (2026-10-03, `personal-cfo-xu3`): the file layer writes no row.** An exact
 re-upload is caught *before* any batch exists. The importer entry point compares the
 whole-file fingerprint with batches that are `committed` or `partially_committed` and
-still have a non-voided committed row. On a match it returns `already_imported` without
+still have a non-voided committed row, or a row still flagged for review in the Money
+Inbox when none of the batch's committed rows has been voided. On a match it returns
+`already_imported` without
 parsing and without creating a `source_batches` row. Every `dedupe_decisions` row belongs
 to a batch, so there is nothing for a file-layer row to belong to. Creating an empty batch
 only to record a non-event would add one per accidental re-upload. The audit record of a
@@ -127,6 +129,14 @@ and its `created_at`. The user is told through the "already imported" notice. No
 `layer = 'file'` decision row is written. The `file` token stays valid in the schema for a
 future source that dedupes inside an existing batch. The transaction layer is unchanged:
 every transaction-level outcome (`committed`, `flagged`, `skipped`) is recorded.
+
+*Amended 2026-10-03 (`personal-cfo-yl5`, owner decision):* a still-flagged row now keeps
+its batch counted. Before this, a file whose rows were all flagged (an export
+overlapping one already imported from another source) had no committed row, so
+re-uploading the same bytes staged and flagged every row again, doubling the Money
+Inbox. Voiding still wins: once any of a batch's committed rows is voided, the user has
+deleted that import, so a re-upload remains a deliberate restore even while another row
+waits in the inbox (feedback 2026-07-03). Skipped rows keep nothing counted.
 
 ### 6. Commit goes through the kernel, idempotently
 
