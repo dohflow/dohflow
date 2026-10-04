@@ -99,47 +99,77 @@ enum AmountProblem {
     ForeignCurrency,
 }
 
-/// The currency marker written around an amount (`$`, `C$`, `€`, `US$`), if
-/// it carries a currency sign — letters alone (`USD`) are not treated as a
-/// currency here, and a debit/credit indicator (`CR`, `DR`, any case) is not
-/// part of the marker: `$1,234.56 CR` is a dollar amount, as it was before
-/// personal-cfo-tulv. A letter run touching the sign (`C$`) is kept, so it
-/// still names its own currency.
-fn currency_marker(raw: &str) -> Option<String> {
-    // Split into letter runs and everything else, dropping a whole run that
-    // is a debit/credit indicator. Whitespace separates runs, then goes.
-    let mut marker = String::new();
-    let mut run = String::new();
-    let flush = |run: &mut String, marker: &mut String| {
-        if !(run.eq_ignore_ascii_case("cr") || run.eq_ignore_ascii_case("dr")) {
-            marker.push_str(run);
-        }
-        run.clear();
-    };
-    for c in raw
-        .chars()
-        .filter(|c| !c.is_ascii_digit() && !"+-().,'".contains(*c))
-    {
-        if c.is_ascii_alphabetic() {
-            run.push(c);
-        } else {
-            flush(&mut run, &mut marker);
-            if !c.is_whitespace() {
-                marker.push(c);
-            }
-        }
+/// Common ISO 4217 codes a bank or app export writes beside an amount. A
+/// cell that also carries a currency sign and one of these (other than the
+/// import currency's own) is that other currency. Curated rather than the
+/// full ISO list on purpose: codes that are also ordinary words a bank writes
+/// next to an amount (`ALL`, `TOP`, `CUP`) are left out.
+const CURRENCY_CODES: &[&str] = &[
+    "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS",
+    "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PHP", "PLN", "RUB", "SEK", "SGD", "THB", "TRY",
+    "TWD", "USD", "ZAR",
+];
+
+/// The import currency's own sign.
+fn own_sign(currency: Currency) -> Option<char> {
+    match currency {
+        Currency::Usd => Some('$'),
+        Currency::Eur => Some('€'),
+        _ => None,
     }
-    flush(&mut run, &mut marker);
-    marker.contains(CURRENCY_SIGNS).then_some(marker)
 }
 
-/// Whether `marker` names `currency` itself.
-fn marker_matches(marker: &str, currency: Currency) -> bool {
-    match currency {
-        Currency::Usd => matches!(marker, "$" | "US$" | "USD$"),
-        Currency::Eur => marker == "€",
-        _ => false,
+/// Whether an amount cell names a currency other than `currency`
+/// (personal-cfo-tulv). Only a cell carrying a currency sign is judged — a
+/// cell of digits and letters alone (`12.00 CAD`, `12.00 CR`) is not, as
+/// before this check existed. With a sign, the cell names another currency
+/// when:
+///
+/// - the sign is not `currency`'s own (`€12.00` in a dollar import);
+/// - letters touch the sign (`C$`, `A$`, `R$`) — except `currency`'s own
+///   code and, for dollars, `US` (`USD$12.00`, `US$12.00`);
+/// - a separate letter run is another known ISO code (`$12.00 CAD`).
+///
+/// Every other letter run is neutral wherever it sits: the import
+/// currency's own code (`$12.00 USD`, `$12.00 (USD)`), a debit/credit
+/// indicator (`$1,234.56 CR`), or any other word a bank writes there. Digits
+/// and separators bound a run, so `$12.00CR` does not put `CR` beside the
+/// sign.
+fn names_another_currency(raw: &str, currency: Currency) -> bool {
+    let chars: Vec<char> = raw.chars().collect();
+    if !chars.iter().any(|c| CURRENCY_SIGNS.contains(c)) {
+        return false;
     }
+    if chars
+        .iter()
+        .any(|c| CURRENCY_SIGNS.contains(c) && Some(*c) != own_sign(currency))
+    {
+        return true;
+    }
+    let is_sign = |i: usize| chars.get(i).is_some_and(|c| CURRENCY_SIGNS.contains(c));
+    let mut start = 0;
+    while start < chars.len() {
+        if !chars[start].is_ascii_alphabetic() {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < chars.len() && chars[end].is_ascii_alphabetic() {
+            end += 1;
+        }
+        let run: String = chars[start..end].iter().collect();
+        let upper = run.to_ascii_uppercase();
+        let touches_sign = (start > 0 && is_sign(start - 1)) || is_sign(end);
+        let own_code = upper == currency.code();
+        if touches_sign && !own_code && !(currency == Currency::Usd && upper == "US") {
+            return true;
+        }
+        if !own_code && CURRENCY_CODES.contains(&run.as_str()) {
+            return true;
+        }
+        start = end;
+    }
+    false
 }
 
 /// Whether `int_part` uses `sep` only as a thousands separator in valid
@@ -239,10 +269,8 @@ fn parse_amount_cell(
     currency: Currency,
     decimal_comma: bool,
 ) -> Result<i64, AmountProblem> {
-    if let Some(marker) = currency_marker(raw) {
-        if !marker_matches(&marker, currency) {
-            return Err(AmountProblem::ForeignCurrency);
-        }
+    if names_another_currency(raw, currency) {
+        return Err(AmountProblem::ForeignCurrency);
     }
     parse_minor_units(raw, currency.exponent(), decimal_comma).ok_or(AmountProblem::Unreadable)
 }
@@ -837,6 +865,50 @@ mod tests {
             parse_amount_cell("C$12.00 CR", Currency::Usd, false),
             Err(AmountProblem::ForeignCurrency)
         );
+        // The import currency's own code is neutral wherever it sits (04-review
+        // F2, PR #70); another code beside a sign is that currency.
+        for raw in [
+            "$12.00 USD",
+            "$12.00 (USD)",
+            "USD$12.00",
+            "USD $12.00",
+            "$12.00 usd",
+            "$12.00 USD CR",
+            "$12.00 POS",
+        ] {
+            assert_eq!(
+                parse_amount_cell(raw, Currency::Usd, false),
+                Ok(1200),
+                "{raw} must stay a dollar amount"
+            );
+        }
+        assert_eq!(
+            parse_amount_cell("12,00 € EUR", Currency::Eur, true),
+            Ok(1200)
+        );
+        assert_eq!(
+            parse_amount_cell("EUR€12,00", Currency::Eur, true),
+            Ok(1200)
+        );
+        for (raw, currency) in [
+            ("$12.00 CAD", Currency::Usd),
+            ("CAD $12.00", Currency::Usd),
+            ("C$12.00", Currency::Usd),
+            ("A$12.00 USD", Currency::Usd),
+            ("€12,00 USD", Currency::Eur),
+            ("€12,00 GBP", Currency::Eur),
+        ] {
+            assert_eq!(
+                parse_amount_cell(raw, currency, currency == Currency::Eur),
+                Err(AmountProblem::ForeignCurrency),
+                "{raw} as {currency:?}"
+            );
+        }
+        // Letters alone, without a sign, are judged by nothing — as on main.
+        assert_eq!(
+            parse_amount_cell("12.00 CAD", Currency::Usd, false),
+            Ok(1200)
+        );
     }
 
     #[test]
@@ -945,16 +1017,26 @@ mod tests {
                    2026-06-20,Deposit,\"$1,234.56 CR\"\n\
                    2026-06-21,Payment,\"$1,234.56 DR\"\n\
                    2026-06-22,Refund,$12.00CR\n\
-                   2026-06-23,Abroad,C$12.00\n";
+                   2026-06-23,Abroad,C$12.00\n\
+                   2026-06-24,Coded,$12.00 USD\n\
+                   2026-06-25,Bracketed,$12.00 (USD)\n\
+                   2026-06-26,Prefixed,USD$12.00\n\
+                   2026-06-27,Canadian,$12.00 CAD\n";
         let batch = GenericCsv
             .parse(&input(csv), &ParserHints::default())
             .unwrap();
-        assert_eq!(batch.records.len(), 3, "{:?}", batch.skipped);
-        assert_eq!(batch.skipped.len(), 1);
-        assert_eq!(batch.skipped[0].row, Some(3));
+        assert_eq!(batch.records.len(), 6, "{:?}", batch.skipped);
+        let skipped: Vec<_> = batch
+            .skipped
+            .iter()
+            .map(|w| (w.row, w.message.as_str()))
+            .collect();
         assert_eq!(
-            batch.skipped[0].message,
-            "currency differs from the import currency"
+            skipped,
+            vec![
+                (Some(3), "currency differs from the import currency"),
+                (Some(7), "currency differs from the import currency"),
+            ]
         );
     }
 
