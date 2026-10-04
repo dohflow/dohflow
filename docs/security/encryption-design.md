@@ -167,7 +167,7 @@ is the release-blocking (`cargo test --workspace`) guard for that:
 - `linked_engine_versions_match_the_pin` asserts the *linked* SQLCipher
   (`PRAGMA cipher_version`) and SQLite (`rusqlite::version()`) exactly equal
   the pins recorded in [`docs/architecture/stack.md`](../architecture/stack.md)
-  — **SQLCipher `4.5.7 community`**, **SQLite `3.45.3`** — so a silent
+  — **SQLCipher `4.14.0 community`**, **SQLite `3.51.3`** — so a silent
   `cargo update` that bumps the bundled engine (and could make existing
   vaults unopenable) fails this test instead of shipping.
 - `golden_vault_round_trips_on_the_pinned_engine` builds a real vault

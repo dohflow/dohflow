@@ -18,7 +18,7 @@ authors = ["Chris Bustos"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/dohflow/dohflow"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.95"
 # Never meant to reach crates.io — also lets cargo-deny's `[licenses.private]`
 # correctly skip this crate's license field (personal-cfo-o1nxk).
 publish = false

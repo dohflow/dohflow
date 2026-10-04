@@ -8,7 +8,7 @@ Update this when a version is intentionally bumped.
 | Component | Version | Pinned in |
 |---|---|---|
 | Rust toolchain | `1.96.0` (+ rustfmt, clippy) | `rust-toolchain.toml` |
-| Rust MSRV | `1.82` | `Cargo.toml` `[workspace.package].rust-version` |
+| Rust MSRV | `1.95` | `Cargo.toml` `[workspace.package].rust-version` and `apps/desktop/src-tauri/Cargo.toml` (must match; CI-enforced) |
 | Node | `>= 20` (CI uses 22) | `package.json` `engines`, CI |
 | pnpm | `11.5.2` | `package.json` `packageManager` |
 
@@ -27,15 +27,17 @@ compiled from vendored source, so:
 
 ### Pinned versions
 
-`rusqlite` is pinned **exact** (`=0.32.1`) in the workspace `Cargo.toml`, which —
+`rusqlite` is pinned **exact** (`=0.40.2`) in the workspace `Cargo.toml`, which —
 with the committed `Cargo.lock` — locks the bundled engine below.
 
 | Component | Version | Source |
 |---|---|---|
-| `rusqlite` | `0.32.1` | `Cargo.toml` (`=0.32.1`) |
-| `libsqlite3-sys` | `0.30.1` | transitive, locked by `Cargo.lock` |
-| SQLCipher (`PRAGMA cipher_version`) | `4.5.7 community` | bundled by `libsqlite3-sys` |
-| SQLite (`rusqlite::version()`) | `3.45.3` | bundled by `libsqlite3-sys` |
+| `rusqlite` | `0.40.2` | `Cargo.toml` (`=0.40.2`) |
+| `libsqlite3-sys` | `0.38.2` | transitive, locked by `Cargo.lock` (root and desktop) |
+| SQLCipher (`PRAGMA cipher_version`) | `4.14.0 community` | bundled by `libsqlite3-sys` |
+| SQLite (`rusqlite::version()`) | `3.51.3` | bundled by `libsqlite3-sys` |
+| SQLite source ID (`sqlite_source_id()`) | `2026-03-13 10:38:09 737ae4a3…6alt1` | asserted in full by `crates/db-worker/tests/engine_contract.rs` |
+| Bundled amalgamation (`sqlcipher/sqlite3.c`) SHA-256 | `ea0bf0b08f688ca5d9312b2e33e7f81b3f4ae54b5016fb062ae1f2632a30a1b9` | `libsqlite3-sys` 0.38.2 crate |
 | `openssl-src` (vendored) | `300.6.0+3.6.2` (OpenSSL 3.6.2) | transitive |
 
 ### Version-pin policy & cross-version testing (`personal-cfo-7igv`)
@@ -54,6 +56,50 @@ must stay openable by the next, or users lose data (risk `personal-cfo-aia0`).
   `EXPECTED_SQLITE` in the test; and (3) capture the **outgoing** version's vault
   and add it to the test's cross-version corpus, proving the new engine opens
   every prior on-disk format.
+
+### Engine update to SQLCipher 4.14.0 / SQLite 3.51.3 (`personal-cfo-g3m.5`)
+
+**Why.** The previous bundle (SQLCipher 4.5.7 / SQLite 3.45.3, `libsqlite3-sys`
+0.30.1) predates SQLite's fix for the WAL-reset database-corruption bug
+([sqlite.org/wal.html §11](https://sqlite.org/wal.html)), fixed upstream in
+SQLite 3.51.3 and shipped in [SQLCipher 4.14.0](https://github.com/sqlcipher/sqlcipher/releases/tag/v4.14.0).
+The bug needs concurrent connections writing or checkpointing. The app's
+controller mutex serializes most work, but `DbWorker` has independent reader
+and projection connections, so the app is not claimed to be unaffected.
+
+**Fix provenance (checked in the packaged source, not inferred from the version
+number).** In the bundled amalgamation above, `walCheckpoint()` now re-reads the
+live WAL header salt after taking read-lock slot 0 and skips the backfill if the
+WAL was reset since the checkpoint began (`memcmp(pLive->aSalt, pWal->hdr.aSalt, …)`).
+That guard is absent from the 0.30.1 amalgamation.
+
+**Change scope.** Only `rusqlite`, `libsqlite3-sys` and their hashing
+dependencies moved in either lockfile; the vendored OpenSSL, Tauri and all other
+packages are unchanged. No vault, envelope, backup, KDF or schema format change.
+
+**Compatibility evidence.** The outgoing engine's synthetic corpus was frozen
+*before* the bump: a checkpointed vault, a committed-but-uncheckpointed WAL
+(no SHM), its envelope, an encrypted attachment, a v2 backup package and the full
+70-table logical state (`crates/finance-kernel/tests/fixtures/sqlcipher-4.5.7.json`,
+`crates/db-worker/tests/fixtures/sqlcipher-4.5.7-state.json`). The new engine
+opens all of it with identical canonical state (`engine_compatibility.rs`,
+`engine_contract.rs`).
+
+**Rollback is not promised.** An older DohFlow build has not been tested against
+a vault that this engine has written, and is not supported for that. To return
+to an older build, restore a backup made by that build. Never test rollback on
+real vaults.
+
+### Minimum supported Rust (MSRV)
+
+The declared MSRV is **1.95**, the lowest version in the owner-approved range
+1.95–1.96 (ADR 0001 addendum, 2026-09-28): `rusqlite` 0.40 uses `cfg_select!`,
+stabilized in Rust 1.95. The floor was verified with the actual 1.95 compiler
+against the complete locked root workspace and the standalone desktop graph
+(`--all-targets`, plus the desktop's `export-bindings` and
+`tauri/custom-protocol` features). CI rechecks both graphs with the declared
+compiler on every Rust change (`Declared MSRV builds` steps in
+`.github/workflows/ci.yml`). The pinned build toolchain stays **1.96.0**.
 
 > The durable WAL/SHM/temp plaintext-leak suite is owned by `personal-cfo-zxvl`
 > (`crates/finance-kernel/tests/side_file_leak.rs`).

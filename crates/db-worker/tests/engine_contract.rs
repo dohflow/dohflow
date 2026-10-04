@@ -10,8 +10,12 @@ use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::Path};
 use vault_crypto::{derive_kek, unwrap_dek, VaultEnvelope};
 
+/// The linked engine's `sqlite_source_id()` — SQLite 3.51.3 as packaged in
+/// SQLCipher 4.14.0 community (`libsqlite3-sys` 0.38.2; amalgamation SHA-256
+/// `ea0bf0b08f688ca5d9312b2e33e7f81b3f4ae54b5016fb062ae1f2632a30a1b9`). Must
+/// match `docs/architecture/stack.md`.
 const SOURCE_ID: &str =
-    "2024-04-15 13:34:05 8653b758870e6ef0c98d46b3ace27849054af85da891eb121e9aaa537f1ealt1";
+    "2026-03-13 10:38:09 737ae4a34738ffa0c3ff7f9bb18df914dd1cad163f28fd6b6e114a344fe6alt1";
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../finance-kernel/tests/fixtures/sqlcipher-4.5.7.json"

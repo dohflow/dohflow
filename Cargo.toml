@@ -25,7 +25,7 @@ members = ["crates/categorization", "crates/connector-core", "crates/connectors/
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.82" # MSRV — do not raise without a deliberate decision.
+rust-version = "1.95" # MSRV — ADR 0001 addendum (2026-09-28); verified floor, CI-enforced. Do not raise without a deliberate decision.
 license = "AGPL-3.0-only" # ADR 0043; personal-cfo-fkt5.4.
 repository = "https://github.com/dohflow/dohflow"
 # None of these crates are meant to reach crates.io — internal-only, path
@@ -57,9 +57,10 @@ chrono-tz = "0.10"
 # the SQLCipher version reproducibly. Only db-worker (personal-cfo-klr.3) may
 # depend on this long-term; the sqlcipher-spike crate is a temporary exception.
 #
-# Pinned EXACT (personal-cfo-7igv, risk personal-cfo-aia0): `=0.32.1` locks the
+# Pinned EXACT (personal-cfo-7igv, risk personal-cfo-aia0): `=0.40.2` locks the
 # bundled SQLCipher/SQLite versions recorded in docs/architecture/stack.md
-# (SQLCipher 4.5.7 community / SQLite 3.45.3). The cross-version vault test
+# (SQLCipher 4.14.0 community / SQLite 3.51.3, which carries the WAL-reset fix;
+# personal-cfo-g3m.5). The cross-version vault test
 # (crates/finance-kernel/tests/cross_version_vault.rs) asserts the *linked*
 # versions match that record, so any bump fails CI until the pin + stack.md +
 # release notes are updated and the outgoing vault is captured as a fixture.

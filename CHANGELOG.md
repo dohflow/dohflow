@@ -9,6 +9,13 @@ record until the first tagged release.
 
 ### Fixed
 
+- The bundled database engine is updated to SQLCipher 4.14.0 / SQLite 3.51.3,
+  which includes SQLite's fix for a rare write-ahead-log reset corruption bug
+  (`personal-cfo-g3m.5`). Existing vaults open unchanged: no vault, backup or
+  key format changes. Once a vault has been opened by this version, an older
+  DohFlow build is not supported for it; to go back, restore a backup made by
+  that build. Building from source now needs Rust 1.95 or newer.
+
 - Existing vaults with a newer schema are refused before migrations or
   post-unlock writes (`personal-cfo-g3m.4`). The unlock screen asks for a
   compatible newer DohFlow version instead of opening or stamping the vault

@@ -3265,7 +3265,7 @@ impl Kernel {
     }
 
     /// The linked SQLCipher version (`PRAGMA cipher_version`), e.g.
-    /// `"4.5.7 community"`. Pair with [`sqlite_version`] for the full engine
+    /// `"4.14.0 community"`. Pair with [`sqlite_version`] for the full engine
     /// fingerprint. See [`db_worker::DbWorker::cipher_version`].
     ///
     /// # Errors

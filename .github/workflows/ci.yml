@@ -119,6 +119,22 @@ jobs:
             cargo test --workspace
           fi
 
+      # Declared MSRV (ADR 0001 addendum 2026-09-28, personal-cfo-g3m.5): the
+      # workspace's `rust-version` must actually build with THAT compiler, not
+      # just with the pinned 1.96 above. A 1.96 pass proves nothing about the
+      # floor, so this checks the complete locked graph with the floor itself.
+      - name: Declared MSRV builds (root workspace)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          msrv=$(cargo metadata --format-version 1 --no-deps --locked | jq -r '[.packages[].rust_version] | unique | join(" ")')
+          case "$msrv" in
+            ""|*" "*) echo "::error::workspace members must share one rust-version, got: '$msrv'"; exit 1 ;;
+          esac
+          echo "Declared MSRV: $msrv"
+          rustup toolchain install "$msrv" --profile minimal
+          cargo +"$msrv" check --locked --workspace --all-targets
+
       # Monetary amounts must use integer minor units, never floating point
       # (plan §9.1). Forbid f32/f64 in money-critical crates' non-test source.
       #
@@ -526,6 +542,25 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --all-targets -- -D warnings
           cargo test
+
+      # Declared MSRV for the standalone desktop graph (ADR 0001 addendum
+      # 2026-09-28, personal-cfo-g3m.5): it must equal the root workspace's and
+      # build with that exact compiler, including the bindings-export feature.
+      - name: Declared MSRV builds (desktop crate)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          set -euo pipefail
+          desktop=$(cargo metadata --format-version 1 --no-deps --locked | jq -r '.packages[0].rust_version')
+          root=$(cd ../../.. && cargo metadata --format-version 1 --no-deps --locked | jq -r '[.packages[].rust_version] | unique | join(" ")')
+          if [ "$desktop" != "$root" ]; then
+            echo "::error::desktop rust-version ($desktop) must equal the root workspace's ($root)"
+            exit 1
+          fi
+          echo "Declared MSRV: $desktop"
+          rustup toolchain install "$desktop" --profile minimal
+          cargo +"$desktop" check --locked --all-targets
+          cargo +"$desktop" check --locked --features export-bindings,tauri/custom-protocol
 
       # Regenerate the bindings and fail if the committed file is stale. This is
       # the enforced Rust↔TS schema-sync gate (personal-cfo-40t / rs1v).
