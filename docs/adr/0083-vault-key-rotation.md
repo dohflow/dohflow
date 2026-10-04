@@ -1,6 +1,6 @@
 # ADR 0083 — Vault key rotation (DEK rekey)
 
-- **Status:** Proposed
+- **Status:** Accepted (owner decision, 2026-10-04)
 - **Tier:** Public
 - **Date:** 2026-10-03
 - **Bead:** `personal-cfo-2y8`

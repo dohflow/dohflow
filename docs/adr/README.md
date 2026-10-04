@@ -104,7 +104,7 @@ when the ADR was written (owner-confirmed).
 | 0080 | Mobile architecture | Public | Not yet written (`personal-cfo-iuxhq`) |
 | 0081 | — internal | Internal | Not yet written (`personal-cfo-658vi`) |
 | 0082 | [The public-disclosure boundary](0082-public-disclosure-boundary.md) | Public | Accepted |
-| 0083 | [Vault key rotation (DEK rekey)](0083-vault-key-rotation.md) | Public | Proposed |
+| 0083 | [Vault key rotation (DEK rekey)](0083-vault-key-rotation.md) | Public | Accepted |
 
 ## Sub-numbered amendments
 
