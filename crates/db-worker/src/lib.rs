@@ -74,6 +74,8 @@ mod projection;
 mod recurring_debt;
 mod recurring_detection;
 mod recurring_instances;
+mod rekey;
+pub use rekey::{available_space, verify_rekeyed_copy, BlobRename};
 mod scenarios;
 mod schedule_sources;
 mod spend_by_category;
