@@ -425,6 +425,15 @@ fn required_space(db_size: u64, blobs_size: u64, links: bool) -> u64 {
     db_size.saturating_add(margin).saturating_add(blobs)
 }
 
+/// Refuse a rotation that would not fit (ADR 0083 §5). Nothing has been
+/// written when this fails.
+fn check_space(needed: u64, available: u64) -> Result<(), KernelError> {
+    if available < needed {
+        return Err(KernelError::InsufficientDiskSpace { needed, available });
+    }
+    Ok(())
+}
+
 /// Prepare and commit a rotation of `kernel`'s vault (ADR 0083 §2). On success
 /// the journal is `committed` and the caller must drop the kernel and run
 /// [`finish_rotation`]. On failure everything prepared is removed and the live
@@ -453,10 +462,7 @@ pub(crate) fn prepare_and_commit(
     let db_size = kernel.worker.database_size()?;
     let blobs_size = kernel.worker.blobs_size()?;
     let needed = required_space(db_size, blobs_size, hard_links_supported(&paths.blobs));
-    let available = db_worker::available_space(paths.dir())?;
-    if available < needed {
-        return Err(KernelError::InsufficientDiskSpace { needed, available });
-    }
+    check_space(needed, db_worker::available_space(paths.dir())?)?;
 
     let result = prepare_inner(kernel, password, &paths, stop);
     if let Err(error) = &result {
@@ -578,6 +584,18 @@ mod tests {
         assert_eq!(required_space(10, 1_000, false), 10 + MIN_MARGIN + 1_000);
         let big = 10 * MIN_MARGIN;
         assert_eq!(required_space(big, 0, true), big + big / 10);
+    }
+
+    #[test]
+    fn check_space_refuses_when_free_space_is_short() {
+        assert!(matches!(
+            check_space(100, 99),
+            Err(KernelError::InsufficientDiskSpace {
+                needed: 100,
+                available: 99
+            })
+        ));
+        assert!(check_space(100, 100).is_ok());
     }
 
     #[test]
@@ -991,6 +1009,63 @@ mod protocol_tests {
         assert_eq!(reopened.rekey_recovery(), RekeyRecovery::Contradiction);
         assert_eq!(reopened.state(), VaultState::CorruptNeedsRecovery);
         assert!(paths.journal.exists() && paths.new_db.exists());
+    }
+
+    #[test]
+    fn no_journal_recovery_removes_stray_prepare_files_and_never_sweeps_blobs() {
+        let (_dir, path, mut controller, _) = seeded();
+        controller.lock().unwrap();
+        let paths = RekeyPaths::new(&path);
+        let blobs = blob_names(&path);
+        fs::write(&paths.new_db, b"copy").unwrap();
+        fs::write(with_suffix(&paths.new_db, "-journal"), b"j").unwrap();
+        fs::write(&paths.journal_tmp, b"{").unwrap();
+        // An unreferenced file in blobs/ is not prepare's to remove without a journal.
+        fs::write(paths.blobs.join("ffff"), b"unrelated").unwrap();
+        let reopened = VaultController::open(&path);
+        assert_eq!(reopened.rekey_recovery(), RekeyRecovery::RolledBack);
+        assert_eq!(reopened.state(), VaultState::Locked);
+        assert_no_artifacts(&path);
+        assert!(paths.blobs.join("ffff").exists(), "no blob-directory sweep");
+        let mut expected = blobs;
+        expected.push("ffff".into());
+        expected.sort();
+        assert_eq!(blob_names(&path), expected);
+    }
+
+    /// A real (not simulated) failure during prepare removes everything prepared
+    /// and leaves the vault Unlocked on the old DEK.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_prepare_failure_rolls_back_and_stays_unlocked() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, path, mut controller, attachment) = seeded();
+        let before = canonical(&controller);
+        let paths = RekeyPaths::new(&path);
+        let envelope = fs::read(&paths.envelope).unwrap();
+        let blobs = blob_names(&path);
+        // A read-only blob directory makes both the link and the copy fallback fail.
+        fs::set_permissions(&paths.blobs, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = controller.rotate_key(PASSWORD);
+        fs::set_permissions(&paths.blobs, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert!(!is_simulated_crash(&error));
+        assert_eq!(controller.state(), VaultState::Unlocked);
+        assert_no_artifacts(&path);
+        assert_eq!(fs::read(&paths.envelope).unwrap(), envelope);
+        assert_eq!(blob_names(&path), blobs);
+        assert_eq!(canonical(&controller), before);
+        assert_eq!(
+            controller
+                .kernel()
+                .unwrap()
+                .read_attachment_bytes(attachment)
+                .unwrap(),
+            PDF
+        );
+        // And a retry after the cause is fixed succeeds.
+        controller.rotate_key(PASSWORD).unwrap();
+        assert_eq!(canonical(&controller), before);
     }
 
     #[test]
