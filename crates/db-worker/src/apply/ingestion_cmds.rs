@@ -229,21 +229,28 @@ pub(crate) fn apply_commit_staged(
         // belongs to a committed import is FLAGGED for the Money Inbox — never
         // silently dropped, and no ledger write. `force` (the Money Inbox
         // "import anyway" resolution, ADR 0014 §7) skips this check.
-        let committed_or_flagged = if !*force
-            && ingestion::fingerprint_already_committed(
+        let fingerprint_match = if *force {
+            None
+        } else {
+            ingestion::committed_fingerprint_match(
                 tx,
                 &staged.txn_fingerprint,
                 staged.proposed_account_id,
                 staged.id,
-            )? {
+            )?
+        };
+        let committed_or_flagged = if let Some(matched_txn) = fingerprint_match {
+            // The decision names the committed counterpart, as the
+            // cross-source layer does, so review reads what was decided rather
+            // than re-deriving it (personal-cfo-yl5).
             ingestion::record_dedupe_decision(
                 tx,
                 &ingestion::NewDedupeDecision {
                     source_batch_id: batch_id,
                     layer: "transaction",
                     staged_transaction_id: Some(staged.id),
-                    matched_entity_type: Some("staged_transaction"),
-                    matched_entity_id: None,
+                    matched_entity_type: Some("ledger_transaction"),
+                    matched_entity_id: Some(matched_txn),
                     decision: "flagged",
                     reason: "duplicate of an already-committed transaction",
                 },
