@@ -63,7 +63,7 @@ chrono-tz = "0.10"
 # (crates/finance-kernel/tests/cross_version_vault.rs) asserts the *linked*
 # versions match that record, so any bump fails CI until the pin + stack.md +
 # release notes are updated and the outgoing vault is captured as a fixture.
-rusqlite = { version = "=0.32.1", features = ["bundled-sqlcipher-vendored-openssl", "uuid"] }
+rusqlite = { version = "=0.40.2", features = ["bundled-sqlcipher-vendored-openssl", "uuid"] }
 # Vault-crypto KDF (personal-cfo-j0o): Argon2id key derivation, key-buffer
 # zeroization, and a CSPRNG salt source. Only vault-crypto depends on these.
 argon2 = "0.5"
