@@ -326,3 +326,92 @@ fn outgoing_v2_package_restores_with_original_key_and_state() {
         corpus.files["vault.db.envelope"].bytes()
     );
 }
+
+/// Child half of [`incoming_engine_recovers_committed_wal_after_an_abrupt_exit`]:
+/// builds a vault on the linked engine, checkpoints it, commits one more
+/// transaction that lives only in the WAL, records the expected canonical state,
+/// and aborts without closing anything (no Drop, no checkpoint).
+fn abrupt_child(path: &Path) -> ! {
+    let kernel = Kernel::create_vault(path, PASSWORD).unwrap();
+    let id = AccountId::from_uuid(Uuid::from_bytes([11; 16]));
+    kernel
+        .dispatch(CommandEnvelope::new(
+            meta(12),
+            CreateAccount::with_opening_balance(
+                Account::new(
+                    id,
+                    LedgerAccountId::from_uuid(Uuid::from_bytes([13; 16])),
+                    "Synthetic Abrupt",
+                    CashflowRole::LiquidCash,
+                    Currency::Usd,
+                    AccountFlags::default(),
+                ),
+                Money::new(100_000, Currency::Usd),
+            ),
+        ))
+        .unwrap();
+    // The backup export checkpoints the WAL (TRUNCATE) — a known-settled base.
+    kernel
+        .export_unattended(
+            &path.with_file_name("checkpoint.pcfobk"),
+            "synthetic-abrupt",
+            "2026-10-04T00:00:00Z".into(),
+            Uuid::from_bytes([14; 16]),
+        )
+        .unwrap();
+    kernel
+        .dispatch(CommandEnvelope::new(
+            meta(15),
+            RecordTransaction::new(
+                TransactionId::from_uuid(Uuid::from_bytes([16; 16])),
+                id,
+                Money::new(-2_500, Currency::Usd),
+                "2026-10-03T00:00:00Z".parse().unwrap(),
+            ),
+        ))
+        .unwrap();
+    kernel.rebuild_transaction_display().unwrap();
+    let expected = serde_json::to_vec(&canonical(&kernel)).unwrap();
+    let mut file = fs::File::create(path.with_file_name("expected.json")).unwrap();
+    file.write_all(&expected).unwrap();
+    file.sync_all().unwrap();
+    std::process::abort();
+}
+
+/// Crash/reopen on the incoming engine: a process that dies abruptly with
+/// committed-but-uncheckpointed WAL frames loses no commit, and the vault
+/// reopens healthy with exactly the state the dead process last committed.
+#[test]
+fn incoming_engine_recovers_committed_wal_after_an_abrupt_exit() {
+    const CHILD: &str = "G3M5_ABRUPT_CHILD_VAULT";
+    if let Some(path) = std::env::var_os(CHILD) {
+        abrupt_child(Path::new(&path));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "incoming_engine_recovers_committed_wal_after_an_abrupt_exit",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD, &path)
+        .status()
+        .unwrap();
+    assert!(
+        !status.success(),
+        "the child must die abruptly, not exit cleanly"
+    );
+    let expected: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("expected.json")).unwrap()).unwrap();
+    let wal = fs::read(dir.path().join("vault.db-wal")).unwrap();
+    assert!(wal.len() > 32, "the last commit must still be WAL-only");
+    for _ in 0..2 {
+        let mut controller = VaultController::open(&path);
+        controller.unlock(PASSWORD).unwrap();
+        assert_eq!(canonical(controller.kernel().unwrap()), expected);
+        assert!(controller.health_check().unwrap().is_healthy());
+        controller.lock().unwrap();
+    }
+}

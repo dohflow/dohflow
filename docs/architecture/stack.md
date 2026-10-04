@@ -85,6 +85,16 @@ packages are unchanged. No vault, envelope, backup, KDF or schema format change.
 opens all of it with identical canonical state (`engine_compatibility.rs`,
 `engine_contract.rs`).
 
+**Synthetic smoke (never on real data).** With the pinned toolchain:
+`cargo test -p finance-kernel --test engine_compatibility --test cross_version_vault`
+and `cargo test -p db-worker --test engine_contract`. Together they prove the
+linked versions and source ID, open the frozen outgoing corpus (settled vault,
+committed WAL without SHM, attachment, v2 backup) with identical state, recover
+a WAL-only commit after an abrupt process exit, and preserve commits across a
+reader-bounded checkpoint. For the app itself: create a throwaway vault in a dev
+build, add an account and a transaction, quit, reopen, and confirm Settings →
+Vault health is green.
+
 **Rollback is not promised.** An older DohFlow build has not been tested against
 a vault that this engine has written, and is not supported for that. To return
 to an older build, restore a backup made by that build. Never test rollback on
