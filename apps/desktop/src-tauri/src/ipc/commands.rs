@@ -431,13 +431,22 @@ pub fn rotate_vault_key_impl(
     vault_status_dto(&guard)
 }
 
+// Async + `spawn_blocking`, like `connector_sync`: a rotation re-encrypts the
+// whole vault (seconds to a minute), and a synchronous command would run on the
+// main thread, freezing the window so the rotate card's overlay could never
+// paint. The blocking impl still holds the controller lock throughout.
 #[tauri::command]
 #[specta::specta]
-pub fn rotate_vault_key(
-    state: tauri::State<'_, AppState>,
+pub async fn rotate_vault_key(
+    app: tauri::AppHandle,
     input: RotateVaultKeyInput,
 ) -> Result<VaultStatusDto, IpcError> {
-    rotate_vault_key_impl(state.inner(), input)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        rotate_vault_key_impl(&state, input)
+    })
+    .await
+    .map_err(|_| IpcError::Unavailable("key rotation task failed".to_owned()))?
 }
 
 /// Permanently delete the active vault (personal-cfo-j0cg.5): wipe its data, drop its registry

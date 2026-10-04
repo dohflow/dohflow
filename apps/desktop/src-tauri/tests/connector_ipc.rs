@@ -1716,10 +1716,21 @@ fn rotation_blocks_kernel_access_and_an_overlapping_sync_lands_in_the_rotated_va
         // locked section (its files exist), so the sync's database phase must
         // queue behind it.
         let deadline = Instant::now() + Duration::from_secs(60);
-        while !rekey_files.iter().any(|f| f.exists()) && !rotating.is_finished() {
+        let mut observed = false;
+        while !rotating.is_finished() {
+            if rekey_files.iter().any(|f| f.exists()) {
+                observed = true;
+                break;
+            }
             assert!(Instant::now() < deadline, "rotation never started");
             std::thread::sleep(Duration::from_micros(200));
         }
+        // The interleaving is only proven if the sync was released while the
+        // rotation was inside its locked section, not after it had finished.
+        assert!(
+            observed,
+            "the rotation finished before its files were observed"
+        );
         gated.release();
         let (rotate_result, rotate_done) = rotating.join().unwrap();
         let (sync_result, sync_done) = syncing.join().unwrap();
