@@ -3030,6 +3030,7 @@ dependencies = [
  "db-worker",
  "finance-kernel",
  "iana-time-zone",
+ "importer-core",
  "insta",
  "job-runtime",
  "lunchflow-adapter",

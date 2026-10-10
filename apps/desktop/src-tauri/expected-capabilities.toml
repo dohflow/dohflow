@@ -138,5 +138,7 @@ commands = [
   "relaunch_app",
   "restore_backup",
   "restore_backup_as_new_vault",
+  # Re-encrypts and replaces vault.db under a new DEK (personal-cfo-2y8, ADR 0083).
+  "rotate_vault_key",
   "run_backup_now",
 ]

@@ -612,6 +612,14 @@ impl VaultController {
         self.state = classify_vault(&self.path);
     }
 
+    /// [`Self::reclassify`] preceded by rotation recovery (ADR 0083 §4): used
+    /// wherever the controller starts treating a vault path as current without
+    /// going through [`Self::open`] — a switch, or a failed restore.
+    fn recover_and_reclassify(&mut self) {
+        self.rekey_recovery = rekey::recover_interrupted_rekey(&self.path);
+        self.reclassify();
+    }
+
     /// Create a brand-new vault and leave it unlocked. Requires `NoVault`.
     ///
     /// # Errors
@@ -673,7 +681,7 @@ impl VaultController {
                 Ok(())
             }
             Err(error) => {
-                self.reclassify();
+                self.recover_and_reclassify();
                 Err(error)
             }
         }
@@ -844,7 +852,7 @@ impl VaultController {
         // No kernel from the previous vault may survive the switch.
         self.kernel = None;
         self.path = path;
-        self.reclassify();
+        self.recover_and_reclassify();
         Ok(())
     }
 

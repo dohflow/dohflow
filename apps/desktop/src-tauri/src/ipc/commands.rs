@@ -52,14 +52,14 @@ use crate::ipc::dto::{
     MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto, MutationResult,
     RecordTransactionInput, RecordTransactionResult, RecordTransferInput, RecurringBillDto,
     RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
-    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, ScenarioDto, SetBillAutopayInput,
-    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
-    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
-    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
-    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
-    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
-    UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto, VaultStatusDto,
-    VaultSummaryDto,
+    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto,
+    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
+    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
+    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
+    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
+    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
+    UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto,
+    VaultStatusDto, VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
@@ -121,6 +121,7 @@ fn ipc_error_code(error: &IpcError) -> &'static str {
         IpcError::NewerVaultSchema => "newer_vault_schema",
         IpcError::UnsupportedVaultSchema => "unsupported_vault_schema",
         IpcError::Unavailable(_) => "unavailable",
+        IpcError::InsufficientDiskSpace => "insufficient_disk_space",
         IpcError::WriterPanicked => "writer_panicked",
         IpcError::Persistence(_) => "persistence",
     }
@@ -407,6 +408,45 @@ pub fn change_password(
     input: ChangePasswordInput,
 ) -> Result<VaultStatusDto, IpcError> {
     change_password_impl(state.inner(), input)
+}
+
+/// Rotate the vault's encryption key (personal-cfo-2y8, ADR 0083): a new random
+/// DEK, the database re-encrypted and every attachment re-wrapped and
+/// re-addressed, the password unchanged. Holds the controller lock for the whole
+/// rotation, so no other command, scheduled job or connector database phase can
+/// touch the vault meanwhile (ADR 0083 §5); they run afterwards. A wrong
+/// password returns [`IpcError::VaultUnlockFailed`] and too little free space
+/// [`IpcError::InsufficientDiskSpace`], both with nothing written. The password
+/// is wrapped in [`Zeroizing`] so its plaintext copy is scrubbed on return.
+pub fn rotate_vault_key_impl(
+    state: &AppState,
+    input: RotateVaultKeyInput,
+) -> Result<VaultStatusDto, IpcError> {
+    let password = Zeroizing::new(input.password);
+    let mut guard = state.lock_controller()?;
+    let result = guard.rotate_key(password.as_bytes());
+    // Report the controller's real state either way (Unlocked, or Locked /
+    // CorruptNeedsRecovery if the rotated vault could not be reopened).
+    result?;
+    vault_status_dto(&guard)
+}
+
+// Async + `spawn_blocking`, like `connector_sync`: a rotation re-encrypts the
+// whole vault (seconds to a minute), and a synchronous command would run on the
+// main thread, freezing the window so the rotate card's overlay could never
+// paint. The blocking impl still holds the controller lock throughout.
+#[tauri::command]
+#[specta::specta]
+pub async fn rotate_vault_key(
+    app: tauri::AppHandle,
+    input: RotateVaultKeyInput,
+) -> Result<VaultStatusDto, IpcError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        rotate_vault_key_impl(&state, input)
+    })
+    .await
+    .map_err(|_| IpcError::Unavailable("key rotation task failed".to_owned()))?
 }
 
 /// Permanently delete the active vault (personal-cfo-j0cg.5): wipe its data, drop its registry

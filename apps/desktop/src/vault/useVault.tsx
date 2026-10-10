@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { onlineManager, useQueryClient } from "@tanstack/react-query";
 
 import {
   commands,
@@ -37,6 +37,11 @@ type VaultContextValue = {
   /// flips to NoVault and the app returns to the create-vault screen. Recoverable
   /// only by restoring an encrypted backup.
   deleteVault: () => Promise<IpcError | null>;
+  /// Rotate the vault's encryption key (personal-cfo-2y8, ADR 0083) with the
+  /// current password. The data and the password are unchanged; on success the
+  /// vault stays unlocked. A failure after the commit point can leave it locked
+  /// (or needing recovery), so the status is re-read on any error.
+  rotateVaultKey: (password: string) => Promise<IpcError | null>;
   /// Restore an encrypted backup into a fresh vault (au3); on success the status
   /// flips to Unlocked.
   restoreVault: (packagePath: string, password: string) => Promise<IpcError | null>;
@@ -164,6 +169,28 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     }
     return error;
   }, [run, queryClient, refresh, refreshVaults]);
+  const rotateVaultKey = useCallback(
+    async (password: string) => {
+      // A rotation holds the vault lock for its whole run (ADR 0083 §5), and
+      // most commands are synchronous: one issued meanwhile would block the main
+      // thread on that lock and freeze the window under the overlay. Pause every
+      // query (polling included) until it finishes; paused queries resume
+      // afterwards. Queries use the default `online` network mode, so marking
+      // the manager offline is what pauses them.
+      onlineManager.setOnline(false);
+      let error: IpcError | null;
+      try {
+        error = await run(commands.rotateVaultKey({ password }));
+      } finally {
+        onlineManager.setOnline(true);
+      }
+      // No visible data changes on success, so the cache stays valid. On error
+      // re-read the real on-disk status so the gate reflects it.
+      if (error !== null) await refresh();
+      return error;
+    },
+    [run, refresh],
+  );
   const restoreVault = useCallback(
     (packagePath: string, password: string) =>
       run(commands.restoreBackup(packagePath, password)),
@@ -222,6 +249,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         unlockVault,
         lockVault,
         deleteVault,
+        rotateVaultKey,
         restoreVault,
         restoreAsNewVault,
         refresh,
@@ -260,6 +288,8 @@ export function describeIpcError(error: IpcError): string {
         return "The vault is locked.";
       case "WriterPanicked":
         return "A write failed and the vault needs recovery.";
+      case "InsufficientDiskSpace":
+        return "There isn't enough free disk space to rotate the key. Nothing was changed. Free up some space and try again.";
       default:
         return error;
     }

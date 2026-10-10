@@ -17,6 +17,7 @@ export const commands = {
 	unlockVault: (password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("unlock_vault", { password })),
 	lockVault: () => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("lock_vault")),
 	changePassword: (input: ChangePasswordInput) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("change_password", { input })),
+	rotateVaultKey: (input: RotateVaultKeyInput) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("rotate_vault_key", { input })),
 	deleteVault: () => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("delete_vault")),
 	listVaults: () => typedError<VaultListDto, IpcError>(__TAURI_INVOKE("list_vaults")),
 	createVaultNamed: (name: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("create_vault_named", { name, password })),
@@ -1812,6 +1813,11 @@ export type IpcError =
  *  awaiting recovery). Carries the worker state as a non-sensitive label.
  */
 ({ Unavailable: string }) & { Persistence?: never; Validation?: never } |
+/**
+ *  A key rotation needs more free disk space than is available (ADR 0083
+ *  §5). Nothing was written; freeing space and retrying is safe.
+ */
+"InsufficientDiskSpace" |
 /**  A writer panic rolled back the transaction; the vault needs recovery. */
 "WriterPanicked" |
 /**
@@ -2168,6 +2174,17 @@ export type RepaymentPhilosophyDto =
 
 /**  Whether the app found a restore slot that was never committed to the registry. */
 export type RestoreRecoveryStatusDto = "clear" | "interrupted" | "unavailable";
+
+/**
+ *  Input to rotate the vault's encryption key (personal-cfo-2y8, ADR 0083). The
+ *  current password re-derives the KEK that wraps the new DEK; the command wraps
+ *  it in `Zeroizing` on use. `Debug` is redacted so it can never reach a log
+ *  line (§6.6).
+ */
+export type RotateVaultKeyInput = {
+	/**  The current master password (unchanged by rotation). */
+	password: string,
+};
 
 /**
  *  A stored scenario definition — a named overlay on the base forecast

@@ -44,6 +44,11 @@ pub enum IpcError {
     #[error("vault unavailable: {0}")]
     Unavailable(String),
 
+    /// A key rotation needs more free disk space than is available (ADR 0083
+    /// §5). Nothing was written; freeing space and retrying is safe.
+    #[error("not enough free disk space to rotate the encryption key")]
+    InsufficientDiskSpace,
+
     /// A writer panic rolled back the transaction; the vault needs recovery.
     #[error("a write failed and the vault needs recovery")]
     WriterPanicked,
@@ -73,6 +78,7 @@ impl From<KernelError> for IpcError {
             KernelError::VaultNotFound => {
                 IpcError::Validation("no vault exists at this location".to_owned())
             }
+            KernelError::InsufficientDiskSpace { .. } => IpcError::InsufficientDiskSpace,
             KernelError::VaultInUse => IpcError::Unavailable(
                 "vault is already open in another DohFlow instance".to_owned(),
             ),

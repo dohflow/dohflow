@@ -94,6 +94,7 @@ describe("generated IPC bindings", () => {
         "unlockVault",
         "lockVault",
         "changePassword",
+        "rotateVaultKey",
         "deleteVault",
         "listVaults",
         "createVaultNamed",

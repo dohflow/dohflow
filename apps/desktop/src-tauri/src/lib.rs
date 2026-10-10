@@ -50,6 +50,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::unlock_vault,
         ipc::commands::lock_vault,
         ipc::commands::change_password,
+        ipc::commands::rotate_vault_key,
         ipc::commands::delete_vault,
         ipc::commands::list_vaults,
         ipc::commands::create_vault_named,

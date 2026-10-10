@@ -7,6 +7,16 @@ record until the first tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Rotate encryption key** in Settings (`personal-cfo-2y8`, ADR 0083). It
+  gives the vault a new encryption key without changing your password, for
+  when you think the key may have been exposed. Your data and attachments are
+  unchanged, and an interrupted rotation is finished or undone safely the next
+  time DohFlow opens. Backups made before rotating still open with the password
+  you had then, and an older vault can move to the current key-derivation
+  settings this way.
+
 ### Fixed
 
 - The bundled database engine is updated to SQLCipher 4.14.0 / SQLite 3.51.3,

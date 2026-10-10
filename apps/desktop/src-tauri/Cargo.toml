@@ -157,6 +157,11 @@ toml = "1.1"
 connector-core = { path = "../../../crates/connector-core", features = ["mock"] }
 # Pins ConnectorLinkInput's no-Serialize guarantee at compile time.
 static_assertions = "1.1"
+# A test-only ConnectorAdapter wrapper (the key-rotation interleaving test,
+# personal-cfo-2y8) must name the trait's record types. Already in this graph
+# via connector-core: the lock only lists it under this crate (no new packages).
+# (`semver`, which the wrapper also names, is the personal-cfo-lqk entry below.)
+importer-core = { path = "../../../crates/importers/importer-core" }
 # Integration tests drive the command impls against a real temp-vault kernel.
 finance-kernel = { path = "../../../crates/finance-kernel" }
 # Synthetic incompatible-vault fixtures only; production persistence stays in
