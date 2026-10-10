@@ -2813,6 +2813,43 @@ impl DbWorker {
         batch: &ParsedBatch,
         target_account: Uuid,
     ) -> Result<Vec<Uuid>, DbError> {
+        self.stage_file_batch(batch_id, batch, |_| Some(target_account))
+            .map(|(staged, _)| staged)
+    }
+
+    /// Bulk-stage a parsed file whose rows span several accounts
+    /// (personal-cfo-tulv, e.g. a YNAB register export): each row lands in
+    /// the real account `account_map` gives its source account label
+    /// (`ParsedTransaction::external_account`), the file-import sibling of
+    /// [`Self::stage_sync_batch`]. A row whose label is absent from the map
+    /// — the user chose not to import that account — is **not staged**, and
+    /// its count is returned so the caller reports it rather than silently
+    /// dropping it (ADR 0014 §3); it never falls into some other account.
+    /// Staged accounts carry the map's answer as `matched_account_id`
+    /// (`None` = in the file, not imported).
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a write failure.
+    pub fn stage_parsed_batch_routed(
+        &self,
+        batch_id: Uuid,
+        batch: &ParsedBatch,
+        account_map: &std::collections::BTreeMap<String, Uuid>,
+    ) -> Result<(Vec<Uuid>, usize), DbError> {
+        self.stage_file_batch(batch_id, batch, |label| {
+            label.and_then(|key| account_map.get(key)).copied()
+        })
+    }
+
+    /// The file-import staging both entry points share: `route` resolves a
+    /// source account label to the real account a row is proposed against,
+    /// or `None` to leave the row unstaged (counted in the returned total).
+    fn stage_file_batch(
+        &self,
+        batch_id: Uuid,
+        batch: &ParsedBatch,
+        route: impl Fn(Option<&str>) -> Option<Uuid>,
+    ) -> Result<(Vec<Uuid>, usize), DbError> {
         let guard = self.lock();
         let tx = guard.conn.unchecked_transaction()?;
         for acct in &batch.accounts {
@@ -2823,12 +2860,25 @@ impl DbWorker {
                     external_name: acct.external_name.as_deref(),
                     external_number_hash: acct.external_number_hash.as_deref(),
                     proposed_subtype: acct.proposed_subtype.as_deref(),
-                    matched_account_id: Some(target_account),
+                    matched_account_id: route(acct.external_id.as_deref()),
                 },
             )?;
         }
         let mut staged = Vec::new();
+        let mut not_routed = 0_usize;
         for rec in &batch.records {
+            let txn_account = rec
+                .transaction
+                .as_ref()
+                .map(|t| route(t.external_account.as_deref()));
+            let bal_account = rec
+                .balance
+                .as_ref()
+                .map(|b| route(b.external_account.as_deref()));
+            if matches!(txn_account, Some(None)) || matches!(bal_account, Some(None)) {
+                not_routed += 1;
+                continue;
+            }
             // insert_source_record dedupes on (batch, source_hash) and returns
             // the EFFECTIVE id — staged rows must reference that, never a
             // freshly-minted id that was not inserted.
@@ -2843,14 +2893,14 @@ impl DbWorker {
                     parse_confidence_bps: rec.parse_confidence_bps.map(i64::from),
                 },
             )?;
-            if let Some(txn) = &rec.transaction {
+            if let (Some(txn), Some(Some(account))) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
                 let transaction_date = txn.transaction_date.map(|d| d.to_string());
                 let id = ingestion::stage_transaction(
                     &tx,
                     &ingestion::NewStagedTransaction {
                         source_record_id: record_id,
-                        proposed_account_id: Some(target_account),
+                        proposed_account_id: Some(account),
                         posted_at: &posted,
                         transaction_date: transaction_date.as_deref(),
                         amount_minor: txn.amount.minor_units(),
@@ -2863,13 +2913,13 @@ impl DbWorker {
                 )?;
                 staged.push(id);
             }
-            if let Some(bal) = &rec.balance {
+            if let (Some(bal), Some(Some(account))) = (&rec.balance, bal_account) {
                 let observed = bal.observed_at.to_string();
                 ingestion::stage_balance(
                     &tx,
                     &ingestion::NewStagedBalance {
                         source_record_id: record_id,
-                        account_ref: Some(target_account),
+                        account_ref: Some(account),
                         observed_at: &observed,
                         balance_minor: bal.amount.minor_units(),
                         currency: bal.amount.currency().code(),
@@ -2878,7 +2928,7 @@ impl DbWorker {
             }
         }
         tx.commit()?;
-        Ok(staged)
+        Ok((staged, not_routed))
     }
 
     /// Bulk-stage a connector sync batch (personal-cfo-gglk): like

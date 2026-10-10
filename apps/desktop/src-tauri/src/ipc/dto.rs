@@ -1567,6 +1567,22 @@ pub struct SourcePresetDto {
     /// (personal-cfo-gvidg review finding F1, PR #15) — the frontend must
     /// not render a guide link when this is `false`.
     pub help_published: bool,
+    /// The importer plugin this preset's files go through, when it has its
+    /// own (personal-cfo-tulv: `"ynab-register"`) — pass it as
+    /// `import_preview_columns`' `plugin_id` so the headers are read the
+    /// way the import will read them. `None` = the generic CSV importer.
+    pub importer_id: Option<String>,
+}
+
+/// One source account in a multi-account file, and where its rows go
+/// (personal-cfo-tulv).
+#[derive(Debug, Clone, Deserialize, Type)]
+pub struct ImportAccountMapEntryDto {
+    /// The account label exactly as `import_preview_accounts` returned it.
+    pub source_account: String,
+    /// The real account (UUID string) its rows land in; `None` = don't
+    /// import this account's rows (they are counted, not dropped silently).
+    pub account_id: Option<String>,
 }
 
 /// Input for importing a file through the ingestion pipeline (personal-cfo-cu8).
@@ -1578,8 +1594,14 @@ pub struct ImportBatchInput {
     pub data: Vec<u8>,
     /// Original filename — drives plugin detection + the batch name.
     pub filename: Option<String>,
-    /// The account (UUID string) to import the transactions into.
-    pub target_account_id: String,
+    /// The account (UUID string) to import every transaction into. Exactly
+    /// one of this and `account_map` is given.
+    pub target_account_id: Option<String>,
+    /// For a file spanning several accounts (personal-cfo-tulv): where each
+    /// source account's rows go, keyed by the labels `import_preview_accounts`
+    /// returned. A row whose label is missing here, or mapped to `None`, is
+    /// not imported and is counted in `BatchResultDto::skipped_unmapped`.
+    pub account_map: Option<Vec<ImportAccountMapEntryDto>>,
     /// An explicit importer plugin id; if omitted, the best-detected one is used.
     pub plugin_id: Option<String>,
     /// A source-app preset id (personal-cfo-gvidg, e.g. `"ynab"`) — applied
@@ -1622,6 +1644,9 @@ pub struct BatchResultDto {
     /// rows that were imported. Each is a row number and a fixed reason — never
     /// the row's own values.
     pub warnings: Vec<ImportWarningDto>,
+    /// Rows left out because the user chose not to import their source
+    /// account (personal-cfo-tulv `account_map`). Not part of `skipped_rows`.
+    pub skipped_unmapped: u32,
 }
 
 /// One issue the parser reported for an import (personal-cfo-pxi.10).
@@ -1658,6 +1683,7 @@ impl From<BatchResult> for BatchResultDto {
                     skipped: w.skipped,
                 })
                 .collect(),
+            skipped_unmapped: result.skipped_unmapped,
         }
     }
 }

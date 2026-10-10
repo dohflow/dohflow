@@ -1516,6 +1516,8 @@ dependencies = [
  "core-money",
  "csv-importer",
  "importer-core",
+ "semver",
+ "serde_json",
 ]
 
 [[package]]

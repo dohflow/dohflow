@@ -521,7 +521,8 @@ fn seed_sensitive_session(session: &Session) -> Vec<(Metric, Option<Value>)> {
         ImportBatchInput {
             data: csv.into_bytes(),
             filename: Some(format!("{HOSTILE_FOLDER} statement.csv")),
-            target_account_id: account_id,
+            target_account_id: Some(account_id),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,

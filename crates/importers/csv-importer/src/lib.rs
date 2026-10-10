@@ -9,8 +9,13 @@
 //! a [`ParseWarning`] rather than a silent guess. It holds no keys/DB/network/IPC
 //! (the eay trait) and runs behind the bounded host (`hs9`, ADR 0022).
 //!
-//! v1 scope: US-style numerics (`,` = thousands, `.` = decimal). European
-//! decimal-comma needs an explicit locale hint and is a documented follow-up.
+//! Numerics default to US style (`,` = thousands, `.` = decimal). A
+//! [`CsvDialect`] with `decimal_comma` reads the European style (`.`/space =
+//! thousands, `,` = decimal) — chosen by a caller that *knows* the file's
+//! convention (the YNAB importer, whose comma-decimal plans export as TSV;
+//! personal-cfo-tulv), never guessed per value. Either way a separator in an
+//! impossible place (`12,50` read US-style) refuses the value instead of
+//! silently scaling it.
 
 use std::collections::BTreeSet;
 
@@ -57,11 +62,134 @@ fn currency_from_code(code: &str) -> Option<Currency> {
     }
 }
 
+/// How a delimited file is written (personal-cfo-tulv): its field delimiter
+/// and whether amounts use a decimal comma. [`GenericCsv`] always reads the
+/// default (comma-delimited, decimal point); a source-specific importer that
+/// knows its file's convention passes its own to [`parse_with_dialect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CsvDialect {
+    pub delimiter: u8,
+    /// `1.234,56` rather than `1,234.56`.
+    pub decimal_comma: bool,
+}
+
+impl Default for CsvDialect {
+    fn default() -> Self {
+        Self {
+            delimiter: b',',
+            decimal_comma: false,
+        }
+    }
+}
+
+/// Currency signs the importer recognizes inside an amount cell. A cell
+/// carrying one of these that is not the import currency's own sign is a
+/// different currency, never silently relabeled (personal-cfo-tulv).
+const CURRENCY_SIGNS: &[char] = &[
+    '$', '€', '£', '¥', '₹', '₩', '₽', '₺', '₪', '₫', '₱', '₦', '₴', '₸', '¢', '₡', '₲', '₵', '₭',
+    '₮', '₼', '₾', '฿',
+];
+
+/// Why an amount cell yielded no usable value.
+#[derive(Debug, PartialEq, Eq)]
+enum AmountProblem {
+    /// Empty, or not a number in the file's convention.
+    Unreadable,
+    /// The cell names a currency other than the import currency.
+    ForeignCurrency,
+}
+
+/// Common ISO 4217 codes a bank or app export writes beside an amount. A
+/// cell that also carries a currency sign and one of these (other than the
+/// import currency's own) is that other currency. Curated rather than the
+/// full ISO list on purpose: codes that are also ordinary words a bank writes
+/// next to an amount (`ALL`, `TOP`, `CUP`) are left out.
+const CURRENCY_CODES: &[&str] = &[
+    "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS",
+    "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PHP", "PLN", "RUB", "SEK", "SGD", "THB", "TRY",
+    "TWD", "USD", "ZAR",
+];
+
+/// The import currency's own sign.
+fn own_sign(currency: Currency) -> Option<char> {
+    match currency {
+        Currency::Usd => Some('$'),
+        Currency::Eur => Some('€'),
+        _ => None,
+    }
+}
+
+/// Whether an amount cell names a currency other than `currency`
+/// (personal-cfo-tulv). Only a cell carrying a currency sign is judged — a
+/// cell of digits and letters alone (`12.00 CAD`, `12.00 CR`) is not, as
+/// before this check existed. With a sign, the cell names another currency
+/// when:
+///
+/// - the sign is not `currency`'s own (`€12.00` in a dollar import);
+/// - letters touch the sign (`C$`, `A$`, `R$`) — except `currency`'s own
+///   code and, for dollars, `US` (`USD$12.00`, `US$12.00`);
+/// - a separate letter run is another known ISO code (`$12.00 CAD`).
+///
+/// Every other letter run is neutral wherever it sits: the import
+/// currency's own code (`$12.00 USD`, `$12.00 (USD)`), a debit/credit
+/// indicator (`$1,234.56 CR`), or any other word a bank writes there. Digits
+/// and separators bound a run, so `$12.00CR` does not put `CR` beside the
+/// sign.
+fn names_another_currency(raw: &str, currency: Currency) -> bool {
+    let chars: Vec<char> = raw.chars().collect();
+    if !chars.iter().any(|c| CURRENCY_SIGNS.contains(c)) {
+        return false;
+    }
+    if chars
+        .iter()
+        .any(|c| CURRENCY_SIGNS.contains(c) && Some(*c) != own_sign(currency))
+    {
+        return true;
+    }
+    let is_sign = |i: usize| chars.get(i).is_some_and(|c| CURRENCY_SIGNS.contains(c));
+    let mut start = 0;
+    while start < chars.len() {
+        if !chars[start].is_ascii_alphabetic() {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < chars.len() && chars[end].is_ascii_alphabetic() {
+            end += 1;
+        }
+        let run: String = chars[start..end].iter().collect();
+        let upper = run.to_ascii_uppercase();
+        let touches_sign = (start > 0 && is_sign(start - 1)) || is_sign(end);
+        let own_code = upper == currency.code();
+        if touches_sign && !own_code && !(currency == Currency::Usd && upper == "US") {
+            return true;
+        }
+        if !own_code && CURRENCY_CODES.contains(&run.as_str()) {
+            return true;
+        }
+        start = end;
+    }
+    false
+}
+
+/// Whether `int_part` uses `sep` only as a thousands separator in valid
+/// places: a leading group of 1–3 digits, then groups of exactly 3.
+fn valid_grouping(int_part: &str, sep: char) -> bool {
+    let mut groups = int_part.split(sep);
+    let first = groups.next().unwrap_or("");
+    if !int_part.contains(sep) {
+        return true;
+    }
+    (1..=3).contains(&first.len()) && groups.all(|g| g.len() == 3)
+}
+
 /// Parse a money string into minor units for a currency with `exponent` decimal
 /// places. Handles a leading currency symbol, thousands separators, surrounding
 /// parentheses (= negative, accounting style), and a leading sign. `None` if it
-/// is not a recognizable amount.
-fn parse_minor_units(raw: &str, exponent: u8) -> Option<i64> {
+/// is not a recognizable amount — including a thousands separator in a place
+/// no real grouping puts it (`12,50` read US-style is refused, not read as
+/// 1250; personal-cfo-tulv).
+fn parse_minor_units(raw: &str, exponent: u8, decimal_comma: bool) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -78,16 +206,40 @@ fn parse_minor_units(raw: &str, exponent: u8) -> Option<i64> {
     } else if let Some(rest) = body.strip_prefix('+') {
         body = rest.trim_start();
     }
-    // Keep only digits + the decimal point (drops `$`, thousands separators,
-    // spaces). A comma is treated as a thousands separator (US style).
+    // A sign after the currency symbol (`$-12.00`, `-$12.00` handled above).
+    if let Some(pos) = body.find('-') {
+        if body[..pos].chars().all(|c| !c.is_ascii_digit()) {
+            negative = !negative;
+            body = &body[pos + 1..];
+        }
+    }
+    let (decimal, thousands) = if decimal_comma {
+        (',', '.')
+    } else {
+        ('.', ',')
+    };
+    // Keep only digits + the two separators (drops `$`, spaces, letters).
+    // Space and apostrophe groupings are dropped unvalidated, as before.
     let cleaned: String = body
         .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .filter(|c| c.is_ascii_digit() || *c == decimal || *c == thousands)
         .collect();
-    if cleaned.is_empty() {
+    if !cleaned.chars().any(|c| c.is_ascii_digit()) {
         return None;
     }
-    let (int_str, frac_str) = cleaned.split_once('.').unwrap_or((cleaned.as_str(), ""));
+    let (int_part, frac_str) = match cleaned.split_once(decimal) {
+        Some((int_part, frac)) => (int_part, frac),
+        None => (cleaned.as_str(), ""),
+    };
+    // A second decimal separator, or a thousands separator after the
+    // decimal one, is not an amount.
+    if frac_str.contains(decimal) || frac_str.contains(thousands) {
+        return None;
+    }
+    if !valid_grouping(int_part, thousands) {
+        return None;
+    }
+    let int_str: String = int_part.chars().filter(char::is_ascii_digit).collect();
     let exp = exponent as usize;
     let mut frac = frac_str.to_owned();
     if frac.len() < exp {
@@ -100,7 +252,6 @@ fn parse_minor_units(raw: &str, exponent: u8) -> Option<i64> {
     } else {
         int_str.parse().ok()?
     };
-    // A stray second '.' (e.g. "1.2.3") leaves a non-digit here → parse fails.
     let frac_val: i64 = if frac.is_empty() {
         0
     } else {
@@ -109,6 +260,19 @@ fn parse_minor_units(raw: &str, exponent: u8) -> Option<i64> {
     let scale = 10i64.checked_pow(exp as u32)?;
     let magnitude = int_val.checked_mul(scale)?.checked_add(frac_val)?;
     Some(if negative { -magnitude } else { magnitude })
+}
+
+/// Parse one amount cell for `currency`: refuses a cell whose currency sign
+/// names a different currency before reading the number.
+fn parse_amount_cell(
+    raw: &str,
+    currency: Currency,
+    decimal_comma: bool,
+) -> Result<i64, AmountProblem> {
+    if names_another_currency(raw, currency) {
+        return Err(AmountProblem::ForeignCurrency);
+    }
+    parse_minor_units(raw, currency.exponent(), decimal_comma).ok_or(AmountProblem::Unreadable)
 }
 
 /// Parse a date with a confidence in basis points. An explicit `hint_format` or
@@ -140,6 +304,68 @@ fn parse_date(raw: &str, hint_format: Option<&str>) -> Option<(chrono::NaiveDate
         (Some(u), None) => Some((u, 9_000)),
         (None, Some(e)) => Some((e, 9_000)),
         (None, None) => None,
+    }
+}
+
+/// The date format a whole column of `values` is written in, when the column
+/// itself proves it (personal-cfo-tulv): `Y-M-D` when the first part has four
+/// digits; otherwise month-first if some value's second part exceeds 12, or
+/// day-first if some value's first part does. `None` when the column does not
+/// decide (every value fits both orders, the evidence conflicts, or the
+/// values mix separators) — the caller then keeps its own default and
+/// per-value ambiguity scoring. A value that is not three numeric parts is
+/// ignored here: that row is refused by the parse itself, and one bad cell
+/// must not cost the rest of the file its date order.
+///
+/// Deciding once per file is what a per-value guess cannot do: in a
+/// day-first file, `05/06/2026` reads as 5 May on its own, but the file's
+/// `13/06/2026` settles that it is 5 June.
+#[must_use]
+pub fn infer_date_format(values: &[String]) -> Option<&'static str> {
+    let mut separator = None;
+    let (mut year_first, mut month_first, mut day_first) = (false, false, false);
+    for value in values {
+        let value = value.trim();
+        let Some(sep) = value.chars().find(|c| matches!(c, '/' | '.' | '-')) else {
+            continue;
+        };
+        let parts: Vec<&str> = value.split(sep).collect();
+        let [a, b, c] = parts.as_slice() else {
+            continue;
+        };
+        let numeric = |p: &&&str| !p.is_empty() && p.chars().all(|ch| ch.is_ascii_digit());
+        if ![a, b, c].iter().all(numeric) || (a.len() != 4 && c.len() != 4) {
+            continue;
+        }
+        if *separator.get_or_insert(sep) != sep {
+            return None;
+        }
+        if a.len() == 4 {
+            year_first = true;
+            continue;
+        }
+        let (first, second): (u32, u32) = (a.parse().ok()?, b.parse().ok()?);
+        month_first |= second > 12;
+        day_first |= first > 12;
+    }
+    let sep = separator?;
+    match (year_first, month_first, day_first) {
+        (true, false, false) => Some(match sep {
+            '/' => "%Y/%m/%d",
+            '.' => "%Y.%m.%d",
+            _ => "%Y-%m-%d",
+        }),
+        (false, true, false) => Some(match sep {
+            '/' => "%m/%d/%Y",
+            '.' => "%m.%d.%Y",
+            _ => "%m-%d-%Y",
+        }),
+        (false, false, true) => Some(match sep {
+            '/' => "%d/%m/%Y",
+            '.' => "%d.%m.%Y",
+            _ => "%d-%m-%Y",
+        }),
+        _ => None,
     }
 }
 
@@ -217,26 +443,39 @@ fn resolve_columns(headers: &csv::StringRecord, mapping: Option<&ColumnMapping>)
 
 /// Resolve a row's signed amount: a single `amount` column wins; otherwise a
 /// non-zero `debit` is an outflow (negative) and a non-zero `credit` an inflow.
-fn resolve_amount(row: &csv::StringRecord, cols: &Columns, exponent: u8) -> Option<i64> {
-    if let Some(minor) = cols
-        .amount
-        .and_then(|i| row.get(i))
-        .and_then(|v| parse_minor_units(v, exponent))
-    {
-        return Some(minor);
+/// A row whose only amounts are zero resolves to `0` (a source such as YNAB
+/// writes `$0.00` on the unused side rather than leaving it blank), so it is
+/// reported as a zero amount rather than an unreadable one.
+fn resolve_amount(
+    row: &csv::StringRecord,
+    cols: &Columns,
+    currency: Currency,
+    decimal_comma: bool,
+) -> Result<i64, AmountProblem> {
+    let cell = |col: Option<usize>| -> Option<Result<i64, AmountProblem>> {
+        col.and_then(|i| row.get(i))
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| parse_amount_cell(v, currency, decimal_comma))
+    };
+    if let Some(amount) = cell(cols.amount) {
+        // A readable signed amount wins; an unreadable one falls through to
+        // a debit/credit pair when the source has one (unchanged behavior).
+        if amount.is_ok() || (cols.debit.is_none() && cols.credit.is_none()) {
+            return amount;
+        }
     }
-    let debit = cols
-        .debit
-        .and_then(|i| row.get(i))
-        .and_then(|v| parse_minor_units(v, exponent));
-    let credit = cols
-        .credit
-        .and_then(|i| row.get(i))
-        .and_then(|v| parse_minor_units(v, exponent));
+    let debit = cell(cols.debit);
+    let credit = cell(cols.credit);
+    if matches!(debit, Some(Err(AmountProblem::ForeignCurrency)))
+        || matches!(credit, Some(Err(AmountProblem::ForeignCurrency)))
+    {
+        return Err(AmountProblem::ForeignCurrency);
+    }
     match (debit, credit) {
-        (Some(d), _) if d != 0 => Some(-d.abs()),
-        (_, Some(c)) if c != 0 => Some(c.abs()),
-        _ => None,
+        (Some(Ok(d)), _) if d != 0 => Ok(-d.abs()),
+        (_, Some(Ok(c))) if c != 0 => Ok(c.abs()),
+        (Some(Ok(_)), _) | (_, Some(Ok(_))) => Ok(0),
+        _ => Err(AmountProblem::Unreadable),
     }
 }
 
@@ -298,187 +537,236 @@ impl ImporterPlugin for GenericCsv {
     }
 
     fn preview_columns(&self, input: &ParserInput) -> Vec<String> {
-        // Same reader config as `parse`, so the returned headers are exactly what a
-        // `ColumnMapping` is matched against (ADR 0045 slice 3, personal-cfo-4d8.24.1.2).
-        let mut reader = csv::ReaderBuilder::new()
-            .flexible(true)
-            .trim(csv::Trim::All)
-            .from_reader(input.bytes.as_slice());
-        reader
-            .headers()
-            .map(|h| h.iter().map(str::to_owned).collect())
-            .unwrap_or_default()
+        preview_columns_with_dialect(input, CsvDialect::default())
     }
 
     fn parse(&self, input: &ParserInput, hints: &ParserHints) -> Result<ParsedBatch, ParseError> {
-        let mut reader = csv::ReaderBuilder::new()
-            .flexible(true)
-            .trim(csv::Trim::All)
-            .from_reader(input.bytes.as_slice());
-        let headers = reader
-            .headers()
-            .map_err(|e| ParseError::Malformed(format!("unreadable CSV header: {e}")))?
-            .clone();
-
-        let cols = resolve_columns(&headers, hints.column_mapping.as_ref());
-        let Some(date_col) = cols.posted_date else {
-            return Err(ParseError::Unsupported(
-                "no date column found — map the columns explicitly".to_owned(),
-            ));
-        };
-        if cols.amount.is_none() && cols.debit.is_none() && cols.credit.is_none() {
-            return Err(ParseError::Unsupported(
-                "no amount / debit / credit column found".to_owned(),
-            ));
-        }
-
-        let currency = hints.default_currency.unwrap_or(Currency::Usd);
-        let mut records = Vec::new();
-        let mut warnings = Vec::new();
-        // Rows not staged. Each reason is fixed text: a skipped row's own
-        // values never travel into the import summary (personal-cfo-pxi.10).
-        let mut skipped = Vec::new();
-        let mut seen_accounts = BTreeSet::new();
-
-        for (idx, result) in reader.records().enumerate() {
-            let row = match result {
-                Ok(row) => row,
-                Err(_) => {
-                    skipped.push(warn(idx, "unreadable row"));
-                    continue;
-                }
-            };
-
-            // Mixed-currency rows are rejected, not silently converted.
-            if let Some(code) = cols
-                .currency
-                .and_then(|i| row.get(i))
-                .filter(|c| !c.is_empty())
-            {
-                if currency_from_code(code) != Some(currency) {
-                    skipped.push(warn(idx, "currency differs from the import currency"));
-                    continue;
-                }
-            }
-
-            let raw_date = row.get(date_col).unwrap_or("").to_owned();
-            let Some((posted_date, date_confidence_bps)) =
-                parse_date(&raw_date, hints.date_format.as_deref())
-            else {
-                skipped.push(warn(idx, "unparseable date"));
-                continue;
-            };
-            if date_confidence_bps < 7_000 {
-                warnings.push(warn(idx, "ambiguous date (assumed US M/D/Y)"));
-            }
-
-            let Some(amount_minor) = resolve_amount(&row, &cols, currency.exponent()) else {
-                skipped.push(warn(idx, "unparseable / missing amount"));
-                continue;
-            };
-            // A 0.00 row moves no money and the ledger refuses it; skip it with a
-            // reason rather than stage a row that can never commit (personal-cfo-pxi.9).
-            if amount_minor == 0 {
-                skipped.push(warn(idx, "zero amount"));
-                continue;
-            }
-
-            // The secondary transaction/authorization date (ADR 0045) — parsed leniently:
-            // a bad value is simply dropped (it never blocks the row or warns). Dropped
-            // when it equals the posted date so the detail view never shows the same date
-            // twice (mirrors the OFX importer's DTUSER != DTPOSTED filter).
-            let transaction_date = cols
-                .transaction_date
-                .and_then(|i| row.get(i))
-                .filter(|s| !s.trim().is_empty())
-                .and_then(|raw| parse_date(raw, hints.date_format.as_deref()))
-                .map(|(d, _)| d)
-                .filter(|&d| d != posted_date);
-            let trimmed = |i: Option<usize>| {
-                i.and_then(|i| row.get(i))
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-            };
-            let description = trimmed(cols.description);
-            // A group + category combine as "Group: Category"; a group alone
-            // (no matching category cell) is used bare rather than dropped
-            // (personal-cfo-gvidg) — still a real, if coarser, prefill.
-            let category = match (trimmed(cols.category_group), trimmed(cols.category)) {
-                (Some(group), Some(cat)) => Some(format!("{group}: {cat}")),
-                (Some(group), None) => Some(group),
-                (None, cat) => cat,
-            };
-            let account_label = trimmed(cols.account);
-            let normalized_merchant = description.as_ref().map(|d| d.to_ascii_lowercase());
-            let txn_fingerprint = format!(
-                "{posted_date}|{amount_minor}|{}",
-                normalized_merchant.as_deref().unwrap_or("")
-            );
-
-            let normalized = normalized_json(&headers, &row);
-            // Per-row source hash (row index keeps two identical rows distinct;
-            // whole-file re-import is caught by the batch file fingerprint).
-            let source_hash =
-                importer_core::content_fingerprint(format!("{idx}:{normalized}").as_bytes());
-
-            if let Some(label) = &account_label {
-                seen_accounts.insert(label.clone());
-            }
-            records.push(ParsedRecord {
-                external_id: None,
-                source_hash,
-                normalized_json: normalized,
-                parse_confidence_bps: Some(date_confidence_bps),
-                transaction: Some(ParsedTransaction {
-                    posted_date,
-                    transaction_date,
-                    raw_date,
-                    date_confidence_bps,
-                    amount: Money::new(amount_minor, currency),
-                    description,
-                    category,
-                    normalized_merchant,
-                    // The account column's raw label, when the source has one
-                    // (personal-cfo-gvidg) — doubles as the matching
-                    // `ParsedAccount::external_id` below, so a per-account
-                    // commit path (e.g. `stage_sync_batch`) can correlate the
-                    // two by the same string. `stage_parsed_batch` (today's
-                    // only file-import commit path) does not read this field
-                    // yet — see this crate's `SourcePreset` docs.
-                    external_account: account_label.clone(),
-                    txn_fingerprint,
-                }),
-                balance: None,
-            });
-        }
-
-        // One ParsedAccount per distinct account label observed (sorted, via
-        // BTreeSet — matching happens by label, so order carries no meaning)
-        // — never from a source with no account column (accounts stays
-        // empty, unchanged from before this field existed).
-        let accounts = seen_accounts
-            .into_iter()
-            .map(|label| ParsedAccount {
-                external_id: Some(label.clone()),
-                external_name: Some(label),
-                external_number_hash: None,
-                proposed_subtype: None,
-                currency: None,
-            })
-            .collect();
-
-        Ok(ParsedBatch {
-            source_format: "csv".to_owned(),
-            accounts,
-            records,
-            warnings,
-            skipped,
-        })
+        parse_with_dialect(input, hints, CsvDialect::default())
     }
 }
 
 register_importer!(GenericCsv);
+
+/// The reader every entry point shares, so the headers [`preview_columns_with_dialect`]
+/// returns are exactly what a `ColumnMapping` is matched against (ADR 0045
+/// slice 3, personal-cfo-4d8.24.1.2).
+fn reader(input: &ParserInput, dialect: CsvDialect) -> csv::Reader<&[u8]> {
+    csv::ReaderBuilder::new()
+        .delimiter(dialect.delimiter)
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(input.bytes.as_slice())
+}
+
+/// The source column headers of `input`, read with `dialect`.
+#[must_use]
+pub fn preview_columns_with_dialect(input: &ParserInput, dialect: CsvDialect) -> Vec<String> {
+    reader(input, dialect)
+        .headers()
+        .map(|h| h.iter().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Every non-empty value in the column named `column` (case-insensitive), in
+/// source order — for an importer that decides something about the whole file
+/// from one column before parsing it (personal-cfo-tulv: YNAB's date order).
+#[must_use]
+pub fn column_values(input: &ParserInput, dialect: CsvDialect, column: &str) -> Vec<String> {
+    let mut reader = reader(input, dialect);
+    let Some(index) = reader.headers().ok().and_then(|headers| {
+        headers
+            .iter()
+            .position(|h| h.trim().eq_ignore_ascii_case(column))
+    }) else {
+        return Vec::new();
+    };
+    reader
+        .records()
+        .filter_map(Result::ok)
+        .filter_map(|row| row.get(index).map(str::to_owned))
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+/// The generic CSV parse, for a file written in `dialect` (personal-cfo-tulv).
+/// [`GenericCsv`] is this with [`CsvDialect::default`].
+///
+/// # Errors
+/// [`ParseError::Malformed`] for an unreadable header;
+/// [`ParseError::Unsupported`] when no date or amount column resolves.
+#[allow(clippy::too_many_lines)]
+pub fn parse_with_dialect(
+    input: &ParserInput,
+    hints: &ParserHints,
+    dialect: CsvDialect,
+) -> Result<ParsedBatch, ParseError> {
+    let mut reader = reader(input, dialect);
+    let headers = reader
+        .headers()
+        .map_err(|e| ParseError::Malformed(format!("unreadable CSV header: {e}")))?
+        .clone();
+
+    let cols = resolve_columns(&headers, hints.column_mapping.as_ref());
+    let Some(date_col) = cols.posted_date else {
+        return Err(ParseError::Unsupported(
+            "no date column found — map the columns explicitly".to_owned(),
+        ));
+    };
+    if cols.amount.is_none() && cols.debit.is_none() && cols.credit.is_none() {
+        return Err(ParseError::Unsupported(
+            "no amount / debit / credit column found".to_owned(),
+        ));
+    }
+
+    let currency = hints.default_currency.unwrap_or(Currency::Usd);
+    let mut records = Vec::new();
+    let mut warnings = Vec::new();
+    // Rows not staged. Each reason is fixed text: a skipped row's own
+    // values never travel into the import summary (personal-cfo-pxi.10).
+    let mut skipped = Vec::new();
+    let mut seen_accounts = BTreeSet::new();
+
+    for (idx, result) in reader.records().enumerate() {
+        let row = match result {
+            Ok(row) => row,
+            Err(_) => {
+                skipped.push(warn(idx, "unreadable row"));
+                continue;
+            }
+        };
+
+        // Mixed-currency rows are rejected, not silently converted.
+        if let Some(code) = cols
+            .currency
+            .and_then(|i| row.get(i))
+            .filter(|c| !c.is_empty())
+        {
+            if currency_from_code(code) != Some(currency) {
+                skipped.push(warn(idx, "currency differs from the import currency"));
+                continue;
+            }
+        }
+
+        let raw_date = row.get(date_col).unwrap_or("").to_owned();
+        let Some((posted_date, date_confidence_bps)) =
+            parse_date(&raw_date, hints.date_format.as_deref())
+        else {
+            skipped.push(warn(idx, "unparseable date"));
+            continue;
+        };
+        if date_confidence_bps < 7_000 {
+            warnings.push(warn(idx, "ambiguous date (assumed US M/D/Y)"));
+        }
+
+        let amount_minor = match resolve_amount(&row, &cols, currency, dialect.decimal_comma) {
+            Ok(minor) => minor,
+            Err(AmountProblem::ForeignCurrency) => {
+                skipped.push(warn(idx, "currency differs from the import currency"));
+                continue;
+            }
+            Err(AmountProblem::Unreadable) => {
+                skipped.push(warn(idx, "unparseable / missing amount"));
+                continue;
+            }
+        };
+        // A 0.00 row moves no money and the ledger refuses it; skip it with a
+        // reason rather than stage a row that can never commit (personal-cfo-pxi.9).
+        if amount_minor == 0 {
+            skipped.push(warn(idx, "zero amount"));
+            continue;
+        }
+
+        // The secondary transaction/authorization date (ADR 0045) — parsed leniently:
+        // a bad value is simply dropped (it never blocks the row or warns). Dropped
+        // when it equals the posted date so the detail view never shows the same date
+        // twice (mirrors the OFX importer's DTUSER != DTPOSTED filter).
+        let transaction_date = cols
+            .transaction_date
+            .and_then(|i| row.get(i))
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|raw| parse_date(raw, hints.date_format.as_deref()))
+            .map(|(d, _)| d)
+            .filter(|&d| d != posted_date);
+        let trimmed = |i: Option<usize>| {
+            i.and_then(|i| row.get(i))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        let description = trimmed(cols.description);
+        // A group + category combine as "Group: Category"; a group alone
+        // (no matching category cell) is used bare rather than dropped
+        // (personal-cfo-gvidg) — still a real, if coarser, prefill.
+        let category = match (trimmed(cols.category_group), trimmed(cols.category)) {
+            (Some(group), Some(cat)) => Some(format!("{group}: {cat}")),
+            (Some(group), None) => Some(group),
+            (None, cat) => cat,
+        };
+        let account_label = trimmed(cols.account);
+        let normalized_merchant = description.as_ref().map(|d| d.to_ascii_lowercase());
+        let txn_fingerprint = format!(
+            "{posted_date}|{amount_minor}|{}",
+            normalized_merchant.as_deref().unwrap_or("")
+        );
+
+        let normalized = normalized_json(&headers, &row);
+        // Per-row source hash (row index keeps two identical rows distinct;
+        // whole-file re-import is caught by the batch file fingerprint).
+        let source_hash =
+            importer_core::content_fingerprint(format!("{idx}:{normalized}").as_bytes());
+
+        if let Some(label) = &account_label {
+            seen_accounts.insert(label.clone());
+        }
+        records.push(ParsedRecord {
+            external_id: None,
+            source_hash,
+            normalized_json: normalized,
+            parse_confidence_bps: Some(date_confidence_bps),
+            transaction: Some(ParsedTransaction {
+                posted_date,
+                transaction_date,
+                raw_date,
+                date_confidence_bps,
+                amount: Money::new(amount_minor, currency),
+                description,
+                category,
+                normalized_merchant,
+                // The account column's raw label, when the source has one
+                // (personal-cfo-gvidg) — doubles as the matching
+                // `ParsedAccount::external_id` below; a routed file import
+                // (`stage_parsed_batch_routed`, personal-cfo-tulv) sends the
+                // row to the account the user mapped this label to.
+                external_account: account_label.clone(),
+                txn_fingerprint,
+            }),
+            balance: None,
+        });
+    }
+
+    // One ParsedAccount per distinct account label observed (sorted, via
+    // BTreeSet — matching happens by label, so order carries no meaning)
+    // — never from a source with no account column (accounts stays
+    // empty, unchanged from before this field existed).
+    let accounts = seen_accounts
+        .into_iter()
+        .map(|label| ParsedAccount {
+            external_id: Some(label.clone()),
+            external_name: Some(label),
+            external_number_hash: None,
+            proposed_subtype: None,
+            currency: None,
+        })
+        .collect();
+
+    Ok(ParsedBatch {
+        source_format: "csv".to_owned(),
+        accounts,
+        records,
+        warnings,
+        skipped,
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -486,18 +774,285 @@ mod tests {
 
     #[test]
     fn parse_minor_units_handles_money_shapes() {
-        assert_eq!(parse_minor_units("12.99", 2), Some(1299));
-        assert_eq!(parse_minor_units("-12.99", 2), Some(-1299));
-        assert_eq!(parse_minor_units("(42.00)", 2), Some(-4200));
-        assert_eq!(parse_minor_units("$1,234.56", 2), Some(123_456));
-        assert_eq!(parse_minor_units("1000", 2), Some(100_000));
-        assert_eq!(parse_minor_units(".50", 2), Some(50));
-        assert_eq!(parse_minor_units("  $ 1,000.00 ", 2), Some(100_000));
-        assert_eq!(parse_minor_units("", 2), None);
-        assert_eq!(parse_minor_units("n/a", 2), None);
-        assert_eq!(parse_minor_units("1.2.3", 2), None);
+        let us = |raw| parse_minor_units(raw, 2, false);
+        assert_eq!(us("12.99"), Some(1299));
+        assert_eq!(us("-12.99"), Some(-1299));
+        assert_eq!(us("(42.00)"), Some(-4200));
+        assert_eq!(us("$1,234.56"), Some(123_456));
+        assert_eq!(us("1000"), Some(100_000));
+        assert_eq!(us(".50"), Some(50));
+        assert_eq!(us("  $ 1,000.00 "), Some(100_000));
+        assert_eq!(us("$1,234,567.89"), Some(123_456_789));
+        assert_eq!(us("-$12.00"), Some(-1200));
+        assert_eq!(us("$-12.00"), Some(-1200));
+        assert_eq!(us(""), None);
+        assert_eq!(us("n/a"), None);
+        assert_eq!(us("1.2.3"), None);
         // Exponent-0 currency would scale differently (defensive).
-        assert_eq!(parse_minor_units("1500", 0), Some(1500));
+        assert_eq!(parse_minor_units("1500", 0, false), Some(1500));
+    }
+
+    #[test]
+    fn a_separator_in_an_impossible_place_is_refused_not_rescaled() {
+        // personal-cfo-tulv: before this, "12,50" read US-style was 1250.00 —
+        // a decimal-comma value silently multiplied by 100.
+        let us = |raw| parse_minor_units(raw, 2, false);
+        assert_eq!(us("12,50"), None);
+        assert_eq!(us("1.234,56"), None);
+        assert_eq!(us("1,23,456.00"), None);
+        assert_eq!(us(",500.00"), None);
+        assert_eq!(us("1234,567.00"), None);
+        // A genuine US grouping still reads.
+        assert_eq!(us("1,234"), Some(123_400));
+    }
+
+    #[test]
+    fn decimal_comma_reads_european_amounts() {
+        let eu = |raw| parse_minor_units(raw, 2, true);
+        assert_eq!(eu("1.234,56"), Some(123_456));
+        assert_eq!(eu("1.234,56€"), Some(123_456));
+        assert_eq!(eu("-84,23€"), Some(-8423));
+        assert_eq!(eu("€0,50"), Some(50));
+        assert_eq!(eu("12"), Some(1200));
+        assert_eq!(eu("1 234,56"), Some(123_456));
+        // A US-style value in a decimal-comma file is refused, not misread.
+        assert_eq!(eu("1,234.56"), None);
+        assert_eq!(eu("12.50"), None);
+    }
+
+    #[test]
+    fn a_foreign_currency_sign_is_refused_never_relabeled() {
+        assert_eq!(parse_amount_cell("$12.00", Currency::Usd, false), Ok(1200));
+        assert_eq!(
+            parse_amount_cell("US$12.00", Currency::Usd, false),
+            Ok(1200)
+        );
+        assert_eq!(parse_amount_cell("12,00€", Currency::Eur, true), Ok(1200));
+        for (raw, currency) in [
+            ("€12.00", Currency::Usd),
+            ("C$12.00", Currency::Usd),
+            ("£12.00", Currency::Usd),
+            ("$12,00", Currency::Eur),
+        ] {
+            assert_eq!(
+                parse_amount_cell(raw, currency, currency == Currency::Eur),
+                Err(AmountProblem::ForeignCurrency),
+                "{raw} as {currency:?}"
+            );
+        }
+        // Letters alone are not a currency sign (a bank's CR/DR suffix).
+        assert_eq!(
+            parse_amount_cell("12.00 CR", Currency::Usd, false),
+            Ok(1200)
+        );
+        // A debit/credit indicator beside a sign is not part of the currency
+        // (04-review F1, PR #70): these imported before personal-cfo-tulv.
+        for (raw, minor) in [
+            ("$1,234.56 CR", 123_456),
+            ("$1,234.56 DR", 123_456),
+            ("$12.00CR", 1200),
+            ("$12.00 cr", 1200),
+            ("CR $12.00", 1200),
+        ] {
+            assert_eq!(
+                parse_amount_cell(raw, Currency::Usd, false),
+                Ok(minor),
+                "{raw} must stay a dollar amount"
+            );
+        }
+        // A letter run touching the sign still names its own currency.
+        assert_eq!(
+            parse_amount_cell("C$12.00 CR", Currency::Usd, false),
+            Err(AmountProblem::ForeignCurrency)
+        );
+        // The import currency's own code is neutral wherever it sits (04-review
+        // F2, PR #70); another code beside a sign is that currency.
+        for raw in [
+            "$12.00 USD",
+            "$12.00 (USD)",
+            "USD$12.00",
+            "USD $12.00",
+            "$12.00 usd",
+            "$12.00 USD CR",
+            "$12.00 POS",
+        ] {
+            assert_eq!(
+                parse_amount_cell(raw, Currency::Usd, false),
+                Ok(1200),
+                "{raw} must stay a dollar amount"
+            );
+        }
+        assert_eq!(
+            parse_amount_cell("12,00 € EUR", Currency::Eur, true),
+            Ok(1200)
+        );
+        assert_eq!(
+            parse_amount_cell("EUR€12,00", Currency::Eur, true),
+            Ok(1200)
+        );
+        for (raw, currency) in [
+            ("$12.00 CAD", Currency::Usd),
+            ("CAD $12.00", Currency::Usd),
+            ("C$12.00", Currency::Usd),
+            ("A$12.00 USD", Currency::Usd),
+            ("€12,00 USD", Currency::Eur),
+            ("€12,00 GBP", Currency::Eur),
+        ] {
+            assert_eq!(
+                parse_amount_cell(raw, currency, currency == Currency::Eur),
+                Err(AmountProblem::ForeignCurrency),
+                "{raw} as {currency:?}"
+            );
+        }
+        // Letters alone, without a sign, are judged by nothing — as on main.
+        assert_eq!(
+            parse_amount_cell("12.00 CAD", Currency::Usd, false),
+            Ok(1200)
+        );
+    }
+
+    #[test]
+    fn infer_date_format_decides_from_the_whole_column() {
+        let col = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            infer_date_format(&col(&["05/06/2026", "13/06/2026"])),
+            Some("%d/%m/%Y")
+        );
+        assert_eq!(
+            infer_date_format(&col(&["05/06/2026", "06/13/2026"])),
+            Some("%m/%d/%Y")
+        );
+        assert_eq!(
+            infer_date_format(&col(&["2026-06-05", "2026-06-13"])),
+            Some("%Y-%m-%d")
+        );
+        assert_eq!(
+            infer_date_format(&col(&["05.06.2026", "13.06.2026"])),
+            Some("%d.%m.%Y")
+        );
+        // Undecided, conflicting, or mixed shapes keep the caller's default.
+        assert_eq!(infer_date_format(&col(&["05/06/2026", "01/02/2026"])), None);
+        assert_eq!(infer_date_format(&col(&["13/06/2026", "06/13/2026"])), None);
+        assert_eq!(infer_date_format(&col(&["13/06/2026", "2026-06-13"])), None);
+        // A malformed cell is ignored, not allowed to undecide the file.
+        assert_eq!(
+            infer_date_format(&col(&["13/06/2026", "June 9th", "1/2"])),
+            Some("%d/%m/%Y")
+        );
+        assert_eq!(infer_date_format(&col(&["bogus"])), None);
+        assert_eq!(infer_date_format(&[]), None);
+    }
+
+    #[test]
+    fn a_tab_delimited_decimal_comma_file_parses_with_its_dialect() {
+        let tsv = "Date\tPayee\tOutflow\tInflow\n\
+                   13/06/2026\tBäckerei\t1.234,56€\t0,00€\n\
+                   14/06/2026\tGehalt\t0,00€\t2.500,00€\n";
+        let hints = ParserHints {
+            column_mapping: Some(ColumnMapping {
+                date: Some("Date".to_owned()),
+                description: Some("Payee".to_owned()),
+                debit: Some("Outflow".to_owned()),
+                credit: Some("Inflow".to_owned()),
+                ..ColumnMapping::default()
+            }),
+            date_format: Some("%d/%m/%Y".to_owned()),
+            default_currency: Some(Currency::Eur),
+            institution: None,
+        };
+        let dialect = CsvDialect {
+            delimiter: b'\t',
+            decimal_comma: true,
+        };
+        let batch = parse_with_dialect(&input(tsv), &hints, dialect).unwrap();
+        assert!(batch.skipped.is_empty(), "{:?}", batch.skipped);
+        let amounts: Vec<_> = batch
+            .records
+            .iter()
+            .map(|r| r.transaction.as_ref().unwrap().amount)
+            .collect();
+        assert_eq!(
+            amounts,
+            vec![
+                Money::new(-123_456, Currency::Eur),
+                Money::new(250_000, Currency::Eur)
+            ]
+        );
+        assert_eq!(
+            preview_columns_with_dialect(&input(tsv), dialect),
+            vec!["Date", "Payee", "Outflow", "Inflow"]
+        );
+        assert_eq!(column_values(&input(tsv), dialect, "date").len(), 2);
+    }
+
+    #[test]
+    fn a_row_whose_debit_and_credit_are_both_zero_is_a_zero_amount() {
+        // YNAB writes "$0.00" on the unused side; a row with both sides zero
+        // (a zero starting balance) is a zero amount, not an unreadable one.
+        let csv = "Date,Payee,Outflow,Inflow\n2026-06-01,Starting Balance,$0.00,$0.00\n2026-06-02,Store,$5.00,$0.00\n";
+        let hints = ParserHints {
+            column_mapping: Some(ColumnMapping {
+                date: Some("Date".to_owned()),
+                description: Some("Payee".to_owned()),
+                debit: Some("Outflow".to_owned()),
+                credit: Some("Inflow".to_owned()),
+                ..ColumnMapping::default()
+            }),
+            ..ParserHints::default()
+        };
+        let batch = GenericCsv.parse(&input(csv), &hints).unwrap();
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.skipped[0].message, "zero amount");
+        assert_eq!(
+            batch.records[0].transaction.as_ref().unwrap().amount,
+            Money::new(-500, Currency::Usd)
+        );
+    }
+
+    #[test]
+    fn a_bank_file_s_cr_dr_suffix_still_imports() {
+        // 04-review F1 (PR #70): a generic bank CSV writing a debit/credit
+        // indicator after a dollar amount imported on main and must still.
+        let csv = "Date,Description,Amount\n\
+                   2026-06-20,Deposit,\"$1,234.56 CR\"\n\
+                   2026-06-21,Payment,\"$1,234.56 DR\"\n\
+                   2026-06-22,Refund,$12.00CR\n\
+                   2026-06-23,Abroad,C$12.00\n\
+                   2026-06-24,Coded,$12.00 USD\n\
+                   2026-06-25,Bracketed,$12.00 (USD)\n\
+                   2026-06-26,Prefixed,USD$12.00\n\
+                   2026-06-27,Canadian,$12.00 CAD\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 6, "{:?}", batch.skipped);
+        let skipped: Vec<_> = batch
+            .skipped
+            .iter()
+            .map(|w| (w.row, w.message.as_str()))
+            .collect();
+        assert_eq!(
+            skipped,
+            vec![
+                (Some(3), "currency differs from the import currency"),
+                (Some(7), "currency differs from the import currency"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_in_another_currency_sign_is_skipped_with_the_currency_reason() {
+        let csv = "Date,Description,Amount\n2026-06-20,Cafe,-$3.00\n2026-06-21,Hotel,-€80.00\n";
+        let batch = GenericCsv
+            .parse(&input(csv), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].row, Some(1));
+        assert_eq!(
+            batch.skipped[0].message,
+            "currency differs from the import currency"
+        );
     }
 
     #[test]

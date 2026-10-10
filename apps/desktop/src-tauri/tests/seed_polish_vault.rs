@@ -780,7 +780,8 @@ fn seed_demo_vault(root: &Path, anchor: NaiveDate) -> SeededVault {
         ImportBatchInput {
             data: csv.into_bytes(),
             filename: Some("saltmarsh-checking.csv".to_owned()),
-            target_account_id: checking.clone(),
+            target_account_id: Some(checking.clone()),
+            account_map: None,
             plugin_id: Some("generic-csv".to_owned()),
             preset_id: None,
             column_mapping: None,

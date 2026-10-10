@@ -1866,7 +1866,8 @@ fn import_batch_imports_a_csv_through_the_pipeline() {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("statement.csv".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None, // auto-detect → GenericCsv
             preset_id: None,
             column_mapping: None,
@@ -1905,7 +1906,8 @@ fn import_batch_reports_a_skipped_row_with_its_reason() {
             ImportBatchInput {
                 data: csv.as_bytes().to_vec(),
                 filename: Some("statement.csv".to_owned()),
-                target_account_id: account_id.clone(),
+                target_account_id: Some(account_id.clone()),
+                account_map: None,
                 plugin_id: None,
                 preset_id: None,
                 column_mapping: None,
@@ -1971,7 +1973,8 @@ fn money_inbox_surfaces_a_flagged_import_through_ipc() {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("statement.csv".to_owned()),
-            target_account_id: account_id,
+            target_account_id: Some(account_id),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,
@@ -2020,7 +2023,8 @@ fn import_with_one_flagged(state: &AppState) -> (String, String) {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("statement.csv".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,
@@ -2457,7 +2461,8 @@ fn import_batch_imports_an_ofx_file_through_the_pipeline() {
         ImportBatchInput {
             data: ofx.as_bytes().to_vec(),
             filename: Some("statement.ofx".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None, // auto-detect → the OFX importer
             preset_id: None,
             column_mapping: None,
@@ -2514,7 +2519,8 @@ fn identical_fingerprints_on_different_accounts_are_not_duplicates() {
             ImportBatchInput {
                 data: ofx(pad).into_bytes(),
                 filename: Some("statement.ofx".to_owned()),
-                target_account_id: account.to_owned(),
+                target_account_id: Some(account.to_owned()),
+                account_map: None,
                 plugin_id: None,
                 preset_id: None,
                 column_mapping: None,
@@ -3231,7 +3237,8 @@ fn export_csv_round_trips_through_the_csv_importer() {
         ImportBatchInput {
             data: csv_bytes,
             filename: Some("export.csv".to_owned()),
-            target_account_id: account_b,
+            target_account_id: Some(account_b),
+            account_map: None,
             plugin_id: Some("generic-csv".to_owned()),
             preset_id: None,
             column_mapping: Some(ColumnMappingDto {
@@ -3306,7 +3313,8 @@ fn recurring_deposits_surface_as_income_candidates() {
         ImportBatchInput {
             data: ofx.as_bytes().to_vec(),
             filename: Some("statement.ofx".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,

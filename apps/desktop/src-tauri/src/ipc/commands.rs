@@ -11,19 +11,19 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use finance_kernel::{
-    all_presets, detect_best, plugin_by_id, preset_by_id, ActorType, ApplyScenario, ArchiveAccount,
-    ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill, AttachSourceRecord, CategoryId,
-    Clock, CommandEnvelope, CommandMeta, CommitStaged, ConfirmObligationEarly,
-    ConvertUnexplainedToTransaction, CreateAccount, CreateCategory, CreateIncomeSource,
-    CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag, DeleteIncomeSource,
-    DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem, DismissRecurringSuggestion,
-    Kernel, MarkReviewed, Money, MoveCategory, NewScenario, ParserHints, ParserInput, ParserLimits,
-    RecategorizeTransaction, RecurringEventId, RecurringTransferId, ReinstateAccount,
-    ReinstateCategory, RestoreIncomeSource, RestoreRecurringBill, RevertScenarioApply,
-    ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype, SetBillAutopay,
-    SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged,
-    SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock, TagId,
-    TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
+    all_presets, detect_best, plugin_by_id, preset_by_id, run_bounded, AccountId, ActorType,
+    ApplyScenario, ArchiveAccount, ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill,
+    AttachSourceRecord, CategoryId, Clock, CommandEnvelope, CommandMeta, CommitStaged,
+    ConfirmObligationEarly, ConvertUnexplainedToTransaction, CreateAccount, CreateCategory,
+    CreateIncomeSource, CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag,
+    DeleteIncomeSource, DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem,
+    DismissRecurringSuggestion, Kernel, MarkReviewed, Money, MoveCategory, NewScenario,
+    ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, RecurringEventId,
+    RecurringTransferId, ReinstateAccount, ReinstateCategory, RestoreIncomeSource,
+    RestoreRecurringBill, RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote,
+    SetAccountSubtype, SetBillAutopay, SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits,
+    SetTags, SkipStaged, SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock,
+    TagId, TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
     UpdateIncomeSource, UpdateRecurringBill, VaultController, VaultState, VoidTransaction,
     COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
@@ -1533,6 +1533,12 @@ pub fn update_batch_state(
     update_batch_state_impl(state.inner(), input)
 }
 
+/// Where `import_batch` sends a file's rows (personal-cfo-tulv).
+enum ImportTarget {
+    Single(AccountId),
+    Routed(std::collections::BTreeMap<String, uuid::Uuid>),
+}
+
 /// Import a file through the ingestion pipeline (personal-cfo-cu8): resolve the
 /// importer plugin (by `plugin_id`, else auto-detect from the bytes), parse it in
 /// the bounded host, then stage + dedupe + commit the clean rows into
@@ -1543,7 +1549,26 @@ pub fn import_batch_impl(
     input: ImportBatchInput,
 ) -> Result<BatchResultDto, IpcError> {
     with_kernel(state, |kernel| {
-        let target_account = parse_account_id(&input.target_account_id)?;
+        let target = match (&input.target_account_id, &input.account_map) {
+            (Some(id), None) => ImportTarget::Single(parse_account_id(id)?),
+            (None, Some(entries)) => {
+                let mut map = std::collections::BTreeMap::new();
+                for entry in entries {
+                    if let Some(id) = &entry.account_id {
+                        map.insert(
+                            entry.source_account.clone(),
+                            parse_account_id(id)?.as_uuid(),
+                        );
+                    }
+                }
+                ImportTarget::Routed(map)
+            }
+            _ => {
+                return Err(IpcError::Validation(
+                    "give exactly one of target_account_id and account_map".to_owned(),
+                ))
+            }
+        };
         let mut parser_input = ParserInput::new(input.data);
         if let Some(name) = input.filename {
             parser_input = parser_input.with_filename(name);
@@ -1556,14 +1581,14 @@ pub fn import_batch_impl(
         // column_mapping/date_format/default_currency, when given, override
         // the matching field — the user can always correct a preset's guess.
         // No preset_id behaves exactly as before this field existed.
-        let preset_hints = match input.preset_id.as_deref() {
+        let preset = match input.preset_id.as_deref() {
             Some(id) => Some(
                 preset_by_id(id)
-                    .ok_or_else(|| IpcError::Validation(format!("no source preset {id:?}")))?
-                    .hints(),
+                    .ok_or_else(|| IpcError::Validation(format!("no source preset {id:?}")))?,
             ),
             None => None,
         };
+        let preset_hints = preset.map(|p| p.hints());
         let hints = ParserHints {
             column_mapping: input
                 .column_mapping
@@ -1576,21 +1601,29 @@ pub fn import_batch_impl(
                 .or_else(|| preset_hints.as_ref().and_then(|h| h.default_currency)),
             institution: preset_hints.as_ref().and_then(|h| h.institution.clone()),
         };
-        let plugin = match input.plugin_id.as_deref() {
+        // An explicit plugin wins; else the preset's own importer, when it
+        // has one (personal-cfo-tulv); else auto-detect.
+        let plugin_id = input
+            .plugin_id
+            .as_deref()
+            .or_else(|| preset.and_then(|p| p.importer_id()));
+        let plugin = match plugin_id {
             Some(id) => plugin_by_id(id)
                 .ok_or_else(|| IpcError::Validation(format!("no importer plugin {id:?}")))?,
             None => detect_best(&parser_input).ok_or_else(|| {
                 IpcError::Validation("no importer recognized this file".to_owned())
             })?,
         };
-        let result = kernel.ingest_batch(
-            plugin,
-            parser_input,
-            &hints,
-            target_account,
-            &ParserLimits::default(),
-            &user_meta(&input.idempotency_key),
-        )?;
+        let limits = ParserLimits::default();
+        let meta = user_meta(&input.idempotency_key);
+        let result = match &target {
+            ImportTarget::Single(account) => {
+                kernel.ingest_batch(plugin, parser_input, &hints, *account, &limits, &meta)?
+            }
+            ImportTarget::Routed(map) => {
+                kernel.ingest_batch_routed(plugin, parser_input, &hints, map, &limits, &meta)?
+            }
+        };
         Ok(BatchResultDto::from(result))
     })
 }
@@ -1643,6 +1676,80 @@ pub fn import_preview_columns(
     import_preview_columns_impl(state.inner(), data, filename, plugin_id)
 }
 
+/// The distinct source account labels in a file (personal-cfo-tulv), so the
+/// import dialog can ask where each account's rows go before importing. Parses
+/// the file in the bounded host with the same plugin and hints `import_batch`
+/// would use for `preset_id` (an explicit `plugin_id` wins), then returns the
+/// labels the parse saw — sorted, never the rows. Empty for a file with no
+/// account column. Nothing is persisted.
+pub fn import_preview_accounts_impl(
+    state: &AppState,
+    data: Vec<u8>,
+    filename: Option<String>,
+    plugin_id: Option<String>,
+    preset_id: Option<String>,
+    column_mapping: Option<ColumnMappingDto>,
+) -> Result<Vec<String>, IpcError> {
+    with_kernel(state, |_kernel| {
+        let mut parser_input = ParserInput::new(data);
+        if let Some(name) = filename {
+            parser_input = parser_input.with_filename(name);
+        }
+        let preset = match preset_id.as_deref() {
+            Some(id) => Some(
+                preset_by_id(id)
+                    .ok_or_else(|| IpcError::Validation(format!("no source preset {id:?}")))?,
+            ),
+            None => None,
+        };
+        let mut hints = preset.map(|p| p.hints()).unwrap_or_default();
+        if let Some(mapping) = column_mapping {
+            hints.column_mapping = Some(mapping.into_mapping());
+        }
+        let plugin = match plugin_id
+            .as_deref()
+            .or_else(|| preset.and_then(|p| p.importer_id()))
+        {
+            Some(id) => plugin_by_id(id)
+                .ok_or_else(|| IpcError::Validation(format!("no importer plugin {id:?}")))?,
+            None => match detect_best(&parser_input) {
+                Some(plugin) => plugin,
+                None => return Ok(Vec::new()),
+            },
+        };
+        let (parsed, _report) = run_bounded(plugin, parser_input, hints, &ParserLimits::default());
+        Ok(parsed
+            .map(|batch| {
+                batch
+                    .accounts
+                    .into_iter()
+                    .filter_map(|account| account.external_id)
+                    .collect()
+            })
+            .unwrap_or_default())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn import_preview_accounts(
+    state: tauri::State<'_, AppState>,
+    data: Vec<u8>,
+    filename: Option<String>,
+    plugin_id: Option<String>,
+    preset_id: Option<String>,
+    column_mapping: Option<ColumnMappingDto>,
+) -> Result<Vec<String>, IpcError> {
+    import_preview_accounts_impl(
+        state.inner(),
+        data,
+        filename,
+        plugin_id,
+        preset_id,
+        column_mapping,
+    )
+}
+
 /// Every registered source-app preset (personal-cfo-gvidg), for the "Import
 /// from <app>" picker. No vault access, no state needed — the registry is
 /// compile-time and process-global — but takes `&AppState` for the same
@@ -1661,6 +1768,7 @@ pub fn list_source_presets_impl(_state: &AppState) -> Vec<SourcePresetDto> {
                 ),
                 help_slug: preset.help_slug().to_owned(),
                 help_published: preset.help_published(),
+                importer_id: preset.importer_id().map(str::to_owned),
             }
         })
         .collect()

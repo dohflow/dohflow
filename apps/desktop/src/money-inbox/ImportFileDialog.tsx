@@ -13,6 +13,7 @@ import type {
   AccountViewDto,
   BatchResultDto,
   ColumnMappingDto,
+  ImportAccountMapEntryDto,
   SourcePresetDto,
 } from "@/bindings";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import { mintIdempotencyKey } from "@/lib/idempotency";
 import { describeIpcError } from "@/vault/useVault";
 import { ExportGuidance } from "@/imports/ExportGuidance";
 import { migrateGuideUrl, openExternal } from "@/lib/openExternal";
+import { NewMappedAccountDialog } from "@/settings/NewMappedAccountDialog";
 
 import { useImportBatch } from "./useImportBatch";
 
@@ -107,6 +109,32 @@ function presetFullyMatches(preset: SourcePresetDto, headers: string[]): boolean
   );
 }
 
+/// An account the user can import into: the vault's accounts, plus any just
+/// created from the mapping step until the account list refetch includes them.
+type AccountChoice = { id: string; name: string; currency: string };
+
+/// Sentinel select values in the per-account mapping (personal-cfo-tulv) —
+/// never a real account id.
+const DONT_IMPORT = "";
+const CREATE_NEW = "__create_new__";
+
+/// The account a source account label pre-selects: a DohFlow account with
+/// the same name (case-insensitive), else "Don't import" — the user opts each
+/// account in rather than having rows land somewhere by guess.
+function initialAccountMap(
+  sourceAccounts: string[],
+  accounts: AccountChoice[],
+): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const label of sourceAccounts) {
+    const match = accounts.find(
+      (a) => a.name.trim().toLowerCase() === label.trim().toLowerCase(),
+    );
+    map[label] = match?.id ?? DONT_IMPORT;
+  }
+  return map;
+}
+
 /// Human-readable outcome of an import (ADR 0014 auto-commit-clean): a whole-file
 /// re-upload is skipped; otherwise N commit and M (if any) are flagged for triage.
 /// When merchant memory auto-categorized some of the new rows (ADR 0030 addendum,
@@ -127,8 +155,10 @@ function summaryMessage(batch: BatchResultDto): string {
       batch.flagged === 1 ? "needs" : "need"
     } review in the Money Inbox.${autoCategorized}`;
   }
-  // "All clean" would contradict a skipped-rows note shown beside it.
-  const clean = batch.skipped_rows > 0 ? "" : " All clean — nothing to review.";
+  // "All clean" would contradict a skipped-rows note or import notes shown beside it.
+  const hasNotes =
+    batch.skipped_rows > 0 || batch.skipped_unmapped > 0 || fileNotes(batch).length > 0;
+  const clean = hasNotes ? "" : " All clean — nothing to review.";
   return `${committed}${clean}${autoCategorized}`;
 }
 
@@ -164,6 +194,41 @@ function SkippedRowsNote({ batch }: { batch: BatchResultDto }) {
   );
 }
 
+/// The parser's whole-file notes on what WAS imported (personal-cfo-tulv: a
+/// YNAB file's transfers, split lines and uncleared rows, by count). A note
+/// about one row (an ambiguous date) is not listed here — the summary has
+/// never shown those (pxi.10).
+function fileNotes(batch: BatchResultDto) {
+  return batch.warnings.filter((warning) => !warning.skipped && warning.row === null);
+}
+
+/// Notes on what WAS imported: rows left out because their account was set to
+/// "Don't import", and the file's own notes. Fixed text and counts — never a
+/// row's own values.
+function ImportNotes({ batch }: { batch: BatchResultDto }) {
+  const notes = fileNotes(batch);
+  if (notes.length === 0 && batch.skipped_unmapped === 0) {
+    return null;
+  }
+  return (
+    <ul
+      aria-label="Import notes"
+      className="flex list-disc flex-col gap-1 rounded-md bg-muted px-3 py-2 pl-7 text-xs text-muted-foreground"
+    >
+      {batch.skipped_unmapped > 0 && (
+        <li>
+          {batch.skipped_unmapped} {batch.skipped_unmapped === 1 ? "row" : "rows"} from
+          accounts you chose not to import {batch.skipped_unmapped === 1 ? "was" : "were"}{" "}
+          left out.
+        </li>
+      )}
+      {notes.map((note, index) => (
+        <li key={index}>{note.message}</li>
+      ))}
+    </ul>
+  );
+}
+
 /// Import a statement file into the ledger (personal-cfo-zl8f): choose a target
 /// account + a file, hand the bytes to the pipeline, and show the outcome. The
 /// flagged rows land in the Money Inbox behind this dialog (ADR 0014 §2/§7).
@@ -174,7 +239,8 @@ export function ImportFileDialog({
   accounts: AccountViewDto[];
   onClose: () => void;
 }) {
-  const { importFile, previewColumns, listPresets } = useImportBatch();
+  const { importFile, previewColumns, previewAccounts, listPresets, createAccount } =
+    useImportBatch();
   const fileInput = useRef<HTMLInputElement>(null);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const [file, setFile] = useState<File | null>(null);
@@ -189,6 +255,18 @@ export function ImportFileDialog({
   const [presets, setPresets] = useState<SourcePresetDto[]>([]);
   const [presetId, setPresetId] = useState("");
   const selectedPreset = presets.find((p) => p.id === presetId) ?? null;
+  // A file spanning several accounts (personal-cfo-tulv): its source account
+  // labels, and where each one's rows go. With fewer than two, the dialog
+  // imports everything into the one "Import into" account, as before.
+  const [sourceAccounts, setSourceAccounts] = useState<string[]>([]);
+  const [accountMap, setAccountMap] = useState<Record<string, string>>({});
+  const [creatingFor, setCreatingFor] = useState<string | null>(null);
+  const [created, setCreated] = useState<AccountChoice[]>([]);
+  const knownAccounts: AccountChoice[] = [
+    ...accounts.map((a) => ({ id: a.id, name: a.name, currency: a.balance.currency })),
+    ...created.filter((c) => !accounts.some((a) => a.id === c.id)),
+  ];
+  const multiAccount = sourceAccounts.length >= 2;
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -224,6 +302,28 @@ export function ImportFileDialog({
     setShowMapping(!presetFullyMatches(preset, headers));
   }
 
+  /// Read the file's headers and source accounts the way the import will
+  /// (the preset's own importer, personal-cfo-tulv), then pre-fill the column
+  /// mapping from the preset and the account map by name.
+  async function readFile(
+    picked: File,
+    preset: SourcePresetDto | null,
+    userMapping: ColumnMappingDto | null,
+  ) {
+    const bytes = Array.from(new Uint8Array(await picked.arrayBuffer()));
+    // Seed the (optional) column-mapping UI with the file's real headers. Only CSV
+    // has mappable columns; OFX/an unrecognized file returns none (auto-detect only).
+    const headers = await previewColumns(bytes, picked.name, preset?.importer_id ?? null);
+    setColumns(headers);
+    if (!userMapping) applyPreset(preset, headers);
+    const labels =
+      headers.length > 0
+        ? await previewAccounts(bytes, picked.name, preset?.id ?? null, userMapping)
+        : [];
+    setSourceAccounts(labels);
+    setAccountMap(initialAccountMap(labels, knownAccounts));
+  }
+
   async function onPickFile(event: ChangeEvent<HTMLInputElement>) {
     const picked = event.target.files?.[0] ?? null;
     setFile(picked);
@@ -231,36 +331,89 @@ export function ImportFileDialog({
     setColumns([]);
     setMapping({});
     setShowMapping(false);
-    // Seed the (optional) column-mapping UI with the file's real headers. Only CSV
-    // has mappable columns; OFX/an unrecognized file returns none (auto-detect only).
-    if (picked) {
-      const bytes = Array.from(new Uint8Array(await picked.arrayBuffer()));
-      const headers = await previewColumns(bytes, picked.name);
-      setColumns(headers);
-      applyPreset(selectedPreset, headers);
-    }
+    setSourceAccounts([]);
+    setAccountMap({});
+    if (picked) await readFile(picked, selectedPreset, null);
   }
 
   function onPickPreset(event: ChangeEvent<HTMLSelectElement>) {
     const id = event.target.value;
     setPresetId(id);
-    applyPreset(presets.find((p) => p.id === id) ?? null, columns);
+    const preset = presets.find((p) => p.id === id) ?? null;
+    if (file) {
+      void readFile(file, preset, null);
+    } else {
+      applyPreset(preset, columns);
+    }
   }
 
+  /// A changed column mapping can change which column names the account,
+  /// so the account list is read again with it.
+  function onMapColumn(field: MapField, column: string) {
+    const next = { ...mapping, [field]: column };
+    setMapping(next);
+    if (file && field === "account") {
+      void (async () => {
+        const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+        const labels = await previewAccounts(
+          bytes,
+          file.name,
+          presetId || null,
+          toColumnMapping(next),
+        );
+        setSourceAccounts(labels);
+        setAccountMap(initialAccountMap(labels, knownAccounts));
+      })();
+    }
+  }
+
+  /// The import currency: the chosen account's, or — mapping several
+  /// accounts — theirs when they agree. `null` when mapped accounts disagree:
+  /// one file is one currency, so that import is refused before it starts.
+  function importCurrency(): { currency: string | null; mixed: boolean } {
+    if (!multiAccount) {
+      const account = knownAccounts.find((a) => a.id === accountId);
+      return { currency: account?.currency ?? null, mixed: false };
+    }
+    const currencies = new Set(
+      Object.values(accountMap)
+        .filter((id) => id !== DONT_IMPORT)
+        .map((id) => knownAccounts.find((a) => a.id === id)?.currency)
+        .filter((c): c is string => c !== undefined),
+    );
+    const [only] = currencies;
+    return {
+      currency: currencies.size === 1 ? (only ?? null) : null,
+      mixed: currencies.size > 1,
+    };
+  }
+  const { currency: currencyForImport, mixed: mixedCurrencies } = importCurrency();
+  // A new account takes the import's currency, so it can join this import.
+  const newAccountCurrency = currencyForImport ?? knownAccounts[0]?.currency ?? "USD";
+  const mappedCount = Object.values(accountMap).filter((id) => id !== DONT_IMPORT).length;
+  const canImport =
+    file !== null &&
+    !importing &&
+    (multiAccount ? mappedCount > 0 && !mixedCurrencies : accountId !== "");
+
   async function onImport() {
-    if (!file || !accountId) return;
-    const account = accounts.find((a) => a.id === accountId);
+    if (!file || !canImport) return;
     setImporting(true);
     setError(null);
     const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    const entries: ImportAccountMapEntryDto[] = sourceAccounts.map((label) => ({
+      source_account: label,
+      account_id: accountMap[label] || null,
+    }));
     const outcome = await importFile({
       data: bytes,
       filename: file.name,
-      target_account_id: accountId,
+      target_account_id: multiAccount ? null : accountId,
+      account_map: multiAccount ? entries : null,
       plugin_id: null,
       preset_id: presetId || null,
       column_mapping: toColumnMapping(mapping),
-      default_currency: account?.balance.currency ?? null,
+      default_currency: currencyForImport,
       date_format: null,
       idempotency_key: mintIdempotencyKey(),
     });
@@ -299,6 +452,7 @@ export function ImportFileDialog({
               <span>{summaryMessage(summary)}</span>
             </div>
             <SkippedRowsNote batch={summary} />
+            <ImportNotes batch={summary} />
             <div className="flex justify-end">
               <Button onClick={onClose}>Done</Button>
             </div>
@@ -330,21 +484,23 @@ export function ImportFileDialog({
               </div>
             )}
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="import-account">Import into</Label>
-              <select
-                id="import-account"
-                className={SELECT_CLASS}
-                value={accountId}
-                onChange={(event) => setAccountId(event.target.value)}
-              >
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {!multiAccount && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="import-account">Import into</Label>
+                <select
+                  id="import-account"
+                  className={SELECT_CLASS}
+                  value={accountId}
+                  onChange={(event) => setAccountId(event.target.value)}
+                >
+                  {knownAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="flex flex-col gap-1.5">
               <Label>File</Label>
@@ -434,12 +590,7 @@ export function ImportFileDialog({
                             aria-label={`Map ${field.label}`}
                             className={SELECT_CLASS}
                             value={mapping[field.key] ?? ""}
-                            onChange={(event) =>
-                              setMapping((prev) => ({
-                                ...prev,
-                                [field.key]: event.target.value,
-                              }))
-                            }
+                            onChange={(event) => onMapColumn(field.key, event.target.value)}
                           >
                             <option value="">Auto-detect</option>
                             {columns.map((column) => (
@@ -456,6 +607,52 @@ export function ImportFileDialog({
               </section>
             )}
 
+            {multiAccount && (
+              <section className="flex flex-col gap-2" aria-label="Accounts in this file">
+                <p className="text-sm font-medium">Accounts in this file</p>
+                <p className="text-xs text-muted-foreground">
+                  Choose where each account&apos;s transactions go. Accounts set to
+                  &ldquo;Don&apos;t import&rdquo; are left out. To bring one in later,
+                  export that account on its own.
+                </p>
+                {sourceAccounts.map((label, index) => (
+                  <div key={label} className="grid grid-cols-2 items-center gap-3">
+                    <Label htmlFor={`source-account-${index}`} className="truncate text-sm">
+                      {label}
+                    </Label>
+                    <select
+                      id={`source-account-${index}`}
+                      aria-label={`Import ${label} into`}
+                      className={SELECT_CLASS}
+                      value={accountMap[label] ?? DONT_IMPORT}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (value === CREATE_NEW) {
+                          setCreatingFor(label);
+                          return;
+                        }
+                        setAccountMap((prev) => ({ ...prev, [label]: value }));
+                      }}
+                    >
+                      <option value={DONT_IMPORT}>Don&apos;t import</option>
+                      {knownAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name}
+                        </option>
+                      ))}
+                      <option value={CREATE_NEW}>Create new account…</option>
+                    </select>
+                  </div>
+                ))}
+                {mixedCurrencies && (
+                  <p role="alert" className="text-xs text-loss">
+                    These accounts use different currencies. One file imports in one
+                    currency — map accounts that share it.
+                  </p>
+                )}
+              </section>
+            )}
+
             {error && (
               <p role="alert" className="text-sm text-loss">
                 {error}
@@ -466,7 +663,7 @@ export function ImportFileDialog({
               <Button variant="ghost" onClick={onClose}>
                 Cancel
               </Button>
-              <Button onClick={onImport} disabled={!file || !accountId || importing}>
+              <Button onClick={onImport} disabled={!canImport}>
                 {importing ? (
                   <Loader2 className="animate-spin" aria-hidden />
                 ) : (
@@ -478,6 +675,31 @@ export function ImportFileDialog({
           </>
         )}
       </div>
+      {creatingFor !== null && (
+        <NewMappedAccountDialog
+          externalName={creatingFor}
+          currency={newAccountCurrency}
+          dialogLabel="New account for this import"
+          description={
+            <>
+              A new account for &ldquo;{creatingFor}&rdquo; from this file. Its
+              transactions are imported into it — including the starting balance,
+              when the file has one.
+            </>
+          }
+          createLabel="Create"
+          onCreate={createAccount}
+          onCreated={(id) => {
+            const label = creatingFor;
+            setCreated((prev) => [
+              ...prev,
+              { id, name: label, currency: newAccountCurrency },
+            ]);
+            setAccountMap((prev) => ({ ...prev, [label]: id }));
+          }}
+          onClose={() => setCreatingFor(null)}
+        />
+      )}
     </div>
   );
 }
