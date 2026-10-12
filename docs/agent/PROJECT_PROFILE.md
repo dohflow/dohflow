@@ -413,9 +413,9 @@ in this repository — there is no `git add` step, and none is needed; the Dolt
 database is the source of truth, backed up by the JSONL mirror and the Dolt
 remote, not by a git commit in this repo.
 
-`--include-memories` is **required**. As of bd 1.2.2 a plain `bd export` omits the
-`bd remember` memories, which would silently shrink the export from 1465
-records to 1320. See `AGENTS.md` §9.0.
+`--include-memories` is **required**. On bd 1.2.2, and still on 1.3.1, a plain
+`bd export` omits the `bd remember` memories, which would silently shrink the
+export from 1695 records to 1531 (2026-10-12 counts). See `AGENTS.md` §9.0.
 
 ## Multi-agent coordination policy
 
