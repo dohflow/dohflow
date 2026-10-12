@@ -159,24 +159,30 @@ If `.beads/` exists, Beads is the task source of truth. This project uses `bd` �
 
 ### 9.0 Invoking `bd` on this machine (READ FIRST)
 
-**Expected CLI:** `bd 1.2.2`, installed from **Homebrew core** (`brew install beads` → `/opt/homebrew/bin/bd`, pulling `dolt` and `icu4c@78`). Verify with `\bd --version`. Upgrade with `brew upgrade beads`, and **never install v1.2.0 or v1.2.1** — both were published by accident, untested, and migrate the schema to a version no other binary can open.
+**Expected CLI:** `bd 1.3.1`, installed from **Homebrew core** (`brew install beads` → `/opt/homebrew/bin/bd`, pulling `dolt` and `icu4c@78`). Verify with `\bd --version` → `bd version 1.3.1 (Homebrew)`. The database moved from bd 1.2.2's schema (v53) to 1.3.1's (v66) on 2026-10-11, during the build-machine cutover (`personal-cfo-zz7f7.4`). That migration is one-way: no 1.2.x binary can open the database now. Upgrade with `brew upgrade beads` only as a deliberate step, because a schema migration can ride along (see "Schema migrations" below). **Never install v1.2.0 or v1.2.1**: both were published by accident, untested, and migrate the schema to a version no other binary can open.
 
 **Use `\bd`, not `bd`.** The leading backslash bypasses any shell alias. There is no `bd` alias today — the `bd=br` alias that used to shadow the real binary was removed on 2026-09-06 along with `br` itself (beads_rust, a third-party Rust port) and the MCP Agent Mail installer that put both there. Re-running that installer without `--skip-beads` reinstates both, so the backslash stays the cheap habit that cannot be got wrong.
 
-**PATH:** `~/.zshrc` *prepends* `~/.local/bin`, so anything there shadows Homebrew. The old hand-placed `bd 1.0.3` was retired from that directory on 2026-09-06 (kept at `~/.local/state/beads-pre-upgrade-2026-09-06/bd-1.0.3.binary`). `which -a bd` must return exactly one path; more than one means something reinstalled a second copy.
+**PATH:** `which -a bd` must print only `/opt/homebrew/bin/bd`. The Claude desktop app's environment may list it twice; that's the same file. Any other path means something installed a second copy. The Mac Mini has no `~/.local/bin`. The old MacBook's `~/.zshrc` prepended one, which held a hand-placed `bd 1.0.3` until 2026-09-06; if a `~/.local/bin` ever appears ahead of Homebrew, check it for a `bd`.
 
-**`bd export` drops memories by default — always pass `--include-memories`.** As of 1.2.2, plain `bd export` excludes the 145 `bd remember` entries. The local `.beads/issues.jsonl` export (untracked by git since ADR 0064's 2026-09-08 addendum — the file lives on disk and in `scripts/backup-beads.sh`'s off-machine mirror, never in this repository's git history) should be 1465 records (1320 issues + 145 memories); 1320 means the memories were silently dropped. `scripts/backup-beads.sh` passes the flag; anything else that exports must too.
+**`bd export` drops memories by default — always pass `--include-memories`.** On 1.2.2, and still on 1.3.1 (re-checked 2026-10-12), plain `bd export` excludes the `bd remember` entries. The local `.beads/issues.jsonl` export (untracked by git since ADR 0064's 2026-09-08 addendum — the file lives on disk and in `scripts/backup-beads.sh`'s off-machine mirror, never in this repository's git history) was 1695 records on 2026-10-12 (1531 issues + 164 memories). An export whose line count equals the issue total alone means the memories were silently dropped. `scripts/backup-beads.sh` passes the flag; anything else that exports must too.
 
-**Embedded-mode limits — verified on BOTH 1.0.3 and 1.2.2.** These fail by design, not by misconfiguration, so don't debug them:
+**Embedded-mode limits — verified on 1.0.3 and 1.2.2, re-checked on 1.3.1 (2026-10-12).** These fail by design, not by misconfiguration, so don't debug them:
 
 - `bd doctor` → "not yet supported in embedded mode" (upstream #3794). Ignore the `bd doctor --check=conventions` invocation in older docs.
 - `bd sql` → same.
-- `bd history <id>` → returns "No history found" for every bead, old or new.
-- `bd dolt show` reports `Remotes: (none)` while `bd dolt remote list` shows `origin` (upstream #3689). **`bd dolt push` has never delivered Dolt data to the remote** — the real bead-graph backup is `scripts/backup-beads.sh`, which runs automatically on every `git push`. See `personal-cfo-es9ew`.
+- `bd history <id>` returned "No history found" for every bead on 1.0.3 and 1.2.2. **It works on 1.3.1.**
+- On 1.2.2, `bd dolt show` reported `Remotes: (none)` while `bd dolt remote list` showed `origin` (upstream #3689); 1.3.1 lists the remotes. **`bd dolt push` never delivered Dolt data to the remote on 1.2.2, and nothing relies on it under 1.3.1 (not re-verified).** The real bead-graph backup is `scripts/backup-beads.sh`, which runs automatically on every `git push`. See `personal-cfo-es9ew`.
 
-**Schema migrations are gated, correctly.** 1.2.2 refuses to auto-migrate a remote-backed database, because two clones migrating independently forks the schema irrecoverably. This machine is the single designated migrator, so the escape hatch is `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate` — **only** ever from here, and only after `bd export --include-memories` plus a copy of `.beads/embeddeddolt/`. If a second machine ever exists, it adopts via `bd bootstrap` instead of migrating.
+**Schema migrations are gated, correctly.** bd refuses to auto-migrate a remote-backed database, because two clones migrating independently forks the schema irrecoverably. **The Mac Mini is the single designated migrator** since the 2026-10-11 cutover (`personal-cfo-zz7f7.4`). The old MacBook's bead checkout is archived read-only, and its backup scripts refuse to run there. On 1.3.1, the migrator's consent is `bd migrate --force` / `bd migrate schema --force` (equivalent to `BD_ALLOW_REMOTE_MIGRATE=1`), and `bd migrate --dry-run` previews (`bd migrate schema` has no `--dry-run`). Run them **only** on the Mac Mini, and only after:
 
-**Telemetry is off.** 1.2.2 enables anonymous usage metrics (command names, version, OS) by default; `bd metrics off` was run on 2026-09-06 per §8. Leave it off unless the owner says otherwise.
+- `bd export --include-memories`;
+- a copy of `.beads/embeddeddolt/`;
+- a Dolt tag of the pre-migration state.
+
+If a second machine ever exists, it adopts via `bd bootstrap` instead of migrating.
+
+**Telemetry is off.** bd enables anonymous usage metrics (command names, version, OS) by default. Per §8, `bd metrics off` was run on 2026-09-06 on the old MacBook and again during the Mac Mini's setup (`bd metrics status` → `OFF`, checked 2026-10-12). Leave it off unless the owner says otherwise.
 
 **The embedded chunk journal needs periodic GC.** It is never compacted automatically (upstream #6065) and grows without bound — it hit 693 MB before the first `bd gc --skip-decay`, and the schema migration alone regrew it to 522 MB. When `bd` feels slow, check `.beads/embeddeddolt` size and run `\bd gc --skip-decay`. **`--skip-decay` is mandatory:** plain `bd gc` deletes closed issues older than 90 days, and this repo keeps closed beads as history.
 
@@ -325,7 +331,7 @@ authorize a lighter path; record the exception and its scope in the bead.
 
 > **The `bd`-generated block below is machine-managed — do not edit inside its
 > markers.** Two of its instructions are wrong on this machine: `bd dolt push`
-> has never reached the remote (§9.0), and `bd export` silently drops all 147
+> was never shown to reach the remote (§9.0), and `bd export` silently drops all 164
 > memories without `--include-memories` (§9.0). §13 above is authoritative; the
 > same stale block is duplicated at the end of `CLAUDE.md`.
 

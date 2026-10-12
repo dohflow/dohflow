@@ -137,9 +137,24 @@ technically possible.
 
 ## Usage and hardware constraints
 
-This machine is an 8 GB M3. **One build at a time** — never run `cargo test
---workspace`, a Tauri build, and a frontend build concurrently across sessions.
-Four sessions may be open; they must not all generate continuously.
+Since 2026-10-11, the working and build machine is a Mac Mini (Apple M5 Pro,
+15 cores: 5 performance + 10 efficiency, 64 GB). It replaced an 8 GB M3 MacBook,
+whose one-build-at-a-time limit no longer applies. A clean aarch64 release
+build of the desktop app takes about a minute on the Mac Mini.
+
+**At most two cargo-heavy jobs at once across sessions.** Cargo-heavy means
+`cargo test --workspace`, the desktop `cargo test`, `cargo clippy` over a full
+graph, or a Tauri/release build. Each one already uses every core. Each
+worktree has its own `target/`, so two jobs don't block each other on cargo's
+lock, but a third mostly queues for CPU. Frontend builds and tests don't count
+towards the two. All four sessions may be open, and they may generate at the
+same time.
+
+The desktop suite has one known parallel-test race
+(`connector_spans_carry_the_adapter_and_never_the_token`, `personal-cfo-56w.5`),
+which the 15-core machine loses every time. Until that lands, confirm a lone
+failure with `--test connector_ipc -- --test-threads=1` before treating it as
+real.
 
 Planning and review draw Fable from the shared Max allowance, deliberately, so
 the pilot can measure it. **If Claude Code indicates a request needs separate
