@@ -121,7 +121,7 @@ jobs:
 
       # Declared MSRV (ADR 0001 addendum 2026-09-28, personal-cfo-g3m.5): the
       # workspace's `rust-version` must actually build with THAT compiler, not
-      # just with the pinned 1.96 above. A 1.96 pass proves nothing about the
+      # just with the pinned 1.99 above. A 1.99 pass proves nothing about the
       # floor, so this checks the complete locked graph with the floor itself.
       - name: Declared MSRV builds (root workspace)
         if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'

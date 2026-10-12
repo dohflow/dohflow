@@ -7,7 +7,7 @@ Update this when a version is intentionally bumped.
 
 | Component | Version | Pinned in |
 |---|---|---|
-| Rust toolchain | `1.96.0` (+ rustfmt, clippy) | `rust-toolchain.toml` |
+| Rust toolchain | `1.99.0` (+ rustfmt, clippy) | `rust-toolchain.toml` |
 | Rust MSRV | `1.95` | `Cargo.toml` `[workspace.package].rust-version` and `apps/desktop/src-tauri/Cargo.toml` (must match; CI-enforced) |
 | Node | `>= 20` (CI uses 22) | `package.json` `engines`, CI |
 | pnpm | `11.5.2` | `package.json` `packageManager` |
@@ -109,7 +109,10 @@ against the complete locked root workspace and the standalone desktop graph
 (`--all-targets`, plus the desktop's `export-bindings` and
 `tauri/custom-protocol` features). CI rechecks both graphs with the declared
 compiler on every Rust change (`Declared MSRV builds` steps in
-`.github/workflows/ci.yml`). The pinned build toolchain stays **1.96.0**.
+`.github/workflows/ci.yml`). The pinned build toolchain is **1.99.0** (ADR 0001
+addendum, 2026-10-12): rustc 1.96.0 cannot load proc-macros that Xcode 27's
+linker produces at deployment target 12.0 or later, so release builds failed
+on the Xcode 27 build machine (`personal-cfo-zz7f7.13`).
 
 > The durable WAL/SHM/temp plaintext-leak suite is owned by `personal-cfo-zxvl`
 > (`crates/finance-kernel/tests/side_file_leak.rs`).
