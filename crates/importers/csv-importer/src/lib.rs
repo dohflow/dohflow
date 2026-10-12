@@ -385,16 +385,16 @@ fn resolve_columns(headers: &csv::StringRecord, mapping: Option<&ColumnMapping>)
         // An explicit mapping names a single `date` (the posted date); a separate
         // transaction-date remap is future work (the mapping UI, ADR 0045 slice 3).
         Columns {
-            posted_date: m.date.as_deref().and_then(&find),
+            posted_date: m.date.as_deref().and_then(find),
             transaction_date: None,
-            description: m.description.as_deref().and_then(&find),
-            amount: m.amount.as_deref().and_then(&find),
-            debit: m.debit.as_deref().and_then(&find),
-            credit: m.credit.as_deref().and_then(&find),
-            currency: m.currency.as_deref().and_then(&find),
-            category: m.category.as_deref().and_then(&find),
-            category_group: m.category_group.as_deref().and_then(&find),
-            account: m.account.as_deref().and_then(&find),
+            description: m.description.as_deref().and_then(find),
+            amount: m.amount.as_deref().and_then(find),
+            debit: m.debit.as_deref().and_then(find),
+            credit: m.credit.as_deref().and_then(find),
+            currency: m.currency.as_deref().and_then(find),
+            category: m.category.as_deref().and_then(find),
+            category_group: m.category_group.as_deref().and_then(find),
+            account: m.account.as_deref().and_then(find),
         }
     } else {
         // Every column whose header mentions a date, in source order.
