@@ -117,3 +117,41 @@ release gate, or ship an unreviewed artifact.
 Revisit this addendum if a later dependency requires a higher compiler floor
 or changes platform support. Do not silently raise `rust-version` to make a
 dependency build pass.
+
+## Accepted addendum (2026-10-12): pinned build toolchain 1.99.0
+
+- **Status:** Accepted
+- **Tier:** Public — contributor build requirements and release engineering.
+- **Decider:** Project owner
+- **Bead:** `personal-cfo-zz7f7.13`
+
+The release build machine now runs macOS 27 and Xcode 27. On it, every release
+build with the pinned Rust 1.96.0 fails at once with `error[E0463]: can't find
+crate` for a procedural-macro dependency (first seen as `ctor_proc_macro`).
+Debug builds are unaffected.
+
+**Cause (reproduced in isolation).** Tauri sets `MACOSX_DEPLOYMENT_TARGET` from
+`bundle.macOS.minimumSystemVersion` (14.0, ADR 0065). For a deployment target
+of 12.0 or later, Xcode 27's linker (`ld-27037`) links proc-macro dylibs with
+`LC_DYLD_CHAINED_FIXUPS`, and rustc 1.96.0 cannot then load them as crates. At
+11.0, without chained fixups, they load. A clean 1.96.0 release build at
+deployment target 14.0 fails; the same build on rustc 1.99.0 finishes. Rust
+1.96.0 with the older Xcode on the previous build machine was unaffected, which
+is why v0.2.0 built.
+
+**Decision.** The **pinned build toolchain moves from 1.96.0 to 1.99.0**,
+replacing the previous addendum's "the pinned build toolchain remains 1.96.0".
+The declared MSRV is unchanged at **1.95**, and CI keeps checking both graphs
+with that floor. This changes the build compiler only. Dependency versions,
+the supported OS and hardware floor, and every security, compatibility and
+release gate stay as they are. The bump lands with the full gate set green on
+1.99.0, including any new clippy findings fixed rather than allowed.
+
+**Rejected alternative.** Staying on 1.96.0 and passing
+`-C link-arg=-Wl,-no_fixup_chains` also loads the proc-macros. It works around
+a linker format Apple has made the default, adds a platform-specific flag that
+must reach host artifacts, and leaves the build on a compiler that predates the
+toolchain it now runs against.
+
+Revisit if a later Xcode or Rust release regresses this, or if the pin needs to
+move again. Moving the pin stays a deliberate, recorded decision.
