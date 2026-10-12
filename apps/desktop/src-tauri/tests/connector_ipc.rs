@@ -1051,6 +1051,7 @@ fn connector_spans_carry_the_adapter_and_never_the_token() {
     let subscriber = tracing_subscriber::registry().with(layer);
     let (_dir, state) = open_state();
     let adapter = mock();
+    observability::testing::install_global_test_subscriber();
     tracing::subscriber::with_default(subscriber, || {
         let linked = connector_link_impl(
             &state,
@@ -1191,6 +1192,7 @@ fn capture<F: FnOnce()>(f: F) -> String {
     let layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    observability::testing::install_global_test_subscriber();
     tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), f);
     let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
     logged
@@ -1248,6 +1250,11 @@ fn a_key_echoing_refusal_never_reaches_last_error_the_dto_or_logs() {
     let last_error = connections[0].last_error.clone();
     assert!(last_error.is_some(), "the refusal is recorded");
     let dto = serde_json::to_string(&connections).unwrap();
+    // DoD §2.4: prove the capture saw the sync before trusting a no-leak check.
+    assert!(
+        logged.contains("connector operation completed"),
+        "the capture saw nothing of the sync: {logged:?}"
+    );
 
     for (surface, text) in [
         ("sync result", rendered.as_str()),
@@ -1282,6 +1289,11 @@ fn key_echoing_per_account_errors_never_reach_sync_warnings() {
         "per-account warnings surfaced: {rendered}"
     );
     let dto = serde_json::to_string(&connector_connections_impl(&state).unwrap()).unwrap();
+    // DoD §2.4: prove the capture saw the sync before trusting a no-leak check.
+    assert!(
+        logged.contains("connector operation completed"),
+        "the capture saw nothing of the sync: {logged:?}"
+    );
     for text in [&rendered, &dto, &logged] {
         assert!(!text.contains(ECHO_KEY), "leaked the key: {text}");
     }
