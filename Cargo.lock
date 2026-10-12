@@ -862,6 +862,7 @@ name = "job-runtime"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "observability",
  "thiserror",
  "tracing",
  "tracing-subscriber",

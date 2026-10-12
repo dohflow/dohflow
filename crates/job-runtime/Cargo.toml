@@ -16,3 +16,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+# The process-wide test subscriber log-capture tests install first (DoD §2.4,
+# personal-cfo-56w.5). Dev-only: job-runtime has no observability dependency.
+observability = { path = "../observability", features = ["test-support"] }

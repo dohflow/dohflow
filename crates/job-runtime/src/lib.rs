@@ -1552,6 +1552,7 @@ mod tests {
             .finish();
         let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let clock = FixedClock(now);
+        observability::testing::install_global_test_subscriber();
         let report = tracing::subscriber::with_default(subscriber, || {
             JobRunner::new(&store).run_due_with_clock(
                 now,
@@ -1593,6 +1594,7 @@ mod tests {
             })
             .finish();
         let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        observability::testing::install_global_test_subscriber();
         let report = tracing::subscriber::with_default(subscriber, || {
             JobRunner::new(&store).run_due_with_clock(
                 now,
