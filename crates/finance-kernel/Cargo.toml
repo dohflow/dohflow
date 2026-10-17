@@ -51,3 +51,6 @@ chrono = { workspace = true }
 # through the production redacting subscriber and assert no §6.6 value leaks.
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The process-wide test subscriber log-capture tests install first (DoD §2.4,
+# personal-cfo-56w.5). Same crate as the normal dependency, test feature only.
+observability = { path = "../observability", features = ["test-support"] }

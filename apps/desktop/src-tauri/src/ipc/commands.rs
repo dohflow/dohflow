@@ -6032,6 +6032,7 @@ mod release_update_failure_tests {
         let subscriber = tracing_subscriber::registry().with(layer);
 
         // This invokes the implementation directly: it must not need AppState or vault access.
+        observability::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             record_release_update_failure_impl(
                 "network error while downloading release",
@@ -6088,6 +6089,7 @@ mod release_update_failure_tests {
             .with_writer(RedactingMakeWriter::new(buffer.clone()));
         let subscriber = tracing_subscriber::registry().with(layer);
 
+        observability::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             record_durable_job_unlock_failure(&error);
             record_durable_job_unlock_failure(&IpcError::NewerVaultSchema);
@@ -6116,6 +6118,7 @@ mod release_update_failure_tests {
         let state = AppState::new(VaultController::open(directory.path().join("absent.db")));
         let path = directory.path().join("private-backup-destination.pcfobk");
 
+        observability::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             assert!(matches!(
                 export_backup_impl(&state, path.display().to_string()),

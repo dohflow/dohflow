@@ -652,6 +652,7 @@ impl RawLog {
             .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
             .with_writer(move || writer.clone())
             .finish();
+        observability::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, f)
     }
 

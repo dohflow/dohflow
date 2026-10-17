@@ -177,6 +177,40 @@ pub fn init() {
         .try_init();
 }
 
+/// Support for tests that capture `tracing` output (definition of done §2.4,
+/// `personal-cfo-56w.5`). Compiled for this crate's own tests and, through
+/// the `test-support` feature, for other crates' dev-dependencies only.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+    use std::sync::Once;
+
+    /// Install, once per process, a global subscriber that is interested in
+    /// every callsite and records nothing.
+    ///
+    /// Call it before a test installs its own scoped capture subscriber
+    /// (`tracing::subscriber::with_default`). The reason is how `tracing-core`
+    /// caches callsite interest. While at most one dispatcher is registered,
+    /// a callsite hit for the first time computes its interest through
+    /// *the registering thread's* default dispatcher (`has_just_one` in
+    /// `tracing_core::callsite`). So when one test's scoped subscriber is the
+    /// only live dispatcher, a parallel test thread with no subscriber can hit
+    /// a shared callsite first and cache "never" for it. That test's capture
+    /// then silently misses the event. With this global subscriber registered,
+    /// a live scoped subscriber always makes two dispatchers. Interest is then
+    /// computed across all of them, and this one is interested in everything,
+    /// so no callsite is ever cached as "never".
+    ///
+    /// Events on threads without a scoped subscriber reach this subscriber and
+    /// are dropped. If another component (for example [`crate::init`]) set a
+    /// global subscriber first, that one stays and still has the same effect.
+    pub fn install_global_test_subscriber() {
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -280,6 +314,7 @@ mod tests {
             .with_writer(RedactingMakeWriter::new(buf.clone()));
         let subscriber = tracing_subscriber::registry().with(layer);
 
+        crate::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(account = "1234567890123456", "account created");
         });
@@ -322,6 +357,7 @@ mod tests {
             let layer = tracing_subscriber::fmt::layer()
                 .with_ansi(false)
                 .with_writer(RedactingMakeWriter::new(buf.clone()));
+            crate::testing::install_global_test_subscriber();
             tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
                 tracing::info!(note = note, "transaction note saved");
             });

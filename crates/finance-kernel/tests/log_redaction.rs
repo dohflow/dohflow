@@ -117,6 +117,7 @@ fn no_sensitive_value_survives_into_logs() {
     // No EnvFilter: every event at every level reaches the redacting layer.
     let subscriber = tracing_subscriber::registry().with(layer);
 
+    observability::testing::install_global_test_subscriber();
     tracing::subscriber::with_default(subscriber, || {
         // A realistic workload, so the kernel's own spans flow through the
         // redactor. The account name embeds a card-like number to also exercise
