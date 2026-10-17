@@ -85,7 +85,10 @@ tauri-plugin-opener = "=2.5.5"
 # signature and the JS half (`@tauri-apps/plugin-updater`) drives the same check/
 # download/install flow, so a routine `cargo update` moving one without the other
 # would leave mismatched signing/verification expectations between the two halves.
-tauri-plugin-updater = "=2.11.0"
+# Default features minus `zip` (personal-cfo-md8h2.5): that feature only adds the
+# Windows-only `zip` dependency (RUSTSEC-2026-0367/0368/0369 in zip 4.x). The macOS
+# `.app.tar.gz` install path uses `tar`/`flate2`, which the plugin always enables on macOS.
+tauri-plugin-updater = { version = "=2.11.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 # Restarts the app after an update installs (`process:allow-restart` only —
 # capabilities/destructive.json). No lockstep-pin need: this plugin has no signing
 # semantics to keep in sync with its JS half, so it follows the looser convention
