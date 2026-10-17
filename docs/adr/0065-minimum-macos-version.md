@@ -85,3 +85,46 @@ plutil -extract LSMinimumSystemVersion raw \
 
 Must print `14.0`. This is asserted in the release checklist because the value
 silently reverts to Tauri's default if the config key is ever dropped.
+
+## Accepted addendum (2026-10-17): the 15.0 raise waits for an updater guard
+
+- **Status:** Accepted
+- **Tier:** Public — supported-platform policy and release engineering.
+- **Decider:** Project owner
+- **Beads:** `personal-cfo-wd7ep` (the raise), `personal-cfo-md8h2.4` (the guard)
+
+**What changed.** The trigger this ADR named has arrived. Sonoma's last security
+update was 14.8.9 on 2026-08-06, and Apple's September 2026 security releases
+patched macOS 27, Tahoe 26 and Sequoia 15 but not Sonoma. A new build machine
+can now test on 15 and newer.
+
+**Decision.** v0.3.0 keeps the **14.0** floor. The raise to **15.0** ships in
+the first release *after* v0.3.0, and only once that release's predecessor
+carries an updater guard. Two facts drive the order:
+
+1. **v0.3.0 carries a data-safety fix** for the bundled SQLCipher engine
+   (`personal-cfo-g3m.5`). Raising the floor in the same release would leave
+   every 14.x user on v0.2.0's unfixed engine, worse than an unpatched OS
+   running a fixed app.
+2. **The release updater has no OS check.** It reads one static `latest.json`,
+   so a 14.x install would download a 15.0-floor release that macOS then
+   refuses to open. This is the "dropping users who already installed breaks
+   them" case in this ADR's third reason. v0.3.0 therefore ships a guard: an
+   installed app declines an update whose declared minimum macOS is newer than
+   the running one, and says why (`personal-cfo-md8h2.4`).
+
+**How v0.3.0 stays honest at 14.0.** This ADR's first reason (claim only what we
+test) still holds. The release candidate is smoke-tested on a macOS 14.x Mac
+with synthetic data before publication.
+
+**Who the later raise excludes.** Sequoia supports every Mac that supports
+Sonoma except the 2018–2019 Intel MacBook Air, so nearly everyone on 14.x can
+update macOS for free. Public usage data is thin: browser statistics can't tell
+macOS versions apart, and developer-skewed package-manager analytics put Sonoma
+at roughly 3% of Macs in September 2026. The general share is probably
+somewhat higher.
+
+**Residual risk.** A v0.2.0 install that never updates to v0.3.0 has no guard,
+and would still take the floor-raise release. The gap between v0.3.0 and the
+raise is the mitigation. If that macOS refusal happens, the fix is to reinstall
+v0.3.0 from the releases page.
