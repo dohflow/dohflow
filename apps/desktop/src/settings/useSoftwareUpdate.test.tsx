@@ -37,6 +37,7 @@ function buildInfo(over: Partial<BuildInfoDto> = {}): BuildInfoDto {
     channel: "release",
     built_at: "2026-07-20T14:32:05Z",
     dirty: false,
+    os_version: "15.7.9",
     ...over,
   };
 }
@@ -189,4 +190,48 @@ test("apply() re-checks rather than refuses when the shared handle has been evic
   expect(mocks.pluginCheck).toHaveBeenCalledTimes(2);
   expect(firstUpdate.downloadAndInstall).not.toHaveBeenCalled();
   expect(secondUpdate.downloadAndInstall).toHaveBeenCalledTimes(1);
+});
+
+// personal-cfo-md8h2.4: the minimum-macOS guard. An update whose manifest floor is newer than
+// this Mac's macOS is never offered, never kept as an installable handle, and apply() refuses it.
+test("an update needing a newer macOS is held back and cannot be installed", async () => {
+  mocks.buildInfo.mockResolvedValue(buildInfo({ os_version: "14.8.9" }));
+  const close = vi.fn().mockResolvedValue(undefined);
+  const update = pluginUpdate({
+    rawJson: { version: "0.4.0", minimumSystemVersion: "15.0" },
+    version: "0.4.0",
+    close,
+  });
+  mocks.pluginCheck.mockResolvedValue(update);
+  const { queryClient } = renderTwoObservers();
+
+  await waitFor(() => expect(mocks.pluginCheck).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+  expect(screen.getByTestId("first-available")).toHaveTextContent("false");
+  expect(queryClient.getQueryData(UPDATE_HANDLE_QUERY_KEY)).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "apply-first" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("first-result")).toHaveTextContent(
+      "DohFlow 0.4.0 needs macOS 15.0 or later.",
+    ),
+  );
+  expect(update.downloadAndInstall).not.toHaveBeenCalled();
+});
+
+test("an update whose macOS floor this Mac meets is offered as before", async () => {
+  mocks.buildInfo.mockResolvedValue(buildInfo({ os_version: "14.8.9" }));
+  const update = pluginUpdate({ rawJson: { minimumSystemVersion: "14.0" } });
+  mocks.pluginCheck.mockResolvedValue(update);
+  mocks.pluginRelaunch.mockResolvedValue(undefined);
+  renderTwoObservers();
+
+  await waitFor(() =>
+    expect(screen.getByTestId("first-available")).toHaveTextContent("true"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "apply-first" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("first-result")).toHaveTextContent(JSON.stringify({ ok: true })),
+  );
+  expect(update.downloadAndInstall).toHaveBeenCalledTimes(1);
 });

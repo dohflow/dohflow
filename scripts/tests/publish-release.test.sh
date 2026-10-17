@@ -231,6 +231,7 @@ print(base64.b64encode(text.encode()).decode())
   cat > "$REPO/apps/desktop/src-tauri/tauri.conf.json" <<EOF
 {
   "version": "0.1.0",
+  "bundle": { "macOS": { "minimumSystemVersion": "14.0" } },
   "plugins": {
     "updater": {
       "pubkey": "$PUBKEY_B64",
@@ -396,9 +397,11 @@ write_manifest() {  # <path> <url_aarch64> [url_x86_64=same] [sig_aarch64=irrele
   local url_x="${3:-$2}"
   local sig_a="${4:-irrelevant-for-these-tests}"
   local sig_x="${5:-$sig_a}"
+  # 6th arg: minimumSystemVersion (default the fixture bundle's 14.0; "none" omits it).
+  local min_os="${6:-14.0}"
   python3 -c "
 import json
-json.dump({
+m = {
     'version': '0.1.0',
     'notes': 'fixture',
     'pub_date': '2026-09-10T00:00:00Z',
@@ -406,7 +409,10 @@ json.dump({
         'darwin-aarch64': {'url': '$url_a', 'signature': '$sig_a'},
         'darwin-x86_64': {'url': '$url_x', 'signature': '$sig_x'},
     },
-}, open('$1', 'w'), indent=2)
+}
+if '$min_os' != 'none':
+    m['minimumSystemVersion'] = '$min_os'
+json.dump(m, open('$1', 'w'), indent=2)
 "
 }
 
@@ -637,6 +643,7 @@ CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "0"
 assert_contains "output confirms both platform keys match (ADR 0072)" "$OUT" "share the same url and signature"
+assert_contains "output confirms the macOS floor matches (personal-cfo-md8h2.4)" "$OUT" "minimumSystemVersion matches the bundle (14.0)"
 
 case_start "verify fails when the two platform keys' signatures differ (ADR 0072)"
 new_case_repo
@@ -655,6 +662,24 @@ CODE=$?
 OUT="$(cat "$CASE/out.txt")"
 assert_eq "exit code" "$CODE" "1"
 assert_contains "output" "$OUT" "urls differ"
+
+case_start "verify fails when latest.json has no minimumSystemVersion (personal-cfo-md8h2.4)"
+new_case_repo
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz" "" "" "" "none")"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+CODE=$?
+OUT="$(cat "$CASE/out.txt")"
+assert_eq "exit code" "$CODE" "1"
+assert_contains "output" "$OUT" "has no minimumSystemVersion"
+
+case_start "verify fails when latest.json's minimumSystemVersion differs from tauri.conf.json (personal-cfo-md8h2.4)"
+new_case_repo
+MANIFEST_BODY="$(manifest_body_for_verify "https://github.com/dohflow/dohflow/releases/download/v0.1.0/DohFlow.app.tar.gz" "" "" "" "15.0")"
+( cd "$REPO" && FAKE_CURL_STATUS="200" FAKE_CURL_PAGE_BODY="download DohFlow 0.1.0 today" FAKE_CURL_MANIFEST_BODY="$MANIFEST_BODY" PATH="$TEST_PATH" bash scripts/publish-release.sh verify > "$CASE/out.txt" 2>&1 )
+CODE=$?
+OUT="$(cat "$CASE/out.txt")"
+assert_eq "exit code" "$CODE" "1"
+assert_contains "output" "$OUT" "differs from tauri.conf.json"
 
 case_start "verify fails when a platform key's asset url does not resolve 200 (ADR 0072)"
 new_case_repo

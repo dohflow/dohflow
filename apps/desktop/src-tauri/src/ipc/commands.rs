@@ -3106,9 +3106,10 @@ pub async fn check_for_update() -> UpdateStatusDto {
 
 // ---- build_info (personal-cfo-4d8.27.3.2) ---------------------------------
 
-/// The running binary's build identity: version, commit, channel, build time, dirty flag.
-/// Pure compile-time constants — no git, no network, no vault — so the UI can show which
-/// build you are running immediately, including on the lock screen and while offline.
+/// The running binary's build identity: version, commit, channel, build time, dirty flag,
+/// plus the running macOS version. Compile-time constants and one local file read — no git,
+/// no network, no vault — so the UI can show which build you are running immediately,
+/// including on the lock screen and while offline.
 #[tauri::command]
 #[specta::specta]
 pub fn build_info() -> BuildInfoDto {
@@ -3118,6 +3119,70 @@ pub fn build_info() -> BuildInfoDto {
         channel: env!("PCFO_BUILD_CHANNEL").to_owned(),
         built_at: env!("PCFO_BUILD_TIME").to_owned(),
         dirty: matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true"),
+        os_version: macos_product_version(),
+    }
+}
+
+/// macOS's own `ProductVersion` from `SystemVersion.plist` (personal-cfo-md8h2.4). A binary
+/// built against a current SDK reads the real file, not the `10.16` compatibility shim
+/// macOS serves to old-SDK processes. `None` off macOS or when it can't be read, which the
+/// updater guard treats as "can't evaluate" rather than "too old".
+fn macos_product_version() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let bytes = std::fs::read("/System/Library/CoreServices/SystemVersion.plist").ok()?;
+    product_version_from_plist(&bytes)
+}
+
+fn product_version_from_plist(bytes: &[u8]) -> Option<String> {
+    let value = plist::Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
+    let version = value.as_dictionary()?.get("ProductVersion")?.as_string()?;
+    (!version.trim().is_empty()).then(|| version.trim().to_owned())
+}
+
+#[cfg(test)]
+mod os_version_tests {
+    use super::product_version_from_plist;
+
+    const SYSTEM_VERSION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ProductBuildVersion</key>
+	<string>23H420</string>
+	<key>ProductName</key>
+	<string>macOS</string>
+	<key>ProductVersion</key>
+	<string>14.8.9</string>
+</dict>
+</plist>"#;
+
+    #[test]
+    fn reads_product_version() {
+        assert_eq!(
+            product_version_from_plist(SYSTEM_VERSION.as_bytes()).as_deref(),
+            Some("14.8.9")
+        );
+    }
+
+    #[test]
+    fn missing_key_or_garbage_is_none() {
+        let no_key = SYSTEM_VERSION.replace("ProductVersion", "SomethingElse");
+        assert_eq!(product_version_from_plist(no_key.as_bytes()), None);
+        assert_eq!(product_version_from_plist(b"not a plist"), None);
+        let blank = SYSTEM_VERSION.replace("14.8.9", "  ");
+        assert_eq!(product_version_from_plist(blank.as_bytes()), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn this_mac_reports_a_version() {
+        let v = super::macos_product_version().expect("SystemVersion.plist is readable");
+        assert!(
+            v.split('.').next().unwrap().parse::<u32>().unwrap() >= 11,
+            "{v}"
+        );
     }
 }
 

@@ -34,6 +34,7 @@ function buildInfo(over: Partial<BuildInfoDto> = {}): BuildInfoDto {
     channel: "dev",
     built_at: "2026-07-20T14:32:05Z",
     dirty: false,
+    os_version: "15.7.9",
     ...over,
   };
 }
@@ -152,6 +153,25 @@ describe("release channel", () => {
     renderWithClient(<SoftwareUpdateCard />);
     expect(await screen.findByText(/on the latest version/i)).toBeInTheDocument();
     expect(mocks.checkForUpdate).not.toHaveBeenCalled();
+  });
+
+  // personal-cfo-md8h2.4: an update needing a newer macOS says so, offers no install, and
+  // never claims "You're on the latest version".
+  test("an update needing a newer macOS names the required version and offers no install", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo({ channel: "release", os_version: "14.8.9" }));
+    mocks.pluginCheck.mockResolvedValue(
+      pluginUpdate({
+        version: "0.4.0",
+        rawJson: { minimumSystemVersion: "15.0" },
+        close: vi.fn().mockResolvedValue(undefined),
+      }),
+    );
+    renderWithClient(<SoftwareUpdateCard />);
+    const message = await screen.findByTestId("update-needs-newer-macos");
+    expect(message).toHaveTextContent("DohFlow v0.4.0 needs macOS 15.0 or later");
+    expect(message).toHaveTextContent("this Mac runs macOS 14.8.9");
+    expect(screen.queryByText(/on the latest version/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /update & relaunch/i })).not.toBeInTheDocument();
   });
 
   test("surfaces an available update with the target version and notes", async () => {
