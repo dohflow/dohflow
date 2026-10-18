@@ -476,6 +476,7 @@ fn container(header: &[u8], ct: &[u8]) -> Vec<u8> {
 }
 
 // Membership / epoch record bodies (the bytes Ed25519 signs; HPKE info).
+#[allow(clippy::too_many_arguments)]
 fn membership_body(
     version: u64,
     prev: Option<[u8; 32]>,
@@ -520,6 +521,13 @@ fn epoch_header(
         .fixed(commit_ke)
         .fixed(commit_s)
         .fixed(sealer_fpr)
+        .done()
+}
+
+fn hpke_aad(epoch_header_hash: &[u8; 32], recipient_fpr: &[u8; 32]) -> Vec<u8> {
+    Enc::new("dohflow/sync-hpke-aad/v1")
+        .fixed(epoch_header_hash)
+        .fixed(recipient_fpr)
         .done()
 }
 
@@ -866,6 +874,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("epoch_header", eh),
         ("epoch_header_hash", eh_hash.to_vec()),
         ("hpke_info_recipient_b", info_b),
+        ("hpke_aad_recipient_b", hpke_aad(&eh_hash, &fpr_b)),
         ("sealed_keys_plaintext", sealed_plaintext),
         ("export_header", hdr),
         ("export_header_hash", hdr_hash.to_vec()),
@@ -1172,8 +1181,9 @@ fn counter_rollback_is_lost_state_and_the_cap_forces_rotation() {
 #[test]
 fn service_backstop_accepts_only_exact_retries() {
     use std::collections::HashMap;
-    let mut seen: HashMap<(u64, [u8; 32], u8, [u8; 12]), Vec<u8>> = HashMap::new();
-    let mut accept = |ctx: (u64, [u8; 32], u8, [u8; 12]), bytes: &[u8]| -> bool {
+    type Context = (u64, [u8; 32], u8, [u8; 12]);
+    let mut seen: HashMap<Context, Vec<u8>> = HashMap::new();
+    let mut accept = |ctx: Context, bytes: &[u8]| -> bool {
         match seen.get(&ctx) {
             None => {
                 seen.insert(ctx, bytes.to_vec());
@@ -1255,6 +1265,57 @@ fn epoch_record_context_binds_every_recipient_and_the_membership_head() {
     assert_ne!(
         key_commitment_ke(&counting(0)),
         key_commitment_ke(&counting(0x40))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The owner's decisions stay pinned in the specification and the ADR
+// ---------------------------------------------------------------------------
+
+const ADR_0077: &str = include_str!("../../../docs/adr/0077-wire-formats.md");
+const ADR_INDEX: &str = include_str!("../../../docs/adr/README.md");
+
+#[test]
+fn owner_decisions_are_pinned_in_the_spec_and_the_adr() {
+    for needle in [
+        // Crypto 1: the tag secret and its entropy invariant.
+        "**Non-rotating**",
+        "sealed together with `K_e`",
+        "UUID version 4",
+        // Crypto 2: independent keys that never leave Rust or roam.
+        "crosses the IPC boundary",
+        "never roam, sync or restore",
+        "strict Ed25519 verification",
+        // Crypto 3: sealed keys only inside a signed epoch record.
+        "travels **only** inside a signed epoch record",
+        "`KeyCommitmentMismatch`",
+        // PQ posture and F5.
+        "`UnsupportedSuite`",
+        "**before** it rejects",
+        // Export A, C and D.
+        "`SetHouseholdTimezone`",
+        "Each derived key seals exactly",
+        "**never** the legacy 19 MiB profile",
+        "**Full-history guarantee.**",
+    ] {
+        assert!(SPEC.contains(needle), "spec lost: {needle}");
+    }
+    // ADR 0077 records the decisions and is indexed as a public proposal.
+    for needle in [
+        "- **Tier:** Public",
+        "non-rotating, vault-scoped secret `S`",
+        "independent** key pairs",
+        "epoch record signed by an authorized member",
+        "Classical now, with agility",
+        "every class-1 ledger row of every age",
+    ] {
+        assert!(ADR_0077.contains(needle), "ADR 0077 lost: {needle}");
+    }
+    assert!(
+        ADR_INDEX.contains(
+            "| 0077 | [Data ownership and wire formats](0077-wire-formats.md) | Public | Proposed"
+        ),
+        "the ADR index must list 0077"
     );
 }
 

@@ -987,8 +987,9 @@ then the ciphertext.
 
 **Never service-visible.** The origin `StorageId`, wrapped or content-key fields,
 content nonces, blob paths, and any bare plaintext digest never appear in a
-service-visible field. The service sees only `sync_artifact_id`, the artifact
-kind and sizes it needs to store the object, the key epoch, and ciphertext.
+service-visible field. The service sees only vault routing metadata, the opaque
+`sync_artifact_id`, the key epoch, the ciphertext length, and the ciphertext; the
+artifact kind and logical metadata stay inside the encrypted object.
 
 **Receiver materialization.** A receiver verifies the outer AEAD, then the
 descriptor's length and plaintext digest, **before** it materializes anything. It
@@ -1187,6 +1188,7 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: epoch_header=001c646f68666c6f772f73796e632d65706f63682d7265636f72642f763100010001002011111111111111111111111111111111000000000000000196ae2979c9b76106af4ecd5591e9a022801cfa6e3711b8b70745b300197eec5900c7c2f442f9197f13cd691a7ced1edf498d263a16fd0d0604091294e616fb9eb04576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8 -->
 <!-- sync-vector: epoch_header_hash=51430aa10d72fa0c77f76dda5c14ca02c3ba7b82152acd6d1ac3150ee92001b5 -->
 <!-- sync-vector: hpke_info_recipient_b=0019646f68666c6f772f73796e632d68706b652d696e666f2f763100010001111111111111111111111111111111110000000000000001b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b15ae462eae13d58a5b66c7f38ad32a93bd83d977b92a7fd189b1d71efad6de422ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a896ae2979c9b76106af4ecd5591e9a022801cfa6e3711b8b70745b300197eec5951430aa10d72fa0c77f76dda5c14ca02c3ba7b82152acd6d1ac3150ee92001b5 -->
+<!-- sync-vector: hpke_aad_recipient_b=0018646f68666c6f772f73796e632d68706b652d6161642f763151430aa10d72fa0c77f76dda5c14ca02c3ba7b82152acd6d1ac3150ee92001b55ae462eae13d58a5b66c7f38ad32a93bd83d977b92a7fd189b1d71efad6de422 -->
 <!-- sync-vector: sealed_keys_plaintext=001b646f68666c6f772f73796e632d7365616c65642d6b6579732f7631000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f -->
 <!-- sync-vector: export_header=0018646f68666c6f772f6578706f72742d6865616465722f763100010100010000000000030000000177777777777777777777777777777777777777777777777777777777777777770000000200100000 -->
 <!-- sync-vector: export_header_hash=d4f9f4348e70fd109ac7c4fd76ff4ad83bf4744c0f42544904ecaf017544d67b -->
