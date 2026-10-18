@@ -1,11 +1,18 @@
-# Vault format — version 1 (shipped local vault and backup)
+# Vault format
 
-This is the public format authority for DohFlow data. Version 1 describes only
-formats that the current application writes or reads. The portable logical
-export and Sync wire formats are **not implemented**; their approved contracts
-will be added in a separately reviewed version-2 revision under
-`personal-cfo-klr.4`. Do not treat a SQLCipher database image or a `.pcfobk`
-backup as a Sync snapshot.
+This is the public format authority for DohFlow data. It has two kinds of
+content, kept apart on purpose:
+
+- **Part A** describes the formats the application writes and reads today: the
+  local vault, its key hierarchy, the schema, and the `.pcfobk` backup.
+- **Part B** specifies the portable export and the Sync genesis snapshot, which
+  are **not implemented**. Part B fixes what each format carries.
+
+# Part A — Local vault and backup (shipped)
+
+Part A describes only formats that the current application writes or reads. Do
+not treat a SQLCipher database image or a `.pcfobk` backup as a Sync snapshot or
+as a portable export.
 
 The version pins below are checked against production code by
 `crates/db-worker/tests/vault_format_spec.rs` and the backup integration tests.
@@ -14,7 +21,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=1 -->
+<!-- vault-format: spec-version=2 -->
 <!-- vault-format: schema-version=55 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -217,9 +224,9 @@ synthetic no-app recovery test before any such public claim.
 
 ## Compatibility and change control
 
-- `spec-version = 1` covers current local and backup formats, not the planned
-  portable or Sync formats. New wire sections require a spec-version bump and
-  their own reviewed vectors.
+- `spec-version = 2` adds Part B, the planned portable and Sync content
+  contract, to the shipped formats of Part A. New wire sections require a
+  spec-version bump and their own reviewed vectors.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -233,3 +240,292 @@ synthetic no-app recovery test before any such public claim.
   the exact engine and migration policy, not just parse the outer envelope.
 - No real financial records, vault paths, credentials, or keys appear in this
   specification or its vectors.
+
+# Part B — Portable export and Sync genesis (specified, not implemented)
+
+Nothing in this part is written or read by the shipped application. It is the
+contract that `personal-cfo-vn91` (portable export and import) and
+`personal-cfo-1cltt` (Sync genesis snapshot) implement. Owner approval of the
+separation below is recorded on `personal-cfo-klr.4` (2026-09-27). The outer
+encryption framing and the Sync wire formats are specified in Part C; this part
+fixes *what* is carried and *what the importer promises*.
+
+## B.1 Three formats, three jobs
+
+DohFlow has three distinct data formats. They are not interchangeable, and none
+is derived by post-processing another.
+
+| | `.pcfobk` backup | Portable export | Sync genesis snapshot |
+| --- | --- | --- | --- |
+| Job | restore the same vault on this or another machine | personal migration and data ownership | bootstrap a Sync replica |
+| Status | shipped (v2 written, v1 read) | specified, not implemented | specified, not implemented |
+| Content | encrypted copy of `vault.db`, its envelope and blobs | logical JSON records, document bytes, CSV, recovery instructions | class-1 logical rows plus the class-1b artifact closure |
+| Protected by | the vault password (through the vault DEK; v1 directly) | the vault password and no other secret | Sync epoch keys ([ADR 0074](../adr/0074-dohflow-sync-architecture.md)); never the password |
+| Carries credentials and device keys | credentials yes (whole database) | no | no |
+| Needs a DohFlow binary to read | yes | no: the independent recovery tool (B.6) | yes |
+| Historical records | the whole database | read-only imported history | none: state, not history |
+
+Giving another person a portable bundle and its password exposes the vault
+password. The bundle is for the owner's own migration, not for sharing.
+
+## B.2 Inclusion and exclusion inventory
+
+The [CLASS-0 manifest](../../crates/db-worker/table_classes.toml) assigns every
+table a Sync class. This inventory states, for **every** manifest row, what the
+portable export and the Sync genesis do with it, so nothing is omitted under the
+word "Everything". Dispositions:
+
+- `include`: the rows travel as data.
+- `fields`: only the named fields travel; the rest are named as excluded.
+- `history`: the rows travel as read-only imported history (portable only).
+- `artifact`: bytes travel as artifacts (B.3); under Sync, as opaque, epoch-scoped
+  objects under the closure rule in ADR 0074 Decision 1.
+- `rebuild`: not shipped; rebuilt locally from the shipped rows.
+- `exclude`: never leaves the vault.
+
+A manifest row with no line here, a line with no manifest row, a class that
+disagrees with the manifest, or a disposition outside this list fails
+`crates/db-worker/tests/portable_inventory_spec.rs`. Reclassifying a table
+therefore requires reviewing this inventory.
+
+<!-- inventory:start -->
+| Table | Class | Portable | Sync genesis | Rule |
+| --- | --- | --- | --- | --- |
+| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. |
+| `ledger_accounts` | 1 | include | include | Canonical user intent. |
+| `accounts` | 1 | include | include | Canonical user intent. |
+| `ledger_transactions` | 1 | include | include | Canonical user intent. |
+| `ledger_postings` | 1 | include | include | Canonical user intent. |
+| `provenance_links` | 1 | history | exclude | Travels with the history it indexes, on the same terms as `operation_log`. |
+| `categories` | 1 | include | include | Canonical user intent. |
+| `category_aliases` | 1 | include | include | Canonical user intent. |
+| `income_sources` | 1 | include | include | Canonical user intent. |
+| `recurring_events` | 1 | include | include | Canonical user intent. |
+| `recurring_event_instances` | 1 | include | include | Canonical user intent. |
+| `recurring_event_tags` | 1 | include | include | Canonical user intent. |
+| `recurring_transfers` | 1 | include | include | Canonical user intent. |
+| `bill_contracts` | 1 | include | include | Canonical user intent. |
+| `confirmed_obligations` | 1 | include | include | Canonical user intent. |
+| `transaction_details` | 1 | include | include | Canonical user intent. |
+| `transaction_reviews` | 1 | include | include | Canonical user intent. |
+| `tags` | 1 | include | include | Canonical user intent. |
+| `transaction_tags` | 1 | include | include | Canonical user intent. |
+| `split_lines` | 1 | include | include | Canonical user intent. |
+| `split_line_tags` | 1 | include | include | Canonical user intent. |
+| `debt_terms` | 1 | include | include | Canonical user intent. |
+| `credit_card_cycles` | 1 | include | include | Canonical user intent. |
+| `credit_card_statements` | 1 | include | include | Canonical user intent. |
+| `change_journal_entries` | 1 | include | include | Canonical user intent. |
+| `attachments` | 4 | fields | fields | `id`, `plaintext_size`, `mime_type`, `original_filename` and `created_at` travel; `content_alg` and `ref_count` are rebuilt; `storage_id`, `wrapped_content_key`, `content_key_nonce` and `content_nonce` never travel. |
+| `attachment_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `source_batches` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
+| `source_records` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
+| `parser_runs` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
+| `source_provenance_links` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
+| `commitments` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `transaction_display_rows_read_model` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `read_model_checksums` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_input_snapshots` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_runs` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_rows` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_actuals` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_diffs` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_dirty_ranges` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_quality_scores` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `forecast_backtest_results` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `money_inbox_read_model` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `model_registry` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `risk_flags` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `recurring_suggestion_suppressions` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
+| `command_idempotency_keys` | 3 | exclude | exclude | Device-local state. |
+| `vault_meta` | 3 | exclude | exclude | Device-local state. |
+| `vault_metadata` | 3 | fields | fields | Only `household_timezone` travels, in the manifest vault profile (portable) and the genesis header (Sync). `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. |
+| `schema_migrations` | 3 | exclude | exclude | Device-local state. |
+| `audit_events` | 3 | exclude | exclude | Device-local security evidence and replay-owned planned-command rows; not a user-owned financial record. |
+| `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
+| `connector_connections` | 3 | exclude | exclude | Holds provider credentials. Excluded whole until the identity/secret split in `personal-cfo-07u` yields a replicable identity table. |
+| `connector_account_links` | 3 | exclude | exclude | Holds local refresh watermarks. Excluded whole until the split in `personal-cfo-07u`. |
+| `staged_accounts` | 3 | exclude | exclude | Device-local state. |
+| `staged_balances` | 3 | exclude | exclude | Device-local state. |
+| `staged_transactions` | 3 | exclude | exclude | Device-local state. |
+| `system_ledger_accounts` | 3 | exclude | exclude | Device-local state. |
+| `projection_cursors` | 3 | exclude | exclude | Device-local state. |
+| `dedupe_decisions` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `balance_observations` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `scenarios` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `forecast_assumption_events` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `forecast_dependency_edges` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `merchant_aliases` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `merchant_identities` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `manual_entry_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `transaction_categorizations` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `settings_user_keys` | 4 | fields | fields | Key-scope marker for the `user.*` keys carried from `settings`. |
+| `attachment_blobs` | 1b | artifact | artifact | Document bytes: plaintext inside the portable bundle; an opaque, epoch-scoped artifact object under Sync. |
+| `durable_jobs` | 3 | exclude | exclude | Device-local state. |
+| `backup_history` | 3 | exclude | exclude | Device-local state. |
+<!-- inventory:end -->
+
+Rules that apply to the whole inventory:
+
+1. **Credentials, device keys, endpoint overrides, caches and runtime queues
+   never travel in either format.** Provider credentials and refresh watermarks
+   (`connector_connections`, `connector_account_links`), idempotency memos,
+   durable jobs, staged import rows, backup receipts and the vault's
+   key-derivation parameters are excluded by the rows above.
+2. **No raw database image and no recovery key or packet** is part of the
+   portable export. Emergency-access recovery is separate future work
+   (`personal-cfo-6zf`).
+3. **A document's wrapped content key, content nonce and local storage ID are
+   never exported.** They are bound to the vault DEK that wrote them. The
+   importer re-encrypts the document bytes under the new vault's DEK and a
+   fresh content key (B.4).
+4. **The nine intent groups ADR 0074 Decision 5 promotes from class 4 to class
+   1 are exported as class 1.** The manifest still lists them as class 4 until
+   `personal-cfo-5ymg8` routes their writes; the inventory follows the
+   decision, so the portable export is complete before that routing lands.
+5. **Pre-Sync operation history is audit evidence.** It is portable as history
+   and is never presented as a replayable command stream or carried into a
+   Sync genesis ([ADR 0017](../adr/0017-sync-identity-and-clock.md)).
+
+## B.3 Portable logical model
+
+The portable export is a logical bundle. Its encrypted container is specified
+in Part C; this section defines the logical contents and is independent of the
+container.
+
+### Contents
+
+| Logical path | Meaning |
+| --- | --- |
+| `manifest.json` | format identity and version, producer versions, the vault profile, per-table row counts and hashes, the artifact list, and the inventory version |
+| `data/<table>.jsonl` | one file per table with disposition `include`, `fields` or `history`; one JSON object per line, in primary-key order |
+| `artifacts/<artifact_id>` | the plaintext bytes of one document, addressed by the attachment's logical `id` |
+| `exports/transactions.csv` | the existing plaintext transaction export (`personal-cfo-hbd8`), included unchanged |
+| `RECOVERY.txt` | plain-language instructions for opening the bundle without DohFlow (B.6) |
+
+`manifest.json` carries, at minimum:
+
+- `format`, the constant `dohflow-portable-export`, and `format_version`, an
+  integer that is `1` for this revision;
+- the producing app version and `schema_version`;
+- the vault profile: `household_timezone` and nothing else from
+  `vault_metadata`;
+- the inventory version;
+- a `tables` array: name, class, row count, the SHA-256 of the file's bytes, and
+  a `columns` array giving each column's name and kind;
+- an `artifacts` array: the document's logical `id`, byte length, SHA-256 of the
+  plaintext, `mime_type` and `original_filename`.
+
+The `artifacts` array is the **complete artifact manifest**. An importer
+refuses a bundle whose list names a document that is absent, or that contains a
+document the list does not name.
+
+### Row encoding
+
+Each line of a `data/<table>.jsonl` file is one JSON object keyed by the
+table's column names. The manifest's `columns` array gives each column a kind
+that fixes its encoding, so a reader needs no knowledge of the SQL schema:
+
+- `int`: a JSON integer, read as a signed 64-bit value.
+- `text`: a JSON string.
+- `uuid`: a lowercase hyphenated UUID string, for the 16-byte identifier columns.
+- `bytes`: a standard base64 string, for any other binary column.
+- a SQL `NULL` is JSON `null` in any kind.
+
+Money is always its integer minor units plus a separate currency column; no
+floating-point value appears in any exported record. Every file is UTF-8 with
+`\n` line endings.
+
+### Preserved, rebuilt and not preserved
+
+Importing a bundle into a fresh vault **preserves**:
+
+- every primary and foreign key of every exported table, so references hold;
+- every `created_at` and other timestamp, and every user-entered field;
+- imported history rows with their original identifiers and times, marked by
+  the absence of an op-log-v2 payload, which is what makes them audit history.
+
+It **rebuilds**, by the same projection code used after any import, every table
+with disposition `rebuild`, so forecasts and the transaction display model are
+derived from the imported canonical rows rather than copied.
+
+It does **not** preserve the source vault's identity: the importer mints a new
+`vault_id`, `node_id`, data-encrypting key, salt and envelope. The new vault's
+password is chosen at import and may equal the bundle password; the importer
+never assumes it does.
+
+### Import and export semantics
+
+- **Fresh vault only.** An import creates a new named, app-managed vault through
+  the existing vault lifecycle. It never imports over an existing vault and
+  never modifies the bundle.
+- **Verify, then register.** The importer authenticates the container, then
+  checks every table file and every artifact against the manifest hashes before
+  the new vault is registered or activated. A failure at any point removes the
+  new vault's files and leaves no usable partial vault.
+- **No plaintext temporary files.** Neither exporter nor importer writes
+  decrypted data to disk outside the user-selected destination or the new
+  encrypted vault. Decryption streams into memory and the new vault.
+- **Atomic, non-overwriting publication.** The exporter writes the encrypted
+  bundle to an owned temporary name beside the destination, flushes it, and
+  renames it into place only when complete. It never replaces an existing
+  destination, and it removes only the partial file it created.
+- **Source vault unchanged.** Export reads a consistent snapshot; neither
+  operation modifies the source vault.
+
+### Typed failures
+
+Every failure below is a distinct, typed outcome and never a partial success.
+
+| Outcome | When |
+| --- | --- |
+| `WrongPassword` | the container does not authenticate under the supplied password |
+| `Corrupt` | the container, a table file or an artifact fails its integrity check |
+| `UnsupportedVersion` | `format_version` is below the oldest version this reader supports |
+| `NewerFormat` | `format_version` or the producer's `schema_version` is newer than this reader knows |
+| `MissingArtifact` | the artifact list and the bundle disagree |
+| `DestinationExists` | the export destination already exists |
+| `DiskFull` | the destination or the new vault cannot be written |
+| `Cancelled` | the user cancelled; owned partial output is removed |
+| `Interrupted` | the process ended early; no success is reported and owned partial output is removed on the next run |
+
+### Compatibility
+
+A reader supports an explicit, documented range of `format_version` values and
+refuses the rest; DohFlow does not promise that every future version opens. A
+bundle with an unknown field at a supported version is `Corrupt`. A column
+absent from an older bundle takes the importing schema's default; a column the
+importer's schema does not know is `NewerFormat`.
+
+## B.4 Documents
+
+An attachment's bytes are exported as plaintext inside the encrypted bundle and
+are verified against the manifest's plaintext SHA-256. On import, the importer
+derives the new vault's storage ID, generates a fresh content key, encrypts the
+bytes, wraps that key under the new DEK, and writes the new blob and row. No
+exported value is a local storage ID or key material. The same receiver-side
+rule governs the Sync genesis (ADR 0074 Decision 1).
+
+## B.5 What the Sync genesis reuses
+
+The genesis snapshot reuses only the logical model above, restricted to the
+rows with a Sync disposition of `include`, `fields` or `artifact`. It does not
+reuse the user-facing password wrapper, the history rows or the plaintext CSV
+and instructions. Its wire encoding is in Part C.
+
+## B.6 Independent recovery
+
+The portable export is only a recovery path if it can be opened without
+DohFlow. The independent recovery tool, working name `dohflow-recover`, is
+specified here and delivered and verified by `personal-cfo-vn91`:
+
+- it takes a bundle and the vault password and writes the logical contents of
+  B.3 into a directory the user selects, and writes nothing elsewhere;
+- it depends on the published container specification (Part C) and its test
+  vectors, not on the vault, the database or any DohFlow crate;
+- it reports the typed outcomes above and a non-zero exit status on failure;
+- it ships with a procedure a person can follow with the format specification
+  alone.
+
+DohFlow makes **no** claim that a bundle can be opened without DohFlow until a
+synthetic no-application recovery test passes in `personal-cfo-vn91`.
