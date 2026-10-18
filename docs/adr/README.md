@@ -101,11 +101,12 @@ when the ADR was written (owner-confirmed).
 | 0077 | [Data ownership and wire formats](0077-wire-formats.md) | Public | Accepted |
 | 0078 | — internal | Internal | Not yet written (`personal-cfo-quhmv`) |
 | 0079 | Desktop-first platform order | Public | Not yet written (`personal-cfo-bonpc`) |
-| 0080 | Mobile architecture | Public | Not yet written (`personal-cfo-iuxhq`) |
+| 0080 | — internal | Internal | Not yet written (`personal-cfo-iuxhq`); tier changed from Public by ADR 0085 decision 4 |
 | 0081 | — internal | Internal | Not yet written (`personal-cfo-658vi`) |
 | 0082 | [The public-disclosure boundary](0082-public-disclosure-boundary.md) | Public | Accepted |
 | 0083 | [Vault key rotation (DEK rekey)](0083-vault-key-rotation.md) | Public | Accepted |
 | 0084 | — internal | Internal | Accepted; documentation review/merge pending |
+| 0085 | [The open-core boundary](0085-open-core-boundary.md) | Public | Accepted |
 
 ## Sub-numbered amendments
 
