@@ -149,7 +149,7 @@ fn live_key_end_to_end_refresh_stages_and_commits() {
         adapter,
         ConnectorSyncInput {
             connection_id: linked.connection_id.clone(),
-            idempotency_key: format!("drill-{}", uuid::Uuid::now_v7()),
+            idempotency_key: format!("drill-{}", uuid::Uuid::new_v4()),
         },
     )
     .unwrap();

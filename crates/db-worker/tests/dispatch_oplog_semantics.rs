@@ -74,7 +74,7 @@ fn replay_is_a_noop_for_each_command_type() {
     for variant in 0u8..4 {
         let (_dir, worker) = worker();
         let cmd = cmd_of(variant);
-        let key = Uuid::now_v7().to_string();
+        let key = Uuid::new_v4().to_string();
 
         let first = worker.dispatch(meta_with_key(&key), cmd.clone()).unwrap();
         // A retry: different command_id, SAME idempotency_key.
@@ -102,7 +102,7 @@ fn replay_is_a_noop_for_each_command_type() {
 #[test]
 fn replayed_outcome_returns_the_original_op_seq() {
     let (_dir, worker) = worker();
-    let key = Uuid::now_v7().to_string();
+    let key = Uuid::new_v4().to_string();
     let first = worker
         .dispatch(meta_with_key(&key), create_account_cmd())
         .unwrap();
@@ -260,8 +260,10 @@ proptest! {
     #[test]
     fn replay_with_same_idempotency_key_writes_nothing_new(
         variant in 0u8..4,
-        key in "[a-zA-Z0-9]{8,24}",
+        // A valid key (a CSPRNG-shaped UUIDv4) built from arbitrary bytes.
+        bytes in proptest::array::uniform16(proptest::num::u8::ANY),
     ) {
+        let key = uuid::Builder::from_random_bytes(bytes).into_uuid().to_string();
         let (_dir, worker) = worker();
         let cmd = cmd_of(variant);
 

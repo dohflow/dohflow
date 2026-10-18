@@ -56,7 +56,10 @@ fn meta(index: u8) -> CommandMeta {
         causation_id: None,
         actor_type: ActorType::User,
         actor_id: "synthetic-engine-fixture".into(),
-        idempotency_key: format!("engine-fixture-{index}"),
+        // Deterministic (a frozen fixture) and valid: a UUIDv4-shaped key from fixed bytes.
+        idempotency_key: uuid::Builder::from_random_bytes([index; 16])
+            .into_uuid()
+            .to_string(),
     }
 }
 

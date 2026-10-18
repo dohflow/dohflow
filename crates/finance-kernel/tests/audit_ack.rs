@@ -17,7 +17,7 @@ fn meta() -> CommandMeta {
         causation_id: None,
         actor_type: ActorType::User,
         actor_id: "n7bo".to_owned(),
-        idempotency_key: Uuid::now_v7().to_string(),
+        idempotency_key: Uuid::new_v4().to_string(),
     }
 }
 

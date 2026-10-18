@@ -646,7 +646,11 @@ mod protocol_tests {
             causation_id: None,
             actor_type: ActorType::User,
             actor_id: "rekey-test".into(),
-            idempotency_key: format!("rekey-test-{index}"),
+            // Deterministic and valid: a UUIDv4-shaped key built from fixed bytes. A
+            // deterministic key exists only under cfg(test) (ADR 0077, C.5).
+            idempotency_key: uuid::Builder::from_random_bytes([index; 16])
+                .into_uuid()
+                .to_string(),
         }
     }
 

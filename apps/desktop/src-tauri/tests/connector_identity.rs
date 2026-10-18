@@ -121,7 +121,7 @@ fn refresh(
         adapter,
         ConnectorSyncInput {
             connection_id: connection_id.to_owned(),
-            idempotency_key: uuid::Uuid::now_v7().to_string(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .expect("refresh")
@@ -461,7 +461,7 @@ fn rows_synced_before_connections_were_recorded_do_not_flood_the_first_refresh()
                     causation_id: None,
                     actor_type: finance_kernel::ActorType::User,
                     actor_id: "tester".to_owned(),
-                    idempotency_key: uuid::Uuid::now_v7().to_string(),
+                    idempotency_key: uuid::Uuid::new_v4().to_string(),
                 },
             )
             .expect("legacy ingest");
@@ -503,7 +503,7 @@ fn a_voided_row_from_one_connection_lets_the_other_connections_copy_import() {
     void_transaction_impl(
         &state,
         voided.transaction_id,
-        uuid::Uuid::now_v7().to_string(),
+        uuid::Uuid::new_v4().to_string(),
     )
     .unwrap();
 

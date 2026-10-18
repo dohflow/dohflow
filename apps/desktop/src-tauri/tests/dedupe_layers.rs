@@ -148,7 +148,7 @@ fn waiting(state: &AppState) -> Vec<MoneyInboxItemDto> {
 }
 
 fn key() -> String {
-    uuid::Uuid::now_v7().to_string()
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// The inbox payload's suspected counterpart id.

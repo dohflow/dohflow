@@ -18,7 +18,7 @@ fn worker() -> (TempDir, DbWorker) {
 }
 
 fn meta() -> CommandMeta {
-    meta_with_key(&Uuid::now_v7().to_string())
+    meta_with_key(&Uuid::new_v4().to_string())
 }
 
 fn meta_with_key(idempotency_key: &str) -> CommandMeta {
@@ -5516,7 +5516,7 @@ fn committing_a_staged_transaction_is_idempotent() {
 
     worker
         .dispatch(
-            meta_with_key("commit-pay"),
+            meta_with_key("4c0b3d0e-7a51-4b8e-9f3a-2d6e8a1c5b70"),
             WriteCommand::CommitStaged {
                 staged_transaction_id: staged,
                 force: false,
@@ -5525,7 +5525,7 @@ fn committing_a_staged_transaction_is_idempotent() {
         .unwrap();
     worker
         .dispatch(
-            meta_with_key("commit-pay"),
+            meta_with_key("4c0b3d0e-7a51-4b8e-9f3a-2d6e8a1c5b70"),
             WriteCommand::CommitStaged {
                 staged_transaction_id: staged,
                 force: false,
@@ -5968,7 +5968,7 @@ fn import_anyway_force_commits_a_flagged_duplicate() {
     // Import anyway (twice with the same key — the replay must be a no-op).
     worker
         .dispatch(
-            meta_with_key("import-anyway"),
+            meta_with_key("9a7e51c2-3b64-4d08-8e1f-6c2b4a90d3e5"),
             WriteCommand::CommitStaged {
                 staged_transaction_id: second,
                 force: true,
@@ -5977,7 +5977,7 @@ fn import_anyway_force_commits_a_flagged_duplicate() {
         .unwrap();
     worker
         .dispatch(
-            meta_with_key("import-anyway"),
+            meta_with_key("9a7e51c2-3b64-4d08-8e1f-6c2b4a90d3e5"),
             WriteCommand::CommitStaged {
                 staged_transaction_id: second,
                 force: true,

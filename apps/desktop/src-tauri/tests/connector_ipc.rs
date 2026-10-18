@@ -101,7 +101,7 @@ fn sync(
         adapter,
         ConnectorSyncInput {
             connection_id: connection_id.to_owned(),
-            idempotency_key: uuid::Uuid::now_v7().to_string(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .unwrap()
@@ -515,7 +515,7 @@ fn a_1k_record_sync_batch_stages_and_commits_every_row() {
         causation_id: None,
         actor_type: ActorType::User,
         actor_id: "test".to_owned(),
-        idempotency_key: format!("bulk-{}", uuid::Uuid::now_v7()),
+        idempotency_key: format!("bulk-{}", uuid::Uuid::new_v4()),
     };
     let result = kernel
         .ingest_sync_batch("simplefin", "0.1.0", "bulk test", None, &batch, &map, &meta)
@@ -1237,7 +1237,7 @@ fn a_key_echoing_refusal_never_reaches_last_error_the_dto_or_logs() {
             adapter,
             ConnectorSyncInput {
                 connection_id: connection_id.clone(),
-                idempotency_key: uuid::Uuid::now_v7().to_string(),
+                idempotency_key: uuid::Uuid::new_v4().to_string(),
             },
         );
         rendered.push_str(&format!("{result:?}"));
@@ -1279,7 +1279,7 @@ fn key_echoing_per_account_errors_never_reach_sync_warnings() {
             adapter,
             ConnectorSyncInput {
                 connection_id: connection_id.clone(),
-                idempotency_key: uuid::Uuid::now_v7().to_string(),
+                idempotency_key: uuid::Uuid::new_v4().to_string(),
             },
         );
         rendered = format!("{result:?}");
@@ -1588,7 +1588,7 @@ fn a_failed_refresh_leaves_currencies_alone_and_discovery_backfills_them() {
         &throttled,
         ConnectorSyncInput {
             connection_id: connection_id.clone(),
-            idempotency_key: uuid::Uuid::now_v7().to_string(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     );
     assert!(link_dto(&state, "mock-acct-checking").currency.is_none());

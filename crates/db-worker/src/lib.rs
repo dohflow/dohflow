@@ -232,6 +232,41 @@ impl CommandMeta {
     }
 }
 
+/// Mint an idempotency key: a UUID version 4 from the operating system's CSPRNG,
+/// in canonical lowercase hyphenated form, with no prefix. Every backend site that
+/// needs a fresh key uses this one function (ADR 0077, C.5; personal-cfo-g3m.6).
+///
+/// `command_id` may stay a UUIDv7; only the idempotency key must be unpredictable,
+/// because the Sync tag secret limits a revoked device to recognizing only tags of
+/// keys it already saw.
+#[must_use]
+pub fn new_idempotency_key() -> String {
+    Uuid::new_v4().to_string()
+}
+
+/// Whether `key` is a canonical hyphenated UUID version 4: 36 characters,
+/// lowercase hexadecimal digits, hyphens at positions 8, 13, 18 and 23, version
+/// nibble `4` and RFC 4122 variant (`8`, `9`, `a` or `b`). Uppercase, braced,
+/// URN, unhyphenated, prefixed and other-version keys are rejected.
+///
+/// # Errors
+/// Returns [`DbError::InvalidIdempotencyKey`] for any other string.
+pub fn validate_idempotency_key(key: &str) -> Result<(), DbError> {
+    let bytes = key.as_bytes();
+    let canonical = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => *b == b'-',
+            14 => *b == b'4',
+            19 => matches!(*b, b'8' | b'9' | b'a' | b'b'),
+            _ => matches!(*b, b'0'..=b'9' | b'a'..=b'f'),
+        });
+    if canonical {
+        Ok(())
+    } else {
+        Err(DbError::InvalidIdempotencyKey)
+    }
+}
+
 /// One line of a [`WriteCommand::SetSplits`] (ADR 0034, personal-cfo-e7i): a slice of
 /// a transaction's amount with its own category / note / tags. A plain data carrier —
 /// the apply mints the [`SplitLineId`], assigns `sort_order` from the vec position, and
@@ -1084,6 +1119,10 @@ pub enum DbError {
     /// A required metadata field was empty.
     #[error("missing required command metadata: {0}")]
     MissingMetadata(&'static str),
+    /// The idempotency key is not a canonical hyphenated UUID version 4. Every key
+    /// that can enter a Sync envelope is a CSPRNG UUIDv4 (ADR 0077, C.5).
+    #[error("the idempotency key must be a canonical UUID version 4")]
+    InvalidIdempotencyKey,
     /// Another process already owns the unlocked-vault runner.
     #[error("vault is already unlocked by another process")]
     VaultInUse,
@@ -3884,6 +3923,11 @@ impl DbWorker {
         if let Some(op_seq) = find_by_idempotency_key(&guard.conn, &meta.idempotency_key)? {
             return Ok(Outcome::Replayed { op_seq });
         }
+
+        // The format applies to NEW commands only. It comes after the replay lookup
+        // so a key stored before this rule (a UUIDv7, a prefixed string) still
+        // dedupes until its 30-day expiry instead of being rejected.
+        validate_idempotency_key(&meta.idempotency_key)?;
 
         let result = catch_unwind(AssertUnwindSafe(|| {
             apply_command(&mut guard, &meta, &cmd, node_id, schema_version, fault)

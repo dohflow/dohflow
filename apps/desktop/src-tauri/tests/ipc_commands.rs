@@ -1812,10 +1812,11 @@ fn source_batch_ingestion_lifecycle_through_ipc() {
         parse_confidence_bps: Some(10_000),
         idempotency_key: key.to_owned(),
     };
-    let attached = attach_source_record_impl(&state, attach("k1")).unwrap();
+    let attached =
+        attach_source_record_impl(&state, attach("b1d0c7a4-5e92-4f3a-8d61-0c7e2a9b4f18")).unwrap();
     assert!(!attached.source_record_id.is_empty());
     // Re-attaching the same content (distinct command) is content-deduped (no error).
-    attach_source_record_impl(&state, attach("k2")).unwrap();
+    attach_source_record_impl(&state, attach("e4a2f6c9-1b73-4c58-9a0d-7f3e5b8c2d41")).unwrap();
 
     // Advance the batch to a terminal state.
     update_batch_state_impl(
@@ -2555,6 +2556,8 @@ fn identical_fingerprints_on_different_accounts_are_not_duplicates() {
 /// must report `replayed` and leave the balance reflecting ONE posting.
 #[test]
 fn record_transaction_with_same_key_replays_instead_of_double_posting() {
+    // One user action: the same synthetic UUIDv4 is sent twice, as a double-fired submit would.
+    const ONE_USER_ACTION: &str = "3f8a6d21-9c47-4e0b-a5d3-1b7c9e2f6a84";
     let (_dir, state) = open_state();
     let id = create_account_impl(&state, create_input("Checking"))
         .unwrap()
@@ -2567,7 +2570,7 @@ fn record_transaction_with_same_key_replays_instead_of_double_posting() {
             currency: "USD".to_owned(),
         },
         occurred_at: "2026-06-07T00:00:00Z".to_owned(),
-        idempotency_key: "one-user-action".to_owned(),
+        idempotency_key: ONE_USER_ACTION.to_owned(),
     };
 
     let first = record_transaction_impl(&state, input()).unwrap();
@@ -2594,6 +2597,91 @@ fn record_transaction_with_same_key_replays_instead_of_double_posting() {
             .unwrap()
             .minor_units,
         -4_000
+    );
+}
+
+/// ADR 0077 C.5 (personal-cfo-g3m.6): the IPC boundary rejects a supplied key that is
+/// not a canonical hyphenated UUIDv4 with a typed validation error, and nothing is
+/// posted. A blank key is the "no key supplied" case and gets a fresh UUIDv4.
+#[test]
+fn record_transaction_rejects_a_key_that_is_not_a_canonical_uuid_v4() {
+    let (_dir, state) = open_state();
+    let id = create_account_impl(&state, create_input("Checking"))
+        .unwrap()
+        .account_id;
+    let input = |key: String| RecordTransactionInput {
+        account_id: id.clone(),
+        amount: MoneyDto {
+            minor_units: -1_500,
+            currency: "USD".to_owned(),
+        },
+        occurred_at: "2026-06-07T00:00:00Z".to_owned(),
+        idempotency_key: key,
+    };
+
+    for key in [
+        // A UUIDv7, the backend's old scheme.
+        uuid::Uuid::now_v7().to_string(),
+        // The prefixed strings the connector paths used to mint.
+        format!("connector-refresh-{}", uuid::Uuid::new_v4()),
+        format!("connector-auto-{}", uuid::Uuid::new_v4()),
+        // A non-UUID, an uppercase UUIDv4 and a UUIDv4 without hyphens.
+        "not-a-uuid".to_owned(),
+        uuid::Uuid::new_v4().to_string().to_uppercase(),
+        uuid::Uuid::new_v4().simple().to_string(),
+    ] {
+        let err = record_transaction_impl(&state, input(key.clone())).unwrap_err();
+        assert!(
+            matches!(&err, IpcError::Validation(message) if message.contains("UUID version 4")),
+            "{key}: {err:?}"
+        );
+    }
+    assert_eq!(
+        account_balance_impl(&state, id.clone())
+            .unwrap()
+            .map_or(0, |m| m.minor_units),
+        0,
+        "a rejected key posts nothing"
+    );
+
+    // A canonical UUIDv4 applies.
+    record_transaction_impl(&state, input(uuid::Uuid::new_v4().to_string())).unwrap();
+    assert_eq!(
+        account_balance_impl(&state, id)
+            .unwrap()
+            .unwrap()
+            .minor_units,
+        -1_500
+    );
+}
+
+/// A blank key means "none supplied": the boundary mints a fresh UUIDv4, so two
+/// keyless calls are two distinct, applied commands rather than one replay.
+#[test]
+fn a_blank_key_is_replaced_by_a_fresh_key_and_each_call_applies() {
+    let (_dir, state) = open_state();
+    let id = create_account_impl(&state, create_input("Checking"))
+        .unwrap()
+        .account_id;
+    let keyless = || RecordTransactionInput {
+        account_id: id.clone(),
+        amount: MoneyDto {
+            minor_units: -100,
+            currency: "USD".to_owned(),
+        },
+        occurred_at: "2026-06-07T00:00:00Z".to_owned(),
+        idempotency_key: String::new(),
+    };
+    let first = record_transaction_impl(&state, keyless()).unwrap();
+    let second = record_transaction_impl(&state, keyless()).unwrap();
+    assert!(!first.result.replayed && !second.result.replayed);
+    assert_ne!(first.transaction_id, second.transaction_id);
+    assert_eq!(
+        account_balance_impl(&state, id)
+            .unwrap()
+            .unwrap()
+            .minor_units,
+        -200
     );
 }
 
@@ -3094,8 +3182,12 @@ fn mark_inbox_reviewed_bulk_reviews_all_and_rejects_unknown_ids() {
         ids.push(result.transaction_id);
     }
 
-    let count =
-        mark_inbox_reviewed_bulk_impl(&state, "bulk-key-1".to_owned(), ids.clone()).unwrap();
+    let count = mark_inbox_reviewed_bulk_impl(
+        &state,
+        "7c19e3b5-2a8d-4f60-b4e7-5d1a8c3f9e02".to_owned(),
+        ids.clone(),
+    )
+    .unwrap();
     assert_eq!(count, 3);
     let rows = transaction_rows_by_ids_impl(&state, ids).unwrap();
     assert!(rows.iter().all(|r| r.reviewed), "every row flips reviewed");
@@ -3103,7 +3195,7 @@ fn mark_inbox_reviewed_bulk_reviews_all_and_rejects_unknown_ids() {
     // Failure: an unknown id in the set is a typed command error.
     let err = mark_inbox_reviewed_bulk_impl(
         &state,
-        "bulk-key-2".to_owned(),
+        "a05d7b82-6e1c-4930-8f2a-c4b9d6e17a35".to_owned(),
         vec![uuid::Uuid::now_v7().to_string()],
     )
     .unwrap_err();

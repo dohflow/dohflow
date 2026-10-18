@@ -5,7 +5,8 @@
 
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, ArchiveAccount, CashflowRole, CommandEnvelope,
-    CommandMeta, CreateAccount, Currency, Kernel, LedgerAccountId, Money, Outcome, UpdateAccount,
+    CommandMeta, CreateAccount, Currency, Kernel, KernelError, LedgerAccountId, Money, Outcome,
+    UpdateAccount,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -17,7 +18,7 @@ fn meta() -> CommandMeta {
         causation_id: None,
         actor_type: ActorType::User,
         actor_id: "tester".to_owned(),
-        idempotency_key: Uuid::now_v7().to_string(),
+        idempotency_key: Uuid::new_v4().to_string(),
     }
 }
 
@@ -181,5 +182,41 @@ fn future_cash_series_selection_round_trips() {
     assert_eq!(
         kernel.future_cash_series_selection().unwrap().as_deref(),
         Some(r#"["acct:abc"]"#),
+    );
+}
+
+/// ADR 0077 C.5 (personal-cfo-g3m.6): a key that is not a canonical UUIDv4 is a
+/// typed kernel error, and nothing is written.
+#[test]
+fn an_invalid_idempotency_key_is_a_typed_error_and_writes_nothing() {
+    let (_dir, kernel) = kernel();
+    for key in [
+        Uuid::now_v7().to_string(),
+        format!("connector-refresh-{}", Uuid::new_v4()),
+        "not-a-uuid".to_owned(),
+    ] {
+        let mut bad = meta();
+        bad.idempotency_key = key.clone();
+        let err = kernel
+            .dispatch(CommandEnvelope::new(
+                bad,
+                CreateAccount::new(account_named("Rejected")),
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(err, KernelError::InvalidIdempotencyKey),
+            "{key}: {err:?}"
+        );
+    }
+    assert_eq!(kernel.account_count().unwrap(), 0);
+    assert_eq!(kernel.operation_count().unwrap(), 0);
+}
+
+#[test]
+fn the_kernel_mints_canonical_uuid_v4_keys() {
+    let key = finance_kernel::new_idempotency_key();
+    assert!(
+        finance_kernel::validate_idempotency_key(&key).is_ok(),
+        "{key}"
     );
 }

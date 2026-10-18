@@ -125,7 +125,7 @@ fn demo_token_end_to_end_sync_stages_and_commits() {
         adapter,
         ConnectorSyncInput {
             connection_id: connection_id.to_string(),
-            idempotency_key: format!("drill-{}", uuid::Uuid::now_v7()),
+            idempotency_key: format!("drill-{}", uuid::Uuid::new_v4()),
         },
     )
     .unwrap();

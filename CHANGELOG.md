@@ -17,6 +17,15 @@ record until the first tagged release.
   you had then, and an older vault can move to the current key-derivation
   settings this way.
 
+### Changed
+
+- Retry-safety keys (idempotency keys) are now always random version 4
+  identifiers, and a key in any other shape is rejected with a clear error
+  (`personal-cfo-g3m.6`). Nothing changes in how the app behaves: every action
+  already sent such a key, and the places that made their own now use the same
+  random kind. A key saved by an earlier version still protects a retried action
+  until it expires after 30 days.
+
 ### Fixed
 
 - The bundled database engine is updated to SQLCipher 4.14.0 / SQLite 3.51.3,
