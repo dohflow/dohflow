@@ -85,7 +85,7 @@ when the ADR was written (owner-confirmed).
 | 0062 | [Public-repo fork mechanics](0062-public-repo-fork-mechanics.md) | Public | Accepted (partially superseded by its own 2026-09-08 amendment) |
 | 0063 | [Typeface pairing](0063-typeface-pairing.md) | Public | Accepted |
 | 0064 | [Task tracking leaves the product repository](0064-task-tracking-leaves-the-repo.md) | Public | Accepted |
-| 0065 | [Minimum supported macOS version](0065-minimum-macos-version.md) | Public | Accepted |
+| 0065 | [Minimum supported macOS version](0065-minimum-macos-version.md) | Public | Accepted (15.0-timing addendum) |
 | 0066 | [Business model: free local app + paid services](0066-business-model-free-app-paid-services.md) | Public | Accepted — discusses the business model in the abstract; allowlisted in the tier tripwire (ADR 0082) |
 | 0066-A | [Pinned service endpoints, credentials, and operational logs](0066-A-dohflow-endpoints-pinned-credential-not-unlock.md) | Public | Accepted |
 | 0067 | [DohFlow rename policy](0067-dohflow-rename-policy.md) | Public | Accepted |
