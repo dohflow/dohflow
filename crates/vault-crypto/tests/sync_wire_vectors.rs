@@ -225,6 +225,10 @@ fn hex(b: &[u8]) -> String {
 
 const PROTOCOL_VERSION: u16 = 1;
 const SUITE_ID: u16 = 1;
+/// `reason` of an epoch record (C.6): genesis, revocation cutover, grant of the
+/// current key to a newly added device, and a forced rotation.
+const REASON_GENESIS: u8 = 1;
+const REASON_GRANT: u8 = 3;
 /// RFC 9180 `kem_id` of DHKEM(X25519, HKDF-SHA256), the KEM of suite 1.
 const KEM_ID_X25519: u16 = 0x0020;
 const MAX_KEM_PUBLIC_KEY: u32 = 2048;
@@ -548,6 +552,7 @@ fn membership_body(
 
 fn epoch_header(
     epoch: u64,
+    reason: u8,
     membership_head: &[u8; 32],
     prev_epoch: Option<[u8; 32]>,
     commit_ke: &[u8; 32],
@@ -560,6 +565,7 @@ fn epoch_header(
         .u16(KEM_ID_X25519)
         .fixed(&VAULT)
         .u64(epoch)
+        .u8(reason)
         .fixed(membership_head)
         .opt_fixed(prev_epoch.as_ref().map(<[u8; 32]>::as_slice))
         .fixed(commit_ke)
@@ -818,7 +824,27 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     let id_m2 = sha256(&m2);
     let commit_ke = key_commitment_ke(&k_e);
     let commit_s = key_commitment_s(&s);
-    let eh = epoch_header(1, &id_m2, None, &commit_ke, &commit_s, &fpr_a);
+    let eh_genesis = epoch_header(
+        1,
+        REASON_GENESIS,
+        &id_m1,
+        None,
+        &commit_ke,
+        &commit_s,
+        &fpr_a,
+    );
+    // The genesis record's id is SHA-256 of its full body, which includes sealed
+    // blobs that no vector computes; the grant sample links to a placeholder id.
+    let genesis_record_id = [0x99u8; 32];
+    let eh = epoch_header(
+        1,
+        REASON_GRANT,
+        &id_m2,
+        Some(genesis_record_id),
+        &commit_ke,
+        &commit_s,
+        &fpr_a,
+    );
     let eh_hash = sha256(&eh);
     let info_b = hpke_info(1, &dev_b, &fpr_b, &fpr_a, &id_m2, &eh_hash);
     let sealed_plaintext = Enc::new("dohflow/sync-sealed-keys/v1")
@@ -932,6 +958,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("membership_id_1", id_m1.to_vec()),
         ("membership_body_2", m2),
         ("membership_id_2", id_m2.to_vec()),
+        ("epoch_header_genesis", eh_genesis),
         ("epoch_header", eh),
         ("epoch_header_hash", eh_hash.to_vec()),
         ("hpke_info_recipient_b", info_b),
@@ -1352,6 +1379,9 @@ fn owner_decisions_are_pinned_in_the_spec_and_the_adr() {
         "`KeyCommitmentMismatch`",
         // PQ posture and F5.
         "`UnsupportedSuite`",
+        "`GrantHeadNotAdd`",
+        "**Catch-up walks backward from the anchor.**",
+        "**same transaction** as exactly one epoch record",
         "**before** it rejects",
         // Export A, C and D.
         "`SetHouseholdTimezone`",
@@ -1456,16 +1486,37 @@ fn export_objects_bind_header_path_index_and_length() {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct EpochFacts {
+enum Reason {
+    Genesis,
+    Cutover,
+    Grant,
+    Rotation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeadKind {
+    Add,
+    Revoke,
+}
+
+/// A membership record in the verified chain.
+#[derive(Clone, Copy, Debug)]
+struct Member {
+    version: u64,
+    id: [u8; 32],
+    kind: HeadKind,
+}
+
+/// The facts of an epoch record that the freshness and sequencing rules read.
+/// Signature, exact-recipient-set and commitment checks are separate rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Rec {
+    id: [u8; 32],
+    prev: Option<[u8; 32]>,
     key_epoch: u64,
-    record_id: [u8; 32],
-    prev_epoch_id: Option<[u8; 32]>,
+    reason: Reason,
     head_version: u64,
     head_id: [u8; 32],
-    /// The record is a revocation cutover.
-    cutover: bool,
-    /// The record's `membership_head` is a `revoke` record.
-    head_is_revoke: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1476,162 +1527,402 @@ enum EpochError {
     EpochEquivocation,
     BadEpochSequence,
     CutoverHeadNotRevoke,
+    GrantHeadNotAdd,
+    EpochRecordMissing,
+    SyncHalted,
+    StateRolledBack,
 }
 
-/// What a recipient has verified so far. Signature, recipient-set and
-/// commitment checks come first in the real protocol; this model pins the
-/// freshness and sequencing rules that decide whether a well-formed record is
-/// still acceptable.
+/// What a recipient has verified and persisted. `witness` is the newest head
+/// version it ever verified, kept under the anti-rollback witness (R6).
 struct Recipient {
-    head_version: u64,
-    head_id: [u8; 32],
-    latest: Option<EpochFacts>,
-    /// Every distinct record seen for an epoch, retained for diagnosis.
-    retained: Vec<EpochFacts>,
+    chain: Vec<Member>,
+    accepted: Vec<Rec>,
+    by_prev: std::collections::HashMap<Option<[u8; 32]>, [u8; 32]>,
+    /// Every distinct record seen, retained for diagnosis.
+    retained: Vec<Rec>,
+    halted: bool,
+    witness: u64,
 }
 
 impl Recipient {
-    fn accept(&mut self, r: EpochFacts) -> Result<(), EpochError> {
-        // Equivocation first: a different record for an epoch already accepted.
-        if let Some(prev) = self.latest {
-            if r.key_epoch == prev.key_epoch && r.record_id != prev.record_id {
-                self.retained.push(r);
-                return Err(EpochError::EpochEquivocation);
-            }
-            if r.key_epoch == prev.key_epoch {
-                return Ok(()); // an exact duplicate is idempotent
+    fn new(chain: Vec<Member>) -> Self {
+        let witness = chain.last().map_or(0, |m| m.version);
+        Self {
+            chain,
+            accepted: Vec::new(),
+            by_prev: std::collections::HashMap::new(),
+            retained: Vec::new(),
+            halted: false,
+            witness,
+        }
+    }
+
+    fn head(&self) -> Member {
+        *self.chain.last().expect("a verified chain")
+    }
+
+    fn member(&self, version: u64) -> Option<Member> {
+        self.chain.iter().find(|m| m.version == version).copied()
+    }
+
+    /// A device must not encrypt under any key while it is halted.
+    fn can_encrypt(&self) -> bool {
+        !self.halted && !self.accepted.is_empty()
+    }
+
+    /// Persisted state that is older than the witness is a rollback.
+    fn load(chain: Vec<Member>, witness: u64) -> Result<Self, EpochError> {
+        let mut r = Self::new(chain);
+        if r.head().version < witness {
+            return Err(EpochError::StateRolledBack);
+        }
+        r.witness = witness;
+        Ok(r)
+    }
+
+    /// `records` is ordered oldest to newest; the last is the **anchor**, which
+    /// must name the newest verified membership head. Every earlier record is an
+    /// intermediate reached by walking `prev` links back to the last accepted one.
+    fn accept(&mut self, records: &[Rec]) -> Result<(), EpochError> {
+        if self.halted {
+            return Err(EpochError::SyncHalted);
+        }
+        // Equivocation: two different records at one chain position.
+        for r in records {
+            if let Some(known) = self.by_prev.get(&r.prev) {
+                if *known != r.id {
+                    self.retained.push(*r);
+                    self.halted = true;
+                    return Err(EpochError::EpochEquivocation);
+                }
             }
         }
-        if r.head_version < self.head_version {
+        let todo: Vec<Rec> = records
+            .iter()
+            .filter(|r| !self.accepted.iter().any(|a| a.id == r.id))
+            .copied()
+            .collect();
+        let Some(anchor) = todo.last().copied() else {
+            return Ok(()); // exact duplicates are idempotent
+        };
+        // Rule 1 applies to the anchor only.
+        let head = self.head();
+        if anchor.head_version < head.version {
             return Err(EpochError::StaleMembershipHead);
         }
-        if r.head_version == self.head_version && r.head_id != self.head_id {
-            self.retained.push(r);
+        if anchor.head_version > head.version {
+            return Err(EpochError::ChainBehind);
+        }
+        if anchor.head_id != head.id {
+            self.retained.push(anchor);
+            self.halted = true;
             return Err(EpochError::MembershipChainFork);
         }
-        if r.head_version > self.head_version {
-            return Err(EpochError::ChainBehind); // fetch and verify the chain first
+        // Walk the links and check each record at its own named head.
+        let mut prev = self.accepted.last().copied();
+        for r in &todo {
+            if r.prev != prev.map(|p| p.id) {
+                return Err(EpochError::BadEpochSequence);
+            }
+            let named = self
+                .member(r.head_version)
+                .ok_or(EpochError::EpochRecordMissing)?;
+            if named.id != r.head_id {
+                return Err(EpochError::MembershipChainFork);
+            }
+            if let Some(p) = prev {
+                if r.head_version < p.head_version {
+                    return Err(EpochError::BadEpochSequence);
+                }
+            }
+            match (r.reason, prev) {
+                (Reason::Genesis, None) => {
+                    if r.key_epoch != 1 || r.head_version != 1 {
+                        return Err(EpochError::BadEpochSequence);
+                    }
+                }
+                (Reason::Genesis, Some(_)) | (_, None) => return Err(EpochError::BadEpochSequence),
+                (Reason::Cutover, Some(p)) => {
+                    if r.key_epoch != p.key_epoch + 1 {
+                        return Err(EpochError::BadEpochSequence);
+                    }
+                    if named.kind != HeadKind::Revoke || r.head_version <= p.head_version {
+                        return Err(EpochError::CutoverHeadNotRevoke);
+                    }
+                }
+                (Reason::Grant, Some(p)) => {
+                    if r.key_epoch != p.key_epoch {
+                        return Err(EpochError::BadEpochSequence);
+                    }
+                    if named.kind != HeadKind::Add || r.head_version <= p.head_version {
+                        return Err(EpochError::GrantHeadNotAdd);
+                    }
+                }
+                (Reason::Rotation, Some(p)) => {
+                    if r.key_epoch != p.key_epoch + 1 {
+                        return Err(EpochError::BadEpochSequence);
+                    }
+                }
+            }
+            prev = Some(*r);
         }
-        let expected_epoch = self.latest.map_or(1, |p| p.key_epoch + 1);
-        let expected_prev = self.latest.map(|p| p.record_id);
-        if r.key_epoch != expected_epoch || r.prev_epoch_id != expected_prev {
-            return Err(EpochError::BadEpochSequence);
+        // Coupling: every membership record after the genesis has exactly one
+        // epoch record naming it, so an anchor at the head exists whenever the
+        // head does.
+        let covered: std::collections::HashSet<u64> = self
+            .accepted
+            .iter()
+            .chain(todo.iter())
+            .map(|r| r.head_version)
+            .collect();
+        if self.chain.iter().any(|m| !covered.contains(&m.version)) {
+            return Err(EpochError::EpochRecordMissing);
         }
-        if r.cutover && !r.head_is_revoke {
-            return Err(EpochError::CutoverHeadNotRevoke);
+        for r in todo {
+            self.by_prev.insert(r.prev, r.id);
+            self.accepted.push(r);
+            self.retained.push(r);
         }
-        self.latest = Some(r);
-        self.retained.push(r);
+        self.witness = self.witness.max(head.version);
         Ok(())
     }
-}
 
-fn recipient_at(version: u64, head: u8, epoch1: Option<EpochFacts>) -> Recipient {
-    Recipient {
-        head_version: version,
-        head_id: [head; 32],
-        latest: epoch1,
-        retained: epoch1.into_iter().collect(),
+    /// Recovery after halting: re-enroll through an honest member, which
+    /// rebootstraps from the real chain. Local data and the outbox are kept.
+    fn recover_by_reenrollment(&mut self, real_chain: Vec<Member>) {
+        self.chain = real_chain;
+        self.accepted.clear();
+        self.by_prev.clear();
+        self.halted = false;
+        self.witness = self.head().version;
     }
 }
 
-fn epoch1() -> EpochFacts {
-    EpochFacts {
-        key_epoch: 1,
-        record_id: [0xe1; 32],
-        prev_epoch_id: None,
-        head_version: 4,
-        head_id: [4; 32],
-        cutover: false,
-        head_is_revoke: false,
+fn mid(n: u8) -> [u8; 32] {
+    [n; 32]
+}
+
+fn chain(kinds: &[HeadKind]) -> Vec<Member> {
+    kinds
+        .iter()
+        .enumerate()
+        .map(|(i, k)| Member {
+            version: i as u64 + 1,
+            id: mid(i as u8 + 1),
+            kind: *k,
+        })
+        .collect()
+}
+
+fn rec(id: u8, prev: Option<u8>, epoch: u64, reason: Reason, head: u64) -> Rec {
+    Rec {
+        id: mid(0xe0 + id),
+        prev: prev.map(|p| mid(0xe0 + p)),
+        key_epoch: epoch,
+        reason,
+        head_version: head,
+        head_id: mid(head as u8),
     }
+}
+
+/// A member of the chain at versions 1..=n: v1 genesis, then adds and revokes.
+fn base_chain() -> Vec<HeadKind> {
+    // v1 add (genesis), v2 add B, v3 add C, v4 revoke R
+    vec![
+        HeadKind::Add,
+        HeadKind::Add,
+        HeadKind::Add,
+        HeadKind::Revoke,
+    ]
+}
+
+fn full_history() -> Vec<Rec> {
+    vec![
+        rec(1, None, 1, Reason::Genesis, 1),
+        rec(2, Some(1), 1, Reason::Grant, 2),
+        rec(3, Some(2), 1, Reason::Grant, 3),
+        rec(4, Some(3), 2, Reason::Cutover, 4),
+    ]
 }
 
 #[test]
 fn a_stale_head_record_signed_by_a_since_revoked_member_is_rejected() {
-    // The recipient has verified the chain through version 5, where device R was
-    // revoked. R signs a well-formed epoch-2 record that names the older head
-    // (version 4), where R was still authorized.
-    let mut me = recipient_at(5, 5, Some(epoch1()));
-    let stale = EpochFacts {
-        key_epoch: 2,
-        record_id: [0xe2; 32],
-        prev_epoch_id: Some([0xe1; 32]),
-        head_version: 4,
-        head_id: [4; 32],
-        cutover: true,
-        head_is_revoke: false,
-    };
-    assert_eq!(me.accept(stale), Err(EpochError::StaleMembershipHead));
-    assert_eq!(me.latest, Some(epoch1()), "no key from the rejected record");
+    // The recipient has verified the chain through v4, where R was revoked. R
+    // signs a well-formed epoch-2 record that names the older head v3.
+    let mut me = Recipient::new(chain(&base_chain()));
+    assert_eq!(
+        me.accept(&full_history()[..3]),
+        Err(EpochError::StaleMembershipHead)
+    );
+    let mut forged = rec(9, Some(3), 2, Reason::Cutover, 3);
+    forged.head_id = mid(3);
+    let mut h = full_history()[..3].to_vec();
+    h.push(forged);
+    assert_eq!(me.accept(&h), Err(EpochError::StaleMembershipHead));
+    assert!(me.accepted.is_empty(), "no key from a rejected record");
 }
 
 #[test]
-fn a_cutover_must_name_the_revoke_record_as_its_head() {
-    let mut me = recipient_at(5, 5, Some(epoch1()));
-    let record = |head_is_revoke| EpochFacts {
-        key_epoch: 2,
-        record_id: [0xe2; 32],
-        prev_epoch_id: Some([0xe1; 32]),
-        head_version: 5,
-        head_id: [5; 32],
-        cutover: true,
-        head_is_revoke,
-    };
+fn a_device_that_missed_several_epochs_catches_up_from_the_anchor() {
+    // R1: D accepted epochs up to the grant at v2, then was offline while a
+    // second grant (v3) and a revocation cutover (v4) happened. D verifies the
+    // membership chain through v4 first, then walks back from the anchor.
+    let all = full_history();
+    let mut me = Recipient::new(chain(&base_chain()[..2]));
+    assert_eq!(me.accept(&all[..2]), Ok(()));
+    me.chain = chain(&base_chain());
+    assert_eq!(me.accept(&all[2..]), Ok(()));
+    assert_eq!(me.accepted.last().unwrap().key_epoch, 2);
+    assert!(me.can_encrypt());
+    // Across a cutover followed by an add as well.
+    let kinds = [
+        HeadKind::Add,
+        HeadKind::Add,
+        HeadKind::Revoke,
+        HeadKind::Add,
+    ];
+    let recs = [
+        rec(1, None, 1, Reason::Genesis, 1),
+        rec(2, Some(1), 1, Reason::Grant, 2),
+        rec(3, Some(2), 2, Reason::Cutover, 3),
+        rec(4, Some(3), 2, Reason::Grant, 4),
+    ];
+    let mut d = Recipient::new(chain(&kinds[..2]));
+    assert_eq!(d.accept(&recs[..2]), Ok(()));
+    d.chain = chain(&kinds);
+    assert_eq!(d.accept(&recs[2..]), Ok(()));
+    assert_eq!(d.accepted.last().unwrap().id, recs[3].id);
+}
+
+#[test]
+fn the_anchor_must_name_the_newest_head_and_intermediates_must_link() {
+    let all = full_history();
+    let mut me = Recipient::new(chain(&base_chain()[..2]));
+    assert_eq!(me.accept(&all[..2]), Ok(()));
+    me.chain = chain(&base_chain());
+    // Delivering only an intermediate (not the newest) is stale.
+    assert_eq!(me.accept(&all[2..3]), Err(EpochError::StaleMembershipHead));
+    // A forged intermediate with a wrong hash link is rejected.
+    let mut forged = all[2];
+    forged.prev = Some(mid(0x99));
     assert_eq!(
-        me.accept(record(false)),
+        me.accept(&[forged, all[3]]),
+        Err(EpochError::BadEpochSequence)
+    );
+    assert_eq!(me.accepted.len(), 2, "nothing installed from a bad walk");
+}
+
+#[test]
+fn reason_and_head_are_coupled_structurally() {
+    // A cutover must name a revoke record; a grant must name an add record.
+    let kinds = [HeadKind::Add, HeadKind::Add];
+    let mut me = Recipient::new(chain(&kinds[..1]));
+    assert_eq!(me.accept(&[rec(1, None, 1, Reason::Genesis, 1)]), Ok(()));
+    me.chain = chain(&kinds);
+    assert_eq!(
+        me.accept(&[rec(2, Some(1), 2, Reason::Cutover, 2)]),
         Err(EpochError::CutoverHeadNotRevoke)
     );
-    assert_eq!(me.accept(record(true)), Ok(()));
-}
-
-#[test]
-fn epoch_numbers_are_sequential_and_chained() {
-    let mut me = recipient_at(4, 4, Some(epoch1()));
-    let mut skip = epoch1();
-    skip.key_epoch = 3;
-    skip.record_id = [0xe3; 32];
-    skip.prev_epoch_id = Some([0xe1; 32]);
-    assert_eq!(me.accept(skip), Err(EpochError::BadEpochSequence));
-    let mut wrong_prev = epoch1();
-    wrong_prev.key_epoch = 2;
-    wrong_prev.record_id = [0xe2; 32];
-    wrong_prev.prev_epoch_id = Some([0x99; 32]);
-    assert_eq!(me.accept(wrong_prev), Err(EpochError::BadEpochSequence));
-}
-
-#[test]
-fn equivocating_epoch_records_and_forked_chains_are_rejected_and_retained() {
-    let mut me = recipient_at(4, 4, None);
-    assert_eq!(me.accept(epoch1()), Ok(()));
+    let kinds2 = [HeadKind::Add, HeadKind::Revoke];
+    let mut d = Recipient::new(chain(&kinds2[..1]));
+    assert_eq!(d.accept(&[rec(1, None, 1, Reason::Genesis, 1)]), Ok(()));
+    d.chain = chain(&kinds2);
     assert_eq!(
-        me.accept(epoch1()),
-        Ok(()),
-        "an exact duplicate is idempotent"
+        d.accept(&[rec(2, Some(1), 1, Reason::Grant, 2)]),
+        Err(EpochError::GrantHeadNotAdd)
     );
-    let mut other = epoch1();
-    other.record_id = [0xaa; 32];
-    assert_eq!(me.accept(other), Err(EpochError::EpochEquivocation));
-    assert!(
-        me.retained.contains(&other),
-        "both records stay for diagnosis"
+    // A grant never changes the epoch number; a cutover always adds one.
+    let mut e = Recipient::new(chain(&kinds[..1]));
+    assert_eq!(e.accept(&[rec(1, None, 1, Reason::Genesis, 1)]), Ok(()));
+    e.chain = chain(&kinds);
+    assert_eq!(
+        e.accept(&[rec(2, Some(1), 2, Reason::Grant, 2)]),
+        Err(EpochError::BadEpochSequence)
     );
-    assert!(me.retained.contains(&epoch1()));
+}
 
-    // A second record at the same chain version with a different id is a fork.
-    let mut fork = EpochFacts {
-        key_epoch: 2,
-        record_id: [0xe2; 32],
-        prev_epoch_id: Some([0xe1; 32]),
-        head_version: 4,
-        head_id: [0x77; 32],
-        cutover: false,
-        head_is_revoke: false,
-    };
-    assert_eq!(me.accept(fork), Err(EpochError::MembershipChainFork));
-    // A head newer than anything verified means: fetch the chain first.
-    fork.head_version = 6;
-    assert_eq!(me.accept(fork), Err(EpochError::ChainBehind));
+#[test]
+fn every_membership_record_needs_a_coupled_epoch_record() {
+    // The chain has v1..v3 but the only record names v1 and v3: v2 has none.
+    let kinds = [HeadKind::Add, HeadKind::Add, HeadKind::Add];
+    let mut me = Recipient::new(chain(&kinds));
+    let recs = [
+        rec(1, None, 1, Reason::Genesis, 1),
+        rec(3, Some(1), 1, Reason::Grant, 3),
+    ];
+    assert_eq!(me.accept(&recs), Err(EpochError::EpochRecordMissing));
+}
+
+#[test]
+fn equivocating_records_at_any_position_halt_the_device_and_are_retained() {
+    let all = full_history();
+    let mut me = Recipient::new(chain(&base_chain()));
+    assert_eq!(me.accept(&all), Ok(()));
+    assert_eq!(me.accept(&all), Ok(()), "an exact duplicate is idempotent");
+    // A different record for the newest position.
+    let forged_tip = rec(0x0a, Some(3), 2, Reason::Cutover, 4);
+    assert_eq!(me.accept(&[forged_tip]), Err(EpochError::EpochEquivocation));
+    assert!(me.halted && !me.can_encrypt(), "no encryption while halted");
+    assert!(me.retained.contains(&forged_tip));
+    assert_eq!(me.accept(&all), Err(EpochError::SyncHalted));
+
+    // A forged genesis arriving after later epochs is equivocation too, not a
+    // sequence error: the per-position map covers every position.
+    let mut late = Recipient::new(chain(&base_chain()));
+    assert_eq!(late.accept(&all), Ok(()));
+    let forged_genesis = rec(0x0b, None, 1, Reason::Genesis, 1);
+    assert_eq!(
+        late.accept(&[forged_genesis]),
+        Err(EpochError::EpochEquivocation)
+    );
+    assert!(late.retained.contains(&forged_genesis));
+}
+
+#[test]
+fn a_forked_membership_chain_is_detected_and_recovery_keeps_local_work() {
+    let all = full_history();
+    let mut me = Recipient::new(chain(&base_chain()));
+    let mut fork = all[3];
+    fork.head_id = mid(0x77); // same version 4, a different membership record
+    assert_eq!(
+        me.accept(&[all[0], all[1], all[2], fork]),
+        Err(EpochError::MembershipChainFork)
+    );
+    assert!(me.halted);
+    // Recovery: re-enroll through an honest member against the real chain.
+    me.recover_by_reenrollment(chain(&base_chain()));
+    assert!(!me.halted);
+    assert_eq!(me.accept(&all), Ok(()));
+}
+
+#[test]
+fn a_forced_rotation_takes_the_next_epoch_at_the_newest_head() {
+    // A derived key that reaches its cap, or a NonceStateLost recovery, rotates
+    // the key without a membership change: epoch + 1, the newest verified head.
+    let kinds = [HeadKind::Add];
+    let mut me = Recipient::new(chain(&kinds));
+    assert_eq!(me.accept(&[rec(1, None, 1, Reason::Genesis, 1)]), Ok(()));
+    let rotation = rec(2, Some(1), 2, Reason::Rotation, 1);
+    assert_eq!(me.accept(&[rotation]), Ok(()));
+    assert_eq!(me.accepted.last().unwrap().key_epoch, 2);
+    // A rotation that does not advance the epoch is a sequence error.
+    let mut bad = Recipient::new(chain(&kinds));
+    assert_eq!(bad.accept(&[rec(1, None, 1, Reason::Genesis, 1)]), Ok(()));
+    assert_eq!(
+        bad.accept(&[rec(2, Some(1), 1, Reason::Rotation, 1)]),
+        Err(EpochError::BadEpochSequence)
+    );
+}
+
+#[test]
+fn a_rolled_back_head_is_never_silently_accepted() {
+    // R6: the persisted head must not move backwards past the witness.
+    assert!(matches!(
+        Recipient::load(chain(&base_chain()[..2]), 4),
+        Err(EpochError::StateRolledBack)
+    ));
+    assert!(Recipient::load(chain(&base_chain()), 4).is_ok());
 }
 
 // ---------------------------------------------------------------------------

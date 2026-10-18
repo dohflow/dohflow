@@ -813,7 +813,8 @@ bootstraps a fresh epoch. Each derived key has a cap of `2^32` invocations;
 before the next invocation the client completes a fresh-key epoch rotation. The
 service records the first `(key_epoch, fingerprint, object_type, nonce)` it
 receives and accepts only an exact-byte retry afterwards, as a duplicate-detection
-backstop and never as the security source.
+backstop and never as the security source. The same independent witness also
+protects the newest verified membership head and the accepted epoch chain (C.6).
 
 ## C.5 Idempotency keys and the tag
 
@@ -884,14 +885,39 @@ Chain rules, all enforced by every client and by the service:
 ### Epoch record body
 
 `label "dohflow/sync-epoch-record/v1" ‖ u16 protocol_version ‖ u16 suite_id ‖ u16
-kem_id ‖ uuid vault_id ‖ u64 key_epoch ‖ digest membership_head ‖ opt(digest)
-prev_epoch_id ‖ digest key_commitment_Ke ‖ digest key_commitment_S ‖ fingerprint
-sealer_fingerprint ‖ list(recipient, 1024)`.
+kem_id ‖ uuid vault_id ‖ u64 key_epoch ‖ u8 reason ‖ digest membership_head ‖
+opt(digest) prev_epoch_id ‖ digest key_commitment_Ke ‖ digest key_commitment_S ‖
+fingerprint sealer_fingerprint ‖ list(recipient, 1024)`.
 
 This header (everything before the recipient list) has its own hash,
 `epoch_header_hash = SHA-256(header bytes)`. Each `recipient` is `uuid device_id
 ‖ fingerprint ‖ u16 suite_id ‖ u16 kem_id ‖ bytes(2048) enc ‖ bytes(256)
-ciphertext`.
+ciphertext`. Epoch records form a chain: `prev_epoch_id` is the id of the
+previous epoch record, absent only for the first.
+
+The explicit `reason` says what the record is for, so a recipient never has to
+infer it:
+
+| `reason` | Meaning | `key_epoch` | Key | `membership_head` | Recipients |
+| --- | --- | --- | --- | --- | --- |
+| `1` | genesis | `1` | fresh `K_1` and fresh `S` | version 1, the genesis `add` | the founding device |
+| `2` | revocation cutover | previous + 1 | fresh `K_{e+1}`; `S` unchanged | a `revoke` record newer than the previous record's head | exactly the authorized members at that head |
+| `3` | grant | same as previous | unchanged `K_e` and `S`; both commitments equal the previous record's | an `add` record newer than the previous record's head | exactly the devices added between the previous record's head and this one |
+| `4` | forced rotation (a derived key at its cap, or after `NonceStateLost`) | previous + 1 | fresh `K_{e+1}`; `S` unchanged | the newest verified head | exactly the authorized members at that head |
+
+### Coupling a membership change to an epoch record
+
+Every membership record after the genesis is installed by the service in the
+**same transaction** as exactly one epoch record that names it as its
+`membership_head`: an `add` with a grant (`reason 3`) and a `revoke` with a
+cutover (`reason 2`). The genesis membership record is installed with the genesis
+epoch record. A membership record that no epoch record names is
+`EpochRecordMissing`. An added device therefore receives the current `K_e` and `S`
+from a grant, with **no key rotation and no new snapshot**: it unseals the grant
+and bootstraps from the latest snapshot of the current epoch, whose AEAD key it
+can derive. A revocation cutover remains the only event that rotates the key and
+publishes a new snapshot (C.7). Because every head has a coupled record, an
+anchor exists whenever a head does.
 
 ### Sealing the key set (F1)
 
@@ -908,70 +934,111 @@ recipient the sealer runs HPKE base mode `Seal` to the recipient's
 - plaintext = `label "dohflow/sync-sealed-keys/v1" ‖ key32 K_e ‖ key32 S`.
 
 `S` is sealed together with `K_e` in the same per-recipient payload. It is not
-encrypted under `K_e`.
+encrypted under `K_e`. The `reason` is inside the epoch header, so the header hash
+that the `info` and `aad` bind also binds it.
 
 A recipient accepts an epoch record only when it:
 
 1. verifies the signature strictly and checks that the sealer is an authorized
-   member of the chain at the named `membership_head`;
-2. checks that the recipient list is exactly the authorized, unrevoked members at
-   that head (no extra recipient, none missing);
+   member of the chain at the record's `membership_head`;
+2. checks that the recipient list matches the record's `reason` (the table above):
+   exactly the authorized, unrevoked members at that head for reasons `1`, `2` and
+   `4`, and exactly the newly added devices for reason `3`, with no extra
+   recipient and none missing;
 3. unseals its own entry, then requires `SHA-256(commitment label ‖ K_e)` and the
-   corresponding value for `S` to equal the record's two key commitments;
-4. for any epoch after the first, requires `key_commitment_S` to equal the
-   previous record's value (`S` never changes) and `prev_epoch_id` to equal the
-   previous record's id;
+   corresponding value for `S` to equal the record's two key commitments, and for
+   reason `3` requires both commitments to equal the previous record's;
+4. for any record after the first, requires `key_commitment_S` to equal the first
+   record's value (`S` never changes);
 5. rejects a suite or `kem_id` it does not implement with `UnsupportedSuite`.
 
 Any failure is `EpochRecordInvalid` or `KeyCommitmentMismatch`; no key from a
 rejected record is installed.
 
-### Freshness and sequencing (F1)
+### Freshness, sequencing and catch-up (F1)
 
 A valid signature and consistent commitments are not enough: a member who has
 since been revoked can still produce a well-formed record that names an older
 membership head, where that member was authorized. A recipient therefore also
-requires all of the following, and the checks of the list above are evaluated
-**at the head this list selects**:
+requires all of the following. The checks above are evaluated for each record
+**at the head that record names**.
 
-1. **The head is the newest.** `membership_head` is the id of the newest
-   membership record in the recipient's verified chain. A record naming an older
-   head is rejected with `StaleMembershipHead`. A record naming a head the
-   recipient has not verified makes it first fetch and verify the chain up to
-   that record (an unverifiable chain is `MembershipChainInvalid`), and then apply
-   this rule; a record is never accepted against an unverified head. A member
-   revoked at or before the head can neither sign nor receive.
-2. **The epoch sequence holds.** `key_epoch` equals the previous accepted
-   record's `key_epoch` plus one (it is `1` for the first), and `prev_epoch_id`
-   equals that record's id (it is absent for the first). Otherwise the record is
-   `BadEpochSequence`.
-3. **A cutover names its revocation.** An epoch record issued by a revocation
-   cutover has the `revoke` membership record that triggers it as its
-   `membership_head`. Otherwise it is `CutoverHeadNotRevoke`.
-4. **Equivocation is detected.** A second, different record (a different id) for
-   an epoch already accepted is `EpochEquivocation`; two different membership
-   records for one `version` are `MembershipChainFork`. In either case both
-   records are retained for diagnosis and nothing from either is installed. An
-   exact duplicate is idempotent.
+1. **The anchor names the newest head.** The newest epoch record a recipient is
+   shown, its **anchor**, must name the newest membership record in the
+   recipient's verified chain. An anchor naming an older head is rejected with
+   `StaleMembershipHead`. An anchor naming a head the recipient has not verified
+   makes it first fetch and verify the membership chain up to that record (an
+   unverifiable chain is `MembershipChainInvalid`), and then apply this rule; a
+   record is never accepted against an unverified head. This rule applies to the
+   anchor only.
+2. **The chain and sequence hold.** `prev_epoch_id` equals the previous record's
+   id; `key_epoch` follows the `reason` table; heads never move backwards and
+   strictly advance across reasons `2` and `3`. A cutover must name a `revoke`
+   record (`CutoverHeadNotRevoke` otherwise) and a grant an `add` record
+   (`GrantHeadNotAdd` otherwise). Any other break is `BadEpochSequence`.
+3. **Catch-up walks backward from the anchor.** A device that was offline across
+   several epochs verifies the membership chain to its newest head, takes the epoch
+   record that names it as the anchor, and walks `prev_epoch_id` back to its last
+   accepted record. Each intermediate record must hash (as `SHA-256(body)`) to the
+   id its successor links to; must follow rule 2; and must pass every check above
+   **at its own named head**, with its sealer authorized there. The anchor's
+   authorized sealer and the hash chain vouch for each intermediate, even if an
+   intermediate's sealer was revoked later. The device installs an intermediate
+   epoch's keys for reading only, and only if it was a recipient, and it encrypts
+   only under the anchor's epoch. Nothing is installed if any link fails.
+4. **Equivocation is detected at every position.** Two different records with the
+   same `prev_epoch_id`, including a second genesis record, are
+   `EpochEquivocation`; two different membership records for one `version` are
+   `MembershipChainFork`. Both records are retained, nothing from either is
+   installed, and the device halts as below. An exact duplicate is idempotent.
+5. **Verified state is rollback-protected.** The newest verified membership head,
+   the accepted epoch chain and the per-position record map are persisted under the
+   same independent anti-rollback witness as the nonce counters (C.4). Older
+   restored state is `StateRolledBack`, handled like `NonceStateLost` by
+   re-enrollment, and is never silently accepted.
 
-**Residual.** A service that withholds membership or epoch records can delay a
-device's view of the chain: a device that has not seen a revocation cannot know it
-happened, and an untrusted sequencer with no external freshness anchor can always
-serve it a record that is consistent with its older view. Such a device accepts a
-record only against the newest head *it* has verified, and detects the
-equivocation, rejects the forged record and retains both as soon as it sees the
-real chain. Data it encrypted under a key it adopted from a revoked member in the
-interim is exposed to that member. The rules above guarantee that a withholding
-service cannot get a stale-head record accepted by a device that has already
-verified the newer head, and cannot make any device accept a record that
-contradicts its own verified chain.
+### Detection and recovery
+
+When a device detects equivocation or a chain fork, **including after a forged
+record was already installed**, it:
+
+1. enters `SyncHalted`: it encrypts nothing for Sync and installs no further key;
+2. quarantines every key it adopted from the offending record, flags every object
+   it encrypted or sealed under such a key as exposed, and shows the window to the
+   user;
+3. keeps its outbox: envelopes produced on the forked branch are not accepted on
+   the real chain, so they stay queued and are re-encrypted under the real epoch
+   only after the index check of C.10 shows both their identities unknown;
+4. retains both records for diagnosis;
+5. recovers by re-enrolling through an honest member (chain rule 6) or by
+   rebootstrapping from a snapshot of the real chain. Local data is never deleted.
+
+**Residual.** The rules guarantee that a device that has verified the newer head
+never accepts a stale-head record, and that no device accepts a record that
+contradicts its own verified chain. They cannot give a device a view it was never
+shown. A service that withholds membership or epoch records can keep a device on an
+older view; without an external freshness anchor the strongest property available
+is fork consistency, and a stale device cannot tell. Exploiting this takes a
+revoked (or otherwise compromised, not yet revoked) member **together with** a
+malicious or compromised service, because a revoked member's credential no longer
+works and only the service can deliver its records. The forger can fork the
+membership chain itself, not only an epoch record: a record signed by the since-
+revoked member that adds an attacker-held device, or revokes an honest one, is a
+valid extension of the stale device's chain. The exposure is then everything the
+stale device encrypts under keys from the fork and everything it seals to
+recipients the fork adds. The same holds for any compromised member before its
+revocation. As soon as the device sees the real chain it detects the fork and
+follows the steps above. Two further narrowings need no new cryptography but
+change the wire format or the user experience, and are **not** specified in this
+revision: carrying the newest verified membership head in every envelope header,
+and an out-of-band membership code compared across devices.
 
 ## C.7 Epoch cutover, rotation and compatibility
 
 Revocation is a fresh-key, atomic epoch cutover (ADR 0074 Decision 8): an
 authorized remaining device appends a `revoke` membership record, generates a new
-`K_{e+1}`, publishes a signed epoch record sealed to the remaining members, and
-publishes a new logical snapshot, all in one service transaction. `S` is carried
+`K_{e+1}`, publishes a signed epoch record (`reason 2`) sealed to the remaining
+members, and publishes a new logical snapshot, all in one service transaction. `S` is carried
 unchanged.
 
 - A device reads an object of epoch `e'` only if it holds `K_{e'}`. A device
@@ -985,9 +1052,11 @@ unchanged.
   re-encrypts an outbox entry under a new epoch only after the index confirms
   that both its `command_id` and its tag are unknown, and a request that matches
   one identity but not the other is `ProtocolFork`.
-- **Cutover record.** The epoch record of a revocation cutover names the `revoke`
-  record as its `membership_head` and is checked under the freshness and
-  sequencing rules of C.6; two cutover records for one epoch are equivocation.
+- **Cutover and grant records.** A revocation cutover is an epoch record with
+  `reason 2` naming the `revoke` record; an added device is brought in by a grant
+  with `reason 3` naming the `add` record and sealing the current keys to it
+  without a rotation. Both are checked under the freshness and sequencing rules of
+  C.6, and two records at one chain position are equivocation.
 - A future suite is introduced at a new key epoch (C.1.4).
 
 ## C.8 The logical genesis snapshot
@@ -1120,7 +1189,8 @@ envelopes are retained for diagnosis.
 `EpochRejected`, `EpochRecordInvalid`, `KeyCommitmentMismatch`,
 `MembershipChainInvalid`, `NoAuthorizedDevice`, `SnapshotTooLarge`,
 `StaleMembershipHead`, `BadEpochSequence`, `CutoverHeadNotRevoke`,
-`EpochEquivocation`, `MembershipChainFork`, `ArtifactDescriptorChanged`,
+`GrantHeadNotAdd`, `EpochRecordMissing`, `EpochEquivocation`,
+`MembershipChainFork`, `SyncHalted`, `StateRolledBack`, `ArtifactDescriptorChanged`,
 `ArtifactMaterializationFailed`, `ArtifactRebootstrapRequired` and
 `ArtifactMissing` (a closure that names an absent object). Each fails closed,
 mutates nothing, and retains diagnostic evidence.
@@ -1217,7 +1287,7 @@ written `N x 0xNN`.
 | Local storage ids | 32 x `0x5a` and 32 x `0x6b`; the manifest commitment covers the two epoch-1 artifact ids |
 | Sample artifact | `artifact_kind` 1; plaintext `synthetic document` (18 bytes); `logical_metadata` `{"mime_type":"text/plain"}`; the address and keys of the first storage id at epoch 1 |
 | Membership | record 1: `version` 1, `prev_id` absent, `action` 1 (add), signer and added device A, `issued_at` 1_790_000_001_000_000; record 2: `version` 2, `prev_id` the id of record 1, `action` 1, signer device A, added device B, `issued_at` 1_790_000_002_000_000 |
-| Epoch record 1 | `prev_epoch_id` absent; `membership_head` the id of membership record 2; sealer device A; recipient device B (for `hpke_info_recipient_b` and `hpke_aad_recipient_b`) |
+| Epoch records | genesis sample (`epoch_header_genesis`): `reason` 1, `key_epoch` 1, `membership_head` the id of membership record 1, `prev_epoch_id` absent, sealer device A. Grant sample (`epoch_header`, `hpke_info_recipient_b`, `hpke_aad_recipient_b`): `reason` 3, `key_epoch` 1, `membership_head` the id of membership record 2, `prev_epoch_id` 32 x `0x99` (the id of a genesis record whose body no vector computes), sealer device A, recipient device B |
 | Write-set sample | rows `(ledger_transactions, 16 x 0x01, 32 x 0x51)`, `(accounts, 16 x 0x02, 32 x 0x52)`, `(accounts, 16 x 0x01, 32 x 0x53)` |
 | Export | password `synthetic-export-password`; profile 1; salt 32 x `0x77`; `object_count` 2; `chunk_size` 1048576 |
 | Export objects | object 0 path `manifest.json`, index 0, chunk 0, final 1; object 1 path `data/accounts.jsonl`, index 1, chunk 0, final 1, plaintext `{"id":"1","name":"Checking"}` followed by a line feed (30 bytes) |
@@ -1234,9 +1304,12 @@ across epochs and vaults; an order-independent, exact manifest commitment and it
 presence rule (absent for an envelope with no artifacts, always present for a
 snapshot); strictly ascending manifest lists; the raw-byte ordering of
 `write_set_hash`; a fingerprint that covers the suite, the KEM id and a
-variable-length key; the freshness and sequencing rules of C.6 (a stale-head record
-signed by a since-revoked member, a cutover that does not name the revoke record,
-a skipped or mis-chained epoch, equivocating epoch records, a forked chain);
+variable-length key; the freshness, sequencing and catch-up rules of C.6 (a stale-head anchor from a
+since-revoked member; catch-up across two cutovers and across a cutover followed by
+an add; a forged intermediate and a non-newest anchor; the reason and head
+coupling; a membership record with no epoch record; a forced rotation; equivocation
+at the newest position and at a genesis position; a forked chain with its recovery;
+and a rolled-back state);
 refusal, before encryption, of a changed descriptor for a published artifact
 address; rejection of an altered artifact object or a wrong address; HPKE `info`
 binding every recipient, epoch, sealer, membership head and record header; and the
@@ -1248,7 +1321,8 @@ the reference cannot run: the RFC 8032 and RFC 9180 known-answer vectors;
 unsigned sealed-key set; a replayed old-epoch sealed blob; a record that seals
 different keys to different recipients; a membership chain with a gap, a fork, a
 reused fingerprint and a revoked signer; the stale-head record signed by a
-since-revoked member and the equivocating epoch records, with real signatures;
+since-revoked member, the catch-up walk and the equivocating epoch records, with
+real signatures and real hashes of full bodies;
 a changed artifact descriptor refused before encryption, end to end;
 cross-implementation canonical-JSON vectors for 64-bit integer strings, duplicate
 keys and lone surrogates; and the revocation-cutover simulator suite extended with
@@ -1293,10 +1367,11 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: membership_id_1=453a0ac4429a0e0a7d7e8b425defb17fe6f56833361f1a07e9290725bf9e82a0 -->
 <!-- sync-vector: membership_body_2=001a646f68666c6f772f73796e632d6d656d626572736869702f763100010001002011111111111111111111111111111111000000000000000201453a0ac4429a0e0a7d7e8b425defb17fe6f56833361f1a07e9290725bf9e82a001d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c608b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e200000020c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c200065bfeda446480 -->
 <!-- sync-vector: membership_id_2=1e1545a55b67c5e70ab2a771b9a6d090f53ba38dc4f2b001bae9443697e73a3e -->
-<!-- sync-vector: epoch_header=001c646f68666c6f772f73796e632d65706f63682d7265636f72642f76310001000100201111111111111111111111111111111100000000000000011e1545a55b67c5e70ab2a771b9a6d090f53ba38dc4f2b001bae9443697e73a3e00c7c2f442f9197f13cd691a7ced1edf498d263a16fd0d0604091294e616fb9eb04576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c608 -->
-<!-- sync-vector: epoch_header_hash=a282b733d1dd5c32a71ebb067deb96e2da83933c11dcc9d6720236bd751f2c7b -->
-<!-- sync-vector: hpke_info_recipient_b=0019646f68666c6f772f73796e632d68706b652d696e666f2f763100010001111111111111111111111111111111110000000000000001b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1388483da46033bcf0263edfdbb306bb56114a32c56ebb500cc52813227fdff17d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c6081e1545a55b67c5e70ab2a771b9a6d090f53ba38dc4f2b001bae9443697e73a3ea282b733d1dd5c32a71ebb067deb96e2da83933c11dcc9d6720236bd751f2c7b -->
-<!-- sync-vector: hpke_aad_recipient_b=0018646f68666c6f772f73796e632d68706b652d6161642f7631a282b733d1dd5c32a71ebb067deb96e2da83933c11dcc9d6720236bd751f2c7b388483da46033bcf0263edfdbb306bb56114a32c56ebb500cc52813227fdff17 -->
+<!-- sync-vector: epoch_header_genesis=001c646f68666c6f772f73796e632d65706f63682d7265636f72642f763100010001002011111111111111111111111111111111000000000000000101453a0ac4429a0e0a7d7e8b425defb17fe6f56833361f1a07e9290725bf9e82a000c7c2f442f9197f13cd691a7ced1edf498d263a16fd0d0604091294e616fb9eb04576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c608 -->
+<!-- sync-vector: epoch_header=001c646f68666c6f772f73796e632d65706f63682d7265636f72642f7631000100010020111111111111111111111111111111110000000000000001031e1545a55b67c5e70ab2a771b9a6d090f53ba38dc4f2b001bae9443697e73a3e019999999999999999999999999999999999999999999999999999999999999999c7c2f442f9197f13cd691a7ced1edf498d263a16fd0d0604091294e616fb9eb04576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c608 -->
+<!-- sync-vector: epoch_header_hash=7ad4d10215dae6361f512d0f37da58bd87344f957c75ba0af0e2522aedaee206 -->
+<!-- sync-vector: hpke_info_recipient_b=0019646f68666c6f772f73796e632d68706b652d696e666f2f763100010001111111111111111111111111111111110000000000000001b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1388483da46033bcf0263edfdbb306bb56114a32c56ebb500cc52813227fdff17d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c6081e1545a55b67c5e70ab2a771b9a6d090f53ba38dc4f2b001bae9443697e73a3e7ad4d10215dae6361f512d0f37da58bd87344f957c75ba0af0e2522aedaee206 -->
+<!-- sync-vector: hpke_aad_recipient_b=0018646f68666c6f772f73796e632d68706b652d6161642f76317ad4d10215dae6361f512d0f37da58bd87344f957c75ba0af0e2522aedaee206388483da46033bcf0263edfdbb306bb56114a32c56ebb500cc52813227fdff17 -->
 <!-- sync-vector: sealed_keys_plaintext=001b646f68666c6f772f73796e632d7365616c65642d6b6579732f7631000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f -->
 <!-- sync-vector: export_header=0018646f68666c6f772f6578706f72742d6865616465722f763100010100010000000000030000000177777777777777777777777777777777777777777777777777777777777777770000000200100000 -->
 <!-- sync-vector: export_header_hash=d4f9f4348e70fd109ac7c4fd76ff4ad83bf4744c0f42544904ecaf017544d67b -->

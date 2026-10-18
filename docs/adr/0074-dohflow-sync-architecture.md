@@ -792,7 +792,8 @@ following, which this ADR left open or implicit:
 - **Sealing the epoch key.** Decision 8's sealed keys travel only in an epoch
   record signed by an authorized member and checked against the membership chain,
   with key commitments for `K_e` and `S`, because the sealing primitive is
-  unauthenticated.
+  unauthenticated. Adding a device installs a grant that seals the current `K_e`
+  and `S` to it; only a revocation cutover or a forced rotation changes the key.
 - **Suite agility.** Sealed-key blobs and membership and epoch records carry
   `suite_id` and `kem_id`, so a later hybrid key-encapsulation suite can be adopted
   at a new key epoch.

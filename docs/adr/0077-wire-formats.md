@@ -70,8 +70,12 @@ conditions are part of the decision.
   chained membership record before use. The record carries key commitments for
   `K_e` and `S`, and each HPKE `info` binds the protocol version, suite, vault,
   epoch, recipient and sealer identities and the membership head and epoch-record
-  header hashes. A recipient also accepts a record only against the newest
-  membership head it has verified, in sequence, and rejects equivocation (Part C.6).
+  header hashes. Each epoch record states its `reason` (genesis, revocation
+  cutover, grant, forced rotation) and every membership change is installed with
+  its coupled epoch record, so adding a device is a grant with no key rotation. A
+  recipient accepts an anchor record only against the newest membership head it has
+  verified, catches up backward from it, and detects equivocation at every
+  position (Part C.6).
 - **Encodings.** One canonical binary encoding covers every AAD, signed body,
   HKDF input and hash input. Manifests and payloads are RFC 8785 canonical JSON
   with every 64-bit integer as a decimal string and no floating-point values.
