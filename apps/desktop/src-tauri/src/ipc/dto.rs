@@ -2992,6 +2992,11 @@ pub struct BuildInfoDto {
     pub built_at: String,
     /// Whether tracked files were modified in the worktree at build time.
     pub dirty: bool,
+    /// The running macOS version (`ProductVersion`, e.g. `"14.8.9"`), read at call time;
+    /// `None` off macOS or if it can't be read. The release updater compares it with
+    /// `latest.json`'s `minimumSystemVersion` and declines an update this Mac couldn't
+    /// open (personal-cfo-md8h2.4).
+    pub os_version: Option<String>,
 }
 
 /// The outcome of applying an in-app update (personal-cfo-1ik.4): whether the rebuild+reinstall

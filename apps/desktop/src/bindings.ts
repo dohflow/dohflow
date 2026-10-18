@@ -214,9 +214,10 @@ export const commands = {
 	 */
 	checkForUpdate: () => __TAURI_INVOKE<UpdateStatusDto>("check_for_update"),
 	/**
-	 *  The running binary's build identity: version, commit, channel, build time, dirty flag.
-	 *  Pure compile-time constants — no git, no network, no vault — so the UI can show which
-	 *  build you are running immediately, including on the lock screen and while offline.
+	 *  The running binary's build identity: version, commit, channel, build time, dirty flag,
+	 *  plus the running macOS version. Compile-time constants and one local file read — no git,
+	 *  no network, no vault — so the UI can show which build you are running immediately,
+	 *  including on the lock screen and while offline.
 	 */
 	buildInfo: () => __TAURI_INVOKE<BuildInfoDto>("build_info"),
 	/**
@@ -628,6 +629,13 @@ export type BuildInfoDto = {
 	built_at: string,
 	/**  Whether tracked files were modified in the worktree at build time. */
 	dirty: boolean,
+	/**
+	 *  The running macOS version (`ProductVersion`, e.g. `"14.8.9"`), read at call time;
+	 *  `None` off macOS or if it can't be read. The release updater compares it with
+	 *  `latest.json`'s `minimumSystemVersion` and declines an update this Mac couldn't
+	 *  open (personal-cfo-md8h2.4).
+	 */
+	os_version: string | null,
 };
 
 /**  One observed charge behind a recurring candidate (personal-cfo-4d8.25.11). */

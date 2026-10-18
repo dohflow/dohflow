@@ -162,6 +162,7 @@ beforeEach(() => {
     channel: "release",
     built_at: "2026-07-20T14:32:05Z",
     dirty: false,
+    os_version: "15.7.9",
   });
   mocks.openUrl.mockReset();
   mocks.openUrl.mockResolvedValue(undefined);

@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchProcess } from "@tauri-apps/plugin-process";
+import { minimumMacOSBlock } from "./minimumMacOS";
 
 import {
   commands,
@@ -37,6 +38,11 @@ export type ReleaseUpdateStatus = {
   notes: string | null;
   date: string | null;
   error: string | null;
+  /// Set when a newer version exists but needs a newer macOS than this Mac runs
+  /// (personal-cfo-md8h2.4). `available` is then `false` and nothing can be installed.
+  requiredMacOS: string | null;
+  /// This Mac's macOS version, when known.
+  currentMacOS: string | null;
 };
 
 export type SoftwareUpdateStatus = DevUpdateStatus | ReleaseUpdateStatus;
@@ -189,6 +195,25 @@ export function useSoftwareUpdate() {
       }
       try {
         const update = await check();
+        // The minimum-macOS guard (personal-cfo-md8h2.4): an update this Mac's macOS can't
+        // open is never kept as an installable handle, so no click can download it.
+        const block = update ? minimumMacOSBlock(update.rawJson, info.os_version) : null;
+        if (update && block) {
+          queryClient.setQueryData(UPDATE_HANDLE_QUERY_KEY, null);
+          await update.close().catch(() => undefined);
+          return {
+            kind: "release",
+            currentVersion: info.version,
+            checked: true,
+            available: false,
+            latestVersion: update.version,
+            notes: null,
+            date: update.date ?? null,
+            error: null,
+            requiredMacOS: block.required,
+            currentMacOS: block.current,
+          } satisfies ReleaseUpdateStatus;
+        }
         queryClient.setQueryData(UPDATE_HANDLE_QUERY_KEY, update);
         return {
           kind: "release",
@@ -199,6 +224,8 @@ export function useSoftwareUpdate() {
           notes: update?.body ?? null,
           date: update?.date ?? null,
           error: null,
+          requiredMacOS: null,
+          currentMacOS: info.os_version,
         } satisfies ReleaseUpdateStatus;
       } catch (e) {
         queryClient.setQueryData(UPDATE_HANDLE_QUERY_KEY, null);
@@ -211,6 +238,8 @@ export function useSoftwareUpdate() {
           notes: null,
           date: null,
           error: updaterErrorText(e),
+          requiredMacOS: null,
+          currentMacOS: info.os_version,
         } satisfies ReleaseUpdateStatus;
       }
     },
@@ -229,6 +258,12 @@ export function useSoftwareUpdate() {
       return result.ok ? { ok: true } : { ok: false, message: result.output_tail };
     }
 
+    if (status?.kind === "release" && status.requiredMacOS) {
+      return {
+        ok: false,
+        message: `DohFlow ${status.latestVersion ?? "update"} needs macOS ${status.requiredMacOS} or later.`,
+      };
+    }
     let update =
       queryClient.getQueryData<Update | null>(UPDATE_HANDLE_QUERY_KEY) ?? null;
     if (!update) {
