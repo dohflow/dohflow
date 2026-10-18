@@ -8,6 +8,8 @@ use finance_kernel::backup::disassemble;
 use finance_kernel::Kernel;
 use uuid::Uuid;
 
+const VAULT_FORMAT_SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     needle.len() <= haystack.len() && haystack.windows(needle.len()).any(|w| w == needle)
 }
@@ -29,6 +31,8 @@ fn export_produces_a_sealed_package_that_round_trips() {
         .unwrap();
 
     let package = std::fs::read(&out).unwrap();
+    assert!(VAULT_FORMAT_SPEC.contains("<!-- vault-format: backup-write-version=2 -->"));
+    assert_eq!(u16::from_be_bytes([package[6], package[7]]), 2);
     let db_bytes = std::fs::read(&db_path).unwrap();
     let envelope_bytes = std::fs::read(format!("{}.envelope", db_path.display())).unwrap();
     assert!(db_bytes.len() > 200, "expected a non-trivial vault.db");
@@ -50,6 +54,7 @@ fn export_produces_a_sealed_package_that_round_trips() {
         finance_kernel::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(restored.manifest.manifest_schema_version, Some(1));
+    assert!(VAULT_FORMAT_SPEC.contains("<!-- vault-format: backup-manifest-version=1 -->"));
     assert_eq!(
         restored.manifest.backup_id,
         Uuid::from_bytes([9u8; 16]).to_string()
