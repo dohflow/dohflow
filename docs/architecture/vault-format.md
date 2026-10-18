@@ -84,16 +84,18 @@ or service-facing identifier.
 | `vault.db-wal`, `vault.db-shm`, `vault.db-journal` | SQLite side files: the WAL files while the vault is open, and a rollback journal if the database briefly uses that mode |
 | `vault.db.rekey`, `vault.db.rekey.tmp`, `vault.db.rekey-new`, `vault.db.envelope.rekey-new`, `vault.db.rekey-old` | transient files of an in-progress or interrupted key rotation: the journal (`preparing`, `prepared`, `committed`), its temp file, the re-encrypted copy, the new envelope and the old database |
 
-A rotation also leaves the same `-wal`, `-shm` and `-journal` side files beside
-`vault.db.rekey-new` and `vault.db.rekey-old` while they exist, and a transient
-`blobs/rekey-probe.tmp` file from its hard-link probe; recovery removes strays
-of all of these. This table lists the principal files, not every transient name.
+While a rotation runs, SQLite can leave `-wal`, `-shm` and `-journal` side files
+beside `vault.db.rekey-new`, and the hard-link probe leaves a transient
+`blobs/rekey-probe.tmp`. Rolling back an unfinished rotation removes the copy,
+its side files, the probe and the new envelope. `vault.db.rekey-old` is only
+renamed into place and later removed; SQLite never opens it. This table lists
+the principal files, not every transient name.
 
 A rotation journal present at startup is finished (`committed`) or undone
 (`preparing`, `prepared`) before the vault is classified; contradictory files
 are reported as needing recovery and nothing is deleted
-([ADR 0083](../adr/0083-vault-key-rotation.md) §4). Vault deletion removes this file
-family too.
+([ADR 0083](../adr/0083-vault-key-rotation.md) §4). Vault deletion removes every
+name in this file family, including the rotation side-file names.
 
 ### Envelope byte layout (v1)
 
