@@ -43,8 +43,9 @@ change rewraps the DEK rather than rewriting the whole database. The current
 creation profile is Argon2id with 65,536 KiB memory, time cost 3, parallelism
 1, and parameter-shape version 1; the serialized values, not a presumed
 profile, control unlock. The envelope is authoritative: the `kdf_*` columns in
-`vault_metadata` do not reflect the real envelope parameters and must not be
-used to open a vault. See [encryption design](../security/encryption-design.md)
+`vault_metadata` are a creation-time stamp from build constants, are not kept in
+sync with the envelope (a password change or key rotation does not update them),
+and are never used to open a vault. See [encryption design](../security/encryption-design.md)
 for the supported profile floor and engine pin.
 
 **Key rotation** ([ADR 0083](../adr/0083-vault-key-rotation.md)) replaces the
@@ -65,7 +66,7 @@ per vault and DEK, which gives local deduplication, and they change when the
 DEK changes. A storage ID is a local, DEK-bound address: it is never a portable
 or service-facing identifier.
 
-### Files beside the vault
+### Principal files beside the vault
 
 | File | Meaning |
 | --- | --- |
@@ -73,8 +74,13 @@ or service-facing identifier.
 | `vault.db.envelope` | plaintext sidecar (layout below) |
 | `blobs/` | encrypted attachment blobs under opaque storage IDs |
 | `vault.db.runner.lock` | advisory exclusive lock held while a vault is unlocked; a second opener fails with a typed vault-in-use error |
-| `vault.db-wal`, `vault.db-shm` | SQLite WAL side files while the vault is open |
+| `vault.db-wal`, `vault.db-shm`, `vault.db-journal` | SQLite side files: the WAL files while the vault is open, and a rollback journal if the database briefly uses that mode |
 | `vault.db.rekey`, `vault.db.rekey.tmp`, `vault.db.rekey-new`, `vault.db.envelope.rekey-new`, `vault.db.rekey-old` | transient files of an in-progress or interrupted key rotation: the journal (`preparing`, `prepared`, `committed`), its temp file, the re-encrypted copy, the new envelope and the old database |
+
+A rotation also leaves the same `-wal`, `-shm` and `-journal` side files beside
+`vault.db.rekey-new` and `vault.db.rekey-old` while they exist, and a transient
+`blobs/rekey-probe.tmp` file from its hard-link probe; recovery removes strays
+of all of these. This table lists the principal files, not every transient name.
 
 A rotation journal present at startup is finished (`committed`) or undone
 (`preparing`, `prepared`) before the vault is classified; contradictory files
@@ -114,7 +120,8 @@ parameter version 1, and ciphertext is `aa bb cc`.
 
 ## SQLCipher schema and migrations
 
-The current fully migrated schema is version **52**. The ordered migrations
+The current fully migrated schema is the version pinned by the `schema-version`
+marker above. The ordered migrations
 in `crates/db-worker/src/migrations.rs` start from a consolidated v1 baseline;
 subsequent versions are actual forward changes. `DbWorker::open` applies them
 before exposing a usable worker. Each migration runs transactionally, records
