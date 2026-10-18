@@ -30,8 +30,8 @@ Sync client (`personal-cfo-elciw`), the iOS cross-compile CI guard
 (`personal-cfo-md8h2.7`), the mobile architecture decision
 (`personal-cfo-iuxhq`) and the Sync server license (`personal-cfo-quhmv`).
 
-Two things made the question concrete on 2026-10-18. A free, standalone iPhone
-app is planned, and it need not be open source. And a document about that app
+Two things made the question concrete on 2026-10-18. A proprietary iOS app is
+planned, and it need not be open source. And a document about that app
 (the iOS kernel spike write-up) was about to land in this public repository,
 which showed that ADR 0082 sorted *business* decisions into the internal tier
 but said nothing about *engineering* documents for a product that is itself
@@ -88,8 +88,7 @@ absent. This matches ADR 0066-A as written, so no addendum to it is needed.
 Consequences stated here so downstream beads do not re-derive them:
 
 - There is **no extension host on the Sync critical path**. The extension
-  host is built later, around leaf features such as budgeting or credit-card
-  points, and Sync does not wait for it.
+  host is built later, around leaf features such as budgeting, and Sync does not wait for it.
 - **On iOS, Sync is compiled into the proprietary app.** The open client and
   the proprietary iOS client both speak the published wire format (ADR 0077).
 - Third parties may build interoperable servers or unofficial sync
@@ -178,7 +177,7 @@ work, not this one's.
   extension host on the Sync critical path".
 - ADR 0078 decides the server license in a way that changes decision 2's
   repository map.
-- A second private code repository is created: record its name here or in a
+- A private code repository is created or named: record its name here or in a
   dohflow/internal index.
 
 ## Linked beads
