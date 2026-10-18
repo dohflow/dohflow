@@ -121,7 +121,10 @@ run against the current local-only app:
 
 `personal-cfo-822b` documents the resulting operation-log distinction;
 `personal-cfo-klr.4` (ADR 0077) owns canonical membership/nonce wire fields
-and compatibility rules. This ADR does not implement or serialize them.
+and compatibility rules. This ADR does not implement or serialize them. ADR 0077
+and Part C of `docs/architecture/vault-format.md` specify the signed, chained
+membership records, the device key pairs and fingerprint, and the signed epoch
+record that carries the sealed keys.
 ADR 0073 already defines disposition against the CAS base and **does not
 depend on this ADR**.
 

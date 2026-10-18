@@ -34,4 +34,23 @@ regexes = [
   # keep the exceptions value-scoped rather than allowlisting the ADR path.
   '''f2f6ac71bc63e3df2f66370676ead3f3b6b677a87c124f190941659224b42149''',
   '''b33777244109db333d33cacff0f92a7d03e93497cc2d460e8f2b2db3548891b8''',
+  # The synthetic Sync wire-format test vectors in docs/architecture/vault-format.md
+  # (personal-cfo-klr.4, Part C.14). Derived from patterned, published inputs, so
+  # they are known-answer material, not credentials. Exact values only: the vector
+  # lines are NOT allowlisted by path or by pattern, so a real secret pasted on
+  # one would still be caught. Regenerate this list whenever the vectors change:
+  #   gitleaks detect --config .gitleaks.toml --no-banner
+  '''001b646f68666c6f772f73796e632d7365616c65642d6b6579732f7631000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f''',
+  '''0c5c10840d720abfc446d20b9f510c3c064583c62fd2ace6a6911347a3e7b5f6''',
+  '''4404ee3c509bd231d87b0adc99c1e40ad3da12199898bb827e34d6f21c890e3f''',
+  '''4576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644''',
+  '''481ef4530c89ba2764bc0d8e71e817c91921b928f126adcf4938cc15d9f54a0a''',
+  '''4d354515fedea919f65a2784ece1c414d8eb32743f2ccf0b5a6223942e01eb24''',
+  '''4ef7c269b511e3b7d036f1e17cda5f65118a4c262a065282e860b3b341b19303''',
+  '''57441986f4b6610011f5efa0aa280eb3dd5f415d6275d4e823e03048851944e1''',
+  '''98327c534570f357b1ddffb66ef9ea12fea8e53420dc4067a3d013ffb452dde0''',
+  '''bf5c481f4725ae2c0610cd1b9d5eb9e92e4b7f438f4661e9c3bb274bf96c8674''',
+  '''c7c2f442f9197f13cd691a7ced1edf498d263a16fd0d0604091294e616fb9eb0''',
+  '''f75ae1776bd89877011ef064c39cc9671060ab77e08dcc1afaab5c5e0a710f4c''',
+  '''fc9bee5ab472d6afc355b6f6e943f0877b7bc3799b9e9e8836a106bc89e21f8c''',
 ]

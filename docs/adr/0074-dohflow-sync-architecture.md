@@ -85,8 +85,9 @@ ledger-row CRDT.
 ### 1. Shape: logical genesis snapshot plus a command-envelope tail
 
 At Sync enablement, a client publishes an encrypted logical genesis snapshot
-of class-1 tables. It is the Export Everything bundle specified by
-`personal-cfo-klr.4` with one additional consumer: class-1b artifacts use the
+of class-1 tables. It reuses the logical payload model of the Export Everything
+bundle specified by `personal-cfo-klr.4` (ADR 0077), not that bundle's
+user-facing password wrapper, with one additional consumer: class-1b artifacts use the
 authenticated closure and opaque addressing rule below, and no class-3 row is
 present. Afterwards clients publish versioned command envelopes. A replica
 bootstraps from the latest snapshot plus its tail.
@@ -768,6 +769,39 @@ changes them nor introduces an account requirement to the local app.
   payload-carrying command persistence under SYNC-1 and SYNC-1a.
 - No existing historical operation-log row is recast as a replayable envelope;
   pre-v2 rows remain audit history.
+
+## Addendum A — Wire-format clarifications (ADR 0077, 2026-10-18)
+
+ADR 0077 and Part C of `docs/architecture/vault-format.md` fix the encodings and
+records this ADR delegates. They change no decision above. They record the
+following, which this ADR left open or implicit:
+
+- **The idempotency-tag secret.** `idempotency_key_tag` is keyed by a
+  non-rotating, vault-scoped secret `S`, sealed to each device together with
+  `K_e` and re-sealed unchanged at every epoch. `S` is an equality-tag key, not a
+  confidentiality key, so Decision 8's rule against retaining an old key for new
+  data does not apply to it. A device revoked after learning `S` can recognize
+  only the tags of idempotency keys it already saw: every idempotency key that
+  enters a Sync envelope is a UUID version 4 from the OS CSPRNG, enforced by the
+  envelope builder. That residual is accepted.
+- **Retry order.** Decision 2's accepted-index lookup runs **before** the service
+  rejects an old-epoch write, so an exact retry of an accepted envelope returns
+  its original `seq` and result across a cutover. A client re-encrypts an outbox
+  entry under a new epoch only after the index confirms that both its
+  `command_id` and its tag are unknown.
+- **Sealing the epoch key.** Decision 8's sealed keys travel only in an epoch
+  record signed by an authorized member and checked against the membership chain,
+  with key commitments for `K_e` and `S`, because the sealing primitive is
+  unauthenticated. Adding a device installs a grant that seals the current `K_e`
+  and `S` to it; only a revocation cutover or a forced rotation changes the key.
+- **Epoch position.** A client rejects any envelope whose `key_epoch` is older than
+  the epoch in force at its position in the log. The AAD of Decision 8 is unchanged.
+- **Suite agility.** Sealed-key blobs and membership and epoch records carry
+  `suite_id` and `kem_id`, so a later hybrid key-encapsulation suite can be adopted
+  at a new key epoch.
+- **Full history on a new device.** The genesis snapshot of Decision 1 carries
+  every class-1 ledger row of every age; only pre-v2 operation and provenance
+  history is not carried.
 
 ## Linked beads
 
