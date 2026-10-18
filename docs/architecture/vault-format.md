@@ -635,6 +635,8 @@ that JCS's IEEE-754 number rules never apply:
 | `object_type` (AEAD objects) | `1` command envelope, `2` snapshot |
 | `actor_type` | `1` user, `2` system, `3` importer, `4` agent |
 | `membership_action` | `1` add, `2` revoke |
+| `reason` (epoch record) | `1` genesis, `2` revocation cutover, `3` grant, `4` forced rotation |
+| `kem_id` | `0x0020` DHKEM(X25519, HKDF-SHA256) |
 | `artifact_kind` | `1` attachment, `2` source batch, `3` source record, `4` parser run |
 
 ### C.1.4 Cryptographic suite 1
@@ -794,7 +796,8 @@ post-acceptance `seq` is carried only by the service's response and index.
 
 `write_set_hash` is `SHA-256(label "dohflow/sync-writeset/v1" ‖ u32 count ‖ for
 each touched class-1 row: text(64) table ‖ bytes(256) primary_key ‖ digest
-row_digest)`. The count is at most `2^20`. Rows sort by the **raw bytes** of the
+row_digest)`. The count is at most `2^20`, and each `(table, primary_key)` pair
+appears at most once (a duplicate is `MalformedObject`). Rows sort by the **raw bytes** of the
 table name, then by the raw bytes of the primary key, bytewise lexicographically
 with a shorter value first when it is a prefix of the other; they do not sort by
 their length-prefixed encodings. `row_digest`
@@ -861,7 +864,8 @@ fingerprint.
 kem_id ‖ uuid vault_id ‖ u64 version ‖ opt(digest) prev_id ‖ u8 action ‖
 fingerprint signer_fingerprint ‖ uuid device_id ‖ key32 ed25519_pk ‖
 bytes(2048) kem_public_key ‖ i64 issued_at`. In suite 1 the `kem_public_key` is
-the 32-byte X25519 public key.
+the 32-byte X25519 public key; any other length is `MalformedObject`, and so is an
+HPKE `enc` that is not 32 bytes in suite 1.
 
 Chain rules, all enforced by every client and by the service:
 
@@ -879,7 +883,10 @@ Chain rules, all enforced by every client and by the service:
    `ed25519_pk` and `kem_public_key` of the record that adds it, and every later
    record's `signer_fingerprint` and every epoch-record recipient must equal that
    recomputed value.
-6. A replacement after `NonceStateLost` is a `revoke` of the old fingerprint and
+6. A `revoke` record repeats the revoked device's `device_id`, `ed25519_pk` and
+   `kem_public_key` exactly as its `add` record, and revokes a fingerprint that is
+   currently authorized.
+7. A replacement after `NonceStateLost` is a `revoke` of the old fingerprint and
    an `add` of a new device with fresh keys, signed by an existing member.
 
 ### Epoch record body
@@ -903,7 +910,7 @@ infer it:
 | `1` | genesis | `1` | fresh `K_1` and fresh `S` | version 1, the genesis `add` | the founding device |
 | `2` | revocation cutover | previous + 1 | fresh `K_{e+1}`; `S` unchanged | a `revoke` record newer than the previous record's head | exactly the authorized members at that head |
 | `3` | grant | same as previous | unchanged `K_e` and `S`; both commitments equal the previous record's | an `add` record newer than the previous record's head | exactly the devices added between the previous record's head and this one |
-| `4` | forced rotation (a derived key at its cap, or after `NonceStateLost`) | previous + 1 | fresh `K_{e+1}`; `S` unchanged | the newest verified head | exactly the authorized members at that head |
+| `4` | forced rotation (a derived key at its cap, or after `NonceStateLost`) | previous + 1 | fresh `K_{e+1}`; `S` unchanged | **the previous record's head**: a rotation changes no membership | exactly the authorized members at that head, the same as the previous record's |
 
 ### Coupling a membership change to an epoch record
 
@@ -915,8 +922,9 @@ epoch record. A membership record that no epoch record names is
 `EpochRecordMissing`. An added device therefore receives the current `K_e` and `S`
 from a grant, with **no key rotation and no new snapshot**: it unseals the grant
 and bootstraps from the latest snapshot of the current epoch, whose AEAD key it
-can derive. A revocation cutover remains the only event that rotates the key and
-publishes a new snapshot (C.7). Because every head has a coupled record, an
+can derive. A revocation cutover and a forced rotation are the only events that
+change the key, and each publishes a snapshot under the new key and re-seals the
+live artifacts (C.7). Because every head has a coupled record, an
 anchor exists whenever a head does.
 
 **What a grant gives, and its conditions.**
@@ -997,7 +1005,8 @@ requires all of the following. The checks above are evaluated for each record
    anchor only.
 2. **The chain and sequence hold.** `prev_epoch_id` equals the previous record's
    id; `key_epoch` follows the `reason` table; heads never move backwards and
-   strictly advance across reasons `2` and `3`. A cutover must name a `revoke`
+   strictly advance across reasons `2` and `3`, and a forced rotation names the same
+   head as the previous record. A cutover must name a `revoke`
    record (`CutoverHeadNotRevoke` otherwise) and a grant an `add` record
    (`GrantHeadNotAdd` otherwise). Any other break is `BadEpochSequence`.
 3. **Catch-up walks backward from the anchor.** A device that was offline across
@@ -1054,7 +1063,9 @@ recipients the fork adds. The same holds for any compromised member before its
 revocation. As soon as the device sees the real chain it detects the fork and
 follows the steps above. An out-of-band membership code compared across devices
 would narrow the window further and is **not** specified in this revision. The
-epoch-position rule of C.7 is the narrowing this revision adopts.
+epoch-position rule of C.7 is the narrowing this revision adopts; it binds a client
+only to the log order it has observed, and a service that controls the order can
+place a stale envelope before a cutover in history the client has not yet seen.
 
 ## C.7 Epoch cutover, rotation and compatibility
 
@@ -1067,22 +1078,37 @@ unchanged.
 - A device reads an object of epoch `e'` only if it holds `K_{e'}`. A device
   enrolled at epoch `e` bootstraps from the snapshot at the current head and
   never needs older tails.
-- Every live artifact is re-addressed and re-sealed at the cutover, because its
-  `sync_artifact_id_e` and object key depend on `K_e` (C.9).
+- **Key-changing epochs.** A revocation cutover (`reason 2`) and a forced rotation
+  (`reason 4`) both start a new key epoch. In one service transaction each installs
+  its epoch record, publishes a snapshot under `K_{e+1}` at the current head, and
+  re-addresses and re-seals every live artifact, and the service then rejects
+  old-epoch writes. They differ only in membership: a cutover also appends the
+  `revoke` record it names, while a rotation changes no membership and names the
+  previous record's head.
+- Every live artifact is re-addressed and re-sealed at each key-changing epoch,
+  because its `sync_artifact_id_e` and object key depend on `K_e` (C.9).
 - **Retry order (F5).** The service performs the dual accepted-index lookup
   (C.10) **before** it rejects an old-epoch write. An exact retry of an already
   accepted old-epoch envelope returns its original `seq` and result. A client
   re-encrypts an outbox entry under a new epoch only after the index confirms
   that both its `command_id` and its tag are unknown, and a request that matches
   one identity but not the other is `ProtocolFork`.
-- **Epoch position.** A client rejects any envelope whose `key_epoch` is older than
-  the epoch in force at that envelope's position in the log, that is, the epoch of
-  the newest epoch record installed at or before its `seq`, with `EpochRejected`;
-  so is an envelope sealed under an epoch that is not yet installed at its
-  position. The service applies the same rule to new pushes, and a client re-checks
-  it on replay, so an old-epoch envelope that a withholding service slips in after a
-  cutover is not applied. An envelope accepted before the cutover keeps its place:
-  its position precedes the epoch record. This adds nothing to the AAD of ADR 0074.
+- **Epoch position.** The **position** of a key-changing epoch record (`reason 2`
+  or `4`) is the log head `h` at which the compare-and-swap that installs it, with
+  its snapshot, is accepted; that snapshot's header `base_seq` equals `h`. The first
+  epoch (`reason 1`) has position `0`. A client learns `h` from the service's log
+  entry for the record and checks it against the authenticated `base_seq` of that
+  epoch's first snapshot; a mismatch is `EpochRecordInvalid`. The boundary is
+  exact: an envelope with `seq <= h` belongs to the earlier epoch and one with
+  `seq > h` to the new epoch. A client rejects with `EpochRejected` an envelope
+  whose `key_epoch` is not the epoch in force at its `seq` by this rule: an older
+  key after a key-changing epoch, or an epoch not yet installed at that position.
+  The service applies the same rule to new pushes. An envelope accepted at
+  `seq <= h` keeps its place. **The guarantee is relative to the log order the
+  client has observed:** the service assigns both an envelope's `seq` and the
+  epoch's position, so a malicious service can still place a stale envelope before
+  a cutover in history the client has not yet seen (the residual of C.6). This adds
+  nothing to the AAD of ADR 0074.
 - **Cutover and grant records.** A revocation cutover is an epoch record with
   `reason 2` naming the `revoke` record; an added device is brought in by a grant
   with `reason 3` naming the `add` record and sealing the current keys to it
@@ -1196,8 +1222,9 @@ differs from the decrypted manifest. Upload precedes reference, and reachability
 retention and garbage collection follow ADR 0074 Decision 1; `personal-cfo-v98vd`
 implements them.
 
-**Cutover.** At a key-epoch cutover a client re-addresses and re-seals every live
-artifact under the new epoch before the replacement snapshot is accepted.
+**Key-changing epochs.** At a revocation cutover or a forced rotation a client
+re-addresses and re-seals every live artifact under the new epoch before the
+replacement snapshot is accepted.
 
 ## C.10 Accepted-envelope index and retry protocol
 
@@ -1262,7 +1289,8 @@ object_count ‖ u32 chunk_size`. `chunk_size` is `1048576`.
 
 ### Keys
 
-`KEK = Argon2id(password, salt, profile parameters, 32-byte output)`. With
+`KEK = Argon2id` (version `0x13`) over the password, the salt and the profile
+parameters, with a 32-byte output. With
 `header_hash = SHA-256(header bytes)`, object `i` (counting the manifest as
 object 0) uses the key `Expand(KEK, label ‖ digest header_hash ‖ u32 i)`, where
 the label is `"dohflow/export-manifest-key/v1"` for `i = 0` and
@@ -1273,6 +1301,8 @@ one plaintext** under the fixed zero nonce.
 
 Every logical file is split into chunks of at most `chunk_size` plaintext bytes;
 each chunk is one object, so a large document is chunked rather than sealed whole.
+A zero-length logical file is one object: an empty final chunk (`chunk_index` 0,
+`final` 1, `plaintext_length` 0).
 After the header the container holds `object_count` objects, each `u32 length`
 then ciphertext. `object_count` is at least 1 and at most `2^20`. Object 0 is the
 canonical-JSON `manifest.json` of Part B: it is a single object, never chunked,
@@ -1333,12 +1363,18 @@ written `N x 0xNN`.
 | Epoch records | genesis sample (`epoch_header_genesis`): `reason` 1, `key_epoch` 1, `membership_head` the id of membership record 1, `prev_epoch_id` absent, sealer device A. Grant sample (`epoch_header`, `hpke_info_recipient_b`, `hpke_aad_recipient_b`): `reason` 3, `key_epoch` 1, `membership_head` the id of membership record 2, `prev_epoch_id` 32 x `0x99` (the id of a genesis record whose body no vector computes), sealer device A, recipient device B |
 | Write-set sample | rows `(ledger_transactions, 16 x 0x01, 32 x 0x51)`, `(accounts, 16 x 0x02, 32 x 0x52)`, `(accounts, 16 x 0x01, 32 x 0x53)` |
 | Export | password `synthetic-export-password`; profile 1; salt 32 x `0x77`; `object_count` 2; `chunk_size` 1048576 |
-| Export objects | object 0 path `manifest.json`, index 0, chunk 0, final 1; object 1 path `data/accounts.jsonl`, index 1, chunk 0, final 1, plaintext `{"id":"1","name":"Checking"}` followed by a line feed (30 bytes) |
+| Export objects | object 0 path `manifest.json`, index 0, chunk 0, final 1; object 1 path `data/accounts.jsonl`, index 1, chunk 0, final 1, plaintext `{"id":"1","name":"Checking"}` followed by a line feed (29 bytes) |
+| Export manifest values | `app_version` `dohflow-0.3.0`; `schema_version` `"55"`; `inventory_version` `"1"`; `object_count` `"2"`; `artifacts` empty; one `tables` entry with `name` `accounts`, `class` `"1"`, `row_count` `"1"`, `sha256` the SHA-256 of the row file's 29 bytes, and `columns` `id` with `kind` `text` and `name` with `kind` `text`; one `objects` entry for object 1 (`index` `"1"`, `chunk` `"0"`, `path` `data/accounts.jsonl`, with the ciphertext's length and SHA-256) |
 
 The vectors `aead_key_a_envelope` and `aead_key_b_envelope`, and
 `nonce_domain_a_envelope` and `nonce_domain_b_envelope`, are computed from the
 **same** `K_e` and two device fingerprints: they differ, so two devices sealed the
 same epoch key by a grant never share an AEAD key or a nonce domain.
+
+The 199-byte HPKE `info` should be confirmed against the HPKE crate that
+`personal-cfo-1cltt` selects. The grant sample's `prev_epoch_id` is a declared
+placeholder, so the epoch-chain link has no byte vector here; the implementing
+bead's real-hash tests cover it.
 
 Beyond the byte vectors, the reference test enforces: rejection of trailing
 bytes, truncation, a wrong label, an oversize length, a bad presence byte, invalid
@@ -1358,8 +1394,11 @@ an add; a forged intermediate and a non-newest anchor; the reason and head
 coupling; a membership record with no epoch record; a forced rotation; equivocation
 at the newest position and at a genesis position; a forked chain with its recovery;
 a rolled-back state, an add racing a cutover whose grant seals the pre-cutover key,
-and its retry at the new head; and the epoch-position rule at a log position before
-and after a cutover);
+and its retry at the new head; a forced rotation that moves the membership head
+(refused, so an add or revoke cannot bypass its coupled grant or cutover); the
+epoch-position rule with its exact boundary (an envelope at `seq` equal to the
+position belongs to the old epoch); exact 32-byte suite-1 key lengths with a layout
+that still carries longer keys; and duplicate write-set rows (refused);
 refusal, before encryption, of a changed descriptor for a published artifact
 address; rejection of an altered artifact object or a wrong address; HPKE `info`
 binding every recipient, epoch, sealer, membership head and record header; and the

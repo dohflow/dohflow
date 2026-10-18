@@ -405,6 +405,12 @@ fn write_set_hash(rows: &[(&str, &[u8], [u8; 32])]) -> [u8; 32] {
     assert!(rows.len() as u64 <= u64::from(MAX_ROWS));
     let mut sorted = rows.to_vec();
     sorted.sort_by(|a, b| (a.0.as_bytes(), a.1).cmp(&(b.0.as_bytes(), b.1)));
+    assert!(
+        sorted
+            .windows(2)
+            .all(|w| (w[0].0, w[0].1) != (w[1].0, w[1].1)),
+        "a (table, primary key) pair appears at most once"
+    );
     let mut e = Enc::new("dohflow/sync-writeset/v1").u32(sorted.len() as u32);
     for (table, pk, digest) in sorted {
         e = e.text(table, 64).bytes(pk, 256).fixed(&digest);
@@ -1382,6 +1388,9 @@ fn owner_decisions_are_pinned_in_the_spec_and_the_adr() {
         "`GrantHeadNotAdd`",
         "**Catch-up walks backward from the anchor.**",
         "**Epoch position.**",
+        "`seq <= h` belongs to the earlier epoch",
+        "**the previous record's head**",
+        "**Key-changing epochs.**",
         "a new enrollment with new key pairs",
         "A device you add\n   can read everything in this vault",
         "**same transaction** as exactly one epoch record",
@@ -1663,7 +1672,12 @@ impl Recipient {
                     }
                 }
                 (Reason::Rotation, Some(p)) => {
-                    if r.key_epoch != p.key_epoch + 1 {
+                    // A rotation changes the key and no membership: it names the
+                    // previous record's head exactly.
+                    if r.key_epoch != p.key_epoch + 1
+                        || r.head_version != p.head_version
+                        || r.head_id != p.head_id
+                    {
                         return Err(EpochError::BadEpochSequence);
                     }
                 }
@@ -1941,39 +1955,66 @@ fn an_add_racing_a_cutover_fails_and_retries_at_the_new_head() {
     assert_eq!(me.accepted.last().unwrap().key_epoch, 2);
 }
 
-/// The log position of an epoch record, with the epoch it puts in force.
+/// `installs` holds `(position h, epoch)`: a key-changing epoch record is at the
+/// log head `h` of the compare-and-swap that installs it, and the first epoch is
+/// at position 0. An envelope with `seq <= h` belongs to the earlier epoch and one
+/// with `seq > h` to the new epoch.
 fn epoch_in_force(installs: &[(u64, u64)], seq: u64) -> u64 {
     installs
         .iter()
-        .filter(|(at, _)| *at <= seq)
+        .filter(|(h, _)| *h < seq)
         .map(|(_, epoch)| *epoch)
         .max()
         .unwrap_or(0)
 }
 
 /// A client rejects an envelope whose epoch is not the epoch in force at its
-/// position: older is the stale-key case, newer is not yet installed.
+/// position: an older key after a cutover, or an epoch not yet installed.
 fn epoch_position_ok(installs: &[(u64, u64)], seq: u64, key_epoch: u64) -> bool {
     key_epoch == epoch_in_force(installs, seq)
 }
 
 #[test]
 fn an_envelope_older_than_the_epoch_in_force_at_its_position_is_rejected() {
-    // Epoch 1 in force from seq 10, epoch 2 (a cutover) from seq 50.
-    let installs = [(10, 1), (50, 2)];
-    assert!(
-        epoch_position_ok(&installs, 49, 1),
-        "accepted before the cutover"
-    );
-    assert!(!epoch_position_ok(&installs, 51, 1), "a stale key after it");
-    assert!(epoch_position_ok(&installs, 51, 2));
+    // Epoch 1 from position 0; a cutover installed at head 49 starts epoch 2.
+    let installs = [(0, 1), (49, 2)];
+    assert!(epoch_position_ok(&installs, 48, 1), "before the cutover");
+    // The boundary: seq equal to the position is the last envelope of epoch 1.
+    assert!(epoch_position_ok(&installs, 49, 1), "equal position is old");
     assert!(
         !epoch_position_ok(&installs, 49, 2),
-        "an epoch not yet installed"
+        "equal position is not new"
     );
-    // On replay the check is the same, so a withholding service cannot slip a
-    // stale-epoch envelope into the history after a cutover.
+    assert!(
+        epoch_position_ok(&installs, 50, 2),
+        "the first of the new epoch"
+    );
+    assert!(!epoch_position_ok(&installs, 50, 1), "a stale key after it");
     assert_eq!(epoch_in_force(&installs, 100), 2);
+    // The snapshot's base_seq is the position, so the two must agree.
+    let snapshot_base_seq = 49;
+    assert_eq!(installs[1].0, snapshot_base_seq);
+}
+
+#[test]
+fn a_forced_rotation_may_not_move_the_membership_head() {
+    // Chain [add, add]: a rotation naming v2 would install an add without its
+    // coupled grant. It is rejected; one naming the previous head is accepted.
+    let kinds = [HeadKind::Add, HeadKind::Add];
+    let mut me = Recipient::new(chain(&kinds));
+    let genesis = rec(1, None, 1, Reason::Genesis, 1);
+    // With the chain already at v2, a genesis anchor naming v1 is stale.
+    assert_eq!(me.accept(&[genesis]), Err(EpochError::StaleMembershipHead));
+    let mut ok = Recipient::new(chain(&kinds[..1]));
+    assert_eq!(ok.accept(&[genesis]), Ok(()));
+    ok.chain = chain(&kinds);
+    let smuggled = rec(2, Some(1), 2, Reason::Rotation, 2);
+    assert_eq!(ok.accept(&[smuggled]), Err(EpochError::BadEpochSequence));
+    assert_eq!(
+        ok.accepted.len(),
+        1,
+        "nothing installed from a head-moving rotation"
+    );
 }
 
 #[test]
@@ -2131,5 +2172,33 @@ fn the_fingerprint_commits_to_the_suite_the_kem_and_a_variable_length_key() {
     let hybrid = [0xc1u8; 1216];
     assert_ne!(base, device_fingerprint(SUITE_ID, 0x0030, &ed, &hybrid));
     let long = membership_body(1, None, 1, &base, &[0xa1; 16], &ed, &hybrid, 0);
+    assert!(long.len() > 1216);
+}
+
+#[test]
+#[should_panic(expected = "appears at most once")]
+fn a_duplicate_write_set_row_is_rejected() {
+    let d = [1u8; 32];
+    let _ = write_set_hash(&[("t", &[1][..], d), ("t", &[1][..], d)]);
+}
+
+/// In suite 1 a KEM public key and an HPKE `enc` are exactly 32 bytes.
+fn suite1_key_len_ok(len: usize) -> Result<(), WireError> {
+    if len == 32 {
+        Ok(())
+    } else {
+        Err(WireError::Semantic("suite 1 keys are exactly 32 bytes"))
+    }
+}
+
+#[test]
+fn suite_1_key_lengths_are_exact_while_the_layout_stays_variable() {
+    assert!(suite1_key_len_ok(32).is_ok());
+    for bad in [0, 31, 33, 1216, 2048] {
+        assert!(suite1_key_len_ok(bad).is_err());
+    }
+    // The membership layout itself still carries any length up to its maximum, so
+    // a later suite can enroll a longer key without a new record layout.
+    let long = membership_body(1, None, 1, &[1; 32], &[1; 16], &[2; 32], &[3; 1216], 0);
     assert!(long.len() > 1216);
 }
