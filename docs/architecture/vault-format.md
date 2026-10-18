@@ -1211,12 +1211,12 @@ written `N x 0xNN`.
 | `K_e` (epoch 2, used only by `artifact_id_epoch2`) | the 32 bytes `40 41 42 ... 5f` |
 | `S` | the 32 bytes `20 21 22 ... 3f` |
 | Idempotency key | `4a3b2c1d-9e8f-4a7b-8c6d-5e4f3a2b1c0d` as 16 raw bytes |
-| Command metadata | `command_id` `01938f2e-7c1a-7b3d-9a4e-123456789abc`; `correlation_id` 16 x `0x22`; `causation_id` absent; `actor_type` 1; `actor_id` `device-a-user`; `issued_at` 1790000000000000; `device_id` = device A |
+| Command metadata | `command_id` `01938f2e-7c1a-7b3d-9a4e-123456789abc`; `correlation_id` 16 x `0x22`; `causation_id` absent; `actor_type` 1; `actor_id` `device-a-user`; `issued_at` 1_790_000_000_000_000; `device_id` = device A |
 | Sample header fields | `base_seq` 41; `payload_schema_version` 1; `engine_version` `dohflow-0.3.0`; `schema_version` 55; `invocation_counter` 0; the snapshot's `object_id` 16 x `0x33`; `nonce_domain` and fingerprint as derived for device A |
 | Envelope plaintext | `write_set_hash` 32 x `0x44`; payload `{"amount_minor":"-1250","currency":"USD"}`; the delta manifest is the two sample artifact ids in ascending byte order |
 | Local storage ids | 32 x `0x5a` and 32 x `0x6b`; the manifest commitment covers the two epoch-1 artifact ids |
 | Sample artifact | `artifact_kind` 1; plaintext `synthetic document` (18 bytes); `logical_metadata` `{"mime_type":"text/plain"}`; the address and keys of the first storage id at epoch 1 |
-| Membership | record 1: `version` 1, `prev_id` absent, `action` 1 (add), signer and added device A, `issued_at` 1790000001000000; record 2: `version` 2, `prev_id` the id of record 1, `action` 1, signer device A, added device B, `issued_at` 1790000002000000 |
+| Membership | record 1: `version` 1, `prev_id` absent, `action` 1 (add), signer and added device A, `issued_at` 1_790_000_001_000_000; record 2: `version` 2, `prev_id` the id of record 1, `action` 1, signer device A, added device B, `issued_at` 1_790_000_002_000_000 |
 | Epoch record 1 | `prev_epoch_id` absent; `membership_head` the id of membership record 2; sealer device A; recipient device B (for `hpke_info_recipient_b` and `hpke_aad_recipient_b`) |
 | Write-set sample | rows `(ledger_transactions, 16 x 0x01, 32 x 0x51)`, `(accounts, 16 x 0x02, 32 x 0x52)`, `(accounts, 16 x 0x01, 32 x 0x53)` |
 | Export | password `synthetic-export-password`; profile 1; salt 32 x `0x77`; `object_count` 2; `chunk_size` 1048576 |
