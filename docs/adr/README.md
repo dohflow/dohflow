@@ -98,7 +98,7 @@ when the ADR was written (owner-confirmed).
 | 0074 | [DohFlow Sync architecture](0074-dohflow-sync-architecture.md) | Public | Accepted |
 | 0075 | — internal | Internal | Not yet written (`personal-cfo-oh3hg`) |
 | 0076 | [Multi-provider connector strategy](0076-multi-provider-connector-strategy.md) | Public + Internal split | Accepted — this file carries the decisions and the D15/FTC sentence; the affiliate-payout terms live in `dohflow/internal` |
-| 0077 | [Data ownership and wire formats](0077-wire-formats.md) | Public | Proposed (`personal-cfo-klr.4`) |
+| 0077 | [Data ownership and wire formats](0077-wire-formats.md) | Public | Accepted |
 | 0078 | — internal | Internal | Not yet written (`personal-cfo-quhmv`) |
 | 0079 | Desktop-first platform order | Public | Not yet written (`personal-cfo-bonpc`) |
 | 0080 | Mobile architecture | Public | Not yet written (`personal-cfo-iuxhq`) |

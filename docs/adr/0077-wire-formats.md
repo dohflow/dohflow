@@ -1,8 +1,6 @@
 # ADR 0077 — Data ownership and wire formats
 
-- **Status:** Proposed (the owner decisions recorded below were made on
-  2026-10-18; this ADR becomes Accepted when the owner merges the pull request
-  that introduces it)
+- **Status:** Accepted (owner decision, 2026-10-18)
 - **Tier:** Public
 - **Date:** 2026-10-18
 - **Bead:** `personal-cfo-klr.4`
@@ -62,7 +60,8 @@ conditions are part of the decision.
 - **Device keys.** Each device has two **independent** key pairs, Ed25519 for
   signing and X25519 for key agreement, generated in platform-neutral Rust and
   wrapped at rest by the OS keystore. Hardware P-256 keys are not protocol keys.
-  The fingerprint commits to both public keys and the suite. Private keys and
+  The fingerprint commits to both public keys, the suite and the KEM id, and a
+  membership record carries the suite-typed agreement key at its own length. Private keys and
   nonce state never roam, sync or restore across devices.
 - **Sealing the epoch key.** `K_e` and `S` are sealed to each enrolled device
   with HPKE base mode (DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM).
@@ -71,7 +70,8 @@ conditions are part of the decision.
   chained membership record before use. The record carries key commitments for
   `K_e` and `S`, and each HPKE `info` binds the protocol version, suite, vault,
   epoch, recipient and sealer identities and the membership head and epoch-record
-  header hashes.
+  header hashes. A recipient also accepts a record only against the newest
+  membership head it has verified, in sequence, and rejects equivocation (Part C.6).
 - **Encodings.** One canonical binary encoding covers every AAD, signed body,
   HKDF input and hash input. Manifests and payloads are RFC 8785 canonical JSON
   with every 64-bit integer as a decimal string and no floating-point values.

@@ -225,16 +225,23 @@ fn hex(b: &[u8]) -> String {
 
 const PROTOCOL_VERSION: u16 = 1;
 const SUITE_ID: u16 = 1;
+/// RFC 9180 `kem_id` of DHKEM(X25519, HKDF-SHA256), the KEM of suite 1.
+const KEM_ID_X25519: u16 = 0x0020;
+const MAX_KEM_PUBLIC_KEY: u32 = 2048;
+const MAX_OBJECTS: u32 = 1 << 20;
+const MAX_FILES: u32 = 1024;
+const MAX_ROWS: u32 = 1 << 20;
 const OBJ_ENVELOPE: u8 = 1;
 const OBJ_SNAPSHOT: u8 = 2;
 const MAX_COUNTER: u64 = (1 << 32) - 1;
 
-fn device_fingerprint(suite: u16, ed_pk: &[u8; 32], x_pk: &[u8; 32]) -> [u8; 32] {
+fn device_fingerprint(suite: u16, kem_id: u16, ed_pk: &[u8; 32], kem_pk: &[u8]) -> [u8; 32] {
     sha256(
         &Enc::new("dohflow/device-fpr/v1")
             .u16(suite)
+            .u16(kem_id)
             .fixed(ed_pk)
-            .fixed(x_pk)
+            .bytes(kem_pk, MAX_KEM_PUBLIC_KEY)
             .done(),
     )
 }
@@ -365,6 +372,42 @@ fn artifact_aad(vault: &[u8; 16], epoch: u64, id: &[u8; 32]) -> Vec<u8> {
         .done()
 }
 
+/// A manifest or delta list is strictly ascending: sorted and without duplicates.
+fn validate_manifest_list(ids: &[[u8; 32]]) -> Result<(), WireError> {
+    if ids.windows(2).all(|w| w[0] < w[1]) {
+        Ok(())
+    } else {
+        Err(WireError::Semantic(
+            "manifest list is not strictly ascending",
+        ))
+    }
+}
+
+/// The header commitment rule: an envelope carries the commitment of its delta
+/// manifest only when that manifest is non-empty; a snapshot always carries the
+/// commitment of its (possibly empty) full closure.
+fn manifest_presence_ok(is_snapshot: bool, ids: &[[u8; 32]], commit: Option<[u8; 32]>) -> bool {
+    match (is_snapshot, ids.is_empty(), commit) {
+        (false, true, None) => true,
+        (false, false, Some(c)) | (true, _, Some(c)) => c == manifest_commitment(ids),
+        _ => false,
+    }
+}
+
+/// `row_digest` is owned by `personal-cfo-t2s4b`; the container is fixed here.
+/// Rows sort by the raw bytes of the table name, then of the primary key (not by
+/// their length-prefixed encodings).
+fn write_set_hash(rows: &[(&str, &[u8], [u8; 32])]) -> [u8; 32] {
+    assert!(rows.len() as u64 <= u64::from(MAX_ROWS));
+    let mut sorted = rows.to_vec();
+    sorted.sort_by(|a, b| (a.0.as_bytes(), a.1).cmp(&(b.0.as_bytes(), b.1)));
+    let mut e = Enc::new("dohflow/sync-writeset/v1").u32(sorted.len() as u32);
+    for (table, pk, digest) in sorted {
+        e = e.text(table, 64).bytes(pk, 256).fixed(&digest);
+    }
+    sha256(&e.done())
+}
+
 fn manifest_commitment(ids: &[[u8; 32]]) -> [u8; 32] {
     let mut sorted = ids.to_vec();
     sorted.sort_unstable();
@@ -484,12 +527,13 @@ fn membership_body(
     signer_fpr: &[u8; 32],
     device_id: &[u8; 16],
     ed_pk: &[u8; 32],
-    x_pk: &[u8; 32],
+    kem_pk: &[u8],
     issued_at: i64,
 ) -> Vec<u8> {
     Enc::new("dohflow/sync-membership/v1")
         .u16(PROTOCOL_VERSION)
         .u16(SUITE_ID)
+        .u16(KEM_ID_X25519)
         .fixed(&VAULT)
         .u64(version)
         .opt_fixed(prev.as_ref().map(<[u8; 32]>::as_slice))
@@ -497,7 +541,7 @@ fn membership_body(
         .fixed(signer_fpr)
         .fixed(device_id)
         .fixed(ed_pk)
-        .fixed(x_pk)
+        .bytes(kem_pk, MAX_KEM_PUBLIC_KEY)
         .i64(issued_at)
         .done()
 }
@@ -513,7 +557,7 @@ fn epoch_header(
     Enc::new("dohflow/sync-epoch-record/v1")
         .u16(PROTOCOL_VERSION)
         .u16(SUITE_ID)
-        .u16(0x0020) // kem_id: DHKEM(X25519, HKDF-SHA256), RFC 9180
+        .u16(KEM_ID_X25519)
         .fixed(&VAULT)
         .u64(epoch)
         .fixed(membership_head)
@@ -599,8 +643,8 @@ fn parse_export_header(buf: &[u8]) -> Result<(u8, [u8; 32], u32), WireError> {
         return Err(WireError::Semantic("unsupported chunk size"));
     }
     d.finish()?;
-    if count == 0 {
-        return Err(WireError::Semantic("a bundle has at least a manifest"));
+    if count == 0 || count > MAX_OBJECTS {
+        return Err(WireError::Semantic("object count is outside 1..=2^20"));
     }
     Ok((profile, salt, count))
 }
@@ -660,8 +704,8 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     let s = counting(0x20);
     let (dev_a, dev_b) = ([0xa1u8; 16], [0xb1u8; 16]);
     let (ed_a, x_a, ed_b, x_b) = ([0xe1u8; 32], [0xc1u8; 32], [0xe2u8; 32], [0xc2u8; 32]);
-    let fpr_a = device_fingerprint(SUITE_ID, &ed_a, &x_a);
-    let fpr_b = device_fingerprint(SUITE_ID, &ed_b, &x_b);
+    let fpr_a = device_fingerprint(SUITE_ID, KEM_ID_X25519, &ed_a, &x_a);
+    let fpr_b = device_fingerprint(SUITE_ID, KEM_ID_X25519, &ed_b, &x_b);
     let idem: [u8; 16] = [
         0x4a, 0x3b, 0x2c, 0x1d, 0x9e, 0x8f, 0x4a, 0x7b, 0x8c, 0x6d, 0x5e, 0x4f, 0x3a, 0x2b, 0x1c,
         0x0d,
@@ -689,6 +733,9 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     let art_1_e2 = artifact_id(&k_e2, &VAULT, &storage_1);
     let art_2 = artifact_id(&k_e, &VAULT, &storage_2);
     let man_commit = manifest_commitment(&[art_1, art_2]);
+    let mut delta = vec![art_1, art_2];
+    delta.sort_unstable();
+    validate_manifest_list(&delta).unwrap();
 
     let nd_a = nonce_domain(&VAULT, 1, &fpr_a, OBJ_ENVELOPE);
     let nd_b = nonce_domain(&VAULT, 1, &fpr_b, OBJ_ENVELOPE);
@@ -740,7 +787,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         .i64(meta.issued_at)
         .fixed(&meta.device_id)
         .fixed(&[0x44; 32])
-        .list_digests(&[art_1, art_2], 4096)
+        .list_digests(&delta, 4096)
         .bytes(br#"{"amount_minor":"-1250","currency":"USD"}"#, 1 << 24)
         .done();
     let ct_env = seal(&key_a, &nonce(nd_a, 0), &header_env, &plaintext_env);
@@ -815,11 +862,16 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     );
     let ct1 = seal(&k1, &[0u8; 12], &aad1, row);
     let manifest_json = format!(
-        "{{\"artifacts\":[],\"format\":\"dohflow-portable-export\",\"format_version\":\"1\",\
+        "{{\"app_version\":\"dohflow-0.3.0\",\"artifacts\":[],\"format\":\"dohflow-portable-export\",\
+         \"format_version\":\"1\",\"inventory_version\":\"1\",\"object_count\":\"2\",\
          \"objects\":[{{\"chunk\":\"0\",\"ciphertext_length\":\"{}\",\"ciphertext_sha256\":\"{}\",\
-         \"index\":\"1\",\"path\":\"data/accounts.jsonl\"}}]}}",
+         \"index\":\"1\",\"path\":\"data/accounts.jsonl\"}}],\"schema_version\":\"55\",\
+         \"tables\":[{{\"class\":\"1\",\"columns\":[{{\"kind\":\"text\",\"name\":\"id\"}},\
+         {{\"kind\":\"text\",\"name\":\"name\"}}],\"name\":\"accounts\",\"row_count\":\"1\",\
+         \"sha256\":\"{}\"}}]}}",
         ct1.len(),
-        hex(&sha256(&ct1))
+        hex(&sha256(&ct1)),
+        hex(&sha256(row))
     );
     let aad0 = export_object_aad(
         &hdr_hash,
@@ -855,6 +907,15 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("artifact_id_epoch1", art_1.to_vec()),
         ("artifact_id_epoch2", art_1_e2.to_vec()),
         ("artifact_manifest_commitment", man_commit.to_vec()),
+        (
+            "write_set_hash_sample",
+            write_set_hash(&[
+                ("ledger_transactions", &[0x01; 16], [0x51; 32]),
+                ("accounts", &[0x02; 16], [0x52; 32]),
+                ("accounts", &[0x01; 16], [0x53; 32]),
+            ])
+            .to_vec(),
+        ),
         ("artifact_object_key", obj_key.to_vec()),
         ("artifact_aad", art_ad),
         ("artifact_object_ciphertext", art_ct),
@@ -1108,8 +1169,8 @@ fn tag_and_commitment_tamper_fail_authentication() {
 #[test]
 fn equal_counters_on_distinct_device_keys_never_share_a_key() {
     let k_e = counting(0);
-    let fpr_a = device_fingerprint(SUITE_ID, &[0xe1; 32], &[0xc1; 32]);
-    let fpr_b = device_fingerprint(SUITE_ID, &[0xe2; 32], &[0xc2; 32]);
+    let fpr_a = device_fingerprint(SUITE_ID, KEM_ID_X25519, &[0xe1; 32], &[0xc1; 32]);
+    let fpr_b = device_fingerprint(SUITE_ID, KEM_ID_X25519, &[0xe2; 32], &[0xc2; 32]);
     assert_ne!(fpr_a, fpr_b);
     // Even if a hostile service hands both devices the same nonce domain and
     // counter, the derived AEAD keys differ, so (key, nonce) cannot repeat.
@@ -1243,8 +1304,8 @@ fn artifact_object_rejects_altered_bytes_and_wrong_address() {
 
 #[test]
 fn epoch_record_context_binds_every_recipient_and_the_membership_head() {
-    let fpr_a = device_fingerprint(SUITE_ID, &[0xe1; 32], &[0xc1; 32]);
-    let fpr_b = device_fingerprint(SUITE_ID, &[0xe2; 32], &[0xc2; 32]);
+    let fpr_a = device_fingerprint(SUITE_ID, KEM_ID_X25519, &[0xe1; 32], &[0xc1; 32]);
+    let fpr_b = device_fingerprint(SUITE_ID, KEM_ID_X25519, &[0xe2; 32], &[0xc2; 32]);
     let head = [5u8; 32];
     let hh = [6u8; 32];
     let base = hpke_info(2, &[0xb1; 16], &fpr_b, &fpr_a, &head, &hh);
@@ -1313,7 +1374,7 @@ fn owner_decisions_are_pinned_in_the_spec_and_the_adr() {
     }
     assert!(
         ADR_INDEX.contains(
-            "| 0077 | [Data ownership and wire formats](0077-wire-formats.md) | Public | Proposed"
+            "| 0077 | [Data ownership and wire formats](0077-wire-formats.md) | Public | Accepted"
         ),
         "the ADR index must list 0077"
     );
@@ -1388,4 +1449,323 @@ fn export_objects_bind_header_path_index_and_length() {
         export_object_key(&kek, &h1, 1),
         export_object_key(&kek, &h2, 1)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Epoch-record acceptance (Part C.6/C.7), modelled without signatures
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EpochFacts {
+    key_epoch: u64,
+    record_id: [u8; 32],
+    prev_epoch_id: Option<[u8; 32]>,
+    head_version: u64,
+    head_id: [u8; 32],
+    /// The record is a revocation cutover.
+    cutover: bool,
+    /// The record's `membership_head` is a `revoke` record.
+    head_is_revoke: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EpochError {
+    StaleMembershipHead,
+    MembershipChainFork,
+    ChainBehind,
+    EpochEquivocation,
+    BadEpochSequence,
+    CutoverHeadNotRevoke,
+}
+
+/// What a recipient has verified so far. Signature, recipient-set and
+/// commitment checks come first in the real protocol; this model pins the
+/// freshness and sequencing rules that decide whether a well-formed record is
+/// still acceptable.
+struct Recipient {
+    head_version: u64,
+    head_id: [u8; 32],
+    latest: Option<EpochFacts>,
+    /// Every distinct record seen for an epoch, retained for diagnosis.
+    retained: Vec<EpochFacts>,
+}
+
+impl Recipient {
+    fn accept(&mut self, r: EpochFacts) -> Result<(), EpochError> {
+        // Equivocation first: a different record for an epoch already accepted.
+        if let Some(prev) = self.latest {
+            if r.key_epoch == prev.key_epoch && r.record_id != prev.record_id {
+                self.retained.push(r);
+                return Err(EpochError::EpochEquivocation);
+            }
+            if r.key_epoch == prev.key_epoch {
+                return Ok(()); // an exact duplicate is idempotent
+            }
+        }
+        if r.head_version < self.head_version {
+            return Err(EpochError::StaleMembershipHead);
+        }
+        if r.head_version == self.head_version && r.head_id != self.head_id {
+            self.retained.push(r);
+            return Err(EpochError::MembershipChainFork);
+        }
+        if r.head_version > self.head_version {
+            return Err(EpochError::ChainBehind); // fetch and verify the chain first
+        }
+        let expected_epoch = self.latest.map_or(1, |p| p.key_epoch + 1);
+        let expected_prev = self.latest.map(|p| p.record_id);
+        if r.key_epoch != expected_epoch || r.prev_epoch_id != expected_prev {
+            return Err(EpochError::BadEpochSequence);
+        }
+        if r.cutover && !r.head_is_revoke {
+            return Err(EpochError::CutoverHeadNotRevoke);
+        }
+        self.latest = Some(r);
+        self.retained.push(r);
+        Ok(())
+    }
+}
+
+fn recipient_at(version: u64, head: u8, epoch1: Option<EpochFacts>) -> Recipient {
+    Recipient {
+        head_version: version,
+        head_id: [head; 32],
+        latest: epoch1,
+        retained: epoch1.into_iter().collect(),
+    }
+}
+
+fn epoch1() -> EpochFacts {
+    EpochFacts {
+        key_epoch: 1,
+        record_id: [0xe1; 32],
+        prev_epoch_id: None,
+        head_version: 4,
+        head_id: [4; 32],
+        cutover: false,
+        head_is_revoke: false,
+    }
+}
+
+#[test]
+fn a_stale_head_record_signed_by_a_since_revoked_member_is_rejected() {
+    // The recipient has verified the chain through version 5, where device R was
+    // revoked. R signs a well-formed epoch-2 record that names the older head
+    // (version 4), where R was still authorized.
+    let mut me = recipient_at(5, 5, Some(epoch1()));
+    let stale = EpochFacts {
+        key_epoch: 2,
+        record_id: [0xe2; 32],
+        prev_epoch_id: Some([0xe1; 32]),
+        head_version: 4,
+        head_id: [4; 32],
+        cutover: true,
+        head_is_revoke: false,
+    };
+    assert_eq!(me.accept(stale), Err(EpochError::StaleMembershipHead));
+    assert_eq!(me.latest, Some(epoch1()), "no key from the rejected record");
+}
+
+#[test]
+fn a_cutover_must_name_the_revoke_record_as_its_head() {
+    let mut me = recipient_at(5, 5, Some(epoch1()));
+    let record = |head_is_revoke| EpochFacts {
+        key_epoch: 2,
+        record_id: [0xe2; 32],
+        prev_epoch_id: Some([0xe1; 32]),
+        head_version: 5,
+        head_id: [5; 32],
+        cutover: true,
+        head_is_revoke,
+    };
+    assert_eq!(
+        me.accept(record(false)),
+        Err(EpochError::CutoverHeadNotRevoke)
+    );
+    assert_eq!(me.accept(record(true)), Ok(()));
+}
+
+#[test]
+fn epoch_numbers_are_sequential_and_chained() {
+    let mut me = recipient_at(4, 4, Some(epoch1()));
+    let mut skip = epoch1();
+    skip.key_epoch = 3;
+    skip.record_id = [0xe3; 32];
+    skip.prev_epoch_id = Some([0xe1; 32]);
+    assert_eq!(me.accept(skip), Err(EpochError::BadEpochSequence));
+    let mut wrong_prev = epoch1();
+    wrong_prev.key_epoch = 2;
+    wrong_prev.record_id = [0xe2; 32];
+    wrong_prev.prev_epoch_id = Some([0x99; 32]);
+    assert_eq!(me.accept(wrong_prev), Err(EpochError::BadEpochSequence));
+}
+
+#[test]
+fn equivocating_epoch_records_and_forked_chains_are_rejected_and_retained() {
+    let mut me = recipient_at(4, 4, None);
+    assert_eq!(me.accept(epoch1()), Ok(()));
+    assert_eq!(
+        me.accept(epoch1()),
+        Ok(()),
+        "an exact duplicate is idempotent"
+    );
+    let mut other = epoch1();
+    other.record_id = [0xaa; 32];
+    assert_eq!(me.accept(other), Err(EpochError::EpochEquivocation));
+    assert!(
+        me.retained.contains(&other),
+        "both records stay for diagnosis"
+    );
+    assert!(me.retained.contains(&epoch1()));
+
+    // A second record at the same chain version with a different id is a fork.
+    let mut fork = EpochFacts {
+        key_epoch: 2,
+        record_id: [0xe2; 32],
+        prev_epoch_id: Some([0xe1; 32]),
+        head_version: 4,
+        head_id: [0x77; 32],
+        cutover: false,
+        head_is_revoke: false,
+    };
+    assert_eq!(me.accept(fork), Err(EpochError::MembershipChainFork));
+    // A head newer than anything verified means: fetch the chain first.
+    fork.head_version = 6;
+    assert_eq!(me.accept(fork), Err(EpochError::ChainBehind));
+}
+
+// ---------------------------------------------------------------------------
+// Artifact seal guard (Part C.9): the zero nonce needs a fixed plaintext
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, Eq)]
+enum SealError {
+    ArtifactDescriptorChanged,
+}
+
+/// A client records the plaintext digest of the first seal of every
+/// `(key_epoch, sync_artifact_id)` and refuses a different one before it
+/// encrypts, so the fixed zero nonce never protects two plaintexts.
+#[derive(Default)]
+struct SealGuard {
+    sealed: std::collections::HashMap<(u64, [u8; 32]), [u8; 32]>,
+}
+
+impl SealGuard {
+    fn plan(&mut self, epoch: u64, id: [u8; 32], plaintext: &[u8]) -> Result<(), SealError> {
+        let digest = sha256(plaintext);
+        match self.sealed.get(&(epoch, id)) {
+            None => {
+                self.sealed.insert((epoch, id), digest);
+                Ok(())
+            }
+            Some(first) if *first == digest => Ok(()),
+            Some(_) => Err(SealError::ArtifactDescriptorChanged),
+        }
+    }
+}
+
+#[test]
+fn a_changed_descriptor_for_a_published_address_is_refused_before_encryption() {
+    let mut g = SealGuard::default();
+    let id = [7u8; 32];
+    assert_eq!(g.plan(1, id, b"descriptor v1 + bytes"), Ok(()));
+    // A re-publication of the same bytes is the same plaintext: allowed.
+    assert_eq!(g.plan(1, id, b"descriptor v1 + bytes"), Ok(()));
+    // A renamed file or corrected MIME type changes the plaintext: refused.
+    assert_eq!(
+        g.plan(1, id, b"descriptor v2 + bytes"),
+        Err(SealError::ArtifactDescriptorChanged)
+    );
+    // A new epoch re-addresses and re-seals under a new key: allowed.
+    assert_eq!(g.plan(2, [8u8; 32], b"descriptor v2 + bytes"), Ok(()));
+}
+
+// ---------------------------------------------------------------------------
+// Byte-level determinism rules settled in review
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_manifest_commitment_presence_rule_is_exact() {
+    let (x, y) = ([1u8; 32], [2u8; 32]);
+    let c = manifest_commitment(&[x, y]);
+    // An envelope with no artifacts carries an absent commitment.
+    assert!(manifest_presence_ok(false, &[], None));
+    assert!(!manifest_presence_ok(
+        false,
+        &[],
+        Some(manifest_commitment(&[]))
+    ));
+    // An envelope with artifacts carries exactly their commitment.
+    assert!(manifest_presence_ok(false, &[x, y], Some(c)));
+    assert!(!manifest_presence_ok(false, &[x, y], None));
+    assert!(!manifest_presence_ok(false, &[x, y], Some([0; 32])));
+    // A snapshot always carries one, even for an empty closure.
+    assert!(manifest_presence_ok(
+        true,
+        &[],
+        Some(manifest_commitment(&[]))
+    ));
+    assert!(!manifest_presence_ok(true, &[], None));
+}
+
+#[test]
+fn manifest_lists_must_be_strictly_ascending() {
+    let (x, y) = ([1u8; 32], [2u8; 32]);
+    assert!(validate_manifest_list(&[x, y]).is_ok());
+    assert!(validate_manifest_list(&[y, x]).is_err());
+    assert!(validate_manifest_list(&[x, x]).is_err());
+}
+
+#[test]
+fn the_write_set_hash_sorts_raw_bytes_not_length_prefixed_encodings() {
+    // Raw order puts "ab" before "b"; a length-prefixed order would put "b"
+    // first (shorter length). The hash must follow the raw order.
+    let (d1, d2) = ([1u8; 32], [2u8; 32]);
+    let rows = [("b", &[0u8][..], d2), ("ab", &[0u8][..], d1)];
+    let expected = {
+        let e = Enc::new("dohflow/sync-writeset/v1")
+            .u32(2)
+            .text("ab", 64)
+            .bytes(&[0], 256)
+            .fixed(&d1)
+            .text("b", 64)
+            .bytes(&[0], 256)
+            .fixed(&d2);
+        sha256(&e.done())
+    };
+    assert_eq!(write_set_hash(&rows), expected);
+    // Input order never matters.
+    assert_eq!(write_set_hash(&rows), write_set_hash(&[rows[1], rows[0]]));
+    // Primary keys sort bytewise within a table, shorter first on a prefix.
+    let by_pk = [("t", &[1u8, 0][..], d1), ("t", &[1u8][..], d2)];
+    assert_eq!(
+        write_set_hash(&by_pk),
+        write_set_hash(&[by_pk[1], by_pk[0]])
+    );
+}
+
+#[test]
+fn the_object_count_and_file_count_have_stated_bounds() {
+    let salt = [3u8; 32];
+    assert!(parse_export_header(&export_header(1, &salt, MAX_OBJECTS)).is_ok());
+    assert!(parse_export_header(&export_header(1, &salt, MAX_OBJECTS + 1)).is_err());
+    // The snapshot file count has its own bound.
+    assert_eq!(MAX_FILES, 1024);
+}
+
+#[test]
+fn the_fingerprint_commits_to_the_suite_the_kem_and_a_variable_length_key() {
+    let ed = [0xe1u8; 32];
+    let x = [0xc1u8; 32];
+    let base = device_fingerprint(SUITE_ID, KEM_ID_X25519, &ed, &x);
+    // A different suite or KEM id yields a different identity.
+    assert_ne!(base, device_fingerprint(2, KEM_ID_X25519, &ed, &x));
+    assert_ne!(base, device_fingerprint(SUITE_ID, 0x0021, &ed, &x));
+    // A future KEM public key of a different length enrolls without a new
+    // membership-record layout, and cannot collide with a 32-byte key.
+    let hybrid = [0xc1u8; 1216];
+    assert_ne!(base, device_fingerprint(SUITE_ID, 0x0030, &ed, &hybrid));
+    let long = membership_body(1, None, 1, &base, &[0xa1; 16], &ed, &hybrid, 0);
+    assert!(long.len() > 1216);
 }
