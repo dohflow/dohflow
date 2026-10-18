@@ -5,8 +5,10 @@ content, kept apart on purpose:
 
 - **Part A** describes the formats the application writes and reads today: the
   local vault, its key hierarchy, the schema, and the `.pcfobk` backup.
-- **Part B** specifies the portable export and the Sync genesis snapshot, which
-  are **not implemented**. Part B fixes what each format carries.
+- **Part B** specifies what the portable export and the Sync genesis snapshot
+  carry. Both are **not implemented**.
+- **Part C** specifies the cryptographic framing, the canonical encodings and the
+  Sync wire formats behind them. It is **not implemented** either.
 
 # Part A — Local vault and backup (shipped)
 
@@ -233,8 +235,8 @@ synthetic no-app recovery test before any such public claim.
 
 ## Compatibility and change control
 
-- `spec-version = 2` adds Part B, the planned portable and Sync content
-  contract, to the shipped formats of Part A. New wire sections require a
+- `spec-version = 2` adds Parts B and C, the planned portable and Sync content
+  contract and wire formats, to the shipped formats of Part A. New wire sections require a
   spec-version bump and their own reviewed vectors.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
@@ -348,7 +350,7 @@ therefore requires reviewing this inventory.
 | `recurring_suggestion_suppressions` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `command_idempotency_keys` | 3 | exclude | exclude | Device-local state. |
 | `vault_meta` | 3 | exclude | exclude | Device-local state. |
-| `vault_metadata` | 3 | fields | fields | Only `household_timezone` travels, in the manifest vault profile (portable) and the genesis header (Sync). `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. |
+| `vault_metadata` | 3 | fields | fields | Only `household_timezone` travels, as the logical class-1 field of the `household` record (B.3); it is stored here today and may move to the households row (`personal-cfo-339`) without a format change. `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. |
 | `schema_migrations` | 3 | exclude | exclude | Device-local state. |
 | `audit_events` | 3 | exclude | exclude | Device-local security evidence and replay-owned planned-command rows; not a user-owned financial record. |
 | `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
@@ -394,12 +396,20 @@ Rules that apply to the whole inventory:
    decision, so the portable export is complete before that routing lands.
 5. **Pre-Sync operation history is audit evidence.** It is portable as history
    and is never presented as a replayable command stream or carried into a
-   Sync genesis ([ADR 0017](../adr/0017-sync-identity-and-clock.md)).
+   Sync genesis ([ADR 0017](../adr/0017-sync-identity-and-clock.md)). This does
+   **not** limit what a Sync device can see: the genesis carries every class-1
+   ledger row of every age (C.8).
+6. **The household timezone is user data, not a header.** `household_timezone`
+   changes the forecast horizon boundary, so it is a class-1 logical field and is
+   changed only through a logged command (`SetHouseholdTimezone`, a
+   `WriteCommand` to be added before the S1 format freeze; today the value is
+   written directly to `vault_metadata`). It is never a manifest-only or
+   genesis-header-only value, because a header would not propagate later changes.
 
 ## B.3 Portable logical model
 
 The portable export is a logical bundle. Its encrypted container is specified
-in Part C; this section defines the logical contents and is independent of the
+in C.12; this section defines the logical contents and is independent of the
 container.
 
 ### Contents
@@ -407,23 +417,26 @@ container.
 | Logical path | Meaning |
 | --- | --- |
 | `manifest.json` | format identity and version, producer versions, the vault profile, per-table row counts and hashes, the artifact list, and the inventory version |
-| `data/<table>.jsonl` | one file per table with disposition `include`, `fields` or `history`; one JSON object per line, in primary-key order |
+| `data/<table>.jsonl` | one file per table with disposition `include`, `fields` or `history`; one canonical JSON object per line, in primary-key order |
+| `data/household.jsonl` | the logical `household` record: one row holding `household_timezone` (B.2 rule 6) |
 | `artifacts/<artifact_id>` | the plaintext bytes of one document, addressed by the attachment's logical `id` |
 | `exports/transactions.csv` | the existing plaintext transaction export (`personal-cfo-hbd8`), included unchanged |
 | `RECOVERY.txt` | plain-language instructions for opening the bundle without DohFlow (B.6) |
 
 `manifest.json` carries, at minimum:
 
-- `format`, the constant `dohflow-portable-export`, and `format_version`, an
-  integer that is `1` for this revision;
+- `format`, the constant `dohflow-portable-export`, and `format_version`, the
+  decimal string `"1"` for this revision;
 - the producing app version and `schema_version`;
-- the vault profile: `household_timezone` and nothing else from
-  `vault_metadata`;
 - the inventory version;
 - a `tables` array: name, class, row count, the SHA-256 of the file's bytes, and
   a `columns` array giving each column's name and kind;
 - an `artifacts` array: the document's logical `id`, byte length, SHA-256 of the
-  plaintext, `mime_type` and `original_filename`.
+  plaintext, `mime_type` and `original_filename`;
+- an `objects` array committing the container's object set (C.12).
+
+`manifest.json` is canonical JSON (C.1.2): every integer in it, including counts
+and lengths, is a decimal string.
 
 The `artifacts` array is the **complete artifact manifest**. An importer
 refuses a bundle whose list names a document that is absent, or that contains a
@@ -435,14 +448,14 @@ Each line of a `data/<table>.jsonl` file is one JSON object keyed by the
 table's column names. The manifest's `columns` array gives each column a kind
 that fixes its encoding, so a reader needs no knowledge of the SQL schema:
 
-- `int`: a JSON integer, read as a signed 64-bit value.
+- `int`: a decimal string for a signed 64-bit value, never a JSON number (C.1.2).
 - `text`: a JSON string.
 - `uuid`: a lowercase hyphenated UUID string, for the 16-byte identifier columns.
 - `bytes`: a standard base64 string, for any other binary column.
 - a SQL `NULL` is JSON `null` in any kind.
 
-Money is always its integer minor units plus a separate currency column; no
-floating-point value appears in any exported record. Every file is UTF-8 with
+Money is always its integer minor units, as a decimal string, plus a separate
+currency column; no floating-point value appears in any exported record. Every file is UTF-8 with
 `\n` line endings.
 
 ### Preserved, rebuilt and not preserved
@@ -520,7 +533,12 @@ rule governs the Sync genesis (ADR 0074 Decision 1).
 The genesis snapshot reuses only the logical model above, restricted to the
 rows with a Sync disposition of `include`, `fields` or `artifact`. It does not
 reuse the user-facing password wrapper, the history rows or the plaintext CSV
-and instructions. Its wire encoding is in Part C.
+and instructions. Its wire encoding is in C.8.
+
+**Full-history guarantee.** Every device that bootstraps from a genesis snapshot
+can view all historical transactions, however old. The genesis carries every
+class-1 ledger row of every age; only the pre-v2 edit audit trail
+(`operation_log` and `provenance_links` history) is left out.
 
 ## B.6 Independent recovery
 
@@ -530,7 +548,7 @@ specified here and delivered and verified by `personal-cfo-vn91`:
 
 - it takes a bundle and the vault password and writes the logical contents of
   B.3 into a directory the user selects, and writes nothing elsewhere;
-- it depends on the published container specification (Part C) and its test
+- it depends on the published container specification (C.12) and its test
   vectors, not on the vault, the database or any DohFlow crate;
 - it reports the typed outcomes above and a non-zero exit status on failure;
 - it ships with a procedure a person can follow with the format specification
@@ -538,3 +556,645 @@ specified here and delivered and verified by `personal-cfo-vn91`:
 
 DohFlow makes **no** claim that a bundle can be opened without DohFlow until a
 synthetic no-application recovery test passes in `personal-cfo-vn91`.
+
+# Part C — Cryptographic framing and Sync wire formats (specified, not implemented)
+
+Nothing in this part is written or read by the shipped application. It fixes the
+bytes behind the content contract of Part B and behind
+[ADR 0074](../adr/0074-dohflow-sync-architecture.md), whose decisions it does not
+change: ADR 0074 decides *what* Sync protects and how it behaves; this part
+fixes the canonical encodings, derivations and records, as ADR 0074 and
+[ADR 0017](../adr/0017-sync-identity-and-clock.md) delegate to
+[ADR 0077](../adr/0077-wire-formats.md). The owner decisions it applies are
+recorded on `personal-cfo-klr.4` (2026-10-18).
+
+The byte-level rules here are checked by a test-only reference implementation,
+`crates/vault-crypto/tests/sync_wire_vectors.rs`, which computes every vector in
+C.14 from the rules below and rejects the malformed inputs listed there. Ed25519
+signatures and HPKE sealing are **not** in that reference, because those
+primitives are not workspace dependencies yet: this part pins every byte that
+feeds them (signed bodies, HPKE `info`, AAD) and requires the implementing beads
+(`personal-cfo-1zb`, `personal-cfo-1cltt`) to add the RFC 8032 and RFC 9180
+known-answer tests listed in C.14.
+
+## C.1 Conventions
+
+### C.1.1 Canonical binary encoding (CBE1)
+
+Every value that is hashed, signed, authenticated as AAD, or used as HKDF
+`info` is encoded with one scheme, so there is exactly one byte string for each
+logical value. One field table per structure drives both the encoder and the
+parser.
+
+| Kind | Encoding |
+| --- | --- |
+| `label` | `u16` length (1 to 64), then ASCII bytes from `[a-z0-9/_.-]`. Every structure starts with its own label, which is its domain separator. |
+| `u8`, `u16`, `u32`, `u64` | fixed-width, big-endian |
+| `i64` | fixed-width, big-endian, two's complement |
+| `uuid` | 16 raw bytes (never text) |
+| `digest`, `fingerprint`, `key32` | 32 raw bytes |
+| `bytes(max)` | `u32` big-endian length no greater than `max`, then the bytes |
+| `text(max)` | `bytes(max)` whose content is valid UTF-8 |
+| `blob` | `u64` length, then the bytes; used only for large bodies with a stated bound |
+| `opt(T)` | one presence byte, `0` for absent or `1` for present, then `T` if present; this is the canonical null marker |
+| `list(T, max)` | `u32` count no greater than `max`, then the items |
+
+A parser **must** reject: trailing bytes after the last field; a length above
+its stated maximum; a presence byte other than `0` or `1`; invalid UTF-8 in a
+`text`; an unknown or mismatched label; and truncation. It must not skip unknown
+trailing fields. A receiver that supports a version rejects a structure of an
+unsupported version rather than reading part of it.
+
+### C.1.2 Canonical JSON (restricted RFC 8785)
+
+Manifests and command payloads are JSON canonicalized under
+[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) (JCS), restricted so
+that JCS's IEEE-754 number rules never apply:
+
+- **Every 64-bit integer is a decimal string** (`"-1250"`, `"41"`), with syntax
+  `-?(0|[1-9][0-9]*)` and the range of its field. No JSON number appears in any
+  hashed or committed document, and no floating-point value appears at all.
+  Money is a minor-units string plus a currency string.
+- Member names are ASCII `[a-z0-9_]`, sorted by UTF-16 code units (which is byte
+  order for ASCII), with no insignificant whitespace.
+- Strings use the JCS escaping rules. Invalid UTF-8, lone surrogate escapes and
+  duplicate member names are rejected. No Unicode normalization is applied.
+- Booleans, `null`, arrays, objects and strings are the only value types.
+- Implementations pin one canonicalization crate and must produce identical
+  bytes on the cross-implementation vectors of C.14.
+
+### C.1.3 Registries
+
+| Registry | Values |
+| --- | --- |
+| `protocol_version` | `1` |
+| `suite_id` | `1`: see C.1.4 |
+| `object_type` (AEAD objects) | `1` command envelope, `2` snapshot |
+| `actor_type` | `1` user, `2` system, `3` importer, `4` agent |
+| `membership_action` | `1` add, `2` revoke |
+| `artifact_kind` | `1` attachment, `2` source batch, `3` source record, `4` parser run |
+
+### C.1.4 Cryptographic suite 1
+
+| Role | Algorithm |
+| --- | --- |
+| Hash | SHA-256 |
+| MAC | HMAC-SHA256 |
+| Key derivation | HKDF-SHA256 in Expand-only use on a uniformly random 32-byte key ([RFC 5869](https://www.rfc-editor.org/rfc/rfc5869.html)) |
+| AEAD | AES-256-GCM, 96-bit nonce, 128-bit tag |
+| Key encapsulation | [HPKE](https://www.rfc-editor.org/rfc/rfc9180.html) base mode, DHKEM(X25519, HKDF-SHA256) `kem_id 0x0020`, HKDF-SHA256 `kdf_id 0x0001`, AES-256-GCM `aead_id 0x0002` |
+| Signature | Ed25519 ([RFC 8032](https://www.rfc-editor.org/rfc/rfc8032.html)), always verified with strict verification (`verify_strict` semantics: canonical `S`, small-order keys and points rejected) |
+
+**Post-quantum posture (owner decision).** Suite 1 is classical. Every sealed-key
+blob, membership record and epoch record carries `suite_id` and `kem_id`, so a
+hybrid KEM (for example X-Wing, or ML-KEM-768 with X25519) can be introduced at a
+later key epoch as a new `suite_id` without a format break. All objects of one
+epoch use the single suite named in that epoch's record. A recipient that does
+not implement the named suite fails with `UnsupportedSuite`; it never guesses.
+Ciphertext already sealed under suite 1 is not retroactively protected against a
+future quantum adversary; that limitation is accepted for v1.
+
+## C.2 Keys and secrets
+
+| Secret | Size | Lifetime and custody |
+| --- | --- | --- |
+| Sync epoch root `K_e` | 32 random bytes | One per key epoch; sealed only to enrolled devices; never used directly as an AEAD key; distinct from the vault DEK |
+| Tag secret `S` | 32 random bytes | **Non-rotating**, created at Sync genesis, sealed to each device together with `K_e` and re-sealed unchanged at every epoch. It is an equality-tag key, not a confidentiality key. |
+| Device signing key | Ed25519 | One per device; generated in platform-neutral Rust and wrapped at rest by the OS keystore |
+| Device agreement key | X25519 | One per device, independent of the signing key |
+
+The two device keys are generated independently and are not derived from a
+common seed. Hardware P-256 keys are not protocol keys. Key material lives in
+zeroizing protected buffers in Rust, is loaded only when needed, and **never
+crosses the IPC boundary** to the frontend.
+
+**Device key custody (rules; platform behavior is unverified until
+`personal-cfo-1zb` exists).** Device private keys and the nonce-counter state
+never roam, sync or restore across devices, because two devices sharing a
+fingerprint would reuse GCM nonces. The implementing bead must satisfy, per
+platform: Apple, `kSecAttrSynchronizable` false and a `ThisDeviceOnly`
+accessibility class; Windows, a local-machine or non-roaming credential store;
+Android, a restored wrapped blob is detected and treated as `NonceStateLost`;
+Linux, the Secret Service, failing with a typed error when it is absent, and
+never falling back to plaintext storage. These requirements are carried into
+the acceptance criteria of `personal-cfo-1zb`.
+
+`device_key_fingerprint` is a 32-byte value, defined in C.3, that commits to
+**both** public keys and the suite. No two enrollments may share a fingerprint.
+
+## C.3 Derivations
+
+Every derived value is computed over CBE1 bytes. `‖` below means the fields are
+encoded in the order shown with the kinds of C.1.1. `Expand(K, info)` is
+HKDF-SHA256-Expand with PRK `K` and output length 32.
+
+| Value | Derivation |
+| --- | --- |
+| `device_key_fingerprint` | `SHA-256(label "dohflow/device-fpr/v1" ‖ u16 suite_id ‖ ed25519_pk ‖ x25519_pk)` |
+| AEAD key `K_{e,d,t}` | `Expand(K_e, label "dohflow/sync-aead/v1" ‖ u16 protocol_version ‖ uuid vault_id ‖ u64 key_epoch ‖ fingerprint ‖ u8 object_type)` |
+| `nonce_domain` | first 4 bytes of `SHA-256(label "dohflow/sync-nonce/v1" ‖ uuid vault_id ‖ u64 key_epoch ‖ fingerprint ‖ u8 object_type)` |
+| GCM nonce | `nonce_domain` (4 bytes) then `u64 invocation_counter` (8 bytes) |
+| Tag key | `Expand(S, label "dohflow/sync-idem-tag-key/v1" ‖ uuid vault_id)` |
+| `idempotency_key_tag` | `HMAC-SHA256(tag key, label "dohflow/sync-idem-tag/v1" ‖ uuid canonical_idempotency_key)` |
+| `immutable_metadata_commitment` | `SHA-256(label "dohflow/sync-meta-commit/v1" ‖ uuid command_id ‖ uuid correlation_id ‖ opt(uuid) causation_id ‖ u8 actor_type ‖ text(256) actor_id ‖ uuid idempotency_key ‖ i64 issued_at ‖ uuid device_id)` |
+| Key commitments | `SHA-256(label "dohflow/sync-epoch-key-commit/v1" ‖ key32 K_e)` and `SHA-256(label "dohflow/sync-tag-key-commit/v1" ‖ key32 S)` |
+| `sync_artifact_id_e` | `HMAC-SHA256(Expand(K_e, label "dohflow/sync-artifact-address/v1" ‖ uuid vault_id), storage_id_raw)`, where `storage_id_raw` is the 32 bytes behind the local `StorageId`'s hex form |
+| Artifact object key | `Expand(K_e, label "dohflow/sync-artifact-object/v1" ‖ u16 protocol_version ‖ uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id)` |
+| Artifact manifest commitment | `SHA-256(label "dohflow/sync-artifact-manifest/v1" ‖ list(digest, 4096) of the ids in strictly ascending byte order)` |
+| `canonical_envelope_digest` | `SHA-256(label "dohflow/sync-envelope-digest/v1" ‖ u32 len ‖ header bytes ‖ u64 len ‖ ciphertext)` |
+
+`issued_at` is a signed 64-bit count of microseconds since the Unix epoch, UTC.
+`canonical_idempotency_key` is the 16 raw bytes of the key's UUID (C.5).
+`K_e` and `S` are uniformly random, so Expand-only use is sound; the labelled,
+versioned context provides domain separation.
+
+## C.4 AEAD objects: envelopes and snapshots
+
+### Clear header
+
+The header is the AAD of the object's AEAD. Its fields, in order:
+
+| # | Field | Kind | Notes |
+| --- | --- | --- | --- |
+| 1 | label `dohflow/sync-header/v1` | `label` | |
+| 2 | `protocol_version` | `u16` | `1` |
+| 3 | `vault_id` | `uuid` | |
+| 4 | `key_epoch` | `u64` | |
+| 5 | `object_type` | `u8` | `1` envelope or `2` snapshot |
+| 6 | `object_id` | `uuid` | the immutable `command_id`, or the snapshot id |
+| 7 | `idempotency_key_tag` | `opt(digest)` | present for an envelope, absent for a snapshot |
+| 8 | `immutable_metadata_commitment` | `opt(digest)` | present for an envelope, absent for a snapshot |
+| 9 | `device_id` | `uuid` | |
+| 10 | `device_key_fingerprint` | `fingerprint` | |
+| 11 | `nonce_domain` | 4 raw bytes | |
+| 12 | `invocation_counter` | `u64` | at most `2^32 - 1` |
+| 13 | `base_seq` | `u64` | |
+| 14 | `payload_schema_version` | `u32` | |
+| 15 | `engine_version` | `text(64)` | |
+| 16 | `schema_version` | `u32` | the vault schema version of the producer |
+| 17 | `artifact_manifest_commitment` | `opt(digest)` | the delta manifest commitment of an envelope, or the full closure commitment of a snapshot |
+
+The service-assigned `seq` is **not** in the header: it does not exist until the
+service accepts the already sealed object, and the service binds it to the
+immutable `object_id` in its append-only log. Any epoch, type, fingerprint,
+domain, counter, tag, commitment or field mismatch fails closed.
+
+### Container
+
+`magic "DFSY"` (4 ASCII bytes), `u16 container_version = 1`, `u32 header_len`,
+the header, `u64 ciphertext_len`, then the ciphertext (the AES-256-GCM output
+including its tag). A parser rejects any other length, any trailing byte, and an
+unsupported container version.
+
+### Encryption
+
+The key is `K_{e,d,t}` for the object's epoch, device and type, and the nonce is
+`nonce_domain ‖ invocation_counter`. The AAD is the header bytes. An exact-byte
+retransmission reuses the saved ciphertext; a crash or a changed retry **burns**
+the counter, and the next encryption uses the next counter value.
+
+### Receiver checks
+
+After authenticated decryption, and before any apply, rebase, queue or accepted-
+index reconciliation, a receiver:
+
+1. recomputes `idempotency_key_tag` from the plaintext's `idempotency_key` and
+   `immutable_metadata_commitment` from the plaintext's complete metadata, and
+   requires both to equal the header fields; a separately tampered clear field
+   already fails AEAD authentication, because the header is the AAD, and the
+   ciphertext and a diagnostic record are retained;
+2. checks that `device_id` and `device_key_fingerprint` belong to the same member
+   of the membership chain at the object's epoch;
+3. for an envelope, requires a UUIDv4 idempotency key (C.5).
+
+### Envelope plaintext (`EnvelopePlaintextV1`)
+
+`label "dohflow/sync-envelope-plaintext/v1" ‖ uuid command_id ‖ uuid
+correlation_id ‖ opt(uuid) causation_id ‖ u8 actor_type ‖ text(256) actor_id ‖
+uuid idempotency_key ‖ i64 issued_at ‖ uuid device_id ‖ digest write_set_hash ‖
+list(digest, 4096) delta_manifest ‖ bytes(2^24) payload`.
+
+`payload` is canonical JSON (C.1.2). Together with the header, the envelope
+therefore carries the complete original `CommandMeta` (`command_id`,
+`idempotency_key`, `issued_at`, `correlation_id`, `causation_id`, `device_id`,
+plus `actor_type` and `actor_id`), the payload, schema and engine versions, the
+class-1 write-set hash, `base_seq`, and the immutable `object_id`. The optional
+post-acceptance `seq` is carried only by the service's response and index.
+
+`write_set_hash` is `SHA-256(label "dohflow/sync-writeset/v1" ‖ u32 count ‖ for
+each touched class-1 row, in ascending (table name, primary-key bytes) order:
+text(64) table ‖ bytes(256) primary_key ‖ digest row_digest)`, where `row_digest`
+is the SHA-256 of the row's one canonical binary encoding, which
+`personal-cfo-t2s4b` defines under C.1.1. Class-2 rebuilds are excluded.
+
+### Counter register and nonce state
+
+Each device owns a durable `next_counter` for every
+`(key_epoch, device_key_fingerprint, object_type)` context. It persists the
+advance **before** encrypting. The register has an independent anti-rollback
+witness that a backup restore does not restore; a missing, restored or
+inconsistent witness is `NonceStateLost`, and the client must not encrypt in
+that context. It re-enrolls with a fresh device key pair and fingerprint, or
+bootstraps a fresh epoch. Each derived key has a cap of `2^32` invocations;
+before the next invocation the client completes a fresh-key epoch rotation. The
+service records the first `(key_epoch, fingerprint, object_type, nonce)` it
+receives and accepts only an exact-byte retry afterwards, as a duplicate-detection
+backstop and never as the security source.
+
+## C.5 Idempotency keys and the tag
+
+Every idempotency key that enters a Sync envelope is a UUID version 4 drawn from
+the operating system's CSPRNG, enforced as follows:
+
+- the backend mints idempotency keys with version 4, not version 7
+  (`command_id` may remain version 7);
+- the envelope builder rejects any other format with the typed error
+  `InvalidIdempotencyKey`, covered by a negative test (a version 7 key and a
+  wrong-variant key are the required cases);
+- `canonical_idempotency_key` is the 16 raw UUID bytes.
+
+With 122 random bits per key, a device holding `S` after revocation can only
+recognize tags of keys it has already seen; it cannot confirm guessed keys. That
+residual is accepted. `S` is shared by every enrolled device and is never
+rotated, so the tag is stable across key epochs and across a vault key rotation
+([ADR 0083](../adr/0083-vault-key-rotation.md)). A per-epoch tag key is rejected:
+it would break the dual-identity lookup that ADR 0074 Decision 2 requires after
+tail truncation.
+
+`S` lives as long as the Sync vault. A second genesis for a known `vault_id` is
+impossible (ADR 0074 Decision 9), so `S` never needs replacing. If every enrolled
+device is lost, no device can sign membership changes or unseal keys, and the
+vault cannot rejoin Sync (ADR 0074 Decision 10: no escrow in v1). The client
+reports the typed outcome `NoAuthorizedDevice`; a local backup restores the local
+vault, but its unsent outbox cannot be pushed.
+
+## C.6 Membership and epoch records
+
+### Signed record container
+
+A signed record is `u32 body_len`, the body bytes, then a 64-byte Ed25519
+signature over **the body bytes**. Each body starts with its own label, so a
+signature made for one record type cannot be reinterpreted as another. A record
+is identified by `SHA-256(body)`. Verification uses strict Ed25519 verification
+against the signer's `ed25519_pk` from the membership chain, found by
+fingerprint.
+
+### Membership record body
+
+`label "dohflow/sync-membership/v1" ‖ u16 protocol_version ‖ u16 suite_id ‖ uuid
+vault_id ‖ u64 version ‖ opt(digest) prev_id ‖ u8 action ‖ fingerprint
+signer_fingerprint ‖ uuid device_id ‖ key32 ed25519_pk ‖ key32 x25519_pk ‖ i64
+issued_at`.
+
+Chain rules, all enforced by every client and by the service:
+
+1. The first record has `version = 1`, an absent `prev_id`, `action = 1`, and is
+   signed by the device it adds (`signer_fingerprint` equals that device's
+   fingerprint). The first Sync device creates it locally.
+2. Every later record has `version = previous + 1` and `prev_id` equal to the
+   previous record's id, with the same `vault_id`.
+3. The signer must be an authorized, unrevoked member in the state after
+   `prev_id`. The service stores and enforces the chain but cannot add a
+   recipient, replace a key or choose a fingerprint.
+4. A fingerprint is never reused: an `add` of a fingerprint already in the chain
+   is rejected, and a revoked device can never sign or be added again.
+5. The `device_key_fingerprint` in a record must equal the value recomputed from
+   its two public keys and suite.
+6. A replacement after `NonceStateLost` is a `revoke` of the old fingerprint and
+   an `add` of a new device with fresh keys, signed by an existing member.
+
+### Epoch record body
+
+`label "dohflow/sync-epoch-record/v1" ‖ u16 protocol_version ‖ u16 suite_id ‖ u16
+kem_id ‖ uuid vault_id ‖ u64 key_epoch ‖ digest membership_head ‖ opt(digest)
+prev_epoch_id ‖ digest key_commitment_Ke ‖ digest key_commitment_S ‖ fingerprint
+sealer_fingerprint ‖ list(recipient, 1024)`.
+
+This header (everything before the recipient list) has its own hash,
+`epoch_header_hash = SHA-256(header bytes)`. Each `recipient` is `uuid device_id
+‖ fingerprint ‖ u16 suite_id ‖ u16 kem_id ‖ bytes(2048) enc ‖ bytes(256)
+ciphertext`.
+
+### Sealing the key set (F1)
+
+The sealed-key set travels **only** inside a signed epoch record. For each
+recipient the sealer runs HPKE base mode `Seal` to the recipient's `x25519_pk`
+with:
+
+- `info` = `label "dohflow/sync-hpke-info/v1" ‖ u16 protocol_version ‖ u16
+  suite_id ‖ uuid vault_id ‖ u64 key_epoch ‖ uuid recipient_device_id ‖
+  fingerprint recipient_fingerprint ‖ fingerprint sealer_fingerprint ‖ digest
+  membership_head ‖ digest epoch_header_hash`;
+- `aad` = `label "dohflow/sync-hpke-aad/v1" ‖ digest epoch_header_hash ‖
+  fingerprint recipient_fingerprint`;
+- plaintext = `label "dohflow/sync-sealed-keys/v1" ‖ key32 K_e ‖ key32 S`.
+
+`S` is sealed together with `K_e` in the same per-recipient payload. It is not
+encrypted under `K_e`.
+
+A recipient accepts an epoch record only when it:
+
+1. verifies the signature strictly and checks that the sealer is an authorized
+   member of the chain at the named `membership_head`;
+2. checks that the recipient list is exactly the authorized, unrevoked members at
+   that head (no extra recipient, none missing);
+3. unseals its own entry, then requires `SHA-256(commitment label ‖ K_e)` and the
+   corresponding value for `S` to equal the record's two key commitments;
+4. for any epoch after the first, requires `key_commitment_S` to equal the
+   previous record's value (`S` never changes) and `prev_epoch_id` to equal the
+   previous record's id;
+5. rejects a suite or `kem_id` it does not implement with `UnsupportedSuite`.
+
+Any failure is `EpochRecordInvalid` or `KeyCommitmentMismatch`; no key from a
+rejected record is installed.
+
+## C.7 Epoch cutover, rotation and compatibility
+
+Revocation is a fresh-key, atomic epoch cutover (ADR 0074 Decision 8): an
+authorized remaining device appends a `revoke` membership record, generates a new
+`K_{e+1}`, publishes a signed epoch record sealed to the remaining members, and
+publishes a new logical snapshot, all in one service transaction. `S` is carried
+unchanged.
+
+- A device reads an object of epoch `e'` only if it holds `K_{e'}`. A device
+  enrolled at epoch `e` bootstraps from the snapshot at the current head and
+  never needs older tails.
+- Every live artifact is re-addressed and re-sealed at the cutover, because its
+  `sync_artifact_id_e` and object key depend on `K_e` (C.9).
+- **Retry order (F5).** The service performs the dual accepted-index lookup
+  (C.10) **before** it rejects an old-epoch write. An exact retry of an already
+  accepted old-epoch envelope returns its original `seq` and result. A client
+  re-encrypts an outbox entry under a new epoch only after the index confirms
+  that both its `command_id` and its tag are unknown, and a request that matches
+  one identity but not the other is `ProtocolFork`.
+- A future suite is introduced at a new key epoch (C.1.4).
+
+## C.8 The logical genesis snapshot
+
+The snapshot is an AEAD object of type `2` whose plaintext is the logical model
+of Part B restricted to the Sync dispositions of the B.2 inventory.
+
+**Full-history guarantee.** The genesis carries the complete current canonical
+state, which includes **every class-1 ledger row of every age**
+(`ledger_transactions`, `ledger_postings`, `transaction_details`, `split_lines`
+and the rest of the class-1 tables), so a device that bootstraps from it, a phone
+included, can view all historical transactions, not only recent ones. What the
+genesis does **not** carry is the pre-v2 edit audit trail (`operation_log` and
+`provenance_links` history). That trail stays in the portable export and on the
+originating device, and each replica keeps its own local history from the point
+it joins.
+
+### Plaintext framing (`SnapshotPlaintextV1`)
+
+`label "dohflow/sync-snapshot-plaintext/v1" ‖ u32 file_count`, then per file
+`text(255) path ‖ blob content`. The first file is `manifest.json`; the other
+files are the `data/<table>.jsonl` files in ascending path order. The manifest
+(canonical JSON) lists every table file with its row count and SHA-256, and the
+**complete closure manifest** of `sync_artifact_id_e` values; its commitment is
+the header's `artifact_manifest_commitment`. The set of files must equal the set
+the manifest names, with none missing and none extra.
+
+The household timezone travels as the logical class-1 field `household_timezone`
+of the `household` record in `data/household.jsonl` (Part B), never as a header
+field, so later changes to it propagate by command.
+
+A snapshot's plaintext is at most `2^30` bytes (1 GiB). A larger vault fails with
+the typed error `SnapshotTooLarge` until a chunked framing is specified.
+Publication follows ADR 0074 Decision 1: the service accepts a snapshot only when
+`base_seq` equals the current head and the snapshot, its artifact closure and
+every closure pin are durable in one compare-and-swap transaction.
+
+## C.9 Artifact transport
+
+A class-1b artifact (an attachment's bytes, or an import provenance artifact) is
+published as an immutable, epoch-scoped object.
+
+**Plaintext (`SyncArtifactTransportV1`).** `label
+"dohflow/sync-artifact-transport/v1" ‖ digest sync_artifact_id ‖ u8
+artifact_kind ‖ u64 plaintext_length ‖ digest plaintext_digest ‖ bytes(65536)
+logical_metadata ‖ blob bytes`. `logical_metadata` is canonical JSON and carries
+only logical fields such as `mime_type` and `original_filename`. The plaintext
+digest and metadata exist **only** inside the encrypted object.
+
+**Sealing.** The key is the per-artifact object key of C.3; the nonce is twelve
+zero bytes; the AAD is `label "dohflow/sync-artifact-aad/v1" ‖ u16
+protocol_version ‖ uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id`. The
+nonce is safe because the key is unique per artifact and is invoked exactly once;
+there is exactly one canonical ciphertext per address. An exact retry sends the
+same bytes, and a different byte string for the same address fails closed. The
+container is `magic "DFSA"`, `u16 container_version = 1`, `u64 ciphertext_len`,
+then the ciphertext.
+
+**Never service-visible.** The origin `StorageId`, wrapped or content-key fields,
+content nonces, blob paths, and any bare plaintext digest never appear in a
+service-visible field. The service sees only `sync_artifact_id`, the artifact
+kind and sizes it needs to store the object, the key epoch, and ciphertext.
+
+**Receiver materialization.** A receiver verifies the outer AEAD, then the
+descriptor's length and plaintext digest, **before** it materializes anything. It
+then derives its own `StorageId_B` under its DEK, generates a fresh content key,
+re-encrypts the bytes, wraps the key under its DEK, writes the blob and row
+atomically, and records only a device-local mapping from `sync_artifact_id_e` to
+the local identity. A failure is `ArtifactMaterializationFailed`, leaves the live
+vault unchanged, and discards temporary plaintext and ciphertext. A received
+canonical reference keeps the origin's `sync_artifact_id_e`.
+
+**Receipts and pins.** `ArtifactReceiptV1` is `label "dohflow/sync-receipt/v1" ‖
+uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id ‖ u64 ciphertext_length ‖
+digest ciphertext_sha256`. It is a durability acknowledgement bound to the
+address and ciphertext, with **no service signature** in v1: its integrity comes
+from the client re-verifying the outer AEAD whenever it fetches. A pin is the
+service's record that a retained snapshot or envelope references an artifact; the
+opaque manifest sidecar the service stores is the ordered id list whose
+commitment the header carries, and a client rejects a sidecar whose commitment
+differs from the decrypted manifest. Upload precedes reference, and reachability,
+retention and garbage collection follow ADR 0074 Decision 1; `personal-cfo-v98vd`
+implements them.
+
+**Cutover.** At a key-epoch cutover a client re-addresses and re-seals every live
+artifact under the new epoch before the replacement snapshot is accepted.
+
+## C.10 Accepted-envelope index and retry protocol
+
+The service's accepted-envelope index is authoritative and recovery-durable, and
+survives tail truncation, snapshot bootstrap and restart. Each record is
+`label "dohflow/sync-accepted/v1" ‖ uuid vault_id ‖ uuid command_id ‖ digest
+idempotency_key_tag ‖ digest canonical_envelope_digest ‖ digest
+immutable_metadata_commitment ‖ u64 key_epoch ‖ u64 seq ‖ opt(bytes(64))
+result_ref`. It holds no plaintext key and no payload, and the exact original
+command metadata is bound by `immutable_metadata_commitment`.
+
+On a push the service decides in this order:
+
+1. look up **both** `command_id` and the tag in the index;
+2. if both match one record with the same envelope digest and commitment, return
+   that record's `seq` and `result_ref`, even when the request's `base_seq` is
+   stale and even when its `key_epoch` is old;
+3. if either lookup finds a different bound command, tag, digest or commitment, or
+   the two lookups disagree, reject with `ProtocolFork`;
+4. only if both identities are unknown, reject an old `key_epoch` (`EpochRejected`),
+   then apply the compare-and-swap rule on `base_seq`.
+
+A client that sees a `seq` for a command it still holds in its outbox binds the
+outbox record to that `seq` and result and never replays or requeues it. A
+same-identifier, different-envelope response is `ProtocolFork`, and both
+envelopes are retained for diagnosis.
+
+## C.11 Typed Sync failures
+
+`NonceStateLost`, `ProtocolFork`, `InvalidIdempotencyKey`, `MalformedObject`
+(any CBE1 or container violation), `UnsupportedProtocol`, `UnsupportedSuite`,
+`EpochRejected`, `EpochRecordInvalid`, `KeyCommitmentMismatch`,
+`MembershipChainInvalid`, `NoAuthorizedDevice`, `SnapshotTooLarge`,
+`ArtifactMaterializationFailed`, `ArtifactRebootstrapRequired` and
+`ArtifactMissing` (a closure that names an absent object). Each fails closed,
+mutates nothing, and retains diagnostic evidence.
+
+## C.12 Portable bundle container
+
+The portable export of Part B is protected by the vault password alone, with no
+separate export secret, as an encrypted container. This applies the owner's
+decision on the bundle, including the conditions of the adversarial review.
+
+### Header
+
+`magic "DFPX"` (4 ASCII bytes), `u16 container_version = 1`, `u32 header_len`,
+then the header, which is also the manifest's authenticated context:
+`label "dohflow/export-header/v1" ‖ u16 container_version ‖ u8 kdf_profile ‖ u32
+memory_kib ‖ u32 time_cost ‖ u32 parallelism ‖ 32 raw bytes salt ‖ u32
+object_count ‖ u32 chunk_size`. `chunk_size` is `1048576`.
+
+- **KDF allowlist.** `kdf_profile` is exactly `1` (Argon2id, 65,536 KiB, time 3,
+  parallelism 1) or `2` (Argon2id, 262,144 KiB, time 4, parallelism 1). A writer
+  uses at least profile `1` and **never** the legacy 19 MiB profile. A reader
+  accepts only those two, requires the stored three values to equal the profile's
+  exact values, and rejects anything else **before** it spends memory on the KDF.
+- **Fresh salt.** The 32-byte salt is random and fresh for every export, never the
+  vault envelope's salt. A retry draws a new salt and therefore a new header hash.
+
+### Keys
+
+`KEK = Argon2id(password, salt, profile parameters, 32-byte output)`. With
+`header_hash = SHA-256(header bytes)`, object `i` (counting the manifest as
+object 0) uses the key `Expand(KEK, label ‖ digest header_hash ‖ u32 i)`, where
+the label is `"dohflow/export-manifest-key/v1"` for `i = 0` and
+`"dohflow/export-object-key/v1"` for `i >= 1`. **Each derived key seals exactly
+one plaintext** under the fixed zero nonce.
+
+### Objects
+
+Every logical file is split into chunks of at most `chunk_size` plaintext bytes;
+each chunk is one object, so a large document is chunked rather than sealed whole.
+After the header the container holds `object_count` objects, each `u32 length`
+then ciphertext. Object 0 is the canonical-JSON `manifest.json` of Part B. The AAD
+of object `i` is `label "dohflow/export-object-aad/v1" ‖ digest header_hash ‖
+text(255) path ‖ u32 index ‖ u32 chunk_index ‖ u8 final ‖ u64 plaintext_length`,
+which binds the header, path, position and length.
+
+The manifest **commits the object set**: it lists the object count and, for every
+object after the manifest, its index, path, chunk, ciphertext length and
+ciphertext SHA-256, and a reader enforces the exact set (an object not listed, or
+a listed object absent, is `Corrupt`). The container allows at most `2^32` objects.
+
+### Outcomes
+
+A malformed header or container is `Corrupt`. A failure to authenticate object 0
+is `WrongPassword` (it can also mean a tampered header, which the AAD binds). A
+failure on any later object, or a mismatch with the manifest, is `Corrupt`. The
+typed outcomes of Part B apply unchanged.
+
+## C.13 Compatibility and change control
+
+- A reader supports an explicit, documented range of `protocol_version`,
+  `container_version` and `suite_id` values and refuses the rest with a typed
+  error. No version promises that every future version opens.
+- Any new field, label, kind or registry value is a new version of its structure,
+  and a changed derivation is a new label version (`/v2`), never a silent edit.
+- A change to this part bumps `spec-version` and requires new reviewed vectors.
+- `engine_version` and `schema_version` skew is handled by ADR 0074 (R40): the
+  client asks the user to update before continuing.
+
+## C.14 Conformance tests and vectors
+
+The reference test recomputes every vector below and fails if the document and
+the code differ. All inputs are synthetic: vault id sixteen `0x11` bytes; devices
+A and B with ids of sixteen `0xa1` and `0xb1` bytes and public keys of repeated
+`0xe1`, `0xc1` (A) and `0xe2`, `0xc2` (B) bytes; `K_e` the bytes `00` to `1f`;
+`S` the bytes `20` to `3f`; epoch 1; a UUIDv4 idempotency key
+`4a3b2c1d-9e8f-4a7b-8c6d-5e4f3a2b1c0d`; local storage ids of repeated `0x5a` and
+`0x6b` bytes; the export password `synthetic-export-password`.
+
+Beyond the byte vectors, the reference test enforces: rejection of trailing
+bytes, truncation, a wrong label, an oversize length, a bad presence byte, invalid
+UTF-8, an unsupported version and a counter above the cap; the dual-identity field
+rules per object type; the UUIDv4-only idempotency rule; tamper of the clear tag
+or commitment failing authentication; distinct AEAD keys for devices with equal
+counters even when a hostile service offers overlapping nonce domains;
+`NonceStateLost` on a register rollback and a forced rotation at the cap; the
+service backstop accepting only exact retries; unlinkable artifact addresses
+across epochs and vaults; an order-independent, exact manifest commitment;
+rejection of an altered artifact object or a wrong address; HPKE `info` binding
+every recipient, epoch, sealer, membership head and record header; and the export
+header's exact KDF allowlist and per-object AAD binding.
+
+The implementing beads must add, with the crates they choose, these tests that
+the reference cannot run: the RFC 8032 and RFC 9180 known-answer vectors;
+`verify_strict` rejection of small-order and non-canonical signatures; a forged,
+unsigned sealed-key set; a replayed old-epoch sealed blob; a record that seals
+different keys to different recipients; a membership chain with a gap, a fork, a
+reused fingerprint and a revoked signer; cross-implementation canonical-JSON
+vectors for 64-bit integer strings, duplicate keys and lone surrogates; and the
+revocation-cutover simulator suite extended with the F5 retry-order case.
+
+## Vector listing
+
+Each line below is one vector as lowercase hex, in the order the reference test
+computes them. A name's meaning is the derivation of the same name in C.3 to
+C.12: for example `header_envelope` is the clear header of the sample envelope,
+`envelope_container` is the complete wire object, and `export_manifest_json` is
+the canonical manifest whose bytes the export vectors seal.
+
+<!-- sync-vector: fingerprint_a=ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8 -->
+<!-- sync-vector: fingerprint_b=5ae462eae13d58a5b66c7f38ad32a93bd83d977b92a7fd189b1d71efad6de422 -->
+<!-- sync-vector: aead_key_a_envelope=f75ae1776bd89877011ef064c39cc9671060ab77e08dcc1afaab5c5e0a710f4c -->
+<!-- sync-vector: aead_key_b_envelope=4ef7c269b511e3b7d036f1e17cda5f65118a4c262a065282e860b3b341b19303 -->
+<!-- sync-vector: aead_key_a_snapshot=4d354515fedea919f65a2784ece1c414d8eb32743f2ccf0b5a6223942e01eb24 -->
+<!-- sync-vector: nonce_domain_a_envelope=495da0c3 -->
+<!-- sync-vector: nonce_domain_b_envelope=9d6c3694 -->
+<!-- sync-vector: nonce_a_envelope_counter0=495da0c30000000000000000 -->
+<!-- sync-vector: nonce_a_envelope_counter1=495da0c30000000000000001 -->
+<!-- sync-vector: idempotency_tag_key=4404ee3c509bd231d87b0adc99c1e40ad3da12199898bb827e34d6f21c890e3f -->
+<!-- sync-vector: idempotency_tag=06fa9d92e5203243401aa8c29e960bb67d25c7f9b7d148279ce2ad2fea1a5e1b -->
+<!-- sync-vector: immutable_metadata_commitment=885a1199f22775ad785e88bac193d96ef2c4ba0d84665d83c77ae72035b68053 -->
+<!-- sync-vector: key_commitment_ke=c7c2f442f9197f13cd691a7ced1edf498d263a16fd0d0604091294e616fb9eb0 -->
+<!-- sync-vector: key_commitment_s=4576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644 -->
+<!-- sync-vector: artifact_id_epoch1=d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
+<!-- sync-vector: artifact_id_epoch2=b8532c2b8f48fc07410d0fcaab93293882b32a0dc4cbb6d9263ddd4d5b708273 -->
+<!-- sync-vector: artifact_manifest_commitment=e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
+<!-- sync-vector: artifact_object_key=57441986f4b6610011f5efa0aa280eb3dd5f415d6275d4e823e03048851944e1 -->
+<!-- sync-vector: artifact_aad=001c646f68666c6f772f73796e632d61727469666163742d6161642f76310001111111111111111111111111111111110000000000000001d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
+<!-- sync-vector: artifact_object_ciphertext=f1f50189e96ae26161ba2f22e85de9e62984dcab08765606008cca460cc1fb9196f03d2e5812253729b9deb7ea32b967dba157284121dd8874b4594124d7db5a4b935776569576d048cbd279d2086033abafa954db60a99b90f37fcdc750299eaccf4906b3a9c7203ba567abfbd4c32d2e550266430b335d6c540338abfbb4f6a8e8bf06eec43c19e20b7446e292e714976718297e6deecfe928162de967c50141ffd6f4e76eccf2a7425b7b6f2765dd684badf75a -->
+<!-- sync-vector: header_envelope=0016646f68666c6f772f73796e632d6865616465722f763100011111111111111111111111111111111100000000000000010101938f2e7c1a7b3d9a4e123456789abc0106fa9d92e5203243401aa8c29e960bb67d25c7f9b7d148279ce2ad2fea1a5e1b01885a1199f22775ad785e88bac193d96ef2c4ba0d84665d83c77ae72035b68053a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8495da0c300000000000000000000000000000029000000010000000d646f68666c6f772d302e332e300000003701e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
+<!-- sync-vector: header_snapshot=0016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000102333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8f0db005b00000000000000000000000000000029000000010000000d646f68666c6f772d302e332e300000003701e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
+<!-- sync-vector: envelope_plaintext=0022646f68666c6f772f73796e632d656e76656c6f70652d706c61696e746578742f763101938f2e7c1a7b3d9a4e123456789abc2222222222222222222222222222222200010000000d6465766963652d612d757365724a3b2c1d9e8f4a7b8c6d5e4f3a2b1c0d00065bfeda25e000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444400000002d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de33a46ad663dbac24a2db72929a54f8d144a68eb05f092048e4952a187c02d0b3000000297b22616d6f756e745f6d696e6f72223a222d31323530222c2263757272656e6379223a22555344227d -->
+<!-- sync-vector: envelope_ciphertext=b61423410519aba3e5e35176894a31a2cda21ed9a5e55eb0898c613ed2d45c2decb957366ca2db729295b7d92b3ac18f873fc754b5a712544a2afb075ac171b70f98dcdf277d2d2417668be8ebc5502ec880f0add825fcc270ee043d963ccc286fb6a6525898cf3bfb19d52114ed48852ae22d2a8e13e9f147592517545ea3a793a3e36e3c0a915d5349a4100ef0e3da10be0e28af930b00186475fa14e36ffe45946f58199abb810d0e516db1e054f9f4b877f1b1b29e9103e9d2e6500068f558c849fb69f9cf6b6da7b7e24f83aab801c36a38ac432d1c1d3647fe1f4ad61e932fe45883fd5c41baa5a54250fb660811281707e20610ed9caec07c9153eebd563dc6c21d2faa49fbbb992205a2c8355e4a118a30bce588cae15f766f5a2074 -->
+<!-- sync-vector: envelope_digest=c677a9a31bde6310b05690f9cda5146524eb882b724761b674af58a2ab79537e -->
+<!-- sync-vector: envelope_container=444653590001000001030016646f68666c6f772f73796e632d6865616465722f763100011111111111111111111111111111111100000000000000010101938f2e7c1a7b3d9a4e123456789abc0106fa9d92e5203243401aa8c29e960bb67d25c7f9b7d148279ce2ad2fea1a5e1b01885a1199f22775ad785e88bac193d96ef2c4ba0d84665d83c77ae72035b68053a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8495da0c300000000000000000000000000000029000000010000000d646f68666c6f772d302e332e300000003701e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd886310000000000000120b61423410519aba3e5e35176894a31a2cda21ed9a5e55eb0898c613ed2d45c2decb957366ca2db729295b7d92b3ac18f873fc754b5a712544a2afb075ac171b70f98dcdf277d2d2417668be8ebc5502ec880f0add825fcc270ee043d963ccc286fb6a6525898cf3bfb19d52114ed48852ae22d2a8e13e9f147592517545ea3a793a3e36e3c0a915d5349a4100ef0e3da10be0e28af930b00186475fa14e36ffe45946f58199abb810d0e516db1e054f9f4b877f1b1b29e9103e9d2e6500068f558c849fb69f9cf6b6da7b7e24f83aab801c36a38ac432d1c1d3647fe1f4ad61e932fe45883fd5c41baa5a54250fb660811281707e20610ed9caec07c9153eebd563dc6c21d2faa49fbbb992205a2c8355e4a118a30bce588cae15f766f5a2074 -->
+<!-- sync-vector: membership_body_1=001a646f68666c6f772f73796e632d6d656d626572736869702f7631000100011111111111111111111111111111111100000000000000010001ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c100065bfeda352240 -->
+<!-- sync-vector: membership_id_1=a3c1868a060a67e709325bb5d76a897c75d219cafc148ef00f094a43b0b4a21a -->
+<!-- sync-vector: membership_body_2=001a646f68666c6f772f73796e632d6d656d626572736869702f76310001000111111111111111111111111111111111000000000000000201a3c1868a060a67e709325bb5d76a897c75d219cafc148ef00f094a43b0b4a21a01ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c200065bfeda446480 -->
+<!-- sync-vector: membership_id_2=96ae2979c9b76106af4ecd5591e9a022801cfa6e3711b8b70745b300197eec59 -->
+<!-- sync-vector: epoch_header=001c646f68666c6f772f73796e632d65706f63682d7265636f72642f763100010001002011111111111111111111111111111111000000000000000196ae2979c9b76106af4ecd5591e9a022801cfa6e3711b8b70745b300197eec5900c7c2f442f9197f13cd691a7ced1edf498d263a16fd0d0604091294e616fb9eb04576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a8 -->
+<!-- sync-vector: epoch_header_hash=51430aa10d72fa0c77f76dda5c14ca02c3ba7b82152acd6d1ac3150ee92001b5 -->
+<!-- sync-vector: hpke_info_recipient_b=0019646f68666c6f772f73796e632d68706b652d696e666f2f763100010001111111111111111111111111111111110000000000000001b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b15ae462eae13d58a5b66c7f38ad32a93bd83d977b92a7fd189b1d71efad6de422ceac78bf43151e2365c9c9d9d233ff81e1497359cafd488db3ebcd393b1f54a896ae2979c9b76106af4ecd5591e9a022801cfa6e3711b8b70745b300197eec5951430aa10d72fa0c77f76dda5c14ca02c3ba7b82152acd6d1ac3150ee92001b5 -->
+<!-- sync-vector: sealed_keys_plaintext=001b646f68666c6f772f73796e632d7365616c65642d6b6579732f7631000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f -->
+<!-- sync-vector: export_header=0018646f68666c6f772f6578706f72742d6865616465722f763100010100010000000000030000000177777777777777777777777777777777777777777777777777777777777777770000000200100000 -->
+<!-- sync-vector: export_header_hash=d4f9f4348e70fd109ac7c4fd76ff4ad83bf4744c0f42544904ecaf017544d67b -->
+<!-- sync-vector: export_kek=2fe8f3c867e80cbdc7461e1b03743c20dab7db956f8bd4eef8f822953ee3b84b -->
+<!-- sync-vector: export_manifest_key=bf5c481f4725ae2c0610cd1b9d5eb9e92e4b7f438f4661e9c3bb274bf96c8674 -->
+<!-- sync-vector: export_object_key_1=481ef4530c89ba2764bc0d8e71e817c91921b928f126adcf4938cc15d9f54a0a -->
+<!-- sync-vector: export_object_aad_1=001c646f68666c6f772f6578706f72742d6f626a6563742d6161642f7631d4f9f4348e70fd109ac7c4fd76ff4ad83bf4744c0f42544904ecaf017544d67b00000013646174612f6163636f756e74732e6a736f6e6c000000010000000001000000000000001d -->
+<!-- sync-vector: export_object_ciphertext_1=e16256a8851d0f66d0d8360b4064c104cb83cb0242e4850f900b98a927230e2beec4c55f1c4be66873e4a82b69 -->
+<!-- sync-vector: export_manifest_json=7b22617274696661637473223a5b5d2c22666f726d6174223a22646f68666c6f772d706f727461626c652d6578706f7274222c22666f726d61745f76657273696f6e223a2231222c226f626a65637473223a5b7b226368756e6b223a2230222c22636970686572746578745f6c656e677468223a223435222c22636970686572746578745f736861323536223a2261366133396434316139656666333262653639626365376563373865376564666332376433383761396130376262366663653336666131356238646133316136222c22696e646578223a2231222c2270617468223a22646174612f6163636f756e74732e6a736f6e6c227d5d7d -->
+<!-- sync-vector: export_manifest_ciphertext=ff7c9d0d8bab28201dc47a651f9b28b67258273fba630a8fa57db6ddb242b1e80e4c0997baf7c1bc2a01d8441a023eed81905cc0c7da010a0b07be97ed7c9f3d199444d82737d3c148014a8318b36c3958cf0ed4f1aa3e6e1d134b519cbc6a0fdd78b1d91008c20d2e63c608aca477b13fb34a0c69da31e2f45e02c6e1cfd8036b6da12b50138a3e31edd351cd557321d183c066bf6787c478e4695aa4526b02b5f9e36aafd6a63eec10025f1731ee6339974ead4a4435c5e5c387680741ae5e9904d49a1be0f11315b6ee9aea203bbc83c825bec221b2a5c0a0ae2ef1cde6374e3366554c5cbff9649e9dde606fdbd927d6a9dba9d6a748bc148195634a36a56e51729c595b1714026b0b -->
+
