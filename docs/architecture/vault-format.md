@@ -15,11 +15,13 @@ and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
 <!-- vault-format: spec-version=1 -->
-<!-- vault-format: schema-version=52 -->
+<!-- vault-format: schema-version=55 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
 <!-- vault-format: backup-manifest-version=1 -->
+<!-- vault-format: engine-sqlcipher=4.14.0 community -->
+<!-- vault-format: engine-sqlite=3.51.3 -->
 
 ## Local vault files and key hierarchy
 
@@ -40,8 +42,45 @@ wrapped by the vault DEK. The password and KEK are never persisted. Password
 change rewraps the DEK rather than rewriting the whole database. The current
 creation profile is Argon2id with 65,536 KiB memory, time cost 3, parallelism
 1, and parameter-shape version 1; the serialized values, not a presumed
-profile, control unlock. See [encryption design](../security/encryption-design.md)
+profile, control unlock. The envelope is authoritative: the `kdf_*` columns in
+`vault_metadata` do not reflect the real envelope parameters and must not be
+used to open a vault. See [encryption design](../security/encryption-design.md)
 for the supported profile floor and engine pin.
+
+**Key rotation** ([ADR 0083](../adr/0083-vault-key-rotation.md)) replaces the
+DEK itself, unlike a password change, which only re-wraps the same DEK. A
+rotation re-encrypts the database into a sibling file, re-wraps every
+attachment's content key under the new DEK, re-addresses every blob (below),
+writes a new envelope with a fresh salt at the current Argon2id profile, and
+commits with one atomic rename of a journal. The vault's *meaning* is unchanged
+by a rotation; every byte of `vault.db`, the sidecar and the blob names is
+not. Rotation does not touch backups, which carry their own envelope and stay
+openable with the password that was current when each was made.
+
+**Attachment addressing.** A blob's name is the hex of
+`HMAC-SHA256(addr_subkey, plaintext)`, where `addr_subkey` is
+`HKDF-SHA256(DEK, salt = none, info = "personal-cfo/attachment-addressing/v1")`
+(`crates/vault-crypto/src/attachment.rs`). Names are therefore deterministic
+per vault and DEK, which gives local deduplication, and they change when the
+DEK changes. A storage ID is a local, DEK-bound address: it is never a portable
+or service-facing identifier.
+
+### Files beside the vault
+
+| File | Meaning |
+| --- | --- |
+| `vault.db` | SQLCipher database, keyed with the raw DEK |
+| `vault.db.envelope` | plaintext sidecar (layout below) |
+| `blobs/` | encrypted attachment blobs under opaque storage IDs |
+| `vault.db.runner.lock` | advisory exclusive lock held while a vault is unlocked; a second opener fails with a typed vault-in-use error |
+| `vault.db-wal`, `vault.db-shm` | SQLite WAL side files while the vault is open |
+| `vault.db.rekey`, `vault.db.rekey.tmp`, `vault.db.rekey-new`, `vault.db.envelope.rekey-new`, `vault.db.rekey-old` | transient files of an in-progress or interrupted key rotation: the journal (`preparing`, `prepared`, `committed`), its temp file, the re-encrypted copy, the new envelope and the old database |
+
+A rotation journal present at startup is finished (`committed`) or undone
+(`preparing`, `prepared`) before the vault is classified; contradictory files
+are reported as needing recovery and nothing is deleted
+([ADR 0083](../adr/0083-vault-key-rotation.md) §4). Vault deletion removes this file
+family too.
 
 ### Envelope byte layout (v1)
 
@@ -81,8 +120,22 @@ subsequent versions are actual forward changes. `DbWorker::open` applies them
 before exposing a usable worker. Each migration runs transactionally, records
 its SQL content hash in `schema_migrations`, and advances SQLite
 `PRAGMA user_version`. `vault_metadata.schema_version` advances on older
-vaults; it is not lowered when a stored value is newer. Do not assume an older
-app build safely opens a vault written by a newer one.
+vaults; it is not lowered when a stored value is newer.
+
+**Opening an existing vault fails closed on a layout this build does not
+know** (`personal-cfo-g3m.4`). Before any writable setup, migration or unlock
+side effect, the app inspects three independent version witnesses read-only:
+SQLite `PRAGMA user_version`, the versions recorded in `schema_migrations`, and
+`vault_metadata.schema_version`. If the highest of them exceeds the schema this
+build knows, the open is refused with a typed newer-schema error carrying only
+the observed and supported numbers. A missing or unreadable witness, a recorded
+version this build has no migration for, a recorded migration hash that differs
+from this build's, or a non-contiguous applied set is refused as an unsupported
+layout. The inspection runs again on the writer handle after the file identity
+(device and inode) is re-checked, with the runner lock held throughout. A
+missing witness never hides newer evidence in another. An older build therefore
+refuses a newer vault; it does not open it and does not stamp the schema
+version downward.
 The migration tests require contiguous versions, reversible post-baseline
 migrations, and upgrade/rollback behavior; the table-class test compares the
 freshly migrated `sqlite_master` set and selected `PRAGMA table_info` fields
@@ -120,7 +173,9 @@ cross-link this authority.
 The app writes backup container **v2** and still reads historical **v1**
 ([ADR 0024](../adr/0024-encrypted-backup-restore-format.md), Addendum A).
 This is an encrypted copy of the existing vault artifacts, not a logical JSON
-dump. Manual and scheduled export run only while the vault is unlocked and do
+dump. Because it contains the whole database, it includes device-local secrets
+such as stored connector credentials; the portable export and Sync formats
+exclude them by construction. Manual and scheduled export run only while the vault is unlocked and do
 not request or retain a second password; the original vault password opens
 the backup later.
 
@@ -147,7 +202,10 @@ versions validate KDF parameters before expensive derivation and reject a
 wrong password, corrupted ciphertext, or unsupported format. The checked-in
 synthetic v1 fixture and v2 round-trip tests keep the read path covered.
 
-Restore verifies the manifest and all component hashes before installing a
+Each backup is its own key epoch: it carries the envelope that existed when it
+was made, so a later key rotation or password change does not alter an earlier
+backup, and opening it needs the password that was current then. Restore
+verifies the manifest and all component hashes before installing a
 fresh vault; it never overwrites an existing vault. The app's named-vault
 restore route preserves the original vault and reports interrupted, unregistered
 staging for diagnosis ([recovery guide](../user-guide/recover-a-vault.md)).
@@ -165,11 +223,13 @@ synthetic no-app recovery test before any such public claim.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
-  newer backup schema before installation. Opening an existing live vault
-  with an older app build has a separate unresolved downgrade-safety risk.
+  newer backup schema before installation, and opening an existing live vault
+  refuses a newer or unrecognized schema as described above. No version of the
+  app promises to open a vault written by a later one.
 - The SQLCipher/SQLite engine pair is pinned in
-  [stack.md](stack.md) and exercised by the cross-version vault test. A
-  compatible reader must honor the exact engine and migration policy, not just
-  parse the outer envelope.
+  [stack.md](stack.md) (SQLCipher 4.14.0 community, SQLite 3.51.3, which carry
+  the WAL-reset fix from `personal-cfo-g3m.5`), mirrored by the markers above,
+  and exercised by the cross-version vault test. A compatible reader must honor
+  the exact engine and migration policy, not just parse the outer envelope.
 - No real financial records, vault paths, credentials, or keys appear in this
   specification or its vectors.

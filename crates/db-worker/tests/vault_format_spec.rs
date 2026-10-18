@@ -43,6 +43,17 @@ fn migrated_schema_version_matches_public_spec() {
 }
 
 #[test]
+fn engine_versions_match_public_spec() {
+    let (_dir, worker) = worker();
+    assert_eq!(
+        worker.cipher_version().unwrap(),
+        marker("engine-sqlcipher"),
+        "update vault-format.md and stack.md together for an engine change"
+    );
+    assert_eq!(db_worker::sqlite_version(), marker("engine-sqlite"));
+}
+
+#[test]
 fn envelope_layout_and_version_match_public_spec() {
     let documented: u16 = marker("envelope-version").parse().unwrap();
     assert_eq!(documented, ENVELOPE_VERSION);
