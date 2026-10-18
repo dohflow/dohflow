@@ -66,6 +66,11 @@ impl From<KernelError> for IpcError {
             KernelError::MissingMetadata(field) => {
                 IpcError::Validation(format!("missing required field: {field}"))
             }
+            // A caller-supplied key that is not a canonical UUIDv4 never reaches the
+            // vault; the message names the rule, not the offending value.
+            KernelError::InvalidIdempotencyKey => IpcError::Validation(
+                "the idempotency key must be a canonical UUID version 4".to_owned(),
+            ),
             KernelError::Unavailable(state) => IpcError::Unavailable(format!("{state:?}")),
             KernelError::WriterPanicked => IpcError::WriterPanicked,
             KernelError::Persistence(message) => IpcError::Persistence(message),

@@ -131,7 +131,7 @@ observability = { path = "../../../crates/observability" }
 # App-layer log events (e.g. the best-effort daily forecast persist on open,
 # personal-cfo-5ie.3) flow through the redacting subscriber above.
 tracing = "0.1"
-uuid = { version = "1", features = ["v5", "v7"] }
+uuid = { version = "1", features = ["v4", "v5", "v7"] }
 thiserror = "2"
 # Parse RFC 3339 transaction timestamps from the wire (personal-cfo-6wgi); the
 # `clock` feature stamps backup `created_at` at export (personal-cfo-dvxm).

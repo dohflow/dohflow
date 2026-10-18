@@ -229,7 +229,7 @@ fn refresh_one(
     };
     let input = ConnectorSyncInput {
         connection_id: connection.id.to_string(),
-        idempotency_key: format!("connector-refresh-{}", Uuid::now_v7()),
+        idempotency_key: finance_kernel::new_idempotency_key(),
     };
     match connector_sync_impl(state, adapter, input) {
         // Every provider outcome is recorded by the refresh itself.

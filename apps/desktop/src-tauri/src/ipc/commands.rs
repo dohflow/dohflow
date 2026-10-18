@@ -65,18 +65,20 @@ use crate::ipc::IpcError;
 use crate::state::AppState;
 use crate::vault_registry::{VaultEntry, VaultRegistry};
 
-/// Resolve the effective idempotency key: a blank one becomes a fresh UUIDv7 (so
-/// keyless calls are still safe and never collide), a supplied one is used verbatim.
+/// Resolve the effective idempotency key: a blank one becomes a fresh CSPRNG UUIDv4
+/// (so keyless calls are still safe and never collide), a supplied one is used
+/// verbatim. A supplied key that is not a canonical UUIDv4 is rejected when the
+/// command is dispatched, with a typed validation error (personal-cfo-g3m.6).
 fn resolve_idempotency_key(idempotency_key: &str) -> String {
     if idempotency_key.trim().is_empty() {
-        Uuid::now_v7().to_string()
+        finance_kernel::new_idempotency_key()
     } else {
         idempotency_key.to_owned()
     }
 }
 
 /// Build provenance metadata for a single user action. A blank idempotency key
-/// is replaced with a fresh UUIDv7 so retries are still safe by default.
+/// is replaced with a fresh UUIDv4 so retries are still safe by default.
 fn user_meta(idempotency_key: &str) -> CommandMeta {
     user_meta_with_key(resolve_idempotency_key(idempotency_key))
 }
@@ -3142,6 +3144,35 @@ fn product_version_from_plist(bytes: &[u8]) -> Option<String> {
 }
 
 #[cfg(test)]
+mod idempotency_key_tests {
+    use super::{resolve_idempotency_key, user_meta};
+
+    #[test]
+    fn a_blank_key_resolves_to_a_fresh_canonical_uuid_v4() {
+        let mut seen = std::collections::HashSet::new();
+        for blank in ["", " ", "\t\n"] {
+            let key = resolve_idempotency_key(blank);
+            assert!(
+                finance_kernel::validate_idempotency_key(&key).is_ok(),
+                "{key}"
+            );
+            assert!(seen.insert(key), "each blank key gets its own fresh key");
+        }
+    }
+
+    #[test]
+    fn a_supplied_key_is_passed_through_verbatim_for_the_boundary_to_judge() {
+        // The kernel boundary validates the format; the IPC layer never rewrites a
+        // supplied key, so a wrong one fails there with a typed error instead of
+        // being silently replaced.
+        for key in ["not-a-uuid", "4a3b2c1d-9e8f-4a7b-8c6d-5e4f3a2b1c0d"] {
+            assert_eq!(resolve_idempotency_key(key), key);
+            assert_eq!(user_meta(key).idempotency_key, key);
+        }
+    }
+}
+
+#[cfg(test)]
 mod os_version_tests {
     use super::product_version_from_plist;
 
@@ -5888,7 +5919,7 @@ pub fn connector_auto_sync_impl(
         };
         let input = ConnectorSyncInput {
             connection_id: connection.id.to_string(),
-            idempotency_key: format!("connector-auto-{}", Uuid::now_v7()),
+            idempotency_key: finance_kernel::new_idempotency_key(),
         };
         match connector_sync_impl(state, adapter, input) {
             Ok(result) => results.push(result),

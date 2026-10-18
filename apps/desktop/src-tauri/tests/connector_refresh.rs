@@ -230,7 +230,7 @@ fn a_due_connection_refreshes_once_per_interval_and_a_manual_refresh_counts() {
         healthy(),
         ConnectorSyncInput {
             connection_id: connection.clone(),
-            idempotency_key: Uuid::now_v7().to_string(),
+            idempotency_key: Uuid::new_v4().to_string(),
         },
     )
     .unwrap();

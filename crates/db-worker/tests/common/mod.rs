@@ -25,7 +25,7 @@ pub fn worker() -> (TempDir, DbWorker) {
 }
 
 pub fn meta() -> CommandMeta {
-    meta_with_key(&Uuid::now_v7().to_string())
+    meta_with_key(&Uuid::new_v4().to_string())
 }
 
 pub fn meta_with_key(idempotency_key: &str) -> CommandMeta {

@@ -32,6 +32,7 @@ pub use core_ledger::{
     StagedTransactionId, TagId, TransactionId,
 };
 pub use core_money::{Currency, Money};
+pub use db_worker::{new_idempotency_key, validate_idempotency_key};
 pub use db_worker::{
     sqlite_version, AccountAvailability, AccountHistoryView, AccountSeriesView, AccountView,
     ActorType, AssumptionBasis, AssumptionEventView, AssumptionParams, AttachmentMeta,
@@ -2586,7 +2587,7 @@ fn next_meta(seed: &CommandMeta) -> CommandMeta {
         causation_id: Some(seed.command_id),
         actor_type: seed.actor_type,
         actor_id: seed.actor_id.clone(),
-        idempotency_key: Uuid::now_v7().to_string(),
+        idempotency_key: new_idempotency_key(),
     }
 }
 
@@ -2601,6 +2602,10 @@ pub enum KernelError {
     /// A required metadata field was empty.
     #[error("missing required command metadata: {0}")]
     MissingMetadata(&'static str),
+    /// The idempotency key is not a canonical hyphenated UUID version 4
+    /// (ADR 0077, C.5).
+    #[error("the idempotency key must be a canonical UUID version 4")]
+    InvalidIdempotencyKey,
     /// The kernel's persistence is not accepting writes.
     #[error("kernel unavailable for writes: {0:?}")]
     Unavailable(WorkerState),
@@ -2672,6 +2677,7 @@ impl From<DbError> for KernelError {
     fn from(error: DbError) -> Self {
         match error {
             DbError::MissingMetadata(field) => KernelError::MissingMetadata(field),
+            DbError::InvalidIdempotencyKey => KernelError::InvalidIdempotencyKey,
             DbError::VaultInUse => KernelError::VaultInUse,
             DbError::NewerSchema {
                 observed,
@@ -4525,7 +4531,7 @@ mod tests {
             causation_id: None,
             actor_type: ActorType::User,
             actor_id: "tester".to_owned(),
-            idempotency_key: Uuid::now_v7().to_string(),
+            idempotency_key: Uuid::new_v4().to_string(),
         }
     }
 
