@@ -33,13 +33,13 @@ Tauri-on-iOS path is not.
 
 | Item | Result |
 |---|---|
-| Xcode | 27.0, build 27A266a, at `/Applications/XCode.app` (`xcode-select -p` points at it) |
+| Xcode | 27.0, build 27A266a, at `/Applications/Xcode.app` (`xcode-select -p` prints the path as `XCode.app`; the volume is case-insensitive); Apple clang 21.0.0 (clang-2100.3.34.2) |
 | License | accepted (`xcodebuild -license check` exits 0) |
 | SDKs | `iPhoneOS27.0.sdk` and `iPhoneSimulator27.0.sdk` present |
 | Simulator runtime | iOS 27.0 (24A434); iPhone 17 simulator used |
 | Rust toolchain | 1.99.0 (pinned by `rust-toolchain.toml`) |
 | rustup targets | `aarch64-apple-ios` and `aarch64-apple-ios-sim` were not installed; added with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim` |
-| Apple developer membership | **Individual** (owner's answer, 2026-10-18). Moving it to an organization account is a follow-up once the entity forms (`personal-cfo-dyobc`) [U] |
+| Apple developer membership | **Individual** (owner's answer, 2026-10-18). Any later transfer to an organization account, if an entity is later formed, is tracked as `personal-cfo-dyobc` [U] |
 
 ## Leg 1: the kernel on iOS
 
@@ -222,7 +222,7 @@ Entry points are the kernel methods; the desktop-crate impl wraps each.
 | Screen | IPC command | Kernel entry point |
 |---|---|---|
 | Unlock gate | `vault_status`, `create_vault`, `unlock_vault`, `lock_vault`, `no_reset_warning`, `acknowledge_no_reset_warning` | `VaultController::state`, `create` (`vault.rs:628`), `unlock` (`vault.rs:651`), `lock` |
-| Future Cash | `future_cash_forecast(horizon_days, scenario_ids)`; optionally `future_cash_by_account`, `cash_flow_history` | `Kernel::future_cash_forecast` (`lib.rs:3919`), then `forecast::compute` (`forecast/aggregate.rs:81`) |
+| Future Cash | `future_cash_forecast(horizon_days, scenario_ids)`; optionally `future_cash_by_account`, `cash_flow_history` | `Kernel::future_cash_forecast` (`lib.rs:3919`), then `forecast::compute` (`crates/db-worker/src/forecast/aggregate.rs:81`) |
 | Safe to spend | `cash_availability`, `comfort_band`, `forecast_readiness` | `lib.rs:3588`, `:3596`, `:3619` |
 | Account balances | `account_list`, `cash_tiers` | `Kernel::account_views` (`lib.rs:3568`), `cash_tiers` (`:3577`) |
 | Upcoming bills | forecast events filtered to bill kinds, `recurring_bill_list`, `unconfirmed_past_due` | `lib.rs:3794`, `:3991`; mark paid via `confirm_obligation_early` |
@@ -333,7 +333,7 @@ Not proven, and the reason matters for the decision.
 
 | Dimension | Tauri v2 iOS (reuse the React UI) | SwiftUI over UniFFI (native) |
 |---|---|---|
-| UI reuse | Reuses the typed command layer and `bindings.ts` as-is, plus the data hooks, schemas and forms. The layout does not carry over: a fixed 224 px sidebar, 20 responsive class uses in 127 components, tables at 560 to 900 px minimum width. A phone shell and card-list variants are real work (about 20k lines of desktop-density screens in `future-cash/`, `transactions/`, `money-inbox/` and `accounts/`). | Reuses none of the 37,747 lines of frontend (222 files, tests excluded; 40,520 with the generated bindings). All 12 tabs and the vault screens are rebuilt in SwiftUI. UniFFI bindings must also be written for about 133 commands and their DTOs (`dto.rs` is 4,242 lines of specta derives, which would need UniFFI derives alongside). |
+| UI reuse | Reuses the typed command layer and `bindings.ts` as-is, plus the data hooks, schemas and forms. The layout does not carry over: a fixed 224 px sidebar, 20 responsive class uses in 127 components, tables at 560 to 900 px minimum width. A phone shell and card-list variants are real work (about 20k lines of desktop-density screens in `future-cash/`, `transactions/`, `money-inbox/` and `accounts/`). | Reuses none of the frontend: 37,747 lines in 221 files, tests and the generated `bindings.ts` excluded (222 files and 40,520 lines with it). All 12 tabs and the vault screens are rebuilt in SwiftUI. UniFFI bindings must also be written for about 133 commands and their DTOs (`dto.rs` is 4,242 lines of specta derives, which would need UniFFI derives alongside). |
 | Native feel | WKWebView. Achievable, but it is a web UI. | Fully native. |
 | Binary size | Not measured. The kernel alone linked to 8.5 MB; add the WebView shell and the built frontend. | 8.5 MB measured for kernel plus UI stub. |
 | Background fetch | Not needed for the standalone app: the kernel has no timers and jobs run in the post-unlock sweep. Same for both. | Same. |
@@ -389,9 +389,8 @@ over a proven one.
   in-app purchase rules (3.1.1 and 3.1.3) must be re-fetched before MOB-1; the
   encryption export-compliance declaration for a bundled OpenSSL and SQLCipher
   needs confirming [I].
-- **Apple account.** Individual membership today; the move to an organization
-  account (`personal-cfo-dyobc`) changes the app's ownership and should be done
-  before the first release rather than after [I].
+- **Apple account.** Individual membership today; any later transfer is tracked as
+  `personal-cfo-dyobc` [U].
 
 ## Reproducing this
 
