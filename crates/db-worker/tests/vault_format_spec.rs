@@ -43,6 +43,20 @@ fn migrated_schema_version_matches_public_spec() {
 }
 
 #[test]
+fn prose_never_restates_a_different_schema_version() {
+    // The marker is the one place the number lives; prose must not drift from it.
+    let pinned = marker("schema-version");
+    for (at, _) in SPEC.match_indices("schema is version ") {
+        let rest = SPEC[at + "schema is version ".len()..].trim_start_matches('*');
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        assert!(
+            digits.is_empty() || digits == pinned,
+            "prose says schema version {digits}, the marker pins {pinned}"
+        );
+    }
+}
+
+#[test]
 fn engine_versions_match_public_spec() {
     let (_dir, worker) = worker();
     assert_eq!(
