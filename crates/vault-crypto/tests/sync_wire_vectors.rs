@@ -1381,6 +1381,9 @@ fn owner_decisions_are_pinned_in_the_spec_and_the_adr() {
         "`UnsupportedSuite`",
         "`GrantHeadNotAdd`",
         "**Catch-up walks backward from the anchor.**",
+        "**Epoch position.**",
+        "a new enrollment with new key pairs",
+        "A device you add\n   can read everything in this vault",
         "**same transaction** as exactly one epoch record",
         "**before** it rejects",
         // Export A, C and D.
@@ -1913,6 +1916,76 @@ fn a_forced_rotation_takes_the_next_epoch_at_the_newest_head() {
         bad.accept(&[rec(2, Some(1), 1, Reason::Rotation, 1)]),
         Err(EpochError::BadEpochSequence)
     );
+}
+
+#[test]
+fn an_add_racing_a_cutover_fails_and_retries_at_the_new_head() {
+    // v1 genesis, v2 revoke (cutover to epoch 2). A grant prepared for an add
+    // before the cutover seals the pre-cutover key: it claims epoch 1.
+    let kinds = [HeadKind::Add, HeadKind::Revoke, HeadKind::Add];
+    let mut me = Recipient::new(chain(&kinds[..2]));
+    let genesis = rec(1, None, 1, Reason::Genesis, 1);
+    let cutover = rec(2, Some(1), 2, Reason::Cutover, 2);
+    assert_eq!(me.accept(&[genesis, cutover]), Ok(()));
+    me.chain = chain(&kinds);
+    let racing = rec(3, Some(2), 1, Reason::Grant, 3);
+    assert_eq!(me.accept(&[racing]), Err(EpochError::BadEpochSequence));
+    assert_eq!(
+        me.accepted.len(),
+        2,
+        "nothing installed from the racing grant"
+    );
+    // The adder retries at the new head with the new epoch's key.
+    let retry = rec(4, Some(2), 2, Reason::Grant, 3);
+    assert_eq!(me.accept(&[retry]), Ok(()));
+    assert_eq!(me.accepted.last().unwrap().key_epoch, 2);
+}
+
+/// The log position of an epoch record, with the epoch it puts in force.
+fn epoch_in_force(installs: &[(u64, u64)], seq: u64) -> u64 {
+    installs
+        .iter()
+        .filter(|(at, _)| *at <= seq)
+        .map(|(_, epoch)| *epoch)
+        .max()
+        .unwrap_or(0)
+}
+
+/// A client rejects an envelope whose epoch is not the epoch in force at its
+/// position: older is the stale-key case, newer is not yet installed.
+fn epoch_position_ok(installs: &[(u64, u64)], seq: u64, key_epoch: u64) -> bool {
+    key_epoch == epoch_in_force(installs, seq)
+}
+
+#[test]
+fn an_envelope_older_than_the_epoch_in_force_at_its_position_is_rejected() {
+    // Epoch 1 in force from seq 10, epoch 2 (a cutover) from seq 50.
+    let installs = [(10, 1), (50, 2)];
+    assert!(
+        epoch_position_ok(&installs, 49, 1),
+        "accepted before the cutover"
+    );
+    assert!(!epoch_position_ok(&installs, 51, 1), "a stale key after it");
+    assert!(epoch_position_ok(&installs, 51, 2));
+    assert!(
+        !epoch_position_ok(&installs, 49, 2),
+        "an epoch not yet installed"
+    );
+    // On replay the check is the same, so a withholding service cannot slip a
+    // stale-epoch envelope into the history after a cutover.
+    assert_eq!(epoch_in_force(&installs, 100), 2);
+}
+
+#[test]
+fn the_same_epoch_key_gives_two_devices_distinct_keys_and_domains() {
+    let all = vectors();
+    let get = |n: &str| all.iter().find(|(k, _)| *k == n).unwrap().1.clone();
+    assert_ne!(get("aead_key_a_envelope"), get("aead_key_b_envelope"));
+    assert_ne!(
+        get("nonce_domain_a_envelope"),
+        get("nonce_domain_b_envelope")
+    );
+    assert_ne!(get("fingerprint_a"), get("fingerprint_b"));
 }
 
 #[test]

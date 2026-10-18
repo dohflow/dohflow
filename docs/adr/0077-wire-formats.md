@@ -86,6 +86,9 @@ conditions are part of the decision.
   rejects an old-epoch write, and a client re-encrypts an outbox entry under a new
   epoch only after the index confirms both identities are unknown. This fills a
   gap in ADR 0074.
+- **Epoch position.** A client rejects any envelope whose epoch is older than the
+  epoch in force at its position in the log. The membership head is not added to
+  every envelope header; ADR 0074's AAD is unchanged.
 
 ### 4. Portable export decisions (owner, 2026-10-18)
 

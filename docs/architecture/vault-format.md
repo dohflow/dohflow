@@ -576,9 +576,9 @@ The byte-level rules here are checked by a test-only reference implementation,
 C.14 from the rules below and rejects the malformed inputs listed there. Ed25519
 signatures and HPKE sealing are **not** in that reference, because those
 primitives are not workspace dependencies yet: this part pins every byte that
-feeds them (signed bodies, HPKE `info`, AAD) and requires the implementing beads
-(`personal-cfo-1zb`, `personal-cfo-1cltt`) to add the RFC 8032 and RFC 9180
-known-answer tests listed in C.14.
+feeds them (signed bodies, HPKE `info`, AAD) and requires the implementing bead
+(`personal-cfo-1cltt`) to add the RFC 8032 and RFC 9180 known-answer tests listed
+in C.14.
 
 ## C.1 Conventions
 
@@ -919,6 +919,30 @@ can derive. A revocation cutover remains the only event that rotates the key and
 publishes a new snapshot (C.7). Because every head has a coupled record, an
 anchor exists whenever a head does.
 
+**What a grant gives, and its conditions.**
+
+- *Scope.* A grant gives the added device the current `K_e`, so it can read every
+  object of the current epoch, including the change history the service stores
+  since the last cutover. Removing it later stops it reading anything new; it does
+  not stop it reading what it has already seen.
+- *A grant never outlives its epoch (an add racing a cutover).* An `add` names the
+  newest membership record as its `prev_id`, and the service installs a membership
+  record only if that `prev_id` is still the newest (compare and swap). An `add`
+  and its grant prepared before a revocation cutover therefore fail: the `add`'s
+  `prev_id` is stale, and the grant would in any case seal the pre-cutover `K_e`,
+  so it is rejected as `BadEpochSequence` (its `key_epoch` is not the epoch in
+  force) or, if forged to claim it, `KeyCommitmentMismatch`. The adder retries from
+  the new head: a fresh `add`, and a grant that seals the new `K_{e+1}` under the
+  new epoch number. The service rule belongs to `personal-cfo-v98vd`, which owns the
+  test; the reference model of this part tests the epoch-record side.
+- *Optional same-epoch snapshot.* A grant transaction may also include a fresh
+  snapshot published under the current epoch at the new head, so the added device
+  need not rely on an older one. It is optional, and the snapshot is an ordinary
+  type `2` object, so it needs no format change.
+- *Re-adding is a fresh enrollment.* A removed device is never re-added: coming back
+  means a new enrollment with new key pairs, a new fingerprint and a new
+  `device_id` (chain rule 4).
+
 ### Sealing the key set (F1)
 
 The sealed-key set travels **only** inside a signed epoch record. For each
@@ -1028,10 +1052,9 @@ valid extension of the stale device's chain. The exposure is then everything the
 stale device encrypts under keys from the fork and everything it seals to
 recipients the fork adds. The same holds for any compromised member before its
 revocation. As soon as the device sees the real chain it detects the fork and
-follows the steps above. Two further narrowings need no new cryptography but
-change the wire format or the user experience, and are **not** specified in this
-revision: carrying the newest verified membership head in every envelope header,
-and an out-of-band membership code compared across devices.
+follows the steps above. An out-of-band membership code compared across devices
+would narrow the window further and is **not** specified in this revision. The
+epoch-position rule of C.7 is the narrowing this revision adopts.
 
 ## C.7 Epoch cutover, rotation and compatibility
 
@@ -1052,12 +1075,32 @@ unchanged.
   re-encrypts an outbox entry under a new epoch only after the index confirms
   that both its `command_id` and its tag are unknown, and a request that matches
   one identity but not the other is `ProtocolFork`.
+- **Epoch position.** A client rejects any envelope whose `key_epoch` is older than
+  the epoch in force at that envelope's position in the log, that is, the epoch of
+  the newest epoch record installed at or before its `seq`, with `EpochRejected`;
+  so is an envelope sealed under an epoch that is not yet installed at its
+  position. The service applies the same rule to new pushes, and a client re-checks
+  it on replay, so an old-epoch envelope that a withholding service slips in after a
+  cutover is not applied. An envelope accepted before the cutover keeps its place:
+  its position precedes the epoch record. This adds nothing to the AAD of ADR 0074.
 - **Cutover and grant records.** A revocation cutover is an epoch record with
   `reason 2` naming the `revoke` record; an added device is brought in by a grant
   with `reason 3` naming the `add` record and sealing the current keys to it
   without a rotation. Both are checked under the freshness and sequencing rules of
   C.6, and two records at one chain position are equivocation.
 - A future suite is introduced at a new key epoch (C.1.4).
+
+**Requirements on clients (not enforced by this format).**
+
+1. When a device is added, the client says, in plain language: "A device you add
+   can read everything in this vault, including the change history stored on the
+   server since a device was last removed. Removing it later stops it reading
+   anything new, not what it has already seen."
+2. When a device is revoked, the client lists every device that the revoked device
+   added (the `add` records it signed) and offers to revoke those as well, because
+   a compromised member can enroll devices it controls.
+These requirements are carried by the client and settings beads, not by this
+format.
 
 ## C.8 The logical genesis snapshot
 
@@ -1292,6 +1335,11 @@ written `N x 0xNN`.
 | Export | password `synthetic-export-password`; profile 1; salt 32 x `0x77`; `object_count` 2; `chunk_size` 1048576 |
 | Export objects | object 0 path `manifest.json`, index 0, chunk 0, final 1; object 1 path `data/accounts.jsonl`, index 1, chunk 0, final 1, plaintext `{"id":"1","name":"Checking"}` followed by a line feed (30 bytes) |
 
+The vectors `aead_key_a_envelope` and `aead_key_b_envelope`, and
+`nonce_domain_a_envelope` and `nonce_domain_b_envelope`, are computed from the
+**same** `K_e` and two device fingerprints: they differ, so two devices sealed the
+same epoch key by a grant never share an AEAD key or a nonce domain.
+
 Beyond the byte vectors, the reference test enforces: rejection of trailing
 bytes, truncation, a wrong label, an oversize length, a bad presence byte, invalid
 UTF-8, an unsupported version and a counter above the cap; the dual-identity field
@@ -1309,7 +1357,9 @@ since-revoked member; catch-up across two cutovers and across a cutover followed
 an add; a forged intermediate and a non-newest anchor; the reason and head
 coupling; a membership record with no epoch record; a forced rotation; equivocation
 at the newest position and at a genesis position; a forked chain with its recovery;
-and a rolled-back state);
+a rolled-back state, an add racing a cutover whose grant seals the pre-cutover key,
+and its retry at the new head; and the epoch-position rule at a log position before
+and after a cutover);
 refusal, before encryption, of a changed descriptor for a published artifact
 address; rejection of an altered artifact object or a wrong address; HPKE `info`
 binding every recipient, epoch, sealer, membership head and record header; and the
@@ -1322,7 +1372,9 @@ unsigned sealed-key set; a replayed old-epoch sealed blob; a record that seals
 different keys to different recipients; a membership chain with a gap, a fork, a
 reused fingerprint and a revoked signer; the stale-head record signed by a
 since-revoked member, the catch-up walk and the equivocating epoch records, with
-real signatures and real hashes of full bodies;
+real signatures and real hashes of full bodies; an add whose `prev_id` is stale
+refused by the service, and the grant that seals the pre-cutover key refused by a
+recipient (`personal-cfo-v98vd` and `personal-cfo-1cltt`);
 a changed artifact descriptor refused before encryption, end to end;
 cross-implementation canonical-JSON vectors for 64-bit integer strings, duplicate
 keys and lone surrogates; and the revocation-cutover simulator suite extended with
