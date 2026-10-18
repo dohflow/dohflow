@@ -31,10 +31,23 @@ pub enum IpcError {
     #[error("the password is incorrect")]
     VaultUnlockFailed,
 
+    /// This vault was written by a newer schema; do not offer a downgrade.
+    #[error("this vault requires a newer version of DohFlow")]
+    NewerVaultSchema,
+
+    /// This existing vault is not a verified supported migration layout.
+    #[error("this vault's format is unsupported or incomplete")]
+    UnsupportedVaultSchema,
+
     /// The vault is open but not accepting writes (e.g. restoring a backup or
     /// awaiting recovery). Carries the worker state as a non-sensitive label.
     #[error("vault unavailable: {0}")]
     Unavailable(String),
+
+    /// A key rotation needs more free disk space than is available (ADR 0083
+    /// §5). Nothing was written; freeing space and retrying is safe.
+    #[error("not enough free disk space to rotate the encryption key")]
+    InsufficientDiskSpace,
 
     /// A writer panic rolled back the transaction; the vault needs recovery.
     #[error("a write failed and the vault needs recovery")]
@@ -57,12 +70,15 @@ impl From<KernelError> for IpcError {
             KernelError::WriterPanicked => IpcError::WriterPanicked,
             KernelError::Persistence(message) => IpcError::Persistence(message),
             KernelError::VaultUnlockFailed => IpcError::VaultUnlockFailed,
+            KernelError::NewerVaultSchema { .. } => IpcError::NewerVaultSchema,
+            KernelError::UnsupportedVaultSchema => IpcError::UnsupportedVaultSchema,
             KernelError::VaultExists => {
                 IpcError::Validation("a vault already exists at this location".to_owned())
             }
             KernelError::VaultNotFound => {
                 IpcError::Validation("no vault exists at this location".to_owned())
             }
+            KernelError::InsufficientDiskSpace { .. } => IpcError::InsufficientDiskSpace,
             KernelError::VaultInUse => IpcError::Unavailable(
                 "vault is already open in another DohFlow instance".to_owned(),
             ),

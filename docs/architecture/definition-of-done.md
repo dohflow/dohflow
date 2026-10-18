@@ -61,6 +61,13 @@ Each feature ships with the layers that apply to it. "Applies" means the layer c
 - This includes stdout, stderr, file logs, OS-level crash dumps, and any test-fixture output captured for debugging.
 - WAL / SHM / temp / journal files in the vault directory must contain no plaintext financial values after any test (`personal-cfo-zxvl`).
 
+### 2.4 Tests that capture log output
+
+A test that captures `tracing` output to prove something is, or is not, logged follows two rules (`personal-cfo-56w.5`):
+
+- **Install the process-wide test subscriber first.** Call `observability::testing::install_global_test_subscriber()` before installing the test's own scoped subscriber (`tracing::subscriber::with_default`). Without it, a parallel test thread can make `tracing` cache "never interested" for a shared callsite while this test's subscriber is the only one alive, and the capture silently loses those events. That always fails on many-core machines and sometimes on smaller ones. Crates outside `observability` reach the helper through a dev-dependency with the `test-support` feature.
+- **Prove the capture is not empty before asserting an absence.** Assert that a known event or field the code under test emits (or a sentinel the test emits itself) is present before asserting that a secret is absent. An empty capture must never be able to pass a no-leak check.
+
 ---
 
 ## 3. Performance budgets

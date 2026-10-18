@@ -85,6 +85,19 @@ An interruption may leave an unregistered vault folder. DohFlow reports it on
 the next launch and keeps it for diagnosis. Keep your backup file and the
 original vault files safe while you investigate or retry.
 
+## If the vault requires a newer version
+
+If unlocking says **This vault requires a newer version of DohFlow**, open it
+with a compatible newer version of the app. This is different from an incorrect
+password: the app has authenticated your password but cannot safely use that
+vault's schema. It stays locked and does not migrate, downgrade, or repair it.
+You can retry or return to the vault picker.
+
+If the app cannot verify an existing vault's format, keep its database,
+envelope, and attachment files together. Do not edit schema stamps or delete
+WAL files to force it open. Use a compatible app version or restore a
+known-good encrypted backup as a **new vault**, leaving the original intact.
+
 ## If you lost the password — or never made a backup
 
 Honesty over comfort:

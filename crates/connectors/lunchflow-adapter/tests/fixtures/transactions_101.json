@@ -1,0 +1,35 @@
+{
+  "transactions": [
+    {
+      "id": "txn_a1",
+      "accountId": 101,
+      "amount": -45.10,
+      "currency": "USD",
+      "date": "2026-09-20",
+      "merchant": "Fixture Grocer",
+      "description": "FIXTURE GROCER #12",
+      "isPending": false
+    },
+    {
+      "id": "txn_a2",
+      "accountId": 101,
+      "amount": 2500,
+      "currency": "USD",
+      "date": "2026-09-15",
+      "merchant": null,
+      "description": "PAYROLL FIXTURE CO",
+      "isPending": false
+    },
+    {
+      "id": "txn_a3",
+      "accountId": 101,
+      "amount": -3.5,
+      "currency": "USD",
+      "date": "2026-09-21",
+      "merchant": "Fixture Cafe",
+      "description": "",
+      "isPending": false
+    }
+  ],
+  "total": 3
+}

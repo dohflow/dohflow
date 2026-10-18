@@ -12,7 +12,12 @@ description = "Compile-time SourcePreset registrations for migrating from other 
 # crates/importers/*), same rule csv-importer/ofx-importer already follow.
 [dependencies]
 importer-core = { path = "../importer-core" }
+# A preset whose source needs more than a mapping wraps the generic parse in
+# its own ImporterPlugin (personal-cfo-tulv: YNAB's TSV/decimal comma, date
+# order, transfer/split notes) — still pure, same isolation rule.
+csv-importer = { path = "../csv-importer" }
+semver = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-csv-importer = { path = "../csv-importer" }
 core-money = { path = "../../core-money" }

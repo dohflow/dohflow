@@ -6,8 +6,9 @@
 
 use chrono::{DateTime, Utc};
 use job_runtime::{
-    BackoffPolicy, CancellationToken, Clock, JobExecutor, JobFailure, JobFinishResult, JobOutcome,
-    JobRecord, JobRunReport, JobRunner, JobRunnerError, JobSpec, JobState, JobStore,
+    BackoffPolicy, CancellationToken, ClaimedJob, Clock, JobExecution, JobExecutor, JobFailure,
+    JobFinishResult, JobOutcome, JobRecord, JobRunReport, JobRunner, JobRunnerError, JobSpec,
+    JobState, JobStore,
 };
 use rusqlite::{params, OptionalExtension};
 use thiserror::Error;
@@ -150,6 +151,15 @@ fn row_from_parts(
         cancel_requested: cancel_requested != 0,
     })
 }
+
+/// The connector refresh job kind (ADR 0060 addendum 2026-10-04).
+pub const CONNECTOR_REFRESH_JOB_KIND: &str = "connector_refresh";
+
+/// Kinds whose handler must not hold the vault lock while it runs (a provider
+/// fetch takes seconds). The post-unlock sweep leaves them alone; the host runs
+/// them through [`DbWorker::claim_due_jobs_of_kind`] and
+/// [`DbWorker::finish_claimed_job`] with the lock released in between.
+pub const LOCK_RELEASING_JOB_KINDS: &[&str] = &[CONNECTOR_REFRESH_JOB_KIND];
 
 const SELECT_COLUMNS: &str = "
     id, kind, cadence, next_due_at, state, attempt_count, max_attempts,
@@ -331,7 +341,9 @@ impl DbWorker {
             .runner_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        JobRunner::new(self).run_due(now, unlock_window, context, executor, cancellation)
+        JobRunner::new(self)
+            .excluding_kinds(LOCK_RELEASING_JOB_KINDS)
+            .run_due(now, unlock_window, context, executor, cancellation)
     }
 
     /// Clock-injected scheduler entry point for deterministic tests and
@@ -349,14 +361,57 @@ impl DbWorker {
             .runner_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        JobRunner::new(self).run_due_with_clock(
-            now,
-            unlock_window,
-            context,
-            executor,
-            cancellation,
-            clock,
-        )
+        JobRunner::new(self)
+            .excluding_kinds(LOCK_RELEASING_JOB_KINDS)
+            .run_due_with_clock(now, unlock_window, context, executor, cancellation, clock)
+    }
+
+    /// Claim the due rows of a lock-releasing `kind` for this unlock window
+    /// (see [`LOCK_RELEASING_JOB_KINDS`]). Serialized with the post-unlock
+    /// sweep, which must already have run so its crash recovery has happened.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn claim_due_jobs_of_kind(
+        &self,
+        kind: &str,
+        now: DateTime<Utc>,
+        unlock_window: &str,
+        clock: &dyn Clock,
+    ) -> Result<(Vec<ClaimedJob>, JobRunReport), JobRunnerError<JobStoreError>> {
+        let _runner_guard = self
+            .runner_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        JobRunner::new(self).claim_due_of_kind(now, unlock_window, kind, clock)
+    }
+
+    /// Record a claimed job's outcome with the runtime's usual terminal rules.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn finish_claimed_job(
+        &self,
+        claimed: &ClaimedJob,
+        execution: JobExecution,
+        clock: &dyn Clock,
+    ) -> Result<JobRunReport, JobRunnerError<JobStoreError>> {
+        JobRunner::new(self).finish_claimed(claimed, execution, clock)
+    }
+
+    /// Remove a schedule, e.g. a forgotten connection's refresh job. A running
+    /// row is left alone; its own sweep finishes it and the next removal (or
+    /// the missing connection) retires it.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a write failure.
+    pub fn delete_job(&self, id: Uuid) -> Result<bool, DbError> {
+        let guard = self.lock();
+        let changed = guard.conn.execute(
+            "DELETE FROM durable_jobs WHERE id = ?1 AND state <> 'running'",
+            params![id],
+        )?;
+        Ok(changed != 0)
     }
 }
 

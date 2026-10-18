@@ -1065,11 +1065,11 @@ Allowed local metrics:
 
 Rules:
 
-- Telemetry is stored inside the encrypted vault or ephemeral memory.
+- Telemetry is held only in ephemeral, session-only memory: bounded, cleared on vault lock/switch and exit, with no automatic diagnostic history on disk.
 - No telemetry leaves the device unless the user previews and explicitly exports it.
-- Diagnostic export must have redacted and full-local modes.
-- Full-local mode remains encrypted and user-controlled.
+- The only diagnostic export is a user-initiated, previewed, redacted bundle (ADR 0066-A §5); there is no full-local or unredacted mode.
 - Redaction tests are part of CI.
+- Contract: `docs/security/logging-policy.md` §5–§9 (`personal-cfo-vkda`, reconciled 2026-09-28 to ADR 0066-A; earlier wording allowing vault-stored telemetry and a full-local export mode is superseded).
 
 ### 6.7 Privacy Modes
 

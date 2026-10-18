@@ -1,0 +1,120 @@
+[
+  {
+    "adapter_id": "simplefin",
+    "display_name": "SimpleFIN",
+    "capabilities": {
+      "accounts": true,
+      "transactions": true,
+      "balances": true,
+      "holdings": false,
+      "liabilities": false
+    },
+    "tier": "UserToken",
+    "account_types": [
+      "Depository",
+      "Credit",
+      "Loan",
+      "Investment"
+    ],
+    "regions": [
+      "US"
+    ],
+    "economics": {
+      "payer": "UserDirect",
+      "base_cost_minor_units": 1500,
+      "currency": "USD",
+      "billing_period": "Annual",
+      "included_connections": 25,
+      "extra_connection_cost_minor_units": null,
+      "extra_connection_period": null,
+      "cost_reviewed_at": "2026-09-27",
+      "terms_url": "https://beta-bridge.simplefin.org/info/terms",
+      "terms_reviewed_at": "2026-09-27",
+      "history_depth_expectation": "About 2–6 months at first link, depending on the bank."
+    },
+    "disclosure": {
+      "independent_party": "Not affiliated with us. If you use it, the Bridge is a separate service handling your bank connections under its own terms and privacy policy.",
+      "handles_credentials": "The SimpleFIN Bridge is an independent service that connects to your banks and hands this app read-only account and transaction data. Your bank credentials are given to the Bridge, never to this app.",
+      "cost_summary": "It costs money. The Bridge charges a small yearly fee, paid to them — nothing here is billed by this app.",
+      "optional": "It is optional. Everything in this app works with manual entry and file imports; a connection only saves the typing."
+    },
+    "link_guide": {
+      "title": "About the SimpleFIN Bridge",
+      "refresh_note": "Data refreshes about daily. The Bridge pulls from your banks roughly once a day; this app refreshes it on open and on demand.",
+      "setup_steps": [
+        "Create an account at https://bridge.simplefin.org (copy it into your browser) and connect each bank there.",
+        "Under Apps, choose New app connection to get a setup token.",
+        "Paste the token below. Tokens are single-use; make a new one if a link fails."
+      ],
+      "provider_url": "https://bridge.simplefin.org",
+      "credential_label": "Setup token",
+      "credential_noun": "setup token",
+      "credential_placeholder": "Paste the setup token",
+      "paste_instructions": "Create the token in the SimpleFIN Bridge under Apps, then paste it here. Tokens are single-use."
+    },
+    "referral": null,
+    "enabled": true
+  },
+  {
+    "adapter_id": "lunchflow",
+    "display_name": "LunchFlow",
+    "capabilities": {
+      "accounts": true,
+      "transactions": true,
+      "balances": true,
+      "holdings": false,
+      "liabilities": false
+    },
+    "tier": "UserToken",
+    "account_types": [
+      "Depository",
+      "Credit",
+      "Investment"
+    ],
+    "regions": [
+      "US",
+      "CA",
+      "GB",
+      "NZ",
+      "BR"
+    ],
+    "economics": {
+      "payer": "UserDirect",
+      "base_cost_minor_units": 3499,
+      "currency": "USD",
+      "billing_period": "Annual",
+      "included_connections": 2,
+      "extra_connection_cost_minor_units": 1000,
+      "extra_connection_period": "Annual",
+      "cost_reviewed_at": "2026-09-27",
+      "terms_url": "https://www.lunchflow.app/terms",
+      "terms_reviewed_at": "2026-09-18",
+      "history_depth_expectation": "Varies by bank and by LunchFlow's own data provider."
+    },
+    "disclosure": {
+      "independent_party": "LunchFlow is a separate company, not run by DohFlow. DohFlow has a referral relationship with LunchFlow, explained in the note below.",
+      "handles_credentials": "LunchFlow connects to your banks and gives this app read-only account and transaction data through an API key you create in your LunchFlow dashboard. Your bank credentials are given to LunchFlow, never to this app.",
+      "cost_summary": "It costs money. LunchFlow charges its own plan fee, paid to them — nothing here is billed by this app.",
+      "optional": "It is optional. Everything in this app works with manual entry and file imports, including LunchFlow's own CSV and OFX exports; a connection only saves the typing."
+    },
+    "link_guide": {
+      "title": "About LunchFlow",
+      "refresh_note": "Data refreshes on LunchFlow's schedule. LunchFlow pulls from your banks through its own data providers; this app refreshes it on open and on demand.",
+      "setup_steps": [
+        "Create an account at https://www.lunchflow.app (copy it into your browser) and connect each bank there.",
+        "Create an API destination and add the accounts this app should see — a new destination starts with none.",
+        "Copy the destination's API key and paste it below."
+      ],
+      "provider_url": "https://www.lunchflow.app",
+      "credential_label": "API key",
+      "credential_noun": "API key",
+      "credential_placeholder": "Paste the API key",
+      "paste_instructions": "Copy the API key from your API destination in the LunchFlow dashboard, then paste it here."
+    },
+    "referral": {
+      "url": "https://www.lunchflow.app/?atp=dohflow",
+      "disclosure": "DohFlow may earn a commission if you sign up for LunchFlow through the link above — this does not affect what LunchFlow charges you, and DohFlow works the same whether or not you use it."
+    },
+    "enabled": false
+  }
+]

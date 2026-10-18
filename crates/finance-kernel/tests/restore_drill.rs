@@ -161,7 +161,7 @@ fn restore_drill_reproduces_the_canonical_state() {
         )
         .unwrap();
     kernel
-        .upsert_connector_link(connection_id, "ACT-1", Some("Drill Checking"))
+        .upsert_connector_link(connection_id, "ACT-1", Some("Drill Checking"), Some("USD"))
         .unwrap();
 
     let before = capture(&kernel);

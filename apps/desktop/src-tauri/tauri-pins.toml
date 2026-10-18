@@ -1,0 +1,52 @@
+# Reviewed Tauri version pins (personal-cfo-io42, ADR 0001: "pin Tauri v2 minor
+# versions and treat Tauri upgrades as their own PRs").
+#
+# `tests/tauri_pins.rs` fails CI when the resolved Tauri family in Cargo.lock or
+# pnpm-lock.yaml differs from this file — by even a patch release — and when the
+# manifests allow a new minor, or the Rust and npm halves fall out of lockstep.
+#
+# Why exact versions and not just the minor: ADR 0010 and its addenda, the
+# 2026-09-27 capability audit and the regression suite were verified against
+# THESE vendored sources (the ACL check in `Webview::on_message`, the CSP
+# rewriting, the channel-fetch queue, navigation hooks, the opener scope, the
+# updater's signature check). A patch release can change any of them, so it is a
+# reviewed Tauri upgrade like any other.
+#
+# HOW TO UPDATE THIS FILE: only in a dedicated Tauri-upgrade PR. Follow
+# docs/agent/TAURI_UPGRADES.md and open it with the upgrade template
+# (.github/PULL_REQUEST_TEMPLATE/tauri-upgrade.md). Edit by hand: there is no
+# regenerate command, on purpose. Entries are sorted.
+
+# Every Rust package named `tauri*`, plus the webview (`wry`) and windowing
+# (`tao`) crates Tauri's runtime is built on, as resolved in
+# apps/desktop/src-tauri/Cargo.lock.
+[rust]
+tao = "0.35.3"
+tauri = "2.11.2"
+tauri-build = "2.6.2"
+tauri-codegen = "2.6.2"
+tauri-macros = "2.6.2"
+tauri-plugin = "2.6.2"
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-fs = "2.5.1"
+tauri-plugin-opener = "2.5.5"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2.11.0"
+tauri-runtime = "2.11.2"
+tauri-runtime-wry = "2.11.2"
+tauri-specta = "2.0.0-rc.25"
+tauri-utils = "2.9.2"
+tauri-winres = "0.3.6"
+wry = "0.55.1"
+
+# Every `@tauri-apps/*` package the desktop app depends on, as resolved in
+# pnpm-lock.yaml (importer apps/desktop). The CLI's per-platform binaries
+# (`@tauri-apps/cli-<platform>`) must match `@tauri-apps/cli` and are checked by
+# rule, not listed.
+[npm]
+"@tauri-apps/api" = "2.11.0"
+"@tauri-apps/cli" = "2.11.2"
+"@tauri-apps/plugin-dialog" = "2.7.1"
+"@tauri-apps/plugin-opener" = "2.5.5"
+"@tauri-apps/plugin-process" = "2.3.1"
+"@tauri-apps/plugin-updater" = "2.11.0"

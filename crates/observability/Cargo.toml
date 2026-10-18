@@ -12,3 +12,11 @@ description = "Logging redaction layer for DohFlow: a redact() backstop and a tr
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 regex = { workspace = true }
+# Diagnostic bundle (personal-cfo-lyd): typed records serialize to/parse from JSON.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# `observability::testing` for other crates' log-capture tests (DoD §2.4,
+# personal-cfo-56w.5). Dev-dependencies only; never a production feature.
+test-support = []

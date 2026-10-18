@@ -24,7 +24,7 @@ when the ADR was written (owner-confirmed).
 
 | # | Title | Tier | Status |
 |---|---|---|---|
-| 0001 | [Tauri v2 + Rust core + React/TypeScript frontend](0001-tauri-rust-react.md) | Public | Accepted |
+| 0001 | [Tauri v2 + Rust core + React/TypeScript frontend](0001-tauri-rust-react.md) | Public | Accepted (compiler-support + toolchain-1.99 addenda) |
 | 0002 | [Local encrypted vault model](0002-local-encrypted-vault.md) | Public | Accepted |
 | 0003 | [Frontend / backend trust boundary](0003-trust-boundary.md) | Public | Accepted (amended twice) |
 | 0004 | [Connector relay boundary](0004-connector-relay-boundary.md) | Public | Accepted |
@@ -85,7 +85,7 @@ when the ADR was written (owner-confirmed).
 | 0062 | [Public-repo fork mechanics](0062-public-repo-fork-mechanics.md) | Public | Accepted (partially superseded by its own 2026-09-08 amendment) |
 | 0063 | [Typeface pairing](0063-typeface-pairing.md) | Public | Accepted |
 | 0064 | [Task tracking leaves the product repository](0064-task-tracking-leaves-the-repo.md) | Public | Accepted |
-| 0065 | [Minimum supported macOS version](0065-minimum-macos-version.md) | Public | Accepted |
+| 0065 | [Minimum supported macOS version](0065-minimum-macos-version.md) | Public | Accepted (15.0-timing addendum) |
 | 0066 | [Business model: free local app + paid services](0066-business-model-free-app-paid-services.md) | Public | Accepted — discusses the business model in the abstract; allowlisted in the tier tripwire (ADR 0082) |
 | 0066-A | [Pinned service endpoints, credentials, and operational logs](0066-A-dohflow-endpoints-pinned-credential-not-unlock.md) | Public | Accepted |
 | 0067 | [DohFlow rename policy](0067-dohflow-rename-policy.md) | Public | Accepted |
@@ -97,13 +97,15 @@ when the ADR was written (owner-confirmed).
 | 0073 | [Sync disposition rules](0073-sync-disposition-rules.md) | Public | Accepted |
 | 0074 | [DohFlow Sync architecture](0074-dohflow-sync-architecture.md) | Public | Accepted |
 | 0075 | — internal | Internal | Not yet written (`personal-cfo-oh3hg`) |
-| 0076 | Multi-provider connector strategy (public stance) | Public + Internal split | Not yet written (`personal-cfo-m0kgx`) — public ADR carries the decision and the D15/FTC sentence; an internal companion carries the connector's affiliate-payout terms and demand-test results |
+| 0076 | [Multi-provider connector strategy](0076-multi-provider-connector-strategy.md) | Public + Internal split | Accepted — this file carries the decisions and the D15/FTC sentence; the affiliate-payout terms live in `dohflow/internal` |
 | 0077 | Data ownership and wire formats | Public | Not yet written (`personal-cfo-klr.4`) |
 | 0078 | — internal | Internal | Not yet written (`personal-cfo-quhmv`) |
 | 0079 | Desktop-first platform order | Public | Not yet written (`personal-cfo-bonpc`) |
 | 0080 | Mobile architecture | Public | Not yet written (`personal-cfo-iuxhq`) |
 | 0081 | — internal | Internal | Not yet written (`personal-cfo-658vi`) |
 | 0082 | [The public-disclosure boundary](0082-public-disclosure-boundary.md) | Public | Accepted |
+| 0083 | [Vault key rotation (DEK rekey)](0083-vault-key-rotation.md) | Public | Accepted |
+| 0084 | — internal | Internal | Accepted; documentation review/merge pending |
 
 ## Sub-numbered amendments
 

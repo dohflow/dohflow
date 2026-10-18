@@ -1,0 +1,1 @@
+{ "error": "Unauthorized", "message": "Authentication required. Provide x-api-key header or Authorization: Bearer token." }

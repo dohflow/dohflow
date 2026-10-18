@@ -147,3 +147,55 @@ the shape of every later onboarding child (5fp6):
 - Accounts remain the gate for advancing (the forecast needs a starting
   balance); a link whose provider has no accounts ready yet (k025) is told
   how to continue by hand.
+
+## Addendum (2026-10-04, personal-cfo-lqk): refresh moves onto the job runtime
+
+Owner decision (2026-10-04). §4 said connector refresh runs on vault open and from a
+manual button, with "no job runtime, no background daemon". The local durable job
+runtime (`personal-cfo-ati`) has since shipped with the same at-unlock semantics:
+schedules live in the vault, due jobs run after the next unlock, and nothing runs in
+the background. Refresh now uses it, so each connection has a durable schedule, a
+cadence the user can change, and the runtime's claim, retry and crash recovery.
+**There is still no background daemon**: nothing refreshes while the app is closed or
+the vault is locked. The manual refresh button is unchanged.
+
+- **One job per connection.** Every connection has exactly one `connector_refresh`
+  job. It is created when the connection is linked, created at the next unlock for
+  connections linked before this addendum, and removed when the connection is
+  forgotten. Its payload is the connection id only, never a credential. It is marked
+  `requires_explicit_opt_in`: its executor runs only if the connection still exists
+  and its cadence is not "manual only".
+- **Cadence, chosen per connection.** The Connections card offers:
+  - **Every time you open the vault** (the default): runs at the first unlock at least
+    six hours after the last refresh. This is §4's behavior and debounce unchanged.
+  - **Daily**: at the first unlock a day or more after the last refresh.
+  - **Weekly**: at the first unlock a week or more after the last refresh.
+  - **Manual only**: the job is disabled; only the refresh button fetches.
+
+  Cadence is measured from the connection's last refresh of any kind, so a manual
+  refresh also resets it.
+- **A provider-suggested default.** Each provider registry entry (ADR 0015) gains a
+  suggested cadence, used when a connection is linked and until the user changes it.
+  SimpleFIN suggests "every time you open the vault", which keeps typical use well
+  below the Bridge's ~24 requests a day. A provider whose terms or limits call for
+  less suggests less.
+- **The vault lock is never held across the network.** The runtime's due-job sweep
+  runs handlers while holding the vault lock. A provider fetch can take seconds, so
+  `connector_refresh` jobs run in their own post-unlock sweep in three steps, the
+  same shape the refresh itself already uses:
+  1. claim the due job under the lock;
+  2. refresh with the lock released;
+  3. record the outcome under the lock.
+
+  A claim interrupted by an exit is recovered at the next unlock by the runtime's
+  existing recovery.
+- **Failures surface where they already do.** The refresh itself records every
+  provider outcome exactly as today (§5 taxonomy). An expired or re-auth-needed link,
+  or a provider or network error, goes on the connection's health and becomes a
+  `connector_error` Money Inbox item (`zfyo`). A rate limit is recorded as a healthy,
+  paced refresh. For the job, all of these are a completed run, not a `job_failure`,
+  so one problem never produces two inbox items. Only a failure inside DohFlow itself
+  (the vault or its storage) becomes the runtime's `job_failure` item.
+- **No OS notification here.** A link that needs re-authentication is shown on the
+  connection's health and in the Money Inbox. A system notification for it is
+  `personal-cfo-c8cu`'s, built on whatever notification surface the app adopts.

@@ -43,6 +43,7 @@ connector-core = { path = ".", features = ["mock"] }
 # cycle is fine for cargo, and the compile barrier checks normal deps only.
 # Adding an adapter crate to the workspace means adding it here too — the
 # roster test names the expected ids, so a forgotten entry fails loudly.
+lunchflow-adapter = { path = "../connectors/lunchflow-adapter" }
 simplefin-adapter = { path = "../connectors/simplefin-adapter" }
 semver = { workspace = true }
 serde_json = { workspace = true }

@@ -3,10 +3,10 @@
 // writes real ledger rows, so its success invalidates the financial caches the
 // same way an import does.
 //
-// LEAK RULE: the setup token never enters a useMutation — TanStack retains
+// LEAK RULE: the pasted credential never enters a useMutation — TanStack retains
 // mutation variables in its cache (and exposes them via devtools), so link()
 // is a direct command call with hand-rolled pending state (the
-// ChangePasswordCard precedent). The token exists only for the call's
+// ChangePasswordCard precedent). The credential exists only for the call's
 // duration.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -14,7 +14,9 @@ import { useCallback, useState } from "react";
 
 import {
   commands,
+  type CreateAccountInput,
   type ConnectorConnectionDto,
+  type ConnectorFeedDto,
   type ConnectorLinkResultDto,
   type ConnectorSyncResultDto,
   type IpcError,
@@ -22,17 +24,44 @@ import {
 import { mintIdempotencyKey } from "@/lib/idempotency";
 import { ipcQuery, queryKeys } from "@/lib/query";
 
+/// What a mapping did (personal-cfo-6evt): saved; not saved because another
+/// connector link already feeds that account (one feed per account by
+/// default, ADR 0014 §3 addendum 2026-10-04); or an error.
+export type SetLinkOutcome =
+  | { kind: "linked" }
+  | { kind: "already_fed"; existingFeeds: ConnectorFeedDto[] }
+  | { kind: "error"; error: IpcError };
+
 interface UseConnections {
   connections: ConnectorConnectionDto[] | null;
   error: string | null;
   refreshing: boolean;
-  link: (setupToken: string) => Promise<ConnectorLinkResultDto | IpcError>;
+  /// Link the provider `adapterId` (a registry id — ADR 0076 §4) with the
+  /// credential the user pasted.
+  link: (
+    adapterId: string,
+    credential: string,
+  ) => Promise<ConnectorLinkResultDto | IpcError>;
   linkPending: boolean;
+  /// Map (or unmap, with `null`) an external account. A second connector feed
+  /// onto an account is saved only with `allowSharedFeed` (personal-cfo-6evt);
+  /// otherwise the outcome names the existing feed and nothing changes.
   setAccountLink: (
     connectionId: string,
     externalId: string,
     accountId: string | null,
-  ) => Promise<IpcError | null>;
+    allowSharedFeed?: boolean,
+  ) => Promise<SetLinkOutcome>;
+  /// Create a new account and map `externalId` onto it in one call; the
+  /// currency guard runs first, so a refusal creates nothing (personal-cfo-pxi.8).
+  createMappedAccount: (
+    connectionId: string,
+    externalId: string,
+    account: CreateAccountInput,
+  ) => Promise<{ id: string | null; error: IpcError | null }>;
+  /// Change how often a connection refreshes on its own (personal-cfo-lqk):
+  /// `every_open`, `daily`, `weekly` or `manual`.
+  setRefreshCadence: (connectionId: string, cadence: string) => Promise<IpcError | null>;
   sync: (connectionId: string) => Promise<ConnectorSyncResultDto | IpcError>;
   /// The connection currently syncing, or null — per-row pending state (the
   /// backend's in-flight claim is per-connection, so other rows stay live).
@@ -76,12 +105,12 @@ export function useConnections(): UseConnections {
 
   const [linkPending, setLinkPending] = useState(false);
   const link = useCallback(
-    async (setupToken: string) => {
+    async (adapterId: string, credential: string) => {
       setLinkPending(true);
       try {
         const result = await commands.connectorLink({
-          adapter_id: "simplefin",
-          setup_token: setupToken,
+          adapter_id: adapterId,
+          setup_token: credential,
         });
         if (result.status === "ok") {
           void invalidateConnections();
@@ -101,24 +130,91 @@ export function useConnections(): UseConnections {
       connectionId: string;
       externalId: string;
       accountId: string | null;
+      allowSharedFeed: boolean;
     }) =>
       commands.connectorSetAccountLink({
         connection_id: input.connectionId,
         external_id: input.externalId,
         account_id: input.accountId,
+        allow_shared_feed: input.allowSharedFeed,
       }),
     onSuccess: invalidateConnections,
   });
   const setAccountLink = useCallback(
-    async (connectionId: string, externalId: string, accountId: string | null) => {
+    async (
+      connectionId: string,
+      externalId: string,
+      accountId: string | null,
+      allowSharedFeed = false,
+    ): Promise<SetLinkOutcome> => {
       const result = await setLinkMutation.mutateAsync({
         connectionId,
         externalId,
         accountId,
+        allowSharedFeed,
       });
-      return result.status === "ok" ? null : result.error;
+      if (result.status === "error") return { kind: "error", error: result.error };
+      return result.data.linked
+        ? { kind: "linked" }
+        : { kind: "already_fed", existingFeeds: result.data.existing_feeds };
     },
     [setLinkMutation],
+  );
+
+  const createMappedMutation = useMutation({
+    mutationFn: (input: {
+      connectionId: string;
+      externalId: string;
+      account: CreateAccountInput;
+    }) =>
+      commands.connectorCreateMappedAccount({
+        connection_id: input.connectionId,
+        external_id: input.externalId,
+        account: input.account,
+      }),
+    onSuccess: (result) => {
+      if (result.status !== "ok") return;
+      // A new account now exists and a link points at it.
+      for (const key of [
+        queryKeys.connections,
+        queryKeys.accounts,
+        queryKeys.cashTiers,
+        queryKeys.cashAvailability,
+        queryKeys.forecastReadiness,
+        ["forecast"] as const,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    },
+  });
+  const createMappedAccount = useCallback(
+    async (connectionId: string, externalId: string, account: CreateAccountInput) => {
+      const result = await createMappedMutation.mutateAsync({
+        connectionId,
+        externalId,
+        account,
+      });
+      return result.status === "ok"
+        ? { id: result.data.account_id, error: null }
+        : { id: null, error: result.error };
+    },
+    [createMappedMutation],
+  );
+
+  const cadenceMutation = useMutation({
+    mutationFn: (input: { connectionId: string; cadence: string }) =>
+      commands.connectorSetRefreshCadence({
+        connection_id: input.connectionId,
+        cadence: input.cadence,
+      }),
+    onSuccess: invalidateConnections,
+  });
+  const setRefreshCadence = useCallback(
+    async (connectionId: string, cadence: string) => {
+      const result = await cadenceMutation.mutateAsync({ connectionId, cadence });
+      return result.status === "ok" ? null : result.error;
+    },
+    [cadenceMutation],
   );
 
   const syncMutation = useMutation({
@@ -159,6 +255,8 @@ export function useConnections(): UseConnections {
     link,
     linkPending,
     setAccountLink,
+    createMappedAccount,
+    setRefreshCadence,
     sync,
     syncingId: syncMutation.isPending ? (syncMutation.variables ?? null) : null,
     forget,

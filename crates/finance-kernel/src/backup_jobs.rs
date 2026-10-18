@@ -186,12 +186,21 @@ impl Kernel {
         package_path: &Path,
         app_version: &str,
     ) -> Result<BackupHistoryEntry, KernelError> {
-        validate_backup_file_path(package_path)?;
-        self.perform_backup_export(package_path, app_version, BackupHistoryKind::Manual, false)
+        let result = validate_backup_file_path(package_path).and_then(|()| {
+            self.perform_backup_export(package_path, app_version, BackupHistoryKind::Manual, false)
+        });
+        self.record_backup_outcome(&result);
+        result
     }
 
     /// Run the shared backup exporter immediately using the configured folder.
     pub fn run_backup_now(&self, app_version: &str) -> Result<BackupHistoryEntry, KernelError> {
+        let result = self.run_backup_now_inner(app_version);
+        self.record_backup_outcome(&result);
+        result
+    }
+
+    fn run_backup_now_inner(&self, app_version: &str) -> Result<BackupHistoryEntry, KernelError> {
         let settings = self.backup_schedule_settings()?;
         let folder = settings.destination.ok_or_else(|| {
             KernelError::Validation("choose a backup folder in Settings first".to_owned())
@@ -202,6 +211,15 @@ impl Kernel {
 
     /// Execute one durable scheduled-backup invocation.
     pub fn run_scheduled_backup(
+        &self,
+        app_version: &str,
+    ) -> Result<BackupHistoryEntry, KernelError> {
+        let result = self.run_scheduled_backup_inner(app_version);
+        self.record_backup_outcome(&result);
+        result
+    }
+
+    fn run_scheduled_backup_inner(
         &self,
         app_version: &str,
     ) -> Result<BackupHistoryEntry, KernelError> {

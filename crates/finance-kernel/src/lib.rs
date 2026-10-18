@@ -51,6 +51,7 @@ pub use db_worker::{
     AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
     FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
+pub use db_worker::{CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS};
 pub use importer_core::{
     all_presets, content_fingerprint, detect_best, plugin_by_id, preset_by_id, run_bounded,
     AccountHandling, CategoryHandling, ColumnMapping, ImporterPlugin, ParseError, ParseWarning,
@@ -59,9 +60,9 @@ pub use importer_core::{
     SourceQuirk,
 };
 pub use job_runtime::{
-    BackoffPolicy, CancellationToken, Clock, JobDispatcher, JobExecution, JobExecutor, JobFailure,
-    JobFinishResult, JobHandler, JobOutcome, JobRecord, JobRunReport, JobRunnerError, JobSpec,
-    JobSpecError, JobState, Schedule, SystemClock,
+    BackoffPolicy, CancellationToken, ClaimedJob, Clock, JobDispatcher, JobExecution, JobExecutor,
+    JobFailure, JobFinishResult, JobHandler, JobOutcome, JobRecord, JobRunReport, JobRunnerError,
+    JobSpec, JobSpecError, JobState, Schedule, SystemClock,
 };
 pub use pay_schedule::{Frequency, PaySchedule};
 // Canonical onboarding warning (ADR 0002 / personal-cfo-n7bo): re-exported so the
@@ -73,13 +74,19 @@ pub use vault_crypto::CANONICAL_NO_RESET_WARNING;
 pub const NO_RESET_WARNING_ACKNOWLEDGED: &str = "no_reset_warning_acknowledged";
 
 use db_worker::{DbError, DbWorker, WriteCommand};
+use observability::diagnostics::{
+    Diagnostics, FailureCategory, Metric, Outcome as DiagnosticOutcome,
+};
 use uuid::Uuid;
 
+mod rekey;
+pub use rekey::RekeyRecovery;
 mod vault;
 pub use vault::{classify_vault, VaultController, VaultHealth, VaultState};
 
 pub mod backup;
 mod backup_jobs;
+pub mod connector_currency_guard;
 pub use backup_jobs::{BackupCadence, BackupScheduleSettings, BACKUP_JOB_ID, BACKUP_JOB_KIND};
 
 mod sealed {
@@ -1468,6 +1475,7 @@ pub struct CreateSourceBatch {
     source_name: Option<String>,
     file_fingerprint: Option<String>,
     parser_version: Option<String>,
+    connector_connection_id: Option<uuid::Uuid>,
 }
 
 impl CreateSourceBatch {
@@ -1488,7 +1496,17 @@ impl CreateSourceBatch {
             source_name,
             file_fingerprint,
             parser_version,
+            connector_connection_id: None,
         }
+    }
+
+    /// Record the connector connection this sync batch comes from
+    /// (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04): dedupe treats a
+    /// connector's connection, not just its provider, as its identity.
+    #[must_use]
+    pub const fn with_connector_connection(mut self, connection_id: uuid::Uuid) -> Self {
+        self.connector_connection_id = Some(connection_id);
+        self
     }
 }
 
@@ -1515,6 +1533,7 @@ impl KernelCommand for CreateSourceBatch {
             source_name: self.source_name,
             file_fingerprint: self.file_fingerprint,
             parser_version: self.parser_version,
+            connector_connection_id: self.connector_connection_id,
         }
     }
 }
@@ -2490,6 +2509,61 @@ pub struct BatchResult {
     /// Transactions auto-categorized from merchant memory after the import (ADR 0030
     /// addendum, personal-cfo-5n4.2). `0` when the setting is off or nothing matched.
     pub auto_categorized: u32,
+    /// Source rows the parse could not use, so they were never staged
+    /// (personal-cfo-pxi.10; ADR 0014 §3 "never silently drop"). The full count,
+    /// even when `warnings` is truncated.
+    pub skipped_rows: u32,
+    /// What the parse reported, bounded to [`MAX_IMPORT_WARNINGS`]: skipped rows
+    /// first (in source order), then notes on staged rows. Each message is a
+    /// fixed reason, never the row's own values.
+    pub warnings: Vec<ImportWarning>,
+    /// Rows left out because their source account was not mapped to a real
+    /// account (personal-cfo-tulv, [`Kernel::ingest_batch_routed`]) — the
+    /// user chose not to import that account. Not counted in `skipped_rows`,
+    /// which is about rows the parse could not read. `0` on every other path.
+    pub skipped_unmapped: u32,
+}
+
+/// Where a file import's rows land (personal-cfo-tulv).
+enum FileImportTarget<'a> {
+    /// Every row into one account (the original file-import path).
+    Single(AccountId),
+    /// Each row by its source account label; unmapped labels are left out.
+    Routed(&'a std::collections::BTreeMap<String, uuid::Uuid>),
+}
+
+/// The most [`ImportWarning`]s a [`BatchResult`] carries. A file with more
+/// still reports its full [`BatchResult::skipped_rows`] count.
+pub const MAX_IMPORT_WARNINGS: usize = 20;
+
+/// One issue the parse reported for an import (personal-cfo-pxi.10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportWarning {
+    /// The source row's 0-based data index (header excluded), when known.
+    pub row: Option<usize>,
+    /// A fixed reason, for example `"unparseable / missing amount"`.
+    pub message: String,
+    /// `true` when the row was not staged; `false` for a note on a staged row.
+    pub skipped: bool,
+}
+
+/// The skipped-row count and the bounded warning list for `parsed`.
+fn import_warnings(parsed: &ParsedBatch) -> (u32, Vec<ImportWarning>) {
+    let skipped = parsed.skipped.iter().map(|w| (w, true));
+    let notes = parsed.warnings.iter().map(|w| (w, false));
+    let warnings = skipped
+        .chain(notes)
+        .take(MAX_IMPORT_WARNINGS)
+        .map(|(w, skipped)| ImportWarning {
+            row: w.row,
+            message: w.message.clone(),
+            skipped,
+        })
+        .collect();
+    (
+        u32::try_from(parsed.skipped.len()).unwrap_or(u32::MAX),
+        warnings,
+    )
 }
 
 /// [`Kernel::ingest_sync_batch`]'s result: the standard batch outcome plus
@@ -2546,6 +2620,12 @@ pub enum KernelError {
     /// Another DohFlow process already owns this vault's unlocked runner.
     #[error("vault is already unlocked by another process")]
     VaultInUse,
+    /// This existing vault was written by a newer schema this build cannot open.
+    #[error("vault requires a newer DohFlow version (schema {observed}; supported {supported})")]
+    NewerVaultSchema { observed: i64, supported: i64 },
+    /// An existing vault layout is not a proven supported migration state.
+    #[error("existing vault schema is unsupported or incomplete")]
+    UnsupportedVaultSchema,
     /// The vault could not be unlocked: the password was wrong (the wrapped DEK
     /// failed to authenticate). Deliberately carries no detail — there is no
     /// oracle distinguishing wrong-password from a tampered envelope.
@@ -2555,6 +2635,16 @@ pub enum KernelError {
     /// message (never embeds key, password, or salt material).
     #[error("vault error: {0}")]
     Vault(String),
+    /// A key rotation needs more free disk space than is available (ADR 0083
+    /// §5): room for one database copy plus a margin, plus the attachment bytes
+    /// where hard links are unavailable. Nothing was written.
+    #[error("not enough free disk space for key rotation (need {needed} bytes, have {available})")]
+    InsufficientDiskSpace {
+        /// Bytes required.
+        needed: u64,
+        /// Bytes available.
+        available: u64,
+    },
     /// A vault state transition not permitted by the §6.2.1 state machine
     /// (`personal-cfo-tg5`).
     #[error("illegal vault transition from {from:?} to {to:?}")]
@@ -2583,6 +2673,14 @@ impl From<DbError> for KernelError {
         match error {
             DbError::MissingMetadata(field) => KernelError::MissingMetadata(field),
             DbError::VaultInUse => KernelError::VaultInUse,
+            DbError::NewerSchema {
+                observed,
+                supported,
+            } => KernelError::NewerVaultSchema {
+                observed,
+                supported,
+            },
+            DbError::UnsupportedSchema => KernelError::UnsupportedVaultSchema,
             DbError::WorkerUnavailable(state) => KernelError::Unavailable(state),
             DbError::WriterPanicked => KernelError::WriterPanicked,
             DbError::InvalidCommand(message) => KernelError::Validation(message),
@@ -2605,6 +2703,11 @@ impl From<DbError> for KernelError {
 /// financial state.
 pub struct Kernel {
     worker: DbWorker,
+    /// This unlocked session's local diagnostic capture (personal-cfo-lyd,
+    /// `docs/security/logging-policy.md` §6). Owned by the kernel so that vault
+    /// lock, vault switch and app exit — which all drop the kernel — drop every
+    /// record and any pending preview with it. Never persisted.
+    diagnostics: Diagnostics,
 }
 
 impl Kernel {
@@ -2617,13 +2720,25 @@ impl Kernel {
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, KernelError> {
         Ok(Self {
             worker: DbWorker::open(path, key)?,
+            diagnostics: Diagnostics::new(),
         })
     }
 
     /// Build a kernel over an already-open db-worker.
     #[must_use]
     pub fn with_worker(worker: DbWorker) -> Self {
-        Self { worker }
+        Self {
+            worker,
+            diagnostics: Diagnostics::new(),
+        }
+    }
+
+    /// This session's local diagnostic capture (personal-cfo-lyd). Callers
+    /// record typed measurements; the only way out is a previewed, redacted
+    /// bundle the user saves (ADR 0066-A §5).
+    #[must_use]
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
     }
 
     /// The health of the underlying writer.
@@ -2673,6 +2788,58 @@ impl Kernel {
         Ok(())
     }
 
+    /// Replace a durable job's configuration, resetting terminal state so new
+    /// settings take effect (refused while the job is running).
+    ///
+    /// # Errors
+    /// [`KernelError`] if the spec is invalid, the job is running, or the
+    /// write fails.
+    pub fn reconfigure_job(&self, spec: &JobSpec) -> Result<(), KernelError> {
+        self.worker.reconfigure_job(spec)?;
+        Ok(())
+    }
+
+    /// Remove a durable schedule (not while it is running).
+    ///
+    /// # Errors
+    /// [`KernelError`] on a write failure.
+    pub fn delete_job(&self, id: Uuid) -> Result<bool, KernelError> {
+        Ok(self.worker.delete_job(id)?)
+    }
+
+    /// Claim the due jobs of a lock-releasing `kind` (ADR 0060 addendum
+    /// 2026-10-04): the caller runs them without holding the vault, then
+    /// reports through [`Self::finish_claimed_job`].
+    ///
+    /// # Errors
+    /// [`KernelError::Persistence`] on a store failure.
+    pub fn claim_due_jobs_of_kind(
+        &self,
+        kind: &str,
+        now: DateTime<Utc>,
+        unlock_window: &str,
+        clock: &dyn Clock,
+    ) -> Result<(Vec<ClaimedJob>, JobRunReport), KernelError> {
+        self.worker
+            .claim_due_jobs_of_kind(kind, now, unlock_window, clock)
+            .map_err(|error| KernelError::Persistence(error.to_string()))
+    }
+
+    /// Record a claimed job's outcome with the runtime's usual terminal rules.
+    ///
+    /// # Errors
+    /// [`KernelError::Persistence`] on a store failure.
+    pub fn finish_claimed_job(
+        &self,
+        claimed: &ClaimedJob,
+        execution: JobExecution,
+        clock: &dyn Clock,
+    ) -> Result<JobRunReport, KernelError> {
+        self.worker
+            .finish_claimed_job(claimed, execution, clock)
+            .map_err(|error| KernelError::Persistence(error.to_string()))
+    }
+
     /// Read the local durable-job history for a Settings/status surface.
     pub fn durable_jobs(&self) -> Result<Vec<DurableJobView>, KernelError> {
         Ok(self.worker.durable_jobs()?)
@@ -2699,8 +2866,12 @@ impl Kernel {
         executor: &E,
         cancellation: &CancellationToken,
     ) -> Result<JobRunReport, KernelError> {
+        let timed = TimedExecutor {
+            inner: executor,
+            diagnostics: &self.diagnostics,
+        };
         self.worker
-            .run_due_jobs(now, unlock_window, self, executor, cancellation)
+            .run_due_jobs(now, unlock_window, self, &timed, cancellation)
             .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
     }
 
@@ -2713,8 +2884,12 @@ impl Kernel {
         cancellation: &CancellationToken,
         clock: &dyn Clock,
     ) -> Result<JobRunReport, KernelError> {
+        let timed = TimedExecutor {
+            inner: executor,
+            diagnostics: &self.diagnostics,
+        };
         self.worker
-            .run_due_jobs_with_clock(now, unlock_window, self, executor, cancellation, clock)
+            .run_due_jobs_with_clock(now, unlock_window, self, &timed, cancellation, clock)
             .map_err(|error: JobRunnerError<_>| KernelError::Persistence(error.to_string()))
     }
 
@@ -2736,6 +2911,56 @@ impl Kernel {
         limits: &ParserLimits,
         meta: &CommandMeta,
     ) -> Result<BatchResult, KernelError> {
+        self.ingest_file(
+            plugin,
+            input,
+            hints,
+            &FileImportTarget::Single(target_account),
+            limits,
+            meta,
+        )
+    }
+
+    /// [`Self::ingest_batch`] for a file whose rows span several accounts
+    /// (personal-cfo-tulv — a YNAB register export): `account_map` sends each
+    /// source account label to the real account its rows land in. Rows whose
+    /// label the map does not name are left out and counted in
+    /// [`BatchResult::skipped_unmapped`], never committed elsewhere. Same
+    /// file-level and transaction-level dedupe as `ingest_batch`; the
+    /// transaction-level check is per account, so a duplicate surfaces in the
+    /// Money Inbox against the account it belongs to.
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] if a command fails to apply or persistence errors.
+    pub fn ingest_batch_routed(
+        &self,
+        plugin: &'static dyn ImporterPlugin,
+        input: ParserInput,
+        hints: &ParserHints,
+        account_map: &std::collections::BTreeMap<String, uuid::Uuid>,
+        limits: &ParserLimits,
+        meta: &CommandMeta,
+    ) -> Result<BatchResult, KernelError> {
+        self.ingest_file(
+            plugin,
+            input,
+            hints,
+            &FileImportTarget::Routed(account_map),
+            limits,
+            meta,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn ingest_file(
+        &self,
+        plugin: &'static dyn ImporterPlugin,
+        input: ParserInput,
+        hints: &ParserHints,
+        target: &FileImportTarget<'_>,
+        limits: &ParserLimits,
+        meta: &CommandMeta,
+    ) -> Result<BatchResult, KernelError> {
         let fingerprint = content_fingerprint(&input.bytes);
 
         // File-level dedupe (ADR 0014 §3): an exact re-upload is skipped without
@@ -2748,6 +2973,9 @@ impl Kernel {
                 committed: 0,
                 flagged: 0,
                 auto_categorized: 0,
+                skipped_rows: 0,
+                warnings: Vec::new(),
+                skipped_unmapped: 0,
             });
         }
 
@@ -2786,16 +3014,25 @@ impl Kernel {
                     committed: 0,
                     flagged: 0,
                     auto_categorized: 0,
+                    skipped_rows: 0,
+                    warnings: Vec::new(),
+                    skipped_unmapped: 0,
                 });
             }
         };
 
         // Bulk-stage, then commit each clean transaction (duplicates self-flag).
-        let staged_ids = self.worker.stage_parsed_batch(
-            batch_id.as_uuid(),
-            &parsed,
-            target_account.as_uuid(),
-        )?;
+        let (staged_ids, not_routed) = match target {
+            FileImportTarget::Single(account) => (
+                self.worker
+                    .stage_parsed_batch(batch_id.as_uuid(), &parsed, account.as_uuid())?,
+                0,
+            ),
+            FileImportTarget::Routed(map) => {
+                self.worker
+                    .stage_parsed_batch_routed(batch_id.as_uuid(), &parsed, map)?
+            }
+        };
         for staged_id in &staged_ids {
             self.dispatch(CommandEnvelope::new(
                 next_meta(meta),
@@ -2840,6 +3077,7 @@ impl Kernel {
             }
         }
 
+        let (skipped_rows, warnings) = import_warnings(&parsed);
         Ok(BatchResult {
             source_batch_id: Some(batch_id.to_string()),
             status: status.to_owned(),
@@ -2847,6 +3085,9 @@ impl Kernel {
             committed,
             flagged,
             auto_categorized,
+            skipped_rows,
+            warnings,
+            skipped_unmapped: u32::try_from(not_routed).unwrap_or(u32::MAX),
         })
     }
 
@@ -2863,29 +3104,38 @@ impl Kernel {
     /// records with no mapping are counted in `skipped_unmapped`, never
     /// silently dropped.
     ///
+    /// `connection_id` is the connector connection the batch came from
+    /// (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04). It is recorded on
+    /// the batch, and the silent refetch skip below trusts a provider id only
+    /// within that connection's own history. `None` records no connection and
+    /// keeps the type-wide behavior.
+    ///
     /// # Errors
     /// Returns [`KernelError`] on a persistence or dispatch failure.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub fn ingest_sync_batch(
         &self,
         adapter_id: &str,
         adapter_version: &str,
         source_name: &str,
+        connection_id: Option<uuid::Uuid>,
         parsed: &ParsedBatch,
         account_map: &std::collections::BTreeMap<String, uuid::Uuid>,
         meta: &CommandMeta,
     ) -> Result<SyncBatchResult, KernelError> {
         let batch_id = SourceBatchId::new();
-        self.dispatch(CommandEnvelope::new(
-            next_meta(meta),
-            CreateSourceBatch::new(
-                batch_id,
-                adapter_id.to_owned(),
-                Some(source_name.to_owned()),
-                None,
-                Some(adapter_version.to_owned()),
-            ),
-        ))?;
+        let create = CreateSourceBatch::new(
+            batch_id,
+            adapter_id.to_owned(),
+            Some(source_name.to_owned()),
+            None,
+            Some(adapter_version.to_owned()),
+        );
+        let create = match connection_id {
+            Some(connection) => create.with_connector_connection(connection),
+            None => create,
+        };
+        self.dispatch(CommandEnvelope::new(next_meta(meta), create))?;
         self.worker.record_connector_run(
             batch_id.as_uuid(),
             adapter_id,
@@ -2906,6 +3156,7 @@ impl Kernel {
                 &row.txn_fingerprint,
                 row.account_id,
                 row.staged_id,
+                connection_id,
             )?;
             let staged = StagedTransactionId::from_uuid(row.staged_id);
             if duplicate {
@@ -2956,13 +3207,21 @@ impl Kernel {
         }
 
         Ok(SyncBatchResult {
-            batch: BatchResult {
-                source_batch_id: Some(batch_id.to_string()),
-                status: status.to_owned(),
-                staged: total,
-                committed,
-                flagged,
-                auto_categorized,
+            batch: {
+                let (skipped_rows, warnings) = import_warnings(parsed);
+                BatchResult {
+                    source_batch_id: Some(batch_id.to_string()),
+                    status: status.to_owned(),
+                    staged: total,
+                    committed,
+                    flagged,
+                    auto_categorized,
+                    skipped_rows,
+                    warnings,
+                    // Connector syncs report their unmapped count on
+                    // SyncBatchResult::skipped_unmapped below.
+                    skipped_unmapped: 0,
+                }
             },
             skipped_unmapped,
         })
@@ -3039,25 +3298,92 @@ impl Kernel {
         connection_id: uuid::Uuid,
         external_id: &str,
         external_name: Option<&str>,
+        currency: Option<&str>,
     ) -> Result<(), KernelError> {
+        Ok(self.worker.upsert_connector_link(
+            connection_id,
+            external_id,
+            external_name,
+            currency,
+        )?)
+    }
+
+    /// The household's base (reporting) currency, as the app shows it: the
+    /// stored setting, or USD when none is stored (matching the IPC
+    /// `base_currency` read).
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a persistence failure.
+    pub fn base_currency_code(&self) -> Result<String, KernelError> {
         Ok(self
-            .worker
-            .upsert_connector_link(connection_id, external_id, external_name)?)
+            .get_setting(REPORTING_CURRENCY_KEY)?
+            .unwrap_or_else(|| "USD".to_owned()))
     }
 
     /// Map (or unmap) an external account onto a real account.
     ///
     /// # Errors
     /// Returns [`KernelError`] on a persistence failure.
+    ///
+    /// Mapping (`Some`) passes through [`connector_currency_guard`] first: an
+    /// account whose currency is unknown or differs from the base currency is
+    /// refused with [`KernelError::Validation`] carrying the guard's message
+    /// (personal-cfo-049p6). Unmapping (`None`) is always allowed.
+    ///
+    /// [`connector_currency_guard`]: connector_currency_guard::connector_currency_guard
     pub fn set_connector_link_account(
         &self,
         connection_id: uuid::Uuid,
         external_id: &str,
         account_id: Option<uuid::Uuid>,
     ) -> Result<(), KernelError> {
+        if account_id.is_some() {
+            self.ensure_connector_link_mappable(connection_id, external_id)?;
+        }
         Ok(self
             .worker
             .set_connector_link_account(connection_id, external_id, account_id)?)
+    }
+
+    /// Whether `external_id` on `connection_id` may be mapped onto an account
+    /// right now: the link exists and the connector currency guard accepts
+    /// its currency against the CURRENT base currency (personal-cfo-049p6).
+    /// Callers that create an account to map run this first, so a refusal
+    /// never leaves an empty account behind (personal-cfo-pxi.8).
+    ///
+    /// # Errors
+    /// [`KernelError::Validation`] with the guard's message, or for an unknown
+    /// link; [`KernelError`] on a read failure.
+    pub fn ensure_connector_link_mappable(
+        &self,
+        connection_id: uuid::Uuid,
+        external_id: &str,
+    ) -> Result<(), KernelError> {
+        let Some(link_currency) = self
+            .worker
+            .connector_link_currency(connection_id, external_id)?
+        else {
+            return Err(KernelError::Validation(
+                "unknown connector account link".to_owned(),
+            ));
+        };
+        connector_currency_guard::connector_currency_guard(
+            link_currency.as_deref(),
+            &self.base_currency_code()?,
+        )
+        .map_err(|refusal| KernelError::Validation(refusal.to_string()))
+    }
+
+    /// Every connector link that feeds `account_id`, across all connections
+    /// (personal-cfo-6evt mapping guard).
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a read failure.
+    pub fn connector_feeds_for_account(
+        &self,
+        account_id: uuid::Uuid,
+    ) -> Result<Vec<db_worker::ConnectorFeed>, KernelError> {
+        Ok(self.worker.connector_feeds_for_account(account_id)?)
     }
 
     /// Every account link for a connection.
@@ -3130,7 +3456,7 @@ impl Kernel {
     }
 
     /// The linked SQLCipher version (`PRAGMA cipher_version`), e.g.
-    /// `"4.5.7 community"`. Pair with [`sqlite_version`] for the full engine
+    /// `"4.14.0 community"`. Pair with [`sqlite_version`] for the full engine
     /// fingerprint. See [`db_worker::DbWorker::cipher_version`].
     ///
     /// # Errors
@@ -4102,6 +4428,75 @@ impl Kernel {
     /// Returns [`KernelError`] on a persistence failure.
     pub fn operation_count(&self) -> Result<u64, KernelError> {
         Ok(self.worker.operation_count()?)
+    }
+}
+
+/// The fixed diagnostic category for a kernel error (personal-cfo-lyd). Only the
+/// variant is used — never its message — so no path, value or text from the
+/// error can reach a diagnostic record.
+#[must_use]
+pub fn failure_category(error: &KernelError) -> FailureCategory {
+    match error {
+        KernelError::Validation(_) => FailureCategory::Validation,
+        KernelError::Persistence(_) => FailureCategory::Storage,
+        KernelError::Unavailable(_) => FailureCategory::Unavailable,
+        KernelError::VaultExists
+        | KernelError::VaultNotFound
+        | KernelError::VaultInUse
+        | KernelError::NewerVaultSchema { .. }
+        | KernelError::UnsupportedVaultSchema
+        | KernelError::VaultUnlockFailed
+        | KernelError::Vault(_)
+        | KernelError::IllegalVaultTransition { .. } => FailureCategory::Vault,
+        _ => FailureCategory::Internal,
+    }
+}
+
+/// The diagnostic outcome of a kernel result.
+fn outcome_of<T>(result: &Result<T, KernelError>) -> DiagnosticOutcome {
+    match result {
+        Ok(_) => DiagnosticOutcome::Success,
+        Err(error) => DiagnosticOutcome::Failure(failure_category(error)),
+    }
+}
+
+/// Times each durable-job execution into the session's diagnostics
+/// (`job_duration`, a coarse bucket) without changing what runs.
+struct TimedExecutor<'a, E: ?Sized> {
+    inner: &'a E,
+    diagnostics: &'a Diagnostics,
+}
+
+impl<E: JobExecutor<Kernel> + ?Sized> JobExecutor<Kernel> for TimedExecutor<'_, E> {
+    fn should_run(&self, job: &JobRecord, context: &Kernel) -> bool {
+        self.inner.should_run(job, context)
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        context: &Kernel,
+    ) -> JobExecution {
+        let started = std::time::Instant::now();
+        let execution = self.inner.execute(job, cancellation, context);
+        self.diagnostics
+            .record_duration(Metric::JobDuration, started.elapsed());
+        execution
+    }
+}
+
+impl Kernel {
+    /// Record a backup attempt's outcome (personal-cfo-lyd).
+    pub(crate) fn record_backup_outcome<T>(&self, result: &Result<T, KernelError>) {
+        self.diagnostics
+            .record_outcome(Metric::BackupOutcome, outcome_of(result));
+    }
+
+    /// Record a completed restore in the restored vault's new session.
+    pub(crate) fn record_restore_success(&self) {
+        self.diagnostics
+            .record_outcome(Metric::RestoreOutcome, DiagnosticOutcome::Success);
     }
 }
 

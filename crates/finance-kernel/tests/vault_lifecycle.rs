@@ -7,6 +7,7 @@
 //! raw-keyed vault `create_vault` produces — finance-kernel must not depend on
 //! `rusqlite` (the db-worker boundary), so it is not re-tested here.
 
+use db_worker::DbError;
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, CashflowRole, CommandEnvelope, CommandMeta,
     CreateAccount, Currency, Kernel, KernelError, LedgerAccountId,
@@ -97,4 +98,31 @@ fn unlock_missing_vault_reports_not_found() {
 
     let result = Kernel::unlock_vault(&path, PASSWORD);
     assert!(matches!(result, Err(KernelError::VaultNotFound)));
+}
+
+#[test]
+fn newer_schema_error_keeps_its_identity_across_the_kernel_boundary() {
+    let error = KernelError::from(DbError::NewerSchema {
+        observed: db_worker::CURRENT_SCHEMA_VERSION + 1,
+        supported: db_worker::CURRENT_SCHEMA_VERSION,
+    });
+    assert!(matches!(
+        error,
+        KernelError::NewerVaultSchema { observed, supported }
+            if observed == supported + 1
+    ));
+}
+
+#[test]
+fn existing_envelope_with_missing_db_never_creates_a_replacement_on_unlock() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    Kernel::create_vault(&path, PASSWORD).unwrap().lock();
+    std::fs::rename(&path, dir.path().join("preserved.db")).unwrap();
+    assert!(matches!(
+        Kernel::unlock_vault(&path, PASSWORD),
+        Err(KernelError::UnsupportedVaultSchema)
+    ));
+    assert!(!path.exists());
+    assert!(dir.path().join("preserved.db").exists());
 }

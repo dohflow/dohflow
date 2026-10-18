@@ -780,7 +780,8 @@ fn seed_demo_vault(root: &Path, anchor: NaiveDate) -> SeededVault {
         ImportBatchInput {
             data: csv.into_bytes(),
             filename: Some("saltmarsh-checking.csv".to_owned()),
-            target_account_id: checking.clone(),
+            target_account_id: Some(checking.clone()),
+            account_map: None,
             plugin_id: Some("generic-csv".to_owned()),
             preset_id: None,
             column_mapping: None,
@@ -1130,6 +1131,7 @@ fn seed_demo_vault(root: &Path, anchor: NaiveDate) -> SeededVault {
                 connection_id: link.connection_id.clone(),
                 external_id: external_id.to_owned(),
                 account_id: Some(account_id.clone()),
+                allow_shared_feed: false,
             },
         )
         .expect("map external account");

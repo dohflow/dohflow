@@ -399,6 +399,7 @@ fn stage_a_transaction_dated(
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -5150,6 +5151,7 @@ fn imported_transaction_fields_returns_the_captured_source_columns() {
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -5269,6 +5271,7 @@ fn stage_with_imported_category(
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -5602,6 +5605,135 @@ fn a_duplicate_fingerprint_is_flagged_not_committed() {
         )
         .unwrap();
     assert_eq!(flagged, 1);
+
+    // The flag names its committed counterpart (personal-cfo-yl5), as the
+    // cross-source layer does, rather than leaving review to re-derive it.
+    let committed_txn: Uuid = conn
+        .query_row(
+            "SELECT committed_transaction_id FROM staged_transactions WHERE id = ?1",
+            rusqlite::params![first.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (layer, matched_type, matched_id): (String, Option<String>, Option<Uuid>) = conn
+        .query_row(
+            "SELECT layer, matched_entity_type, matched_entity_id FROM dedupe_decisions
+              WHERE decision = 'flagged' AND staged_transaction_id = ?1",
+            rusqlite::params![second.as_uuid()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(layer, "transaction", "no new historical layer name");
+    assert_eq!(matched_type.as_deref(), Some("ledger_transaction"));
+    assert_eq!(matched_id, Some(committed_txn));
+}
+
+/// Counterpart reads follow the flagging rule (personal-cfo-yl5): only a
+/// committed row with the same fingerprint **in the same account**, and never
+/// a voided one — both in the review panel's candidates and in the inbox
+/// payload's suspected counterpart.
+#[test]
+fn duplicate_counterparts_are_account_scoped_and_never_voided() {
+    let (_dir, worker) = worker();
+    let create = |name: &str| {
+        let account = Account::new(
+            AccountId::new(),
+            LedgerAccountId::new(),
+            name,
+            CashflowRole::LiquidCash,
+            Currency::Usd,
+            AccountFlags::default(),
+        );
+        let id = account.id();
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::CreateAccount {
+                    account: Box::new(account),
+                    opening_balance: None,
+                },
+            )
+            .unwrap();
+        id
+    };
+    let checking = create("Checking");
+    let savings = create("Savings");
+    let commit = |staged: StagedTransactionId| {
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::CommitStaged {
+                    staged_transaction_id: staged,
+                    force: false,
+                },
+            )
+            .unwrap();
+    };
+    // The same fingerprint committed in BOTH accounts (two real transactions).
+    let in_savings = stage_a_transaction(&worker, savings, -1299, "shared-fp");
+    commit(in_savings);
+    let in_checking = stage_a_transaction(&worker, checking, -1299, "shared-fp");
+    commit(in_checking);
+    // A re-import into Checking is flagged against Checking's row only.
+    let incoming = stage_a_transaction(&worker, checking, -1299, "shared-fp");
+    commit(incoming);
+
+    let conn = worker.read_connection().unwrap();
+    let committed_of = |staged: StagedTransactionId| -> Uuid {
+        conn.query_row(
+            "SELECT committed_transaction_id FROM staged_transactions WHERE id = ?1",
+            rusqlite::params![staged.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let checking_txn = committed_of(in_checking);
+    let savings_txn = committed_of(in_savings);
+    assert_ne!(checking_txn, savings_txn);
+
+    let candidates = worker.duplicate_candidates(incoming).unwrap();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|c| c.transaction_id.as_uuid())
+            .collect::<Vec<_>>(),
+        vec![checking_txn],
+        "Savings' row is not a counterpart of a Checking import"
+    );
+    let payload = || {
+        worker
+            .money_inbox_list()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.target_id == incoming.as_uuid())
+            .expect("the flagged row is in the inbox")
+            .payload_json
+    };
+    assert!(
+        payload().contains(&format!(
+            "\"suspected_committed_txn_id\":\"{checking_txn}\""
+        )),
+        "{}",
+        payload()
+    );
+
+    // Voiding the counterpart: it is no longer offered, and the payload does
+    // not name a voided transaction.
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::VoidTransaction {
+                transaction_id: TransactionId::from_uuid(checking_txn),
+            },
+        )
+        .unwrap();
+    worker.rebuild_money_inbox().unwrap();
+    assert!(worker.duplicate_candidates(incoming).unwrap().is_empty());
+    assert!(
+        payload().contains("\"suspected_committed_txn_id\":null"),
+        "{}",
+        payload()
+    );
 }
 
 /// dsq: a flagged staged duplicate surfaces exactly one Money Inbox item of
@@ -5975,6 +6107,30 @@ fn skip_clears_a_flagged_duplicate_without_a_ledger_write() {
         )
         .unwrap();
     assert_eq!(status, "skipped");
+    // The audit trail keeps both decisions for the row: the flag, then the
+    // user's skip (personal-cfo-yl5).
+    let decisions: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT decision, reason FROM dedupe_decisions
+              WHERE staged_transaction_id = ?1 ORDER BY decided_at, id",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![second.as_uuid()], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        decisions,
+        vec![
+            (
+                "flagged".to_owned(),
+                "duplicate of an already-committed transaction".to_owned()
+            ),
+            ("skipped".to_owned(), "user skipped".to_owned()),
+        ]
+    );
 }
 
 /// byxe: a committed import carries its source detail onto the transactions
@@ -6005,6 +6161,7 @@ fn a_committed_import_shows_its_detail_in_the_transactions_list() {
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -6323,6 +6480,356 @@ fn reopen_applies_no_new_migrations() {
 }
 
 #[test]
+fn newer_migration_is_refused_before_stamping_the_vault_down() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("future.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+
+    // Synthetic newer build: its migration is additive, so today's schema
+    // self-tests would otherwise pass despite the version incompatibility.
+    let future = migrations::CURRENT_VERSION + 1;
+    let conn = open_keyed(&path, KEY).unwrap();
+    conn.execute_batch("CREATE TABLE future_additive_data (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
+         VALUES (?1, 'future_additive_data', 'synthetic', '2026-09-27T00:00:00Z')",
+        [future],
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", future).unwrap();
+    conn.execute(
+        "UPDATE vault_metadata SET schema_version = ?1 WHERE singleton = 1",
+        [future],
+    )
+    .unwrap();
+    drop(conn);
+
+    let before_db = std::fs::read(&path).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            DbWorker::open(&path, KEY),
+            Err(DbError::NewerSchema { observed, supported })
+                if observed == future && supported == migrations::CURRENT_VERSION
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before_db);
+    }
+    let observer = open_keyed(&path, KEY).unwrap();
+    let stamped: i64 = observer
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(stamped, future, "refusal must not stamp the vault down");
+}
+
+#[test]
+fn every_independent_newer_marker_refuses_without_changing_committed_wal() {
+    fn logical_state(conn: &Connection) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            "accounts",
+            "ledger_accounts",
+            "operation_log",
+            "audit_events",
+            "categories",
+            "forecast_runs",
+            "forecast_rows",
+            "schema_migrations",
+            "vault_metadata",
+        ]
+        .iter()
+        .map(|table| {
+            let mut statement = conn
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .unwrap();
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..columns).map(|column| row.get(column)).collect()
+                })
+                .unwrap();
+            rows.map(Result::unwrap).collect()
+        })
+        .collect()
+    }
+    for (name, tracker, pragma, metadata) in [
+        ("tracker", true, false, false),
+        ("pragma", false, true, false),
+        ("metadata", false, false, true),
+        ("all", true, true, true),
+        ("lowered-stamps", true, false, false),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(format!("{name}.vault"));
+        drop(DbWorker::open(&path, KEY).unwrap());
+        let future = migrations::CURRENT_VERSION + 1;
+        let writer = open_keyed(&path, KEY).unwrap();
+        if tracker {
+            writer
+                .execute_batch("CREATE TABLE future_additive_data (id INTEGER PRIMARY KEY)")
+                .unwrap();
+            writer
+                .execute(
+                    "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
+                     VALUES (?1, 'future_additive_data', 'synthetic', '2026-09-27T00:00:00Z')",
+                    [future],
+                )
+                .unwrap();
+        }
+        if pragma {
+            writer.pragma_update(None, "user_version", future).unwrap();
+        }
+        if metadata {
+            writer
+                .execute(
+                    "UPDATE vault_metadata SET schema_version = ?1 WHERE singleton = 1",
+                    [future],
+                )
+                .unwrap();
+        }
+        if name == "lowered-stamps" {
+            writer.pragma_update(None, "user_version", 0).unwrap();
+            writer
+                .execute_batch("UPDATE vault_metadata SET schema_version = 0")
+                .unwrap();
+        }
+        let wal_path = path.with_extension("vault-wal");
+        let before_db = std::fs::read(&path).unwrap();
+        let before_wal = std::fs::read(&wal_path).unwrap();
+        let before_state = logical_state(&writer);
+        assert!(
+            matches!(
+                DbWorker::open(&path, KEY),
+                Err(DbError::NewerSchema { observed, supported })
+                    if observed == future && supported == migrations::CURRENT_VERSION
+            ),
+            "{name}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before_db,
+            "{name}: DB changed"
+        );
+        assert_eq!(
+            std::fs::read(&wal_path).unwrap(),
+            before_wal,
+            "{name}: WAL changed"
+        );
+        let seen_tracker: i64 = writer
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                [future],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(seen_tracker, i64::from(tracker), "{name}");
+        assert_eq!(
+            logical_state(&writer),
+            before_state,
+            "{name}: logical state changed"
+        );
+        drop(writer);
+    }
+}
+
+#[test]
+fn existing_unverified_layouts_fail_before_tracker_creation_or_metadata_repair() {
+    for layout in [
+        "no-tracker",
+        "no-metadata-row",
+        "malformed-metadata",
+        "unreadable-marker",
+        "checksum",
+    ] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(format!("{layout}.vault"));
+        drop(DbWorker::open(&path, KEY).unwrap());
+        let writer = open_keyed(&path, KEY).unwrap();
+        match layout {
+            "no-tracker" => writer
+                .execute_batch("DROP TABLE schema_migrations")
+                .unwrap(),
+            "no-metadata-row" => writer.execute_batch("DELETE FROM vault_metadata").unwrap(),
+            "unreadable-marker" => writer
+                .execute_batch("UPDATE vault_metadata SET schema_version = 'not-an-integer'")
+                .unwrap(),
+            "checksum" => writer
+                .execute_batch(
+                    "UPDATE schema_migrations SET content_hash = 'tampered' WHERE version = 1",
+                )
+                .unwrap(),
+            _ => writer
+                .execute_batch("UPDATE vault_metadata SET vault_id = X'00' WHERE singleton = 1")
+                .unwrap(),
+        }
+        let wal_path = path.with_extension("vault-wal");
+        let before_db = std::fs::read(&path).unwrap();
+        let before_wal = std::fs::read(&wal_path).unwrap();
+        assert!(
+            matches!(DbWorker::open(&path, KEY), Err(DbError::UnsupportedSchema)),
+            "{layout}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before_db,
+            "{layout}: DB changed"
+        );
+        assert_eq!(
+            std::fs::read(&wal_path).unwrap(),
+            before_wal,
+            "{layout}: WAL changed"
+        );
+        drop(writer);
+    }
+}
+
+#[test]
+fn read_only_sqlcipher_inspection_observes_committed_wal_marker() {
+    use rusqlite::OpenFlags;
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("future-wal.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+    let future = migrations::CURRENT_VERSION + 1;
+    let writer = open_keyed(&path, KEY).unwrap();
+    writer.pragma_update(None, "user_version", future).unwrap();
+    let before_db = std::fs::read(&path).unwrap();
+    let wal_path = path.with_extension("vault-wal");
+    let before_wal = std::fs::read(&wal_path).unwrap();
+
+    let reader = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    reader.pragma_update(None, "key", KEY).unwrap();
+    let seen: i64 = reader
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        seen, future,
+        "read-only preflight must see committed WAL state"
+    );
+    drop(reader);
+    assert_eq!(std::fs::read(&path).unwrap(), before_db);
+    assert_eq!(std::fs::read(&wal_path).unwrap(), before_wal);
+    drop(writer);
+}
+
+#[test]
+fn credible_newer_metadata_is_not_hidden_by_a_missing_tracker() {
+    let (_dir, worker) = worker();
+    let observer = worker.read_connection().unwrap();
+    let future = migrations::CURRENT_VERSION + 1;
+    observer
+        .execute_batch("DROP TABLE schema_migrations")
+        .unwrap();
+    observer
+        .execute("UPDATE vault_metadata SET schema_version = ?1", [future])
+        .unwrap();
+    assert!(
+        matches!(migrations::inspect_existing(&observer), Err(DbError::NewerSchema { observed, .. }) if observed == future)
+    );
+}
+
+#[test]
+fn migration_runner_refuses_newer_markers_before_recreating_a_missing_tracker() {
+    let (_dir, worker) = worker();
+    let mut observer = worker.read_connection().unwrap();
+    observer
+        .execute_batch("DROP TABLE schema_migrations")
+        .unwrap();
+    observer
+        .pragma_update(None, "user_version", migrations::CURRENT_VERSION + 1)
+        .unwrap();
+    assert!(matches!(
+        migrations::run_migrations(&mut observer),
+        Err(DbError::NewerSchema { .. })
+    ));
+    let exists: bool = observer
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'schema_migrations')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!exists);
+}
+
+#[test]
+fn existing_known_prefixes_and_zero_stamps_upgrade_without_changing_vault_identity() {
+    let dir = TempDir::new().unwrap();
+    for count in 1..migrations::MIGRATIONS.len() {
+        let path = dir.path().join(format!("prefix-{count}.vault"));
+        let mut conn = open_keyed(&path, KEY).unwrap();
+        migrations::apply(&mut conn, &migrations::MIGRATIONS[..count]).unwrap();
+        ensure_vault_metadata(&conn, count as i64).unwrap();
+        let identity = read_vault_metadata(&conn).unwrap().vault_id;
+        // A completed prefix is also the durable state after a crash between
+        // supported migration transactions. Lower/zero stamps are not alone
+        // evidence of an unsupported layout.
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        conn.execute_batch("UPDATE vault_metadata SET schema_version = 0")
+            .unwrap();
+        drop(conn);
+        let reopened = DbWorker::open(&path, KEY).unwrap();
+        assert_eq!(reopened.schema_version(), migrations::CURRENT_VERSION);
+        assert_eq!(reopened.vault_metadata().unwrap().vault_id, identity);
+        assert_eq!(
+            reopened.vault_metadata().unwrap().schema_version,
+            migrations::CURRENT_VERSION
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn file_identity_check_refuses_a_replaced_path() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+    let original = File::open(&path).unwrap();
+    let preserved = dir.path().join("preserved.vault");
+    std::fs::rename(&path, &preserved).unwrap();
+    std::fs::copy(&preserved, &path).unwrap();
+    assert!(matches!(
+        verify_file_identity(&original, &path),
+        Err(DbError::UnsupportedSchema)
+    ));
+}
+
+#[test]
+fn read_only_sqlcipher_inspection_preserves_existing_quiescent_vault_files() {
+    use rusqlite::OpenFlags;
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("quiescent.vault");
+    drop(DbWorker::open(&path, KEY).unwrap());
+    let files = || {
+        let mut entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|entry| entry.as_ref().is_ok_and(|entry| entry.path().is_file()))
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    };
+    let before = files();
+    let reader = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    reader.pragma_update(None, "key", KEY).unwrap();
+    let current: i64 = reader
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(current, migrations::CURRENT_VERSION);
+    drop(reader);
+    let after = files();
+    for (name, old) in &before {
+        let (_, new) = after
+            .iter()
+            .find(|(after_name, _)| after_name == name)
+            .unwrap();
+        assert_eq!(old, new, "read-only preflight changed {name:?}");
+    }
+}
+
+#[test]
 fn down_then_up_reaches_current_with_integrity() {
     let (_dir, worker) = worker();
     let mut conn = worker.read_connection().unwrap();
@@ -6387,6 +6894,7 @@ fn rebuild_flag_triggers_read_model_rebuild() {
         up: "SELECT 1;",
         down: None,
         rebuilds_read_models: true,
+        foreign_keys_off: false,
     }];
     migrations::apply(&mut conn, &synthetic).unwrap();
     // The rebuild wrote the transaction-display cursor + checksum.

@@ -291,30 +291,7 @@ echo "── Writing latest.json ───────────────�
 # tauri-plugin-updater=2.11.0 selects its entry by the running binary's
 # cfg!(target_arch), so this one manifest correctly serves both.
 latest_json="$bundle_dir/macos/latest.json"
-python3 -c "
-import json, sys
-version, notes, sig_path, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-# The 'url' below is a PLACEHOLDER — the real asset URL only exists once this build's
-# artifacts are uploaded to a GitHub release. Fill it in (or pass --smoke-endpoint's
-# matching upload target) before publishing; release-checklist.md (867.1.3) names the
-# exact step.
-manifest = {
-    'version': version,
-    'notes': notes,
-    'pub_date': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
-    'platforms': {
-        'darwin-aarch64': {
-            'url': 'REPLACE_WITH_THE_UPLOADED_APP_TAR_GZ_ASSET_URL',
-            'signature': open(sig_path).read(),
-        },
-        'darwin-x86_64': {
-            'url': 'REPLACE_WITH_THE_UPLOADED_APP_TAR_GZ_ASSET_URL',
-            'signature': open(sig_path).read(),
-        },
-    },
-}
-json.dump(manifest, open(out, 'w'), indent=2)
-" "$version" "$notes" "$updater_sig" "$latest_json"
+python3 "$repo_root/scripts/write-latest-json.py" "$version" "$notes" "$updater_sig" "$latest_json" "$repo_root/apps/desktop/src-tauri/tauri.conf.json"
 echo "  wrote: $latest_json"
 echo "  ⚠  its platforms.darwin-aarch64.url and platforms.darwin-x86_64.url are"
 echo "     placeholders — fill in the real GitHub release asset URL before"

@@ -3,11 +3,10 @@
 // account name. No opening balance is asked for — the next refresh brings the
 // provider's balance (yl53), so the user maps and moves on.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Loader2, X } from "lucide-react";
 
-import type { CashflowRoleDto } from "@/bindings";
-import { useAccounts } from "@/accounts/useAccounts";
+import type { CashflowRoleDto, CreateAccountInput, IpcError } from "@/bindings";
 import { ROLE_DTO_TO_TOKEN, subtypesForRoleToken } from "@/accounts/subtypes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +14,8 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { mintIdempotencyKey } from "@/lib/idempotency";
 import { describeIpcError } from "@/vault/useVault";
+
+import { CurrencyRefusal } from "./connections/CurrencyRefusal";
 
 const ROLE_OPTIONS: { value: CashflowRoleDto; label: string }[] = [
   { value: "LiquidCash", label: "Cash / bank" },
@@ -27,16 +28,36 @@ const ROLE_OPTIONS: { value: CashflowRoleDto; label: string }[] = [
 export function NewMappedAccountDialog({
   externalName,
   currency,
+  currencyRefusal = null,
+  onCreate,
   onCreated,
   onClose,
+  dialogLabel = "New account for this connection",
+  description,
+  createLabel = "Create and map",
 }: {
   /// The provider's name for the account — the natural default name.
   externalName: string;
   currency: string;
+  /// The currency guard's refusal for this provider account, when it can't
+  /// be mapped (personal-cfo-049p6). Creating is disabled: an account made
+  /// here could never be mapped, so none is created.
+  currencyRefusal?: string | null;
+  /// Create the account AND map it, in one call that runs the currency guard
+  /// first (personal-cfo-pxi.8): a refusal comes back as an error and no
+  /// account is created, even if `currencyRefusal` above is stale.
+  onCreate: (
+    account: CreateAccountInput,
+  ) => Promise<{ id: string | null; error: IpcError | null }>;
   onCreated: (id: string) => void;
   onClose: () => void;
+  /// Reused outside the connection mapping step (personal-cfo-tulv: a file
+  /// import's per-account mapping), where the connector wording below would
+  /// be wrong — the caller supplies its own. Defaults keep the connector copy.
+  dialogLabel?: string;
+  description?: ReactNode;
+  createLabel?: string;
 }) {
-  const { createAccount } = useAccounts();
   const [name, setName] = useState(externalName);
   const [role, setRole] = useState<CashflowRoleDto>("LiquidCash");
   const [subtype, setSubtype] = useState("");
@@ -56,13 +77,14 @@ export function NewMappedAccountDialog({
   const subtypes = subtypesForRoleToken(ROLE_DTO_TO_TOKEN[role] ?? "");
 
   async function create() {
+    if (currencyRefusal) return;
     if (name.trim() === "") {
       setError("Enter a name for the account.");
       return;
     }
     setBusy(true);
     setError(null);
-    const { id, error: failure } = await createAccount({
+    const { id, error: failure } = await onCreate({
       name: name.trim(),
       cashflow_role: role,
       subtype: subtype || null,
@@ -91,7 +113,7 @@ export function NewMappedAccountDialog({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="New account for this connection"
+        aria-label={dialogLabel}
         className="relative flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-background p-6 shadow-xl"
       >
         <div className="flex items-center justify-between">
@@ -107,9 +129,13 @@ export function NewMappedAccountDialog({
           </button>
         </div>
         <p className="text-sm text-muted-foreground">
-          Tracks the provider&rsquo;s &ldquo;{externalName}&rdquo;, created in{" "}
-          {currency} (your base currency). Its balance and history arrive with
-          the next refresh.
+          {description ?? (
+            <>
+              Tracks the provider&rsquo;s &ldquo;{externalName}&rdquo;, created in{" "}
+              {currency} (your base currency). Its balance and history arrive with
+              the next refresh.
+            </>
+          )}
         </p>
 
         <div className="flex flex-col gap-1.5">
@@ -156,6 +182,11 @@ export function NewMappedAccountDialog({
           </div>
         ) : null}
 
+        {currencyRefusal ? (
+          <div role="alert">
+            <CurrencyRefusal message={currencyRefusal} className="text-sm text-warning" />
+          </div>
+        ) : null}
         {error ? (
           <p role="alert" className="text-sm text-loss">
             {error}
@@ -166,9 +197,13 @@ export function NewMappedAccountDialog({
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button size="sm" onClick={() => void create()} disabled={busy}>
+          <Button
+            size="sm"
+            onClick={() => void create()}
+            disabled={busy || currencyRefusal !== null}
+          >
             {busy ? <Loader2 className="animate-spin" aria-hidden /> : null}
-            Create and map
+            {createLabel}
           </Button>
         </div>
       </div>

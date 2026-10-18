@@ -225,7 +225,9 @@ impl ImporterPlugin for OfxImporter {
         let default_currency = hints.default_currency.unwrap_or(Currency::Usd);
         let curdefs = curdef_positions(&lower, &text)?;
         let mut records = Vec::new();
-        let mut warnings = Vec::new();
+        // Blocks not staged. Each reason is fixed text: a skipped block's own
+        // values never travel into the import summary (personal-cfo-pxi.10).
+        let mut skipped = Vec::new();
 
         for (idx, &(start, end)) in stmttrn_blocks(&lower).iter().enumerate() {
             let block_lower = &lower[start..end];
@@ -241,24 +243,31 @@ impl ImporterPlugin for OfxImporter {
                 .map_or(default_currency, |(_, c)| *c);
 
             let Some(raw_date) = value("dtposted") else {
-                warnings.push(warn(idx, "missing DTPOSTED"));
+                skipped.push(warn(idx, "missing date"));
                 continue;
             };
             let Some(posted_date) = parse_dtposted(&raw_date) else {
-                warnings.push(warn(idx, format!("unparseable DTPOSTED {raw_date:?}")));
+                skipped.push(warn(idx, "unparseable date"));
                 continue;
             };
             // OFX dates are unambiguous YYYYMMDD — a successful parse is certain.
             let date_confidence_bps = 10_000;
 
             let Some(raw_amount) = value("trnamt") else {
-                warnings.push(warn(idx, "missing TRNAMT"));
+                skipped.push(warn(idx, "missing amount"));
                 continue;
             };
             let Some(amount_minor) = parse_minor_units(&raw_amount, currency.exponent()) else {
-                warnings.push(warn(idx, format!("unparseable TRNAMT {raw_amount:?}")));
+                skipped.push(warn(idx, "unparseable amount"));
                 continue;
             };
+            // A 0.00 TRNAMT moves no money and the ledger refuses it; skip it with
+            // a reason rather than stage a block that can never commit
+            // (personal-cfo-pxi.9).
+            if amount_minor == 0 {
+                skipped.push(warn(idx, "zero amount"));
+                continue;
+            }
 
             let trntype = value("trntype");
             let fitid = value("fitid");
@@ -340,7 +349,8 @@ impl ImporterPlugin for OfxImporter {
             source_format: "ofx".to_owned(),
             accounts: vec![],
             records,
-            warnings,
+            warnings: Vec::new(),
+            skipped,
         })
     }
 }
@@ -623,14 +633,46 @@ NEWFILEUID:NONE
     }
 
     #[test]
-    fn an_unparseable_block_becomes_a_warning_not_a_transaction() {
+    fn an_unparseable_block_is_reported_as_skipped_not_a_transaction() {
         let mutated = OFX_V1.replace("<DTPOSTED>20260621", "<DTPOSTED>bogus");
         let batch = OfxImporter
             .parse(&input(&mutated), &ParserHints::default())
             .unwrap();
         assert_eq!(batch.records.len(), 3, "only the valid blocks are staged");
-        assert_eq!(batch.warnings.len(), 1, "the bad block is flagged");
-        assert_eq!(batch.warnings[0].row, Some(1));
+        assert_eq!(batch.skipped.len(), 1, "the bad block is reported");
+        assert_eq!(batch.skipped[0].row, Some(1));
+        assert_eq!(batch.skipped[0].message, "unparseable date");
+        assert!(!format!("{:?}", batch.skipped).contains("bogus"));
+    }
+
+    #[test]
+    fn a_zero_amount_block_is_skipped_with_a_reason() {
+        // personal-cfo-pxi.9: the second block's TRNAMT becomes 0.00.
+        let mutated = OFX_V1.replace("<TRNAMT>1500.00", "<TRNAMT>0.00");
+        assert_ne!(mutated, OFX_V1);
+        let batch = OfxImporter
+            .parse(&input(&mutated), &ParserHints::default())
+            .unwrap();
+        assert_eq!(batch.records.len(), 3, "the other blocks are staged");
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].row, Some(1));
+        assert_eq!(batch.skipped[0].message, "zero amount");
+    }
+
+    #[test]
+    fn every_skipped_block_has_a_fixed_reason_and_none_of_its_values() {
+        // personal-cfo-pxi.10: a bad amount is the block's financial value —
+        // it must not be echoed into the summary.
+        let mutated = OFX_V1
+            .replacen("<DTPOSTED>20260621", "<DTPOSTED>SENTINEL-DATE", 1)
+            .replacen("<TRNAMT>", "<TRNAMT>SENTINEL-98765.43", 1);
+        let batch = OfxImporter
+            .parse(&input(&mutated), &ParserHints::default())
+            .unwrap();
+        let reasons: Vec<&str> = batch.skipped.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(reasons, ["unparseable amount", "unparseable date"]);
+        assert!(!format!("{:?}", batch.skipped).contains("SENTINEL"));
+        assert!(batch.warnings.is_empty());
     }
 
     #[test]

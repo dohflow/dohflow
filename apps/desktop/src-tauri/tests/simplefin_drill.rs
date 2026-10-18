@@ -74,7 +74,12 @@ fn demo_token_end_to_end_sync_stages_and_commits() {
         for account in &discovered {
             let external_id = account.external_id.as_deref().expect("stable account id");
             kernel
-                .upsert_connector_link(connection_id, external_id, account.external_name.as_deref())
+                .upsert_connector_link(
+                    connection_id,
+                    external_id,
+                    account.external_name.as_deref(),
+                    account.currency.as_deref(),
+                )
                 .unwrap();
         }
     }
@@ -107,6 +112,7 @@ fn demo_token_end_to_end_sync_stages_and_commits() {
                 connection_id: connection_id.to_string(),
                 external_id: account.external_id.clone().unwrap(),
                 account_id: Some(real),
+                allow_shared_feed: false,
             },
         )
         .unwrap();

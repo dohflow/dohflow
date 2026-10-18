@@ -7,6 +7,30 @@ record until the first tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Rotate encryption key** in Settings (`personal-cfo-2y8`, ADR 0083). It
+  gives the vault a new encryption key without changing your password, for
+  when you think the key may have been exposed. Your data and attachments are
+  unchanged, and an interrupted rotation is finished or undone safely the next
+  time DohFlow opens. Backups made before rotating still open with the password
+  you had then, and an older vault can move to the current key-derivation
+  settings this way.
+
+### Fixed
+
+- The bundled database engine is updated to SQLCipher 4.14.0 / SQLite 3.51.3,
+  which includes SQLite's fix for a rare write-ahead-log reset corruption bug
+  (`personal-cfo-g3m.5`). Existing vaults open unchanged: no vault, backup or
+  key format changes. Once a vault has been opened by this version, an older
+  DohFlow build is not supported for it; to go back, restore a backup made by
+  that build. Building from source now needs Rust 1.95 or newer.
+
+- Existing vaults with a newer schema are refused before migrations or
+  post-unlock writes (`personal-cfo-g3m.4`). The unlock screen asks for a
+  compatible newer DohFlow version instead of opening or stamping the vault
+  down. Unverified or incomplete existing layouts also fail closed.
+
 ## [0.2.0] - 2026-09-18
 
 ### Added

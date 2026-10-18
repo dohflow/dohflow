@@ -14,21 +14,30 @@
 use csv_importer::GenericCsv;
 use importer_core::{ImporterPlugin, ParserInput, SourcePreset};
 
-/// Parse `preset`'s own `fixture_csv()` through the generic CSV importer,
-/// applying `preset.hints()` exactly as the real import flow will (personal-
-/// cfo-gvidg: presets are hints applied *before* a user's own mapping — this
-/// harness never supplies one, since the fixture is built to need none).
+/// Parse `preset`'s own `fixture_csv()` through the importer the real import
+/// flow uses for it — its own [`SourcePreset::importer_id`] plugin when it
+/// names one (personal-cfo-tulv), else the generic CSV importer — applying
+/// `preset.hints()` exactly as that flow will (personal-cfo-gvidg: presets
+/// are hints applied *before* a user's own mapping — this harness never
+/// supplies one, since the fixture is built to need none).
 pub fn parse_fixture(preset: &dyn SourcePreset) -> importer_core::ParsedBatch {
     let input = ParserInput::new(preset.fixture_csv().as_bytes().to_vec())
         .with_filename(format!("{}.csv", preset.id()));
-    GenericCsv
-        .parse(&input, &preset.hints())
-        .unwrap_or_else(|e| {
+    let importer: &dyn ImporterPlugin = match preset.importer_id() {
+        Some(id) => importer_core::plugin_by_id(id).unwrap_or_else(|| {
             panic!(
-                "preset {:?}'s own fixture failed to parse through its own hints: {e}",
+                "preset {:?} names unregistered importer {id:?}",
                 preset.id()
             )
-        })
+        }),
+        None => &GenericCsv,
+    };
+    importer.parse(&input, &preset.hints()).unwrap_or_else(|e| {
+        panic!(
+            "preset {:?}'s own fixture failed to parse through its own hints: {e}",
+            preset.id()
+        )
+    })
 }
 
 #[test]

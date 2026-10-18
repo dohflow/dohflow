@@ -10,9 +10,9 @@ const ops = vi.hoisted(() => ({
 }));
 let vaults: VaultSummaryDto[] = [];
 let status: { state: "Locked" | "NoVault" } = { state: "Locked" };
-vi.mock("@/vault/useVault", () => ({
+vi.mock("@/vault/useVault", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/vault/useVault")>()),
   useVault: () => ({ status, vaults, ...ops }),
-  describeIpcError: (e: unknown) => (typeof e === "string" ? e : "error"),
 }));
 // The no-reset warning + restore flow have their own tests; stub them so the picker
 // test needs no react-query client or Tauri dialog plugin.
@@ -105,6 +105,36 @@ test("a wrong password surfaces the error and stays on the modal", async () => {
   fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
   expect(await screen.findByRole("alert")).toBeInTheDocument();
   expect(screen.getByRole("dialog", { name: /unlock real/i })).toBeInTheDocument();
+});
+
+test("newer schema refusal resets busy state, focuses retry, and permits back without force-open", async () => {
+  let refuse!: (value: "NewerVaultSchema") => void;
+  ops.unlockVault.mockResolvedValue("NewerVaultSchema");
+  ops.unlockVault.mockReturnValueOnce(new Promise((resolve) => { refuse = resolve; }));
+  render(<VaultPickerScreen />);
+  fireEvent.click(screen.getByRole("button", { name: /real/i }));
+  const password = await screen.findByLabelText(/master password/i);
+  fireEvent.change(password, { target: { value: "synthetic-password" } });
+  fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
+  expect(screen.getByRole("button", { name: /unlocking/i })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /back to vaults/i })).toBeDisabled();
+  fireEvent.submit(password.closest("form")!);
+  expect(ops.unlockVault).toHaveBeenCalledTimes(1);
+  refuse("NewerVaultSchema");
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This vault requires a newer version of DohFlow. Open it with a compatible newer version.",
+  );
+  expect(password).toHaveValue("");
+  expect(password).toHaveFocus();
+  expect(screen.getByRole("dialog", { name: /unlock real/i })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /force|downgrade|repair/i })).not.toBeInTheDocument();
+  fireEvent.change(password, { target: { value: "retry-password" } });
+  fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
+  await waitFor(() => expect(ops.unlockVault).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.getByRole("button", { name: /back to vaults/i })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: /back to vaults/i }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(status.state).toBe("Locked");
 });
 
 test("forgot-password explains there is no reset (backup restore instead)", async () => {

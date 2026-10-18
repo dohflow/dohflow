@@ -228,6 +228,7 @@ fn source_batch_lifecycle_records_one_oplog_per_transition() {
                 source_name: Some("statement.csv".to_owned()),
                 file_fingerprint: Some("sha256:file".to_owned()),
                 parser_version: Some("csv-v1".to_owned()),
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -285,6 +286,7 @@ fn attaching_the_same_source_hash_is_idempotent() {
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();

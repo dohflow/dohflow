@@ -11,19 +11,19 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use finance_kernel::{
-    all_presets, detect_best, plugin_by_id, preset_by_id, ActorType, ApplyScenario, ArchiveAccount,
-    ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill, AttachSourceRecord, CategoryId,
-    Clock, CommandEnvelope, CommandMeta, CommitStaged, ConfirmObligationEarly,
-    ConvertUnexplainedToTransaction, CreateAccount, CreateCategory, CreateIncomeSource,
-    CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag, DeleteIncomeSource,
-    DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem, DismissRecurringSuggestion,
-    Kernel, MarkReviewed, Money, MoveCategory, NewScenario, ParserHints, ParserInput, ParserLimits,
-    RecategorizeTransaction, RecurringEventId, RecurringTransferId, ReinstateAccount,
-    ReinstateCategory, RestoreIncomeSource, RestoreRecurringBill, RevertScenarioApply,
-    ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype, SetBillAutopay,
-    SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged,
-    SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock, TagId,
-    TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
+    all_presets, detect_best, plugin_by_id, preset_by_id, run_bounded, AccountId, ActorType,
+    ApplyScenario, ArchiveAccount, ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill,
+    AttachSourceRecord, CategoryId, Clock, CommandEnvelope, CommandMeta, CommitStaged,
+    ConfirmObligationEarly, ConvertUnexplainedToTransaction, CreateAccount, CreateCategory,
+    CreateIncomeSource, CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag,
+    DeleteIncomeSource, DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem,
+    DismissRecurringSuggestion, Kernel, MarkReviewed, Money, MoveCategory, NewScenario,
+    ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, RecurringEventId,
+    RecurringTransferId, ReinstateAccount, ReinstateCategory, RestoreIncomeSource,
+    RestoreRecurringBill, RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote,
+    SetAccountSubtype, SetBillAutopay, SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits,
+    SetTags, SkipStaged, SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock,
+    TagId, TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
     UpdateIncomeSource, UpdateRecurringBill, VaultController, VaultState, VoidTransaction,
     COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
@@ -46,19 +46,20 @@ use crate::ipc::dto::{
     CreateIncomeSourceInput, CreateManualFutureEntryInput, CreateRecurringBillInput,
     CreateRecurringBillResult, CreateRecurringTransferInput, CreateRecurringTransferResult,
     CreateScenarioInput, CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult,
-    DebtPayoffPlanDto, DebtTermsDto, DismissRecurringSuggestionInput, ForecastReadinessDto,
-    ForecastViewDto, ImportBatchInput, ImportedTransactionFieldsDto, IncomeSourceDto,
-    LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
-    MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
-    RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
-    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind,
-    RestoreRecoveryStatusDto, ScenarioDto, SetBillAutopayInput, SetCardStatementBalanceInput,
-    SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto, SpendBreakdownDto,
-    SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto, TransactionPageDto,
-    TransactionPageInput, TransactionRowDto, UnconfirmObligationInput, UnconfirmedOccurrenceDto,
-    UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput, UpdateIncomeSourceInput,
-    UpdateManualFutureEntryInput, UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto,
-    VaultHealthDto, VaultListDto, VaultStatusDto, VaultSummaryDto,
+    DebtPayoffPlanDto, DebtTermsDto, DiagnosticsPreviewDto, DiagnosticsSaveResult,
+    DismissRecurringSuggestionInput, ForecastReadinessDto, ForecastViewDto, ImportBatchInput,
+    ImportedTransactionFieldsDto, IncomeSourceDto, LoanDoubleCountWarningDto, ManualFutureEntryDto,
+    MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto, MutationResult,
+    RecordTransactionInput, RecordTransactionResult, RecordTransferInput, RecurringBillDto,
+    RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
+    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto,
+    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
+    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
+    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
+    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
+    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
+    UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto,
+    VaultStatusDto, VaultSummaryDto,
 };
 use crate::ipc::IpcError;
 use crate::state::AppState;
@@ -100,7 +101,7 @@ const RECORD_TRANSACTION_ID_NAMESPACE: Uuid = Uuid::from_bytes([
 
 /// Run `f` with the open kernel, or return [`IpcError::VaultLocked`] when the
 /// vault is not unlocked. The kernel is reached through the [`VaultController`].
-fn with_kernel<T>(
+pub(crate) fn with_kernel<T>(
     state: &AppState,
     f: impl FnOnce(&Kernel) -> Result<T, IpcError>,
 ) -> Result<T, IpcError> {
@@ -117,7 +118,10 @@ fn ipc_error_code(error: &IpcError) -> &'static str {
         IpcError::Validation(_) => "validation",
         IpcError::VaultLocked => "vault_locked",
         IpcError::VaultUnlockFailed => "vault_unlock_failed",
+        IpcError::NewerVaultSchema => "newer_vault_schema",
+        IpcError::UnsupportedVaultSchema => "unsupported_vault_schema",
         IpcError::Unavailable(_) => "unavailable",
+        IpcError::InsufficientDiskSpace => "insufficient_disk_space",
         IpcError::WriterPanicked => "writer_panicked",
         IpcError::Persistence(_) => "persistence",
     }
@@ -331,27 +335,25 @@ pub fn unlock_vault(
     // the successful unlock response.
     let executor = state.inner().job_dispatcher();
     let unlock_window = format!("unlock-{}", Uuid::now_v7());
-    let job_app = app.clone();
+    // One post-unlock task, never blocking the unlock: the durable-job sweep
+    // first (its crash recovery must run before anything is claimed), then
+    // connector refresh on the same runtime, which releases the vault lock
+    // around every provider fetch (lqk; ADR 0060 addendum 2026-10-04).
     tauri::async_runtime::spawn(async move {
         let _ = tauri::async_runtime::spawn_blocking(move || {
-            let app_state = job_app.state::<AppState>();
+            let app_state = app.state::<AppState>();
             if let Err(err) =
                 run_due_jobs_on_unlock_impl(&app_state, executor.as_ref(), &unlock_window)
             {
                 record_durable_job_unlock_failure(&err);
             }
-        })
-        .await;
-    });
-    // Sync-on-open (personal-cfo-gglk, ADR 0060 §4): fire-and-forget so the
-    // network NEVER blocks the unlock; debounced inside; outcomes land on the
-    // connection rows for the health surface. Lives in the wrapper — the impl
-    // stays synchronous and test-drivable without an AppHandle.
-    tauri::async_runtime::spawn(async move {
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            let state = app.state::<AppState>();
-            if let Err(err) = connector_auto_sync_impl(&state, connector_core::connector_by_id) {
-                tracing::warn!(error = %err, "connector auto-sync on open failed");
+            if let Err(err) = crate::connector_refresh::run_due_connector_refresh(
+                &app_state,
+                connector_core::connector_by_id,
+                &unlock_window,
+                &SystemClock,
+            ) {
+                tracing::warn!(error = %err, "connector refresh after unlock failed");
             }
         })
         .await;
@@ -406,6 +408,45 @@ pub fn change_password(
     input: ChangePasswordInput,
 ) -> Result<VaultStatusDto, IpcError> {
     change_password_impl(state.inner(), input)
+}
+
+/// Rotate the vault's encryption key (personal-cfo-2y8, ADR 0083): a new random
+/// DEK, the database re-encrypted and every attachment re-wrapped and
+/// re-addressed, the password unchanged. Holds the controller lock for the whole
+/// rotation, so no other command, scheduled job or connector database phase can
+/// touch the vault meanwhile (ADR 0083 §5); they run afterwards. A wrong
+/// password returns [`IpcError::VaultUnlockFailed`] and too little free space
+/// [`IpcError::InsufficientDiskSpace`], both with nothing written. The password
+/// is wrapped in [`Zeroizing`] so its plaintext copy is scrubbed on return.
+pub fn rotate_vault_key_impl(
+    state: &AppState,
+    input: RotateVaultKeyInput,
+) -> Result<VaultStatusDto, IpcError> {
+    let password = Zeroizing::new(input.password);
+    let mut guard = state.lock_controller()?;
+    let result = guard.rotate_key(password.as_bytes());
+    // Report the controller's real state either way (Unlocked, or Locked /
+    // CorruptNeedsRecovery if the rotated vault could not be reopened).
+    result?;
+    vault_status_dto(&guard)
+}
+
+// Async + `spawn_blocking`, like `connector_sync`: a rotation re-encrypts the
+// whole vault (seconds to a minute), and a synchronous command would run on the
+// main thread, freezing the window so the rotate card's overlay could never
+// paint. The blocking impl still holds the controller lock throughout.
+#[tauri::command]
+#[specta::specta]
+pub async fn rotate_vault_key(
+    app: tauri::AppHandle,
+    input: RotateVaultKeyInput,
+) -> Result<VaultStatusDto, IpcError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        rotate_vault_key_impl(&state, input)
+    })
+    .await
+    .map_err(|_| IpcError::Unavailable("key rotation task failed".to_owned()))?
 }
 
 /// Permanently delete the active vault (personal-cfo-j0cg.5): wipe its data, drop its registry
@@ -785,6 +826,209 @@ pub fn export_transactions_csv(
     export_transactions_csv_impl(state.inner(), out_path)
 }
 
+// ---- local diagnostics (personal-cfo-lyd) -------------------------------------
+//
+// The capture lives on the unlocked kernel's session (`Kernel::diagnostics`), so
+// vault lock / switch / exit drop it and any pending preview by construction.
+// The only way out is: preview (an immutable redacted snapshot) → the user picks
+// a file in the native Save dialog → save writes exactly those bytes. No
+// background export, no upload, no unredacted mode (ADR 0066-A §5,
+// docs/security/logging-policy.md §6–§8).
+
+fn diagnostics_header(created_on: &str) -> observability::diagnostics::BundleHeader {
+    observability::diagnostics::BundleHeader {
+        build_version: env!("CARGO_PKG_VERSION").to_owned(),
+        build_channel: crate::update::BUILD_CHANNEL.to_owned(),
+        platform: std::env::consts::OS.to_owned(),
+        created_on: created_on.to_owned(),
+    }
+}
+
+const DIAGNOSTICS_UNAVAILABLE: &str = "Diagnostics couldn't be prepared. Nothing was saved.";
+
+pub fn diagnostics_preview_impl(state: &AppState) -> Result<DiagnosticsPreviewDto, IpcError> {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    with_kernel(state, |kernel| {
+        let snapshot = kernel
+            .diagnostics()
+            .preview(&diagnostics_header(&today))
+            .map_err(|_| IpcError::Validation(DIAGNOSTICS_UNAVAILABLE.to_owned()))?;
+        let bundle = observability::diagnostics::parse_bundle(snapshot.bytes())
+            .map_err(|_| IpcError::Validation(DIAGNOSTICS_UNAVAILABLE.to_owned()))?;
+        let clamp = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
+        Ok(DiagnosticsPreviewDto {
+            snapshot_id: u32::try_from(snapshot.id()).unwrap_or(u32::MAX),
+            text: snapshot.text().to_owned(),
+            records: bundle.records_retained,
+            dropped: clamp(bundle.dropped_by_capacity.values().sum()),
+            rejected: clamp(bundle.rejected_at_admission),
+            suggested_file_name: format!("dohflow-diagnostics-{today}.json"),
+        })
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_preview(
+    state: tauri::State<'_, AppState>,
+) -> Result<DiagnosticsPreviewDto, IpcError> {
+    diagnostics_preview_impl(state.inner())
+}
+
+/// The fixed result for an OS write failure — never the error's text or path.
+fn diagnostics_write_failure(error: &std::io::Error) -> DiagnosticsSaveResult {
+    // ENOSPC is 28 on macOS and Linux; ERROR_HANDLE_DISK_FULL (39) and
+    // ERROR_DISK_FULL (112) on Windows. `ErrorKind::StorageFull` is newer than
+    // the crate's MSRV.
+    let disk_full: &[i32] = if cfg!(windows) { &[39, 112] } else { &[28] };
+    if error
+        .raw_os_error()
+        .is_some_and(|code| disk_full.contains(&code))
+    {
+        DiagnosticsSaveResult::DiskFull
+    } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+        DiagnosticsSaveResult::PermissionDenied
+    } else {
+        DiagnosticsSaveResult::Failed
+    }
+}
+
+/// Where a diagnostics save may write, or `None` (personal-cfo-lyd review F1).
+///
+/// Only an absolute `.json` file, in a folder that exists, that is **not** inside
+/// an app-owned directory: the app-data root (the vault registry `vaults.json`,
+/// managed vaults, settings) or the active vault's own folder. The parent is
+/// canonicalized, so `..` segments and symlinked folders are resolved before the
+/// check; an existing target must be a plain file, not a symlink (which
+/// `fs::write` would follow) or a directory. The returned path is the resolved
+/// one, so what is checked is what is written.
+fn diagnostics_destination(state: &AppState, out_path: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(out_path);
+    if !path.is_absolute() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+        return None;
+    }
+    let parent = std::fs::canonicalize(path.parent()?).ok()?;
+    if !parent.is_dir() {
+        return None;
+    }
+    let target = parent.join(path.file_name()?);
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        if !meta.file_type().is_file() {
+            return None;
+        }
+    }
+    let mut protected: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(root) = state.vaults_root() {
+        protected.push(root.to_path_buf());
+    }
+    if let Ok(controller) = state.lock_controller() {
+        if let Some(folder) = controller.path().parent() {
+            protected.push(folder.to_path_buf());
+        }
+    }
+    let inside_app_data = protected
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(dir).ok())
+        .any(|dir| target.starts_with(&dir));
+    (!inside_app_data).then_some(target)
+}
+
+#[cfg(test)]
+mod diagnostics_write_failure_tests {
+    use super::{diagnostics_write_failure, DiagnosticsSaveResult};
+
+    #[test]
+    fn os_write_failures_map_to_fixed_results() {
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::from_raw_os_error(28)),
+            DiagnosticsSaveResult::DiskFull
+        );
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            DiagnosticsSaveResult::PermissionDenied
+        );
+        assert_eq!(
+            diagnostics_write_failure(&std::io::Error::other("/Users/jane/secret path")),
+            DiagnosticsSaveResult::Failed
+        );
+    }
+}
+
+pub fn diagnostics_save_impl(
+    state: &AppState,
+    snapshot_id: u32,
+    out_path: String,
+) -> Result<DiagnosticsSaveResult, IpcError> {
+    let started_at = std::time::Instant::now();
+    // The boundary span records the command and outcome only — never the path.
+    let span = tracing::info_span!(
+        "tauri_command",
+        command_id = %Uuid::now_v7(),
+        correlation_id = %Uuid::now_v7(),
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command = "diagnostics_save",
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    // Resolved BEFORE `with_kernel`: it reads the controller's vault path, and the
+    // controller mutex is not reentrant.
+    let destination = diagnostics_destination(state, &out_path);
+    let result = with_kernel(state, |kernel| {
+        let diagnostics = kernel.diagnostics();
+        let Some(snapshot) = diagnostics.pending(u64::from(snapshot_id)) else {
+            return Ok(DiagnosticsSaveResult::PreviewExpired);
+        };
+        let Some(target) = destination else {
+            return Ok(DiagnosticsSaveResult::InvalidDestination);
+        };
+        match std::fs::write(&target, snapshot.bytes()) {
+            Ok(()) => {
+                diagnostics.discard(u64::from(snapshot_id));
+                Ok(DiagnosticsSaveResult::Saved)
+            }
+            Err(error) => Ok(diagnostics_write_failure(&error)),
+        }
+    });
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let outcome = match &result {
+        Ok(DiagnosticsSaveResult::Saved) => "success",
+        Ok(_) => "not_saved",
+        Err(error) => ipc_error_code(error),
+    };
+    span.record("duration_ms", duration_ms);
+    span.record("outcome", outcome);
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_save(
+    state: tauri::State<'_, AppState>,
+    snapshot_id: u32,
+    out_path: String,
+) -> Result<DiagnosticsSaveResult, IpcError> {
+    diagnostics_save_impl(state.inner(), snapshot_id, out_path)
+}
+
+pub fn diagnostics_discard_impl(state: &AppState, snapshot_id: u32) -> Result<(), IpcError> {
+    with_kernel(state, |kernel| {
+        kernel.diagnostics().discard(u64::from(snapshot_id));
+        Ok(())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn diagnostics_discard(
+    state: tauri::State<'_, AppState>,
+    snapshot_id: u32,
+) -> Result<(), IpcError> {
+    diagnostics_discard_impl(state.inner(), snapshot_id)
+}
+
 pub fn export_backup_impl(state: &AppState, out_path: String) -> Result<(), IpcError> {
     let started_at = std::time::Instant::now();
     // Keep the IPC trace useful without recording the chosen path or any key
@@ -1117,26 +1361,33 @@ pub fn create_account_impl(
     state: &AppState,
     input: CreateAccountInput,
 ) -> Result<CreateAccountResult, IpcError> {
-    with_kernel(state, |kernel| {
-        let account = input.to_account()?;
-        let account_id = account.id();
+    with_kernel(state, |kernel| create_account_in(kernel, &input))
+}
 
-        let command = match input.opening_balance.as_ref() {
-            Some(opening) => {
-                let money: Money = opening.to_money()?;
-                CreateAccount::with_opening_balance(account, money)
-            }
-            None => CreateAccount::new(account),
-        };
+/// The body of [`create_account_impl`], for callers already holding the kernel
+/// (the controller mutex is not reentrant).
+fn create_account_in(
+    kernel: &Kernel,
+    input: &CreateAccountInput,
+) -> Result<CreateAccountResult, IpcError> {
+    let account = input.to_account()?;
+    let account_id = account.id();
 
-        let outcome = kernel.dispatch(CommandEnvelope::new(
-            user_meta(&input.idempotency_key),
-            command,
-        ))?;
-        Ok(CreateAccountResult {
-            account_id: account_id.to_string(),
-            mutation: outcome.into(),
-        })
+    let command = match input.opening_balance.as_ref() {
+        Some(opening) => {
+            let money: Money = opening.to_money()?;
+            CreateAccount::with_opening_balance(account, money)
+        }
+        None => CreateAccount::new(account),
+    };
+
+    let outcome = kernel.dispatch(CommandEnvelope::new(
+        user_meta(&input.idempotency_key),
+        command,
+    ))?;
+    Ok(CreateAccountResult {
+        account_id: account_id.to_string(),
+        mutation: outcome.into(),
     })
 }
 
@@ -1322,6 +1573,12 @@ pub fn update_batch_state(
     update_batch_state_impl(state.inner(), input)
 }
 
+/// Where `import_batch` sends a file's rows (personal-cfo-tulv).
+enum ImportTarget {
+    Single(AccountId),
+    Routed(std::collections::BTreeMap<String, uuid::Uuid>),
+}
+
 /// Import a file through the ingestion pipeline (personal-cfo-cu8): resolve the
 /// importer plugin (by `plugin_id`, else auto-detect from the bytes), parse it in
 /// the bounded host, then stage + dedupe + commit the clean rows into
@@ -1332,7 +1589,26 @@ pub fn import_batch_impl(
     input: ImportBatchInput,
 ) -> Result<BatchResultDto, IpcError> {
     with_kernel(state, |kernel| {
-        let target_account = parse_account_id(&input.target_account_id)?;
+        let target = match (&input.target_account_id, &input.account_map) {
+            (Some(id), None) => ImportTarget::Single(parse_account_id(id)?),
+            (None, Some(entries)) => {
+                let mut map = std::collections::BTreeMap::new();
+                for entry in entries {
+                    if let Some(id) = &entry.account_id {
+                        map.insert(
+                            entry.source_account.clone(),
+                            parse_account_id(id)?.as_uuid(),
+                        );
+                    }
+                }
+                ImportTarget::Routed(map)
+            }
+            _ => {
+                return Err(IpcError::Validation(
+                    "give exactly one of target_account_id and account_map".to_owned(),
+                ))
+            }
+        };
         let mut parser_input = ParserInput::new(input.data);
         if let Some(name) = input.filename {
             parser_input = parser_input.with_filename(name);
@@ -1345,14 +1621,14 @@ pub fn import_batch_impl(
         // column_mapping/date_format/default_currency, when given, override
         // the matching field — the user can always correct a preset's guess.
         // No preset_id behaves exactly as before this field existed.
-        let preset_hints = match input.preset_id.as_deref() {
+        let preset = match input.preset_id.as_deref() {
             Some(id) => Some(
                 preset_by_id(id)
-                    .ok_or_else(|| IpcError::Validation(format!("no source preset {id:?}")))?
-                    .hints(),
+                    .ok_or_else(|| IpcError::Validation(format!("no source preset {id:?}")))?,
             ),
             None => None,
         };
+        let preset_hints = preset.map(|p| p.hints());
         let hints = ParserHints {
             column_mapping: input
                 .column_mapping
@@ -1365,21 +1641,29 @@ pub fn import_batch_impl(
                 .or_else(|| preset_hints.as_ref().and_then(|h| h.default_currency)),
             institution: preset_hints.as_ref().and_then(|h| h.institution.clone()),
         };
-        let plugin = match input.plugin_id.as_deref() {
+        // An explicit plugin wins; else the preset's own importer, when it
+        // has one (personal-cfo-tulv); else auto-detect.
+        let plugin_id = input
+            .plugin_id
+            .as_deref()
+            .or_else(|| preset.and_then(|p| p.importer_id()));
+        let plugin = match plugin_id {
             Some(id) => plugin_by_id(id)
                 .ok_or_else(|| IpcError::Validation(format!("no importer plugin {id:?}")))?,
             None => detect_best(&parser_input).ok_or_else(|| {
                 IpcError::Validation("no importer recognized this file".to_owned())
             })?,
         };
-        let result = kernel.ingest_batch(
-            plugin,
-            parser_input,
-            &hints,
-            target_account,
-            &ParserLimits::default(),
-            &user_meta(&input.idempotency_key),
-        )?;
+        let limits = ParserLimits::default();
+        let meta = user_meta(&input.idempotency_key);
+        let result = match &target {
+            ImportTarget::Single(account) => {
+                kernel.ingest_batch(plugin, parser_input, &hints, *account, &limits, &meta)?
+            }
+            ImportTarget::Routed(map) => {
+                kernel.ingest_batch_routed(plugin, parser_input, &hints, map, &limits, &meta)?
+            }
+        };
         Ok(BatchResultDto::from(result))
     })
 }
@@ -1432,6 +1716,80 @@ pub fn import_preview_columns(
     import_preview_columns_impl(state.inner(), data, filename, plugin_id)
 }
 
+/// The distinct source account labels in a file (personal-cfo-tulv), so the
+/// import dialog can ask where each account's rows go before importing. Parses
+/// the file in the bounded host with the same plugin and hints `import_batch`
+/// would use for `preset_id` (an explicit `plugin_id` wins), then returns the
+/// labels the parse saw — sorted, never the rows. Empty for a file with no
+/// account column. Nothing is persisted.
+pub fn import_preview_accounts_impl(
+    state: &AppState,
+    data: Vec<u8>,
+    filename: Option<String>,
+    plugin_id: Option<String>,
+    preset_id: Option<String>,
+    column_mapping: Option<ColumnMappingDto>,
+) -> Result<Vec<String>, IpcError> {
+    with_kernel(state, |_kernel| {
+        let mut parser_input = ParserInput::new(data);
+        if let Some(name) = filename {
+            parser_input = parser_input.with_filename(name);
+        }
+        let preset = match preset_id.as_deref() {
+            Some(id) => Some(
+                preset_by_id(id)
+                    .ok_or_else(|| IpcError::Validation(format!("no source preset {id:?}")))?,
+            ),
+            None => None,
+        };
+        let mut hints = preset.map(|p| p.hints()).unwrap_or_default();
+        if let Some(mapping) = column_mapping {
+            hints.column_mapping = Some(mapping.into_mapping());
+        }
+        let plugin = match plugin_id
+            .as_deref()
+            .or_else(|| preset.and_then(|p| p.importer_id()))
+        {
+            Some(id) => plugin_by_id(id)
+                .ok_or_else(|| IpcError::Validation(format!("no importer plugin {id:?}")))?,
+            None => match detect_best(&parser_input) {
+                Some(plugin) => plugin,
+                None => return Ok(Vec::new()),
+            },
+        };
+        let (parsed, _report) = run_bounded(plugin, parser_input, hints, &ParserLimits::default());
+        Ok(parsed
+            .map(|batch| {
+                batch
+                    .accounts
+                    .into_iter()
+                    .filter_map(|account| account.external_id)
+                    .collect()
+            })
+            .unwrap_or_default())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn import_preview_accounts(
+    state: tauri::State<'_, AppState>,
+    data: Vec<u8>,
+    filename: Option<String>,
+    plugin_id: Option<String>,
+    preset_id: Option<String>,
+    column_mapping: Option<ColumnMappingDto>,
+) -> Result<Vec<String>, IpcError> {
+    import_preview_accounts_impl(
+        state.inner(),
+        data,
+        filename,
+        plugin_id,
+        preset_id,
+        column_mapping,
+    )
+}
+
 /// Every registered source-app preset (personal-cfo-gvidg), for the "Import
 /// from <app>" picker. No vault access, no state needed — the registry is
 /// compile-time and process-global — but takes `&AppState` for the same
@@ -1450,6 +1808,7 @@ pub fn list_source_presets_impl(_state: &AppState) -> Vec<SourcePresetDto> {
                 ),
                 help_slug: preset.help_slug().to_owned(),
                 help_published: preset.help_published(),
+                importer_id: preset.importer_id().map(str::to_owned),
             }
         })
         .collect()
@@ -2747,9 +3106,10 @@ pub async fn check_for_update() -> UpdateStatusDto {
 
 // ---- build_info (personal-cfo-4d8.27.3.2) ---------------------------------
 
-/// The running binary's build identity: version, commit, channel, build time, dirty flag.
-/// Pure compile-time constants — no git, no network, no vault — so the UI can show which
-/// build you are running immediately, including on the lock screen and while offline.
+/// The running binary's build identity: version, commit, channel, build time, dirty flag,
+/// plus the running macOS version. Compile-time constants and one local file read — no git,
+/// no network, no vault — so the UI can show which build you are running immediately,
+/// including on the lock screen and while offline.
 #[tauri::command]
 #[specta::specta]
 pub fn build_info() -> BuildInfoDto {
@@ -2759,6 +3119,70 @@ pub fn build_info() -> BuildInfoDto {
         channel: env!("PCFO_BUILD_CHANNEL").to_owned(),
         built_at: env!("PCFO_BUILD_TIME").to_owned(),
         dirty: matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true"),
+        os_version: macos_product_version(),
+    }
+}
+
+/// macOS's own `ProductVersion` from `SystemVersion.plist` (personal-cfo-md8h2.4). A binary
+/// built against a current SDK reads the real file, not the `10.16` compatibility shim
+/// macOS serves to old-SDK processes. `None` off macOS or when it can't be read, which the
+/// updater guard treats as "can't evaluate" rather than "too old".
+fn macos_product_version() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let bytes = std::fs::read("/System/Library/CoreServices/SystemVersion.plist").ok()?;
+    product_version_from_plist(&bytes)
+}
+
+fn product_version_from_plist(bytes: &[u8]) -> Option<String> {
+    let value = plist::Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
+    let version = value.as_dictionary()?.get("ProductVersion")?.as_string()?;
+    (!version.trim().is_empty()).then(|| version.trim().to_owned())
+}
+
+#[cfg(test)]
+mod os_version_tests {
+    use super::product_version_from_plist;
+
+    const SYSTEM_VERSION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ProductBuildVersion</key>
+	<string>23H420</string>
+	<key>ProductName</key>
+	<string>macOS</string>
+	<key>ProductVersion</key>
+	<string>14.8.9</string>
+</dict>
+</plist>"#;
+
+    #[test]
+    fn reads_product_version() {
+        assert_eq!(
+            product_version_from_plist(SYSTEM_VERSION.as_bytes()).as_deref(),
+            Some("14.8.9")
+        );
+    }
+
+    #[test]
+    fn missing_key_or_garbage_is_none() {
+        let no_key = SYSTEM_VERSION.replace("ProductVersion", "SomethingElse");
+        assert_eq!(product_version_from_plist(no_key.as_bytes()), None);
+        assert_eq!(product_version_from_plist(b"not a plist"), None);
+        let blank = SYSTEM_VERSION.replace("14.8.9", "  ");
+        assert_eq!(product_version_from_plist(blank.as_bytes()), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn this_mac_reports_a_version() {
+        let v = super::macos_product_version().expect("SystemVersion.plist is readable");
+        assert!(
+            v.split('.').next().unwrap().parse::<u32>().unwrap() >= 11,
+            "{v}"
+        );
     }
 }
 
@@ -4543,14 +4967,19 @@ use connector_core::{
     Credential as ProviderCredential, CredentialTier as ProviderCredentialTier,
     LinkInput as ProviderLinkInput, LinkSession, Payer as ProviderPayer,
 };
+use finance_kernel::connector_currency_guard::{
+    connector_currency_guard, ConnectorCurrencyRefusal,
+};
 use tauri::Manager as _;
 
 use crate::ipc::dto::{
     ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto,
     ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
-    ConnectorCredentialTierDto, ConnectorDisclosureDto, ConnectorEconomicsDto,
-    ConnectorExternalAccountDto, ConnectorForgetInput, ConnectorLinkInput, ConnectorLinkResultDto,
-    ConnectorPayerDto, ConnectorSetAccountLinkInput, ConnectorSyncInput, ConnectorSyncResultDto,
+    ConnectorCreateMappedAccountInput, ConnectorCredentialTierDto, ConnectorDisclosureDto,
+    ConnectorEconomicsDto, ConnectorExternalAccountDto, ConnectorFeedDto, ConnectorForgetInput,
+    ConnectorLinkGuideDto, ConnectorLinkInput, ConnectorLinkResultDto, ConnectorPayerDto,
+    ConnectorReferralDto, ConnectorSetAccountLinkInput, ConnectorSetAccountLinkResultDto,
+    ConnectorSetRefreshCadenceInput, ConnectorSyncInput, ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -4602,10 +5031,57 @@ fn connector_link_error(err: &ConnectorError) -> IpcError {
     }
 }
 
+/// The boundary span for one connector operation (DoD §2.1): which adapter
+/// and version ran, how long it took and how it ended — never the credential,
+/// the setup token, or a provider URL.
+fn connector_span(command: &'static str, adapter: &dyn ConnectorAdapter) -> tracing::Span {
+    tracing::info_span!(
+        "tauri_command",
+        command_id = %Uuid::now_v7(),
+        correlation_id = %Uuid::now_v7(),
+        causation_id = "none",
+        actor_type = "user",
+        actor_id = "local-user",
+        command,
+        adapter_id = adapter.id(),
+        adapter_version = %adapter.version(),
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    )
+}
+
+fn finish_connector_span<T>(
+    span: &tracing::Span,
+    started_at: std::time::Instant,
+    result: &Result<T, IpcError>,
+) {
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let outcome = match result {
+        Ok(_) => "success",
+        Err(error) => ipc_error_code(error),
+    };
+    span.record("duration_ms", duration_ms);
+    span.record("outcome", outcome);
+    tracing::info!(duration_ms, outcome, "connector operation completed");
+}
+
 /// Link through an already-resolved adapter. Skips the registry's enabled
 /// check — production goes through [`connector_link_registered_impl`]; this
 /// entry point exists for tests that drive an unregistered mock adapter.
 pub fn connector_link_impl(
+    state: &AppState,
+    adapter: &dyn ConnectorAdapter,
+    input: ConnectorLinkInput,
+) -> Result<ConnectorLinkResultDto, IpcError> {
+    let started_at = std::time::Instant::now();
+    let span = connector_span("connector_link", adapter);
+    let _entered = span.enter();
+    let result = connector_link_inner(state, adapter, input);
+    finish_connector_span(&span, started_at, &result);
+    result
+}
+
+fn connector_link_inner(
     state: &AppState,
     adapter: &dyn ConnectorAdapter,
     input: ConnectorLinkInput,
@@ -4641,6 +5117,13 @@ pub fn connector_link_impl(
             credential.expose_secret(),
             display_hint.as_deref(),
         )?;
+        // Its refresh job, at the provider's suggested cadence (lqk).
+        crate::connector_refresh::ensure_refresh_job(
+            kernel,
+            connection_id,
+            adapter.id(),
+            chrono::Utc::now(),
+        )?;
         Ok(())
     })?;
 
@@ -4662,6 +5145,7 @@ pub fn connector_link_impl(
                         connection_id,
                         external_id,
                         acct.external_name.as_deref(),
+                        acct.currency.as_deref(),
                     )?;
                     accounts.push(ConnectorExternalAccountDto {
                         external_id: external_id.to_owned(),
@@ -4738,10 +5222,26 @@ pub fn connector_adapters_impl<'a>(
         .into_iter()
         .map(connector_adapter_dto)
         .collect();
-    // inventory's collection order is unspecified — keep the wire stable.
-    out.sort_by(|a, b| a.adapter_id.cmp(&b.adapter_id));
+    // ADR 0076 §4 (owner decision 2026-09-27): SimpleFIN first as the launch
+    // provider, then every other provider alphabetically by display name.
+    // Nothing in the registry can reorder this — no weight, no referral.
+    out.sort_by(|a, b| {
+        (
+            a.adapter_id != LAUNCH_PROVIDER,
+            a.display_name.to_lowercase(),
+            &a.adapter_id,
+        )
+            .cmp(&(
+                b.adapter_id != LAUNCH_PROVIDER,
+                b.display_name.to_lowercase(),
+                &b.adapter_id,
+            ))
+    });
     out
 }
+
+/// The picker's first entry (ADR 0076 §4).
+const LAUNCH_PROVIDER: &str = "simplefin";
 
 #[tauri::command]
 #[specta::specta]
@@ -4807,6 +5307,25 @@ fn connector_adapter_dto(registration: &ConnectorRegistration) -> ConnectorAdapt
             cost_summary: metadata.disclosure.cost_summary.to_owned(),
             optional: metadata.disclosure.optional.to_owned(),
         },
+        link_guide: ConnectorLinkGuideDto {
+            title: metadata.link_guide.title.to_owned(),
+            refresh_note: metadata.link_guide.refresh_note.to_owned(),
+            setup_steps: metadata
+                .link_guide
+                .setup_steps
+                .iter()
+                .map(|step| (*step).to_owned())
+                .collect(),
+            provider_url: metadata.link_guide.provider_url.to_owned(),
+            credential_label: metadata.link_guide.credential_label.to_owned(),
+            credential_noun: metadata.link_guide.credential_noun.to_owned(),
+            credential_placeholder: metadata.link_guide.credential_placeholder.to_owned(),
+            paste_instructions: metadata.link_guide.paste_instructions.to_owned(),
+        },
+        referral: metadata.referral.map(|r| ConnectorReferralDto {
+            url: r.url.to_owned(),
+            disclosure: r.disclosure.to_owned(),
+        }),
         enabled: metadata.enabled,
     }
 }
@@ -4815,24 +5334,35 @@ pub fn connector_connections_impl(
     state: &AppState,
 ) -> Result<Vec<ConnectorConnectionDto>, IpcError> {
     with_kernel(state, |kernel| {
+        let base_currency = kernel.base_currency_code()?;
         let mut out = Vec::new();
         for row in kernel.connector_connections()? {
             let links = kernel
                 .connector_links(row.id)?
                 .into_iter()
                 .map(|l| ConnectorAccountLinkDto {
+                    currency_refusal: connector_currency_guard(
+                        l.currency.as_deref(),
+                        &base_currency,
+                    )
+                    .err()
+                    .map(|refusal| refusal.to_string()),
                     external_id: l.external_id,
                     external_name: l.external_name,
                     account_id: l.account_id.map(|a| a.to_string()),
                     last_synced_on: l.last_synced_on,
+                    currency: l.currency,
                 })
                 .collect();
+            let refresh_cadence = crate::connector_refresh::cadence_of(kernel, row.id)?
+                .unwrap_or_else(|| crate::connector_refresh::suggested_cadence(&row.adapter_id));
             out.push(ConnectorConnectionDto {
                 id: row.id.to_string(),
                 adapter_id: row.adapter_id,
                 display_hint: row.display_hint,
                 last_synced_at: row.last_synced_at,
                 last_error: row.last_error,
+                refresh_cadence: refresh_cadence.token().to_owned(),
                 links,
             });
         }
@@ -4851,7 +5381,7 @@ pub fn connector_connections(
 pub fn connector_set_account_link_impl(
     state: &AppState,
     input: ConnectorSetAccountLinkInput,
-) -> Result<(), IpcError> {
+) -> Result<ConnectorSetAccountLinkResultDto, IpcError> {
     let connection_id = parse_connector_connection_id(&input.connection_id)?;
     let account = match input.account_id.as_deref() {
         Some(raw) => Some(parse_account_id(raw)?),
@@ -4866,14 +5396,78 @@ pub fn connector_set_account_link_impl(
             if !kernel.account_exists(account)? {
                 return Err(IpcError::Validation("unknown account".to_owned()));
             }
+            // One account, one feed by default (personal-cfo-6evt, ADR 0014
+            // §3 addendum 2026-10-04): a second connector link onto an account
+            // is saved only once the user chose "Import from both".
+            if !input.allow_shared_feed {
+                let existing_feeds: Vec<ConnectorFeedDto> = kernel
+                    .connector_feeds_for_account(account.as_uuid())?
+                    .into_iter()
+                    .filter(|feed| {
+                        !(feed.connection_id == connection_id
+                            && feed.external_id == input.external_id)
+                    })
+                    .map(|feed| ConnectorFeedDto {
+                        connection_id: feed.connection_id.to_string(),
+                        adapter_id: feed.adapter_id,
+                        display_hint: feed.display_hint,
+                        external_id: feed.external_id,
+                        external_name: feed.external_name,
+                    })
+                    .collect();
+                if !existing_feeds.is_empty() {
+                    return Ok(ConnectorSetAccountLinkResultDto {
+                        linked: false,
+                        existing_feeds,
+                    });
+                }
+            }
         }
         kernel.set_connector_link_account(
             connection_id,
             &input.external_id,
             account.map(|a| a.as_uuid()),
         )?;
-        Ok(())
+        Ok(ConnectorSetAccountLinkResultDto {
+            linked: true,
+            existing_feeds: Vec::new(),
+        })
     })
+}
+
+/// Create a new account and map a connector account onto it, in one step
+/// (personal-cfo-pxi.8). The currency guard runs FIRST, against the current
+/// base currency and the link's current currency, so a refusal creates
+/// nothing — the mapping dialog's own copy of the link may be stale (the base
+/// currency changed, or a refresh recorded a foreign or unknown currency).
+/// Everything runs under one kernel lock, so neither can change in between.
+/// A brand-new account has no other feed, so the one-feed guard (6evt) has
+/// nothing to say here.
+pub fn connector_create_mapped_account_impl(
+    state: &AppState,
+    input: ConnectorCreateMappedAccountInput,
+) -> Result<CreateAccountResult, IpcError> {
+    let connection_id = parse_connector_connection_id(&input.connection_id)?;
+    with_kernel(state, |kernel| {
+        kernel.ensure_connector_link_mappable(connection_id, &input.external_id)?;
+        let created = create_account_in(kernel, &input.account)?;
+        let account_id = parse_account_id(&created.account_id)?;
+        kernel.set_connector_link_account(
+            connection_id,
+            &input.external_id,
+            Some(account_id.as_uuid()),
+        )?;
+        Ok(created)
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn connector_create_mapped_account(
+    state: tauri::State<'_, AppState>,
+    input: ConnectorCreateMappedAccountInput,
+) -> Result<CreateAccountResult, IpcError> {
+    connector_create_mapped_account_impl(state.inner(), input)
 }
 
 #[tauri::command]
@@ -4881,7 +5475,7 @@ pub fn connector_set_account_link_impl(
 pub fn connector_set_account_link(
     state: tauri::State<'_, AppState>,
     input: ConnectorSetAccountLinkInput,
-) -> Result<(), IpcError> {
+) -> Result<ConnectorSetAccountLinkResultDto, IpcError> {
     connector_set_account_link_impl(state.inner(), input)
 }
 
@@ -4956,6 +5550,19 @@ pub fn connector_sync_impl(
     adapter: &dyn ConnectorAdapter,
     input: ConnectorSyncInput,
 ) -> Result<ConnectorSyncResultDto, IpcError> {
+    let started_at = std::time::Instant::now();
+    let span = connector_span("connector_sync", adapter);
+    let _entered = span.enter();
+    let result = connector_sync_inner(state, adapter, input);
+    finish_connector_span(&span, started_at, &result);
+    result
+}
+
+fn connector_sync_inner(
+    state: &AppState,
+    adapter: &dyn ConnectorAdapter,
+    input: ConnectorSyncInput,
+) -> Result<ConnectorSyncResultDto, IpcError> {
     let connection_id = parse_connector_connection_id(&input.connection_id)?;
     let empty = |status: &str, message: Option<String>| ConnectorSyncResultDto {
         connection_id: connection_id.to_string(),
@@ -5025,6 +5632,7 @@ pub fn connector_sync_impl(
                                 connection_id,
                                 external_id,
                                 acct.external_name.as_deref(),
+                                acct.currency.as_deref(),
                             )?;
                             count += 1;
                         }
@@ -5107,7 +5715,34 @@ pub fn connector_sync_impl(
                             connection_id,
                             external_id,
                             acct.external_name.as_deref(),
+                            acct.currency.as_deref(),
                         )?;
+                    }
+                }
+                // The currency guard (personal-cfo-049p6; ADR 0076 decision
+                // 7): a mapped link now KNOWN to be in another currency —
+                // backfilled just above, for links saved before currencies
+                // were recorded — is held for this refresh: left out of the
+                // map, so its rows are counted but not committed, nothing is
+                // deleted or remapped, and its watermark stays put so the
+                // same window is fetched again. A still-unknown legacy
+                // mapping keeps refreshing (owner decision 2026-09-28); the
+                // commit path's own currency check still stands behind it.
+                let base_currency = kernel.base_currency_code()?;
+                let mut effective_map = account_map.clone();
+                let mut held_foreign: Vec<String> = Vec::new();
+                for link in kernel.connector_links(connection_id)? {
+                    if !effective_map.contains_key(&link.external_id) {
+                        continue;
+                    }
+                    if let Err(refusal @ ConnectorCurrencyRefusal::Foreign { .. }) =
+                        connector_currency_guard(link.currency.as_deref(), &base_currency)
+                    {
+                        effective_map.remove(&link.external_id);
+                        held_foreign.push(format!(
+                            "{}: {refusal} Its transactions were held and not imported.",
+                            link.external_name.as_deref().unwrap_or(&link.external_id)
+                        ));
                     }
                 }
                 let source_name = format!("{} sync", adapter.display_name());
@@ -5115,8 +5750,9 @@ pub fn connector_sync_impl(
                     adapter.id(),
                     &synced.adapter_version,
                     &source_name,
+                    Some(connection_id),
                     &synced.batch,
-                    &account_map,
+                    &effective_map,
                     &user_meta(&input.idempotency_key),
                 )?;
                 // Watermarks advance ONLY for links that (a) were mapped when
@@ -5127,7 +5763,7 @@ pub fn connector_sync_impl(
                 // retry-held (structured SyncBatch scopes, ADR 0060 §5).
                 if !synced.hold_all_watermarks {
                     let held = held_link_ids(&synced.held_account_ids, &links);
-                    let advance: Vec<String> = account_map
+                    let advance: Vec<String> = effective_map
                         .keys()
                         .filter(|key| response_keys.contains(*key))
                         .filter(|key| !held.contains(*key))
@@ -5139,10 +5775,10 @@ pub fn connector_sync_impl(
                     }
                 }
                 kernel.record_connector_sync(connection_id, None)?;
-                Ok(result)
+                Ok((result, held_foreign))
             });
-            let result = match ingested {
-                Ok(result) => result,
+            let (result, held_foreign) = match ingested {
+                Ok(outcome) => outcome,
                 Err(err) => {
                     // Ingest failures (e.g. a poisoned mapping) must reach the
                     // health surface, not vanish into a tracing::warn loop.
@@ -5154,11 +5790,9 @@ pub fn connector_sync_impl(
                     return Err(err);
                 }
             };
-            let warnings: Vec<String> = synced
-                .batch
-                .warnings
-                .iter()
-                .map(|w| w.message.clone())
+            let warnings: Vec<String> = held_foreign
+                .into_iter()
+                .chain(synced.batch.warnings.iter().map(|w| w.message.clone()))
                 .collect();
             let status = if result.batch.status == "committed" {
                 "synced".to_owned()
@@ -5288,8 +5922,43 @@ pub fn connector_forget_impl(
     // relay tier. Past synced ledger data deliberately survives.
     with_kernel(state, |kernel| {
         kernel.delete_connector_connection(connection_id)?;
+        crate::connector_refresh::remove_refresh_job(kernel, connection_id)?;
         Ok(())
     })
+}
+
+/// Change how often a connection refreshes (lqk; ADR 0060 addendum
+/// 2026-10-04): `every_open`, `daily`, `weekly` or `manual`.
+pub fn connector_set_refresh_cadence_impl(
+    state: &AppState,
+    input: ConnectorSetRefreshCadenceInput,
+) -> Result<(), IpcError> {
+    let connection_id = parse_connector_connection_id(&input.connection_id)?;
+    let cadence = connector_core::RefreshCadence::from_token(&input.cadence)
+        .ok_or_else(|| IpcError::Validation("unknown refresh cadence".to_owned()))?;
+    with_kernel(state, |kernel| {
+        if !kernel.connector_connection_exists(connection_id)? {
+            return Err(IpcError::Validation(
+                "unknown connector connection".to_owned(),
+            ));
+        }
+        crate::connector_refresh::set_refresh_cadence(
+            kernel,
+            connection_id,
+            cadence,
+            chrono::Utc::now(),
+        )?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn connector_set_refresh_cadence(
+    state: tauri::State<'_, AppState>,
+    input: ConnectorSetRefreshCadenceInput,
+) -> Result<(), IpcError> {
+    connector_set_refresh_cadence_impl(state.inner(), input)
 }
 
 #[tauri::command]
@@ -5320,6 +5989,7 @@ mod connector_tests {
             external_name: None,
             account_id: Some(Uuid::nil()),
             last_synced_on: None,
+            currency: Some("USD".to_owned()),
         }
     }
 
@@ -5427,6 +6097,7 @@ mod release_update_failure_tests {
         let subscriber = tracing_subscriber::registry().with(layer);
 
         // This invokes the implementation directly: it must not need AppState or vault access.
+        observability::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             record_release_update_failure_impl(
                 "network error while downloading release",
@@ -5483,8 +6154,11 @@ mod release_update_failure_tests {
             .with_writer(RedactingMakeWriter::new(buffer.clone()));
         let subscriber = tracing_subscriber::registry().with(layer);
 
+        observability::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             record_durable_job_unlock_failure(&error);
+            record_durable_job_unlock_failure(&IpcError::NewerVaultSchema);
+            record_durable_job_unlock_failure(&IpcError::UnsupportedVaultSchema);
         });
 
         let logged = String::from_utf8(buffer.0.lock().expect("test log buffer lock").clone())
@@ -5492,6 +6166,8 @@ mod release_update_failure_tests {
         assert!(logged.contains("durable jobs on unlock failed"));
         assert!(logged.contains("error_code") && logged.contains("persistence"));
         assert!(logged.contains("outcome") && logged.contains("failed"));
+        assert!(logged.contains("newer_vault_schema"));
+        assert!(logged.contains("unsupported_vault_schema"));
         assert!(!logged.contains(&sensitive_payload));
         assert!(!logged.contains("opaque durable payload"));
     }
@@ -5507,6 +6183,7 @@ mod release_update_failure_tests {
         let state = AppState::new(VaultController::open(directory.path().join("absent.db")));
         let path = directory.path().join("private-backup-destination.pcfobk");
 
+        observability::testing::install_global_test_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             assert!(matches!(
                 export_backup_impl(&state, path.display().to_string()),

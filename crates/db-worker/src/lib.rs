@@ -38,7 +38,7 @@ use core_money::{Currency, Money, MoneyError};
 use fs2::FileExt;
 use importer_core::{ParsedBatch, ParserRunReport};
 use pay_schedule::{Frequency, PaySchedule};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use thiserror::Error;
 use uuid::Uuid;
 use vault_crypto::Dek;
@@ -51,7 +51,7 @@ mod backup_history;
 mod band_drift;
 mod categories;
 mod connectors;
-pub use connectors::{ConnectorConnectionRow, ConnectorLinkRow};
+pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
 mod forecast;
@@ -62,7 +62,9 @@ mod forecast_overrides;
 mod forecast_persist;
 mod ingestion;
 mod jobs;
-pub use jobs::{DurableJobView, JobStoreError};
+pub use jobs::{
+    DurableJobView, JobStoreError, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
+};
 mod loan_overlap;
 mod manual_entry;
 mod merchant_grouping;
@@ -74,6 +76,8 @@ mod projection;
 mod recurring_debt;
 mod recurring_detection;
 mod recurring_instances;
+mod rekey;
+pub use rekey::{available_space, verify_rekeyed_copy, BlobRename};
 mod scenarios;
 mod schedule_sources;
 mod spend_by_category;
@@ -89,8 +93,8 @@ pub use commitments::CommitmentView;
 pub use money_inbox::MoneyInboxItem;
 
 /// The schema version a fully-migrated vault is at — the highest migration this
-/// build knows. A backup whose `schema_version` exceeds this is from a newer app
-/// and cannot be restored (personal-cfo-au3, ADR 0024 §5).
+/// build knows. Newer backups and ordinary existing-vault version witnesses
+/// cannot be opened by this build (ADR 0024, personal-cfo-g3m.4).
 pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
@@ -519,6 +523,9 @@ pub enum WriteCommand {
         file_fingerprint: Option<String>,
         /// Parser version, if known at open time.
         parser_version: Option<String>,
+        /// The connector connection a sync batch came from (personal-cfo-6evt,
+        /// ADR 0014 §3 addendum 2026-10-04); `None` for file imports.
+        connector_connection_id: Option<Uuid>,
     },
     /// Attach a parsed `source_record` to a batch (ADR 0008, personal-cfo-3bb).
     /// Idempotent on `(batch, source_hash)`: re-attaching the same content adds no
@@ -1080,6 +1087,17 @@ pub enum DbError {
     /// Another process already owns the unlocked-vault runner.
     #[error("vault is already unlocked by another process")]
     VaultInUse,
+    /// A newer build has written a schema marker this build cannot interpret.
+    #[error("vault schema {observed} is newer than supported schema {supported}")]
+    NewerSchema {
+        /// Observed schema marker; safe to expose without vault contents.
+        observed: i64,
+        /// Highest schema this build knows.
+        supported: i64,
+    },
+    /// An existing vault does not match a proven supported migration layout.
+    #[error("existing vault schema is unsupported or incomplete")]
+    UnsupportedSchema,
     /// The worker is not in a state that accepts writes.
     #[error("worker unavailable for writes: {0:?}")]
     WorkerUnavailable(WorkerState),
@@ -1200,7 +1218,11 @@ impl DbWorker {
     pub fn open(path: impl AsRef<Path>, key: &str) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         let runner_lock = acquire_runner_lock(&path)?;
-        let conn = open_keyed(&path, key)?;
+        let conn = if path.try_exists()? {
+            open_existing_keyed(&path, key)?
+        } else {
+            open_keyed(&path, key)?
+        };
         Self::bootstrap(
             path,
             conn,
@@ -1225,7 +1247,25 @@ impl DbWorker {
     pub fn open_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         let runner_lock = acquire_runner_lock(&path)?;
-        let conn = open_keyed_raw(&path, &dek)?;
+        let conn = if path.try_exists()? {
+            open_existing_keyed_raw(&path, &dek)?
+        } else {
+            open_keyed_raw(&path, &dek)?
+        };
+        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
+    }
+
+    /// Open an existing envelope-backed vault. Unlike creation, a missing DB
+    /// must never be silently initialized during unlock.
+    ///
+    /// # Errors
+    /// Returns [`DbError::NewerSchema`] for a newer version marker,
+    /// [`DbError::UnsupportedSchema`] for an unverified/missing layout, or the
+    /// normal keying, filesystem and exclusive-owner errors.
+    pub fn open_existing_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
+        let path = path.as_ref().to_path_buf();
+        let runner_lock = acquire_runner_lock(&path)?;
+        let conn = open_existing_keyed_raw(&path, &dek)?;
         Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
     }
 
@@ -1274,10 +1314,17 @@ impl DbWorker {
     /// # Errors
     /// Returns [`DbError`] if the connection cannot be opened or keyed.
     pub fn read_connection(&self) -> Result<Connection, DbError> {
+        // A worker already owns a supported vault. Reads must never create a
+        // replacement if its path disappears during that lifetime.
+        let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         match &self.key {
-            KeyMaterial::Passphrase(passphrase) => open_keyed(&self.path, passphrase.as_str()),
-            KeyMaterial::Raw(dek) => open_keyed_raw(&self.path, dek),
+            KeyMaterial::Passphrase(passphrase) => {
+                conn.pragma_update(None, "key", passphrase.as_str())?
+            }
+            KeyMaterial::Raw(dek) => key_raw(&conn, dek)?,
         }
+        configure_conn(&conn)?;
+        Ok(conn)
     }
 
     /// A consistent snapshot of the encrypted `vault.db` bytes, for backup
@@ -2601,7 +2648,7 @@ impl DbWorker {
     }
 
     /// The linked SQLCipher version string (`PRAGMA cipher_version`), e.g.
-    /// `"4.5.7 community"`. Pinned in `docs/architecture/stack.md`; the
+    /// `"4.14.0 community"`. Pinned in `docs/architecture/stack.md`; the
     /// cross-version vault test (personal-cfo-7igv) asserts it so a silent
     /// SQLCipher upgrade that could break vault compatibility (risk
     /// personal-cfo-aia0) fails CI instead of shipping.
@@ -2678,25 +2725,48 @@ impl DbWorker {
         Ok(())
     }
 
-    /// File-level dedupe (ADR 0014 §3): the id of an already-committed batch with
+    /// File-level dedupe (ADR 0014 §3): the id of an already-imported batch with
     /// this whole-file `fingerprint`, if any — an exact re-upload can be skipped.
     ///
-    /// A batch stops counting once none of its committed rows survive in the ledger
-    /// (every one voided): the user deleted that import, and re-uploading the same
-    /// file is a deliberate restore, not an accidental duplicate (feedback 2026-07-03).
+    /// A batch counts while one of its committed rows survives in the ledger
+    /// (not voided). It also counts while a row is still flagged for review in
+    /// the Money Inbox, unless the user has voided any of its committed rows
+    /// (personal-cfo-yl5): re-uploading a file whose rows are all awaiting
+    /// review must not flag them all again, but voiding an import's rows means
+    /// the user deleted it, and re-uploading the same file is then a deliberate
+    /// restore, not an accidental duplicate (feedback 2026-07-03). Skipped rows
+    /// keep nothing counted. ADR 0008 §5 addendum.
     pub fn batch_with_fingerprint(&self, fingerprint: &str) -> Result<Option<Uuid>, DbError> {
         self.read_connection()?
             .query_row(
                 "SELECT sb.id FROM source_batches sb
                   WHERE sb.file_fingerprint = ?1
                     AND sb.status IN ('committed', 'partially_committed')
-                    AND EXISTS (
-                      SELECT 1 FROM staged_transactions st
-                      JOIN source_records sr ON sr.id = st.source_record_id
-                      JOIN ledger_transactions lt ON lt.id = st.committed_transaction_id
-                       WHERE sr.source_batch_id = sb.id
-                         AND st.commit_status = 'committed'
-                         AND lt.voided_at IS NULL
+                    AND (
+                      EXISTS (
+                        SELECT 1 FROM staged_transactions st
+                        JOIN source_records sr ON sr.id = st.source_record_id
+                        JOIN ledger_transactions lt ON lt.id = st.committed_transaction_id
+                         WHERE sr.source_batch_id = sb.id
+                           AND st.commit_status = 'committed'
+                           AND lt.voided_at IS NULL
+                      )
+                      OR (
+                        EXISTS (
+                          SELECT 1 FROM staged_transactions st
+                          JOIN source_records sr ON sr.id = st.source_record_id
+                           WHERE sr.source_batch_id = sb.id
+                             AND st.commit_status = 'flagged'
+                        )
+                        AND NOT EXISTS (
+                          SELECT 1 FROM staged_transactions st
+                          JOIN source_records sr ON sr.id = st.source_record_id
+                          JOIN ledger_transactions lt ON lt.id = st.committed_transaction_id
+                           WHERE sr.source_batch_id = sb.id
+                             AND st.commit_status = 'committed'
+                             AND lt.voided_at IS NOT NULL
+                        )
+                      )
                     )
                   LIMIT 1",
                 params![fingerprint],
@@ -2743,6 +2813,43 @@ impl DbWorker {
         batch: &ParsedBatch,
         target_account: Uuid,
     ) -> Result<Vec<Uuid>, DbError> {
+        self.stage_file_batch(batch_id, batch, |_| Some(target_account))
+            .map(|(staged, _)| staged)
+    }
+
+    /// Bulk-stage a parsed file whose rows span several accounts
+    /// (personal-cfo-tulv, e.g. a YNAB register export): each row lands in
+    /// the real account `account_map` gives its source account label
+    /// (`ParsedTransaction::external_account`), the file-import sibling of
+    /// [`Self::stage_sync_batch`]. A row whose label is absent from the map
+    /// — the user chose not to import that account — is **not staged**, and
+    /// its count is returned so the caller reports it rather than silently
+    /// dropping it (ADR 0014 §3); it never falls into some other account.
+    /// Staged accounts carry the map's answer as `matched_account_id`
+    /// (`None` = in the file, not imported).
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a write failure.
+    pub fn stage_parsed_batch_routed(
+        &self,
+        batch_id: Uuid,
+        batch: &ParsedBatch,
+        account_map: &std::collections::BTreeMap<String, Uuid>,
+    ) -> Result<(Vec<Uuid>, usize), DbError> {
+        self.stage_file_batch(batch_id, batch, |label| {
+            label.and_then(|key| account_map.get(key)).copied()
+        })
+    }
+
+    /// The file-import staging both entry points share: `route` resolves a
+    /// source account label to the real account a row is proposed against,
+    /// or `None` to leave the row unstaged (counted in the returned total).
+    fn stage_file_batch(
+        &self,
+        batch_id: Uuid,
+        batch: &ParsedBatch,
+        route: impl Fn(Option<&str>) -> Option<Uuid>,
+    ) -> Result<(Vec<Uuid>, usize), DbError> {
         let guard = self.lock();
         let tx = guard.conn.unchecked_transaction()?;
         for acct in &batch.accounts {
@@ -2753,12 +2860,25 @@ impl DbWorker {
                     external_name: acct.external_name.as_deref(),
                     external_number_hash: acct.external_number_hash.as_deref(),
                     proposed_subtype: acct.proposed_subtype.as_deref(),
-                    matched_account_id: Some(target_account),
+                    matched_account_id: route(acct.external_id.as_deref()),
                 },
             )?;
         }
         let mut staged = Vec::new();
+        let mut not_routed = 0_usize;
         for rec in &batch.records {
+            let txn_account = rec
+                .transaction
+                .as_ref()
+                .map(|t| route(t.external_account.as_deref()));
+            let bal_account = rec
+                .balance
+                .as_ref()
+                .map(|b| route(b.external_account.as_deref()));
+            if matches!(txn_account, Some(None)) || matches!(bal_account, Some(None)) {
+                not_routed += 1;
+                continue;
+            }
             // insert_source_record dedupes on (batch, source_hash) and returns
             // the EFFECTIVE id — staged rows must reference that, never a
             // freshly-minted id that was not inserted.
@@ -2773,14 +2893,14 @@ impl DbWorker {
                     parse_confidence_bps: rec.parse_confidence_bps.map(i64::from),
                 },
             )?;
-            if let Some(txn) = &rec.transaction {
+            if let (Some(txn), Some(Some(account))) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
                 let transaction_date = txn.transaction_date.map(|d| d.to_string());
                 let id = ingestion::stage_transaction(
                     &tx,
                     &ingestion::NewStagedTransaction {
                         source_record_id: record_id,
-                        proposed_account_id: Some(target_account),
+                        proposed_account_id: Some(account),
                         posted_at: &posted,
                         transaction_date: transaction_date.as_deref(),
                         amount_minor: txn.amount.minor_units(),
@@ -2793,13 +2913,13 @@ impl DbWorker {
                 )?;
                 staged.push(id);
             }
-            if let Some(bal) = &rec.balance {
+            if let (Some(bal), Some(Some(account))) = (&rec.balance, bal_account) {
                 let observed = bal.observed_at.to_string();
                 ingestion::stage_balance(
                     &tx,
                     &ingestion::NewStagedBalance {
                         source_record_id: record_id,
-                        account_ref: Some(target_account),
+                        account_ref: Some(account),
                         observed_at: &observed,
                         balance_minor: bal.amount.minor_units(),
                         currency: bal.amount.currency().code(),
@@ -2808,7 +2928,7 @@ impl DbWorker {
             }
         }
         tx.commit()?;
-        Ok(staged)
+        Ok((staged, not_routed))
     }
 
     /// Bulk-stage a connector sync batch (personal-cfo-gglk): like
@@ -3002,12 +3122,14 @@ impl DbWorker {
     /// fingerprint sitting flagged or skipped from an earlier batch — the
     /// connector pre-check (tevp): a rewind re-fetch of an UNRESOLVED (or
     /// deliberately skipped) collision must not mint a fresh inbox item on
-    /// every sync.
+    /// every sync. `connection` scopes the certainty to that connection's own
+    /// history (personal-cfo-6evt); `None` keeps the type-wide check.
     pub fn txn_fingerprint_already_tracked(
         &self,
         txn_fingerprint: &str,
         account: Uuid,
         excluding_staged_id: Uuid,
+        connection: Option<Uuid>,
     ) -> Result<bool, DbError> {
         let conn = self.read_connection()?;
         ingestion::fingerprint_already_tracked(
@@ -3015,6 +3137,7 @@ impl DbWorker {
             txn_fingerprint,
             Some(account),
             excluding_staged_id,
+            connection,
         )
     }
 
@@ -3863,6 +3986,59 @@ fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
     Ok(conn)
 }
 
+fn open_existing_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
+    open_existing(path, |conn| {
+        conn.pragma_update(None, "key", key).map_err(Into::into)
+    })
+}
+
+fn open_existing_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
+    open_existing(path, |conn| key_raw(conn, dek))
+}
+
+/// The runner lock is held by the caller throughout both checks and bootstrap.
+/// Read-only inspection may let SQLite create absent WAL/SHM coordination files,
+/// but issues no app-controlled write and sees committed WAL state. The second
+/// check is on the writer handle before configure_conn requests WAL.
+fn open_existing(
+    path: &Path,
+    key: impl Fn(&Connection) -> Result<(), DbError>,
+) -> Result<Connection, DbError> {
+    let source = File::open(path).map_err(|_| DbError::UnsupportedSchema)?;
+    let reader = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    key(&reader)?;
+    reader.execute_batch("BEGIN DEFERRED")?;
+    let inspected = migrations::inspect_existing(&reader);
+    reader.execute_batch("ROLLBACK")?;
+    inspected?;
+    drop(reader);
+    verify_file_identity(&source, path)?;
+
+    let writer = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    key(&writer)?;
+    verify_file_identity(&source, path)?;
+    migrations::inspect_existing(&writer)?;
+    configure_conn(&writer)?;
+    Ok(writer)
+}
+
+fn verify_file_identity(source: &File, path: &Path) -> Result<(), DbError> {
+    let original = source.metadata().map_err(|_| DbError::UnsupportedSchema)?;
+    let current = std::fs::metadata(path).map_err(|_| DbError::UnsupportedSchema)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if original.dev() != current.dev() || original.ino() != current.ino() {
+            return Err(DbError::UnsupportedSchema);
+        }
+    }
+    #[cfg(not(unix))]
+    if original.len() != current.len() || original.modified().ok() != current.modified().ok() {
+        return Err(DbError::UnsupportedSchema);
+    }
+    Ok(())
+}
+
 /// Open a SQLCipher connection keyed with a **raw** 256-bit key (no SQLCipher
 /// KDF — the DEK is used verbatim). Used by [`DbWorker::open_with_raw_key`].
 ///
@@ -3871,9 +4047,15 @@ fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
 /// `pragma_update` (which would quote the value and be treated as a passphrase).
 /// The PRAGMA string holds the key in hex and is zeroized immediately after use.
 fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
+    let conn = Connection::open(path)?;
+    key_raw(&conn, dek)?;
+    configure_conn(&conn)?;
+    Ok(conn)
+}
+
+fn key_raw(conn: &Connection, dek: &Dek) -> Result<(), DbError> {
     use std::fmt::Write as _;
 
-    let conn = Connection::open(path)?;
     let mut pragma = String::with_capacity(80);
     pragma.push_str("PRAGMA key = \"x'");
     for byte in dek.expose_bytes() {
@@ -3884,8 +4066,7 @@ fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
     let result = conn.execute_batch(&pragma);
     pragma.zeroize();
     result?;
-    configure_conn(&conn)?;
-    Ok(conn)
+    Ok(())
 }
 
 /// Apply the non-key connection pragmas shared by both keying paths (WAL,
@@ -3902,7 +4083,7 @@ fn configure_conn(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-/// The bundled SQLite version string (`rusqlite::version()`), e.g. `"3.45.3"`.
+/// The bundled SQLite version string (`rusqlite::version()`), e.g. `"3.51.3"`.
 /// Pinned in `docs/architecture/stack.md` and asserted by the cross-version vault
 /// test (personal-cfo-7igv); see also [`DbWorker::cipher_version`].
 #[must_use]
@@ -3911,8 +4092,9 @@ pub fn sqlite_version() -> &'static str {
 }
 
 /// The baseline schema (migration `0001`, personal-cfo-wkn). Defined as a `&str`
-/// const consumed by [`migrations::MIGRATIONS`]; `CREATE TABLE IF NOT EXISTS`
-/// keeps it a safe no-op on a pre-framework vault that already has these tables.
+/// const consumed by [`migrations::MIGRATIONS`]. `CREATE TABLE IF NOT EXISTS`
+/// supports known migration prefixes; it is not evidence that an unverified
+/// existing no-tracker layout is compatible.
 ///
 /// operation_log (ADR 0011, personal-cfo-0s0): immutable append-only audit
 /// trail. Provenance UUIDs are 16-byte BLOBs; idempotency_key stays TEXT (an
@@ -4246,10 +4428,9 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
     )?;
     if exists {
         // Advance the write-once stamp to the version we just migrated to. Only
-        // move it FORWARD: if the stored stamp is already higher (a vault created
-        // by a newer build, opened here by an older one), leave it so the health
-        // check still surfaces the genuine "opened by a newer version" mismatch
-        // instead of masking it.
+        // move it FORWARD. Existing-vault open refuses a higher stamp before
+        // bootstrap; this predicate also prevents accidental down-stamping by
+        // any future internal caller.
         conn.execute(
             "UPDATE vault_metadata SET schema_version = ?1
              WHERE singleton = 1 AND schema_version < ?1",
@@ -5737,6 +5918,7 @@ fn read_duplicate_candidates(
              FROM staged_transactions c
              JOIN staged_transactions s ON s.id = ?1
              WHERE c.txn_fingerprint = s.txn_fingerprint
+               AND c.proposed_account_id IS s.proposed_account_id
                AND c.commit_status = 'committed'
                AND c.committed_transaction_id IS NOT NULL
              UNION
@@ -6335,6 +6517,7 @@ fn apply_command(
             source_name,
             file_fingerprint,
             parser_version,
+            connector_connection_id,
         } => apply::ingestion_cmds::apply_create_source_batch(
             &tx,
             id,
@@ -6342,6 +6525,7 @@ fn apply_command(
             source_name,
             file_fingerprint,
             parser_version,
+            connector_connection_id,
         )?,
         WriteCommand::AttachSourceRecord {
             id,

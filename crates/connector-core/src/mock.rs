@@ -18,8 +18,9 @@ use semver::Version;
 
 use crate::{
     review_date, AccountType, Capability, CapabilitySet, Connection, ConnectorAdapter,
-    ConnectorEconomics, ConnectorError, ConnectorMetadata, ConnectorRegistration, Credential,
-    CredentialTier, DisclosureText, HealthStatus, LinkInput, LinkSession, Payer,
+    ConnectorEconomics, ConnectorError, ConnectorLinkGuide, ConnectorMetadata,
+    ConnectorRegistration, Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput,
+    LinkSession, Payer,
 };
 
 /// Registry metadata for the mock provider — free, US-only, with obviously
@@ -50,7 +51,19 @@ pub const fn mock_metadata(enabled: bool) -> ConnectorMetadata {
             cost_summary: "mock: cost point",
             optional: "mock: optional point",
         },
+        link_guide: ConnectorLinkGuide {
+            title: "mock: guide title",
+            refresh_note: "mock: refresh note",
+            setup_steps: &["mock: step at https://mock.invalid"],
+            provider_url: "https://mock.invalid",
+            credential_label: "mock: credential",
+            credential_noun: "mock credential",
+            credential_placeholder: "mock: paste",
+            paste_instructions: "mock: paste instructions",
+        },
+        referral: None,
         enabled,
+        suggested_refresh: crate::RefreshCadence::EveryOpen,
     }
 }
 
@@ -103,6 +116,25 @@ pub struct MockConnector {
     /// Bridge right after an app connection is created, personal-cfo-k025).
     /// `sync` still returns the full fixture.
     empty_discovery: bool,
+    /// The currency the checking and card accounts report (and their rows are
+    /// in). Defaults to `Some("USD")`, the test household's base currency;
+    /// `None` models a provider that states no currency (personal-cfo-049p6).
+    account_currency: Option<&'static str>,
+    /// When set, the fixture adds `mock-acct-euro`: an account in EUR, with
+    /// EUR rows and balance — a non-household currency (049p6 AC1).
+    include_foreign_account: bool,
+    /// `(namespace, id prefix)`: give rows provider-shaped ids and
+    /// fingerprints (`date|minor|namespace:id`) like the real adapters, so two
+    /// connections can report the same or different ids for the same
+    /// transactions (personal-cfo-6evt).
+    provider_ids: Option<(&'static str, &'static str)>,
+    /// Fixture row indexes the provider still reports as pending: not staged,
+    /// reported as a warning, like the posted-only real adapters.
+    pending_rows: &'static [usize],
+    /// When set, every sync re-delivers the whole fixture whatever `since`
+    /// says — the overlap window real adapters rewind into, so a repeat
+    /// refresh genuinely re-fetches rows it has seen before.
+    refetch_everything: bool,
 }
 
 impl MockConnector {
@@ -123,7 +155,45 @@ impl MockConnector {
             include_unnamed_account: false,
             held_accounts: &[],
             empty_discovery: false,
+            account_currency: Some("USD"),
+            include_foreign_account: false,
+            provider_ids: None,
+            pending_rows: &[],
+            refetch_everything: false,
         }
+    }
+
+    /// Same fixture, re-delivered in full on every sync regardless of
+    /// `since` — models the overlap window real adapters rewind into
+    /// (personal-cfo-6evt), so repeat-refresh tests re-fetch real rows.
+    #[must_use]
+    pub const fn refetching_everything(mut self) -> Self {
+        self.refetch_everything = true;
+        self
+    }
+
+    /// Same fixture, with provider-shaped row ids and fingerprints
+    /// (`date|minor|{namespace}:{prefix}-{account}-{row}`), as the real
+    /// adapters build them. Two mocks with the same `namespace` and `prefix`
+    /// report the same ids; a different `prefix` models a second connection
+    /// whose provider assigned its own ids (personal-cfo-6evt).
+    #[must_use]
+    pub const fn with_provider_ids(
+        mut self,
+        namespace: &'static str,
+        prefix: &'static str,
+    ) -> Self {
+        self.provider_ids = Some((namespace, prefix));
+        self
+    }
+
+    /// Same fixture, but these row indexes (0..3) are still pending: not
+    /// staged, and each reported as a warning (posted-only, like the real
+    /// adapters).
+    #[must_use]
+    pub const fn with_pending(mut self, rows: &'static [usize]) -> Self {
+        self.pending_rows = rows;
+        self
     }
 
     /// Same fixture, reporting these raw account ids retry-required so
@@ -168,6 +238,34 @@ impl MockConnector {
         }
     }
 
+    /// The checking and card accounts report `currency` (and their rows are
+    /// in it when it is USD or EUR). `None` = the provider states none.
+    #[must_use]
+    pub fn with_account_currency(mut self, currency: Option<&'static str>) -> Self {
+        self.account_currency = currency;
+        self
+    }
+
+    /// The fixture plus `mock-acct-euro`, an account in EUR.
+    #[must_use]
+    pub fn with_foreign_account(mut self) -> Self {
+        self.include_foreign_account = true;
+        self
+    }
+
+    /// The currency one fixture account's money is in.
+    fn money_currency(&self, account: &str) -> core_money::Currency {
+        let code = if account == "mock-acct-euro" {
+            Some("EUR")
+        } else {
+            self.account_currency
+        };
+        match code {
+            Some("EUR") => core_money::Currency::Eur,
+            _ => core_money::Currency::Usd,
+        }
+    }
+
     /// The fixture plus one account with no external id or name.
     #[must_use]
     pub fn with_unnamed_account() -> Self {
@@ -201,20 +299,32 @@ impl MockConnector {
                 external_name: Some("Mock Checking".to_owned()),
                 external_number_hash: Some("sha256:mock-checking".to_owned()),
                 proposed_subtype: Some("checking".to_owned()),
+                currency: self.account_currency.map(str::to_owned),
             },
             ParsedAccount {
                 external_id: Some("mock-acct-card".to_owned()),
                 external_name: Some("Mock Card".to_owned()),
                 external_number_hash: Some("sha256:mock-card".to_owned()),
                 proposed_subtype: Some("credit_card".to_owned()),
+                currency: self.account_currency.map(str::to_owned),
             },
         ];
+        if self.include_foreign_account {
+            accounts.push(ParsedAccount {
+                external_id: Some("mock-acct-euro".to_owned()),
+                external_name: Some("Mock Euro Account".to_owned()),
+                external_number_hash: Some("sha256:mock-euro".to_owned()),
+                proposed_subtype: Some("checking".to_owned()),
+                currency: Some("EUR".to_owned()),
+            });
+        }
         if self.include_unnamed_account {
             accounts.push(ParsedAccount {
                 external_id: None,
                 external_name: None,
                 external_number_hash: None,
                 proposed_subtype: None,
+                currency: None,
             });
         }
         accounts
@@ -222,20 +332,33 @@ impl MockConnector {
 
     /// Three deterministic transactions per account, dated relative to a fixed
     /// anchor so `since` filtering is exercised.
-    fn fixture_transactions(account: &str, since: Option<NaiveDate>) -> Vec<ParsedRecord> {
-        use core_money::{Currency, Money};
+    fn fixture_transactions(&self, account: &str, since: Option<NaiveDate>) -> Vec<ParsedRecord> {
+        use core_money::Money;
+        let currency = self.money_currency(account);
         let anchor = NaiveDate::from_ymd_opt(2026, 7, 15).expect("valid fixture anchor");
         [(0_u64, -1250_i64), (10, -4599), (20, 250_000)]
             .into_iter()
             .enumerate()
             .filter_map(|(i, (day_offset, minor))| {
                 let posted = anchor + chrono::Days::new(day_offset);
-                if since.is_some_and(|s| posted < s) {
+                let before_window = !self.refetch_everything && since.is_some_and(|s| posted < s);
+                if before_window || self.pending_rows.contains(&i) {
                     return None;
                 }
                 let merchant = format!("mock merchant {i}");
+                let (external_id, txn_fingerprint) = match self.provider_ids {
+                    Some((namespace, prefix)) => {
+                        let id = format!("{prefix}-{account}-{i}");
+                        let fingerprint = format!("{posted}|{minor}|{namespace}:{id}");
+                        (id, fingerprint)
+                    }
+                    None => (
+                        format!("mock-{account}-{i}"),
+                        format!("{posted}|{minor}|{merchant}|{account}"),
+                    ),
+                };
                 Some(ParsedRecord {
-                    external_id: Some(format!("mock-{account}-{i}")),
+                    external_id: Some(external_id),
                     source_hash: format!("sha256:mock-{account}-{i}"),
                     normalized_json: format!("{{\"mock_row\":{i}}}"),
                     parse_confidence_bps: Some(10_000),
@@ -244,12 +367,12 @@ impl MockConnector {
                         transaction_date: None,
                         raw_date: posted.to_string(),
                         date_confidence_bps: 10_000,
-                        amount: Money::new(minor, Currency::Usd),
+                        amount: Money::new(minor, currency),
                         description: Some(format!("Mock purchase {i}")),
                         category: None,
                         normalized_merchant: Some(merchant.clone()),
                         external_account: Some(account.to_owned()),
-                        txn_fingerprint: format!("{posted}|{minor}|{merchant}|{account}"),
+                        txn_fingerprint,
                     }),
                     balance: None,
                 })
@@ -315,7 +438,7 @@ impl ConnectorAdapter for MockConnector {
     ) -> Result<Vec<ParsedRecord>, ConnectorError> {
         self.check_failure()?;
         self.capabilities.ensure(Capability::Transactions)?;
-        Ok(Self::fixture_transactions(account_external_id, since))
+        Ok(self.fixture_transactions(account_external_id, since))
     }
 
     fn fetch_balances(
@@ -323,12 +446,12 @@ impl ConnectorAdapter for MockConnector {
         _conn: &Connection,
         account_external_id: &str,
     ) -> Result<Vec<ParsedBalance>, ConnectorError> {
-        use core_money::{Currency, Money};
+        use core_money::Money;
         self.check_failure()?;
         self.capabilities.ensure(Capability::Balances)?;
         Ok(vec![ParsedBalance {
             observed_at: NaiveDate::from_ymd_opt(2026, 8, 4).expect("valid fixture date"),
-            amount: Money::new(123_456, Currency::Usd),
+            amount: Money::new(123_456, self.money_currency(account_external_id)),
             external_account: Some(account_external_id.to_owned()),
         }])
     }
@@ -362,6 +485,14 @@ impl ConnectorAdapter for MockConnector {
             };
             if capabilities.supports(crate::Capability::Transactions) {
                 records.extend(self.fetch_transactions(conn, key, since)?);
+                for row in self.pending_rows {
+                    warnings.push(importer_core::ParseWarning {
+                        row: None,
+                        message: format!(
+                            "pending transaction {row} on {key} not staged (posted-only scope)"
+                        ),
+                    });
+                }
             }
             if capabilities.supports(crate::Capability::Balances) {
                 for balance in self.fetch_balances(conn, key)? {
@@ -381,6 +512,7 @@ impl ConnectorAdapter for MockConnector {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }

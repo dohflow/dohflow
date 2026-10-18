@@ -9,6 +9,9 @@ repository.workspace = true
 description = "The Finance Kernel: the single internal boundary for all financial state changes. Typed, sealed commands lowered onto the db-worker; no raw database types in its public API."
 
 [dependencies]
+# The session's local diagnostic capture lives on the kernel (personal-cfo-lyd);
+# the redactor + typed capture types come from here.
+observability = { path = "../observability" }
 core-ledger = { path = "../core-ledger" }
 core-money = { path = "../core-money" }
 db-worker = { path = "../db-worker" }
@@ -35,6 +38,7 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 
 [dev-dependencies]
+base64 = "=0.22.1" # Frozen encrypted cross-version fixtures (text only).
 tempfile = "3"
 tracing-test = "0.2"
 # Build a test ImporterPlugin's version in the ingest-pipeline e2e (personal-cfo-cmx).
@@ -45,6 +49,8 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 # Logging-redaction gate (personal-cfo-zobt): capture the kernel's tracing spans
 # through the production redacting subscriber and assert no §6.6 value leaks.
-observability = { path = "../observability" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The process-wide test subscriber log-capture tests install first (DoD §2.4,
+# personal-cfo-56w.5). Same crate as the normal dependency, test feature only.
+observability = { path = "../observability", features = ["test-support"] }

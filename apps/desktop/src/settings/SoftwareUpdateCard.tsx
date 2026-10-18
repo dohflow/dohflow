@@ -132,11 +132,25 @@ export function SoftwareUpdateCard() {
             You're on the latest version.
           </div>
         )}
-        {release?.checked && !release.available && (
+        {release?.checked && !release.available && !release.requiredMacOS && (
           <div className="flex items-center gap-2 text-sm text-gain">
             <CircleCheck className="size-4 shrink-0" aria-hidden />
             You're on the latest version.
           </div>
+        )}
+        {/* The minimum-macOS guard (personal-cfo-md8h2.4): a newer version exists but this
+            Mac's macOS can't run it, so nothing is offered for download. */}
+        {release?.checked && release.requiredMacOS && (
+          <p
+            className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground"
+            data-testid="update-needs-newer-macos"
+          >
+            DohFlow {release.latestVersion ? `v${release.latestVersion}` : "has a newer version that"}{" "}
+            needs macOS {release.requiredMacOS} or later
+            {release.currentMacOS ? `; this Mac runs macOS ${release.currentMacOS}` : ""}. Update
+            macOS in System Settings › General › Software Update to get it. This version keeps
+            working in the meantime.
+          </p>
         )}
 
         {/* Checked, but the built commit isn't in the tree (e.g. built outside git) so the

@@ -18,9 +18,13 @@
   registry classifies each provider against), ADR 0060 (SimpleFIN-first
   strategy + the onboarding disclosure panel this registry's disclosure text
   feeds), ADR 0076 (`personal-cfo-m0kgx`, multi-provider strategy — decides
-  *which* providers ship and the affiliate/FTC stance; does not redefine this
-  registry's shape), ADR 0022 (parser/document isolation — the no-runtime-
+  *which* providers ship and the affiliate/FTC stance; its §5 adds one
+  optional referral field to this registry's shape, recorded in the
+  2026-09-27 addendum below), ADR 0022 (parser/document isolation — the no-runtime-
   dynamic-loading precedent this ADR's Rust-vs-TOML decision follows)
+- **Documented in:** [`docs/architecture/connector-provider-registry.md`](../architecture/connector-provider-registry.md)
+  — the implemented registry, its IPC, the picker flow, and how to add a
+  provider.
 
 ## Context
 
@@ -252,3 +256,56 @@ connectors layered on top of it.
   has no real user yet; when one exists, confirm the economics shape still
   fits a brokered provider's actual billing relationship (DohFlow may be the
   one setting the cost, not just relaying a third party's).
+
+## Addendum (2026-09-27, `personal-cfo-m0kgx`): an optional referral field
+
+ADR 0076 §5 records the owner's affiliate stance (D15, take and disclose). A
+provider that offers a referral fee needs somewhere to keep the referral URL
+and the FTC 16 CFR Part 255 sentence that must sit next to it.
+`ConnectorMetadata` (§2) gains **one optional field** for this: a referral,
+made of
+
+- the referral URL, rendered in the app as selectable text, never a link
+  (ADR 0076 §5; ADR 0010's opener grant is scoped to `https://dohflow.app/*`
+  only); and
+- that provider's disclosure sentence, written **per provider**, for the same
+  reason §5 keeps every `DisclosureText` field per provider. Whether DohFlow
+  can earn from a provider is a fact about that provider, never boilerplate.
+
+`None` means no referral, and SimpleFIN's entry carries none. The field is
+added by the first bead that registers a provider with a referral
+(`personal-cfo-r2pow`), not ahead of need. The picker (`personal-cfo-dto2j`)
+renders the sentence only when the field is present, and the field never
+affects picker order (ADR 0076 §4). Everything else in this ADR is unchanged.
+
+## Addendum (2026-09-27, `personal-cfo-dto2j`): a per-provider link guide
+
+The provider picker (ADR 0076 §4) renders every provider from this registry,
+so everything it says about *how to connect* one provider has to live here
+too. That covers the panel title, how often the provider refreshes, the
+setup steps, the provider's URL, and what the credential is called and how
+to paste it. Kept in the frontend, that copy would need a map keyed by
+adapter id, which puts provider facts in two places and leaves the picker
+hardcoded to whichever providers the map knows (owner decision, 2026-09-27,
+on `personal-cfo-dto2j`).
+
+`ConnectorMetadata` (§2) therefore gains a required **`link_guide`**:
+
+- `title` — the disclosure panel's heading.
+- `refresh_note` — how often the provider pulls from the user's banks, and
+  when the app refreshes.
+- `setup_steps` — what the user does at the provider to get a credential, in
+  order.
+- `provider_url` — the provider's own site. Wherever it appears in a step,
+  the app renders it as **selectable text, never a link**, because ADR 0010's
+  opener grant is scoped to `https://dohflow.app/*` only.
+- `credential_label`, `credential_noun`, `credential_placeholder`,
+  `paste_instructions` — what the credential is called (a SimpleFIN "setup
+  token", a LunchFlow "API key") and how to paste it.
+
+Like `DisclosureText` (§5), every field is written per provider, never shared
+boilerplate. The picker renders the guide after the four disclosure points and
+before any credential field exists. SimpleFIN's guide is the shipped
+onboarding copy (`personal-cfo-kdw6`), unchanged; a test pins it to the
+rendered text of the panel it replaces. Everything else in this ADR is
+unchanged.

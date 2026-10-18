@@ -203,7 +203,10 @@ fn apply_change_journal(conn: &Connection) -> Result<(), DbError> {
 
 /// Generator: one item per flagged staged transaction (ADR 0014 §2/§3). Joins the
 /// source batch (for the filename) + the flagged `dedupe_decisions` reason + the
-/// suspected committed counterpart (same fingerprint, already committed).
+/// suspected committed counterpart: the match the decision recorded, else (for a
+/// flag recorded before decisions named it) a committed row with the same
+/// fingerprint **in the same account**; never a voided transaction
+/// (personal-cfo-yl5).
 fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
     let mut stmt = conn.prepare(
         "SELECT s.id, s.posted_at, s.amount_minor, s.currency,
@@ -213,14 +216,19 @@ fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
                   WHERE d.staged_transaction_id = s.id AND d.decision = 'flagged'
                   ORDER BY d.decided_at DESC LIMIT 1),
                 COALESCE(
-                  (SELECT c.committed_transaction_id FROM staged_transactions c
-                    WHERE c.txn_fingerprint = s.txn_fingerprint
-                      AND c.commit_status = 'committed'
-                    ORDER BY c.created_at LIMIT 1),
                   (SELECT d.matched_entity_id FROM dedupe_decisions d
+                    JOIN ledger_transactions lt ON lt.id = d.matched_entity_id
                     WHERE d.staged_transaction_id = s.id AND d.decision = 'flagged'
                       AND d.matched_entity_type = 'ledger_transaction'
-                    ORDER BY d.decided_at DESC LIMIT 1))
+                      AND lt.voided_at IS NULL
+                    ORDER BY d.decided_at DESC LIMIT 1),
+                  (SELECT c.committed_transaction_id FROM staged_transactions c
+                    JOIN ledger_transactions lt ON lt.id = c.committed_transaction_id
+                    WHERE c.txn_fingerprint = s.txn_fingerprint
+                      AND c.proposed_account_id IS s.proposed_account_id
+                      AND c.commit_status = 'committed'
+                      AND lt.voided_at IS NULL
+                    ORDER BY c.created_at, c.id LIMIT 1))
          FROM staged_transactions s
          JOIN source_records sr ON sr.id = s.source_record_id
          JOIN source_batches sb ON sb.id = sr.source_batch_id

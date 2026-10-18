@@ -165,6 +165,15 @@ impl VaultRegistry {
             "vault.db-shm",
             "vault.db-journal",
             "vault.db.runner.lock",
+            // Key-rotation artifacts (ADR 0083), in case a rotation ever ran here.
+            "vault.db.rekey",
+            "vault.db.rekey.tmp",
+            "vault.db.rekey-new",
+            "vault.db.rekey-new-wal",
+            "vault.db.rekey-new-shm",
+            "vault.db.rekey-new-journal",
+            "vault.db.envelope.rekey-new",
+            "vault.db.rekey-old",
         ] {
             remove_if_present(&slot.join(filename))?;
         }

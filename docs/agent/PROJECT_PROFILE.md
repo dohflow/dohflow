@@ -76,7 +76,7 @@ Non-negotiables:
 - Platform secrets: macOS Keychain for small secrets such as wrapped vault unlock material, connector tokens where allowed, and BYOK API keys only when explicitly saved by the user.
 - Biometric unlock: optional Touch ID after password unlock; password remains the primary unlock path.
 - AI: none required for core app. Later AI features must be scoped report generators brokered by Rust, read-only, schema-validated, evidence-citing, and cost-capped.
-- Connectors: no connector dependency for MVP. Later connector work must keep provider secrets out of the desktop app and route through user-token flows, self-hosted relay, or managed relay as explicitly designed.
+- Connectors: no connector dependency for MVP. Later connector work must keep provider secrets out of the desktop app and route through user-token flows, self-hosted relay, or managed relay as explicitly designed. How a second or later provider enters the free app (user-pay providers only, the registry gate, the picker, the affiliate disclosure, the currency and `source_type` rules) is ADR 0076 (`docs/adr/0076-multi-provider-connector-strategy.md`).
 
 ## Package manager policy
 
@@ -84,6 +84,7 @@ Non-negotiables:
 - Recommendation: use `pnpm` for the frontend/workspace unless there is a specific reason to use npm, Bun, or Yarn.
 - Once the package manager is chosen, commit exactly one frontend lockfile and never introduce competing lockfiles.
 - Rust uses Cargo and the repository should use a Rust workspace for shared crates.
+- **Tauri is pinned (ADR 0001, `personal-cfo-io42`).** The whole Tauri family (Rust `tauri*`/`wry`/`tao`, npm `@tauri-apps/*`) is recorded exactly in `apps/desktop/src-tauri/tauri-pins.toml`, and `tests/tauri_pins.rs` fails CI on any drift. Never bump a Tauri package as a side effect of other work; an upgrade is its own PR, following `docs/agent/TAURI_UPGRADES.md`.
 - Agents must detect the package manager from the committed lockfile or this profile before running install/build/test commands.
 
 ## Architecture boundaries
@@ -412,9 +413,9 @@ in this repository — there is no `git add` step, and none is needed; the Dolt
 database is the source of truth, backed up by the JSONL mirror and the Dolt
 remote, not by a git commit in this repo.
 
-`--include-memories` is **required**. As of bd 1.2.2 a plain `bd export` omits the
-`bd remember` memories, which would silently shrink the export from 1465
-records to 1320. See `AGENTS.md` §9.0.
+`--include-memories` is **required**. On bd 1.2.2, and still on 1.3.1, a plain
+`bd export` omits the `bd remember` memories, which would silently shrink the
+export from 1695 records to 1531 (2026-10-12 counts). See `AGENTS.md` §9.0.
 
 ## Multi-agent coordination policy
 

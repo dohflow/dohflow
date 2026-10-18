@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { LockKeyhole } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ export function UnlockScreen() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const passwordInput = useRef<HTMLInputElement>(null);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -29,6 +30,7 @@ export function UnlockScreen() {
       setError(describeIpcError(failure));
       setPassword("");
       setSubmitting(false);
+      passwordInput.current?.focus();
     }
   }
 
@@ -50,6 +52,7 @@ export function UnlockScreen() {
               <Label htmlFor="password">Master password</Label>
               <Input
                 id="password"
+                ref={passwordInput}
                 type="password"
                 autoComplete="current-password"
                 autoFocus

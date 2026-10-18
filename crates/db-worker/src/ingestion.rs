@@ -12,10 +12,11 @@
 //! TRUNCATE-safe (removing a batch touches no accounts / ledger / balances).
 //!
 //! Provenance is FK-strict at the application layer: [`link_provenance`] refuses
-//! to pin a committed entity to a `source_record` that does not exist, because
-//! `configure_conn` leaves SQLite's per-connection `foreign_keys` at its default
-//! (off) — the declared `REFERENCES` document intent, this code enforces it
-//! (ADR 0008 §4).
+//! to pin a committed entity to a `source_record` that does not exist. The
+//! provenance link's target is a plain BLOB no foreign key covers, so this code
+//! enforces it (ADR 0008 §4). (The declared intra-staging `REFERENCES` are
+//! enforced by SQLite too: the bundled build defaults `foreign_keys` on — see
+//! migration 53, personal-cfo-r2pow.)
 //!
 //! Every primitive here is forward-built substrate: until the commit pipeline
 //! wires real callers it has no non-test user, hence the module-level
@@ -42,6 +43,9 @@ pub(crate) struct NewSourceBatch<'a> {
     /// for sources without a file (manual, connector sync).
     pub file_fingerprint: Option<&'a str>,
     pub parser_version: Option<&'a str>,
+    /// The connector connection a sync batch came from (personal-cfo-6evt).
+    /// `None` for file imports and for batches synced before it was recorded.
+    pub connector_connection_id: Option<Uuid>,
 }
 
 /// A parsed row / provider object. Keeps the fingerprint + extracted fields,
@@ -216,8 +220,8 @@ pub(crate) fn create_source_batch(
         "INSERT INTO source_batches
             (id, source_type, source_name, file_fingerprint, parser_version,
              status, staged_count, committed_count, skipped_count, summary_json,
-             imported_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'parsing', 0, 0, 0, NULL, NULL, ?6, ?6)",
+             imported_at, created_at, updated_at, connector_connection_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'parsing', 0, 0, 0, NULL, NULL, ?6, ?6, ?7)",
         params![
             id,
             batch.source_type,
@@ -225,6 +229,7 @@ pub(crate) fn create_source_batch(
             batch.file_fingerprint,
             batch.parser_version,
             now,
+            batch.connector_connection_id,
         ],
     )?;
     Ok(id)
@@ -645,6 +650,7 @@ pub(crate) fn read_staged_transaction(
 ///
 /// Returns the reason to flag with plus the matched ledger transaction (so
 /// the Money Inbox review panel can show the counterpart), or `None`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cross_source_duplicate_reason(
     conn: &Connection,
     account_id: Uuid,
@@ -652,41 +658,52 @@ pub(crate) fn cross_source_duplicate_reason(
     amount_minor: i64,
     posted_date: &str,
     own_source_type: &str,
+    own_connection: Option<Uuid>,
     excluding_staged: Uuid,
 ) -> Result<Option<(&'static str, Uuid)>, DbError> {
-    // A committed staged row from a different source type.
-    let staged_match: Option<Uuid> = conn
+    // A committed staged row from a different source type, or — for a
+    // connector — from a different connection of the same type
+    // (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04). A batch with no
+    // recorded connection (file imports, and syncs from before it was
+    // recorded) is the same source as any batch of its type.
+    let staged_match: Option<(Uuid, String)> = conn
         .query_row(
-            "SELECT st.committed_transaction_id FROM staged_transactions st
+            "SELECT st.committed_transaction_id, sb.source_type FROM staged_transactions st
              JOIN source_records sr ON sr.id = st.source_record_id
              JOIN source_batches sb ON sb.id = sr.source_batch_id
              WHERE st.commit_status = 'committed' AND st.id != ?1
                AND st.proposed_account_id IS ?2
                AND st.amount_minor = ?3
                AND substr(st.posted_at, 1, 10) = ?4
-               AND sb.source_type != ?5
+               AND (sb.source_type != ?5
+                    OR (?6 IS NOT NULL AND sb.connector_connection_id IS NOT NULL
+                        AND sb.connector_connection_id != ?6))
                AND st.committed_transaction_id IS NOT NULL
                AND NOT EXISTS (
                  SELECT 1 FROM ledger_transactions lt
                   WHERE lt.id = st.committed_transaction_id
                     AND lt.voided_at IS NOT NULL
                )
+             ORDER BY st.created_at, st.id
              LIMIT 1",
             params![
                 excluding_staged,
                 account_id,
                 amount_minor,
                 posted_date,
-                own_source_type
+                own_source_type,
+                own_connection
             ],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    if let Some(txn) = staged_match {
-        return Ok(Some((
-            "same date and amount already recorded from another source",
-            txn,
-        )));
+    if let Some((txn, matched_type)) = staged_match {
+        let reason = if matched_type == own_source_type {
+            "same date and amount already recorded by another connection"
+        } else {
+            "same date and amount already recorded from another source"
+        };
+        return Ok(Some((reason, txn)));
     }
     // A provenance-free transaction (a manual entry, transfer leg, or other
     // user-authored posting) on the same account/date/amount.
@@ -722,27 +739,39 @@ pub(crate) fn cross_source_duplicate_reason(
 /// connector re-sync pre-check uses this so an unresolved (or explicitly
 /// skipped) collision is not re-staged into a fresh Money Inbox item on
 /// every rewind re-fetch (tevp review blocker).
+///
+/// A provider id is certain only within its connection (personal-cfo-6evt,
+/// ADR 0014 §3 addendum 2026-10-04): with `connection` given, only rows from
+/// that connection's batches count, plus batches synced before connections
+/// were recorded (NULL, which counts as any connection of the type). A match
+/// from another connection is not tracked here; it reaches commit, where the
+/// fingerprint and cross-source layers flag it for review.
 pub(crate) fn fingerprint_already_tracked(
     conn: &Connection,
     txn_fingerprint: &str,
     account: Option<Uuid>,
     excluding: Uuid,
+    connection: Option<Uuid>,
 ) -> Result<bool, DbError> {
-    if fingerprint_already_committed(conn, txn_fingerprint, account, excluding)? {
-        return Ok(true);
-    }
-    let pending = conn
+    Ok(conn
         .query_row(
             "SELECT 1 FROM staged_transactions st
+              JOIN source_records sr ON sr.id = st.source_record_id
+              JOIN source_batches sb ON sb.id = sr.source_batch_id
+              LEFT JOIN ledger_transactions lt ON lt.id = st.committed_transaction_id
               WHERE st.txn_fingerprint = ?1 AND st.id != ?2
                 AND st.proposed_account_id IS ?3
-                AND st.commit_status IN ('flagged', 'skipped')",
-            params![txn_fingerprint, excluding, account],
+                AND (?4 IS NULL OR sb.connector_connection_id IS NULL
+                     OR sb.connector_connection_id = ?4)
+                AND (st.commit_status IN ('flagged', 'skipped')
+                     OR (st.commit_status = 'committed'
+                         AND (lt.id IS NULL OR lt.voided_at IS NULL)))
+              LIMIT 1",
+            params![txn_fingerprint, excluding, account, connection],
             |_| Ok(()),
         )
         .optional()?
-        .is_some();
-    Ok(pending)
+        .is_some())
 }
 
 pub(crate) fn fingerprint_already_committed(
@@ -751,21 +780,34 @@ pub(crate) fn fingerprint_already_committed(
     account: Option<Uuid>,
     excluding: Uuid,
 ) -> Result<bool, DbError> {
-    let found = conn
+    Ok(committed_fingerprint_match(conn, txn_fingerprint, account, excluding)?.is_some())
+}
+
+/// The ledger transaction an exact fingerprint already committed to at
+/// `account` (non-voided; the earliest, if several), so a fingerprint-layer
+/// flag can record its counterpart (personal-cfo-yl5).
+pub(crate) fn committed_fingerprint_match(
+    conn: &Connection,
+    txn_fingerprint: &str,
+    account: Option<Uuid>,
+    excluding: Uuid,
+) -> Result<Option<Uuid>, DbError> {
+    Ok(conn
         .query_row(
-            "SELECT 1 FROM staged_transactions st
+            "SELECT st.committed_transaction_id FROM staged_transactions st
               WHERE st.txn_fingerprint = ?1 AND st.commit_status = 'committed' AND st.id != ?2
                 AND st.proposed_account_id IS ?3
+                AND st.committed_transaction_id IS NOT NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM ledger_transactions lt
                    WHERE lt.id = st.committed_transaction_id AND lt.voided_at IS NOT NULL
-                )",
+                )
+              ORDER BY st.created_at, st.id
+              LIMIT 1",
             params![txn_fingerprint, excluding, account],
-            |_| Ok(()),
+            |r| r.get(0),
         )
-        .optional()?
-        .is_some();
-    Ok(found)
+        .optional()?)
 }
 
 /// Mark a staged transaction committed and link it to its ledger transaction.
@@ -791,6 +833,17 @@ pub(crate) fn flag_staged_duplicate(conn: &Connection, staged_id: Uuid) -> Resul
         "UPDATE staged_transactions
             SET commit_status = 'flagged', dedupe_status = 'suspected_duplicate'
           WHERE id = ?1",
+        params![staged_id],
+    )?;
+    Ok(())
+}
+
+/// Flag a staged transaction for review **without** calling it a duplicate:
+/// the row cannot be committed as it stands (personal-cfo-pxi.9), so it waits
+/// in the Money Inbox. `dedupe_status` is left as it was.
+pub(crate) fn flag_staged_for_review(conn: &Connection, staged_id: Uuid) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE staged_transactions SET commit_status = 'flagged' WHERE id = ?1",
         params![staged_id],
     )?;
     Ok(())
@@ -916,6 +969,7 @@ mod tests {
                 source_name: Some("statement.csv"),
                 file_fingerprint: Some("sha256:abc"),
                 parser_version: Some("csv-v1"),
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -1063,6 +1117,7 @@ mod tests {
                 source_name: None,
                 file_fingerprint: Some("sha256:file"),
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -1116,6 +1171,7 @@ mod tests {
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();
@@ -1172,6 +1228,7 @@ mod tests {
                 source_name: None,
                 file_fingerprint: None,
                 parser_version: None,
+                connector_connection_id: None,
             },
         )
         .unwrap();

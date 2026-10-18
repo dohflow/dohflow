@@ -8,9 +8,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient } from "@/test/renderWithClient";
 
 const mocks = vi.hoisted(() => ({
+  openUrl: vi.fn(),
+  connectorAdapters: vi.fn(),
   connectorConnections: vi.fn(),
   connectorLink: vi.fn(),
   connectorSetAccountLink: vi.fn(),
+  connectorCreateMappedAccount: vi.fn(),
+  connectorSetRefreshCadence: vi.fn(),
   connectorSync: vi.fn(),
   connectorForget: vi.fn(),
   accountList: vi.fn(),
@@ -22,14 +26,19 @@ vi.mock("@/bindings", () => ({
   commands: { ...mocks },
 }));
 
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
+
 vi.mock("@/vault/useVault", () => ({
   describeIpcError: (error: unknown) =>
     typeof error === "string" ? error : "Something went wrong.",
 }));
 
 import { ConnectionsCard } from "./ConnectionsCard";
+import { exampleflow, simplefin } from "./connections/fixtures/adapters";
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
+/// A mapping that was saved (personal-cfo-6evt result shape).
+const LINKED = { linked: true, existing_feeds: [] };
 
 function connection(over: Record<string, unknown> = {}) {
   return {
@@ -38,12 +47,15 @@ function connection(over: Record<string, unknown> = {}) {
     display_hint: "SimpleFIN Bridge connection",
     last_synced_at: "2026-08-22T10:00:00Z",
     last_error: null,
+    refresh_cadence: "every_open",
     links: [
       {
         external_id: "ACT-1",
         external_name: "Demo Checking",
         account_id: null,
         last_synced_on: null,
+        currency: "USD",
+        currency_refusal: null,
       },
     ],
     ...over,
@@ -58,6 +70,7 @@ const account = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.connectorAdapters.mockResolvedValue([simplefin]);
   mocks.connectorConnections.mockResolvedValue(ok([]));
   mocks.accountList.mockResolvedValue(ok([account]));
   mocks.baseCurrency.mockResolvedValue(ok("USD"));
@@ -125,6 +138,8 @@ describe("ConnectionsCard", () => {
       <ConnectionsCard />,
     );
     fireEvent.click(await findByText("Link a connection…"));
+    // The provider's disclosure comes first (one provider: no picker).
+    fireEvent.click(await findByText("Continue"));
     fireEvent.change(getByLabelText("Setup token"), {
       target: { value: "  base64token  " },
     });
@@ -140,9 +155,47 @@ describe("ConnectionsCard", () => {
     ).toBeInTheDocument();
   });
 
+  it("links the provider chosen in the picker", async () => {
+    mocks.connectorAdapters.mockResolvedValue([simplefin, exampleflow]);
+    mocks.connectorLink.mockResolvedValue(
+      ok({
+        connection_id: "33333333-3333-7333-8333-333333333333",
+        display_hint: null,
+        accounts: [],
+        fetch_error: null,
+      }),
+    );
+    const { findByText, getByLabelText, getByText } = renderWithClient(
+      <ConnectionsCard />,
+    );
+    fireEvent.click(await findByText("Link a connection…"));
+    fireEvent.click(await findByText("Choose ExampleFlow"));
+    fireEvent.click(getByText("Continue"));
+    fireEvent.change(getByLabelText("API key"), { target: { value: "key-9" } });
+    fireEvent.click(getByText("Connect"));
+    await waitFor(() =>
+      expect(mocks.connectorLink).toHaveBeenCalledWith({
+        adapter_id: "exampleflow",
+        setup_token: "key-9",
+      }),
+    );
+  });
+
+  it("names each connection's provider from the registry, never hardcoded", async () => {
+    mocks.connectorAdapters.mockResolvedValue([simplefin, exampleflow]);
+    mocks.connectorConnections.mockResolvedValue(
+      ok([connection({ adapter_id: "exampleflow", display_hint: null })]),
+    );
+    const { findByText, getByText, container } = renderWithClient(<ConnectionsCard />);
+    expect(await findByText("ExampleFlow connection")).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/SimpleFIN/);
+    fireEvent.click(getByText("Forget connection…"));
+    expect(getByText(/Re-linking needs a fresh API key\./)).toBeInTheDocument();
+  });
+
   it("maps an external account onto a real account", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection()]));
-    mocks.connectorSetAccountLink.mockResolvedValue(ok(null));
+    mocks.connectorSetAccountLink.mockResolvedValue(ok(LINKED));
     const { findByLabelText } = renderWithClient(<ConnectionsCard />);
     const select = await findByLabelText("Account for Demo Checking");
     fireEvent.change(select, { target: { value: account.id } });
@@ -151,6 +204,7 @@ describe("ConnectionsCard", () => {
         connection_id: connection().id,
         external_id: "ACT-1",
         account_id: account.id,
+        allow_shared_feed: false,
       }),
     );
   });
@@ -262,11 +316,10 @@ describe("ConnectionsCard", () => {
 
   it("creates a new account from the mapping step and maps it (07bn)", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection()]));
-    mocks.createAccount.mockResolvedValue(
+    mocks.connectorCreateMappedAccount.mockResolvedValue(
       ok({ account_id: "44444444-4444-7444-8444-444444444444" }),
     );
-    mocks.connectorSetAccountLink.mockResolvedValue(ok(null));
-    const { findByLabelText, findByRole, getByRole, getByLabelText } =
+    const { findByLabelText, findByRole, getByRole, getByLabelText, queryByRole } =
       renderWithClient(<ConnectionsCard />);
     const select = await findByLabelText("Account for Demo Checking");
     fireEvent.change(select, { target: { value: "__create_new__" } });
@@ -285,9 +338,13 @@ describe("ConnectionsCard", () => {
     );
     fireEvent.click(getByRole("button", { name: /create and map/i }));
 
+    // ONE call creates and maps, with the guard first (personal-cfo-pxi.8):
+    // no separate create, no separate map.
     await waitFor(() =>
-      expect(mocks.createAccount).toHaveBeenCalledWith(
-        expect.objectContaining({
+      expect(mocks.connectorCreateMappedAccount).toHaveBeenCalledWith({
+        connection_id: connection().id,
+        external_id: "ACT-1",
+        account: expect.objectContaining({
           name: "Demo Checking",
           cashflow_role: "LiquidCash",
           subtype: null,
@@ -295,21 +352,36 @@ describe("ConnectionsCard", () => {
           currency: "USD",
           opening_balance: null,
         }),
-      ),
-    );
-    // …and the new account is mapped onto the external one in the same flow.
-    await waitFor(() =>
-      expect(mocks.connectorSetAccountLink).toHaveBeenCalledWith({
-        connection_id: connection().id,
-        external_id: "ACT-1",
-        account_id: "44444444-4444-7444-8444-444444444444",
       }),
     );
+    expect(mocks.createAccount).not.toHaveBeenCalled();
+    expect(mocks.connectorSetAccountLink).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(queryByRole("dialog", { name: /new account for this connection/i })).toBeNull(),
+    );
+  });
+
+  it("a stale dialog's create is refused by the guard and leaves no account (pxi.8)", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    const refusal =
+      "This account is in USD, but your base currency is EUR. Accounts in a currency other than your base currency aren't supported yet.";
+    mocks.connectorCreateMappedAccount.mockResolvedValue({
+      status: "error",
+      error: refusal,
+    });
+    const { findByLabelText, findByRole, getByRole } = renderWithClient(<ConnectionsCard />);
+    const select = await findByLabelText("Account for Demo Checking");
+    fireEvent.change(select, { target: { value: "__create_new__" } });
+    const dialog = await findByRole("dialog", { name: /new account for this connection/i });
+    fireEvent.click(getByRole("button", { name: /create and map/i }));
+    await waitFor(() => expect(dialog).toHaveTextContent(refusal));
+    expect(mocks.createAccount).not.toHaveBeenCalled();
+    expect(mocks.connectorSetAccountLink).not.toHaveBeenCalled();
   });
 
   it("cannot be dismissed while a create is in flight (07bn review)", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection()]));
-    mocks.createAccount.mockReturnValue(new Promise(() => {}));
+    mocks.connectorCreateMappedAccount.mockReturnValue(new Promise(() => {}));
     const { findByLabelText, findByRole, getByRole, queryByRole } =
       renderWithClient(<ConnectionsCard />);
     const select = await findByLabelText("Account for Demo Checking");
@@ -321,5 +393,227 @@ describe("ConnectionsCard", () => {
       queryByRole("dialog", { name: /new account for this connection/i }),
     ).toBeInTheDocument();
     expect(getByRole("button", { name: /close/i })).toBeDisabled();
+  });
+
+  // --- the currency guard (personal-cfo-049p6) ---------------------------
+
+  const EUR_REFUSAL =
+    "This account is in EUR, but your base currency is USD. Accounts in a currency other than your base currency aren't supported yet.";
+  const UNKNOWN_REFUSAL =
+    "The provider hasn't reported this account's currency yet. Refresh the connection, then map it.";
+
+  function linkWith(over: Record<string, unknown>) {
+    return connection({
+      links: [
+        {
+          external_id: "ACT-EU",
+          external_name: "Euro Savings",
+          account_id: null,
+          last_synced_on: null,
+          currency: "EUR",
+          currency_refusal: EUR_REFUSAL,
+          ...over,
+        },
+      ],
+    });
+  }
+
+  it("refuses to map a foreign-currency account and says why", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([linkWith({})]));
+    const { findByLabelText, getByText, getByRole } = renderWithClient(<ConnectionsCard />);
+    const select = (await findByLabelText("Account for Euro Savings")) as HTMLSelectElement;
+    expect(select).toBeDisabled();
+    expect(getByText(EUR_REFUSAL, { exact: false })).toBeInTheDocument();
+    expect(select.getAttribute("aria-describedby")).toBeTruthy();
+    // No way to create an account that could never be mapped.
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Not mapped"]);
+    // The row names the account's currency.
+    expect(
+      getByText((_, el) => el?.tagName === "P" && el.textContent === "Euro Savings · EUR"),
+    ).toBeInTheDocument();
+    // The help link opens the page that states the limitation.
+    fireEvent.click(getByRole("button", { name: "About currencies" }));
+    await waitFor(() =>
+      expect(mocks.openUrl).toHaveBeenCalledWith(
+        "https://dohflow.app/help/known-limitations#bank-connections",
+      ),
+    );
+    expect(mocks.connectorSetAccountLink).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown currency and never shows it as the base currency", async () => {
+    mocks.connectorConnections.mockResolvedValue(
+      ok([linkWith({ currency: null, currency_refusal: UNKNOWN_REFUSAL })]),
+    );
+    const { findByLabelText, getByText, queryByText } = renderWithClient(<ConnectionsCard />);
+    expect(await findByLabelText("Account for Euro Savings")).toBeDisabled();
+    expect(getByText(UNKNOWN_REFUSAL, { exact: false })).toBeInTheDocument();
+    expect(queryByText(/· USD/)).toBeNull();
+  });
+
+  it("flags a mapped account whose currency turned out foreign as held", async () => {
+    mocks.connectorConnections.mockResolvedValue(
+      ok([linkWith({ account_id: account.id, last_synced_on: null })]),
+    );
+    const { findByText, getByText, getByLabelText } = renderWithClient(<ConnectionsCard />);
+    expect(await findByText("Needs attention")).toBeInTheDocument();
+    expect(getByText(/Its transactions are held and not imported/)).toBeInTheDocument();
+    expect(getByText(/Held — this account/)).toBeInTheDocument();
+    const select = getByLabelText("Account for Euro Savings") as HTMLSelectElement;
+    // It can be unmapped, not remapped or recreated.
+    expect(select).not.toBeDisabled();
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Not mapped", "Checking"]);
+    mocks.connectorSetAccountLink.mockResolvedValue(ok(LINKED));
+    fireEvent.change(select, { target: { value: "" } });
+    await waitFor(() =>
+      expect(mocks.connectorSetAccountLink).toHaveBeenCalledWith({
+        connection_id: connection().id,
+        external_id: "ACT-EU",
+        account_id: null,
+        allow_shared_feed: false,
+      }),
+    );
+  });
+
+  it("labels a legacy mapped link with no recorded currency as unconfirmed", async () => {
+    mocks.connectorConnections.mockResolvedValue(
+      ok([
+        linkWith({
+          account_id: account.id,
+          currency: null,
+          currency_refusal: UNKNOWN_REFUSAL,
+        }),
+      ]),
+    );
+    const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+    expect(await findByText(/Currency not confirmed yet/)).toBeInTheDocument();
+    // Unknown is not foreign: nothing is held, and no false base-currency label.
+    expect(queryByText("Needs attention")).toBeNull();
+    expect(queryByText(/· USD/)).toBeNull();
+  });
+  // ---- one account, one feed by default (personal-cfo-6evt) ----
+
+  const ALREADY_FED = {
+    linked: false,
+    existing_feeds: [
+      {
+        connection_id: "33333333-3333-7333-8333-333333333333",
+        adapter_id: "simplefin",
+        display_hint: "Alex's SimpleFIN",
+        external_id: "ALEX-JOINT",
+        external_name: "Joint Checking ••1234",
+      },
+    ],
+  };
+
+  async function pickAccountAlreadyFed() {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    mocks.connectorSetAccountLink
+      .mockResolvedValueOnce(ok(ALREADY_FED))
+      .mockResolvedValue(ok(LINKED));
+    const view = renderWithClient(<ConnectionsCard />);
+    const select = await view.findByLabelText("Account for Demo Checking");
+    fireEvent.change(select, { target: { value: account.id } });
+    const dialog = await view.findByRole("alertdialog");
+    return { ...view, dialog, select };
+  }
+
+  it("warns before a second connection feeds an account, naming the existing link", async () => {
+    const { dialog, getByLabelText } = await pickAccountAlreadyFed();
+    expect(dialog).toHaveTextContent("Checking is already updated by another connection");
+    expect(getByLabelText("Already updating this account")).toHaveTextContent(
+      "Alex's SimpleFIN — Joint Checking ••1234",
+    );
+    expect(dialog).toHaveTextContent("Demo Checking");
+    // The copy states the real guarantee: exact date + amount overlaps are
+    // reviewed; different dates are not caught (review F1, PR 63).
+    expect(dialog).toHaveTextContent(
+      "A transaction both connections report with the same date and amount waits in the Money Inbox",
+    );
+    expect(dialog).toHaveTextContent("If they report it on different dates, both copies are imported");
+    expect(dialog).not.toHaveTextContent(/never\s+counted\s+twice/i);
+    // The default action is the safe one.
+    expect(document.activeElement).toHaveTextContent("Don’t import this one");
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("choosing another account changes nothing and returns to the picker", async () => {
+    const { findByRole, queryByRole, getByRole, select } = await pickAccountAlreadyFed();
+    fireEvent.click(getByRole("button", { name: /map it to a different account/i }));
+    await waitFor(() => expect(queryByRole("alertdialog")).toBeNull());
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+    expect(select).toHaveValue("");
+    expect(document.activeElement).toBe(select);
+    expect(await findByRole("combobox", { name: /account for demo checking/i })).toBeTruthy();
+  });
+
+  it("Escape is the same as choosing another account", async () => {
+    const { queryByRole } = await pickAccountAlreadyFed();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(queryByRole("alertdialog")).toBeNull());
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("don't import leaves the account listed and feeding nothing", async () => {
+    const { getByRole, findByRole, getByText } = await pickAccountAlreadyFed();
+    fireEvent.click(getByRole("button", { name: /don.t import this one/i }));
+    expect(await findByRole("status")).toHaveTextContent(
+      "“Demo Checking” is not imported. Checking keeps its existing connection.",
+    );
+    // It was never mapped, so nothing needed saving.
+    expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
+    expect(getByText(/not mapped — transactions from this account are not imported/i)).toBeTruthy();
+  });
+
+  it("import from both saves the mapping on request and says overlaps are reviewed", async () => {
+    const { getByRole, findByRole } = await pickAccountAlreadyFed();
+    fireEvent.click(getByRole("button", { name: /import from both/i }));
+    await waitFor(() =>
+      expect(mocks.connectorSetAccountLink).toHaveBeenLastCalledWith({
+        connection_id: connection().id,
+        external_id: "ACT-1",
+        account_id: account.id,
+        allow_shared_feed: true,
+      }),
+    );
+    expect(await findByRole("status")).toHaveTextContent(
+      "A transaction both connections report with the same date and amount waits in the Money Inbox; one reported on different dates is imported twice.",
+    );
+  });
+
+  // ---- refresh cadence (personal-cfo-lqk) ----
+
+  it("shows each connection's refresh cadence and changes it", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    mocks.connectorSetRefreshCadence.mockResolvedValue(ok(null));
+    const { findByLabelText } = renderWithClient(<ConnectionsCard />);
+    const select = (await findByLabelText("Refresh automatically")) as HTMLSelectElement;
+    expect(select.value).toBe("every_open");
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+      "Every time you open the vault",
+      "Daily",
+      "Weekly",
+      "Only when I press Refresh now",
+    ]);
+    fireEvent.change(select, { target: { value: "daily" } });
+    await waitFor(() =>
+      expect(mocks.connectorSetRefreshCadence).toHaveBeenCalledWith({
+        connection_id: connection().id,
+        cadence: "daily",
+      }),
+    );
+  });
+
+  it("a refused cadence change says why", async () => {
+    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+    mocks.connectorSetRefreshCadence.mockResolvedValue({
+      status: "error",
+      error: "cannot reconfigure a running job",
+    });
+    const { findByLabelText, findByRole } = renderWithClient(<ConnectionsCard />);
+    fireEvent.change(await findByLabelText("Refresh automatically"), {
+      target: { value: "manual" },
+    });
+    expect(await findByRole("alert")).toHaveTextContent("cannot reconfigure a running job");
   });
 });

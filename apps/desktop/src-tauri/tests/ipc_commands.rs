@@ -1866,7 +1866,8 @@ fn import_batch_imports_a_csv_through_the_pipeline() {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("statement.csv".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None, // auto-detect → GenericCsv
             preset_id: None,
             column_mapping: None,
@@ -1886,6 +1887,62 @@ fn import_batch_imports_a_csv_through_the_pipeline() {
         .unwrap()
         .expect("balance present");
     assert_eq!(balance.minor_units, -5499);
+}
+
+/// personal-cfo-pxi.10: a row the parser cannot use is reported, not silently
+/// absent — the result carries the skipped count and the reason, with the
+/// row's position and none of its values. A clean file reports nothing extra.
+#[test]
+fn import_batch_reports_a_skipped_row_with_its_reason() {
+    use app_lib::ipc::dto::ImportWarningDto;
+
+    let (_dir, state) = open_state();
+    let account_id = create_account_impl(&state, create_input("Checking"))
+        .unwrap()
+        .account_id;
+    let import = |csv: &str| {
+        import_batch_impl(
+            &state,
+            ImportBatchInput {
+                data: csv.as_bytes().to_vec(),
+                filename: Some("statement.csv".to_owned()),
+                target_account_id: Some(account_id.clone()),
+                account_map: None,
+                plugin_id: None,
+                preset_id: None,
+                column_mapping: None,
+                default_currency: Some("USD".to_owned()),
+                date_format: None,
+                idempotency_key: String::new(),
+            },
+        )
+        .unwrap()
+    };
+
+    let result = import(
+        "Date,Description,Amount\n\
+         2026-06-20,Coffee,-12.99\n\
+         2026-06-21,SENTINEL-PAYEE,not-a-number\n\
+         2026-06-22,Lunch,-42.00\n",
+    );
+    assert_eq!(result.status, "committed");
+    assert_eq!(result.committed, 2);
+    assert_eq!(result.skipped_rows, 1);
+    assert_eq!(
+        result.warnings,
+        vec![ImportWarningDto {
+            row: Some(2),
+            message: "unparseable / missing amount".to_owned(),
+            skipped: true,
+        }]
+    );
+    let wire = serde_json::to_string(&result).unwrap();
+    for value in ["SENTINEL", "not-a-number", "2026-06-21"] {
+        assert!(!wire.contains(value), "{value} reached the summary: {wire}");
+    }
+
+    let clean = import("Date,Description,Amount\n2026-07-01,Rent,-900.00\n");
+    assert_eq!((clean.skipped_rows, clean.warnings.len()), (0, 0));
 }
 
 /// dsq: importing a CSV with an overlapping (duplicate) row flags it, and the
@@ -1916,7 +1973,8 @@ fn money_inbox_surfaces_a_flagged_import_through_ipc() {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("statement.csv".to_owned()),
-            target_account_id: account_id,
+            target_account_id: Some(account_id),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,
@@ -1965,7 +2023,8 @@ fn import_with_one_flagged(state: &AppState) -> (String, String) {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("statement.csv".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,
@@ -2402,7 +2461,8 @@ fn import_batch_imports_an_ofx_file_through_the_pipeline() {
         ImportBatchInput {
             data: ofx.as_bytes().to_vec(),
             filename: Some("statement.ofx".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None, // auto-detect → the OFX importer
             preset_id: None,
             column_mapping: None,
@@ -2459,7 +2519,8 @@ fn identical_fingerprints_on_different_accounts_are_not_duplicates() {
             ImportBatchInput {
                 data: ofx(pad).into_bytes(),
                 filename: Some("statement.ofx".to_owned()),
-                target_account_id: account.to_owned(),
+                target_account_id: Some(account.to_owned()),
+                account_map: None,
                 plugin_id: None,
                 preset_id: None,
                 column_mapping: None,
@@ -3176,7 +3237,8 @@ fn export_csv_round_trips_through_the_csv_importer() {
         ImportBatchInput {
             data: csv_bytes,
             filename: Some("export.csv".to_owned()),
-            target_account_id: account_b,
+            target_account_id: Some(account_b),
+            account_map: None,
             plugin_id: Some("generic-csv".to_owned()),
             preset_id: None,
             column_mapping: Some(ColumnMappingDto {
@@ -3251,7 +3313,8 @@ fn recurring_deposits_surface_as_income_candidates() {
         ImportBatchInput {
             data: ofx.as_bytes().to_vec(),
             filename: Some("statement.ofx".to_owned()),
-            target_account_id: account_id.clone(),
+            target_account_id: Some(account_id.clone()),
+            account_map: None,
             plugin_id: None,
             preset_id: None,
             column_mapping: None,

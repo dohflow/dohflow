@@ -4,6 +4,7 @@ import type { RecurringCandidateDto } from "@/bindings";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import { FirstForecastWizard } from "./FirstForecastWizard";
+import { simplefin } from "@/settings/connections/fixtures/adapters";
 
 const mocks = vi.hoisted(() => ({
   importPreviewColumns: vi.fn(),
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   cashAvailability: vi.fn(),
   setMinimumCashFloor: vi.fn(),
   connectorConnections: vi.fn(),
+  connectorAdapters: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -54,6 +56,7 @@ vi.mock("@/bindings", () => ({
     cashAvailability: mocks.cashAvailability,
     setMinimumCashFloor: mocks.setMinimumCashFloor,
     connectorConnections: mocks.connectorConnections,
+    connectorAdapters: mocks.connectorAdapters,
   },
 }));
 
@@ -84,6 +87,7 @@ beforeEach(() => {
   mocks.baseCurrency.mockResolvedValue(ok("USD"));
   mocks.setBaseCurrency.mockResolvedValue(ok(null));
   mocks.connectorConnections.mockResolvedValue(ok([]));
+  mocks.connectorAdapters.mockResolvedValue([simplefin]);
   localStorage.removeItem("pcfo.onboardingPath");
   mocks.futureCashForecast.mockResolvedValue(
     ok({
@@ -187,20 +191,25 @@ describe("FirstForecastWizard", () => {
     expect(localStorage.getItem("pcfo.onboardingPath")).toBe("manual");
   });
 
-  it("connected path shows the Bridge disclosures and the Connections card", async () => {
+  it("connected path shows the registry's provider disclosure and the Connections card", async () => {
     renderWithClient(<FirstForecastWizard onClose={() => {}} />);
     fireEvent.click(await screen.findByRole("button", { name: /next/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /connect my banks/i }));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     expect(await screen.findByText(/connect your banks/i)).toBeInTheDocument();
-    // The four disclosures.
+    // The same picker + disclosure surface as Settings (dto2j), opened up
+    // front: the four registry-supplied points, before any credential field.
+    expect(
+      await screen.findByRole("region", { name: "About the SimpleFIN Bridge" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/not affiliated with us/i)).toBeInTheDocument();
     expect(screen.getByText(/it costs money/i)).toBeInTheDocument();
     expect(screen.getByText(/it is optional/i)).toBeInTheDocument();
     expect(screen.getByText(/bridge\.simplefin\.org/i)).toBeInTheDocument();
+    expect(document.querySelectorAll('input[type="password"]')).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
     // The real link/map surface is right here, in its (empty) loaded state.
     expect(await screen.findByText("No connections yet")).toBeInTheDocument();
-    expect(screen.getByText(/link a connection/i)).toBeInTheDocument();
     // …and the manual path stays one click away.
     expect(screen.getByRole("button", { name: /add an account by hand/i })).toBeInTheDocument();
   });

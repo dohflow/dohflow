@@ -5,7 +5,7 @@
 //! passphrase. The full create→lock→unlock→read round-trip through the real
 //! envelope lives in `finance-kernel`; here we isolate db-worker.
 
-use db_worker::DbWorker;
+use db_worker::{DbError, DbWorker, CURRENT_SCHEMA_VERSION};
 use vault_crypto::{
     derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek, Argon2Params, ALGORITHM,
 };
@@ -66,4 +66,43 @@ fn raw_keyed_vault_is_opaque_without_the_key() {
         read.is_err(),
         "encrypted vault must not be readable without the key"
     );
+}
+
+#[test]
+fn raw_key_existing_open_refuses_a_newer_stamp_without_lowering_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    let salt = generate_salt().unwrap();
+    let kek = derive_kek(b"password", &salt, &cheap_params()).unwrap();
+    let wrapped = wrap_dek(&kek, &generate_dek().unwrap()).unwrap();
+    let future = CURRENT_SCHEMA_VERSION + 1;
+    let worker = DbWorker::open_with_raw_key(&path, unwrap_dek(&kek, &wrapped).unwrap()).unwrap();
+    worker
+        .read_connection()
+        .unwrap()
+        .pragma_update(None, "user_version", future)
+        .unwrap();
+    drop(worker);
+
+    assert!(matches!(
+        DbWorker::open_existing_with_raw_key(&path, unwrap_dek(&kek, &wrapped).unwrap()),
+        Err(DbError::NewerSchema { observed, supported })
+            if observed == future && supported == CURRENT_SCHEMA_VERSION
+    ));
+    assert!(matches!(
+        DbWorker::open_with_raw_key(&path, unwrap_dek(&kek, &wrapped).unwrap()),
+        Err(DbError::NewerSchema { observed, supported })
+            if observed == future && supported == CURRENT_SCHEMA_VERSION
+    ));
+}
+
+#[test]
+fn existing_raw_key_open_does_not_create_a_missing_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing.db");
+    assert!(matches!(
+        DbWorker::open_existing_with_raw_key(&path, generate_dek().unwrap()),
+        Err(DbError::UnsupportedSchema)
+    ));
+    assert!(!path.exists());
 }

@@ -13,8 +13,11 @@
 //!    password path, reproduces its canonical state on the pinned engine.
 //!
 //! ## How the cross-version corpus grows
-//! There is one pinned engine today, so the golden vault is generated with the
-//! current one. When the pin is **intentionally** bumped, the bumping PR must:
+//! The golden vault below is generated with the current engine. The outgoing
+//! SQLCipher 4.5.7 / SQLite 3.45.3 corpus (frozen before the `personal-cfo-g3m.5`
+//! bump) lives in `tests/fixtures/sqlcipher-4.5.7.json` and is opened by
+//! `tests/engine_compatibility.rs`. When the pin is **intentionally** bumped,
+//! the bumping PR must:
 //!   1. update `EXPECTED_SQLCIPHER` / `EXPECTED_SQLITE` here, plus
 //!      `docs/architecture/stack.md` and the release notes; and
 //!   2. capture the *outgoing* version's vault (`vault.db` + `.envelope`) and add
@@ -32,8 +35,8 @@ use uuid::Uuid;
 
 /// The pinned engine versions — **must** match `docs/architecture/stack.md`.
 /// Changing these is a deliberate act; see the module-level corpus note.
-const EXPECTED_SQLCIPHER: &str = "4.5.7 community";
-const EXPECTED_SQLITE: &str = "3.45.3";
+const EXPECTED_SQLCIPHER: &str = "4.14.0 community";
+const EXPECTED_SQLITE: &str = "3.51.3";
 
 const PW: &[u8] = b"golden vault cross-version password";
 
@@ -143,6 +146,56 @@ fn golden_vault_round_trips_on_the_pinned_engine() {
         checksum,
         "golden vault read-model checksum changed across close/reopen on the pinned engine"
     );
+    assert_eq!(reopened.cipher_version().unwrap(), EXPECTED_SQLCIPHER);
+    assert_eq!(sqlite_version(), EXPECTED_SQLITE);
+}
+
+/// A vault whose DEK has been rotated (ADR 0083, personal-cfo-2y8) is an
+/// ordinary vault on the pinned engine: it closes, reopens cold through the
+/// password path with the unchanged password, and keeps its canonical state.
+#[test]
+fn a_rotated_vault_round_trips_on_the_pinned_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("vault.db");
+    let mut controller = finance_kernel::VaultController::open(&db_path);
+    controller.create(PW).unwrap();
+    let (accounts, checksum) = {
+        let kernel = controller.kernel().unwrap();
+        let checking = account("Checking");
+        let checking_id = checking.id();
+        kernel
+            .dispatch(CommandEnvelope::new(
+                meta(),
+                CreateAccount::with_opening_balance(checking, Money::new(250_000, Currency::Usd)),
+            ))
+            .unwrap();
+        kernel
+            .dispatch(CommandEnvelope::new(
+                meta(),
+                RecordTransaction::new(
+                    TransactionId::new(),
+                    checking_id,
+                    Money::new(-4_500, Currency::Usd),
+                    at("2026-06-05T00:00:00Z"),
+                ),
+            ))
+            .unwrap();
+        kernel.rebuild_transaction_display().unwrap();
+        (
+            kernel.account_count().unwrap(),
+            kernel.transaction_display_checksum().unwrap(),
+        )
+    };
+    controller.rotate_key(PW).unwrap();
+    assert_eq!(
+        controller.kernel().unwrap().cipher_version().unwrap(),
+        EXPECTED_SQLCIPHER
+    );
+    drop(controller);
+
+    let reopened = Kernel::unlock_vault(&db_path, PW).unwrap();
+    assert_eq!(reopened.account_count().unwrap(), accounts);
+    assert_eq!(reopened.transaction_display_checksum().unwrap(), checksum);
     assert_eq!(reopened.cipher_version().unwrap(), EXPECTED_SQLCIPHER);
     assert_eq!(sqlite_version(), EXPECTED_SQLITE);
 }

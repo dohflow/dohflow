@@ -27,6 +27,15 @@
 # Two separate Cargo workspaces exist in this repo (root, and the standalone
 # apps/desktop/src-tauri crate — see ci.yml's `rust` vs `ipc-codegen` jobs),
 # so both get their own `cargo` entry.
+#
+# TAURI (personal-cfo-io42, ADR 0001): the Tauri family — Rust `tauri*`, `wry`,
+# `tao`; npm `@tauri-apps/*` — has its own `tauri` group, listed FIRST so it wins
+# over `minor-and-patch` (Dependabot puts a dependency in the first group it
+# matches). A Tauri bump therefore never rides along in a generic update PR.
+# Dependabot cannot group across ecosystems, so the Rust and npm halves arrive
+# as two PRs; each fails tests/tauri_pins.rs (drift + lockstep) on its own. Treat
+# them as the signal to open ONE dedicated upgrade PR by hand, following
+# docs/agent/TAURI_UPGRADES.md — never merge a Dependabot Tauri PR directly.
 version: 2
 updates:
   - package-ecosystem: "cargo"
@@ -46,6 +55,12 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 0
     groups:
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-*"
+          - "wry"
+          - "tao"
       minor-and-patch:
         update-types:
           - "minor"
@@ -57,6 +72,9 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 0
     groups:
+      tauri:
+        patterns:
+          - "@tauri-apps/*"
       minor-and-patch:
         update-types:
           - "minor"

@@ -6,8 +6,12 @@
 //! binding exporter ([`export_bindings`] / the `export_bindings` binary).
 
 mod backup_job;
+pub mod connector_refresh;
 pub mod data_dir;
 pub mod ipc;
+// Runtime isolation probe (personal-cfo-0hp6) — debug builds only.
+#[cfg(debug_assertions)]
+mod isolation_probe;
 pub mod navigation_guard;
 pub mod state;
 pub mod update;
@@ -26,6 +30,7 @@ use ofx_importer as _;
 // Source-app presets register the same way (personal-cfo-gvidg).
 use source_presets as _;
 // Connector adapters register the same way (personal-cfo-gglk, ADR 0060).
+use lunchflow_adapter as _;
 use simplefin_adapter as _;
 
 use tauri_specta::{collect_commands, Builder};
@@ -45,6 +50,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::unlock_vault,
         ipc::commands::lock_vault,
         ipc::commands::change_password,
+        ipc::commands::rotate_vault_key,
         ipc::commands::delete_vault,
         ipc::commands::list_vaults,
         ipc::commands::create_vault_named,
@@ -60,6 +66,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::update_batch_state,
         ipc::commands::import_batch,
         ipc::commands::import_preview_columns,
+        ipc::commands::import_preview_accounts,
         ipc::commands::list_source_presets,
         ipc::commands::update_account,
         ipc::commands::set_account_subtype,
@@ -184,6 +191,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::configure_backup,
         ipc::commands::run_backup_now,
         ipc::commands::export_transactions_csv,
+        // Local diagnostics (personal-cfo-lyd).
+        ipc::commands::diagnostics_preview,
+        ipc::commands::diagnostics_save,
+        ipc::commands::diagnostics_discard,
         ipc::commands::restore_backup,
         ipc::commands::restore_backup_as_new_vault,
         // Connectors (personal-cfo-gglk, ADR 0060).
@@ -191,6 +202,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ipc::commands::connector_adapters,
         ipc::commands::connector_connections,
         ipc::commands::connector_set_account_link,
+        ipc::commands::connector_set_refresh_cadence,
+        ipc::commands::connector_create_mapped_account,
         ipc::commands::connector_sync,
         ipc::commands::connector_auto_sync,
         ipc::commands::connector_forget,
@@ -209,6 +222,17 @@ pub fn export_bindings(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     use specta_typescript::Typescript;
 
     ipc_builder().export(Typescript::default(), path)?;
+    // Specta emits spaces after union separators. Keep this committed artifact
+    // deterministic and compatible with git diff --check, including on a fresh
+    // regeneration in CI; this does not alter the generated TypeScript types.
+    let generated = std::fs::read_to_string(path)?;
+    let normalized = generated
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(path, normalized)?;
     Ok(())
 }
 
@@ -311,6 +335,10 @@ pub fn run() {
             // a hands-on isolation check. Not compiled into release builds.
             #[cfg(debug_assertions)]
             windows::open_smoke_shells_if_requested(app)?;
+            // Debug builds only: PCFO_ISOLATION_PROBE=<report> probes every window's real
+            // WebView (IPC rejection, effective CSP, navigation, window.open) and exits.
+            #[cfg(debug_assertions)]
+            isolation_probe::start_if_requested(app.handle())?;
 
             // CI launch smoke (personal-cfo-rr0lm, DIST-5): a headless proof that
             // the binary starts and setup() completes without a display or a

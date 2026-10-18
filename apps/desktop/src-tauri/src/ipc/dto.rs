@@ -1567,6 +1567,22 @@ pub struct SourcePresetDto {
     /// (personal-cfo-gvidg review finding F1, PR #15) — the frontend must
     /// not render a guide link when this is `false`.
     pub help_published: bool,
+    /// The importer plugin this preset's files go through, when it has its
+    /// own (personal-cfo-tulv: `"ynab-register"`) — pass it as
+    /// `import_preview_columns`' `plugin_id` so the headers are read the
+    /// way the import will read them. `None` = the generic CSV importer.
+    pub importer_id: Option<String>,
+}
+
+/// One source account in a multi-account file, and where its rows go
+/// (personal-cfo-tulv).
+#[derive(Debug, Clone, Deserialize, Type)]
+pub struct ImportAccountMapEntryDto {
+    /// The account label exactly as `import_preview_accounts` returned it.
+    pub source_account: String,
+    /// The real account (UUID string) its rows land in; `None` = don't
+    /// import this account's rows (they are counted, not dropped silently).
+    pub account_id: Option<String>,
 }
 
 /// Input for importing a file through the ingestion pipeline (personal-cfo-cu8).
@@ -1578,8 +1594,14 @@ pub struct ImportBatchInput {
     pub data: Vec<u8>,
     /// Original filename — drives plugin detection + the batch name.
     pub filename: Option<String>,
-    /// The account (UUID string) to import the transactions into.
-    pub target_account_id: String,
+    /// The account (UUID string) to import every transaction into. Exactly
+    /// one of this and `account_map` is given.
+    pub target_account_id: Option<String>,
+    /// For a file spanning several accounts (personal-cfo-tulv): where each
+    /// source account's rows go, keyed by the labels `import_preview_accounts`
+    /// returned. A row whose label is missing here, or mapped to `None`, is
+    /// not imported and is counted in `BatchResultDto::skipped_unmapped`.
+    pub account_map: Option<Vec<ImportAccountMapEntryDto>>,
     /// An explicit importer plugin id; if omitted, the best-detected one is used.
     pub plugin_id: Option<String>,
     /// A source-app preset id (personal-cfo-gvidg, e.g. `"ynab"`) — applied
@@ -1615,6 +1637,28 @@ pub struct BatchResultDto {
     /// Transactions auto-categorized from merchant memory after the import (ADR 0030
     /// addendum, personal-cfo-5n4.2). 0 when the setting is off or nothing matched.
     pub auto_categorized: u32,
+    /// Rows in the file the parser could not use, so nothing was imported for
+    /// them (personal-cfo-pxi.10). The full count, even when `warnings` is cut short.
+    pub skipped_rows: u32,
+    /// What the parser reported, at most 20: skipped rows first, then notes on
+    /// rows that were imported. Each is a row number and a fixed reason — never
+    /// the row's own values.
+    pub warnings: Vec<ImportWarningDto>,
+    /// Rows left out because the user chose not to import their source
+    /// account (personal-cfo-tulv `account_map`). Not part of `skipped_rows`.
+    pub skipped_unmapped: u32,
+}
+
+/// One issue the parser reported for an import (personal-cfo-pxi.10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ImportWarningDto {
+    /// The row's 1-based position among the file's data rows (a CSV header
+    /// is not counted; for OFX, the transaction's position), when known.
+    pub row: Option<u32>,
+    /// A fixed reason, for example `"unparseable / missing amount"`.
+    pub message: String,
+    /// `true` when nothing was imported for this row.
+    pub skipped: bool,
 }
 
 impl From<BatchResult> for BatchResultDto {
@@ -1626,6 +1670,20 @@ impl From<BatchResult> for BatchResultDto {
             committed: result.committed,
             flagged: result.flagged,
             auto_categorized: result.auto_categorized,
+            skipped_rows: result.skipped_rows,
+            warnings: result
+                .warnings
+                .into_iter()
+                .map(|w| ImportWarningDto {
+                    row: w
+                        .row
+                        .and_then(|r| u32::try_from(r).ok())
+                        .and_then(|r| r.checked_add(1)),
+                    message: w.message,
+                    skipped: w.skipped,
+                })
+                .collect(),
+            skipped_unmapped: result.skipped_unmapped,
         }
     }
 }
@@ -1766,6 +1824,22 @@ pub struct VaultStatusDto {
     pub state: VaultStateDto,
     /// Number of accounts — present only while the vault is unlocked.
     pub account_count: Option<u32>,
+}
+
+/// Input to rotate the vault's encryption key (personal-cfo-2y8, ADR 0083). The
+/// current password re-derives the KEK that wraps the new DEK; the command wraps
+/// it in `Zeroizing` on use. `Debug` is redacted so it can never reach a log
+/// line (§6.6).
+#[derive(Clone, Deserialize, Type)]
+pub struct RotateVaultKeyInput {
+    /// The current master password (unchanged by rotation).
+    pub password: String,
+}
+
+impl std::fmt::Debug for RotateVaultKeyInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RotateVaultKeyInput([REDACTED])")
+    }
 }
 
 /// Input to change the vault master password (personal-cfo-zxq). Carries both
@@ -2918,6 +2992,11 @@ pub struct BuildInfoDto {
     pub built_at: String,
     /// Whether tracked files were modified in the worktree at build time.
     pub dirty: bool,
+    /// The running macOS version (`ProductVersion`, e.g. `"14.8.9"`), read at call time;
+    /// `None` off macOS or if it can't be read. The release updater compares it with
+    /// `latest.json`'s `minimumSystemVersion` and declines an update this Mac couldn't
+    /// open (personal-cfo-md8h2.4).
+    pub os_version: Option<String>,
 }
 
 /// The outcome of applying an in-app update (personal-cfo-1ik.4): whether the rebuild+reinstall
@@ -3851,7 +3930,7 @@ impl From<finance_kernel::SpendBreakdown> for SpendBreakdownDto {
 // (pinned by a static assertion in the commands tests).
 #[derive(Clone, PartialEq, Eq, Deserialize, Type)]
 pub struct ConnectorLinkInput {
-    /// Registry id of the adapter (`"simplefin"`).
+    /// Registry id of the adapter (e.g. `simplefin`).
     pub adapter_id: String,
     pub setup_token: String,
 }
@@ -3893,6 +3972,13 @@ pub struct ConnectorAccountLinkDto {
     pub account_id: Option<String>,
     /// `YYYY-MM-DD`; `None` = never synced (next sync fetches full history).
     pub last_synced_on: Option<String>,
+    /// The provider account's ISO 4217 currency; `None` = not known yet.
+    pub currency: Option<String>,
+    /// Why this account can't be mapped, in the currency guard's own words
+    /// (personal-cfo-049p6; ADR 0076 decision 7) — `None` when it can. Set
+    /// for an unknown currency or one other than the base currency; a mapped
+    /// link with a known foreign currency has its transactions held.
+    pub currency_refusal: Option<String>,
 }
 
 /// One provider in the connector registry (ADR 0015) — the picker's input.
@@ -3910,8 +3996,35 @@ pub struct ConnectorAdapterDto {
     pub regions: Vec<String>,
     pub economics: ConnectorEconomicsDto,
     pub disclosure: ConnectorDisclosureDto,
+    pub link_guide: ConnectorLinkGuideDto,
+    /// A referral link DohFlow may earn from, with its FTC sentence (ADR 0076
+    /// §5). Render the URL as selectable text, never a link, with the
+    /// sentence beside it. `None` for most providers.
+    pub referral: Option<ConnectorReferralDto>,
     /// `false` = implemented but not released; `connector_link` refuses it.
     pub enabled: bool,
+}
+
+/// How to connect one provider (ADR 0015's link-guide addendum). Render
+/// `provider_url` as selectable text wherever a step contains it — never a
+/// link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorLinkGuideDto {
+    pub title: String,
+    pub refresh_note: String,
+    pub setup_steps: Vec<String>,
+    pub provider_url: String,
+    pub credential_label: String,
+    pub credential_noun: String,
+    pub credential_placeholder: String,
+    pub paste_instructions: String,
+}
+
+/// A provider's referral URL and the disclosure that must sit next to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorReferralDto {
+    pub url: String,
+    pub disclosure: String,
 }
 
 /// What the adapter's code can fetch (`connector_core::CapabilitySet`).
@@ -3993,6 +4106,9 @@ pub struct ConnectorConnectionDto {
     pub display_hint: Option<String>,
     pub last_synced_at: Option<String>,
     pub last_error: Option<String>,
+    /// How often this connection refreshes (lqk): `every_open`, `daily`,
+    /// `weekly` or `manual`.
+    pub refresh_cadence: String,
     pub links: Vec<ConnectorAccountLinkDto>,
 }
 
@@ -4002,6 +4118,50 @@ pub struct ConnectorSetAccountLinkInput {
     pub connection_id: String,
     pub external_id: String,
     pub account_id: Option<String>,
+    /// `true` once the user chose "Import from both" for an account another
+    /// connector link already feeds (personal-cfo-6evt). With `false`, such a
+    /// mapping is not saved; the result names the existing feed instead.
+    pub allow_shared_feed: bool,
+}
+
+/// Create a new account and map a connector account onto it, in one step
+/// (personal-cfo-pxi.8): the currency guard runs before anything is created.
+#[derive(Debug, Clone, Deserialize, Type)]
+pub struct ConnectorCreateMappedAccountInput {
+    pub connection_id: String,
+    pub external_id: String,
+    /// The account to create; it is mapped once created.
+    pub account: CreateAccountInput,
+}
+
+/// What a mapping did (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorSetAccountLinkResultDto {
+    /// `true` if the link now points where asked (or was unmapped).
+    pub linked: bool,
+    /// When `linked` is `false`: the other connector links already feeding the
+    /// chosen account. Nothing was changed.
+    pub existing_feeds: Vec<ConnectorFeedDto>,
+}
+
+/// A connector link that already feeds an account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorFeedDto {
+    pub connection_id: String,
+    /// The connection's provider id; the UI names it from the registry.
+    pub adapter_id: String,
+    /// The provider's own label for the connection, if it gave one.
+    pub display_hint: Option<String>,
+    pub external_id: String,
+    pub external_name: Option<String>,
+}
+
+/// Change how often a connection refreshes (lqk).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ConnectorSetRefreshCadenceInput {
+    pub connection_id: String,
+    /// `every_open`, `daily`, `weekly` or `manual`.
+    pub cadence: String,
 }
 
 /// Run one sync for a connection.
@@ -4036,4 +4196,47 @@ pub struct ConnectorSyncResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ConnectorForgetInput {
     pub connection_id: String,
+}
+
+/// A previewed local diagnostics bundle (personal-cfo-lyd,
+/// `docs/security/logging-policy.md` §8). `text` is **exactly** what
+/// `diagnostics_save` writes for this `snapshot_id`; records captured after the
+/// preview never enter it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct DiagnosticsPreviewDto {
+    /// Names this preview; a save must name the preview the user saw.
+    pub snapshot_id: u32,
+    /// The exact bundle text (redacted JSON).
+    pub text: String,
+    /// Records the bundle holds.
+    pub records: u32,
+    /// Records evicted because the session reached its capacity.
+    pub dropped: u32,
+    /// Values rejected at admission (wrong shape for their metric).
+    pub rejected: u32,
+    /// A suggested file name for the Save dialog (no directory).
+    pub suggested_file_name: String,
+}
+
+/// How a diagnostics save ended (personal-cfo-lyd). Every expected outcome is a
+/// fixed variant — never a path or an OS error message — so the UI shows safe
+/// copy for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticsSaveResult {
+    /// The previewed bytes were written.
+    Saved,
+    /// The preview is gone (a newer preview replaced it, or the vault was locked
+    /// or switched). Nothing was written.
+    PreviewExpired,
+    /// The destination is not an absolute `.json` file in an existing folder
+    /// outside the app-data and active-vault folders (a symlink or `..` that
+    /// resolves inside them counts as inside). Nothing was written.
+    InvalidDestination,
+    /// The OS refused the write.
+    PermissionDenied,
+    /// The disk is full.
+    DiskFull,
+    /// The write failed for another reason.
+    Failed,
 }

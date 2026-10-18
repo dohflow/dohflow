@@ -80,3 +80,78 @@ Use **Tauri v2** as the desktop shell, with a **Rust** trusted core (the "Financ
 - `personal-cfo-dily` (React + TypeScript frontend shell)
 - `personal-cfo-tif` (ADR 0010: Tauri window/capability isolation)
 - `personal-cfo-1al` (ADR 0003: trust boundary)
+
+## Accepted addendum (2026-09-28): verified Rust compiler support
+
+- **Status:** Accepted
+- **Tier:** Public — contributor build requirements and security engineering.
+- **Decider:** Project owner
+- **Bead:** `personal-cfo-g3m.5`
+
+The supported bundled SQLCipher update requires a newer Rust compiler than the
+previously declared minimum of 1.82. The upstream `rusqlite` 0.40 releases use
+[`cfg_select!`](https://doc.rust-lang.org/stable/releases.html#version-1950-2026-04-16),
+stabilized in Rust 1.95. Prefer a supported upstream security update over a
+locally maintained database fork or source patch.
+
+The declared minimum may advance to the **lowest verified compiler version in
+the range 1.95–1.96**. Verification must use that actual compiler against the
+complete locked workspace and standalone desktop dependency graphs, including
+the relevant supported targets. A successful 1.96 build does not demonstrate
+1.95 compatibility. Record the selected floor and its verification in
+`docs/architecture/stack.md`, keep both manifests consistent, and enforce it in
+CI. If the graph needs a compiler above 1.96, a supported target regresses, or
+the required evidence cannot be obtained, obtain a new decision before
+continuing. This addendum authorizes the bounded policy change; it does not
+assert an untested minimum already works.
+
+The **pinned build toolchain remains 1.96.0**. Contributors using older Rust
+must update their compiler to build the updated dependency graph. This changes
+source-build support only, not the supported OS or hardware floor. The bundled
+SQLCipher/vendored OpenSSL architecture, Tauri pins, vault and backup formats,
+key hierarchy, KDF, migration rules, and compatibility/security gates remain
+unchanged. Preserve outgoing-engine synthetic fixtures before updating the
+engine. Compiler approval is not permission to convert user data, waive a
+release gate, or ship an unreviewed artifact.
+
+Revisit this addendum if a later dependency requires a higher compiler floor
+or changes platform support. Do not silently raise `rust-version` to make a
+dependency build pass.
+
+## Accepted addendum (2026-10-12): pinned build toolchain 1.99.0
+
+- **Status:** Accepted
+- **Tier:** Public — contributor build requirements and release engineering.
+- **Decider:** Project owner
+- **Bead:** `personal-cfo-zz7f7.13`
+
+The release build machine now runs macOS 27 and Xcode 27. On it, every release
+build with the pinned Rust 1.96.0 fails at once with `error[E0463]: can't find
+crate` for a procedural-macro dependency (first seen as `ctor_proc_macro`).
+Debug builds are unaffected.
+
+**Cause (reproduced in isolation).** Tauri sets `MACOSX_DEPLOYMENT_TARGET` from
+`bundle.macOS.minimumSystemVersion` (14.0, ADR 0065). For a deployment target
+of 12.0 or later, Xcode 27's linker (`ld-27037`) links proc-macro dylibs with
+`LC_DYLD_CHAINED_FIXUPS`, and rustc 1.96.0 cannot then load them as crates. At
+11.0, without chained fixups, they load. A clean 1.96.0 release build at
+deployment target 14.0 fails; the same build on rustc 1.99.0 finishes. Rust
+1.96.0 with the older Xcode on the previous build machine was unaffected, which
+is why v0.2.0 built.
+
+**Decision.** The **pinned build toolchain moves from 1.96.0 to 1.99.0**,
+replacing the previous addendum's "the pinned build toolchain remains 1.96.0".
+The declared MSRV is unchanged at **1.95**, and CI keeps checking both graphs
+with that floor. This changes the build compiler only. Dependency versions,
+the supported OS and hardware floor, and every security, compatibility and
+release gate stay as they are. The bump lands with the full gate set green on
+1.99.0, including any new clippy findings fixed rather than allowed.
+
+**Rejected alternative.** Staying on 1.96.0 and passing
+`-C link-arg=-Wl,-no_fixup_chains` also loads the proc-macros. It works around
+a linker format Apple has made the default, adds a platform-specific flag that
+must reach host artifacts, and leaves the build on a compiler that predates the
+toolchain it now runs against.
+
+Revisit if a later Xcode or Rust release regresses this, or if the pin needs to
+move again. Moving the pin stays a deliberate, recorded decision.

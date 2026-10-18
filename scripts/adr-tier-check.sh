@@ -52,6 +52,7 @@ check() {
   else
     unexcepted="$matches"
   fi
+  [ -n "$unexcepted" ] && unexcepted="$(echo "$unexcepted" | drop_line_exceptions)"
   if [ -n "$unexcepted" ]; then
     echo "$unexcepted"
     echo "FOUND: $label — see matches above" >&2
@@ -79,6 +80,36 @@ check() {
 #     public `/pricing` page (ADR 0066, allowlisted) by name, discloses
 #     nothing new.
 adr_exceptions='docs/adr/0061-website-stack-and-hosting\.md|docs/adr/0030-categorization\.md|docs/adr/0028-account-subtype-and-cash-tiers\.md|docs/adr/0060-connector-strategy-simplefin-first\.md|docs/adr/0046-recurring-suggestion-dismissal\.md|docs/adr/0054-categorical-chart-palette\.md|docs/adr/0007-ledger-transaction-posting-model\.md|docs/research/trademark-clearance-dossier\.md'
+
+# Line-level exceptions: one exact line in one exact file, for text a public
+# ADR is REQUIRED to carry verbatim. Unlike $adr_exceptions (whole files),
+# these leave the rest of the file under the tripwire, so they suit a file
+# that otherwise must stay clean. Each entry is "<path><TAB><entire line>",
+# compared for exact equality — change one character of the line, or move it
+# to another file, and it fails again. Verified by hand, never guessed:
+#   - 0076: the FTC 16 CFR Part 255 affiliate disclosure (D15, decided
+#     2026-09-18 on personal-cfo-hdk50). The law requires this sentence to be
+#     public, and "commission" is in it. The affiliate terms themselves stay in
+#     dohflow/internal, and any OTHER "commission" in 0076 still fails.
+line_exceptions=(
+  $'docs/adr/0076-multi-provider-connector-strategy.md\t> DohFlow may earn a commission if you sign up for LunchFlow through the link above — this does not affect what LunchFlow charges you, and DohFlow works the same whether or not you use it.'
+)
+
+# Drops `git grep -n` lines ("path:line:content") that match a
+# $line_exceptions entry exactly. Content may itself contain colons, so only
+# the first two separate fields.
+drop_line_exceptions() {
+  LINE_EXCEPTIONS="$(printf '%s\n' "${line_exceptions[@]}")" awk '
+    BEGIN {
+      n = split(ENVIRON["LINE_EXCEPTIONS"], entries, "\n")
+      for (i = 1; i <= n; i++) if (entries[i] != "") allowed[entries[i]] = 1
+    }
+    {
+      p = index($0, ":"); path = substr($0, 1, p - 1); rest = substr($0, p + 1)
+      q = index(rest, ":"); content = substr(rest, q + 1)
+      if (!((path "\t" content) in allowed)) print
+    }'
+}
 
 # ADR 0082's own phrase list, verbatim, checked one at a time against the
 # same exceptions list — a file legitimately excepted for one phrase (e.g.

@@ -17,6 +17,7 @@ export const commands = {
 	unlockVault: (password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("unlock_vault", { password })),
 	lockVault: () => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("lock_vault")),
 	changePassword: (input: ChangePasswordInput) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("change_password", { input })),
+	rotateVaultKey: (input: RotateVaultKeyInput) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("rotate_vault_key", { input })),
 	deleteVault: () => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("delete_vault")),
 	listVaults: () => typedError<VaultListDto, IpcError>(__TAURI_INVOKE("list_vaults")),
 	createVaultNamed: (name: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("create_vault_named", { name, password })),
@@ -32,6 +33,22 @@ export const commands = {
 	updateBatchState: (input: UpdateBatchStateInput) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("update_batch_state", { input })),
 	importBatch: (input: ImportBatchInput) => typedError<BatchResultDto, IpcError>(__TAURI_INVOKE("import_batch", { input })),
 	importPreviewColumns: (data: number[], filename: string | null, pluginId: string | null) => typedError<string[], IpcError>(__TAURI_INVOKE("import_preview_columns", { data, filename, pluginId })),
+	importPreviewAccounts: (data: number[], filename: string | null, pluginId: string | null, presetId: string | null, columnMapping: {
+	date: string | null,
+	description: string | null,
+	amount: string | null,
+	debit: string | null,
+	credit: string | null,
+	account: string | null,
+	category: string | null,
+	/**
+	 *  A second, coarser category column (personal-cfo-gvidg) — see
+	 *  `ColumnMapping::category_group`.
+	 */
+	category_group: string | null,
+	currency: string | null,
+	memo: string | null,
+} | null) => typedError<string[], IpcError>(__TAURI_INVOKE("import_preview_accounts", { data, filename, pluginId, presetId, columnMapping })),
 	listSourcePresets: () => __TAURI_INVOKE<SourcePresetDto[]>("list_source_presets"),
 	updateAccount: (input: UpdateAccountInput) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("update_account", { input })),
 	setAccountSubtype: (accountId: string, subtype: string | null, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_account_subtype", { accountId, subtype, idempotencyKey })),
@@ -197,9 +214,10 @@ export const commands = {
 	 */
 	checkForUpdate: () => __TAURI_INVOKE<UpdateStatusDto>("check_for_update"),
 	/**
-	 *  The running binary's build identity: version, commit, channel, build time, dirty flag.
-	 *  Pure compile-time constants — no git, no network, no vault — so the UI can show which
-	 *  build you are running immediately, including on the lock screen and while offline.
+	 *  The running binary's build identity: version, commit, channel, build time, dirty flag,
+	 *  plus the running macOS version. Compile-time constants and one local file read — no git,
+	 *  no network, no vault — so the UI can show which build you are running immediately,
+	 *  including on the lock screen and while offline.
 	 */
 	buildInfo: () => __TAURI_INVOKE<BuildInfoDto>("build_info"),
 	/**
@@ -274,12 +292,17 @@ export const commands = {
 	configureBackup: (cadence: BackupCadenceDto, destination: string | null) => typedError<BackupScheduleSettingsDto, IpcError>(__TAURI_INVOKE("configure_backup", { cadence, destination })),
 	runBackupNow: () => typedError<BackupHistoryEntryDto, IpcError>(__TAURI_INVOKE("run_backup_now")),
 	exportTransactionsCsv: (outPath: string) => typedError<number, IpcError>(__TAURI_INVOKE("export_transactions_csv", { outPath })),
+	diagnosticsPreview: () => typedError<DiagnosticsPreviewDto, IpcError>(__TAURI_INVOKE("diagnostics_preview")),
+	diagnosticsSave: (snapshotId: number, outPath: string) => typedError<DiagnosticsSaveResult, IpcError>(__TAURI_INVOKE("diagnostics_save", { snapshotId, outPath })),
+	diagnosticsDiscard: (snapshotId: number) => typedError<null, IpcError>(__TAURI_INVOKE("diagnostics_discard", { snapshotId })),
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
 	restoreBackupAsNewVault: (packagePath: string, password: string, name: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup_as_new_vault", { packagePath, password, name })),
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
 	connectorAdapters: () => __TAURI_INVOKE<ConnectorAdapterDto[]>("connector_adapters"),
 	connectorConnections: () => typedError<ConnectorConnectionDto[], IpcError>(__TAURI_INVOKE("connector_connections")),
-	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
+	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<ConnectorSetAccountLinkResultDto, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
+	connectorSetRefreshCadence: (input: ConnectorSetRefreshCadenceInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_set_refresh_cadence", { input })),
+	connectorCreateMappedAccount: (input: ConnectorCreateMappedAccountInput) => typedError<CreateAccountResult, IpcError>(__TAURI_INVOKE("connector_create_mapped_account", { input })),
 	connectorSync: (input: ConnectorSyncInput) => typedError<ConnectorSyncResultDto, IpcError>(__TAURI_INVOKE("connector_sync", { input })),
 	connectorAutoSync: () => typedError<ConnectorSyncResultDto[], IpcError>(__TAURI_INVOKE("connector_auto_sync")),
 	connectorForget: (input: ConnectorForgetInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_forget", { input })),
@@ -571,6 +594,22 @@ export type BatchResultDto = {
 	 *  addendum, personal-cfo-5n4.2). 0 when the setting is off or nothing matched.
 	 */
 	auto_categorized: number,
+	/**
+	 *  Rows in the file the parser could not use, so nothing was imported for
+	 *  them (personal-cfo-pxi.10). The full count, even when `warnings` is cut short.
+	 */
+	skipped_rows: number,
+	/**
+	 *  What the parser reported, at most 20: skipped rows first, then notes on
+	 *  rows that were imported. Each is a row number and a fixed reason — never
+	 *  the row's own values.
+	 */
+	warnings: ImportWarningDto[],
+	/**
+	 *  Rows left out because the user chose not to import their source
+	 *  account (personal-cfo-tulv `account_map`). Not part of `skipped_rows`.
+	 */
+	skipped_unmapped: number,
 };
 
 /**
@@ -590,6 +629,13 @@ export type BuildInfoDto = {
 	built_at: string,
 	/**  Whether tracked files were modified in the worktree at build time. */
 	dirty: boolean,
+	/**
+	 *  The running macOS version (`ProductVersion`, e.g. `"14.8.9"`), read at call time;
+	 *  `None` off macOS or if it can't be read. The release updater compares it with
+	 *  `latest.json`'s `minimumSystemVersion` and declines an update this Mac couldn't
+	 *  open (personal-cfo-md8h2.4).
+	 */
+	os_version: string | null,
 };
 
 /**  One observed charge behind a recurring candidate (personal-cfo-4d8.25.11). */
@@ -763,19 +809,19 @@ export type CashTiersDto = {
  *  How an account participates in household cashflow. Mirrors the kernel
  *  [`CashflowRole`] so the generated bindings expose a clean string union.
  */
-export type CashflowRoleDto = 
+export type CashflowRoleDto =
 /**  Checking, savings — spendable now. */
-"LiquidCash" | 
+"LiquidCash" |
 /**  Credit cards and lines of credit. */
-"CreditFacility" | 
+"CreditFacility" |
 /**  Term loans, mortgages. */
-"LoanLiability" | 
+"LoanLiability" |
 /**  Brokerage, retirement balances. */
-"InvestmentAsset" | 
+"InvestmentAsset" |
 /**  Property, vehicles. */
-"RealAsset" | 
+"RealAsset" |
 /**  In-transit / clearing / suspense. */
-"ExternalClearing" | 
+"ExternalClearing" |
 /**  Virtual income/expense categorization account. */
 "IncomeExpenseVirtual";
 
@@ -907,6 +953,15 @@ export type ConnectorAccountLinkDto = {
 	account_id: string | null,
 	/**  `YYYY-MM-DD`; `None` = never synced (next sync fetches full history). */
 	last_synced_on: string | null,
+	/**  The provider account's ISO 4217 currency; `None` = not known yet. */
+	currency: string | null,
+	/**
+	 *  Why this account can't be mapped, in the currency guard's own words
+	 *  (personal-cfo-049p6; ADR 0076 decision 7) — `None` when it can. Set
+	 *  for an unknown currency or one other than the base currency; a mapped
+	 *  link with a known foreign currency has its transactions held.
+	 */
+	currency_refusal: string | null,
 };
 
 /**  A class of account the provider reaches. */
@@ -928,6 +983,13 @@ export type ConnectorAdapterDto = {
 	regions: string[],
 	economics: ConnectorEconomicsDto,
 	disclosure: ConnectorDisclosureDto,
+	link_guide: ConnectorLinkGuideDto,
+	/**
+	 *  A referral link DohFlow may earn from, with its FTC sentence (ADR 0076
+	 *  §5). Render the URL as selectable text, never a link, with the
+	 *  sentence beside it. `None` for most providers.
+	 */
+	referral: ConnectorReferralDto | null,
 	/**  `false` = implemented but not released; `connector_link` refuses it. */
 	enabled: boolean,
 };
@@ -950,7 +1012,23 @@ export type ConnectorConnectionDto = {
 	display_hint: string | null,
 	last_synced_at: string | null,
 	last_error: string | null,
+	/**
+	 *  How often this connection refreshes (lqk): `every_open`, `daily`,
+	 *  `weekly` or `manual`.
+	 */
+	refresh_cadence: string,
 	links: ConnectorAccountLinkDto[],
+};
+
+/**
+ *  Create a new account and map a connector account onto it, in one step
+ *  (personal-cfo-pxi.8): the currency guard runs before anything is created.
+ */
+export type ConnectorCreateMappedAccountInput = {
+	connection_id: string,
+	external_id: string,
+	/**  The account to create; it is mapped once created. */
+	account: CreateAccountInput,
 };
 
 /**  ADR 0004's credential tiers: what "connect" means for this provider. */
@@ -995,19 +1073,46 @@ export type ConnectorExternalAccountDto = {
 	external_name: string | null,
 };
 
+/**  A connector link that already feeds an account. */
+export type ConnectorFeedDto = {
+	connection_id: string,
+	/**  The connection's provider id; the UI names it from the registry. */
+	adapter_id: string,
+	/**  The provider's own label for the connection, if it gave one. */
+	display_hint: string | null,
+	external_id: string,
+	external_name: string | null,
+};
+
 /**  Forget a stored connection (its past synced data stays in the ledger). */
 export type ConnectorForgetInput = {
 	connection_id: string,
 };
 
 /**
+ *  How to connect one provider (ADR 0015's link-guide addendum). Render
+ *  `provider_url` as selectable text wherever a step contains it — never a
+ *  link.
+ */
+export type ConnectorLinkGuideDto = {
+	title: string,
+	refresh_note: string,
+	setup_steps: string[],
+	provider_url: string,
+	credential_label: string,
+	credential_noun: string,
+	credential_placeholder: string,
+	paste_instructions: string,
+};
+
+/**
  *  Link a new aggregator connection from a user-pasted setup token.
- * 
+ *
  *  LEAK RULE: `setup_token` is a one-time secret — the manual `Debug` impl
  *  redacts it, mirroring `connector_core::Credential`'s posture.
  */
 export type ConnectorLinkInput = {
-	/**  Registry id of the adapter (`"simplefin"`). */
+	/**  Registry id of the adapter (e.g. `simplefin`). */
 	adapter_id: string,
 	setup_token: string,
 };
@@ -1028,11 +1133,41 @@ export type ConnectorLinkResultDto = {
 /**  Who pays the provider. */
 export type ConnectorPayerDto = "UserDirect" | "DohflowBrokered" | "None";
 
+/**  A provider's referral URL and the disclosure that must sit next to it. */
+export type ConnectorReferralDto = {
+	url: string,
+	disclosure: string,
+};
+
 /**  Map (or unmap, with `None`) an external account onto a real account. */
 export type ConnectorSetAccountLinkInput = {
 	connection_id: string,
 	external_id: string,
 	account_id: string | null,
+	/**
+	 *  `true` once the user chose "Import from both" for an account another
+	 *  connector link already feeds (personal-cfo-6evt). With `false`, such a
+	 *  mapping is not saved; the result names the existing feed instead.
+	 */
+	allow_shared_feed: boolean,
+};
+
+/**  What a mapping did (personal-cfo-6evt, ADR 0014 §3 addendum 2026-10-04). */
+export type ConnectorSetAccountLinkResultDto = {
+	/**  `true` if the link now points where asked (or was unmapped). */
+	linked: boolean,
+	/**
+	 *  When `linked` is `false`: the other connector links already feeding the
+	 *  chosen account. Nothing was changed.
+	 */
+	existing_feeds: ConnectorFeedDto[],
+};
+
+/**  Change how often a connection refreshes (lqk). */
+export type ConnectorSetRefreshCadenceInput = {
+	connection_id: string,
+	/**  `every_open`, `daily`, `weekly` or `manual`. */
+	cadence: string,
 };
 
 /**  Run one sync for a connection. */
@@ -1378,6 +1513,53 @@ export type DebtTermsDto = {
 };
 
 /**
+ *  A previewed local diagnostics bundle (personal-cfo-lyd,
+ *  `docs/security/logging-policy.md` §8). `text` is **exactly** what
+ *  `diagnostics_save` writes for this `snapshot_id`; records captured after the
+ *  preview never enter it.
+ */
+export type DiagnosticsPreviewDto = {
+	/**  Names this preview; a save must name the preview the user saw. */
+	snapshot_id: number,
+	/**  The exact bundle text (redacted JSON). */
+	text: string,
+	/**  Records the bundle holds. */
+	records: number,
+	/**  Records evicted because the session reached its capacity. */
+	dropped: number,
+	/**  Values rejected at admission (wrong shape for their metric). */
+	rejected: number,
+	/**  A suggested file name for the Save dialog (no directory). */
+	suggested_file_name: string,
+};
+
+/**
+ *  How a diagnostics save ended (personal-cfo-lyd). Every expected outcome is a
+ *  fixed variant — never a path or an OS error message — so the UI shows safe
+ *  copy for each.
+ */
+export type DiagnosticsSaveResult =
+/**  The previewed bytes were written. */
+"saved" |
+/**
+ *  The preview is gone (a newer preview replaced it, or the vault was locked
+ *  or switched). Nothing was written.
+ */
+"preview_expired" |
+/**
+ *  The destination is not an absolute `.json` file in an existing folder
+ *  outside the app-data and active-vault folders (a symlink or `..` that
+ *  resolves inside them counts as inside). Nothing was written.
+ */
+"invalid_destination" |
+/**  The OS refused the write. */
+"permission_denied" |
+/**  The disk is full. */
+"disk_full" |
+/**  The write failed for another reason. */
+"failed";
+
+/**
  *  Input to dismiss a recurring-bill suggestion (ADR 0046, personal-cfo-4d8.24.6): the
  *  suggestion's identity + inferred pattern, recorded so detection stops offering it until
  *  the pattern materially changes.
@@ -1485,6 +1667,20 @@ export type HistoryDayDto = {
 };
 
 /**
+ *  One source account in a multi-account file, and where its rows go
+ *  (personal-cfo-tulv).
+ */
+export type ImportAccountMapEntryDto = {
+	/**  The account label exactly as `import_preview_accounts` returned it. */
+	source_account: string,
+	/**
+	 *  The real account (UUID string) its rows land in; `None` = don't
+	 *  import this account's rows (they are counted, not dropped silently).
+	 */
+	account_id: string | null,
+};
+
+/**
  *  Input for importing a file through the ingestion pipeline (personal-cfo-cu8).
  *  The raw bytes cross the wire as a `number[]` and are parsed in the bounded
  *  host; nothing is persisted unencrypted (ADR 0014 shred-after-parse).
@@ -1494,8 +1690,18 @@ export type ImportBatchInput = {
 	data: number[],
 	/**  Original filename — drives plugin detection + the batch name. */
 	filename: string | null,
-	/**  The account (UUID string) to import the transactions into. */
-	target_account_id: string,
+	/**
+	 *  The account (UUID string) to import every transaction into. Exactly
+	 *  one of this and `account_map` is given.
+	 */
+	target_account_id: string | null,
+	/**
+	 *  For a file spanning several accounts (personal-cfo-tulv): where each
+	 *  source account's rows go, keyed by the labels `import_preview_accounts`
+	 *  returned. A row whose label is missing here, or mapped to `None`, is
+	 *  not imported and is counted in `BatchResultDto::skipped_unmapped`.
+	 */
+	account_map: ImportAccountMapEntryDto[] | null,
 	/**  An explicit importer plugin id; if omitted, the best-detected one is used. */
 	plugin_id: string | null,
 	/**
@@ -1516,6 +1722,19 @@ export type ImportBatchInput = {
 	date_format: string | null,
 	/**  Idempotency key; empty → generated server-side. */
 	idempotency_key: string,
+};
+
+/**  One issue the parser reported for an import (personal-cfo-pxi.10). */
+export type ImportWarningDto = {
+	/**
+	 *  The row's 1-based position among the file's data rows (a CSV header
+	 *  is not counted; for OFX, the transaction's position), when known.
+	 */
+	row: number | null,
+	/**  A fixed reason, for example `"unparseable / missing amount"`. */
+	message: string,
+	/**  `true` when nothing was imported for this row. */
+	skipped: boolean,
 };
 
 /**
@@ -1575,31 +1794,40 @@ export type IncomeSourceDto = {
  *  An error crossing the Tauri IPC boundary. Serialized to the frontend as an
  *  externally-tagged union (e.g. `{ "Validation": "..." }` or `"VaultLocked"`).
  */
-export type IpcError = 
+export type IpcError =
 /**
  *  The request failed domain or input validation (bad UUID, unknown
  *  currency, empty name, …). Safe to show the message to the user.
  */
-({ Validation: string }) & { Persistence?: never; Unavailable?: never } | 
+({ Validation: string }) & { Persistence?: never; Unavailable?: never } |
 /**
  *  No vault is open. The caller must open/unlock a vault first. This is the
  *  steady state of a locked app.
  */
-"VaultLocked" | 
+"VaultLocked" |
 /**
  *  Unlocking failed because the password was wrong (the wrapped DEK failed
  *  to authenticate). Carries no detail — there is no oracle distinguishing a
  *  wrong password from a tampered envelope. The unlock screen surfaces this
  *  as "incorrect password".
  */
-"VaultUnlockFailed" | 
+"VaultUnlockFailed" |
+/**  This vault was written by a newer schema; do not offer a downgrade. */
+"NewerVaultSchema" |
+/**  This existing vault is not a verified supported migration layout. */
+"UnsupportedVaultSchema" |
 /**
  *  The vault is open but not accepting writes (e.g. restoring a backup or
  *  awaiting recovery). Carries the worker state as a non-sensitive label.
  */
-({ Unavailable: string }) & { Persistence?: never; Validation?: never } | 
+({ Unavailable: string }) & { Persistence?: never; Validation?: never } |
+/**
+ *  A key rotation needs more free disk space than is available (ADR 0083
+ *  §5). Nothing was written; freeing space and retrying is safe.
+ */
+"InsufficientDiskSpace" |
 /**  A writer panic rolled back the transaction; the vault needs recovery. */
-"WriterPanicked" | 
+"WriterPanicked" |
 /**
  *  Any other persistence failure, flattened to a message so no database
  *  type is exposed.
@@ -1644,7 +1872,7 @@ export type ManualFutureEntryDto = {
 
 /**
  *  A monetary amount on the wire: integer minor units + ISO currency code.
- * 
+ *
  *  `minor_units` is an `i64` cast to a TypeScript `number` via
  *  `#[specta(type = Number)]` on the field. A personal vault's balances stay
  *  far below 2^53 minor units, so no precision is lost.
@@ -1938,22 +2166,33 @@ export type RecurringTransferDto = {
 export type ReleaseUpdateFailureKind = "download" | "signature" | "install";
 
 /**  How a liability is repaid (ADR 0035 §1), on the wire as a snake_case token. */
-export type RepaymentPhilosophyDto = 
+export type RepaymentPhilosophyDto =
 /**  Pay the full balance. */
-"pay_in_full" | 
+"pay_in_full" |
 /**  Pay the projected statement balance. */
-"pay_statement_balance" | 
+"pay_statement_balance" |
 /**  Pay the current owed balance. */
-"pay_current_balance" | 
+"pay_current_balance" |
 /**  Pay the computed minimum. */
-"pay_minimum" | 
+"pay_minimum" |
 /**  Pay a stored fixed amount. */
-"pay_fixed_amount" | 
+"pay_fixed_amount" |
 /**  Not set — the forecast assumes the minimum. */
 "unknown";
 
 /**  Whether the app found a restore slot that was never committed to the registry. */
 export type RestoreRecoveryStatusDto = "clear" | "interrupted" | "unavailable";
+
+/**
+ *  Input to rotate the vault's encryption key (personal-cfo-2y8, ADR 0083). The
+ *  current password re-derives the KEK that wraps the new DEK; the command wraps
+ *  it in `Zeroizing` on use. `Debug` is redacted so it can never reach a log
+ *  line (§6.6).
+ */
+export type RotateVaultKeyInput = {
+	/**  The current master password (unchanged by rotation). */
+	password: string,
+};
 
 /**
  *  A stored scenario definition — a named overlay on the base forecast
@@ -2076,11 +2315,18 @@ export type SourcePresetDto = {
 	 *  not render a guide link when this is `false`.
 	 */
 	help_published: boolean,
+	/**
+	 *  The importer plugin this preset's files go through, when it has its
+	 *  own (personal-cfo-tulv: `"ynab-register"`) — pass it as
+	 *  `import_preview_columns`' `plugin_id` so the headers are read the
+	 *  way the import will read them. `None` = the generic CSV importer.
+	 */
+	importer_id: string | null,
 };
 
 /**
  *  The spend chart's rows plus what the same query excluded (personal-cfo-90eg).
- * 
+ *
  *  The exclusions travel WITH the rows so the surface can explain the gap between this
  *  chart and the list beside it, rather than letting the two silently disagree.
  */
@@ -2093,7 +2339,7 @@ export type SpendBreakdownDto = {
 /**
  *  Input to the spend-by-category read (ADR 0052). The date range is inclusive; `parent`
  *  is the level to roll up to (`None` = the taxonomy roots).
- * 
+ *
  *  The facets below mirror `TransactionPageInput` because ADR 0052 §2 makes the chart and
  *  the list read ONE filter state: a bar the user clicks has to list exactly the rows it
  *  counted. There is deliberately **no category facet** — a category selection is the

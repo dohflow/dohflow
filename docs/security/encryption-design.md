@@ -59,7 +59,11 @@ copied or logged — its `Debug` impl prints `Kek([REDACTED])`.
   whatever `memory_kib`/`time_cost` the vault's own `vault_metadata` row
   records — `Profile` selection happens at write time; reading an envelope
   uses whatever parameters are stored alongside it, not a hardcoded
-  profile). Full rekey-forward tooling is `personal-cfo-2y8`.
+  profile). A key rotation ([ADR 0083](../adr/0083-vault-key-rotation.md),
+  `personal-cfo-2y8`) always re-wraps the new DEK at `InteractiveDefault`
+  with a fresh salt, so rotating a `LegacyCompatibility` vault moves it to the
+  current profile. A password change (`personal-cfo-zxq`) does the same for
+  the KEK while keeping the DEK.
 
 ### Test floor
 
@@ -167,7 +171,7 @@ is the release-blocking (`cargo test --workspace`) guard for that:
 - `linked_engine_versions_match_the_pin` asserts the *linked* SQLCipher
   (`PRAGMA cipher_version`) and SQLite (`rusqlite::version()`) exactly equal
   the pins recorded in [`docs/architecture/stack.md`](../architecture/stack.md)
-  — **SQLCipher `4.5.7 community`**, **SQLite `3.45.3`** — so a silent
+  — **SQLCipher `4.14.0 community`**, **SQLite `3.51.3`** — so a silent
   `cargo update` that bumps the bundled engine (and could make existing
   vaults unopenable) fails this test instead of shipping.
 - `golden_vault_round_trips_on_the_pinned_engine` builds a real vault
@@ -202,5 +206,5 @@ this document for the exact run.
 - [`docs/architecture/stack.md`](../architecture/stack.md) — SQLCipher/SQLite engine pins.
 - [`docs/security/threat-model.md`](threat-model.md) — TB2 (unlocked memory ↔ disk) and the brute-force-password threat row cite this document.
 - `personal-cfo-0sqk` — open follow-up: per-device Argon2id calibration + a CI parameter-floor regression guard.
-- `personal-cfo-2y8` — key rotation / rekey implementation, including the `LegacyCompatibility` → current-profile migration path.
+- [ADR 0083 — Vault key rotation](../adr/0083-vault-key-rotation.md) (`personal-cfo-2y8`) — rotating the DEK itself: a re-encrypted copy prepared beside the live vault, attachments re-wrapped and re-addressed, one journal rename as the commit point, startup roll-back/roll-forward recovery, and the `LegacyCompatibility` → current-profile move. Implemented in `crates/finance-kernel/src/rekey.rs` and `crates/db-worker/src/rekey.rs`.
 - `personal-cfo-1t0` — `SecretBytes` `mlock`/zeroize protection this crate's `Kek`/`Dek` types build on.

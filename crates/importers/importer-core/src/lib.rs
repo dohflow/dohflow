@@ -144,8 +144,16 @@ pub struct ParsedBatch {
     pub accounts: Vec<ParsedAccount>,
     /// One entry per parsed row / object.
     pub records: Vec<ParsedRecord>,
-    /// Non-fatal issues a human may want to review (ambiguous date, odd row).
+    /// Non-fatal issues a human may want to review (an ambiguous date). The
+    /// row they name **was** staged.
     pub warnings: Vec<ParseWarning>,
+    /// Source rows that were **not** staged, one entry per row, each with the
+    /// reason (personal-cfo-pxi.10; ADR 0014 §3 "never silently drop"). The
+    /// import summary reports these, so a row a parser cannot use is visible
+    /// rather than silently absent. Adapters that have not classified their
+    /// own skips yet leave this empty and keep reporting through `warnings`.
+    #[serde(default)]
+    pub skipped: Vec<ParseWarning>,
 }
 
 /// One parsed row / provider object → a `source_record`.
@@ -212,6 +220,13 @@ pub struct ParsedAccount {
     pub external_number_hash: Option<String>,
     /// Proposed subtype token (`checking`/`savings`/`credit_card`/…), matched later.
     pub proposed_subtype: Option<String>,
+    /// The account's ISO 4217 currency code **as the source reports it**, when
+    /// the source states one (a connector's account currency). Kept raw — it
+    /// may name a currency the app cannot hold yet, which the mapping surface
+    /// must see in order to refuse it (ADR 0076 decision 7, personal-cfo-049p6).
+    /// `None` for sources that state no account currency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// An observed ending balance → a `staged_balance` (becomes a balance assertion
@@ -223,10 +238,15 @@ pub struct ParsedBalance {
     pub external_account: Option<String>,
 }
 
-/// A non-fatal parse issue surfaced for human review.
+/// A parse issue surfaced for human review.
+///
+/// File importers keep `message` to a **fixed reason** (for example
+/// `"unparseable amount"`) and never echo the row's own values — the row
+/// number locates it (personal-cfo-pxi.10, logging-policy §1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParseWarning {
-    /// Source row number, when applicable.
+    /// Source row number, when applicable: the 0-based index of the data row
+    /// (a CSV header is not counted; for OFX, the transaction's position).
     pub row: Option<usize>,
     pub message: String,
 }
@@ -405,12 +425,10 @@ pub enum AccountHandling {
     /// behavior for `generic-csv`, unchanged).
     OneFilePerAccount,
     /// An account column present — the importer stages one [`ParsedAccount`]
-    /// per distinct value and stamps each row's `external_account`.
-    /// Routing those into DIFFERENT real DohFlow accounts at commit time is
-    /// NOT part of this preset mechanism (see this crate's module docs) —
-    /// today every row still commits into whichever single account the user
-    /// picked, the same as `OneFilePerAccount`; only the *parsed* data is
-    /// richer.
+    /// per distinct value and stamps each row's `external_account`. The
+    /// import then routes each row by that label through the account map
+    /// the user chose (personal-cfo-tulv); a row whose account the user did
+    /// not map is reported, never committed into some other account.
     AccountColumn,
 }
 
@@ -451,17 +469,9 @@ pub enum SourceQuirk {
 /// [`ImporterPlugin`]/`ConnectorAdapter` are traits returning owned data
 /// from methods rather than struct literals.
 ///
-/// SCOPE NOTE on [`AccountHandling::AccountColumn`]: this mechanism parses
-/// and stages an account column's distinct values as [`ParsedAccount`]s and
-/// stamps `external_account` on each row — but does not itself route
-/// different rows into different *real* DohFlow accounts at commit time.
-/// `crates/db-worker`'s `stage_parsed_batch` (the file-import commit path)
-/// still targets one account for the whole batch, same as today;
-/// `stage_sync_batch` (the connector-sync path) already supports true
-/// per-row account routing via an external-key → real-account map, and is
-/// the natural mechanism to reuse for this — deliberately left to whichever
-/// bead does the first `AccountColumn`-handling preset's full end-to-end
-/// commit path (e.g. `personal-cfo-tulv`'s YNAB guide), not built here.
+/// [`AccountHandling::AccountColumn`] sources span several accounts in one
+/// file: the import routes each row to the real account the user mapped its
+/// label to (personal-cfo-tulv — `stage_parsed_batch_routed` in `db-worker`).
 pub trait SourcePreset: Sync {
     /// Stable, unique id (e.g. `"ynab"`). Never changes.
     fn id(&self) -> &'static str;
@@ -516,6 +526,15 @@ pub trait SourcePreset: Sync {
     /// The frontend must not render a guide link when this is `false`.
     fn help_published(&self) -> bool {
         false
+    }
+
+    /// The [`ImporterPlugin`] this preset's files go through, when the
+    /// source needs logic beyond a column mapping (personal-cfo-tulv: YNAB's
+    /// tab-separated decimal-comma export, its whole-file date order, and
+    /// its transfer/split/cleared notes). `None` — the default — means the
+    /// generic CSV importer with [`Self::hints`], the MIGRATE-0 path.
+    fn importer_id(&self) -> Option<&'static str> {
+        None
     }
 
     /// A synthesized fixture (never a real user file) exercising this
@@ -585,6 +604,7 @@ mod tests {
                 external_name: Some("Checking".to_owned()),
                 external_number_hash: None,
                 proposed_subtype: Some("checking".to_owned()),
+                currency: None,
             }],
             records: vec![ParsedRecord {
                 external_id: None,
@@ -605,11 +625,24 @@ mod tests {
                 }),
                 balance: None,
             }],
-            warnings: vec![],
+            warnings: vec![ParseWarning {
+                row: Some(0),
+                message: "ambiguous date (assumed US M/D/Y)".to_owned(),
+            }],
+            skipped: vec![ParseWarning {
+                row: Some(1),
+                message: "unparseable amount".to_owned(),
+            }],
         };
         let json = serde_json::to_string(&batch).unwrap();
         let back: ParsedBatch = serde_json::from_str(&json).unwrap();
         assert_eq!(batch, back);
+
+        // A batch serialized before `skipped` existed still reads, as no skips.
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        legacy.as_object_mut().unwrap().remove("skipped");
+        let back: ParsedBatch = serde_json::from_value(legacy).unwrap();
+        assert!(back.skipped.is_empty());
     }
 
     /// Deliberately does NOT override `help_published()` — the whole point
@@ -668,5 +701,12 @@ mod tests {
         // be a draft," not the safer "a preset's guide link stays hidden
         // one release longer than necessary."
         assert!(!PresetWithNoOpinionOnPublishStatus.help_published());
+    }
+
+    #[test]
+    fn importer_id_defaults_to_the_generic_csv_path() {
+        // personal-cfo-tulv: a preset routes through its own importer only by
+        // opting in; the default keeps the MIGRATE-0 generic CSV path.
+        assert_eq!(PresetWithNoOpinionOnPublishStatus.importer_id(), None);
     }
 }

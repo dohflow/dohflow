@@ -440,6 +440,23 @@ cmd_verify() {
   fi
   ok "darwin-aarch64 and darwin-x86_64 share the same url and signature"
 
+  echo
+  echo "── Checking latest.json's minimumSystemVersion (personal-cfo-md8h2.4) ──"
+  # Installed apps compare this with the running macOS and decline an update they
+  # couldn't open, so the live manifest must carry the bundle's real floor.
+  local min_live min_conf
+  min_live="$(printf '%s' "$manifest_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('minimumSystemVersion') or '')")"
+  min_conf="$(python3 -c "import json;print(json.load(open('$tauri_conf')).get('bundle',{}).get('macOS',{}).get('minimumSystemVersion') or '')")"
+  if [[ -z "$min_live" ]]; then
+    echo "✗ latest.json has no minimumSystemVersion" >&2
+    fail "verify failed — installed apps couldn't tell whether this release runs on their macOS."
+  fi
+  if [[ "$min_live" != "$min_conf" ]]; then
+    echo "✗ latest.json minimumSystemVersion '$min_live' differs from tauri.conf.json's '$min_conf'" >&2
+    fail "verify failed — the manifest's macOS floor must match the bundle's."
+  fi
+  ok "latest.json minimumSystemVersion matches the bundle ($min_live)"
+
   # bash 3.2 (macOS system bash) has no associative arrays — "key:value"
   # pairs plus parameter expansion instead.
   local entry plat asset_url asset_status

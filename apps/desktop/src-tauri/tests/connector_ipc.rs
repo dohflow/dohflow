@@ -8,16 +8,17 @@ use std::collections::BTreeMap;
 
 use app_lib::ipc::commands::{
     account_count_impl, account_list_impl, connector_adapters_impl, connector_auto_sync_impl,
-    connector_connections_impl, connector_forget_impl, connector_link_impl,
-    connector_link_registered_impl, connector_set_account_link_impl, connector_sync_impl,
-    create_account_impl, create_category_impl, create_manual_future_entry_impl, import_batch_impl,
-    manual_future_entry_list_impl, money_inbox_list_impl, recategorize_transaction_impl,
-    record_transaction_impl, set_auto_categorize_on_import_impl, transaction_page_impl,
+    connector_connections_impl, connector_create_mapped_account_impl, connector_forget_impl,
+    connector_link_impl, connector_link_registered_impl, connector_set_account_link_impl,
+    connector_sync_impl, create_account_impl, create_category_impl,
+    create_manual_future_entry_impl, import_batch_impl, manual_future_entry_list_impl,
+    money_inbox_list_impl, recategorize_transaction_impl, record_transaction_impl,
+    set_auto_categorize_on_import_impl, set_base_currency_impl, transaction_page_impl,
 };
 use app_lib::ipc::dto::{
-    AccountFlagsDto, CashflowRoleDto, ConnectorForgetInput, ConnectorLinkInput,
-    ConnectorSetAccountLinkInput, ConnectorSyncInput, CreateAccountInput, CreateCategoryInput,
-    ImportBatchInput, MoneyDto, RecordTransactionInput, TransactionPageInput,
+    AccountFlagsDto, CashflowRoleDto, ConnectorCreateMappedAccountInput, ConnectorForgetInput,
+    ConnectorLinkInput, ConnectorSetAccountLinkInput, ConnectorSyncInput, CreateAccountInput,
+    CreateCategoryInput, ImportBatchInput, MoneyDto, RecordTransactionInput, TransactionPageInput,
 };
 use app_lib::AppState;
 use connector_core::mock::{mock_registration, MockConnector};
@@ -84,6 +85,7 @@ fn map_account(state: &AppState, connection_id: &str, external_id: &str, account
             connection_id: connection_id.to_owned(),
             external_id: external_id.to_owned(),
             account_id: Some(account_id.to_owned()),
+            allow_shared_feed: false,
         },
     )
     .unwrap();
@@ -501,6 +503,7 @@ fn a_1k_record_sync_batch_stages_and_commits_every_row() {
         accounts: vec![],
         records,
         warnings: vec![],
+        skipped: Vec::new(),
     };
     let map = BTreeMap::from([("EXT-BULK".to_owned(), account_uuid)]);
 
@@ -515,7 +518,7 @@ fn a_1k_record_sync_batch_stages_and_commits_every_row() {
         idempotency_key: format!("bulk-{}", uuid::Uuid::now_v7()),
     };
     let result = kernel
-        .ingest_sync_batch("simplefin", "0.1.0", "bulk test", &batch, &map, &meta)
+        .ingest_sync_batch("simplefin", "0.1.0", "bulk test", None, &batch, &map, &meta)
         .unwrap();
     assert_eq!(result.batch.staged, 1000);
     assert_eq!(result.batch.committed, 1000);
@@ -614,6 +617,7 @@ fn mapping_to_a_nonexistent_account_is_rejected() {
             connection_id,
             external_id: "mock-acct-checking".to_owned(),
             account_id: Some(uuid::Uuid::now_v7().to_string()),
+            allow_shared_feed: false,
         },
     )
     .unwrap_err();
@@ -795,7 +799,8 @@ fn csv_backfill_flags_already_synced_rows() {
         ImportBatchInput {
             data: csv.as_bytes().to_vec(),
             filename: Some("backfill.csv".to_owned()),
-            target_account_id: checking,
+            target_account_id: Some(checking),
+            account_map: None,
             plugin_id: Some("generic-csv".to_owned()),
             preset_id: None,
             column_mapping: None,
@@ -907,9 +912,19 @@ fn an_unknown_adapter_id_is_a_validation_error() {
 fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
     let listing = connector_adapters_impl(connector_core::all_registrations());
     let ids: Vec<&str> = listing.iter().map(|a| a.adapter_id.as_str()).collect();
-    assert_eq!(ids, ["simplefin"]);
+    // ADR 0076 §4: the launch provider first, then alphabetical.
+    assert_eq!(ids, ["simplefin", "lunchflow"]);
+
+    let lunchflow = &listing[1];
+    assert!(!lunchflow.enabled, "implemented but not released");
+    let referral = lunchflow
+        .referral
+        .as_ref()
+        .expect("lunchflow carries its referral");
+    assert!(referral.disclosure.contains("may earn a commission"));
 
     let simplefin = &listing[0];
+    assert!(simplefin.referral.is_none());
     assert!(simplefin.enabled);
     assert_eq!(simplefin.display_name, "SimpleFIN");
     assert!(simplefin.capabilities.transactions && !simplefin.capabilities.holdings);
@@ -932,9 +947,19 @@ fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
     }
     let mut all_keys = Vec::new();
     keys(&serde_json::to_value(&listing).unwrap(), &mut all_keys);
-    // `handles_credentials` is disclosure prose ABOUT credentials — the one
-    // key the substring scan must let through.
-    for key in all_keys.iter().filter(|k| *k != "handles_credentials") {
+    // These keys hold copy ABOUT the credential (disclosure prose, the link
+    // guide's label/noun/placeholder) — never a credential. The allowlist is
+    // exact names, so any other credential-shaped key still fails.
+    const COPY_ABOUT_CREDENTIALS: [&str; 4] = [
+        "handles_credentials",
+        "credential_label",
+        "credential_noun",
+        "credential_placeholder",
+    ];
+    for key in all_keys
+        .iter()
+        .filter(|k| !COPY_ABOUT_CREDENTIALS.contains(&k.as_str()))
+    {
         for forbidden in [
             "token",
             "secret",
@@ -961,5 +986,793 @@ fn the_adapters_listing_includes_disabled_providers_flagged() {
         .iter()
         .map(|a| (a.adapter_id.as_str(), a.enabled))
         .collect();
+    // No launch provider among the mocks: alphabetical by display name, then id.
     assert_eq!(flags, [("mock-off", false), ("other", true)]);
+}
+
+// ---------------------------------------------------------------------------
+// LunchFlow (personal-cfo-r2pow): registered, disabled, refused before link
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lunchflow_is_refused_while_disabled_through_the_real_registry() {
+    let (_dir, state) = open_state();
+    // The production resolver. The refusal fires before the adapter's link,
+    // so no request is ever made with this key.
+    let err = connector_link_registered_impl(
+        &state,
+        connector_core::registration_by_id,
+        ConnectorLinkInput {
+            adapter_id: "lunchflow".to_owned(),
+            setup_token: "lf-not-a-real-key".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(msg) if msg.contains("not available")),
+        "got {err:?}"
+    );
+    assert!(connector_connections_impl(&state).unwrap().is_empty());
+}
+
+#[test]
+fn connector_spans_carry_the_adapter_and_never_the_token() {
+    use observability::RedactingMakeWriter;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    // The mock accepts exactly this token and issues a fixed credential —
+    // both stand in for the secrets that must never be logged.
+    let token = "mock-setup-token";
+    let buffer = Buffer::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    let subscriber = tracing_subscriber::registry().with(layer);
+    let (_dir, state) = open_state();
+    let adapter = mock();
+    observability::testing::install_global_test_subscriber();
+    tracing::subscriber::with_default(subscriber, || {
+        let linked = connector_link_impl(
+            &state,
+            &adapter,
+            ConnectorLinkInput {
+                adapter_id: "other".to_owned(),
+                setup_token: token.to_owned(),
+            },
+        )
+        .unwrap();
+        sync(&state, &adapter, &linked.connection_id);
+    });
+
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    for field in [
+        "connector_link",
+        "connector_sync",
+        "adapter_id",
+        "adapter_version",
+        "outcome",
+        "success",
+        "duration_ms",
+    ] {
+        assert!(logged.contains(field), "missing {field:?} in {logged}");
+    }
+    assert!(!logged.contains(token), "token leaked into logs: {logged}");
+    assert!(
+        !logged.contains("mock-access-url"),
+        "credential leaked into logs: {logged}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LunchFlow key-echo (personal-cfo-r2pow review F1): a provider that quotes
+// the key back in its error bodies must not get it into last_error, the
+// connection DTO, sync warnings, or any log line — including auto-sync's.
+// ---------------------------------------------------------------------------
+
+const ECHO_KEY: &str = "lf-IPC-CANARY-5e3a";
+
+struct EchoingLunchFlow {
+    routes: &'static [(&'static str, u16)],
+}
+
+impl lunchflow_adapter::transport::Transport for EchoingLunchFlow {
+    fn get(
+        &self,
+        url: &str,
+        _api_key: &str,
+        _query: &[(String, String)],
+    ) -> Result<
+        lunchflow_adapter::transport::HttpResponse,
+        lunchflow_adapter::transport::TransportError,
+    > {
+        let path = url.strip_prefix(lunchflow_adapter::BASE_URL).unwrap_or(url);
+        let status = self
+            .routes
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map_or(404, |(_, status)| *status);
+        let body = if status == 200 && path == "/accounts" {
+            r#"{"accounts":[{"id":101,"name":"Checking","currency":"USD","status":"ACTIVE"}],"total":1}"#.to_owned()
+        } else if status == 200 && path.ends_with("/balance") {
+            r#"{"balance":{"amount":1.00,"currency":"USD"}}"#.to_owned()
+        } else {
+            format!(r#"{{"error":"Rejected","message":"key {ECHO_KEY} is not valid"}}"#)
+        };
+        Ok(lunchflow_adapter::transport::HttpResponse { status, body })
+    }
+}
+
+fn echo_now() -> i64 {
+    1_790_510_400 // 2026-09-27T12:00:00Z
+}
+
+/// A key refused mid-refresh (403 echoing the key on the transactions call;
+/// discovery at link time succeeds, so the account can be mapped).
+fn refused_lunchflow(_: &str) -> Option<&'static dyn ConnectorAdapter> {
+    static ADAPTER: std::sync::OnceLock<lunchflow_adapter::LunchFlowAdapter<EchoingLunchFlow>> =
+        std::sync::OnceLock::new();
+    Some(ADAPTER.get_or_init(|| {
+        lunchflow_adapter::LunchFlowAdapter::new(
+            EchoingLunchFlow {
+                routes: &[
+                    ("/accounts", 200),
+                    ("/accounts/101/balance", 200),
+                    ("/accounts/101/transactions", 403),
+                ],
+            },
+            echo_now,
+        )
+    }))
+}
+
+/// One account whose balance and transactions both fail (400 echoing the key).
+fn failing_account_lunchflow(_: &str) -> Option<&'static dyn ConnectorAdapter> {
+    static ADAPTER: std::sync::OnceLock<lunchflow_adapter::LunchFlowAdapter<EchoingLunchFlow>> =
+        std::sync::OnceLock::new();
+    Some(ADAPTER.get_or_init(|| {
+        lunchflow_adapter::LunchFlowAdapter::new(
+            EchoingLunchFlow {
+                routes: &[
+                    ("/accounts", 200),
+                    ("/accounts/101/balance", 400),
+                    ("/accounts/101/transactions", 400),
+                ],
+            },
+            echo_now,
+        )
+    }))
+}
+
+fn capture<F: FnOnce()>(f: F) -> String {
+    use observability::RedactingMakeWriter;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+    let buffer = Buffer::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    observability::testing::install_global_test_subscriber();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), f);
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    logged
+}
+
+fn link_echoing(
+    state: &AppState,
+    resolve: fn(&str) -> Option<&'static dyn ConnectorAdapter>,
+) -> String {
+    connector_link_impl(
+        state,
+        resolve("lunchflow").unwrap(),
+        ConnectorLinkInput {
+            adapter_id: "lunchflow".to_owned(),
+            setup_token: ECHO_KEY.to_owned(),
+        },
+    )
+    .unwrap()
+    .connection_id
+}
+
+#[test]
+fn a_key_echoing_refusal_never_reaches_last_error_the_dto_or_logs() {
+    let (_dir, state) = open_state();
+    let connection_id = link_echoing(&state, refused_lunchflow);
+    let checking = make_account(&state, "Checking");
+    map_account(&state, &connection_id, "101", &checking);
+    let adapter = refused_lunchflow("lunchflow").unwrap();
+
+    let mut rendered = String::new();
+    let logged = capture(|| {
+        // The vault-open path first: a just-linked connection has never
+        // refreshed, so auto-sync is not debounced and really runs.
+        let auto = connector_auto_sync_impl(&state, refused_lunchflow);
+        rendered = format!("{auto:?}");
+        assert!(
+            !rendered.contains("skipped_debounced"),
+            "auto-sync must actually run: {rendered}"
+        );
+        let result = connector_sync_impl(
+            &state,
+            adapter,
+            ConnectorSyncInput {
+                connection_id: connection_id.clone(),
+                idempotency_key: uuid::Uuid::now_v7().to_string(),
+            },
+        );
+        rendered.push_str(&format!("{result:?}"));
+    });
+    assert!(
+        rendered.contains("expired"),
+        "the refresh hit the refusal: {rendered}"
+    );
+    let connections = connector_connections_impl(&state).unwrap();
+    let last_error = connections[0].last_error.clone();
+    assert!(last_error.is_some(), "the refusal is recorded");
+    let dto = serde_json::to_string(&connections).unwrap();
+    // DoD §2.4: prove the capture saw the sync before trusting a no-leak check.
+    assert!(
+        logged.contains("connector operation completed"),
+        "the capture saw nothing of the sync: {logged:?}"
+    );
+
+    for (surface, text) in [
+        ("sync result", rendered.as_str()),
+        ("connection dto", dto.as_str()),
+        ("logs", logged.as_str()),
+    ] {
+        assert!(!text.contains(ECHO_KEY), "{surface} leaked the key: {text}");
+    }
+}
+
+#[test]
+fn key_echoing_per_account_errors_never_reach_sync_warnings() {
+    let (_dir, state) = open_state();
+    let connection_id = link_echoing(&state, failing_account_lunchflow);
+    let checking = make_account(&state, "Checking");
+    map_account(&state, &connection_id, "101", &checking);
+    let adapter = failing_account_lunchflow("lunchflow").unwrap();
+    let mut rendered = String::new();
+    let logged = capture(|| {
+        let result = connector_sync_impl(
+            &state,
+            adapter,
+            ConnectorSyncInput {
+                connection_id: connection_id.clone(),
+                idempotency_key: uuid::Uuid::now_v7().to_string(),
+            },
+        );
+        rendered = format!("{result:?}");
+    });
+    assert!(
+        rendered.contains("not refreshed"),
+        "per-account warnings surfaced: {rendered}"
+    );
+    let dto = serde_json::to_string(&connector_connections_impl(&state).unwrap()).unwrap();
+    // DoD §2.4: prove the capture saw the sync before trusting a no-leak check.
+    assert!(
+        logged.contains("connector operation completed"),
+        "the capture saw nothing of the sync: {logged:?}"
+    );
+    for text in [&rendered, &dto, &logged] {
+        assert!(!text.contains(ECHO_KEY), "leaked the key: {text}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The connector currency guard (personal-cfo-049p6; ADR 0076 decision 7)
+// ---------------------------------------------------------------------------
+
+/// Link `adapter` and return the connection id (any account count).
+fn link_any(state: &AppState, adapter: &dyn ConnectorAdapter) -> String {
+    connector_link_impl(
+        state,
+        adapter,
+        ConnectorLinkInput {
+            adapter_id: "other".to_owned(),
+            setup_token: "mock-setup-token".to_owned(),
+        },
+    )
+    .unwrap()
+    .connection_id
+}
+
+fn try_map(
+    state: &AppState,
+    connection_id: &str,
+    external_id: &str,
+    account_id: Option<&str>,
+) -> Result<(), app_lib::ipc::IpcError> {
+    connector_set_account_link_impl(
+        state,
+        ConnectorSetAccountLinkInput {
+            connection_id: connection_id.to_owned(),
+            external_id: external_id.to_owned(),
+            account_id: account_id.map(str::to_owned),
+            allow_shared_feed: false,
+        },
+    )
+    .map(|result| assert!(result.linked, "{result:?}"))
+}
+
+fn link_dto(state: &AppState, external_id: &str) -> app_lib::ipc::dto::ConnectorAccountLinkDto {
+    connector_connections_impl(state).unwrap()[0]
+        .links
+        .iter()
+        .find(|l| l.external_id == external_id)
+        .cloned()
+        .unwrap()
+}
+
+#[test]
+fn a_foreign_currency_account_is_discovered_then_refused_on_both_mapping_paths() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_foreign_account();
+    let connection_id = link_any(&state, &adapter);
+
+    // Discovery records every account's currency; the guard's verdict rides
+    // the link DTO.
+    let euro = link_dto(&state, "mock-acct-euro");
+    assert_eq!(euro.currency.as_deref(), Some("EUR"));
+    let refusal = euro
+        .currency_refusal
+        .expect("a EUR account is refused in a USD household");
+    assert!(
+        refusal.contains("EUR") && refusal.contains("USD"),
+        "{refusal}"
+    );
+    let checking = link_dto(&state, "mock-acct-checking");
+    assert_eq!(checking.currency.as_deref(), Some("USD"));
+    assert!(checking.currency_refusal.is_none());
+
+    // Map-to-existing: refused, with the same copy, Rust-side.
+    let existing = make_account(&state, "Checking");
+    let err = try_map(&state, &connection_id, "mock-acct-euro", Some(&existing)).unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(m) if m == &refusal),
+        "{err:?}"
+    );
+    // Create-from-mapping is one call that checks first (personal-cfo-pxi.8):
+    // refused with the same copy, and no account is created.
+    let before = account_count_impl(&state).unwrap();
+    let err = create_and_map(
+        &state,
+        &connection_id,
+        "mock-acct-euro",
+        "Mock Euro Account",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(m) if m == &refusal),
+        "{err:?}"
+    );
+    assert_eq!(account_count_impl(&state).unwrap(), before);
+    assert!(link_dto(&state, "mock-acct-euro").account_id.is_none());
+
+    // Same currency maps; unmapping is always allowed.
+    try_map(
+        &state,
+        &connection_id,
+        "mock-acct-checking",
+        Some(&existing),
+    )
+    .unwrap();
+    try_map(&state, &connection_id, "mock-acct-checking", None).unwrap();
+}
+
+/// The account the mapping dialog creates: named after the provider's account,
+/// in the household's base currency as the dialog last knew it.
+fn create_and_map(
+    state: &AppState,
+    connection_id: &str,
+    external_id: &str,
+    name: &str,
+) -> Result<app_lib::ipc::dto::CreateAccountResult, app_lib::ipc::IpcError> {
+    connector_create_mapped_account_impl(
+        state,
+        ConnectorCreateMappedAccountInput {
+            connection_id: connection_id.to_owned(),
+            external_id: external_id.to_owned(),
+            account: CreateAccountInput {
+                name: name.to_owned(),
+                cashflow_role: CashflowRoleDto::LiquidCash,
+                currency: "USD".to_owned(),
+                flags: None,
+                opening_balance: None,
+                subtype: None,
+                idempotency_key: String::new(),
+            },
+        },
+    )
+}
+
+/// personal-cfo-pxi.8: the mapping dialog's link DTO said "mappable", then the
+/// base currency changed before the user pressed Create. The guard runs against
+/// the CURRENT state first, so nothing is created and its message comes back.
+#[test]
+fn create_from_mapping_checks_the_guard_first_even_when_the_dialog_is_stale() {
+    let (_dir, state) = open_state();
+    let adapter = mock();
+    let connection_id = link_any(&state, &adapter);
+    let stale = link_dto(&state, "mock-acct-checking");
+    assert!(stale.currency_refusal.is_none(), "USD in a USD household");
+
+    set_base_currency_impl(&state, "EUR".to_owned()).unwrap();
+    let refusal = link_dto(&state, "mock-acct-checking")
+        .currency_refusal
+        .expect("now foreign");
+
+    let before = account_count_impl(&state).unwrap();
+    let err = create_and_map(&state, &connection_id, "mock-acct-checking", "Checking").unwrap_err();
+    assert!(
+        matches!(&err, app_lib::ipc::IpcError::Validation(m) if m == &refusal),
+        "{err:?}"
+    );
+    assert_eq!(
+        account_count_impl(&state).unwrap(),
+        before,
+        "no empty account left behind"
+    );
+    assert!(link_dto(&state, "mock-acct-checking").account_id.is_none());
+}
+
+#[test]
+fn create_from_mapping_refuses_an_unknown_currency_without_creating() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_account_currency(None);
+    let connection_id = link_any(&state, &adapter);
+    let before = account_count_impl(&state).unwrap();
+    assert!(matches!(
+        create_and_map(&state, &connection_id, "mock-acct-checking", "Checking"),
+        Err(app_lib::ipc::IpcError::Validation(_))
+    ));
+    assert_eq!(account_count_impl(&state).unwrap(), before);
+}
+
+#[test]
+fn create_from_mapping_creates_and_maps_in_one_call() {
+    let (_dir, state) = open_state();
+    let adapter = mock();
+    let connection_id = link_any(&state, &adapter);
+    let before = account_count_impl(&state).unwrap();
+    let created = create_and_map(&state, &connection_id, "mock-acct-checking", "Checking")
+        .expect("same currency");
+    assert_eq!(account_count_impl(&state).unwrap(), before + 1);
+    assert_eq!(
+        link_dto(&state, "mock-acct-checking").account_id.as_deref(),
+        Some(created.account_id.as_str())
+    );
+    // An unknown link is refused before anything is created.
+    assert!(create_and_map(&state, &connection_id, "no-such-account", "Ghost").is_err());
+    assert_eq!(account_count_impl(&state).unwrap(), before + 1);
+}
+
+#[test]
+fn an_unknown_currency_is_refused_never_assumed() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_account_currency(None);
+    let connection_id = link_any(&state, &adapter);
+    let dto = link_dto(&state, "mock-acct-checking");
+    assert!(dto.currency.is_none(), "unknown stays unknown");
+    let refusal = dto.currency_refusal.expect("unknown is refused");
+    assert!(refusal.contains("hasn't reported"), "{refusal}");
+    let account = make_account(&state, "Checking");
+    let err = try_map(&state, &connection_id, "mock-acct-checking", Some(&account)).unwrap_err();
+    assert!(matches!(err, app_lib::ipc::IpcError::Validation(_)));
+}
+
+#[test]
+fn the_base_currency_setting_is_what_the_guard_compares_against() {
+    let (_dir, state) = open_state();
+    let adapter = mock().with_foreign_account();
+    let connection_id = link_any(&state, &adapter);
+    set_base_currency_impl(&state, "EUR".to_owned()).unwrap();
+    // Now the EUR account matches and the USD ones are foreign.
+    assert!(link_dto(&state, "mock-acct-euro")
+        .currency_refusal
+        .is_none());
+    assert!(link_dto(&state, "mock-acct-checking")
+        .currency_refusal
+        .is_some());
+    let account = make_account(&state, "Checking");
+    assert!(try_map(&state, &connection_id, "mock-acct-checking", Some(&account)).is_err());
+}
+
+#[test]
+fn a_mapped_account_later_reported_in_another_currency_is_held_not_committed() {
+    let (_dir, state) = open_state();
+    let connection_id = link(&state, &mock());
+    let checking = make_account(&state, "Checking");
+    map_account(&state, &connection_id, "mock-acct-checking", &checking);
+
+    // The provider now reports the account in EUR (the same path a legacy
+    // link with no recorded currency takes when its first refresh backfills
+    // a foreign one).
+    let result = sync(
+        &state,
+        &mock().with_account_currency(Some("EUR")),
+        &connection_id,
+    );
+    assert_eq!(
+        result.committed, 0,
+        "nothing in another currency is committed"
+    );
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("EUR") && w.contains("held and not imported")),
+        "{:?}",
+        result.warnings
+    );
+    let dto = link_dto(&state, "mock-acct-checking");
+    assert_eq!(dto.currency.as_deref(), Some("EUR"));
+    assert!(
+        dto.currency_refusal.is_some(),
+        "flagged on the connection surface"
+    );
+    assert_eq!(
+        dto.account_id.as_deref(),
+        Some(checking.as_str()),
+        "the mapping is kept"
+    );
+    assert!(
+        dto.last_synced_on.is_none(),
+        "the watermark doesn't advance"
+    );
+    assert_eq!(
+        transaction_page_impl(&state, page_query())
+            .unwrap()
+            .rows
+            .len(),
+        0,
+        "no rows were summed"
+    );
+    // A remap attempt is refused; unmapping is allowed.
+    let other = make_account(&state, "Other");
+    assert!(try_map(&state, &connection_id, "mock-acct-checking", Some(&other)).is_err());
+    try_map(&state, &connection_id, "mock-acct-checking", None).unwrap();
+}
+
+#[test]
+fn a_failed_refresh_leaves_currencies_alone_and_discovery_backfills_them() {
+    let (_dir, state) = open_state();
+    let connection_id = link_any(&state, &mock().with_account_currency(None));
+    assert!(link_dto(&state, "mock-acct-checking").currency.is_none());
+
+    // A throttled refresh changes nothing (retry-safe).
+    let throttled = MockConnector::failing_with(connector_core::mock::FailureMode::RateLimited)
+        .with_id("other");
+    let _ = connector_sync_impl(
+        &state,
+        &throttled,
+        ConnectorSyncInput {
+            connection_id: connection_id.clone(),
+            idempotency_key: uuid::Uuid::now_v7().to_string(),
+        },
+    );
+    assert!(link_dto(&state, "mock-acct-checking").currency.is_none());
+
+    // The next successful refresh (discovery, since nothing is mapped)
+    // records the currency, and the account becomes mappable.
+    sync(&state, &mock(), &connection_id);
+    let dto = link_dto(&state, "mock-acct-checking");
+    assert_eq!(dto.currency.as_deref(), Some("USD"));
+    assert!(dto.currency_refusal.is_none());
+    let account = make_account(&state, "Checking");
+    try_map(&state, &connection_id, "mock-acct-checking", Some(&account)).unwrap();
+}
+
+// ---- key rotation interleaving (personal-cfo-2y8, ADR 0083 §5) ---------------
+
+/// Wraps the mock connector so the first transaction fetch (a network phase,
+/// run outside the controller lock) blocks until the test releases it.
+struct GatedConnector {
+    inner: MockConnector,
+    started: std::sync::atomic::AtomicBool,
+    gate: (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+
+impl GatedConnector {
+    fn release(&self) {
+        *self.gate.0.lock().unwrap() = true;
+        self.gate.1.notify_all();
+    }
+}
+
+impl ConnectorAdapter for GatedConnector {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+    fn display_name(&self) -> &'static str {
+        self.inner.display_name()
+    }
+    fn version(&self) -> semver::Version {
+        self.inner.version()
+    }
+    fn capabilities(&self) -> connector_core::CapabilitySet {
+        self.inner.capabilities()
+    }
+    fn link(
+        &self,
+        input: &connector_core::LinkInput,
+    ) -> Result<connector_core::LinkSession, connector_core::ConnectorError> {
+        self.inner.link(input)
+    }
+    fn fetch_accounts(
+        &self,
+        conn: &connector_core::Connection,
+    ) -> Result<Vec<importer_core::ParsedAccount>, connector_core::ConnectorError> {
+        self.inner.fetch_accounts(conn)
+    }
+    fn fetch_transactions(
+        &self,
+        conn: &connector_core::Connection,
+        account_external_id: &str,
+        since: Option<chrono::NaiveDate>,
+    ) -> Result<Vec<importer_core::ParsedRecord>, connector_core::ConnectorError> {
+        if !self.started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let mut released = self.gate.0.lock().unwrap();
+            while !*released {
+                released = self.gate.1.wait(released).unwrap();
+            }
+        }
+        self.inner
+            .fetch_transactions(conn, account_external_id, since)
+    }
+    fn fetch_balances(
+        &self,
+        conn: &connector_core::Connection,
+        account_external_id: &str,
+    ) -> Result<Vec<importer_core::ParsedBalance>, connector_core::ConnectorError> {
+        self.inner.fetch_balances(conn, account_external_id)
+    }
+    fn health(
+        &self,
+        conn: &connector_core::Connection,
+    ) -> Result<connector_core::HealthStatus, connector_core::ConnectorError> {
+        self.inner.health(conn)
+    }
+}
+
+/// ADR 0083 §5: every kernel access goes through the controller lock, which a
+/// rotation holds for its whole run. A connector sync whose network fetch
+/// overlaps the rotation waits for the lock and then writes into the rotated
+/// vault — no write lands between the export and the commit, and nothing is lost.
+#[test]
+fn rotation_blocks_kernel_access_and_an_overlapping_sync_lands_in_the_rotated_vault() {
+    use app_lib::ipc::commands::{lock_vault_impl, rotate_vault_key_impl, unlock_vault_impl};
+    use app_lib::ipc::dto::RotateVaultKeyInput;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    let (dir, state) = open_state();
+    let gated = GatedConnector {
+        inner: mock(),
+        started: std::sync::atomic::AtomicBool::new(false),
+        gate: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+    };
+    let connection_id = link(&state, &gated);
+    let checking = make_account(&state, "Checking");
+    let card = make_account(&state, "Card");
+    map_account(&state, &connection_id, "mock-acct-checking", &checking);
+    map_account(&state, &connection_id, "mock-acct-card", &card);
+    let envelope = dir.path().join("vault.db.envelope");
+    let envelope_before = std::fs::read(&envelope).unwrap();
+    let rekey_files = [
+        dir.path().join("vault.db.rekey-new"),
+        dir.path().join("vault.db.rekey"),
+        dir.path().join("vault.db.rekey-old"),
+    ];
+
+    let (sync_result, sync_done, rotate_result, rotate_done) = std::thread::scope(|scope| {
+        let syncing = scope.spawn(|| {
+            let result = sync(&state, &gated, &connection_id);
+            (result, Instant::now())
+        });
+        // Wait until the sync is inside its (unlocked) network phase.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !gated.started.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "sync never reached its fetch");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let rotating = scope.spawn(|| {
+            let result = rotate_vault_key_impl(
+                &state,
+                RotateVaultKeyInput {
+                    password: "test-key".to_owned(),
+                },
+            );
+            (result, Instant::now())
+        });
+        // Release the fetch only once the rotation is observably inside its
+        // locked section (its files exist), so the sync's database phase must
+        // queue behind it.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut observed = false;
+        while !rotating.is_finished() {
+            if rekey_files.iter().any(|f| f.exists()) {
+                observed = true;
+                break;
+            }
+            assert!(Instant::now() < deadline, "rotation never started");
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        // The interleaving is only proven if the sync was released while the
+        // rotation was inside its locked section, not after it had finished.
+        assert!(
+            observed,
+            "the rotation finished before its files were observed"
+        );
+        gated.release();
+        let (rotate_result, rotate_done) = rotating.join().unwrap();
+        let (sync_result, sync_done) = syncing.join().unwrap();
+        (sync_result, sync_done, rotate_result, rotate_done)
+    });
+
+    let status = rotate_result.unwrap();
+    assert_eq!(status.state, app_lib::ipc::dto::VaultStateDto::Unlocked);
+    assert_ne!(
+        std::fs::read(&envelope).unwrap(),
+        envelope_before,
+        "rotated"
+    );
+    assert_eq!(sync_result.status, "synced");
+    assert_eq!(sync_result.committed, 6);
+    assert!(
+        sync_done >= rotate_done,
+        "the sync's write waited for the rotation"
+    );
+    for file in &rekey_files {
+        assert!(!file.exists(), "rotation artifact left: {}", file.display());
+    }
+
+    // The synced rows live in the rotated vault: they survive a lock and an
+    // unlock with the unchanged password.
+    lock_vault_impl(&state).unwrap();
+    unlock_vault_impl(&state, "test-key".to_owned()).unwrap();
+    assert_eq!(
+        transaction_page_impl(&state, page_query()).unwrap().total,
+        6
+    );
 }

@@ -119,6 +119,22 @@ jobs:
             cargo test --workspace
           fi
 
+      # Declared MSRV (ADR 0001 addendum 2026-09-28, personal-cfo-g3m.5): the
+      # workspace's `rust-version` must actually build with THAT compiler, not
+      # just with the pinned 1.99 above. A 1.99 pass proves nothing about the
+      # floor, so this checks the complete locked graph with the floor itself.
+      - name: Declared MSRV builds (root workspace)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          msrv=$(cargo metadata --format-version 1 --no-deps --locked | jq -r '[.packages[].rust_version] | unique | join(" ")')
+          case "$msrv" in
+            ""|*" "*) echo "::error::workspace members must share one rust-version, got: '$msrv'"; exit 1 ;;
+          esac
+          echo "Declared MSRV: $msrv"
+          rustup toolchain install "$msrv" --profile minimal
+          cargo +"$msrv" check --locked --workspace --all-targets
+
       # Monetary amounts must use integer minor units, never floating point
       # (plan §9.1). Forbid f32/f64 in money-critical crates' non-test source.
       #
@@ -380,6 +396,7 @@ jobs:
             code:
               - 'apps/desktop/**'
               - '!apps/desktop/src-tauri/**'
+              - 'scripts/check-dist-csp.mjs'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
@@ -413,6 +430,14 @@ jobs:
       - name: Build
         if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: pnpm -r build
+
+      # personal-cfo-0hp6, ADR 0010: the built HTML must not contain anything that
+      # changes the EFFECTIVE CSP — a <style> element (Tauri would add a style-src
+      # nonce, which disables the accepted 'unsafe-inline'), an inline script, or a
+      # remote script/stylesheet.
+      - name: Built HTML keeps the CSP effective (ADR 0010)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        run: node scripts/check-dist-csp.mjs apps/desktop/dist
 
   # The IPC command surface (personal-cfo-40t): compile the standalone desktop
   # crate, run its Rust gates, and prove the generated TypeScript bindings are
@@ -450,6 +475,12 @@ jobs:
             code:
               - 'apps/desktop/src-tauri/**'
               - 'apps/desktop/src/bindings.ts'
+              - 'apps/desktop/public/isolated-shell.html'
+              # The npm half of the Tauri family (personal-cfo-io42): an npm-only
+              # Tauri bump must still run tests/tauri_pins.rs, the capability suite
+              # and the runtime probe.
+              - 'apps/desktop/package.json'
+              - 'pnpm-lock.yaml'
               - 'crates/**'
               - '.github/workflows/ci.yml'
 
@@ -481,7 +512,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            xvfb
 
       # The pinned toolchain comes from rust-toolchain.toml (rustup honors it).
       - name: Show toolchain
@@ -511,6 +543,25 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
 
+      # Declared MSRV for the standalone desktop graph (ADR 0001 addendum
+      # 2026-09-28, personal-cfo-g3m.5): it must equal the root workspace's and
+      # build with that exact compiler, including the bindings-export feature.
+      - name: Declared MSRV builds (desktop crate)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          set -euo pipefail
+          desktop=$(cargo metadata --format-version 1 --no-deps --locked | jq -r '.packages[0].rust_version')
+          root=$(cd ../../.. && cargo metadata --format-version 1 --no-deps --locked | jq -r '[.packages[].rust_version] | unique | join(" ")')
+          if [ "$desktop" != "$root" ]; then
+            echo "::error::desktop rust-version ($desktop) must equal the root workspace's ($root)"
+            exit 1
+          fi
+          echo "Declared MSRV: $desktop"
+          rustup toolchain install "$desktop" --profile minimal
+          cargo +"$desktop" check --locked --all-targets
+          cargo +"$desktop" check --locked --features export-bindings,tauri/custom-protocol
+
       # Regenerate the bindings and fail if the committed file is stale. This is
       # the enforced Rust↔TS schema-sync gate (personal-cfo-40t / rs1v).
       - name: TypeScript bindings are in sync
@@ -523,6 +574,32 @@ jobs:
             echo "::error::apps/desktop/src/bindings.ts is stale — run 'cargo run --bin export_bindings --features export-bindings' in apps/desktop/src-tauri and commit the result."
             exit 1
           fi
+
+      # personal-cfo-0hp6, ADR 0010: prove isolation in a REAL WebView, not just in
+      # configuration. A debug build with Tauri's `custom-protocol` feature serves
+      # the bundled origin (tauri://localhost) under the production CSP; the
+      # debug-only probe (src/isolation_probe.rs) opens main and both untrusted
+      # shells, and in each checks IPC rejection, the effective CSP (inline script,
+      # eval and remote fetch refused; inline style still applied), window.open and
+      # remote navigation (which must be cancelled by the navigation guard itself,
+      # counted per window), then exits non-zero on any failure. The placeholder
+      # dist is enough — the probe injects its own script — plus the shells' page.
+      # Scratch data directory only. No remote host is contacted: every target is
+      # in the reserved .invalid domain, and every check requires positive
+      # evidence of a refusal, so none depends on the network.
+      - name: Runtime isolation probe (real WebView, ADR 0010)
+        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          set -euo pipefail
+          cp ../public/isolated-shell.html ../dist/isolated-shell.html
+          cargo build --features tauri/custom-protocol
+          report="$RUNNER_TEMP/isolation-probe.json"
+          PCFO_DATA_DIR="$(mktemp -d)" PCFO_ISOLATION_PROBE="$report" \
+          GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+            timeout 180 xvfb-run --auto-servernum --server-args='-screen 0 1280x900x24' \
+            ./target/debug/personal-cfo-desktop
+          echo "Isolation probe passed; report: $report"
 
   # personal-cfo-xcrsk (LIN-1): exploratory Linux AppImage proof. This is
   # deliberately manual and is NOT a required check: the result feeds ADR

@@ -30,8 +30,9 @@
 use chrono::{Days, NaiveDate};
 use connector_core::{
     balance_record, register_connector, review_date, AccountType, BillingPeriod, CapabilitySet,
-    Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorMetadata,
-    Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput, LinkSession, Payer,
+    Connection, ConnectorAdapter, ConnectorEconomics, ConnectorError, ConnectorLinkGuide,
+    ConnectorMetadata, Credential, CredentialTier, DisclosureText, HealthStatus, LinkInput,
+    LinkSession, Payer, RefreshCadence,
 };
 use importer_core::{
     content_fingerprint, ParseWarning, ParsedAccount, ParsedBalance, ParsedBatch, ParsedRecord,
@@ -128,7 +129,27 @@ pub const SIMPLEFIN_METADATA: ConnectorMetadata = ConnectorMetadata {
         optional: "It is optional. Everything in this app works with manual entry and file \
                    imports; a connection only saves the typing.",
     },
+    link_guide: ConnectorLinkGuide {
+        title: "About the SimpleFIN Bridge",
+        refresh_note: "Data refreshes about daily. The Bridge pulls from your banks roughly \
+                       once a day; this app refreshes it on open and on demand.",
+        setup_steps: &[
+            "Create an account at https://bridge.simplefin.org (copy it into your browser) \
+             and connect each bank there.",
+            "Under Apps, choose New app connection to get a setup token.",
+            "Paste the token below. Tokens are single-use; make a new one if a link fails.",
+        ],
+        provider_url: "https://bridge.simplefin.org",
+        credential_label: "Setup token",
+        credential_noun: "setup token",
+        credential_placeholder: "Paste the setup token",
+        paste_instructions: "Create the token in the SimpleFIN Bridge under Apps, then paste \
+                             it here. Tokens are single-use.",
+    },
+    // SimpleFIN pays DohFlow nothing: no referral (ADR 0076 §5).
+    referral: None,
     enabled: true,
+    suggested_refresh: RefreshCadence::EveryOpen,
 };
 
 register_connector!(SIMPLEFIN, SIMPLEFIN_METADATA);
@@ -496,6 +517,12 @@ struct NormalizedTxn<'a> {
     transacted_at: Option<i64>,
 }
 
+/// An uppercase ISO 4217-shaped code (three ASCII letters), or `None`.
+fn iso_currency(raw: &str) -> Option<String> {
+    let code = raw.trim().to_ascii_uppercase();
+    (code.len() == 3 && code.bytes().all(|b| b.is_ascii_uppercase())).then_some(code)
+}
+
 fn map_account(account: &WireAccount, set: &AccountSet) -> ParsedAccount {
     // Institution display name: the v2 Connection's name, else the v1 org.
     let institution = account
@@ -524,6 +551,10 @@ fn map_account(account: &WireAccount, set: &AccountSet) -> ParsedAccount {
         }),
         external_number_hash: None,
         proposed_subtype: None,
+        // The account's ISO 4217 code, or unknown: SimpleFIN also allows a
+        // custom-currency URL here, which is not a currency the app can check
+        // (personal-cfo-049p6 — never assumed to be the base currency).
+        currency: iso_currency(&account.currency),
     }
 }
 
@@ -932,6 +963,7 @@ impl<T: Transport> ConnectorAdapter for SimpleFinAdapter<T> {
                 accounts,
                 records,
                 warnings,
+                skipped: Vec::new(),
             },
         })
     }
@@ -986,6 +1018,17 @@ mod tests {
         // A short range is a single chunk; None = the 365-day lookback.
         assert_eq!(chunk_ranges(Some(today), today).len(), 1);
         assert_eq!(chunk_ranges(None, today).len(), 10);
+    }
+
+    #[test]
+    fn account_currency_is_an_iso_code_or_unknown() {
+        // personal-cfo-049p6: a custom-currency URL or garbage is unknown,
+        // never assumed to be the base currency.
+        assert_eq!(iso_currency("usd"), Some("USD".to_owned()));
+        assert_eq!(iso_currency(" EUR "), Some("EUR".to_owned()));
+        assert_eq!(iso_currency("https://www.example.com/flight-miles"), None);
+        assert_eq!(iso_currency(""), None);
+        assert_eq!(iso_currency("U$D"), None);
     }
 
     #[test]

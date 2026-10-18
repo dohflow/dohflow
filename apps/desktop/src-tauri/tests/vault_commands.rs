@@ -8,20 +8,158 @@
 use app_lib::ipc::commands::{
     account_count_impl, change_password_impl, create_account_impl, create_vault_impl,
     create_vault_named_impl, delete_vault_impl, household_timezone_impl, list_vaults_impl,
-    lock_vault_impl, rename_vault_impl, switch_vault_impl, unlock_vault_impl, vault_status_impl,
+    lock_vault_impl, rename_vault_impl, rotate_vault_key_impl, switch_vault_impl,
+    unlock_vault_impl, vault_status_impl,
 };
 use app_lib::ipc::dto::{
-    AccountFlagsDto, CashflowRoleDto, ChangePasswordInput, CreateAccountInput, VaultStateDto,
+    AccountFlagsDto, CashflowRoleDto, ChangePasswordInput, CreateAccountInput, RotateVaultKeyInput,
+    VaultStateDto,
 };
 use app_lib::ipc::IpcError;
 use app_lib::vault_registry::{VaultEntry, VaultRegistry};
 use app_lib::AppState;
-use finance_kernel::VaultController;
+use finance_kernel::{KernelError, VaultController};
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
 
 const PASSWORD: &str = "correct horse battery staple";
 const NEW_PASSWORD: &str = "an entirely different phrase";
+
+#[test]
+fn newer_schema_error_is_typed_at_the_ipc_boundary() {
+    let error = IpcError::from(KernelError::NewerVaultSchema {
+        observed: db_worker::CURRENT_SCHEMA_VERSION + 1,
+        supported: db_worker::CURRENT_SCHEMA_VERSION,
+    });
+    assert!(matches!(error, IpcError::NewerVaultSchema));
+    assert_eq!(
+        serde_json::to_string(&error).unwrap(),
+        "\"NewerVaultSchema\""
+    );
+}
+
+/// A synthetic future build stamps one independent marker, without changing
+/// migration contents or relying on a real user's vault/credentials.
+fn stamp_newer_vault(path: &Path) {
+    use vault_crypto::{derive_kek, unwrap_dek, VaultEnvelope};
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".envelope");
+    let envelope =
+        VaultEnvelope::from_bytes(&std::fs::read(PathBuf::from(sidecar)).unwrap()).unwrap();
+    let kek = derive_kek(PASSWORD.as_bytes(), &envelope.salt, &envelope.kdf).unwrap();
+    let dek = unwrap_dek(&kek, &envelope.wrapped).unwrap();
+    let worker = db_worker::DbWorker::open_existing_with_raw_key(path, dek).unwrap();
+    worker
+        .import_attachment(b"synthetic-private-attachment", Some("text/plain"), None)
+        .unwrap();
+    worker
+        .read_connection()
+        .unwrap()
+        .pragma_update(None, "user_version", db_worker::CURRENT_SCHEMA_VERSION + 1)
+        .unwrap();
+}
+
+fn vault_data_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn collect(root: &Path, dir: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(root, &path, files);
+            } else {
+                let name = path.file_name().unwrap().to_string_lossy();
+                if name.ends_with("-wal")
+                    || name.ends_with("-shm")
+                    || name.ends_with(".runner.lock")
+                {
+                    continue;
+                }
+                files.push((
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    collect(root, root, &mut files);
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
+}
+
+fn assert_no_plaintext_canaries(root: &Path) {
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            assert_no_plaintext_canaries(&path);
+        } else {
+            let bytes = std::fs::read(&path).unwrap();
+            for canary in [
+                PASSWORD.as_bytes(),
+                b"synthetic-private-attachment",
+                b"Synthetic checking",
+            ] {
+                assert!(
+                    !bytes.windows(canary.len()).any(|window| window == canary),
+                    "plaintext canary leaked into a vault-directory file"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn newer_schema_unlock_stays_locked_and_preserves_database_envelope_and_blobs() {
+    let (dir, state) = empty_state();
+    create_vault_impl(&state, PASSWORD.to_owned()).unwrap();
+    create_account_impl(&state, create_input("Synthetic checking")).unwrap();
+    lock_vault_impl(&state).unwrap();
+    stamp_newer_vault(&dir.path().join("vault.db"));
+    let before = vault_data_files(dir.path());
+    assert!(before.iter().any(|(path, _)| path.starts_with("blobs")));
+
+    for _ in 0..2 {
+        assert!(matches!(
+            unlock_vault_impl(&state, PASSWORD.to_owned()),
+            Err(IpcError::NewerVaultSchema)
+        ));
+        let status = vault_status_impl(&state).unwrap();
+        assert_eq!(status.state, VaultStateDto::Locked);
+        assert_eq!(status.account_count, None);
+        assert!(matches!(
+            account_count_impl(&state),
+            Err(IpcError::VaultLocked)
+        ));
+        assert!(state.lock_controller().unwrap().kernel().is_none());
+        assert_eq!(vault_data_files(dir.path()), before);
+        assert_no_plaintext_canaries(dir.path());
+    }
+}
+
+#[test]
+fn failed_newer_unlock_does_not_mutate_the_registry_or_replace_another_vault() {
+    let (dir, state) = registry_state();
+    create_vault_named_impl(&state, "Original".into(), PASSWORD.into()).unwrap();
+    let original_id = list_vaults_impl(&state).unwrap().vaults[0].id.clone();
+    create_account_impl(&state, create_input("Original account")).unwrap();
+    create_vault_named_impl(&state, "Newer".into(), PASSWORD.into()).unwrap();
+    let selected = list_vaults_impl(&state).unwrap().vaults;
+    lock_vault_impl(&state).unwrap();
+    let target = state.lock_controller().unwrap().path().to_path_buf();
+    stamp_newer_vault(&target);
+    let before = vault_data_files(dir.path());
+    assert!(matches!(
+        unlock_vault_impl(&state, PASSWORD.into()),
+        Err(IpcError::NewerVaultSchema)
+    ));
+    assert_eq!(vault_data_files(dir.path()), before);
+    assert_eq!(list_vaults_impl(&state).unwrap().vaults, selected);
+    // The existing explicit selection remains selected-but-locked; the failed
+    // unlock does not silently activate a kernel or rewrite the other vault.
+    switch_vault_impl(&state, original_id).unwrap();
+    let reopened = unlock_vault_impl(&state, PASSWORD.into()).unwrap();
+    assert_eq!(reopened.account_count, Some(1));
+}
 
 fn change_input(old: &str, new: &str) -> ChangePasswordInput {
     ChangePasswordInput {
@@ -403,5 +541,84 @@ fn unlock_persists_a_daily_forecast_run_then_dedups() {
         persisted_run_count(&state),
         1,
         "re-open with unchanged inputs same day should dedup"
+    );
+}
+
+// ---- key rotation (personal-cfo-2y8, ADR 0083) ------------------------------
+
+fn rotate_input(password: &str) -> RotateVaultKeyInput {
+    RotateVaultKeyInput {
+        password: password.to_owned(),
+    }
+}
+
+fn envelope_bytes(dir: &TempDir) -> Vec<u8> {
+    std::fs::read(dir.path().join("vault.db.envelope")).unwrap()
+}
+
+#[test]
+fn rotate_vault_key_keeps_the_data_and_the_password() {
+    let (dir, state) = empty_state();
+    create_vault_impl(&state, PASSWORD.to_owned()).unwrap();
+    create_account_impl(&state, create_input("Checking")).unwrap();
+    let before = envelope_bytes(&dir);
+
+    let status = rotate_vault_key_impl(&state, rotate_input(PASSWORD)).unwrap();
+    assert_eq!(status.state, VaultStateDto::Unlocked);
+    assert_eq!(status.account_count, Some(1));
+    assert_ne!(
+        envelope_bytes(&dir),
+        before,
+        "a new DEK means a new envelope"
+    );
+
+    // The password is unchanged and opens the same data after a lock.
+    lock_vault_impl(&state).unwrap();
+    let unlocked = unlock_vault_impl(&state, PASSWORD.to_owned()).unwrap();
+    assert_eq!(unlocked.account_count, Some(1));
+}
+
+#[test]
+fn rotate_vault_key_rejects_a_wrong_password_and_changes_nothing() {
+    let (dir, state) = empty_state();
+    create_vault_impl(&state, PASSWORD.to_owned()).unwrap();
+    let before = envelope_bytes(&dir);
+
+    assert!(matches!(
+        rotate_vault_key_impl(&state, rotate_input("not the password")).unwrap_err(),
+        IpcError::VaultUnlockFailed
+    ));
+    assert_eq!(envelope_bytes(&dir), before);
+    assert_eq!(
+        vault_status_impl(&state).unwrap().state,
+        VaultStateDto::Unlocked
+    );
+}
+
+#[test]
+fn rotate_vault_key_requires_an_unlocked_vault() {
+    let (_dir, state) = empty_state();
+    create_vault_impl(&state, PASSWORD.to_owned()).unwrap();
+    lock_vault_impl(&state).unwrap();
+    assert!(matches!(
+        rotate_vault_key_impl(&state, rotate_input(PASSWORD)).unwrap_err(),
+        IpcError::Persistence(_)
+    ));
+    assert_eq!(
+        vault_status_impl(&state).unwrap().state,
+        VaultStateDto::Locked
+    );
+}
+
+#[test]
+fn insufficient_disk_space_is_typed_at_the_ipc_boundary() {
+    let error = IpcError::from(KernelError::InsufficientDiskSpace {
+        needed: 10,
+        available: 1,
+    });
+    assert!(matches!(error, IpcError::InsufficientDiskSpace));
+    assert_eq!(
+        serde_json::to_string(&error).unwrap(),
+        "\"InsufficientDiskSpace\""
     );
 }

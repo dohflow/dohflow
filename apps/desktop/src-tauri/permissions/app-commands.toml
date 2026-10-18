@@ -40,6 +40,7 @@ commands.allow = [
   "update_batch_state",
   "import_batch",
   "import_preview_columns",
+  "import_preview_accounts",
   "list_source_presets",
   "update_account",
   "set_account_subtype",
@@ -157,6 +158,10 @@ commands.allow = [
   "duplicate_candidates",
   "backup_schedule_settings",
   "backup_history",
+  # Local diagnostics (personal-cfo-lyd): build/forget an in-memory redacted preview.
+  # Writing it to disk is diagnostics_save, in destructive-commands.toml.
+  "diagnostics_preview",
+  "diagnostics_discard",
   # Pre-listed for the in-flight paged-transaction-read work (wave2 Part A);
   # remove if that command lands under a different name.
   "transaction_page",
@@ -172,6 +177,11 @@ commands.allow = [
   "connector_adapters",
   "connector_connections",
   "connector_set_account_link",
+  # Per-connection refresh cadence (personal-cfo-lqk, ADR 0060 addendum).
+  "connector_set_refresh_cadence",
+  # Create-and-map in one step: guard first, so a refusal creates nothing
+  # (personal-cfo-pxi.8).
+  "connector_create_mapped_account",
   "connector_sync",
   "connector_auto_sync",
 ]

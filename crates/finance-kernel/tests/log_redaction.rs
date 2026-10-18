@@ -1,5 +1,9 @@
 //! Logging-redaction gate (personal-cfo-zobt, §6.6, release-blocking).
 //!
+//! Policy: `docs/security/logging-policy.md` §4 — this file's POSITIVE/NEGATIVE
+//! lists and the `observability` unit corpus are the two halves of the
+//! never-log corpus and must be extended together.
+//!
 //! Proves that no §6.6 sensitive value reaches a log sink. A realistic Finance
 //! Kernel workload runs **under the production redacting subscriber**
 //! (`observability::RedactingMakeWriter` over the `tracing` fmt layer) so every
@@ -113,6 +117,7 @@ fn no_sensitive_value_survives_into_logs() {
     // No EnvFilter: every event at every level reaches the redacting layer.
     let subscriber = tracing_subscriber::registry().with(layer);
 
+    observability::testing::install_global_test_subscriber();
     tracing::subscriber::with_default(subscriber, || {
         // A realistic workload, so the kernel's own spans flow through the
         // redactor. The account name embeds a card-like number to also exercise

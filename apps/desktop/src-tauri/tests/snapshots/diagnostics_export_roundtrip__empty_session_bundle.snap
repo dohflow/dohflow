@@ -1,0 +1,19 @@
+---
+source: tests/diagnostics_export_roundtrip.rs
+expression: "normalized(&dto.text, &approved)"
+---
+{
+  "format": "dohflow-diagnostics",
+  "version": 1,
+  "created_on": "<utc-date>",
+  "build": {
+    "version": "<app-version>",
+    "channel": "<build-channel>"
+  },
+  "platform": "<os>",
+  "coverage": "Covers only the current unlocked session since its last unlock. Earlier sessions, other vaults and anything before a crash are not included. Oldest records are dropped once the session holds 2000.",
+  "records_retained": 0,
+  "dropped_by_capacity": {},
+  "rejected_at_admission": 0,
+  "records": []
+}
