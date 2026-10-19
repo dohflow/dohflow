@@ -93,6 +93,7 @@ fn user_meta_with_key(idempotency_key: String) -> CommandMeta {
         actor_type: ActorType::User,
         actor_id: "local-user".to_owned(),
         idempotency_key,
+        issued_at: finance_kernel::IssuedAt::now(),
     }
 }
 
@@ -217,6 +218,7 @@ fn vault_creation_meta() -> CommandMeta {
         actor_type: ActorType::System,
         actor_id: "vault-creation".to_owned(),
         idempotency_key: finance_kernel::new_idempotency_key(),
+        issued_at: finance_kernel::IssuedAt::now(),
     }
 }
 
@@ -3159,6 +3161,28 @@ fn product_version_from_plist(bytes: &[u8]) -> Option<String> {
     let value = plist::Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
     let version = value.as_dictionary()?.get("ProductVersion")?.as_string()?;
     (!version.trim().is_empty()).then(|| version.trim().to_owned())
+}
+
+#[cfg(test)]
+mod issued_at_tests {
+    use super::{user_meta, vault_creation_meta};
+
+    // personal-cfo-t2s4b: the IPC boundary stamps each command with its own issue instant,
+    // so `apply` can take the time from the command instead of the clock.
+    #[test]
+    fn every_command_built_at_the_boundary_gets_a_later_issue_instant() {
+        let a = user_meta("");
+        let b = user_meta("");
+        let c = vault_creation_meta();
+        assert!(b.issued_at > a.issued_at);
+        assert!(c.issued_at > b.issued_at);
+        // A plausible current time in microseconds since the Unix epoch.
+        let micros = a.issued_at.as_unix_micros();
+        assert!(
+            micros > 1_735_689_600_000_000 && micros < 4_102_444_800_000_000,
+            "{micros}"
+        );
+    }
 }
 
 #[cfg(test)]
