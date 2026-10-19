@@ -124,6 +124,11 @@ pub const FUTURE_CASH_SERIES_KEY: &str = "future_cash_series_selection";
 /// backwards-compatible `user.*` prefix migration. They are inventory metadata only;
 /// this bead does not rename, route, or reject writes for them.
 pub const LOCALE_KEY: &str = "locale";
+/// The longest `settings.key`, in UTF-8 bytes. Settings keys are application-defined names
+/// (`device.*`, `user.*` and six legacy names); the key is a replicated primary key whose
+/// canonical encoding is capped at 256 bytes (vault-format.md C.1.5), so the writer bounds it
+/// well inside that.
+pub const MAX_SETTING_KEY_BYTES: usize = 128;
 pub const REPORTING_CURRENCY_KEY: &str = "reporting_currency";
 /// Every currently defined setting key that can be persisted in the settings KV.
 /// New keys must be added with an explicit `device.*` or `user.*` prefix by the
@@ -2760,8 +2765,13 @@ impl DbWorker {
     /// `vault_metadata` and `audit_events` — they bypass the `WriteCommand` bus.
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError::ReplicatedKeyTooLong`] if `key` is longer than [`MAX_SETTING_KEY_BYTES`]
+    /// (the key is the table's primary key and part of the replicated user settings, so its
+    /// width is bounded; it is never truncated), or [`DbError::Sqlite`] on a write failure.
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        if key.len() > MAX_SETTING_KEY_BYTES {
+            return Err(DbError::ReplicatedKeyTooLong { table: "settings" });
+        }
         let guard = self.lock();
         guard.conn.execute(
             "INSERT INTO settings (key, value, value_schema_version, updated_at)

@@ -503,6 +503,24 @@ write_set = "projection"
 primary_key = ["singleton"]
 columns = ["singleton:int", "vault_id:uuid", "schema_version:int", "envelope_version:int", "kdf_algorithm:text", "kdf_memory_kib:int", "kdf_time_cost:int", "kdf_parallelism:int", "household_timezone:text", "manifest_pointer:text", "created_at:text"]
 
+[[key_bound]]
+table = "merchant_aliases"
+column = "normalized_key"
+max_bytes = 251
+mechanism = "writer"
+
+[[key_bound]]
+table = "settings"
+column = "key"
+max_bytes = 128
+mechanism = "writer"
+
+[[key_bound]]
+table = "credit_card_cycles"
+column = "cycle_close"
+max_bytes = 16
+mechanism = "construction"
+
 [[projection]]
 source = "attachments"
 logical_table = "attachments"

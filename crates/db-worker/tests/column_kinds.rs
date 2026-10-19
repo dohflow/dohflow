@@ -42,15 +42,20 @@ const FOLDED: &[(&str, &str, &str)] = &[
 /// row carries the write-set hash, and `provenance_links` is excluded by B.2.
 const NOT_REPLICATED: &[&str] = &["operation_log", "provenance_links"];
 
-/// Covered text key columns with no bound enforced by the schema. Each needs a bound
-/// (a length CHECK, or a write-time validation) so the 256-byte key limit is a schema-time
-/// guarantee.
-const UNBOUNDED_TEXT_KEYS: &[(&str, &str)] =
-    &[("credit_card_cycles", "cycle_close"), ("settings", "key")];
-
-/// Covered text keys the schema does not bound but the writer does, with a typed error and a
-/// test (`merchant_alias_key_width.rs`): `merchant_aliases.normalized_key`.
-const WRITER_BOUNDED_TEXT_KEYS: &[(&str, &str)] = &[("merchant_aliases", "normalized_key")];
+/// How each covered text key column is bounded, since SQLite bounds nothing. `(table, column,
+/// maximum UTF-8 bytes, mechanism)`. The manifest records the maximum, and a test per key
+/// proves the mechanism: a writer check with a typed error, or a bound by construction.
+/// Every covered text key must appear here (no unbounded key remains), and the widest
+/// possible key must fit the 256-byte limit of C.1.5.
+const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
+    // `link_merchant_alias` rejects a longer key (merchant_alias_key_width.rs).
+    ("merchant_aliases", "normalized_key", 251, "writer"),
+    // `set_setting` rejects a longer key (settings_key_width.rs).
+    ("settings", "key", 128, "writer"),
+    // `NaiveDate::to_string()` is `YYYY-MM-DD`, or at most 13 bytes for the extreme years
+    // (settings_key_width.rs checks the extremes).
+    ("credit_card_cycles", "cycle_close", 16, "construction"),
+];
 
 /// BLOB columns that hold a 16-byte identifier although their name does not say so.
 const UUID_BLOBS: &[(&str, &str)] = &[
@@ -256,6 +261,13 @@ fn generate() -> String {
         }
         writeln!(out, "columns = [{}]\n", columns.join(", ")).unwrap();
     }
+    for (table, column, max, mechanism) in TEXT_KEY_BOUNDS {
+        writeln!(out, "[[key_bound]]").unwrap();
+        writeln!(out, "table = \"{table}\"").unwrap();
+        writeln!(out, "column = \"{column}\"").unwrap();
+        writeln!(out, "max_bytes = {max}").unwrap();
+        writeln!(out, "mechanism = \"{mechanism}\"\n").unwrap();
+    }
     let legacy = legacy_settings_keys();
     for p in PROJECTIONS {
         writeln!(out, "[[projection]]").unwrap();
@@ -421,11 +433,34 @@ fn covered_key_widths_fit_the_cap_by_construction() {
         }
         assert!(width <= 256, "{table}: fixed key width {width} exceeds 256");
     }
-    unbounded.retain(|key| !WRITER_BOUNDED_TEXT_KEYS.contains(key));
+    // Every covered text key has a recorded bound, and the bound plus the other key columns
+    // fits the 256-byte cap (a text key is a tag byte, a u32 length and the bytes).
+    unbounded.sort_unstable();
+    let mut bounded: Vec<(&str, &str)> = TEXT_KEY_BOUNDS
+        .iter()
+        .map(|(t, c, _, _)| (*t, *c))
+        .collect();
+    bounded.sort_unstable();
     assert_eq!(
-        unbounded, UNBOUNDED_TEXT_KEYS,
-        "the set of covered text keys with no schema bound changed: it may only shrink"
+        unbounded, bounded,
+        "every covered text key needs an entry in TEXT_KEY_BOUNDS"
     );
+    for (table, column, max, _) in TEXT_KEY_BOUNDS {
+        let (cols, _) = &schema[*table];
+        let mut width = 0;
+        for col in cols.iter().filter(|c| c.pk > 0) {
+            width += match kind_of(table, col) {
+                "int" => 9,
+                "uuid" => 17,
+                "text" => 5 + if col.name == *column { *max } else { 0 },
+                other => panic!("{other} key"),
+            };
+        }
+        assert!(
+            width <= 256,
+            "{table}.{column}: widest key {width} exceeds 256"
+        );
+    }
 }
 
 #[test]
