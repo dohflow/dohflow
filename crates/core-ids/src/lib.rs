@@ -20,8 +20,12 @@
 //! (categories, forecast, income, …) shares one ID foundation without depending
 //! on the ledger.
 
+mod derived;
 mod issued_at;
 
+pub use derived::{
+    DerivedIdError, DerivedIdKey, DerivedIds, ID_KEY_LABEL, MAX_ORDINALS, MAX_TAG_LEN,
+};
 pub use issued_at::IssuedAt;
 
 use std::sync::{Mutex, OnceLock};
