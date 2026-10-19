@@ -24,13 +24,15 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use db_worker::{DbWorker, WorkerState};
+use subtle::ConstantTimeEq;
 use vault_crypto::{
-    derive_kek, generate_dek, generate_salt, rewrap_envelope, unwrap_dek, wrap_dek, Profile,
-    VaultEnvelope,
+    dek_fingerprint, derive_kek, generate_dek, generate_salt, rewrap_envelope, unwrap_dek,
+    wrap_dek, Profile, ReleasedParseError, ReleasedUnlockMaterial, SecretBytes, VaultEnvelope,
+    RELEASED_LEN,
 };
 
 use crate::rekey::{self, CrashPoint, RekeyPaths, RekeyRecovery};
-use crate::{Kernel, KernelError};
+use crate::{Kernel, KernelError, ReleasedUnlockError};
 
 /// The sidecar that holds a vault's unlock material, derived from the DB path by
 /// appending `.envelope` (so `…/vault.db` → `…/vault.db.envelope`).
@@ -120,6 +122,103 @@ impl Kernel {
         let dek = unwrap_dek(&kek, &envelope.wrapped)?;
         let worker = DbWorker::open_existing_with_raw_key(db_path, dek)?;
         Ok(Self::with_worker(worker))
+    }
+
+    /// Unlock the existing vault at `path` from a DEK released by the platform's biometric
+    /// store (ADR 0002 decision 6; personal-cfo-7ie.10).
+    ///
+    /// The platform layer (Rust, never the WebView) decrypts its wrapped item into a
+    /// zeroizing [`SecretBytes`] and calls this. The DEK crosses no IPC boundary: no Tauri
+    /// command accepts or returns it. The released plaintext (format in
+    /// `vault_crypto::released`) carries a version, the vault's `vault_id` and a
+    /// fingerprint of the wrapped DEK. Before the worker is opened, migrated or written:
+    ///
+    /// 1. the version is checked;
+    /// 2. the fingerprint is compared, in constant time, with the fingerprint of the
+    ///    wrapped DEK in the vault's envelope sidecar, so a password change or a key
+    ///    rotation (both change the wrapped DEK) retires every older item;
+    /// 3. a read-only handle is keyed with the DEK and the `vault_id` read from the
+    ///    database is compared with the item's.
+    ///
+    /// Only then is the worker opened. A wrong key is a typed
+    /// [`ReleasedUnlockError::KeyRejected`], never a corrupt-vault state, and it does not
+    /// ask the caller to delete the item (the item matched the envelope).
+    ///
+    /// Call this only after the vault controller has opened the vault and settled any
+    /// interrupted key rotation (it recovers in `VaultController::open`); a rotation journal
+    /// on disk is refused with [`ReleasedUnlockError::RotationInProgress`].
+    ///
+    /// # Errors
+    /// - [`KernelError::VaultNotFound`] if there is no envelope at `path`.
+    /// - [`KernelError::ReleasedUnlock`] with the cause: unknown version, stale
+    ///   fingerprint, wrong vault, or a key that does not open the database. In each case the
+    ///   caller deletes the platform item and asks for the password.
+    /// - [`KernelError::Vault`], [`KernelError::Persistence`], [`KernelError::VaultInUse`],
+    ///   [`KernelError::NewerVaultSchema`], [`KernelError::UnsupportedVaultSchema`] as for
+    ///   [`Kernel::unlock_vault`].
+    pub fn unlock_vault_with_dek(
+        path: impl AsRef<Path>,
+        released: SecretBytes<RELEASED_LEN>,
+    ) -> Result<Self, KernelError> {
+        let db_path = path.as_ref();
+        // A rotation journal means the database and envelope may be a half-rotated pair; the
+        // vault controller recovers it when it opens. Never probe that pair: the item would
+        // look stale or wrong and be deleted for a fault that is not its own.
+        if rekey::journal_present(db_path) {
+            return Err(KernelError::ReleasedUnlock(
+                ReleasedUnlockError::RotationInProgress,
+            ));
+        }
+        let sidecar = sidecar_path(db_path);
+        let bytes = match std::fs::read(&sidecar) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Err(KernelError::VaultNotFound)
+            }
+            Err(error) => return Err(KernelError::Vault(error.to_string())),
+        };
+        let envelope = VaultEnvelope::from_bytes(&bytes)?;
+
+        let material = ReleasedUnlockMaterial::parse(&released).map_err(|error| match error {
+            ReleasedParseError::UnknownVersion(found) => {
+                KernelError::ReleasedUnlock(ReleasedUnlockError::UnknownVersion(found))
+            }
+            _ => KernelError::ReleasedUnlock(ReleasedUnlockError::Unreadable),
+        })?;
+        drop(released);
+
+        let current = dek_fingerprint(&envelope.wrapped);
+        if !bool::from(material.fingerprint.ct_eq(&current)) {
+            return Err(KernelError::ReleasedUnlock(
+                ReleasedUnlockError::StaleFingerprint,
+            ));
+        }
+
+        match DbWorker::probe_raw_key(db_path, &material.dek)? {
+            None => Err(KernelError::ReleasedUnlock(
+                ReleasedUnlockError::KeyRejected,
+            )),
+            Some(stored) if stored.as_bytes() != &material.vault_id => {
+                Err(KernelError::ReleasedUnlock(ReleasedUnlockError::WrongVault))
+            }
+            Some(_) => {
+                let worker = DbWorker::open_existing_with_raw_key(db_path, material.dek)?;
+                // The probe and this open each take the runner lock for themselves, so another
+                // process could have rotated the key between them. Re-read the envelope now
+                // that this process owns the vault; a changed fingerprint means the item went
+                // stale in that window. Dropping the worker releases the lock and scrubs the key.
+                let now = std::fs::read(&sidecar)
+                    .map_err(|error| KernelError::Vault(error.to_string()))
+                    .and_then(|bytes| VaultEnvelope::from_bytes(&bytes).map_err(Into::into))?;
+                if !bool::from(material.fingerprint.ct_eq(&dek_fingerprint(&now.wrapped))) {
+                    drop(worker);
+                    return Err(KernelError::ReleasedUnlock(
+                        ReleasedUnlockError::StaleFingerprint,
+                    ));
+                }
+                Ok(Self::with_worker(worker))
+            }
+        }
     }
 
     /// Lock the vault by consuming the kernel. Dropping it drops the db-worker,

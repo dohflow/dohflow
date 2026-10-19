@@ -31,6 +31,7 @@
 pub mod attachment;
 pub mod backup;
 pub mod envelope;
+pub mod released;
 pub mod secret;
 
 pub use attachment::{
@@ -39,6 +40,10 @@ pub use attachment::{
 };
 pub use envelope::{
     generate_dek, rewrap_envelope, unwrap_dek, wrap_dek, Dek, VaultEnvelope, WrappedDek,
+};
+pub use released::{
+    dek_fingerprint, ReleasedParseError, ReleasedUnlockMaterial, DEK_FINGERPRINT_LABEL,
+    RELEASED_LEN, RELEASED_VERSION,
 };
 pub use secret::SecretBytes;
 use zeroize::Zeroize;

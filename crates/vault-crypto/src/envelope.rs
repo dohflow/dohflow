@@ -51,13 +51,15 @@ impl Dek {
     }
 
     /// Build a DEK in place in a protected buffer (no stack copy of the key).
-    fn init<E>(fill: impl FnOnce(&mut [u8; DEK_LEN]) -> Result<(), E>) -> Result<Self, E> {
+    pub(crate) fn init<E>(
+        fill: impl FnOnce(&mut [u8; DEK_LEN]) -> Result<(), E>,
+    ) -> Result<Self, E> {
         crate::SecretBytes::init(fill).map(Dek)
     }
 
     /// Copy a DEK from `bytes` into a protected buffer; `None` unless it is exactly
     /// [`DEK_LEN`] long. The caller scrubs the slice it passed.
-    fn from_slice(bytes: &[u8]) -> Option<Self> {
+    pub(crate) fn from_slice(bytes: &[u8]) -> Option<Self> {
         crate::SecretBytes::from_slice(bytes).map(Dek)
     }
 }
