@@ -125,4 +125,82 @@ assert msg[43] == (len(acct) >> 8)
 PY
 echo "    ok   — provider-id vector re-derived independently"
 
+# Section 10 (personal-cfo-g3m.14): the 2026-10-19 correction note.
+require_text "correction note is dated and named" "$ADR" "#### 10. Correction note (2026-10-19, \`personal-cfo-g3m.14\`): payload-only ordinals, singleton ids, mint order and the clock scope"
+require_text "(a) ordinals depend only on payload and metadata" "$ADR" "**(a) Ordinal consumption depends only on the payload and the metadata.**"
+require_text "(b) singletons get a content-derived id" "$ADR" "**(b) Create-if-missing singletons get a content-derived id.**"
+require_text "(b) singleton domain label is fixed" "$ADR" 'label    = ASCII "dohflow/system-account-id/v1"'
+require_text "(b) singleton packing uses a zero time field" "$ADR" "packing  = uuid::Builder::from_unix_timestamp_millis(0, &counter_random_bytes)"
+require_text "(b) cross-references the provider-transaction exception" "$ADR" "the provider-transaction exception of section 9"
+require_text "(b) validates before deriving" "$ADR" "the currency is exactly three ASCII uppercase letters, and the role"
+require_text "(b) separates from section 9 by first byte and version nibble" "$ADR" "nibble (7 here, 8 there)"
+require_text "(c) mint order is deterministic" "$ADR" "**(c) Mint order is deterministic.**"
+require_text "(c) no unordered collection on a mint path" "$ADR" "no iteration over a \`HashMap\`, a \`HashSet\` or any other unordered"
+require_text "(c) a total ORDER BY feeds every mint loop" "$ADR" "total \`ORDER BY\`"
+require_text "(d) the clock rule covers everything reachable" "$ADR" "**(d) The no-clock rule covers everything reachable from \`apply\`.**"
+require_text "(d) class-2 rebuilds are in scope" "$ADR" "**class-2 rebuilds**"
+require_text "section 2 carries a dated pointer" "$ADR" "*(Scope corrected 2026-10-19: the rule covers every clock read reachable from"
+require_text "section 3 carries a dated pointer" "$ADR" "*(Corrected 2026-10-19: \`ensure_system_ledger_account\`, and any other"
+require_text "section 4 carries a dated pointer" "$ADR" "*(Corrected 2026-10-19: the payload and the metadata alone determine the"
+require_text "section 6 carries a dated pointer" "$ADR" "*(Superseded 2026-10-19: a singleton's id is content-derived and outside the"
+require_text "the accepted section 4 sentence is unchanged" "$ADR" "payload, metadata, and base determine the sequence; a rollback-then-replay"
+
+# The singleton vectors are re-derived here, independently of the document's text, with a
+# packer that is first checked against the document's own vector A.
+CASES=$((CASES + 1))
+python3 - "$ADR" <<'PY'
+import hashlib, hmac, re, struct, sys, uuid
+text = open(sys.argv[1]).read()
+def pack_v7(ms, ordinal, high62):
+    c = bytearray(10)
+    c[0] = (ordinal >> 8) & 0x0F
+    c[1] = ordinal & 0xFF
+    c[2:10] = high62.to_bytes(8, "big")
+    b = bytearray(16)
+    b[0:6] = ms.to_bytes(6, "big")
+    b[6] = 0x70 | (c[0] & 0x0F)
+    b[7] = c[1]
+    b[8] = (c[2] & 0x3F) | 0x80
+    b[9:16] = c[3:10]
+    return bytes(c), uuid.UUID(bytes=bytes(b))
+# 1. the packer reproduces section 1's vector A exactly
+a = text.split("vector A", 1)[1].split("vector B", 1)[0]
+def f(name, chunk):
+    m = re.search(r"^" + name + r"\s*=\s*(\S+)", chunk, re.M)
+    assert m, name
+    return m.group(1)
+key = bytes.fromhex(f("id_key", a))
+msg = bytes.fromhex(f("message_hex", a))
+dig = hmac.new(key, msg, hashlib.sha256).digest()
+counter, got = pack_v7(int(f("issued_at_unix_ms", a)), int(f("ordinal", a)), int.from_bytes(dig[:8], "big") >> 2)
+assert counter.hex() == f("counter_random_bytes", a) and str(got) == f("uuid", a), "packer vs vector A"
+# 2. the section 10 singleton vectors
+sec = text.split("#### 10. Correction note", 1)[1]
+block = sec.split("Known-answer vectors (normative; hexadecimal is lowercase; `id_key` is vector A's key", 1)[1]
+block = block.split("```text", 1)[1].split("```", 1)[0]
+label = b"dohflow/system-account-id/v1"
+assert len(label) == 28
+chunks = block.split("\n\n")
+assert len(chunks) == 2, len(chunks)
+for chunk in chunks:
+    role, cur = f("role", chunk).encode(), f("currency", chunk).encode()
+    assert role in (b"opening_balance_equity", b"unmatched_income", b"unmatched_expense")
+    assert re.fullmatch(rb"[A-Z]{3}", cur)
+    m = bytes([len(label)]) + label + bytes([len(role)]) + role + cur
+    d = hmac.new(key, m, hashlib.sha256).digest()
+    counter, u = pack_v7(0, 0, int.from_bytes(d[:8], "big") >> 2)
+    assert m.hex() == f("message_hex", chunk), "message_hex"
+    assert d.hex() == f("hmac_sha256", chunk), "hmac_sha256"
+    assert counter.hex() == f("counter_random_bytes", chunk), "counter_random_bytes"
+    assert str(u) == f("uuid", chunk), "uuid"
+    assert u.version == 7 and str(u).startswith("00000000-0000-7000-")
+    # not a valid section 1 message: its last two bytes cannot be an ordinal below 4096
+    assert struct.unpack(">H", m[-2:])[0] >= 4096
+    # and its first byte differs from the provider derivation's (26)
+    assert m[0] == 0x1C != 0x1A
+    # ... and the id is a version 7 layout, whereas the provider-derived ids are version 8
+    assert u.version == 7
+PY
+echo "    ok   — singleton vectors re-derived independently (packer checked against vector A)"
+
 echo "PASS — $CASES ADR 0013-A contract assertions, 0 failures"
