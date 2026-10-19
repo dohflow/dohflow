@@ -1789,6 +1789,41 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Operation log v2 (personal-cfo-t2s4b part 4; ADR 0074, vault-format.md C.1.2 and the
+    // envelope plaintext): the replayable form of a command. `payload` is the canonical
+    // JSON of the WriteCommand (`db_worker::payload`), `payload_schema_version` names the
+    // payload encoding it was written under, `write_set_hash` binds the class-1 rows the
+    // command touched (part 5), and `engine_version` records the build that applied it.
+    //
+    // All four are nullable, and NULL is meaningful: a row written before this migration
+    // has no payload and is **audit history only**. It is never replayed and never
+    // sent as a Sync envelope; `payload_schema_version IS NULL` is how code tells the two
+    // apart. `operation_log` is append-only (triggers refuse UPDATE and DELETE), so the
+    // pre-v2 rows are left exactly as they are: ADD COLUMN rewrites no row and fires no
+    // trigger. The column CHECKs make a half-written v2 row impossible: a version without
+    // a payload, a hash that is not 32 bytes, an empty or oversized engine version.
+    // Additive, so no rebuild and no read-model impact. The down migration drops the
+    // dependent column first (SQLite refuses to drop a column another CHECK refers to).
+    Migration {
+        version: 56,
+        name: "operation_log_v2",
+        up: "ALTER TABLE operation_log ADD COLUMN payload BLOB;
+             ALTER TABLE operation_log ADD COLUMN payload_schema_version INTEGER
+                 CHECK (payload_schema_version IS NULL
+                        OR (payload_schema_version >= 1 AND payload IS NOT NULL));
+             ALTER TABLE operation_log ADD COLUMN write_set_hash BLOB
+                 CHECK (write_set_hash IS NULL OR length(write_set_hash) = 32);
+             ALTER TABLE operation_log ADD COLUMN engine_version TEXT
+                 CHECK (engine_version IS NULL OR length(engine_version) BETWEEN 1 AND 64);",
+        down: Some(
+            "ALTER TABLE operation_log DROP COLUMN engine_version;
+             ALTER TABLE operation_log DROP COLUMN write_set_hash;
+             ALTER TABLE operation_log DROP COLUMN payload_schema_version;
+             ALTER TABLE operation_log DROP COLUMN payload;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 const fn max_version() -> i64 {

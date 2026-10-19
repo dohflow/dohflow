@@ -6892,6 +6892,202 @@ fn down_migration_preserves_canonical_data() {
     assert_eq!(integrity, "ok");
 }
 
+/// Every column of `operation_log`, in table order, as `(name, type, not_null)`.
+fn operation_log_columns(conn: &rusqlite::Connection) -> Vec<(String, String, bool)> {
+    let mut stmt = conn.prepare("PRAGMA table_info(operation_log)").unwrap();
+    stmt.query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A complete `operation_log` row for raw-SQL tests: the pre-v2 columns only, keyed by `n`.
+const OPLOG_INSERT_V1: &str = "INSERT INTO operation_log
+    (command_id, correlation_id, causation_id, actor_type, actor_id, idempotency_key,
+     operation_type, affected_entities, metadata, node_id, vault_schema_version,
+     hlc_timestamp, created_at)
+    VALUES (?1, zeroblob(16), NULL, 'user', 'u', 'k', 'test', zeroblob(1), NULL,
+            zeroblob(16), 55, 1, '2026-10-18T00:00:00Z')";
+
+#[test]
+fn operation_log_v2_adds_four_nullable_columns() {
+    let (_dir, worker) = worker();
+    let conn = worker.read_connection().unwrap();
+    let columns = operation_log_columns(&conn);
+    let tail: Vec<(&str, &str, bool)> = columns
+        .iter()
+        .rev()
+        .take(4)
+        .rev()
+        .map(|(n, t, nn)| (n.as_str(), t.as_str(), *nn))
+        .collect();
+    assert_eq!(
+        tail,
+        vec![
+            ("payload", "BLOB", false),
+            ("payload_schema_version", "INTEGER", false),
+            ("write_set_hash", "BLOB", false),
+            ("engine_version", "TEXT", false),
+        ],
+        "v2 columns are appended and nullable, so pre-v2 rows stay valid",
+    );
+    // The pre-v2 columns are unchanged.
+    assert_eq!(columns.len(), 18);
+    assert_eq!(columns[0].0, "op_seq");
+    assert_eq!(columns[13].0, "created_at");
+}
+
+#[test]
+fn pre_v2_rows_survive_the_migration_untouched_and_are_audit_history() {
+    let (_dir, worker) = worker();
+    let mut conn = worker.read_connection().unwrap();
+    // A realistic pre-v2 vault: roll back to 55, write rows the way a 55 build did.
+    migrations::migrate_down(&mut conn, 55).unwrap();
+    assert_eq!(user_version(&conn), 55);
+    assert_eq!(operation_log_columns(&conn).len(), 14);
+    for n in 1_u8..=3 {
+        conn.execute(OPLOG_INSERT_V1, [vec![n; 16]]).unwrap();
+    }
+    let snapshot = |conn: &rusqlite::Connection| -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT op_seq, hex(command_id), hex(correlation_id), actor_type, actor_id,
+                        idempotency_key, operation_type, hex(affected_entities),
+                        vault_schema_version, hlc_timestamp, created_at
+                 FROM operation_log ORDER BY op_seq",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((0..11)
+                .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                .collect::<Vec<_>>()
+                .join("|"))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    };
+    let before = snapshot(&conn);
+    assert_eq!(before.len(), 3);
+
+    migrations::run_migrations(&mut conn).unwrap();
+    assert_eq!(user_version(&conn), migrations::CURRENT_VERSION);
+    assert_eq!(
+        snapshot(&conn),
+        before,
+        "migration 56 rewrites no pre-v2 row"
+    );
+
+    // Pre-v2 rows are told apart by a NULL payload_schema_version, and carry no payload.
+    let (audit_only, replayable): (i64, i64) = conn
+        .query_row(
+            "SELECT SUM(payload_schema_version IS NULL), SUM(payload_schema_version IS NOT NULL)
+             FROM operation_log",
+            [],
+            |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+        )
+        .unwrap();
+    assert_eq!((audit_only, replayable), (3, 0));
+    let populated: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM operation_log
+             WHERE payload IS NOT NULL OR write_set_hash IS NOT NULL OR engine_version IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(populated, 0);
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+}
+
+#[test]
+fn the_operation_log_stays_append_only_for_the_v2_columns_too() {
+    let (_dir, worker) = worker();
+    let conn = worker.read_connection().unwrap();
+    conn.execute(OPLOG_INSERT_V1, [vec![9_u8; 16]]).unwrap();
+    for sql in [
+        "UPDATE operation_log SET payload = x'7b7d'",
+        "UPDATE operation_log SET engine_version = 'dohflow-0.3.0'",
+        "UPDATE operation_log SET write_set_hash = zeroblob(32)",
+        "DELETE FROM operation_log",
+    ] {
+        let err = conn.execute(sql, []).unwrap_err().to_string();
+        assert!(err.contains("append-only"), "{sql}: {err}");
+    }
+}
+
+#[test]
+fn operation_log_v2_checks_refuse_a_half_written_row() {
+    let (_dir, worker) = worker();
+    let conn = worker.read_connection().unwrap();
+    let insert = |extra_cols: &str, extra_vals: &str, n: u8| {
+        conn.execute(
+            &format!(
+                "INSERT INTO operation_log
+                 (command_id, correlation_id, actor_type, actor_id, idempotency_key,
+                  operation_type, affected_entities, node_id, vault_schema_version,
+                  hlc_timestamp, created_at{extra_cols})
+                 VALUES (?1, zeroblob(16), 'user', 'u', 'k', 'test', zeroblob(1),
+                         zeroblob(16), 56, 1, '2026-10-18T00:00:00Z'{extra_vals})"
+            ),
+            [vec![n; 16]],
+        )
+    };
+    // A complete v2 row is accepted.
+    insert(
+        ", payload, payload_schema_version, write_set_hash, engine_version",
+        ", x'7b7d', 1, zeroblob(32), 'dohflow-0.3.0'",
+        1,
+    )
+    .unwrap();
+    // A payload alone (a version-less payload), or the hash and engine alone, are accepted:
+    // the part that writes them decides what a complete row is; the schema only refuses
+    // values that can never be right.
+    insert(", payload", ", x'7b7d'", 2).unwrap();
+    insert(", engine_version", ", 'dohflow-0.3.0'", 3).unwrap();
+    // A schema version without a payload is a half-written row.
+    for (cols, vals) in [
+        (", payload_schema_version", ", 1"),
+        (", payload_schema_version, payload", ", 0, x'7b7d'"),
+        (", payload_schema_version, payload", ", -1, x'7b7d'"),
+        (", write_set_hash", ", zeroblob(31)"),
+        (", write_set_hash", ", zeroblob(33)"),
+        (", write_set_hash", ", x''"),
+        (", engine_version", ", ''"),
+        (", engine_version", &format!(", '{}'", "v".repeat(65))),
+    ] {
+        let err = insert(cols, vals, 100).unwrap_err().to_string();
+        assert!(err.contains("CHECK"), "{cols}{vals}: {err}");
+    }
+}
+
+#[test]
+fn operation_log_v2_rolls_back_to_55_and_forward_again() {
+    let (_dir, worker) = worker();
+    worker.dispatch(meta(), create_account_cmd()).unwrap();
+    let mut conn = worker.read_connection().unwrap();
+    migrations::migrate_down(&mut conn, 55).unwrap();
+    assert_eq!(user_version(&conn), 55);
+    assert_eq!(
+        operation_log_columns(&conn).len(),
+        14,
+        "the down migration removes exactly the four v2 columns"
+    );
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM operation_log", [], |r| r.get(0))
+        .unwrap();
+    assert!(rows >= 1, "history survives the rollback");
+    migrations::run_migrations(&mut conn).unwrap();
+    assert_eq!(operation_log_columns(&conn).len(), 18);
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+}
+
 #[test]
 fn rebuild_flag_triggers_read_model_rebuild() {
     let (_dir, worker) = worker();
