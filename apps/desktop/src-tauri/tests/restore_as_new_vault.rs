@@ -61,6 +61,7 @@ fn meta() -> CommandMeta {
         actor_type: ActorType::User,
         actor_id: "restore test".to_owned(),
         idempotency_key: Uuid::new_v4().to_string(),
+        issued_at: finance_kernel::IssuedAt::now(),
     }
 }
 

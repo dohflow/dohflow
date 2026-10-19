@@ -29,6 +29,7 @@ fn meta_with_key(idempotency_key: &str) -> CommandMeta {
         actor_type: ActorType::User,
         actor_id: "tester".to_owned(),
         idempotency_key: idempotency_key.to_owned(),
+        issued_at: crate::IssuedAt::now(),
     }
 }
 
