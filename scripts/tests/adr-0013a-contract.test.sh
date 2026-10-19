@@ -70,4 +70,50 @@ require_text "per-device counter alternative is rejected" "$ADR" "Sequential per
 require_text "revisit triggers include the cap" "$ADR" "A command legitimately needs more than 4,096 derived IDs."
 require_text "SYNC-1 points at accepted heading" "$SYNC" "ADR 0013 Addendum A — deterministic derived identifiers for apply-minted rows"
 
+# Section 9 (personal-cfo-g3m.12): the content-derived provider-transaction id.
+require_text "provider-id exception is a dated section" "$ADR" "#### 9. Exception: content-derived provider-transaction identifiers (2026-10-18, \`personal-cfo-g3m.12\`)"
+require_text "provider-id domain label is fixed" "$ADR" 'label    = ASCII "dohflow/provider-txn-id/v1"'
+require_text "provider-id is never command-scoped" "$ADR" "**never from \`issued_at\`, a \`command_id\` or an ordinal**"
+require_text "provider-id layout is UUID version 8" "$ADR" "byte 6 = (byte 6 & 0x0f) | 0x80"
+require_text "provider strings may not hold control characters" "$ADR" "containing no C0 control"
+require_text "provider-id domain separation is structural" "$ADR" "No provider-derived message can therefore be"
+require_text "provider-id consumes no ordinal" "$ADR" "no ordinal and is outside the 4,096-id cap."
+
+# The provider-id vector is re-derived here, independently of the document's own text:
+# a stale or mistyped vector fails this script rather than a future implementation.
+CASES=$((CASES + 1))
+python3 - "$ADR" <<'PY'
+import hashlib, hmac, re, struct, sys, uuid
+text = open(sys.argv[1]).read()
+block = text.split("Known-answer vector (normative; hexadecimal is lowercase; `id_key` is vector A's", 1)[1]
+block = block.split("```text", 1)[1].split("```", 1)[0]
+first, second = block.split("provider_txn_id      = TXN-2026-10-17-0043", 1)
+def field(name, chunk):
+    m = re.search(r"^" + name + r"\s*=\s*(\S+)", chunk, re.M)
+    assert m, name
+    return m.group(1)
+key = bytes.fromhex(field("id_key", first))
+conn = uuid.UUID(field("connection_id", first))
+acct = field("provider_account_key", first).encode()
+label = b"dohflow/provider-txn-id/v1"
+def derive(txn):
+    txn = txn.encode()
+    msg = bytes([len(label)]) + label + conn.bytes + struct.pack(">H", len(acct)) + acct + struct.pack(">H", len(txn)) + txn
+    digest = hmac.new(key, msg, hashlib.sha256).digest()
+    b = bytearray(digest[:16])
+    b[6] = (b[6] & 0x0F) | 0x80
+    b[8] = (b[8] & 0x3F) | 0x80
+    return msg, digest, uuid.UUID(bytes=bytes(b))
+msg, digest, got = derive(field("provider_txn_id", first))
+assert msg.hex() == field("message_hex", first), "message_hex"
+assert digest.hex() == field("hmac_sha256", first), "hmac_sha256"
+assert str(got) == field("uuid", first), "uuid"
+assert got.version == 8
+_, _, got2 = derive("TXN-2026-10-17-0043")
+assert str(got2) == field("uuid", second), "second uuid"
+# The disjointness argument: the last two bytes of the message are never a valid ordinal.
+assert struct.unpack(">H", msg[-2:])[0] >= 4096
+PY
+echo "    ok   — provider-id vector re-derived independently"
+
 echo "PASS — $CASES ADR 0013-A contract assertions, 0 failures"

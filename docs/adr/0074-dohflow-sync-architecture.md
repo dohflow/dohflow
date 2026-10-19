@@ -803,6 +803,118 @@ following, which this ADR left open or implicit:
   every class-1 ledger row of every age; only pre-v2 operation and provenance
   history is not carried.
 
+## Addendum B — Cross-device connector ingestion (2026-10-18, `personal-cfo-g3m.12`)
+
+Two devices that each hold their own provider credential refresh the same bank
+account independently. They must never commit the same provider transaction
+twice, and neither may depend on the other being online. This addendum records
+the owner's 2026-10-18 decision for that case (`personal-cfo-g3m.7`): derived
+provider-transaction identity plus a rebase-time `AlreadyPresent` rule, **no
+lease**. It rewrites none of the decisions above; Decision 2 (no lease,
+compare-and-swap, rollback-then-replay) stands, and the rule is built on it.
+
+**1. The problem.** Every duplicate check that exists today reads class-3 staged
+rows (`crates/db-worker/src/ingestion.rs`: the cross-source duplicate reason and
+the fingerprint tracked and committed checks). Staging does not replicate. After a
+normal Sync, device B has A's committed transactions but not A's staged rows, so B
+refreshes the same provider data, finds nothing to match against, and commits it
+again. The gap is permanent, not a race, and no timing rule closes it: detection
+must read class-1 state.
+
+**2. Derived provider-transaction identity.** Each provider-imported transaction
+gets a content-derived id that every device computes identically from the
+provider's own identifiers: an HMAC of the per-vault `id_key` over a
+domain-separated message of the replicated `connection_id`, the provider account
+key and the provider transaction id, laid out as a UUID version 8. It is never
+derived from `issued_at`. It is computed when the commit command is constructed and
+carried in the `CommitStaged` payload, so it is not an apply-minted id and
+consumes no derived-id ordinal. The exact byte grammar, the validation of the
+provider strings, the argument that it cannot collide with command-scoped ids, and
+a known-answer vector are in ADR 0013 Addendum A, section 9.
+
+**3. Class-1 identity records.** Two new class-1 tables carry the rule across
+devices (their names and columns are fixed by the beads that implement the rule,
+not here):
+
+- a **provider-identity record** with `UNIQUE(connection_id,
+  provider_account_key, provider_txn_id)`, mapping each committed provider
+  transaction to its derived id; and
+- a **skip / import-anyway disposition** keyed by the derived identity, so a
+  user's choice to skip or to re-import a provider transaction replicates and is
+  honoured on every device.
+
+`connection_id` and the account mappings are the replicated connection identity of
+`personal-cfo-07u`; every device that holds a token refreshes on its own.
+
+**4. The apply rule and the `AlreadyPresent` exception.** Inside apply, a commit
+of a provider transaction looks up its derived id in the provider-identity record
+(class-1 rows only; apply never reads class-3 staging). The same check runs at
+**local commit**, not only at rebase. The outcomes:
+
+| Situation | Disposition |
+| --- | --- |
+| The identity is absent | Commit as usual. |
+| Present, and the provider-financial fields are equal | A no-op, plus a dedupe decision and an audit line. No inbox item. |
+| Present, and the provider-financial fields differ | One disposition item (queue-choose). |
+| Present, and the transaction is voided or tombstoned | A no-op. Re-importing never resurrects it; an explicit restore is a separate Reinstate command. |
+
+The provider-financial fields are the ones the provider supplies (amount,
+currency, posted date, provider description). **User-editable fields (category,
+note, tags, splits, review state) are never compared and never overwritten.**
+This is a new disposition in the rebase executor, `AlreadyPresent`, an exception
+to the strict auto-iff rule of ADR 0073 Decision 1 (an envelope whose write set
+was touched queues): a replayed `CommitStaged` whose identity is already present
+is resolved by this table instead of by the touched-write-set rule. ADR 0073
+records it under its exceptions (section 3, item 6).
+
+**5. Void and reinstate.** A void keeps the provider-identity record, so a later
+refresh of the same provider transaction finds the identity and takes the voided
+row of the table above. Reinstating a voided transaction is an explicit command; a
+refresh never does it.
+
+**6. What never feeds identity.** A **pending** provider transaction is never
+committed. A **fallback fingerprint** (a heuristic hash of date, amount and
+description) never feeds a derived id: a transaction without usable provider
+identifiers has no provider identity and is handled by the existing heuristic
+review path, not by this rule. **File imports** have no provider identifiers, so
+they derive their identity from the file's content fingerprint and the row's
+ordinal in it, under their own domain label (fixed by `personal-cfo-0g528`).
+
+**7. Provider revisions.** If a provider later revises the amount or posted date
+of a transaction under the same provider id, the identity is present and the
+provider-financial fields differ, so it is one disposition item (queue-choose):
+the user decides whether to take the provider's revision. It is not applied
+silently.
+
+**8. Non-goals.** There is no refresh lease, no designated committer and no
+clock-based failover (ADR 0017 and Decision 2 forbid a clock deciding who may
+write). Re-issued provider ids, where a provider reuses an id for a different
+transaction, are out of scope.
+
+**9. Downstream changes.** `personal-cfo-0g528` (import-family reshape) carries
+the origin's heuristic dedupe decisions and evaluates the class-1 identity guard in
+apply; the dedupe-decision record is reshaped off the class-3 staged id so it can
+replicate; `personal-cfo-bxsbz` (base image and rebase) implements the
+`AlreadyPresent` exception; and `personal-cfo-tp2ln` (the two-vault simulator) gains
+the nine cases that exercise this rule.
+
+**10. What the user sees.** An exact collapse is an audit line only. A mismatch is
+one disposition item in the queue, with both values. A voided transaction that a
+refresh sees again is silent.
+
+**11. Verified scope.** The rule depends on one assumption: that a provider returns
+the **same account keys and transaction ids to different credentials** for the same
+accounts. That is **verified for SimpleFIN**: on 2026-10-18 two setup tokens on one
+Bridge subscription, claimed to two different access URLs and each queried once
+(accounts and transactions for the last 30 days, posted only), returned identical
+`(connection id, account id)` keys on all 14 accounts and identical transaction-id
+sets on every account (193 transactions per side) (`personal-cfo-g3m.10`, recorded
+on `personal-cfo-g3m.7`). It is **pending for LunchFlow** until
+`personal-cfo-g3m.11` records the equivalent check for a second LunchFlow key
+(planned before paid Sync). **Until then LunchFlow connections are not covered by
+this rule and must not be described as covered.** If a provider's ids differ across
+credentials, this decision returns to the owner.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` (this ADR)
@@ -825,3 +937,7 @@ following, which this ADR left open or implicit:
 - `personal-cfo-klr.4` (ADR 0077 and wire-format authority)
 - `personal-cfo-5kua` (external cryptographic review)
 - `personal-cfo-efv` (future recovery design)
+- `personal-cfo-g3m.7` (cross-device connector ingestion: the decision behind Addendum B)
+- `personal-cfo-g3m.10` (SimpleFIN two-token id check)
+- `personal-cfo-g3m.11` (LunchFlow two-key id check, pending)
+- `personal-cfo-g3m.12` (Addendum B and the ADR 0013-A section 9 note)
