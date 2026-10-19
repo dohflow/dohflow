@@ -243,8 +243,8 @@ synthetic no-app recovery test before any such public claim.
   to, and C.14 gains the rejection vectors. New wire sections require a
   spec-version bump and their own reviewed vectors.
 - `spec-version = 4` adds C.1.5, the canonical row encoding (declared-kind tags, primary
-  key, row and deleted-row digests) that the write-set hash of C.4 and the replay-property
-  hash refer to, with known-answer vectors.
+  key, row and deleted-row digests, and folded children) that the write-set hash of C.4
+  and the replay-property hash refer to, with known-answer vectors.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -753,7 +753,8 @@ encoding). It uses CBE1 (C.1.1).
 **What the write set covers.** Exactly what Sync replicates, per the B.2 inventory:
 
 - every table of Sync class 1, and each class-4 group that ADR 0074 Decision 5 routes to
-  class 1 (the CLASS-0 manifest names them), with all of their columns;
+  class 1 (the CLASS-0 manifest names them), with all of their columns, except the
+  **folded children** below and `operation_log` (the command's own row);
 - for each table whose B.2 disposition is `fields`, a **projection**: only the replicated
   fields B.2 names, as a logical record, so that a device-local or rebuilt column never
   enters a digest. These are `attachments` (`id`, `plaintext_size`, `mime_type`,
@@ -764,6 +765,33 @@ encoding). It uses CBE1 (C.1.1).
   digest uses the table name `household`, the one column `household_timezone`, and the
   key `int 1`. The projection a command's apply writes is therefore never empty for
   `SetHouseholdTimezone`.
+
+**Folded children.** A replicated table that declares no primary key cannot be a write-set
+entry of its own, because a rowid is not the same on two devices. Such a table is **folded
+into a parent**: its rows are part of the parent's digest, and the parent is the only
+write-set entry. The column-kind manifest names the mapping:
+
+| Child table | Parent table | Child column naming the parent |
+| --- | --- | --- |
+| `ledger_postings` | `ledger_transactions` | `transaction_id` (the parent's `id`) |
+| `attachment_links` | `attachments` | `attachment_id` (the parent's `id`) |
+
+A parent that has folded children appends a **child section** to its `row_digest` message,
+after its own columns: `u16 child_table_count ‖ for each child table, in raw-name order:
+text(64) child_table ‖ u32 count ‖ for each child row: bytes(2^16) child_row`. A
+`child_row` is `u16 column_count ‖ for each column of the child table, over **all** its
+declared columns and never a rowid, sorted by the raw bytes of the name: text(64) name ‖
+tagged value`. The child rows of one parent are sorted **bytewise by their `child_row`
+encoding, and duplicates are kept**, so two identical postings count twice and the digest
+is a multiset. A parent with no folded children has no child section, so its message is
+exactly the one defined below. A parent whose manifest declares children always carries the
+section, with a count of 0 when it has no child rows now. An insert, update or delete of
+any child row changes the parent's digest, so the parent's write-set entry is present
+(the state-difference rule); a child row whose parent does not exist is an error, never an
+entry.
+
+`provenance_links` is **not** in the write set: B.2 gives it the disposition `exclude`, like
+`operation_log`, and the write set is exactly what Sync replicates.
 
 Each value is tagged by its column's **declared kind**, taken from the column-kind
 manifest, which lists every column of every table with a kind and is aligned with the
@@ -793,7 +821,8 @@ from the table, is an error. The digests are:
   table ‖ u16 column_count ‖ for each column: text(64) name ‖ tagged value)`, with the
   columns sorted by the **raw bytes of their names** (not by their position in the table,
   which a table rebuild may change). Every column the manifest lists for the table, or for
-  its projection, is included. A class-1 table contains only class-1 columns (a schema
+  its projection, is included; a parent with folded children then appends its child
+  section (above). A class-1 table contains only class-1 columns (a schema
   test checks every class-1 table against CLASS-0), and a projection lists only replicated
   fields, so no device-local (class-3) or rebuild-timing (class-2) value ever enters a
   digest.
@@ -844,13 +873,25 @@ the other. Known-answer vectors, derived independently by the contract script
 `scripts/tests/row-digest-contract.test.sh` (`table = tags`; `id` is a `uuid` column
 holding the 16 bytes of `0198c2c1-5f0a-7c3d-8a4e-9b1d00000011`; `name` is a `text` column
 holding `trip é`; `color` is a `text` column holding NULL; `sort_order` is an `int` column
-holding `-7`):
+holding `-7`; the first five markers below). The last four markers cover a parent with
+folded children: the parent
+is a `ledger_transactions` row with `id` the 16 bytes of
+`0198c2c1-5f0a-7c3d-8a4e-9b1d00000021` and `memo` `split`; its children are three
+`ledger_postings` rows over the same `transaction_id`, two identical (account
+`...0031`, `-500`, `USD`, exponent `2`, `2026-10-17`) and one other (account `...0032`,
+`1000`); `child_row_a` and `child_row_b` are the two distinct child encodings, and the
+duplicate shows that the multiset keeps both copies (`parent_message` and `parent_digest`
+are the parent's message, with its child section, and its digest):
 
 <!-- row-vector: primary_key=030198c2c15f0a7c3d8a4e9b1d00000011 -->
 <!-- row-vector: row_message=0013646f68666c6f772f73796e632d726f772f76310000000474616773000400000005636f6c6f7200000000026964030198c2c15f0a7c3d8a4e9b1d00000011000000046e616d6502000000077472697020c3a90000000a736f72745f6f7264657201fffffffffffffff9 -->
 <!-- row-vector: row_digest=2f155b98841dc8b10bc71e369ee216022f9c15ef56a27b5165b36cb220d7b601 -->
 <!-- row-vector: absent_message=001a646f68666c6f772f73796e632d726f772d616273656e742f7631000000047461677300000011030198c2c15f0a7c3d8a4e9b1d00000011 -->
 <!-- row-vector: absent_digest=6d5ad824c2f6c542d09ce9250916c0135574503f89d8719c90292aac69347285 -->
+<!-- row-vector: child_row_a=00060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
+<!-- row-vector: child_row_b=00060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000320000000b6d696e6f725f756e6974730100000000000003e80000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
+<!-- row-vector: parent_message=0013646f68666c6f772f73796e632d726f772f7631000000136c65646765725f7472616e73616374696f6e730002000000026964030198c2c15f0a7c3d8a4e9b1d00000021000000046d656d6f020000000573706c697400010000000f6c65646765725f706f7374696e677300000003000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000320000000b6d696e6f725f756e6974730100000000000003e80000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
+<!-- row-vector: parent_digest=c31659d4006d3c4609c0b9d330c0d45627160732eddf048b749ac1ee4048ac1c -->
 
 ## C.2 Keys and secrets
 
