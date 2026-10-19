@@ -688,7 +688,9 @@ dependencies = [
 name = "core-ids"
 version = "0.1.0"
 dependencies = [
+ "hmac",
  "serde",
+ "sha2",
  "thiserror 2.0.18",
  "uuid",
 ]

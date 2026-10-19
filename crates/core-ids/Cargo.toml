@@ -15,6 +15,9 @@ description = "Shared identifier strategy for DohFlow: monotonic UUIDv7 newtypes
 uuid = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 thiserror = { workspace = true }
+# Derived identifiers (ADR 0013 Addendum A): HMAC-SHA256 for the id and the per-vault key.
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # Integration tests instantiate the macro, so they need uuid/serde as named
