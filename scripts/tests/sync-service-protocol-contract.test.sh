@@ -162,7 +162,7 @@ need "index is recovery-durable" 'it MUST survive tail truncation, snapshot boot
 need "exact retry returns the original seq" 'its `seq` and `result_ref` are those of the original acceptance'
 need "the server never chooses a nonce" 'never chooses, allocates or assigns a nonce domain or a counter range'
 need "ProtocolFork rejects the whole request" 'reject the **whole request** with'
-need "genesis for a known vault is VaultExists" 'a known vault is `VaultExists`'
+need "genesis for a known vault is VaultExists" 'that already has one is `VaultExists`'
 need "lapsed credentials never disable local features" 'A server response never instructs a client to disable'
 need "the never-sees section exists" '## 9. What a server never sees'
 for item in 'the vault password' 'the Sync epoch root `K_e`' 'the tag secret `S`' 'the origin `StorageId`' 'the plaintext idempotency key' 'attachment bytes'; do
