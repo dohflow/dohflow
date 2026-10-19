@@ -21,6 +21,18 @@
 //! canonical (whitespace, member order, an alternative escape spelling, an unknown
 //! member, `"-0"`) is refused rather than accepted under a different spelling.
 //!
+//! **Hashes and signatures are always over the bytes that were received**, never over a
+//! re-encoding of what was parsed. [`parse_node_lenient`] accepts any whitespace and any
+//! escape spelling (it still enforces every content rule), so using its result to produce
+//! a hash would give different wire bytes the same hash; [`parse_canonical_node`] and
+//! [`from_canonical_slice`] are the entry points for a document that arrives from outside.
+//!
+//! One value, one encoding: an `Option` whose content itself encodes as `null` (`Some(())`,
+//! `Some(None)`) is refused, because it would encode like `None`; strings never contain
+//! U+0000; nesting is at most [`MAX_DEPTH`] levels, on encoding as on parsing. User data is
+//! never a map key (keys follow the member-name rule), and binary data is a base64 string
+//! newtype, not a byte sequence.
+//!
 //! Payload types may use `#[derive(Serialize, Deserialize)]` with externally tagged,
 //! snake-case enums. They may not use `#[serde(flatten)]`, `untagged` or the `tag`
 //! attributes, which buffer values and would read integers out of the buffer as numbers.
@@ -35,8 +47,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 pub use error::{CanonicalJsonError, Redacted};
+pub use node::MAX_DEPTH;
 pub use node::{is_member_name, Node};
-pub use parse::{parse_node, MAX_DEPTH};
+pub use parse::{parse_canonical_node, parse_node_lenient};
 
 /// Encode a value as canonical JSON bytes.
 ///
@@ -56,7 +69,7 @@ pub fn to_canonical_vec<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Can
 /// the serializer); [`CanonicalJsonError::Decode`] if the encoder itself fails, which it
 /// cannot for a number-free tree.
 pub fn node_to_canonical_vec(node: &Node) -> Result<Vec<u8>, CanonicalJsonError> {
-    node.check_member_names()?;
+    node.validate()?;
     serde_json_canonicalizer::to_vec(node).map_err(|e| CanonicalJsonError::Decode(Redacted::new(e)))
 }
 
@@ -69,7 +82,7 @@ pub fn node_to_canonical_vec(node: &Node) -> Result<Vec<u8>, CanonicalJsonError>
 pub fn from_canonical_slice<T: DeserializeOwned + Serialize>(
     bytes: &[u8],
 ) -> Result<T, CanonicalJsonError> {
-    let node = parse_node(bytes)?;
+    let node = parse_node_lenient(bytes)?;
     let value = T::deserialize(de::NodeDeserializer(node))?;
     if to_canonical_vec(&value)? != bytes {
         return Err(CanonicalJsonError::NotCanonical);

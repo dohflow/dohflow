@@ -614,15 +614,80 @@ Manifests and command payloads are JSON canonicalized under
 [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) (JCS), restricted so
 that JCS's IEEE-754 number rules never apply:
 
-- **Every 64-bit integer is a decimal string** (`"-1250"`, `"41"`), with syntax
-  `-?(0|[1-9][0-9]*)` and the range of its field. No JSON number appears in any
-  hashed or committed document, and no floating-point value appears at all.
-  Money is a minor-units string plus a currency string.
+- **Every integer is a decimal string** (`"-1250"`, `"41"`), whatever its width, with
+  syntax `0|-?[1-9][0-9]*` (zero is `"0"`, never `"-0"`, and there are no leading zeros,
+  so every integer has exactly one spelling) and the range of its field. No JSON number
+  appears in any hashed or committed document, and no floating-point value appears at
+  all. Money is a minor-units string plus a currency string.
 - Member names are ASCII `[a-z0-9_]`, sorted by UTF-16 code units (which is byte
   order for ASCII), with no insignificant whitespace.
 - Strings use the JCS escaping rules. Invalid UTF-8, lone surrogate escapes and
   duplicate member names are rejected. No Unicode normalization is applied.
-- Booleans, `null`, arrays, objects and strings are the only value types.
+- A string contains no U+0000 (neither raw nor as `\u0000`), so a consumer in a language
+  with NUL-terminated strings cannot truncate a document.
+- Booleans, `null`, arrays, objects and strings are the only value types. Nesting is at
+  most **128** levels of arrays and objects (the outermost container is level 1); a
+  document nested deeper is refused on encoding and on parsing alike.
+- A value that is *absent* and a value that is *present but null* are distinguishable
+  only by the schema of the document: an encoder refuses a "some" whose content itself
+  encodes as `null`, so no two distinct values share an encoding.
+- **A receiver accepts a document only if its bytes equal the canonical encoding of the
+  value it decodes to.** Accepting any other spelling of the same value (whitespace, a
+  different member order, an alternative escape, an unknown member, `"-0"`) would let
+  two byte strings carry one meaning. Hashes and signatures are always over the received
+  bytes, never over a re-encoding of what was parsed. The documents below are well-formed
+  text that a receiver must refuse; each is a rejection vector of C.14:
+
+| Name | Document |
+| --- | --- |
+| `whitespace_between_members` | `{"a": "1"}` |
+| `trailing_newline` | `{"a":"1"}\n` |
+| `members_out_of_order` | `{"b":"1","a":"2"}` |
+| `escaped_ordinary_character` | `{"a":"\u0041"}` |
+| `escaped_solidus` | `{"a":"\/"}` |
+| `uppercase_hex_escape` | `{"a":"\u00E9"}` |
+| `escaped_non_ascii_character` | `{"a":"\u00e9"}` |
+| `escaped_control_with_wrong_spelling` | `{"a":"\u000a"}` |
+| `escaped_surrogate_pair` | `{"a":"\ud83d\ude00"}` |
+| `a_json_number` | `{"a":1}` |
+| `a_float` | `{"a":1.5}` |
+| `duplicate_member` | `{"a":"1","a":"2"}` |
+| `duplicate_member_escaped` | `{"a":"1","\u0061":"2"}` |
+| `member_name_uppercase` | `{"A":"1"}` |
+| `member_name_with_dot` | `{"a.b":"1"}` |
+| `lone_high_surrogate` | `{"a":"\ud800"}` |
+| `lone_low_surrogate` | `{"a":"\udc00"}` |
+| `nul_escape` | `{"a":"\u0000"}` |
+| `raw_control_character` | `{"a":"\n"}` |
+| `leading_byte_order_mark` | `\ufeff{"a":"1"}` |
+| `trailing_comma` | `{"a":"1",}` |
+
+<!-- cj-reject: whitespace_between_members=7b2261223a202231227d -->
+<!-- cj-reject: trailing_newline=7b2261223a2231227d0a -->
+<!-- cj-reject: members_out_of_order=7b2262223a2231222c2261223a2232227d -->
+<!-- cj-reject: escaped_ordinary_character=7b2261223a225c7530303431227d -->
+<!-- cj-reject: escaped_solidus=7b2261223a225c2f227d -->
+<!-- cj-reject: uppercase_hex_escape=7b2261223a225c7530304539227d -->
+<!-- cj-reject: escaped_non_ascii_character=7b2261223a225c7530306539227d -->
+<!-- cj-reject: escaped_control_with_wrong_spelling=7b2261223a225c7530303061227d -->
+<!-- cj-reject: escaped_surrogate_pair=7b2261223a225c75643833645c7564653030227d -->
+<!-- cj-reject: a_json_number=7b2261223a317d -->
+<!-- cj-reject: a_float=7b2261223a312e357d -->
+<!-- cj-reject: duplicate_member=7b2261223a2231222c2261223a2232227d -->
+<!-- cj-reject: duplicate_member_escaped=7b2261223a2231222c225c7530303631223a2232227d -->
+<!-- cj-reject: member_name_uppercase=7b2241223a2231227d -->
+<!-- cj-reject: member_name_with_dot=7b22612e62223a2231227d -->
+<!-- cj-reject: lone_high_surrogate=7b2261223a225c7564383030227d -->
+<!-- cj-reject: lone_low_surrogate=7b2261223a225c7564633030227d -->
+<!-- cj-reject: nul_escape=7b2261223a225c7530303030227d -->
+<!-- cj-reject: raw_control_character=7b2261223a220a227d -->
+<!-- cj-reject: leading_byte_order_mark=efbbbf7b2261223a2231227d -->
+<!-- cj-reject: trailing_comma=7b2261223a2231222c7d -->
+
+- Member names, when a map is encoded, follow the same `[a-z0-9_]` rule, so user data is
+  never a map key (a key such as `user.theme` is refused), and an integer key is its
+  decimal string (a negative key fails the name rule). Binary data in a payload is a
+  base64 string newtype, never a byte sequence.
 - Implementations pin one canonicalization crate and must produce identical
   bytes on the cross-implementation vectors of C.14.
 

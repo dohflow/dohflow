@@ -32,19 +32,43 @@ pub fn is_member_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// The deepest nesting accepted, on both encoding and parsing: at most this many arrays and
+/// objects inside one another (the outermost container is level 1). A second
+/// implementation with a different limit would be a differential in its own right, so the
+/// number is part of the format.
+pub const MAX_DEPTH: usize = 128;
+
 impl Node {
-    /// Check every object in the tree for legal member names.
-    pub(crate) fn check_member_names(&self) -> Result<(), CanonicalJsonError> {
+    /// Check the whole tree against the format's rules for a value that is about to be
+    /// encoded: member names, no U+0000 in a string, and the nesting limit.
+    pub(crate) fn validate(&self) -> Result<(), CanonicalJsonError> {
+        self.validate_at(0)
+    }
+
+    fn validate_at(&self, containers: usize) -> Result<(), CanonicalJsonError> {
         match self {
-            Node::Array(items) => items.iter().try_for_each(Node::check_member_names),
+            Node::Array(items) => {
+                if containers >= MAX_DEPTH {
+                    return Err(CanonicalJsonError::TooDeep(MAX_DEPTH));
+                }
+                items
+                    .iter()
+                    .try_for_each(|item| item.validate_at(containers + 1))
+            }
             Node::Object(members) => {
+                if containers >= MAX_DEPTH {
+                    return Err(CanonicalJsonError::TooDeep(MAX_DEPTH));
+                }
                 for (name, value) in members {
                     if !is_member_name(name) {
                         return Err(CanonicalJsonError::BadMemberName(name.clone()));
                     }
-                    value.check_member_names()?;
+                    value.validate_at(containers + 1)?;
                 }
                 Ok(())
+            }
+            Node::String(text) if text.contains('\u{0}') => {
+                Err(CanonicalJsonError::Unsupported("U+0000 in a string"))
             }
             Node::Null | Node::Bool(_) | Node::String(_) => Ok(()),
         }
