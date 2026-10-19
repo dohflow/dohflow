@@ -1372,9 +1372,7 @@ impl DbWorker {
         // replacement if its path disappears during that lifetime.
         let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         match &self.key {
-            KeyMaterial::Passphrase(passphrase) => {
-                conn.pragma_update(None, "key", passphrase.as_str())?
-            }
+            KeyMaterial::Passphrase(passphrase) => key_passphrase(&conn, passphrase.as_str())?,
             KeyMaterial::Raw(dek) => key_raw(&conn, dek)?,
         }
         configure_conn(&conn)?;
@@ -4022,19 +4020,35 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
     }
 }
 
+/// Turn SQLCipher's memory security on for the connection, before it is keyed. SQLite keeps its
+/// own copy of a statement's SQL text, and a `PRAGMA key` statement's text holds the key (the hex
+/// DEK, or the passphrase); that copy is freed without being scrubbed. With memory security ON
+/// SQLCipher's allocator wipes freed memory and keeps it out of swap, so the copy does not
+/// outlive the statement. It is OFF by default (`cipher_memory_security` reads 0 on the bundled
+/// SQLCipher 4.14), hence this call at every keying site (personal-cfo-rsjud).
+fn set_memory_security(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch("PRAGMA cipher_memory_security = ON;")?;
+    Ok(())
+}
+
+/// Key a connection with a passphrase (SQLCipher runs its own KDF over it).
+fn key_passphrase(conn: &Connection, key: &str) -> Result<(), DbError> {
+    set_memory_security(conn)?;
+    conn.pragma_update(None, "key", key)?;
+    Ok(())
+}
+
 /// Open a SQLCipher connection keyed with a **passphrase** (SQLCipher runs its
 /// own KDF over it). Used by [`DbWorker::open`].
 fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
     let conn = Connection::open(path)?;
-    conn.pragma_update(None, "key", key)?;
+    key_passphrase(&conn, key)?;
     configure_conn(&conn)?;
     Ok(conn)
 }
 
 fn open_existing_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
-    open_existing(path, |conn| {
-        conn.pragma_update(None, "key", key).map_err(Into::into)
-    })
+    open_existing(path, |conn| key_passphrase(conn, key))
 }
 
 fn open_existing_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
@@ -4100,6 +4114,8 @@ fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
 
 fn key_raw(conn: &Connection, dek: &Dek) -> Result<(), DbError> {
     use std::fmt::Write as _;
+
+    set_memory_security(conn)?;
 
     let mut pragma = String::with_capacity(80);
     pragma.push_str("PRAGMA key = \"x'");
