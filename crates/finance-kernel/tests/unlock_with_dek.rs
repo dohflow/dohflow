@@ -311,6 +311,48 @@ fn a_key_rotation_retires_the_old_item() {
 }
 
 #[test]
+fn a_hot_wal_after_an_unclean_shutdown_never_reads_as_a_key_problem() {
+    // Copy the vault files while the vault is open and has uncheckpointed writes: the copy is
+    // what a crash leaves behind (a database plus a non-empty -wal, no process holding it).
+    let (_dir, path) = created_vault();
+    let item = enroll(&path, PASSWORD);
+    let live = Kernel::unlock_vault(&path, PASSWORD).unwrap();
+    live.dispatch(CommandEnvelope::new(
+        meta(),
+        CreateAccount::new(account_named("Written after the last checkpoint")),
+    ))
+    .unwrap();
+    assert_eq!(live.account_count().unwrap(), 2);
+
+    let crashed_dir = TempDir::new().unwrap();
+    let crashed = crashed_dir.path().join("vault.db");
+    for suffix in ["", "-wal", "-shm", ".envelope"] {
+        let mut from = path.as_os_str().to_owned();
+        from.push(suffix);
+        let mut to = crashed.as_os_str().to_owned();
+        to.push(suffix);
+        if std::path::Path::new(&from).exists() {
+            std::fs::copy(&from, &to).unwrap();
+        }
+    }
+    let mut wal = crashed.as_os_str().to_owned();
+    wal.push("-wal");
+    let wal_len = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    assert!(wal_len > 0, "the copy must carry a hot WAL");
+
+    // The key is right and the envelope unchanged, so this must never be reported as a key
+    // problem. With the read-write probe under the runner lock, SQLite recovers the WAL and the
+    // unlock succeeds with the post-checkpoint write; a persistence error is also acceptable
+    // (the shell keeps the item and falls back to the password), a key error is not.
+    match Kernel::unlock_vault_with_dek(&crashed, item) {
+        Ok(recovered) => assert_eq!(recovered.account_count().unwrap(), 2),
+        Err(KernelError::Persistence(_)) => {}
+        Err(other) => panic!("a hot WAL must not read as a key or item problem: {other:?}"),
+    }
+    live.lock();
+}
+
+#[test]
 fn a_second_unlock_is_refused_while_the_vault_is_open() {
     let (_dir, path) = created_vault();
     // Enrollment itself unlocks the vault, so both items are made before the first open.
