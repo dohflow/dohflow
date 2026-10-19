@@ -205,7 +205,10 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
 **Rules per role.**
 
 - **Implementation.** After a PR merges, remove your own per-bead worktree and
-  local branch once you have verified they are clean and pushed: `git worktree
+  local branch once you have verified they are clean and pushed. First run
+  `git status --short --ignored` in the worktree: `git worktree remove` deletes
+  ignored files too, so confirm the only ignored entries are rebuildable output
+  (`target/`, `node_modules/`) and nothing you still need. Then `git worktree
   remove <path>` (never `rm -rf`, never `--force`), then `git branch -d <branch>`.
   If `-d` refuses only because the PR was squash-merged, confirm the PR is
   merged and the branch tip is on `origin` (`git branch -r --contains <branch>`),

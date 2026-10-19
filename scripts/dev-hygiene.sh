@@ -40,7 +40,8 @@
 # That is why --clean also checks for running cargo/rustc processes, and why the
 # worst outcome of a wrong guess is a rebuild, never lost work.
 #
-# Environment: DEV_HYGIENE_PROCESS_NAMES overrides the process names treated as
+# Environment: DEV_HYGIENE_AFTER_CONFIRM_HOOK (tests only) runs between the
+# confirmation and the apply step. DEV_HYGIENE_PROCESS_NAMES overrides the process names treated as
 # "a build is running" (default "cargo rustc rust-analyzer"); the tests use it.
 #
 # Bash 3.2 compatible (macOS /bin/bash). No external dependencies beyond git,
@@ -101,6 +102,9 @@ fi
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 
 NOW="$(date +%s)"
+TAB="$(printf '\t')"
+NL="
+"
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -139,12 +143,26 @@ W_ACTIVITY="" W_IDLE_DAYS="" W_DIRTY="" W_UNPUSHED="" W_MERGED="" W_GONE=0
 W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0
 
 # Cargo target directories (a directory named `target` that holds CACHEDIR.TAG)
-# up to four levels down, never descending into node_modules, .git or a target.
+# up to four levels down, never descending into node_modules, .git or a target,
+# and never inside a NESTED checkout: a directory below the worktree that has
+# its own `.git` (a file for a linked worktree, a directory for a clone) belongs
+# to that checkout, which is inspected, or skipped, on its own.
 find_targets() {
-  find "$1" -maxdepth 4 \( -name node_modules -o -name .git \) -prune -o \
+  local root="$1" nested n d skip
+  nested="$(find "$root" -mindepth 2 -maxdepth 4 -name node_modules -prune -o \
+    -name .git -print 2>/dev/null | sed 's|/\.git$||')"
+  find "$root" -maxdepth 4 \( -name node_modules -o -name .git \) -prune -o \
     -type d -name target -print -prune 2>/dev/null |
     while IFS= read -r d; do
-      [ -f "$d/CACHEDIR.TAG" ] && printf '%s\n' "$d"
+      [ -f "$d/CACHEDIR.TAG" ] || continue
+      skip=0
+      while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        case "$d" in "$n"/*) skip=1; break ;; esac
+      done <<NESTED
+$nested
+NESTED
+      [ "$skip" = 0 ] && printf '%s\n' "$d"
     done
 }
 
@@ -210,6 +228,7 @@ cargo_busy() {
     else
       return 0   # cannot tell where it works: assume it is in this worktree
     fi
+    [ -n "$cwd" ] || return 0   # could not read it (not ours, or it just exited): assume busy
     case "$cwd" in "$wt"|"$wt"/*|"$phys"|"$phys"/*) return 0 ;; esac
   done
   return 1
@@ -454,20 +473,63 @@ report() {
 # Clean
 # ---------------------------------------------------------------------------
 
-PLAN_FILE=""
+PLAN=""          # one line per planned worktree: PATH<TAB>TARGET-LIST (newline-joined as |)
+CLEANED=0 CLEANED_KIB=0
+
+target_key() {
+  # The targets of the current worktree on one line, for exact comparison.
+  printf '%s' "$W_TARGETS" | tr '\n' '|'
+}
+
 plan_row() {
   if [ "$W_ELIGIBLE" = 1 ]; then
-    printf '%s\t%s\n' "$W_TARGET_KIB" "$W_PATH" >> "$PLAN_FILE"
+    PLAN="${PLAN}${W_PATH}${TAB}$(target_key)${NL}"
     echo "  clean   $W_PATH  ($(human "$W_TARGET_KIB"), idle ${W_IDLE_DAYS} day(s))"
   else
     echo "  skip    $W_PATH  — $W_SKIP"
   fi
 }
 
+# Runs after the confirmation, with a FRESH inspection of every worktree, because
+# the prompt can wait indefinitely and a worktree can change meanwhile. It cleans
+# exactly the targets the plan showed, and only if the worktree is still eligible.
+apply_row() {
+  local planned t d line key
+  planned=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in "$W_PATH$TAB"*) planned="${line#*"$TAB"}"; break ;; esac
+  done <<PLANNED
+$PLAN
+PLANNED
+  [ -n "$planned" ] || return 0
+  key="$(target_key)"
+  if [ "$W_ELIGIBLE" != 1 ] || [ "$key" != "$planned" ]; then
+    echo "  skipped $W_PATH — changed since the plan (${W_SKIP:-its target directories changed})"
+    return 0
+  fi
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    d="$(dirname "$t")"
+    if [ ! -f "$d/Cargo.toml" ]; then
+      echo "  skipped $t — no Cargo.toml beside it"
+      continue
+    fi
+    # --target-dir is explicit so a CARGO_TARGET_DIR in the environment can
+    # never redirect this to some other directory.
+    if cargo clean --manifest-path "$d/Cargo.toml" --target-dir "$t"; then
+      CLEANED=$((CLEANED + 1))
+    else
+      echo "  cargo clean failed in $d" >&2
+    fi
+  done <<TARGETS
+$W_TARGETS
+TARGETS
+  CLEANED_KIB=$((CLEANED_KIB + W_TARGET_KIB))
+}
+
 clean() {
   command -v cargo >/dev/null 2>&1 || die "cargo is not on PATH; nothing to clean with"
-  PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/dev-hygiene.XXXXXX")" || die "cannot create a temp file"
-  trap 'rm_plan' EXIT
 
   echo "dev-hygiene --clean plan"
   echo
@@ -485,7 +547,7 @@ clean() {
   echo "This runs only 'cargo clean' in the worktrees marked 'clean' and"
   echo "'git worktree prune'. It removes no worktree, branch or scratch directory."
 
-  if [ ! -s "$PLAN_FILE" ] && [ -z "$prune_list" ]; then
+  if [ -z "$PLAN" ] && [ -z "$prune_list" ]; then
     echo "Nothing to do."
     return
   fi
@@ -501,29 +563,15 @@ clean() {
     case "$answer" in y|Y|yes|YES) ;; *) echo "Cancelled; nothing done."; return 0 ;; esac
   fi
 
-  local kib wt t before_total=0 d cleaned=0
-  while IFS="$(printf '\t')" read -r kib wt; do
-    [ -n "$wt" ] || continue
-    while IFS= read -r t; do
-      [ -n "$t" ] || continue
-      d="$(dirname "$t")"
-      if [ ! -f "$d/Cargo.toml" ]; then
-        echo "  skipped $t — no Cargo.toml beside it"
-        continue
-      fi
-      # --target-dir is explicit so a CARGO_TARGET_DIR in the environment can
-      # never redirect this to some other directory.
-      if cargo clean --manifest-path "$d/Cargo.toml" --target-dir "$t"; then
-        cleaned=$((cleaned + 1))
-      else
-        echo "  cargo clean failed in $d" >&2
-      fi
-    done <<EOF
-$(find_targets "$wt")
-EOF
-    before_total=$((before_total + kib))
-  done < "$PLAN_FILE"
-  echo "cargo clean ran on $cleaned target dir(s); about $(human "$before_total") was in them."
+  # Test hook only: an executable run between the confirmation and the apply
+  # step, so the tests can change a worktree "while the prompt waited".
+  if [ -n "${DEV_HYGIENE_AFTER_CONFIRM_HOOK:-}" ]; then
+    "$DEV_HYGIENE_AFTER_CONFIRM_HOOK" || true
+  fi
+
+  NOW="$(date +%s)"
+  for_each_worktree apply_row
+  echo "cargo clean ran on $CLEANED target dir(s); about $(human "$CLEANED_KIB") was in them."
 
   if [ -n "$prune_list" ]; then
     git -C "$REPO" worktree prune -v
@@ -531,9 +579,6 @@ EOF
   read_disk
   [ -n "$disk_avail_kib" ] && echo "Disk now: $(human "$disk_avail_kib") free (${disk_pct_free}% free). Time Machine local snapshots may hold freed space for a while (docs/agent/WORKFLOW_ROLES.md)."
 }
-
-# The temp plan file lives in $TMPDIR; it is the script's own, created by mktemp.
-rm_plan() { [ -n "$PLAN_FILE" ] && [ -f "$PLAN_FILE" ] && unlink "$PLAN_FILE"; }
 
 case "$MODE" in
   report) report ;;
