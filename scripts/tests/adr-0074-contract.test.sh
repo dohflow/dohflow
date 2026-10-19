@@ -104,4 +104,18 @@ if grep -Eq '[0-9]+ accounts|[0-9]+ transactions per side|last 30 days, posted' 
 fi
 echo "    ok   — Addendum B publishes no real account or transaction counts"
 
+# Addendum C (personal-cfo-g3m.15): merge-import.
+require_text "Addendum C is dated and named" "## Addendum C — Bring items from another vault: merge-import (2026-10-19, \`personal-cfo-g3m.15\`)"
+require_text "the merge replays ordinary commands" "**replayed into the household vault"
+require_text "no second synced vault" "There is no direct table copy and no"
+require_text "derived identity cross-references ADR 0013-A section 11" "defined in ADR 0013-A section 11"
+require_text "the household id_key is used" "under the"
+require_text "a second creation is AlreadyPresent or a disposition item" "never a silent overwrite"
+require_text "the remap is class 3 and per session" "device-local working state (class 3)"
+require_text "references are rewritten at construction" "References are rewritten **when a command is"
+require_text "exact matches skip creation" "*Exact* matches skip creation automatically"
+require_text "likely matches are never automatic" "**never automatic**"
+require_text "matched accounts keep the household identity" "the household account stays the"
+require_text "the honest costs are stated" "**6. The honest costs.** History arrives as **new commands with new ids"
+
 echo "PASS — $CASES ADR 0074 contract assertions, 0 failures"

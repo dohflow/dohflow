@@ -921,6 +921,78 @@ were compared, and the figures stay on the bead). It is **pending for LunchFlow*
 this rule and must not be described as covered.** If a provider's ids differ across
 credentials, this decision returns to the owner.
 
+## Addendum C — Bring items from another vault: merge-import (2026-10-19, `personal-cfo-g3m.15`)
+
+A person who joins a device that already has its own vault does not lose that vault's
+contents. v1 joins by replacing the device's vault after a mandatory backup; the later
+"Bring items from another vault" feature (`personal-cfo-i93n3.7`) reads that saved vault
+and brings its unique items into the household vault. This addendum records the engineering
+decisions that feature rests on. It rewrites none of the decisions above: there is still one
+synced vault per household, and Decisions 1 to 3 govern everything the merge writes.
+
+**1. The merge model.** Items from the source vault are **replayed into the household vault
+as ordinary `WriteCommand`s through the command bus**. There is no direct table copy and no
+second synced vault. The saved vault is opened read-only as *data*, in its own temporary
+container, by the same code that reads a backup; it is never a Sync participant. Each
+replayed command is an ordinary command with its own CSPRNG UUIDv4 idempotency key
+(ADR 0013-A section 3 and `vault-format.md` C.5), its own `command_id`, and `issued_at` the
+time of the merge. Everything the Sync engine does to any command (envelope, write-set
+hash, rebase, disposition) applies to these unchanged.
+
+**2. Merge-import derived identity.** Every row the merge **creates** gets a
+content-derived id, defined in ADR 0013-A section 11: a domain-separated HMAC under the
+**household** vault's `id_key` over the source `vault_id`, a source entity tag and the
+source row's key. Running the same merge twice, or on two devices, therefore mints the same
+ids. The id is computed when the command is constructed and carried in its payload, like
+the provider-derived ids of Addendum B and the caller-minted ids of ADR 0013-A section 3.
+A second creation of an id that already exists with equal content is the `AlreadyPresent`
+no-op of Addendum B item 4 and ADR 0073 exceptions item 6; with different content it is one
+disposition item for the user, never a silent overwrite.
+
+**3. The id remap.** A replayed command refers to other rows (an account, a category, tags).
+The merge keeps a **remap from source ids to household ids** for one merge session:
+
+- a source row the merge *creates* maps to its derived id (item 2);
+- a source row *matched* to an existing household row (item 4) maps to that household row's
+  id;
+- a source row *skipped* maps to nothing, and a command that refers to it is not replayed.
+
+The remap is **device-local working state (class 3)**, recomputable from the saved vault,
+the household vault and the user's decisions, and discarded when the merge finishes or is
+cancelled; it is never a source of truth. References are rewritten **when a command is
+constructed**, so every payload that enters the log carries final household ids and none
+refers to a source-vault id except through the derivation inputs. The user's decision on a
+likely match travels in the commands themselves (they name the existing household id), so
+other devices converge without sharing the remap.
+
+**4. Matching.** *Exact* matches skip creation automatically and need no user input:
+
+- a connector transaction or account with the same provider identity (Addendum B items 2
+  and 3) maps to the existing row, which the `AlreadyPresent` rule then confirms;
+- a file-imported row with the same file fingerprint and row ordinal maps to the existing
+  row (the file-import identity of `personal-cfo-0g528`);
+- a system category or system tag with the same canonical name maps to the household's.
+
+*Likely* matches (an account with the same name, type and currency; a transaction with the
+same amount, date and counterparty) are **never automatic**: they are shown in the compare
+report and created or matched only by the user's choice. Anything with no match is created
+under its derived id.
+
+**5. Matched accounts.** For an account the user matches, the household account stays the
+identity; the user chooses, per account, which side's **opening balance and balance
+assertions** apply: the household's (the default) or the source's. Choosing the source's
+issues the ordinary balance-assertion commands with the source's values; the other values are
+not merged in, because two balance assertions for one account on one date are a conflict, not
+two facts.
+
+**6. The honest costs.** History arrives as **new commands with new ids and the time of the
+merge**, not as the source's original operation log, which is not replayed verbatim. A
+merged transaction shows the time it was brought in as its operation time, with the source
+date as its transaction date. Edits made to a matched row in the source vault, after the
+backup was taken or before the user chose, are not carried unless the user picks the source's
+values. A merge is undone the way any commands are: by correcting or voiding the rows it
+created, not by rolling the merge back as a unit.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` (this ADR)
@@ -943,6 +1015,8 @@ credentials, this decision returns to the owner.
 - `personal-cfo-klr.4` (ADR 0077 and wire-format authority)
 - `personal-cfo-5kua` (external cryptographic review)
 - `personal-cfo-efv` (future recovery design)
+- `personal-cfo-g3m.15` (Addendum C and ADR 0013-A section 11: merge-import identity)
+- `personal-cfo-i93n3.7` (Bring items from another vault)
 - `personal-cfo-g3m.7` (cross-device connector ingestion: the decision behind Addendum B)
 - `personal-cfo-g3m.10` (SimpleFIN two-token id check)
 - `personal-cfo-g3m.11` (LunchFlow two-key id check, pending)
