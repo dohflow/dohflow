@@ -830,7 +830,12 @@ derived from `issued_at`. It is computed when the commit command is constructed 
 carried in the `CommitStaged` payload, so it is not an apply-minted id and
 consumes no derived-id ordinal. The exact byte grammar, the validation of the
 provider strings, the argument that it cannot collide with command-scoped ids, and
-a known-answer vector are in ADR 0013 Addendum A, section 9.
+a known-answer vector are in ADR 0013 Addendum A, section 9. Because the identity
+is byte-exact, each adapter's account-key function is part of it: it is defined
+canonically and pinned by a test, and changing it is a payload-schema change. If a
+provider starts or stops returning a component of the key for an account that is
+already linked, that is an identity change that queues for the user, never a silent
+re-key.
 
 **3. Class-1 identity records.** Two new class-1 tables carry the rule across
 devices (their names and columns are fixed by the beads that implement the rule,

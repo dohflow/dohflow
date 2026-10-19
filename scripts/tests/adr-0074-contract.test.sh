@@ -85,6 +85,7 @@ require_text "the problem is class-3 dedupe state" "Every duplicate check that e
 require_text "identity is computed at command construction" "It is computed when the commit command is constructed and"
 require_text "the apply rule reads class-1 rows only" "(class-1 rows only; apply never reads class-3 staging)"
 require_text "the check also runs at local commit" "**local commit**, not only at rebase"
+require_text "adapter key function is pinned and versioned" "is part of it: it is defined"
 require_text "AlreadyPresent is a rebase-executor disposition" "\`AlreadyPresent\`, an exception"
 require_text "user-editable fields are never overwritten" "never compared and never overwritten"
 require_text "pending rows are never committed" "A **pending** provider transaction is never"

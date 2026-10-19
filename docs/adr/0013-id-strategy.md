@@ -387,15 +387,31 @@ derived id, and no fallback fingerprint stands in for one (Addendum B, item 6).
 The `connection_id` is the replicated connection identity (ADR 0074 Addendum B,
 item 3).
 
-*Domain separation.* The label and its length byte keep this message space apart
-from section 1's command-scoped messages, and the control-character rule makes the
-separation structural rather than merely conventional: a command-scoped message
-ends with `u16_be(ordinal)` where the ordinal is below 4,096, so its
-second-to-last byte is at most `0x0f`, whereas the last two bytes of a
-provider-derived message are the tail of a string with no control characters,
-whose first byte is at least `0x20`. No provider-derived message can therefore be
-read as a command-scoped one, and the two derivations cannot collide even under
-the shared `id_key`.
+*Domain separation.* The two derivations share `id_key`, so their message spaces
+must not overlap, and they do not, for every input including a hostile
+`command_id`. Suppose a provider message were also a valid section 1 message. Section
+1 reads the byte at offset 16 as `tag_len` and the next `tag_len` bytes as a tag whose
+every byte is printable (`0x21..=0x7e`). In a provider message the byte at offset 16
+is `label[15]`, `r` (`0x72`), so `tag_len` would be 114 and the tag would span offsets
+17 to 130. Offset 43 lies in that span, and in a provider message it is the high byte
+of `u16_be(len(provider_account_key))`, which is `0x00..=0x04` because the length is
+at most 1,024: never printable. So no provider message is a valid section 1 message,
+for any `connection_id` and any provider strings. The outputs are disjoint as well:
+provider-derived ids are UUID version 8 and section 1 ids are version 7, so the two id
+spaces differ in the version nibble even before the messages are compared.
+
+*Adapter stability.* Because identity is byte-exact, **each adapter's
+`provider_account_key` function is part of the identity.** Each adapter defines its key
+canonically, a test pins it, and changing that function is a payload-schema change.
+If the provider starts or stops returning a component of the key for an account that
+is already linked (for example a connection id that appears or disappears), that is an
+identity change, handled as a disposition that queues for the user; it is never a
+silent re-key, which would re-import the account's whole history under new ids.
+
+*Residual.* A provider that reuses one transaction id for two different transactions
+collapses them into one derived id on purpose: the provider is vouching that they
+are the same. Addendum B's rule then decides (equal provider-financial fields: a
+no-op; differing fields: one disposition item).
 
 Known-answer vector (normative; hexadecimal is lowercase; `id_key` is vector A's
 key from section 1):

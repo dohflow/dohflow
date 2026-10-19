@@ -76,7 +76,10 @@ require_text "provider-id domain label is fixed" "$ADR" 'label    = ASCII "dohfl
 require_text "provider-id is never command-scoped" "$ADR" "**never from \`issued_at\`, a \`command_id\` or an ordinal**"
 require_text "provider-id layout is UUID version 8" "$ADR" "byte 6 = (byte 6 & 0x0f) | 0x80"
 require_text "provider strings may not hold control characters" "$ADR" "containing no C0 control"
-require_text "provider-id domain separation is structural" "$ADR" "No provider-derived message can therefore be"
+require_text "provider-id domain separation is proved for every input" "$ADR" "So no provider message is a valid section 1 message,"
+require_text "provider-id and command-id spaces differ by version nibble" "$ADR" "provider-derived ids are UUID version 8 and section 1 ids are version 7"
+require_text "adapter key function is part of the identity" "$ADR" "**each adapter's"
+require_text "provider id reuse is a stated residual" "$ADR" "A provider that reuses one transaction id for two different transactions"
 require_text "provider-id consumes no ordinal" "$ADR" "no ordinal and is outside the 4,096-id cap."
 
 # The provider-id vector is re-derived here, independently of the document's own text:
@@ -111,8 +114,14 @@ assert str(got) == field("uuid", first), "uuid"
 assert got.version == 8
 _, _, got2 = derive("TXN-2026-10-17-0043")
 assert str(got2) == field("uuid", second), "second uuid"
-# The disjointness argument: the last two bytes of the message are never a valid ordinal.
-assert struct.unpack(">H", msg[-2:])[0] >= 4096
+# The disjointness argument, re-checked on the byte arithmetic itself: section 1 would read
+# offset 16 as tag_len; the tag it then claims must be entirely printable.
+assert msg[16] == label[15] == ord("r") and msg[16] == 114
+assert 17 <= 43 <= 17 + msg[16] - 1          # offset 43 would lie inside that tag
+for n in range(1, 1025):                      # every allowed provider_account_key length
+    high = (n >> 8) & 0xFF                    # offset 43 is the high byte of u16_be(len)
+    assert high <= 0x04 and not (0x21 <= high <= 0x7E), n
+assert msg[43] == (len(acct) >> 8)
 PY
 echo "    ok   — provider-id vector re-derived independently"
 
