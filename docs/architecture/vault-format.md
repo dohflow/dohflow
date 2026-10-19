@@ -781,14 +781,30 @@ after its own columns: `u16 child_table_count ‖ for each child table, in raw-n
 text(64) child_table ‖ u32 count ‖ for each child row: bytes(2^16) child_row`. A
 `child_row` is `u16 column_count ‖ for each column of the child table, over **all** its
 declared columns and never a rowid, sorted by the raw bytes of the name: text(64) name ‖
-tagged value`. The child rows of one parent are sorted **bytewise by their `child_row`
-encoding, and duplicates are kept**, so two identical postings count twice and the digest
-is a multiset. A parent with no folded children has no child section, so its message is
+tagged value`. The child rows of one parent are sorted **bytewise by the `child_row` bytes themselves,
+excluding the `bytes(2^16)` length prefix, lexicographically, with a shorter row first when
+it is a prefix of another (the rule of C.4), and duplicates are kept**, so two identical
+postings count twice and the digest is a multiset. Sorting by the length-prefixed form
+gives a different order and therefore a different digest; a vector below fixes the order. A parent with no folded children has no child section, so its message is
 exactly the one defined below. A parent whose manifest declares children always carries the
 section, with a count of 0 when it has no child rows now. An insert, update or delete of
 any child row changes the parent's digest, so the parent's write-set entry is present
 (the state-difference rule); a child row whose parent does not exist is an error, never an
 entry.
+
+**Folded children are bounded and unordered.** The 2^16 child-row bound is a schema-time
+guarantee like the key bound (a schema test checks the folded children's columns). The
+digest is a multiset, so two replicas may hold the same rows in different rowid order and
+still agree: **no reader of a folded child table may depend on row order**, and every query
+over one orders by its content columns.
+
+**Deleting and moving.** A command that deletes a parent removes all its folded children
+in the same transaction (a foreign-key cascade or explicit deletes), and the parent's absent
+digest stands for the whole group. A child left without a parent after apply fails the
+command before commit, deterministically on every replica; it is never discovered at hash
+time. A child whose parent column changes is in both the old and the new parent's digest, so
+both parents are write-set entries, and a capture maps a child write to `OLD` and `NEW`
+parent. Both paths have tests.
 
 `provenance_links` is **not** in the write set: B.2 gives it the disposition `exclude`, like
 `operation_log`, and the write set is exactly what Sync replicates.
@@ -857,8 +873,9 @@ from the table, is an error. The digests are:
   coerced at hash time. Otherwise a legacy mismatch would leave every later command that
   touches the row unhashable. The check is an acceptance criterion of the genesis bead
   (`personal-cfo-1cltt`) and is tested with one seeded mismatch per kind.
-- The schema tests this text promises (no REAL column in a covered table, explicit
-  supplied primary keys, key width of at most 256 bytes, class-1 tables hold only class-1
+- The schema tests this text promises (no REAL column in a covered table, **every
+  replicated table declares a supplied primary key or is listed as a folded child with its
+  parent column**, key width of at most 256 bytes, class-1 tables hold only class-1
   columns, the manifest lists exactly each table's columns) are delivered by part 5b.
 - The `operation_log` row of the command itself is not in the write set: it carries the
   write-set hash.
@@ -881,7 +898,13 @@ is a `ledger_transactions` row with `id` the 16 bytes of
 `...0031`, `-500`, `USD`, exponent `2`, `2026-10-17`) and one other (account `...0032`,
 `1000`); `child_row_a` and `child_row_b` are the two distinct child encodings, and the
 duplicate shows that the multiset keeps both copies (`parent_message` and `parent_digest`
-are the parent's message, with its child section, and its digest):
+are the parent's message, with its child section, and its digest). The last three markers
+fix the child **sort order**: an `attachments` parent with two `attachment_links` rows
+whose shorter encoding sorts after the longer one lexicographically (`entity_id` `...4a`
+with entity kind `transaction_document`, and `entity_id` `...4b` with kind `tx`);
+`order_digest` is the digest with the correct order (the longer row first),
+`order_wrong_digest` the digest an implementation gets by sorting the length-prefixed
+form, and the two differ:
 
 <!-- row-vector: primary_key=030198c2c15f0a7c3d8a4e9b1d00000011 -->
 <!-- row-vector: row_message=0013646f68666c6f772f73796e632d726f772f76310000000474616773000400000005636f6c6f7200000000026964030198c2c15f0a7c3d8a4e9b1d00000011000000046e616d6502000000077472697020c3a90000000a736f72745f6f7264657201fffffffffffffff9 -->
@@ -892,6 +915,9 @@ are the parent's message, with its child section, and its digest):
 <!-- row-vector: child_row_b=00060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000320000000b6d696e6f725f756e6974730100000000000003e80000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
 <!-- row-vector: parent_message=0013646f68666c6f772f73796e632d726f772f7631000000136c65646765725f7472616e73616374696f6e730002000000026964030198c2c15f0a7c3d8a4e9b1d00000021000000046d656d6f020000000573706c697400010000000f6c65646765725f706f7374696e677300000003000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000320000000b6d696e6f725f756e6974730100000000000003e80000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
 <!-- row-vector: parent_digest=c31659d4006d3c4609c0b9d330c0d45627160732eddf048b749ac1ee4048ac1c -->
+<!-- row-vector: order_message=0013646f68666c6f772f73796e632d726f772f76310000000b6174746163686d656e74730002000000026964030198c2c15f0a7c3d8a4e9b1d00000041000000096d696d655f747970650200000009696d6167652f706e670001000000106174746163686d656e745f6c696e6b73000000020000008700040000000d6174746163686d656e745f6964030198c2c15f0a7c3d8a4e9b1d000000410000000a637265617465645f6174020000000a323032362d31302d313700000009656e746974795f6964030198c2c15f0a7c3d8a4e9b1d0000004a0000000b656e746974795f6b696e6402000000147472616e73616374696f6e5f646f63756d656e740000007500040000000d6174746163686d656e745f6964030198c2c15f0a7c3d8a4e9b1d000000410000000a637265617465645f6174020000000a323032362d31302d313700000009656e746974795f6964030198c2c15f0a7c3d8a4e9b1d0000004b0000000b656e746974795f6b696e6402000000027478 -->
+<!-- row-vector: order_digest=6b1d556830b76a329b6b35bcb605f5f4267d906bc62da24d9b085a269faf5cfb -->
+<!-- row-vector: order_wrong_digest=a1ad1405a7e7474e666d7f5a2cc74945bdeae13bacd2864b8656555ff98c5f69 -->
 
 ## C.2 Keys and secrets
 

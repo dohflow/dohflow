@@ -80,11 +80,18 @@ require_text "keyless tables are folded into a parent" "**Folded children.** A r
 require_text "ledger_postings folds into ledger_transactions" '| `ledger_postings` | `ledger_transactions` | `transaction_id` (the parent'"'"'s `id`) |'
 require_text "attachment_links folds into attachments" '| `attachment_links` | `attachments` | `attachment_id` (the parent'"'"'s `id`) |'
 require_text "the child section layout" "A parent that has folded children appends a **child section**"
-require_text "child rows sort bytewise and keep duplicates" "bytewise by their \`child_row\`"
-require_text "the child digest is a multiset" "so two identical postings count twice"
+require_text "child rows sort bytewise and keep duplicates" "bytewise by the \`child_row\` bytes themselves"
+require_text "the child digest is a multiset" "postings count twice and the digest is a multiset"
 require_text "a child change touches the parent" "An insert, update or delete of"
 require_text "an orphan child is an error" "a child row whose parent does not exist is an error"
 require_text "provenance_links is outside the write set" "\`provenance_links\` is **not** in the write set"
+require_text "the child sort key excludes the length prefix" "excluding the \`bytes(2^16)\` length prefix, lexicographically"
+require_text "folded children are bounded and unordered" "**Folded children are bounded and unordered.**"
+require_text "no reader depends on child row order" "no reader of a folded child table may depend on row order"
+require_text "deleting and moving children" "**Deleting and moving.**"
+require_text "an orphaned child fails the command" "fails the"
+require_text "a moved child touches both parents" "both parents are write-set entries"
+require_text "every replicated table has a key or is folded" "declares a supplied primary key or is listed as a folded child with its"
 require_text "digests are bound to the schema version" "The digests are bound to the schema version"
 require_text "C.4 points at C.1.5" "is defined in C.1.5, as is the \`primary_key\` encoding"
 require_text "spec-version 4" "<!-- vault-format: spec-version=4 -->"
@@ -96,7 +103,7 @@ import hashlib, re, struct, sys
 
 text = open(sys.argv[1]).read()
 vectors = dict(re.findall(r"<!-- row-vector: (\w+)=([0-9a-f]+) -->", text))
-assert set(vectors) == {"primary_key", "row_message", "row_digest", "absent_message", "absent_digest", "child_row_a", "child_row_b", "parent_message", "parent_digest"}, vectors
+assert set(vectors) == {"primary_key", "row_message", "row_digest", "absent_message", "absent_digest", "child_row_a", "child_row_b", "parent_message", "parent_digest", "order_message", "order_digest", "order_wrong_digest"}, vectors
 
 def label(s):
     b = s.encode(); assert 1 <= len(b) <= 64 and re.fullmatch(rb"[a-z0-9/_.-]+", b)
@@ -178,6 +185,32 @@ fewer += struct.pack(">H", 1) + text_("ledger_postings", 64) + struct.pack(">I",
 for r in sorted([rows[0], rows[2]]):
     fewer += bytes_(r, 2**16)
 assert hashlib.sha256(fewer).hexdigest() != vectors["parent_digest"]
+
+# Child sort order: by the child_row bytes without the length prefix.
+att = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d00000041")
+e1 = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d0000004a")
+e2 = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d0000004b")
+def link(entity, kind):
+    return {"attachment_id": ("uuid", att), "entity_kind": ("text", kind),
+            "entity_id": ("uuid", entity), "created_at": ("text", "2026-10-17")}
+long_row = cols_enc(link(e1, "transaction_document"))
+short_row = cols_enc(link(e2, "tx"))
+assert len(long_row) > len(short_row)
+def order_msg(rows):
+    m = label("dohflow/sync-row/v1") + text_("attachments", 64) + struct.pack(">H", 2)
+    for n, v in sorted({"id": ("uuid", att), "mime_type": ("text", "image/png")}.items(), key=lambda kv: kv[0].encode()):
+        m += text_(n, 64) + val(*v)
+    m += struct.pack(">H", 1) + text_("attachment_links", 64) + struct.pack(">I", len(rows))
+    for r in rows:
+        m += bytes_(r, 2**16)
+    return m
+right = sorted([long_row, short_row])                              # no length prefix: long row first
+wrong = sorted([long_row, short_row], key=lambda b: bytes_(b, 2**16))  # length-prefixed: short first
+assert right[0] == long_row and wrong[0] == short_row, "the two readings must disagree"
+assert order_msg(right).hex() == vectors["order_message"], "order_message"
+assert hashlib.sha256(order_msg(right)).hexdigest() == vectors["order_digest"], "order_digest"
+assert hashlib.sha256(order_msg(wrong)).hexdigest() == vectors["order_wrong_digest"], "order_wrong_digest"
+assert vectors["order_digest"] != vectors["order_wrong_digest"]
 
 # Domain separation: the labels have different lengths, so neither message parses as the other.
 assert msg[:2] != absent[:2]
