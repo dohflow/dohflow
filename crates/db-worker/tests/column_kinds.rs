@@ -16,9 +16,10 @@
 //! * every covered key fits the 256-byte limit by construction;
 //! * a field-split table is covered only through a projection of its replicated fields.
 //!
-//! Three replicated tables have no key and two have text keys with no stored bound. They are
-//! named below as explicit exceptions (a ratchet that may only shrink); resolving them is
-//! tracked on `personal-cfo-t2s4b` before the write-set capture (part 5c) is built.
+//! Two replicated tables have no key and are **folded into a parent** (C.1.5 "Folded
+//! children"); a third, `provenance_links`, is outside the write set (B.2 `exclude`). Three
+//! text keys have no stored bound; they are named below as explicit exceptions (a ratchet that
+//! may only shrink), to be closed by a write-time check or a documented construction bound.
 
 mod common;
 
@@ -30,18 +31,26 @@ use common::worker;
 const CLASSES: &str = include_str!("../table_classes.toml");
 const MANIFEST: &str = include_str!("../table_columns.toml");
 
-/// Replicated tables that declare no primary key today. Named so the set can only shrink; each
-/// needs a ruling (fold into a parent, or add a natural key) before part 5c.
-const KEYLESS: &[&str] = &["attachment_links", "ledger_postings", "provenance_links"];
+/// Keyless replicated tables folded into a parent: `(child, parent, child column naming the
+/// parent's `id`)`. Their rows are part of the parent's digest and never write-set entries.
+const FOLDED: &[(&str, &str, &str)] = &[
+    ("ledger_postings", "ledger_transactions", "transaction_id"),
+    ("attachment_links", "attachments", "attachment_id"),
+];
+
+/// Tables the write set never covers although CLASS-0 gives them class 1: the command's own log
+/// row carries the write-set hash, and `provenance_links` is excluded by B.2.
+const NOT_REPLICATED: &[&str] = &["operation_log", "provenance_links"];
 
 /// Covered text key columns with no bound enforced by the schema. Each needs a bound
 /// (a length CHECK, or a write-time validation) so the 256-byte key limit is a schema-time
 /// guarantee.
-const UNBOUNDED_TEXT_KEYS: &[(&str, &str)] = &[
-    ("credit_card_cycles", "cycle_close"),
-    ("merchant_aliases", "normalized_key"),
-    ("settings", "key"),
-];
+const UNBOUNDED_TEXT_KEYS: &[(&str, &str)] =
+    &[("credit_card_cycles", "cycle_close"), ("settings", "key")];
+
+/// Covered text keys the schema does not bound but the writer does, with a typed error and a
+/// test (`merchant_alias_key_width.rs`): `merchant_aliases.normalized_key`.
+const WRITER_BOUNDED_TEXT_KEYS: &[(&str, &str)] = &[("merchant_aliases", "normalized_key")];
 
 /// BLOB columns that hold a 16-byte identifier although their name does not say so.
 const UUID_BLOBS: &[(&str, &str)] = &[
@@ -191,10 +200,14 @@ fn write_set(table: &str, class: &str) -> &'static str {
     if PROJECTIONS.iter().any(|p| p.source == table) {
         return "projection";
     }
-    match (table, class) {
-        // The command's own log row carries the write-set hash, so it is never in the set.
-        ("operation_log", _) => "none",
-        (_, "1") | (_, "4") => "full",
+    if FOLDED.iter().any(|(child, _, _)| *child == table) {
+        return "folded";
+    }
+    if NOT_REPLICATED.contains(&table) {
+        return "none";
+    }
+    match class {
+        "1" | "4" => "full",
         _ => "none",
     }
 }
@@ -210,7 +223,8 @@ fn generate() -> String {
          # migrated schema and table_classes.toml; the test fails until this file matches. Review\n\
          # the kind of every new column in the diff: `uuid` is a BLOB of exactly 16 bytes, `bytes`\n\
          # any other BLOB. `write_set` is what the Sync write set covers for the table: `full` (all\n\
-         # columns), `projection` (see [[projection]]) or `none`.\n\n",
+         # columns), `projection` (see [[projection]]), `folded` (a keyless child whose rows are part\n\
+         # of its `parent`'s digest, C.1.5) or `none`.\n\n",
     );
     for (table, (cols, _)) in &schema {
         let class = classes
@@ -228,6 +242,18 @@ fn generate() -> String {
         writeln!(out, "class = \"{class}\"").unwrap();
         writeln!(out, "write_set = \"{}\"", write_set(table, class)).unwrap();
         writeln!(out, "primary_key = [{}]", key_names.join(", ")).unwrap();
+        if let Some((_, parent, column)) = FOLDED.iter().find(|(child, _, _)| child == table) {
+            writeln!(out, "parent = \"{parent}\"").unwrap();
+            writeln!(out, "parent_column = \"{column}\"").unwrap();
+        }
+        let children: Vec<String> = FOLDED
+            .iter()
+            .filter(|(_, parent, _)| parent == table)
+            .map(|(child, _, _)| format!("\"{child}\""))
+            .collect();
+        if !children.is_empty() {
+            writeln!(out, "children = [{}]", children.join(", ")).unwrap();
+        }
         writeln!(out, "columns = [{}]\n", columns.join(", ")).unwrap();
     }
     let legacy = legacy_settings_keys();
@@ -331,10 +357,42 @@ fn covered_tables_declare_explicit_command_supplied_keys() {
             key[0].name
         );
     }
+    // Every covered table without a key is a folded child and every folded child is keyless:
+    // a table that gains a key stops being folded, and a new keyless table must be folded.
+    let mut folded: Vec<&str> = FOLDED.iter().map(|(child, _, _)| *child).collect();
+    folded.sort_unstable();
+    keyless.sort_unstable();
     assert_eq!(
-        keyless, KEYLESS,
-        "the set of keyless replicated tables changed: it may only shrink, and each table that \
-         gains a key must leave KEYLESS"
+        keyless, folded,
+        "the keyless covered tables and FOLDED must be the same set"
+    );
+    for (child, parent, column) in FOLDED {
+        let (child_cols, _) = &schema[*child];
+        assert!(
+            child_cols
+                .iter()
+                .any(|c| c.name == *column && kind_of(child, c) == "uuid"),
+            "{child}.{column} must be a uuid column naming the parent"
+        );
+        let (parent_cols, _) = &schema[*parent];
+        let key: Vec<&str> = parent_cols
+            .iter()
+            .filter(|c| c.pk > 0)
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(
+            key,
+            ["id"],
+            "{parent} must have the single key `id` that {child} folds into"
+        );
+        assert!(
+            matches!(write_set(parent, &classes[*parent]), "full" | "projection"),
+            "{parent} must be a write-set entry"
+        );
+    }
+    assert_eq!(
+        write_set("provenance_links", &classes["provenance_links"]),
+        "none"
     );
 }
 
@@ -363,6 +421,7 @@ fn covered_key_widths_fit_the_cap_by_construction() {
         }
         assert!(width <= 256, "{table}: fixed key width {width} exceeds 256");
     }
+    unbounded.retain(|key| !WRITER_BOUNDED_TEXT_KEYS.contains(key));
     assert_eq!(
         unbounded, UNBOUNDED_TEXT_KEYS,
         "the set of covered text keys with no schema bound changed: it may only shrink"
@@ -424,14 +483,20 @@ fn projections_name_real_columns_and_the_field_split_tables_are_all_projected() 
 // The encoder over a populated vault
 // ---------------------------------------------------------------------------
 
-use common::{bill_cmd, create_account_cmd, income_cmd, meta};
+use common::{bill_cmd, create_account_cmd, income_cmd, liquid_account_cmd, meta};
 use rusqlite::types::ValueRef;
-use sync_core::row_digest::{primary_key, row_digest, Column, Kind, Value};
+use sync_core::row_digest::{
+    parent_row_digest, primary_key, row_digest, ChildTable, Column, Kind, Value,
+};
 
 struct TableSpec {
     key: Vec<String>,
     columns: Vec<(String, Kind)>,
     write_set: String,
+    /// Folded child tables of this parent, if any.
+    children: Vec<String>,
+    /// For a folded child: its parent table and the column naming the parent's `id`.
+    parent: Option<(String, String)>,
 }
 
 fn parse_kind(kind: &str) -> Kind {
@@ -472,12 +537,24 @@ fn manifest_tables() -> BTreeMap<String, TableSpec> {
                 (n.to_owned(), parse_kind(k))
             })
             .collect();
+        let optional = |key: &str| {
+            block
+                .lines()
+                .find(|l| l.starts_with(&format!("{key} = ")))
+                .map(quoted_list)
+        };
+        let parent = optional("parent").map(|mut p| {
+            let column = optional("parent_column").unwrap().remove(0);
+            (p.remove(0), column)
+        });
         out.insert(
             name,
             TableSpec {
                 key: quoted_list(&line("primary_key")),
                 columns,
                 write_set: quoted_list(&line("write_set")).remove(0),
+                children: optional("children").unwrap_or_default(),
+                parent,
             },
         );
     }
@@ -501,16 +578,25 @@ fn every_row_of_a_populated_vault_encodes_under_its_declared_kinds() {
     worker.dispatch(meta(), account).unwrap();
     worker.dispatch(meta(), income_cmd(None)).unwrap();
     worker.dispatch(meta(), bill_cmd(None)).unwrap();
+    // An account with an opening balance writes a ledger transaction with postings.
+    worker
+        .dispatch(
+            meta(),
+            liquid_account_cmd(
+                core_ledger::AccountId::new(),
+                core_money::Currency::Usd,
+                125_000,
+            ),
+        )
+        .unwrap();
 
     let specs = manifest_tables();
     let conn = worker.read_connection().unwrap();
     let mut encoded: BTreeMap<String, usize> = BTreeMap::new();
     for (table, spec) in &specs {
-        if spec.write_set == "none" {
-            continue;
-        }
-        // A projection encodes only its replicated columns; here every full-width table.
-        if spec.write_set == "projection" {
+        // A projection encodes only its replicated columns and a folded child is part of its
+        // parent's digest; this loop covers every full-width, keyed table.
+        if matches!(spec.write_set.as_str(), "none" | "projection" | "folded") {
             continue;
         }
         let names: Vec<&str> = spec.columns.iter().map(|(n, _)| n.as_str()).collect();
@@ -557,4 +643,144 @@ fn every_row_of_a_populated_vault_encodes_under_its_declared_kinds() {
             "{table} was not exercised"
         );
     }
+}
+
+/// Read every row of `table` (all manifest columns) as owned values, in the given SQL order.
+fn read_rows(
+    conn: &rusqlite::Connection,
+    spec: &TableSpec,
+    table: &str,
+    filter: &str,
+    order: &str,
+    parent_id: &[u8],
+) -> Vec<Vec<(String, Kind, rusqlite::types::Value)>> {
+    let names: Vec<&str> = spec.columns.iter().map(|(n, _)| n.as_str()).collect();
+    let sql = format!(
+        "SELECT {} FROM {table} WHERE {filter} = ?1 ORDER BY {order}",
+        names.join(", ")
+    );
+    let mut stmt = conn.prepare(&sql).unwrap();
+    stmt.query_map([parent_id], |row| {
+        spec.columns
+            .iter()
+            .enumerate()
+            .map(|(i, (name, kind))| {
+                Ok((
+                    name.clone(),
+                    *kind,
+                    row.get::<_, rusqlite::types::Value>(i)?,
+                ))
+            })
+            .collect()
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+fn as_value(value: &rusqlite::types::Value) -> Value<'_> {
+    match value {
+        rusqlite::types::Value::Null => Value::Null,
+        rusqlite::types::Value::Integer(v) => Value::Int(*v),
+        rusqlite::types::Value::Text(t) => Value::Text(t.as_bytes()),
+        rusqlite::types::Value::Blob(b) => Value::Blob(b),
+        rusqlite::types::Value::Real(_) => panic!("a REAL value in a covered table"),
+    }
+}
+
+fn as_columns(row: &[(String, Kind, rusqlite::types::Value)]) -> Vec<Column<'_>> {
+    row.iter()
+        .map(|(n, k, v)| Column {
+            name: n,
+            kind: *k,
+            value: as_value(v),
+        })
+        .collect()
+}
+
+#[test]
+fn a_parent_digest_with_folded_children_is_independent_of_row_order_and_counts_duplicates() {
+    let (_dir, worker) = worker();
+    worker
+        .dispatch(
+            meta(),
+            liquid_account_cmd(
+                core_ledger::AccountId::new(),
+                core_money::Currency::Usd,
+                125_000,
+            ),
+        )
+        .unwrap();
+    let specs = manifest_tables();
+    let conn = worker.read_connection().unwrap();
+    let parent_spec = &specs["ledger_transactions"];
+    assert_eq!(parent_spec.children, ["ledger_postings"]);
+    let (child_parent, child_column) = specs["ledger_postings"].parent.clone().unwrap();
+    assert_eq!(
+        (child_parent.as_str(), child_column.as_str()),
+        ("ledger_transactions", "transaction_id")
+    );
+
+    // Every ledger transaction, with its postings read in both rowid orders.
+    let ids: Vec<Vec<u8>> = conn
+        .prepare("SELECT id FROM ledger_transactions")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(!ids.is_empty());
+    let mut checked_children = 0;
+    for id in ids {
+        let parent_rows = read_rows(&conn, parent_spec, "ledger_transactions", "id", "id", &id);
+        assert_eq!(parent_rows.len(), 1);
+        let digest = |order: &str, drop_last: bool| {
+            let mut child_rows = read_rows(
+                &conn,
+                &specs["ledger_postings"],
+                "ledger_postings",
+                &child_column,
+                order,
+                &id,
+            );
+            if drop_last {
+                child_rows.pop();
+            }
+            let children = vec![ChildTable {
+                table: "ledger_postings",
+                rows: child_rows.iter().map(|r| as_columns(r)).collect(),
+            }];
+            parent_row_digest(
+                "ledger_transactions",
+                &as_columns(&parent_rows[0]),
+                &children,
+            )
+            .unwrap()
+        };
+        let forward = digest("rowid ASC", false);
+        assert_eq!(
+            forward,
+            digest("rowid DESC", false),
+            "child order is not semantic"
+        );
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ledger_postings WHERE transaction_id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        checked_children += count;
+        if count > 0 {
+            assert_ne!(
+                forward,
+                digest("rowid ASC", true),
+                "removing a child changes the parent digest"
+            );
+        }
+    }
+    assert!(
+        checked_children >= 2,
+        "the opening balance wrote postings ({checked_children})"
+    );
 }

@@ -2744,6 +2744,9 @@ impl From<DbError> for KernelError {
                 KernelError::Persistence("operation requires an unlocked raw vault key".into())
             }
             DbError::AttachmentNotFound => KernelError::Validation("attachment not found".into()),
+            DbError::ReplicatedKeyTooLong { table } => {
+                KernelError::Validation(format!("a key for {table} is too long"))
+            }
         }
     }
 }

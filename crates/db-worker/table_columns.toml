@@ -4,7 +4,8 @@
 # migrated schema and table_classes.toml; the test fails until this file matches. Review
 # the kind of every new column in the diff: `uuid` is a BLOB of exactly 16 bytes, `bytes`
 # any other BLOB. `write_set` is what the Sync write set covers for the table: `full` (all
-# columns), `projection` (see [[projection]]) or `none`.
+# columns), `projection` (see [[projection]]), `folded` (a keyless child whose rows are part
+# of its `parent`'s digest, C.1.5) or `none`.
 
 [[table]]
 name = "accounts"
@@ -16,8 +17,10 @@ columns = ["id:uuid", "ledger_account_id:uuid", "name:text", "cashflow_role:text
 [[table]]
 name = "attachment_links"
 class = "4"
-write_set = "full"
+write_set = "folded"
 primary_key = []
+parent = "attachments"
+parent_column = "attachment_id"
 columns = ["attachment_id:uuid", "entity_kind:text", "entity_id:uuid", "created_at:text"]
 
 [[table]]
@@ -25,6 +28,7 @@ name = "attachments"
 class = "4"
 write_set = "projection"
 primary_key = ["id"]
+children = ["attachment_links"]
 columns = ["id:uuid", "storage_id:text", "wrapped_content_key:bytes", "content_key_nonce:bytes", "content_nonce:bytes", "content_alg:text", "plaintext_size:int", "mime_type:text", "original_filename:text", "ref_count:int", "created_at:text"]
 
 [[table]]
@@ -233,8 +237,10 @@ columns = ["id:uuid", "kind:text", "normal_balance:text", "currency:text"]
 [[table]]
 name = "ledger_postings"
 class = "1"
-write_set = "full"
+write_set = "folded"
 primary_key = []
+parent = "ledger_transactions"
+parent_column = "transaction_id"
 columns = ["transaction_id:uuid", "ledger_account_id:uuid", "minor_units:int", "currency:text", "currency_exponent:int", "posting_date:text"]
 
 [[table]]
@@ -242,6 +248,7 @@ name = "ledger_transactions"
 class = "1"
 write_set = "full"
 primary_key = ["id"]
+children = ["ledger_postings"]
 columns = ["id:uuid", "operation_id:uuid", "occurred_at:text", "currency:text", "voided_at:text"]
 
 [[table]]
@@ -303,7 +310,7 @@ columns = ["read_model_name:text", "last_applied_op_seq:int", "last_rebuild_at:t
 [[table]]
 name = "provenance_links"
 class = "1"
-write_set = "full"
+write_set = "none"
 primary_key = []
 columns = ["op_seq:int", "entity_type:text", "entity_id:uuid"]
 

@@ -145,7 +145,7 @@ pub use forecast_persist::{
 };
 pub use loan_overlap::LoanDoubleCount;
 pub use manual_entry::ManualEntry;
-pub use merchant_identity::MerchantIdentity;
+pub use merchant_identity::{MerchantIdentity, MAX_ALIAS_KEY_BYTES};
 pub use projection::{
     project_transaction_display, CategorySource, ReviewStatus, TransactionDisplayInput,
     TransactionDisplayRow,
@@ -1184,6 +1184,14 @@ pub enum DbError {
     /// The referenced attachment id does not exist.
     #[error("attachment not found")]
     AttachmentNotFound,
+    /// A replicated table's primary key would exceed the 256-byte limit of the canonical row
+    /// encoding (vault-format.md C.1.5). The key is rejected, never truncated. The message
+    /// names the table only, not the key.
+    #[error("a key for {table} exceeds the maximum replicated key width")]
+    ReplicatedKeyTooLong {
+        /// The table whose key was too wide.
+        table: &'static str,
+    },
 }
 
 impl From<MoneyError> for DbError {
