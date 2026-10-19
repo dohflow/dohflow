@@ -359,6 +359,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "sha2",
+ "sync-core",
  "tempfile",
  "thiserror",
  "uuid",
@@ -1599,6 +1600,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "sha2",
  "thiserror",
 ]
 
