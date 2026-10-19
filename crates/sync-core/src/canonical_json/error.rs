@@ -52,11 +52,11 @@ pub enum CanonicalJsonError {
     #[error("an integer is out of range for its field")]
     IntegerOutOfRange,
     /// Two members of one object have the same name.
-    #[error("duplicate member name {0:?}")]
-    DuplicateMember(String),
+    #[error("an object has two members with the same name")]
+    DuplicateMember,
     /// A member name is not ASCII `[a-z0-9_]`.
-    #[error("member name {0:?} is not ASCII [a-z0-9_]")]
-    BadMemberName(String),
+    #[error("a member name is not ASCII [a-z0-9_]")]
+    BadMemberName,
     /// The text is not valid JSON, or breaks a string rule (invalid UTF-8, a lone
     /// surrogate escape, a raw control character in a string).
     #[error("malformed JSON at byte {offset}: {reason}")]
