@@ -55,4 +55,7 @@ rusqlite = { workspace = true }
 # Attachment-store integration tests (personal-cfo-bcj): open a raw-key vault and
 # construct entity ids through the public API.
 vault-crypto = { path = "../vault-crypto" }
+# The canonical row encoding (personal-cfo-t2s4b part 5b): the column-kind test encodes every
+# row of a populated vault through it.
+sync-core = { path = "../sync-core" }
 uuid = { workspace = true }
