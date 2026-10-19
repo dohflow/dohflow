@@ -51,7 +51,7 @@ impl Dek {
     }
 
     /// Move `bytes` into a protected allocation, scrubbing the caller's copy.
-    fn from_array(mut bytes: [u8; DEK_LEN]) -> Self {
+    pub(crate) fn from_array(mut bytes: [u8; DEK_LEN]) -> Self {
         let dek = Dek(crate::SecretBytes::new(bytes));
         bytes.zeroize();
         dek
