@@ -746,9 +746,24 @@ future quantum adversary; that limitation is accepted for v1.
 
 One encoding of a database row is used everywhere a row is hashed: the write-set hash of
 C.4, the replay-property hash that compares two replicas, and the simulator's equality
-checks. It covers **every table of every class**; the write-set hash applies it to
-class-1 rows only (class-2 rebuilds are excluded from that hash, not from the encoding).
-It uses CBE1 (C.1.1).
+checks. It covers **every table of every class**; the write-set hash applies it to the
+replicated rows only (class-2 rebuilds are excluded from that hash, not from the
+encoding). It uses CBE1 (C.1.1).
+
+**What the write set covers.** Exactly what Sync replicates, per the B.2 inventory:
+
+- every table of Sync class 1, and each class-4 group that ADR 0074 Decision 5 routes to
+  class 1 (the CLASS-0 manifest names them), with all of their columns;
+- for each table whose B.2 disposition is `fields`, a **projection**: only the replicated
+  fields B.2 names, as a logical record, so that a device-local or rebuilt column never
+  enters a digest. These are `attachments` (`id`, `plaintext_size`, `mime_type`,
+  `original_filename`, `created_at`; never `storage_id`, wrapped keys or nonces, and not
+  the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys and the
+  six legacy user keys, never `device.*`), and `vault_metadata`, whose
+  `household_timezone` is the single field of the logical `household` record (B.3): its
+  digest uses the table name `household`, the one column `household_timezone`, and the
+  key `int 1`. The projection a command's apply writes is therefore never empty for
+  `SetHouseholdTimezone`.
 
 Each value is tagged by its column's **declared kind**, taken from the column-kind
 manifest, which lists every column of every table with a kind and is aligned with the
@@ -777,10 +792,11 @@ from the table, is an error. The digests are:
 - `row_digest` of a row that exists is `SHA-256(label "dohflow/sync-row/v1" ‖ text(64)
   table ‖ u16 column_count ‖ for each column: text(64) name ‖ tagged value)`, with the
   columns sorted by the **raw bytes of their names** (not by their position in the table,
-  which a table rebuild may change). Every column the manifest lists for the table is
-  included. A class-1 table contains only class-1 columns (a schema test checks every
-  class-1 table against CLASS-0), so no device-local (class-3) or rebuild-timing (class-2)
-  value ever enters a class-1 digest.
+  which a table rebuild may change). Every column the manifest lists for the table, or for
+  its projection, is included. A class-1 table contains only class-1 columns (a schema
+  test checks every class-1 table against CLASS-0), and a projection lists only replicated
+  fields, so no device-local (class-3) or rebuild-timing (class-2) value ever enters a
+  digest.
 - `row_digest` of a row a command **deleted** (it existed before, it does not exist after)
   is `SHA-256(label "dohflow/sync-row-absent/v1" ‖ text(64) table ‖ bytes(256)
   primary_key)`, so a deletion changes the write-set hash and is distinguishable from a
@@ -801,15 +817,27 @@ from the table, is an error. The digests are:
   rowid is not the same on two devices. Every class-1 key fits the 256-byte limit by
   construction (a bounded column width, checked by a schema test), so the limit is a
   schema-time guarantee and not a runtime failure that strands a command.
-- A field that lives in a class-3 table (for example `household_timezone` in
-  `vault_metadata`) is outside every write set: a divergence there is invisible to the
-  fork check by design, and the command that sets it must carry the value in its payload
-  so replay converges.
+- A value that lives in a class-3 table and is not part of a B.2 projection is outside
+  every write set: a divergence there is invisible to the fork check by design. The
+  command that sets such a value carries it in its payload, and apply writes exactly the
+  payload value, never something derived from local state.
+- **Declared-kind validation is mandatory before Sync.** Before a vault's genesis (and
+  as a local health check), the declared-kind check runs over every covered row. A stored
+  value whose storage class disagrees with its kind blocks Sync as a typed state and is
+  repaired by a reviewed migration that rewrites the value to its kind; it is never
+  coerced at hash time. Otherwise a legacy mismatch would leave every later command that
+  touches the row unhashable. The check is an acceptance criterion of the genesis bead
+  (`personal-cfo-1cltt`) and is tested with one seeded mismatch per kind.
+- The schema tests this text promises (no REAL column in a covered table, explicit
+  supplied primary keys, key width of at most 256 bytes, class-1 tables hold only class-1
+  columns, the manifest lists exactly each table's columns) are delivered by part 5b.
 - The `operation_log` row of the command itself is not in the write set: it carries the
   write-set hash.
 - The digests are bound to the schema version: the column set is the one the manifest
-  lists for the `schema_version` in the envelope header, and a receiver at another schema
-  version does not recompute a hash it cannot reproduce.
+  lists for the `schema_version` in the envelope header. A receiver at another schema
+  version does not apply the envelope and enters the ADR 0074 Decision 3
+  update-required state; the hash is never skipped or recomputed over a different column
+  set.
 
 The two labels differ in their length prefix and in content, and neither can be parsed as
 the other. Known-answer vectors, derived independently by the contract script
