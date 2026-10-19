@@ -79,3 +79,25 @@ pub fn decode_payload(version: u32, bytes: &[u8]) -> Result<WriteCommand, Payloa
     }
     Ok(from_canonical_slice(bytes)?)
 }
+
+/// A command together with the exact payload bytes replicas will decode it from.
+#[derive(Debug, Clone)]
+pub struct PreparedPayload {
+    /// The canonical payload bytes (what the envelope carries and the write-set hash binds).
+    pub bytes: Vec<u8>,
+    /// The command **decoded from those bytes**. The origin applies this, not the value it
+    /// was given, so it applies exactly what every replica will apply (an encoding that is
+    /// not one-to-one would otherwise let the origin and the replicas diverge).
+    pub command: WriteCommand,
+}
+
+/// Encode a command and decode it straight back, returning both.
+///
+/// # Errors
+/// [`PayloadError`] if the command cannot be encoded, or if the bytes do not decode to a
+/// command (which would mean the encoding is not round-trippable).
+pub fn prepare_payload(command: &WriteCommand) -> Result<PreparedPayload, PayloadError> {
+    let bytes = encode_payload(command)?;
+    let command = decode_payload(PAYLOAD_SCHEMA_VERSION, &bytes)?;
+    Ok(PreparedPayload { bytes, command })
+}
