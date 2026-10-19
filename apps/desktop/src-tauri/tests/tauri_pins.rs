@@ -127,7 +127,7 @@ fn npm_resolved(pnpm_lock: &str) -> (BTreeMap<String, String>, Vec<(String, Stri
         if line.starts_with("  ") && !line.starts_with("   ") {
             in_desktop = line.trim_end() == "  apps/desktop:";
             if in_packages {
-                // `  '@tauri-apps/cli-darwin-arm64@2.11.2':`
+                // `  '@tauri-apps/cli-darwin-arm64@2.12.3':`
                 let key = line.trim().trim_end_matches(':').trim_matches('\'');
                 if let Some(rest) = key.strip_prefix("@tauri-apps/") {
                     if let Some((name, version)) = rest.rsplit_once('@') {
@@ -414,8 +414,8 @@ fn a_patch_bump_in_cargo_lock_is_drift() {
     let found = check_with(|i| {
         replace_once(
             &mut i.cargo_lock,
-            "name = \"tauri\"\nversion = \"2.11.2\"",
-            "name = \"tauri\"\nversion = \"2.11.3\"",
+            "name = \"tauri\"\nversion = \"2.12.4\"",
+            "name = \"tauri\"\nversion = \"2.12.5\"",
         )
     });
     assert_reports(&found, "drift", "tauri");
@@ -438,8 +438,8 @@ fn an_npm_bump_in_pnpm_lock_is_drift() {
     let found = check_with(|i| {
         replace_once(
             &mut i.pnpm_lock,
-            "specifier: ~2.11.0\n        version: 2.11.0",
-            "specifier: ~2.11.0\n        version: 2.11.1",
+            "specifier: ~2.12.4\n        version: 2.12.4",
+            "specifier: ~2.12.4\n        version: 2.12.5",
         )
     });
     assert_reports(&found, "drift", "@tauri-apps/api");
@@ -458,16 +458,16 @@ fn a_caret_or_loose_range_in_either_manifest_is_rejected() {
     let caret = check_with(|i| {
         replace_once(
             &mut i.cargo_toml,
-            "tauri = { version = \"~2.11.2\", features = [] }",
-            "tauri = { version = \"2.11.2\", features = [] }",
+            "tauri = { version = \"~2.12.4\", features = [] }",
+            "tauri = { version = \"2.12.4\", features = [] }",
         )
     });
     assert_reports(&caret, "manifest-range", "[dependencies] tauri");
     let npm = check_with(|i| {
         replace_once(
             &mut i.package_json,
-            "\"@tauri-apps/cli\": \"~2.11.2\"",
-            "\"@tauri-apps/cli\": \"^2.11.2\"",
+            "\"@tauri-apps/cli\": \"~2.12.3\"",
+            "\"@tauri-apps/cli\": \"^2.12.3\"",
         )
     });
     assert_reports(&npm, "manifest-range", "@tauri-apps/cli");
@@ -499,13 +499,13 @@ fn rust_and_npm_out_of_lockstep_is_rejected() {
     let cli = check_with(|i| {
         replace_once(
             &mut i.pins,
-            "\"@tauri-apps/cli\" = \"2.11.2\"",
-            "\"@tauri-apps/cli\" = \"2.12.0\"",
+            "\"@tauri-apps/cli\" = \"2.12.3\"",
+            "\"@tauri-apps/cli\" = \"2.13.0\"",
         );
         replace_once(
             &mut i.pnpm_lock,
-            "specifier: ~2.11.2\n        version: 2.11.2",
-            "specifier: ~2.11.2\n        version: 2.12.0",
+            "specifier: ~2.12.3\n        version: 2.12.3",
+            "specifier: ~2.12.3\n        version: 2.13.0",
         );
     });
     assert_reports(&cli, "lockstep", "@tauri-apps/cli");

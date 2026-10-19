@@ -124,6 +124,6 @@ A new *ordinary* command needs only `collect_commands!` plus
 - **Some pins are source scans:** the new-window hook, `Channel`,
   `add_capability`, and the fixtures' `cfg` gates. They fail loudly, but a
   determined rewrite could evade them. Review remains the backstop.
-- **Plugin navigation hooks never see a webview's first load** (Tauri 2.11.2
+- **Plugin navigation hooks never see a webview's first load** (Tauri 2.12.4
   `manager/webview.rs`). The probe checks each window's first-load origin
   directly (`page_origin`).

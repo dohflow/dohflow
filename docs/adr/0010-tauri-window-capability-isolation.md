@@ -493,9 +493,43 @@ it, and makes the ACL — already the "second, declarative layer" of the
   only `main`.
 - A source test fails if app code starts using `tauri::ipc::Channel` (rule 7).
 
+## Addendum (2026-10-18): Tauri 2.12.4 keys the channel-fetch queue per webview
+
+The Tauri upgrade from 2.11.2 to 2.12.4 (wry 0.57.0, tao 0.37.1,
+`personal-cfo-md8h2.8`) re-read every claim in `docs/agent/TAURI_UPGRADES.md`.
+One changed, in the direction this ADR asked for. In `tauri-2.12.4/src/ipc/channel.rs`
+the channel-fetch queue is **keyed by webview label**, with ids sequential
+within one webview, and `plugin:__TAURI_CHANNEL__|fetch` removes an entry only
+from the *calling* webview's queue. The exception to the ACL is unchanged, but
+the cross-webview take described under "The one ACL exception" no longer works:
+an untrusted webview cannot fetch another webview's payload.
+
+**Rule 7 stays as written.** The upgrade does not authorize app code to use
+`tauri::ipc::Channel`: `app_code_sends_nothing_through_an_ipc_channel` still
+fails on the word, and a feature that needs streaming still brings its own
+dated addendum. What this addendum records is that the first condition rule 7
+named for such an addendum (a Tauri release that keys the queue per webview)
+now holds, so that addendum no longer has to close a cross-webview gap.
+
+Other behavior changes read in the same upgrade, none of which widens a grant
+(the expanded ACL of every window is identical before and after, and
+`core:default` gains nothing):
+
+- wry now enables element fullscreen in the macOS web view without the
+  `macos-private-api` feature (Tauri documents that feature as a no-op from
+  2.12.1). On macOS 12.3 and later it uses the public WebKit API. A page can
+  therefore request fullscreen on a user gesture; the untrusted windows' CSP
+  and empty capabilities are unchanged. Follow-up: `personal-cfo-md8h2.9`.
+- New webview permission-request hooks exist; the app registers none, so the
+  platform default is unchanged.
+- New core commands exist (`core:app:allow-exit`,
+  `core:window:allow-set-fullscreen-on-monitor`); `core:default` does not
+  include them and no capability grants them.
+
 ## Linked beads
 
 - `personal-cfo-2no` (window topology + empty-capability isolation — 2026-09-27 addendum)
+- `personal-cfo-md8h2.8` (Tauri 2.12.4 upgrade — 2026-10-18 addendum), `personal-cfo-md8h2.9` (fullscreen follow-up)
 - `personal-cfo-n76x.18` (About card, Support row, scoped opener grant — 2026-09-06 addendum)
 - `personal-cfo-867.1.2` (updater + process capability grants — 2026-09-08 addendum)
 - `personal-cfo-tif` (this ADR's implementation: window/capability isolation)
