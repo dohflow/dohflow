@@ -161,6 +161,80 @@ the pilot can measure it. **If Claude Code indicates a request needs separate
 usage credits rather than the included allowance, stop and tell the user.** Do
 not enable credits, API billing, top-ups, or another paid inference route.
 
+## Build-machine hygiene
+
+On 2026-10-19 the Mac Mini (460 GiB) reached 98% full. The causes were a Rust
+`target/` directory in every worktree (the largest were around 50, 36 and 32 GiB),
+about 54 GiB of session scratch builds under `/private/tmp/claude-<uid>`, and
+Time Machine local snapshots that kept deleted build output alive, so that
+`cargo clean` freed roughly 139 GiB while free space barely moved until the
+snapshots thinned. A full disk blocks builds and releases. The rules below keep
+that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
+
+**Decisions.**
+
+- **Each worktree keeps its own `target/`.** Cargo fingerprints include absolute
+  source paths, so a shared `CARGO_TARGET_DIR` across worktrees would share
+  little and add lock contention.
+- **`sccache` is not adopted.** It is a new dependency, and a possible later owner
+  decision, not part of this change.
+- **Nothing here deletes a worktree, a branch or a scratch directory on its
+  own.** Those stay explicit actions (`AGENTS.md` section 1).
+
+**The tool.** `scripts/dev-hygiene.sh` is read-only by default.
+
+- `scripts/dev-hygiene.sh` (or `--report`, with `--json` for machine output) lists,
+  for every registered worktree: its cargo `target/` size, last activity, branch,
+  whether the branch is merged into `origin/main` or its remote branch is gone,
+  uncommitted changes, commits that exist on no remote, and whether a
+  cargo/rustc process is running in it. It also reports the size of the session
+  scratch directory and the free disk space, and flags free space under 15%.
+- `scripts/dev-hygiene.sh --clean [--idle-days N] [--yes]` shows its plan and asks
+  for confirmation (`--yes` skips the question). It does exactly two things:
+  `cargo clean` in worktrees idle for at least N days (default 3) that have no
+  uncommitted changes, no unpushed commits and no running cargo process; and
+  `git worktree prune` for registrations whose directory is already gone. It
+  never removes a worktree directory, a branch or a scratch directory, never runs
+  `rm`, never touches a dirty or unpushed worktree, and never touches the
+  worktree it is run from. `scripts/tests/dev-hygiene.test.sh` covers those
+  refusals.
+- "Last activity" is an approximation (git index and reflog, and the newest
+  entries in the cargo target directory). The worst result of a wrong guess is a
+  rebuild, never lost work.
+
+**Rules per role.**
+
+- **Implementation.** After a PR merges, remove your own per-bead worktree and
+  local branch once you have verified they are clean and pushed: `git worktree
+  remove <path>` (never `rm -rf`, never `--force`), then `git branch -d <branch>`.
+  If `-d` refuses only because the PR was squash-merged, confirm the PR is
+  merged and the branch tip is on `origin` (`git branch -r --contains <branch>`),
+  and only then use `git branch -D`; otherwise stop and ask. This is the standing
+  owner authorization for this one case and for nothing else in `AGENTS.md`
+  section 1. A long-lived lane worktree is not removed: after the merge, return it
+  to a detached `origin/main` (`git switch --detach origin/main`).
+- **Review and escalation.** Both run the project's test suites, so they fill
+  `target/` too. Run `cargo clean` after each verdict on a large PR, or whenever
+  your `target/` exceeds about 15 GiB.
+- **Overseer.** Run `scripts/dev-hygiene.sh --report` at session start and once a
+  week. When free space is under 15%, **ask the owner before any `--clean`**.
+- **Everyone.** Session scratch builds under `/private/tmp/claude-<uid>` are
+  reported only. Removing one is an explicit act by the session that made it or
+  by the owner, never by `--clean`.
+
+**Owner-side note: Time Machine local snapshots.** Deleting build output does not
+return space at once if local Time Machine snapshots still hold it. These are
+owner-run commands, never run by an agent:
+
+```bash
+tmutil listlocalsnapshots /
+sudo tmutil thinlocalsnapshots / 50000000000 4
+```
+
+The first lists the snapshots. The second asks macOS to reclaim about 50 GB
+(the second number is the byte target; the last is urgency, 1 to 4) and needs
+administrator rights. Free space can take a few minutes to catch up.
+
 ## Bead access across worktrees
 
 All worktrees share one embedded-Dolt bead database. Under this pilot's
