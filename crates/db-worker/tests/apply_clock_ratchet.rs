@@ -40,9 +40,10 @@ const KNOWN_DIRECT: &[(&str, usize)] = &[
 ];
 
 /// `(file under src/apply/, clock-reading helper, calls)`. SYNC-1a empties this table.
-/// `rebuild_in` is a class-2 projection rebuild (`money_inbox`, `commitments`); SYNC-1a
-/// decides, helper by helper, whether to pass `meta.issued_at` or to keep the time a
-/// local-only, non-replicated column.
+/// `rebuild_in` is a class-2 projection rebuild (`money_inbox`, `commitments`). It is
+/// counted like every other helper and is not exempt: class-2 rows must also be hash-equal
+/// across vaults (the M2 exit criterion), so a clock read inside a class-2 rebuild is in
+/// scope for SYNC-1a, which removes it by passing the command's `issued_at` down.
 const KNOWN_INDIRECT: &[(&str, &str, usize)] = &[
     ("inbox.rs", "rebuild_in", 2),
     ("inbox.rs", "record_dismiss", 1),
