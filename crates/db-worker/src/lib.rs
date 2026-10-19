@@ -1323,8 +1323,8 @@ impl DbWorker {
         Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
     }
 
-    /// Probe the SQLCipher database at `path` with `dek` without opening a worker, taking the
-    /// runner lock, migrating or writing anything. A read-only handle is keyed and the
+    /// Probe the SQLCipher database at `path` with `dek` without opening a worker, migrating
+    /// or writing anything (it holds the runner lock only for the probe). A handle is keyed and the
     /// vault's `vault_id` is read: `Ok(None)` means SQLCipher answered "file is not a
     /// database", the signature of a wrong key; `Ok(Some(id))` means the key fits. Any other
     /// failure is an error. A caller holding a key from a platform keystore can therefore
@@ -1336,7 +1336,12 @@ impl DbWorker {
     /// [`DbError::Sqlite`] for a failure other than a wrong key (including a vault with no
     /// `vault_metadata` row), [`DbError::Io`] if the file cannot be inspected.
     pub fn probe_raw_key(path: impl AsRef<Path>, dek: &Dek) -> Result<Option<Uuid>, DbError> {
-        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // The exclusive runner lock keeps another process from using the vault meanwhile. The
+        // handle is opened read-write (and never written through) rather than read-only: a
+        // vault is in WAL mode, and a read-only connection leaves `-wal` and `-shm` files
+        // behind that only a read-write close removes. Holding the lock makes that close safe.
+        let _runner_lock = acquire_runner_lock(path.as_ref())?;
+        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         key_raw(&conn, dek)?;
         match conn.query_row(
             "SELECT vault_id FROM vault_metadata WHERE singleton = 1",

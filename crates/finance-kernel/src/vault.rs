@@ -141,7 +141,12 @@ impl Kernel {
     ///    database is compared with the item's.
     ///
     /// Only then is the worker opened. A wrong key is a typed
-    /// [`ReleasedUnlockError::KeyRejected`], never a corrupt-vault state.
+    /// [`ReleasedUnlockError::KeyRejected`], never a corrupt-vault state, and it does not
+    /// ask the caller to delete the item (the item matched the envelope).
+    ///
+    /// Call this only after the vault controller has opened the vault and settled any
+    /// interrupted key rotation (it recovers in `VaultController::open`); a rotation journal
+    /// on disk is refused with [`ReleasedUnlockError::RotationInProgress`].
     ///
     /// # Errors
     /// - [`KernelError::VaultNotFound`] if there is no envelope at `path`.
@@ -156,6 +161,14 @@ impl Kernel {
         released: SecretBytes<RELEASED_LEN>,
     ) -> Result<Self, KernelError> {
         let db_path = path.as_ref();
+        // A rotation journal means the database and envelope may be a half-rotated pair; the
+        // vault controller recovers it when it opens. Never probe that pair: the item would
+        // look stale or wrong and be deleted for a fault that is not its own.
+        if rekey::journal_present(db_path) {
+            return Err(KernelError::ReleasedUnlock(
+                ReleasedUnlockError::RotationInProgress,
+            ));
+        }
         let sidecar = sidecar_path(db_path);
         let bytes = match std::fs::read(&sidecar) {
             Ok(bytes) => bytes,
@@ -170,7 +183,7 @@ impl Kernel {
             ReleasedParseError::UnknownVersion(found) => {
                 KernelError::ReleasedUnlock(ReleasedUnlockError::UnknownVersion(found))
             }
-            _ => KernelError::ReleasedUnlock(ReleasedUnlockError::KeyRejected),
+            _ => KernelError::ReleasedUnlock(ReleasedUnlockError::Unreadable),
         })?;
         drop(released);
 
@@ -190,6 +203,19 @@ impl Kernel {
             }
             Some(_) => {
                 let worker = DbWorker::open_existing_with_raw_key(db_path, material.dek)?;
+                // The probe and this open each take the runner lock for themselves, so another
+                // process could have rotated the key between them. Re-read the envelope now
+                // that this process owns the vault; a changed fingerprint means the item went
+                // stale in that window. Dropping the worker releases the lock and scrubs the key.
+                let now = std::fs::read(&sidecar)
+                    .map_err(|error| KernelError::Vault(error.to_string()))
+                    .and_then(|bytes| VaultEnvelope::from_bytes(&bytes).map_err(Into::into))?;
+                if !bool::from(material.fingerprint.ct_eq(&dek_fingerprint(&now.wrapped))) {
+                    drop(worker);
+                    return Err(KernelError::ReleasedUnlock(
+                        ReleasedUnlockError::StaleFingerprint,
+                    ));
+                }
                 Ok(Self::with_worker(worker))
             }
         }

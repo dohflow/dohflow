@@ -2635,9 +2635,17 @@ fn next_meta(seed: &CommandMeta) -> CommandMeta {
 }
 
 /// Why released biometric unlock material was refused, before any write to the vault.
-/// Each cause is its own variant so a shell can log which, but every one means the
-/// platform item is stale or foreign: delete it and ask for the password. A wrong key is
-/// never reported as a corrupt vault, and nothing here carries key material.
+/// Each cause is its own variant so a shell can log which. The item is stale, foreign or
+/// unreadable for four of them (delete it and ask for the password:
+/// [`requires_reenrollment`](Self::requires_reenrollment)); for the other two it is **not**
+/// at fault and must be kept, because it may be the only practical copy of the DEK. A wrong
+/// key is never reported as a corrupt vault, and nothing here carries key material.
+///
+/// Hygiene for the platform layer (not enforced here): delete the item as soon as a
+/// password change or key rotation succeeds, rather than waiting for the next stale
+/// fingerprint, and keep the keystore item bound to this device and to the current
+/// biometric set. Under backup format v2 the DEK is a password-free key to every backup
+/// made under its epoch, so a lingering item is worth more than its convenience.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ReleasedUnlockError {
@@ -2651,18 +2659,39 @@ pub enum ReleasedUnlockError {
     /// The item names a different vault than the one opened.
     #[error("the item belongs to a different vault")]
     WrongVault,
-    /// The key does not open the vault's database although the fingerprint matched.
-    #[error("the released key does not open this vault")]
+    /// The item could not be read as released material at all.
+    #[error("the released material is unreadable")]
+    Unreadable,
+    /// The key does not open the vault's database although the fingerprint matched: the
+    /// item's DEK is the one the envelope wraps, so the database does not match its own
+    /// envelope (corruption, or a swapped file). The item is not stale; keep it, and route
+    /// the user to recovery or backup restore. This is a wrong-key open, not a
+    /// corrupt-vault state of this call. A damaged database header is reported the same way,
+    /// because SQLCipher answers "not a database" for it; that is safe, since the item is
+    /// kept either way.
+    #[error("the vault database does not open with its own key")]
     KeyRejected,
+    /// A key rotation is mid-flight or needs recovery (`rekey` journal present). The
+    /// item is untouched and fine; recovery runs when the vault controller opens.
+    #[error("a key rotation needs recovery before the vault can be unlocked")]
+    RotationInProgress,
 }
 
 impl ReleasedUnlockError {
     /// Whether the caller must delete the platform item and offer enrollment again.
-    /// True for every cause today; kept as a method so a future transient cause need not
-    /// force a delete.
+    /// True when the item is stale, foreign or unreadable. False for
+    /// [`KeyRejected`](Self::KeyRejected) and [`RotationInProgress`](Self::RotationInProgress):
+    /// there the item matches the envelope, so deleting it would destroy what may be the
+    /// user's only practical copy of the DEK for a fault that is not the item's.
     #[must_use]
     pub const fn requires_reenrollment(self) -> bool {
-        true
+        match self {
+            Self::UnknownVersion(_)
+            | Self::StaleFingerprint
+            | Self::WrongVault
+            | Self::Unreadable => true,
+            Self::KeyRejected | Self::RotationInProgress => false,
+        }
     }
 }
 
@@ -2712,8 +2741,9 @@ pub enum KernelError {
     #[error("vault unlock failed")]
     VaultUnlockFailed,
     /// Released biometric unlock material was refused (`unlock_vault_with_dek`,
-    /// personal-cfo-7ie.10). Every cause means the platform item cannot be used: the
-    /// caller deletes it and asks for the password. See [`ReleasedUnlockError`].
+    /// personal-cfo-7ie.10). The password is the fallback in every case; whether the
+    /// platform item is also deleted depends on the cause (see
+    /// [`ReleasedUnlockError::requires_reenrollment`]).
     #[error("released unlock material refused: {0}")]
     ReleasedUnlock(ReleasedUnlockError),
     /// A vault envelope/sidecar I/O or non-unlock crypto failure, flattened to a

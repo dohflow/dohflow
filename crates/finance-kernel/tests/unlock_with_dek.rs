@@ -99,10 +99,28 @@ fn created_vault() -> (TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
-fn files(path: &Path) -> (Vec<u8>, Vec<u8>) {
+/// The vault's main file, its sidecar and the sorted directory listing: a refusal must not
+/// change any byte or create any file (a stray `-wal`, `-shm`, journal or lock).
+fn files(path: &Path) -> (Vec<u8>, Vec<u8>, Vec<String>) {
+    let mut listing: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    listing.sort();
     (
         std::fs::read(path).unwrap(),
         std::fs::read(sidecar(path)).unwrap(),
+        listing,
+    )
+}
+
+/// Whether the caller deletes the platform item for each cause: yes when the item is stale,
+/// foreign or unreadable; no when the item matched the envelope (it may be the user's only
+/// practical copy of the DEK) or the vault is merely not ready.
+fn deletes_item(cause: ReleasedUnlockError) -> bool {
+    !matches!(
+        cause,
+        ReleasedUnlockError::KeyRejected | ReleasedUnlockError::RotationInProgress
     )
 }
 
@@ -110,7 +128,11 @@ fn expect_released(result: Result<Kernel, KernelError>, expected: ReleasedUnlock
     match result {
         Err(KernelError::ReleasedUnlock(found)) => {
             assert_eq!(found, expected);
-            assert!(found.requires_reenrollment());
+            assert_eq!(
+                found.requires_reenrollment(),
+                deletes_item(expected),
+                "{found:?}"
+            );
         }
         Err(other) => panic!("expected {expected:?}, got {other:?}"),
         Ok(_) => panic!("the vault must not open: expected {expected:?}"),
@@ -169,11 +191,9 @@ fn another_vaults_id_is_refused_before_anything_is_written() {
         Kernel::unlock_vault_with_dek(&path, tampered(&item, |b| b[1] ^= 0xFF)),
         ReleasedUnlockError::WrongVault,
     );
-    assert_eq!(
-        files(&path),
-        before,
-        "the identity check precedes bootstrap"
-    );
+    let after = files(&path);
+    assert_eq!(after.2, before.2, "directory listing changed");
+    assert_eq!(after, before, "the identity check precedes bootstrap");
     // Nothing was held open: the vault still unlocks.
     Kernel::unlock_vault(&path, PASSWORD)
         .expect("still unlocks")
@@ -191,6 +211,8 @@ fn a_wrong_key_is_a_typed_error_and_never_a_corrupt_vault() {
         ReleasedUnlockError::KeyRejected,
     );
     assert_eq!(files(&path), before);
+    // The item matched the envelope, so it is not deleted: it may be the only practical copy.
+    assert!(!ReleasedUnlockError::KeyRejected.requires_reenrollment());
     // The vault is intact and unlocks normally, so nothing marked it for recovery.
     let kernel = Kernel::unlock_vault(&path, PASSWORD).expect("unlocks");
     assert_eq!(kernel.account_count().unwrap(), 1);
@@ -205,6 +227,35 @@ fn the_wrapped_dek_of_another_vault_does_not_fit() {
     expect_released(
         Kernel::unlock_vault_with_dek(&path_b, item_a),
         ReleasedUnlockError::StaleFingerprint,
+    );
+}
+
+#[test]
+fn a_pending_rotation_journal_is_refused_without_touching_the_item_or_the_vault() {
+    let (_dir, path) = created_vault();
+    let item = enroll(&path, PASSWORD);
+    // A journal beside the database is what a crashed rotation leaves behind.
+    let mut journal = path.as_os_str().to_owned();
+    journal.push(".rekey");
+    std::fs::write(&journal, b"preparing").unwrap();
+    let before = files(&path);
+    expect_released(
+        Kernel::unlock_vault_with_dek(&path, item),
+        ReleasedUnlockError::RotationInProgress,
+    );
+    assert_eq!(files(&path), before, "nothing was probed or written");
+    assert!(!ReleasedUnlockError::RotationInProgress.requires_reenrollment());
+}
+
+#[test]
+fn an_unreadable_parse_is_its_own_cause_and_asks_for_the_item_to_be_deleted() {
+    // The parser's only failure today is the version; the kernel maps any other failure to
+    // `Unreadable`, never to `KeyRejected`, so a future parse error cannot inherit its
+    // keep-the-item semantics.
+    assert!(ReleasedUnlockError::Unreadable.requires_reenrollment());
+    assert_ne!(
+        ReleasedUnlockError::Unreadable,
+        ReleasedUnlockError::KeyRejected
     );
 }
 
