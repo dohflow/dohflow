@@ -25,6 +25,8 @@ Forbidden without explicit written approval:
 - destructive database migrations, table drops, data overwrites, or irreversible import/export operations
 - remote scripts such as `curl ... | bash` or unpinned installers
 
+One standing exception: the disk-hygiene rules in `docs/agent/WORKFLOW_ROLES.md` ("Build-machine hygiene", owner-authorized 2026-10-19) let a session remove its own clean, pushed per-bead worktree and its own **local** branch after its PR merges, and run `scripts/dev-hygiene.sh`; they allow nothing else above. Deleting a **remote** branch on `origin` is not part of the exception and stays the owner's call.
+
 Before any approved destructive operation:
 
 1. Explain in plain language what will change.
