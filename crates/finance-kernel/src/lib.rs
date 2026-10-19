@@ -2634,6 +2634,38 @@ fn next_meta(seed: &CommandMeta) -> CommandMeta {
     }
 }
 
+/// Why released biometric unlock material was refused, before any write to the vault.
+/// Each cause is its own variant so a shell can log which, but every one means the
+/// platform item is stale or foreign: delete it and ask for the password. A wrong key is
+/// never reported as a corrupt vault, and nothing here carries key material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum ReleasedUnlockError {
+    /// The item's format version is not one this build reads.
+    #[error("unknown released-material version {0}")]
+    UnknownVersion(u8),
+    /// The wrapped-DEK fingerprint no longer matches the vault's envelope: the password
+    /// was changed or the key rotated since enrollment. Re-enrollment is needed.
+    #[error("the vault's key envelope changed since enrollment; re-enroll")]
+    StaleFingerprint,
+    /// The item names a different vault than the one opened.
+    #[error("the item belongs to a different vault")]
+    WrongVault,
+    /// The key does not open the vault's database although the fingerprint matched.
+    #[error("the released key does not open this vault")]
+    KeyRejected,
+}
+
+impl ReleasedUnlockError {
+    /// Whether the caller must delete the platform item and offer enrollment again.
+    /// True for every cause today; kept as a method so a future transient cause need not
+    /// force a delete.
+    #[must_use]
+    pub const fn requires_reenrollment(self) -> bool {
+        true
+    }
+}
+
 /// Errors from the kernel boundary. Intentionally free of any `rusqlite` types:
 /// persistence failures are flattened to a message so no database type leaks.
 #[derive(Debug, Error)]
@@ -2679,6 +2711,11 @@ pub enum KernelError {
     /// oracle distinguishing wrong-password from a tampered envelope.
     #[error("vault unlock failed")]
     VaultUnlockFailed,
+    /// Released biometric unlock material was refused (`unlock_vault_with_dek`,
+    /// personal-cfo-7ie.10). Every cause means the platform item cannot be used: the
+    /// caller deletes it and asks for the password. See [`ReleasedUnlockError`].
+    #[error("released unlock material refused: {0}")]
+    ReleasedUnlock(ReleasedUnlockError),
     /// A vault envelope/sidecar I/O or non-unlock crypto failure, flattened to a
     /// message (never embeds key, password, or salt material).
     #[error("vault error: {0}")]
@@ -3502,6 +3539,15 @@ impl Kernel {
     /// Returns [`KernelError`] on a persistence failure.
     pub fn account_count(&self) -> Result<u64, KernelError> {
         Ok(self.worker.account_count()?)
+    }
+
+    /// The vault's Sync `vault_id` (a random identifier, not a secret). The biometric
+    /// enrollment step records it in the platform item, and `unlock_vault_with_dek` checks it.
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a persistence failure.
+    pub fn vault_id(&self) -> Result<Uuid, KernelError> {
+        Ok(self.worker.vault_id()?)
     }
 
     /// The linked SQLCipher version (`PRAGMA cipher_version`), e.g.
@@ -4500,6 +4546,7 @@ pub fn failure_category(error: &KernelError) -> FailureCategory {
         | KernelError::NewerVaultSchema { .. }
         | KernelError::UnsupportedVaultSchema
         | KernelError::VaultUnlockFailed
+        | KernelError::ReleasedUnlock(_)
         | KernelError::Vault(_)
         | KernelError::IllegalVaultTransition { .. } => FailureCategory::Vault,
         _ => FailureCategory::Internal,
