@@ -91,16 +91,14 @@ impl ReleasedUnlockMaterial {
         vault_id.copy_from_slice(&bytes[1..17]);
         let mut fingerprint = [0_u8; 32];
         fingerprint.copy_from_slice(&bytes[17..49]);
-        let mut dek = [0_u8; DEK_LEN];
-        dek.copy_from_slice(&bytes[49..49 + DEK_LEN]);
-        // `Dek::from_array` takes the array by value (arrays are `Copy`), so this local
-        // copy of the key must be scrubbed here.
-        let dek_secret = Dek::from_array(dek);
-        zeroize::Zeroize::zeroize(&mut dek);
+        // The DEK is copied straight from the protected buffer into its own protected
+        // allocation: no stack array ever holds it (personal-cfo-xzpra).
+        let dek = Dek::from_slice(&bytes[49..49 + DEK_LEN])
+            .expect("the slice is DEK_LEN bytes by construction");
         Ok(Self {
             vault_id,
             fingerprint,
-            dek: dek_secret,
+            dek,
         })
     }
 
@@ -112,14 +110,16 @@ impl ReleasedUnlockMaterial {
         wrapped: &WrappedDek,
         dek: &Dek,
     ) -> SecretBytes<RELEASED_LEN> {
-        let mut out = [0_u8; RELEASED_LEN];
-        out[0] = RELEASED_VERSION;
-        out[1..17].copy_from_slice(&vault_id);
-        out[17..49].copy_from_slice(&dek_fingerprint(wrapped));
-        out[49..].copy_from_slice(dek.expose_bytes());
-        let secret = SecretBytes::new(out);
-        zeroize::Zeroize::zeroize(&mut out);
-        secret
+        // Built in place in the protected buffer, so the sealed plaintext never exists in an
+        // unscrubbed stack array.
+        SecretBytes::init::<core::convert::Infallible>(|out| {
+            out[0] = RELEASED_VERSION;
+            out[1..17].copy_from_slice(&vault_id);
+            out[17..49].copy_from_slice(&dek_fingerprint(wrapped));
+            out[49..].copy_from_slice(dek.expose_bytes());
+            Ok(())
+        })
+        .unwrap_or_else(|never| match never {})
     }
 }
 
@@ -162,7 +162,7 @@ mod tests {
     fn released_material_has_the_documented_layout_and_round_trips() {
         let dek = {
             let bytes: [u8; DEK_LEN] = core::array::from_fn(|i| 0x40 + u8::try_from(i).unwrap());
-            Dek::from_array(bytes)
+            Dek::from_slice(&bytes).unwrap()
         };
         let vault_id: [u8; 16] = [
             0x01, 0x98, 0xc2, 0xc1, 0x5f, 0x0a, 0x7c, 0x3d, 0x8a, 0x4e, 0x9b, 0x1d, 0, 0, 0, 0x11,
@@ -184,7 +184,7 @@ mod tests {
         for version in [0_u8, 2, 255] {
             let mut bytes = [7_u8; RELEASED_LEN];
             bytes[0] = version;
-            let sealed = SecretBytes::new(bytes);
+            let sealed = SecretBytes::from_slice(&bytes).unwrap();
             assert_eq!(
                 ReleasedUnlockMaterial::parse(&sealed).unwrap_err(),
                 ReleasedParseError::UnknownVersion(version)
@@ -192,7 +192,8 @@ mod tests {
         }
         let mut bytes = [0xAB_u8; RELEASED_LEN];
         bytes[0] = RELEASED_VERSION;
-        let parsed = ReleasedUnlockMaterial::parse(&SecretBytes::new(bytes)).unwrap();
+        let parsed =
+            ReleasedUnlockMaterial::parse(&SecretBytes::from_slice(&bytes).unwrap()).unwrap();
         let shown = format!("{parsed:?} {:?}", parsed.dek);
         assert!(!shown.to_lowercase().contains("ab"), "{shown}");
         assert!(shown.contains("REDACTED"));

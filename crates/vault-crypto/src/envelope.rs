@@ -50,11 +50,17 @@ impl Dek {
         self.0.expose()
     }
 
-    /// Move `bytes` into a protected allocation, scrubbing the caller's copy.
-    pub(crate) fn from_array(mut bytes: [u8; DEK_LEN]) -> Self {
-        let dek = Dek(crate::SecretBytes::new(bytes));
-        bytes.zeroize();
-        dek
+    /// Build a DEK in place in a protected buffer (no stack copy of the key).
+    pub(crate) fn init<E>(
+        fill: impl FnOnce(&mut [u8; DEK_LEN]) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        crate::SecretBytes::init(fill).map(Dek)
+    }
+
+    /// Copy a DEK from `bytes` into a protected buffer; `None` unless it is exactly
+    /// [`DEK_LEN`] long. The caller scrubs the slice it passed.
+    pub(crate) fn from_slice(bytes: &[u8]) -> Option<Self> {
+        crate::SecretBytes::from_slice(bytes).map(Dek)
     }
 }
 
@@ -75,9 +81,7 @@ impl core::fmt::Debug for Dek {
 /// # Errors
 /// Returns [`VaultCryptoError::Rng`] if the OS random source is unavailable.
 pub fn generate_dek() -> Result<Dek, VaultCryptoError> {
-    let mut bytes = [0u8; DEK_LEN];
-    getrandom::getrandom(&mut bytes).map_err(|_| VaultCryptoError::Rng)?;
-    Ok(Dek::from_array(bytes))
+    Dek::init(|out| getrandom::getrandom(out).map_err(|_| VaultCryptoError::Rng))
 }
 
 /// A DEK wrapped (AEAD-encrypted) by a KEK. Ciphertext + nonce — not secret.
@@ -125,10 +129,9 @@ pub fn unwrap_dek(kek: &Kek, wrapped: &WrappedDek) -> Result<Dek, VaultCryptoErr
         plaintext.zeroize();
         return Err(VaultCryptoError::KeyUnwrap);
     }
-    let mut arr = [0u8; DEK_LEN];
-    arr.copy_from_slice(&plaintext);
+    let dek = Dek::from_slice(&plaintext).ok_or(VaultCryptoError::KeyUnwrap);
     plaintext.zeroize();
-    Ok(Dek::from_array(arr))
+    dek
 }
 
 /// Re-wrap an envelope's DEK under a **new** password — the change-password
