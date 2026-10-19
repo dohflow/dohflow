@@ -519,7 +519,7 @@ Other behavior changes read in the same upgrade, none of which widens a grant
   `macos-private-api` feature (Tauri documents that feature as a no-op from
   2.12.1). On macOS 12.3 and later it uses the public WebKit API. A page can
   therefore request fullscreen on a user gesture; the untrusted windows' CSP
-  and empty capabilities are unchanged. Tracked in `personal-cfo-md8h2.8` notes.
+  and empty capabilities are unchanged. Follow-up: `personal-cfo-md8h2.9`.
 - New webview permission-request hooks exist; the app registers none, so the
   platform default is unchanged.
 - New core commands exist (`core:app:allow-exit`,
@@ -529,7 +529,7 @@ Other behavior changes read in the same upgrade, none of which widens a grant
 ## Linked beads
 
 - `personal-cfo-2no` (window topology + empty-capability isolation — 2026-09-27 addendum)
-- `personal-cfo-md8h2.8` (Tauri 2.12.4 upgrade — 2026-10-18 addendum)
+- `personal-cfo-md8h2.8` (Tauri 2.12.4 upgrade — 2026-10-18 addendum), `personal-cfo-md8h2.9` (fullscreen follow-up)
 - `personal-cfo-n76x.18` (About card, Support row, scoped opener grant — 2026-09-06 addendum)
 - `personal-cfo-867.1.2` (updater + process capability grants — 2026-09-08 addendum)
 - `personal-cfo-tif` (this ADR's implementation: window/capability isolation)
