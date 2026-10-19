@@ -102,6 +102,14 @@ pub use money_inbox::MoneyInboxItem;
 /// build knows. Newer backups and ordinary existing-vault version witnesses
 /// cannot be opened by this build (ADR 0024, personal-cfo-g3m.4).
 pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
+
+/// The apply-semantics generation recorded in every operation-log row (`engine_version`,
+/// vault-format.md C.5; ADR 0074 R40). It names *what `apply` does* for a given payload and base
+/// state, not the app release: two builds with the same value must produce the same rows and the
+/// same write-set hash from the same command, which is what lets a replica verify a write set.
+/// It is bumped by hand, in the same change, whenever a change makes `apply` write something
+/// different for an unchanged payload; a mismatch tells a client to update before it continues.
+pub const ENGINE_VERSION: &str = "dohflow-engine-1";
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
@@ -6482,6 +6490,14 @@ fn apply_command(
     // command starts from an empty capture.
     write_set::clear(&tx)?;
 
+    // The command's payload (ADR 0074 decision 3, vault-format.md C.5): encoded up front so a
+    // command the format cannot carry (text with a U+0000, say) is refused before anything is
+    // written, and the bytes stored in the operation log are exactly the ones encoded here. The
+    // error names the kind of value, never the value.
+    let payload = payload::encode_payload(cmd).map_err(|error| {
+        DbError::InvalidCommand(format!("the command cannot be recorded: {error}"))
+    })?;
+
     // 1. Domain mutation. Each arm yields the affected entity id for provenance.
     let entity_id = match cmd {
         WriteCommand::CreateAccount {
@@ -6931,8 +6947,9 @@ fn apply_command(
         "INSERT INTO operation_log (
             command_id, correlation_id, causation_id, actor_type, actor_id,
             idempotency_key, operation_type, affected_entities, metadata, node_id,
-            vault_schema_version, hlc_timestamp, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            vault_schema_version, hlc_timestamp, created_at,
+            payload, payload_schema_version, write_set_hash, engine_version
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             meta.command_id,
             meta.correlation_id,
@@ -6947,6 +6964,10 @@ fn apply_command(
             schema_version,
             hlc,
             Utc::now().to_rfc3339(),
+            payload,
+            payload::PAYLOAD_SCHEMA_VERSION,
+            write_set.hash.as_slice(),
+            ENGINE_VERSION,
         ],
     )?;
     let op_seq = tx.last_insert_rowid();

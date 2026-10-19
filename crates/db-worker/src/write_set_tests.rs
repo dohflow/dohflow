@@ -657,3 +657,31 @@ fn the_capture_adds_little_to_a_command() {
         "the capture multiplied the cost of a command by 6 or more: {off:?} -> {on:?}"
     );
 }
+
+#[test]
+fn a_replicated_text_key_that_is_not_valid_utf8_fails_the_command() {
+    // A TEXT value in SQLite may hold any bytes, but the row encoding is defined over UTF-8
+    // (vault-format.md C.1.5). A replicated row that cannot be encoded fails the command with a
+    // typed error before commit, never a silently different key: the captured key bytes are
+    // bound back exactly as they were captured, and an unencodable value is an error, not a
+    // lossy substitute that would look up another row (or report this one as deleted).
+    let (_dir, worker) = worker();
+    let result = command(&worker, |tx| {
+        tx.execute(
+            "INSERT INTO settings (key, value, value_schema_version, updated_at)
+             VALUES (CAST(x'757365722effff' AS TEXT), 'v', 1, 't')",
+            [],
+        )?;
+        Ok(())
+    });
+    match result {
+        Err(DbError::InvalidCommand(message)) => {
+            assert!(message.contains("not valid UTF-8"), "{message}");
+            assert!(
+                !message.contains("user."),
+                "no key bytes in the error: {message}"
+            );
+        }
+        other => panic!("expected a typed refusal, got {other:?}"),
+    }
+}

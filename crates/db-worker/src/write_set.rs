@@ -31,7 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use rusqlite::types::{Value as Sql, ValueRef};
+use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::Connection;
 use sync_core::row_digest::{
     absent_digest, parent_row_digest, primary_key, row_digest, ChildTable, Column, Kind, Value,
@@ -530,14 +530,16 @@ pub(crate) fn finish(conn: &Connection) -> Result<WriteSet, DbError> {
                 .map(|(i, k)| format!("{k} = ?{}", i + 1))
                 .collect::<Vec<_>>()
                 .join(" AND ");
-            let key_params: Vec<Sql> = table
+            // Bind the key exactly as it was captured: a text key goes in as its original bytes,
+            // never re-decoded, so a key that is not valid UTF-8 still finds its row.
+            let key_params: Vec<ToSqlOutput<'_>> = table
                 .key
                 .iter()
                 .map(|k| match key_row.get(k).unwrap_or(&Owned::Null) {
-                    Owned::Null => Sql::Null,
-                    Owned::Int(v) => Sql::Integer(*v),
-                    Owned::Text(b) => Sql::Text(String::from_utf8_lossy(b).into_owned()),
-                    Owned::Blob(b) => Sql::Blob(b.clone()),
+                    Owned::Null => ToSqlOutput::Borrowed(ValueRef::Null),
+                    Owned::Int(v) => ToSqlOutput::Borrowed(ValueRef::Integer(*v)),
+                    Owned::Text(b) => ToSqlOutput::Borrowed(ValueRef::Text(b)),
+                    Owned::Blob(b) => ToSqlOutput::Borrowed(ValueRef::Blob(b)),
                 })
                 .collect();
             let params: Vec<&dyn rusqlite::ToSql> = key_params
