@@ -149,6 +149,8 @@ These rows are deliberately not ordinary shape outcomes:
    and `DeleteRecurringBill` become soft deletes in SYNC-2b. Once tombstoned,
    each has an archive/reinstate Toggle disposition. No purge or compaction
    path may erase the tombstone while an envelope can reference it.
+   **Resolved 2026-10-19 (`personal-cfo-egn67`): tombstones, now Toggle; see
+   Addendum A.**
 2. **Reshape first (4).** `CreateSourceBatch`, `AttachSourceRecord`,
    `UpdateBatchState`, and `CommitStaged` reference device-local staging.
    SYNC-2c materializes the command into class-1 or class-1b artifact data

@@ -7203,6 +7203,45 @@ fn migration_57_leaves_existing_rows_live_and_rolls_back_and_forward() {
 }
 
 #[test]
+fn migration_57_down_refuses_while_a_tombstone_exists_and_changes_nothing() {
+    let (_dir, worker) = worker();
+    let mut conn = worker.read_connection().unwrap();
+    let id = vec![7_u8; 16];
+    conn.execute(
+        "INSERT INTO income_sources (id, name, net_minor_units, currency, frequency, anchor_date,
+             active, created_at, deleted_at)
+         VALUES (?1, 'Gone', 100, 'USD', 'monthly', '2026-01-01', 1, 't', '2026-10-19T12:00:00+00:00')",
+        [&id],
+    )
+    .unwrap();
+
+    // Rolling back would drop deleted_at and resurrect the row: refused, atomically.
+    assert!(migrations::migrate_down(&mut conn, 56).is_err());
+    assert_eq!(user_version(&conn), migrations::CURRENT_VERSION);
+    for table in TOMBSTONED_TABLES {
+        assert!(
+            column_of(&conn, table, "deleted_at").is_some(),
+            "{table}: a refused down leaves the column in place"
+        );
+    }
+    let kept: Option<String> = conn
+        .query_row(
+            "SELECT deleted_at FROM income_sources WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept.as_deref(), Some("2026-10-19T12:00:00+00:00"));
+
+    // Once nothing is tombstoned the down goes through.
+    conn.execute("UPDATE income_sources SET deleted_at = NULL", [])
+        .unwrap();
+    migrations::migrate_down(&mut conn, 56).unwrap();
+    assert_eq!(user_version(&conn), 56);
+    assert_eq!(column_of(&conn, "income_sources", "deleted_at"), None);
+}
+
+#[test]
 fn rebuild_flag_triggers_read_model_rebuild() {
     let (_dir, worker) = worker();
     let mut conn = worker.read_connection().unwrap();

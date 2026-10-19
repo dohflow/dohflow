@@ -78,6 +78,7 @@ require_text "scenario uses reversal handle" "$ADR" "\`command_id\` is ADR 0055'
 
 require_text "tombstone exception is counted" "$ADR" "**Tombstone first (3).**"
 require_text "reshape exception is counted" "$ADR" "**Reshape first (4).**"
+require_text "exception item 1 is marked resolved" "$ADR" "**Resolved 2026-10-19 (\`personal-cfo-egn67\`): tombstones, now Toggle; see"
 require_text "tombstones landed (addendum)" "$ADR" "## Addendum A — Tombstones landed (2026-10-19, \`personal-cfo-egn67\`)"
 require_text "tombstone uses issued_at" "$ADR" "to the command's \`issued_at\`, never the wall clock"
 require_text "bill tombstone covers the contract" "$ADR" "tombstone covers its \`recurring_events\` row and its \`bill_contracts\` row"
