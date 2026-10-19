@@ -242,14 +242,15 @@ pub(crate) fn derive_id(
 ///
 /// Not `Clone`: a copy would restart from the same ordinal and mint the same ids twice.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// fn needs_clone<T: Clone>() {}
 /// needs_clone::<core_ids::DerivedIds>();
 /// ```
 ///
-/// There is no public function that derives an id from an explicit ordinal either:
+/// There is no public function that derives an id from an explicit ordinal either (this
+/// guards the crate-root re-export; the function itself is `pub(crate)`):
 ///
-/// ```compile_fail
+/// ```compile_fail,E0425
 /// let _ = core_ids::derive_id;
 /// ```
 #[derive(Debug)]
