@@ -765,6 +765,15 @@ pub enum WriteCommand {
         /// The full desired set of split lines (sum must equal the txn amount).
         lines: Vec<SplitLineInput>,
     },
+    /// Set the household's IANA timezone (`personal-cfo-g3m.8`, ADR 0021 section 1).
+    /// It sets the calendar boundary of the forecast horizon, so it is a class-1 logical
+    /// field that changes only through this logged command (`vault-format.md` B.2 rule 6),
+    /// never by a direct write. Validated against the IANA database on apply; each change
+    /// writes an `operation_log` row and an `audit_events` row.
+    SetHouseholdTimezone {
+        /// The IANA zone name, for example `America/Chicago`.
+        timezone: String,
+    },
 }
 
 impl WriteCommand {
@@ -810,6 +819,7 @@ impl WriteCommand {
             WriteCommand::CreateCategory { .. } => "create_category",
             WriteCommand::UpdateCategory { .. } => "update_category",
             WriteCommand::MoveCategory { .. } => "move_category",
+            WriteCommand::SetHouseholdTimezone { .. } => "set_household_timezone",
             WriteCommand::ArchiveCategory(_) => "archive_category",
             WriteCommand::ReinstateCategory(_) => "reinstate_category",
             WriteCommand::RecategorizeTransaction { .. } => "recategorize_transaction",
@@ -2549,20 +2559,6 @@ impl DbWorker {
     /// signal the state machine, `personal-cfo-tg5`, will consume).
     pub fn vault_metadata(&self) -> Result<VaultMetadata, DbError> {
         read_vault_metadata(&self.read_connection()?)
-    }
-
-    /// Set the household's IANA timezone (`personal-cfo-q329`) — the calendar-boundary
-    /// authority ADR 0021 §1 already named, previously unsettable after vault creation.
-    /// Configuration on the singleton `vault_metadata` row, not a ledger write, so this
-    /// goes through the single-writer connection directly rather than `WriteCommand`
-    /// (mirrors `set_setting`'s "settings, not ledger writes" rationale).
-    ///
-    /// # Errors
-    /// Returns [`DbError::InvalidCommand`] if `tz` is not a valid IANA timezone name, or
-    /// [`DbError`] if the write fails.
-    pub fn set_household_timezone(&self, tz: &str) -> Result<(), DbError> {
-        let guard = self.lock();
-        forecast::write_household_tz(&guard.conn, tz)
     }
 
     /// Number of entries in the operation log.
@@ -6655,6 +6651,9 @@ fn apply_command(
         WriteCommand::MoveCategory { id, new_parent_id } => {
             apply::categorization_cmds::apply_move_category(&tx, id, new_parent_id)?
         }
+        WriteCommand::SetHouseholdTimezone { timezone } => {
+            apply::household::apply_set_household_timezone(&tx, meta, timezone)?
+        }
         WriteCommand::ArchiveCategory(id) => {
             apply::categorization_cmds::apply_archive_category(&tx, id)?
         }
@@ -6754,6 +6753,9 @@ fn apply_command(
         }
         WriteCommand::DismissRecurringSuggestion { .. } => "recurring_suggestion_suppressions",
         WriteCommand::SetCardStatementBalance { .. } => "credit_card_statements",
+        // The household timezone lives on the singleton vault_metadata row; its entity id
+        // is the vault id (personal-cfo-g3m.8).
+        WriteCommand::SetHouseholdTimezone { .. } => "vault_metadata",
         WriteCommand::CreateCategory { .. }
         | WriteCommand::UpdateCategory { .. }
         | WriteCommand::MoveCategory { .. }

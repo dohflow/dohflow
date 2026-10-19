@@ -39,6 +39,17 @@ pub fn meta_with_key(idempotency_key: &str) -> CommandMeta {
     }
 }
 
+/// Change the household timezone through the logged command (personal-cfo-g3m.8): the
+/// only way the value changes after vault creation.
+pub fn set_household_timezone(worker: &DbWorker, timezone: &str) -> Result<Outcome, DbError> {
+    worker.dispatch(
+        meta(),
+        WriteCommand::SetHouseholdTimezone {
+            timezone: timezone.to_owned(),
+        },
+    )
+}
+
 pub fn sample_account() -> Account {
     Account::new(
         AccountId::new(),

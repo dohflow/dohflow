@@ -50,7 +50,7 @@ fn seed_and_export(dir: &std::path::Path) -> std::path::PathBuf {
     // stored timezone through, not merely that "UTC" survives by coincidence with the
     // untouched default.
     kernel
-        .set_household_timezone("America/Los_Angeles")
+        .set_household_timezone(&meta(), "America/Los_Angeles")
         .expect("set household timezone");
 
     let pkg = dir.join("backup.pcfobk");

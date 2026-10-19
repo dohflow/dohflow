@@ -6273,6 +6273,16 @@ fn vault_metadata_is_seeded_on_open_with_defaults() {
     assert_eq!(len, 16);
 }
 
+/// Change the household timezone through the logged command (personal-cfo-g3m.8).
+fn set_household_timezone(worker: &DbWorker, timezone: &str) -> Result<Outcome, DbError> {
+    worker.dispatch(
+        meta(),
+        WriteCommand::SetHouseholdTimezone {
+            timezone: timezone.to_owned(),
+        },
+    )
+}
+
 /// personal-cfo-q329: `set_household_timezone` persists a valid IANA name, and setting it
 /// actually shifts what `household_today` resolves to — proof this isn't merely a column
 /// write, but reaches the same resolver 5ie.11's past-due queue and ku2hn's confirm-early
@@ -6295,9 +6305,7 @@ fn set_household_timezone_persists_and_shifts_household_today() {
     let under_utc = crate::forecast::household_today_at(&conn, as_of).unwrap();
     assert_eq!(under_utc.to_string(), "2026-01-15");
 
-    worker
-        .set_household_timezone("America/Los_Angeles")
-        .unwrap();
+    set_household_timezone(&worker, "America/Los_Angeles").unwrap();
     assert_eq!(
         worker.vault_metadata().unwrap().household_timezone,
         "America/Los_Angeles",
@@ -6310,7 +6318,7 @@ fn set_household_timezone_persists_and_shifts_household_today() {
         "the same instant now resolves to the PREVIOUS calendar day under the new zone",
     );
 
-    worker.set_household_timezone("Asia/Tokyo").unwrap();
+    set_household_timezone(&worker, "Asia/Tokyo").unwrap();
     let conn = worker.read_connection().unwrap();
     let under_tokyo = crate::forecast::household_today_at(&conn, as_of).unwrap();
     assert_eq!(under_tokyo.to_string(), "2026-01-15");
@@ -6322,7 +6330,7 @@ fn set_household_timezone_persists_and_shifts_household_today() {
 #[test]
 fn set_household_timezone_rejects_an_unrecognized_iana_name() {
     let (_dir, worker) = worker();
-    let result = worker.set_household_timezone("Not/A_Real_Zone");
+    let result = set_household_timezone(&worker, "Not/A_Real_Zone");
     assert!(result.is_err(), "an invalid IANA name must be rejected");
     // The stored value is untouched — still the vault's original default.
     assert_eq!(worker.vault_metadata().unwrap().household_timezone, "UTC");
@@ -6987,6 +6995,31 @@ fn panic_after_oplog_also_rolls_back() {
     // Commit never ran, so every insert rolls back together.
     assert_eq!(conn.count_accounts().unwrap(), 0);
     assert_eq!(conn.operation_count().unwrap(), 0);
+    assert_eq!(worker.idempotency_key_count().unwrap(), 0);
+}
+
+/// personal-cfo-g3m.8: the timezone value, its `audit_events` row and its `operation_log`
+/// row are one transaction. A panic after all three writes rolls every one back.
+#[test]
+fn panic_after_a_household_timezone_change_rolls_back_value_audit_and_oplog() {
+    let (_dir, worker) = worker();
+    let outcome = worker.dispatch_inner(
+        meta(),
+        WriteCommand::SetHouseholdTimezone {
+            timezone: "Asia/Tokyo".to_owned(),
+        },
+        Fault::PanicAt(FaultPoint::AfterOpLog),
+    );
+    assert!(matches!(outcome, Err(DbError::WriterPanicked)));
+    let conn = worker.read_connection().unwrap();
+    assert_eq!(worker.vault_metadata().unwrap().household_timezone, "UTC");
+    assert_eq!(conn.operation_count().unwrap(), 0);
+    assert_eq!(
+        worker
+            .audit_event_count("household_timezone_changed")
+            .unwrap(),
+        0
+    );
     assert_eq!(worker.idempotency_key_count().unwrap(), 0);
 }
 

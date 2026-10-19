@@ -2685,6 +2685,38 @@ fn a_blank_key_is_replaced_by_a_fresh_key_and_each_call_applies() {
     );
 }
 
+/// personal-cfo-g3m.8: the Settings path changes the household timezone through the logged
+/// command, so each change leaves an operation-log row and an audit event, and a rejected
+/// name leaves neither.
+#[test]
+fn set_household_timezone_is_a_logged_command_through_ipc() {
+    let (_dir, state) = open_state();
+    let counts = |state: &AppState| {
+        let guard = state.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        (
+            kernel.operation_count().unwrap(),
+            kernel
+                .audit_event_count("household_timezone_changed")
+                .unwrap(),
+        )
+    };
+    let (ops, audits) = counts(&state);
+
+    set_household_timezone_impl(&state, "Asia/Tokyo".to_owned()).unwrap();
+    assert_eq!(household_timezone_impl(&state).unwrap(), "Asia/Tokyo");
+    assert_eq!(counts(&state), (ops + 1, audits + 1));
+
+    let err = set_household_timezone_impl(&state, "Not/A_Real_Zone".to_owned()).unwrap_err();
+    assert!(matches!(err, IpcError::Validation(_)), "{err:?}");
+    assert_eq!(household_timezone_impl(&state).unwrap(), "Asia/Tokyo");
+    assert_eq!(
+        counts(&state),
+        (ops + 1, audits + 1),
+        "a rejected name logs nothing"
+    );
+}
+
 /// hbd8: the plaintext CSV export writes every transaction chronologically with
 /// resolved names and RFC-4180 escaping — the portability guarantee of the Launch gate.
 #[test]

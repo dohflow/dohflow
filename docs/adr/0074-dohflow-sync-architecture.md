@@ -37,7 +37,7 @@ the shipped source:
   database image therefore cannot be a Sync genesis snapshot.
 - `CommandMeta` already carries `correlation_id` and `causation_id`
   (`crates/db-worker/src/lib.rs:174-188`), and the current
-  `WriteCommand` enum has 49 variants
+  `WriteCommand` enum has 50 variants
   (`crates/db-worker/src/lib.rs:223-698`). Its payload and time semantics
   must become explicit before a command tail can replicate safely.
 - The nine user-intent groups that are not yet uniformly on the command bus

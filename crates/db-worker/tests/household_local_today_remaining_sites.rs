@@ -54,7 +54,7 @@ fn zone_that_disagrees_with_utc(now: chrono::DateTime<Utc>) -> (&'static str, Na
 fn disagreeing_household(worker: &DbWorker) -> (NaiveDate, NaiveDate) {
     let utc_today = Utc::now().date_naive();
     let (zone, local_today) = zone_that_disagrees_with_utc(Utc::now());
-    worker.set_household_timezone(zone).unwrap();
+    set_household_timezone(worker, zone).unwrap();
     assert_ne!(
         local_today, utc_today,
         "sanity: the chosen zone ({zone}) must actually disagree with UTC right now"
