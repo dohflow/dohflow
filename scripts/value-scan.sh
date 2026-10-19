@@ -68,6 +68,11 @@ excluded_paths=(
 check() {
   local label="$1" pattern="$2" exceptions="$3" matches unexcepted
   matches="$(git grep -nIE "$pattern" -- . "${excluded_paths[@]}" 2>/dev/null || true)"
+  # A known-answer vector marker (`<!-- row-vector: name=HEX -->`, `<!-- sync-vector: ... -->`)
+  # is machine-generated hex that can contain a 16-digit run by pure chance, exactly like a
+  # lockfile checksum; it carries no narrative text. Only the marker LINE is skipped: the same
+  # digits in prose in the same file still fail. (personal-cfo-t2s4b part 5a.)
+  matches="$(echo "$matches" | grep -vE '^[^:]+:[0-9]+:<!-- (row|sync)-vector: [a-z0-9_]+=[0-9a-f]+ -->$' || true)"
   [ -z "$matches" ] && return 0
   if [ -n "$exceptions" ]; then
     unexcepted="$(echo "$matches" | grep -vE "^($exceptions):" || true)"
