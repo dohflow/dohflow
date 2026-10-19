@@ -5,6 +5,10 @@
   repository exists is not itself a secret.
 - **Bead:** `personal-cfo-0uxwt`
 - **Decider:** Owner, 2026-09-16, in chat with the planning session
+- **Extended 2026-10-18:** decision 2's internal tier also covers documentation
+  about a proprietary product, even when it is engineering content — see
+  [ADR 0085](0085-open-core-boundary.md) decision 4. The accepted text below is
+  unchanged.
 - **Related:** ADR 0062 (public-repo fork mechanics; the snapshot mechanism
   and export-ignore list this ADR builds on), ADR 0064 (task tracking leaves
   the repo — beads never public, restated here), ADR 0066 (business model —
