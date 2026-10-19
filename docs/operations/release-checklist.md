@@ -53,16 +53,34 @@ Two scripts, two different jobs — don't confuse them:
      ```
   4. Verify locally with a throwaway tag (nothing is pushed):
      ```sh
-     printf '%s %s\n' "$(git config user.email)" "$(cat ~/.ssh/id_ed25519_signing.pub)" > ~/.ssh/allowed_signers
+     touch ~/.ssh/allowed_signers   # appended to below, never overwritten
+     grep -qF "$(cut -d' ' -f1,2 ~/.ssh/id_ed25519_signing.pub)" ~/.ssh/allowed_signers ||
+       printf '%s %s\n' "$(git config user.email)" "$(cat ~/.ssh/id_ed25519_signing.pub)" >> ~/.ssh/allowed_signers
      git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
      git tag -s signing-check -m "signing check"
      git tag -v signing-check    # expect: Good "git" signature
      git tag -d signing-check
      ```
-  5. Verify GitHub shows **"Verified"**: push a throwaway signed tag, open
-     `https://github.com/dohflow/dohflow/commits/<tag>` and look for the badge,
-     then remove the tag from `origin` and locally (the owner's call; it is a
-     throwaway). The tag in step 3 gets the same check on the real release.
+  5. Verify GitHub shows the **tag** as "Verified". Push a throwaway signed tag:
+     ```sh
+     git tag -s signing-check-remote -m "signing check"
+     git push origin signing-check-remote
+     ```
+     then either open the repository's **Tags** page
+     (`https://github.com/dohflow/dohflow/tags`) and look for the badge on that
+     tag, or ask the API, which answers about the tag object itself:
+     ```sh
+     gh api repos/dohflow/dohflow/git/tags/"$(git rev-parse signing-check-remote)" --jq .verification.verified   # expect: true
+     ```
+     Do **not** judge it from `/commits/<tag>`: that page shows the badges of the
+     *commits*, which GitHub signs itself on merged commits, so it can say
+     "Verified" for a tag that is not signed at all. Then remove the throwaway
+     tag (the owner's call; it is a throwaway):
+     ```sh
+     git push origin :refs/tags/signing-check-remote
+     git tag -d signing-check-remote
+     ```
+     The tag in step 3 gets the same check on the real release.
 
   The same setup is a numbered step of the build-machine cutover runbook, so a
   new machine does it before its first release.
@@ -135,9 +153,10 @@ continuing — it exits non-zero and names exactly what's wrong.
 ```
 
 Runs preflight again, then `git tag -s vX.Y.Z` and `git push origin vX.Y.Z`.
-Confirm the tag shows **"Verified"** at
-`https://github.com/dohflow/dohflow/releases/tag/vX.Y.Z` (or
-`/commits/vX.Y.Z` before the release exists) — this is the one place a
+Confirm the **tag** shows **"Verified"** at
+`https://github.com/dohflow/dohflow/releases/tag/vX.Y.Z` (or on the
+`/tags` page before the release exists; not `/commits/vX.Y.Z`, which shows the
+commits' own badges and can say "Verified" for an unsigned tag) — this is the one place a
 signing regression would show up silently otherwise.
 
 ## 4. Package + draft (either session)
