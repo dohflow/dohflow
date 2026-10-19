@@ -236,18 +236,42 @@ pub fn export_bindings(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    // Install the redacting `tracing` subscriber first, so kernel/app log lines
-    // are scrubbed before any sink (plan §6.6, personal-cfo-2vs). This owns the
-    // global logger; we deliberately do **not** also install `tauri-plugin-log`,
-    // which would (a) panic on a second `set_logger` and (b) emit log lines that
-    // bypass the redactor.
-    observability::init();
+/// Which optional plugins [`register_plugins`] and [`run_with`] add to the app.
+///
+/// This is part of a generic embedding point: a crate that depends on this one
+/// can build its own Tauri context and decide which of the app's optional
+/// plugins its build carries. [`HostOptions::default`] is exactly what [`run`]
+/// uses, so the default desktop build is unchanged. A plugin left out here is
+/// not registered at all, so its commands do not exist in that build
+/// (`tests/host_options.rs`), whatever a capability file says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostOptions {
+    /// Register the signed-artifact updater plugin (ADR 0068).
+    pub updater: bool,
+    /// Register the process plugin (restart after an update).
+    pub process: bool,
+}
 
-    let builder = ipc_builder();
+impl Default for HostOptions {
+    fn default() -> Self {
+        Self {
+            updater: true,
+            process: true,
+        }
+    }
+}
 
-    tauri::Builder::default()
+/// Register the app's plugins on `builder`, in the order the desktop app has always
+/// used. The navigation guard, the dialog plugin and the scoped opener are always
+/// added; the updater and process plugins follow `options`.
+///
+/// Generic over the runtime so a test can drive it on Tauri's mock runtime.
+#[must_use]
+pub fn register_plugins<R: tauri::Runtime>(
+    builder: tauri::Builder<R>,
+    options: HostOptions,
+) -> tauri::Builder<R> {
+    let mut builder = builder
         // Cancels any webview navigation away from the app's own origin (personal-cfo-2rf,
         // ADR 0010): the CSP limits what a page loads, not where it goes, so without this a
         // renderer could replace the trusted UI with a remote page. External pages open in
@@ -271,20 +295,67 @@ pub fn run() {
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
                 .build(),
-        )
+        );
+    if options.updater {
         // The real signed-artifact updater (personal-cfo-867.1.2, ADR 0068). Config-driven —
         // reads `plugins.updater.pubkey`/`endpoints` from tauri.conf.json, no builder options
         // needed. Release builds call its JS API (`@tauri-apps/plugin-updater`) directly from
         // `useSoftwareUpdate.ts`; the from-source dev updater (`update.rs`) is unaffected and
         // stays the path when `PCFO_BUILD_CHANNEL == dev`. Granted `updater:default` only
         // (capabilities/default.json).
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    if options.process {
         // Restarts the app after the updater installs a new binary (`Update::download_and_install`
         // relaunches nothing on its own — the frontend calls this plugin's `relaunch()` after a
         // successful install). Granted `process:allow-restart` only, in the DESTRUCTIVE capability
         // (capabilities/destructive.json) alongside `apply_update`/`relaunch_app` — swapping the
         // running binary is exactly the class of action that capability exists to gate.
-        .plugin(tauri_plugin_process::init())
+        builder = builder.plugin(tauri_plugin_process::init());
+    }
+    builder
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    run_with(tauri::generate_context!(), HostOptions::default());
+}
+
+/// Run the app with its own Tauri context and the chosen optional plugins.
+///
+/// `context` is the caller's `tauri::generate_context!()` output: its
+/// `tauri.conf.json`, capability files, content-security policy and windows
+/// replace the ones compiled into this crate. [`run`] is
+/// `run_with(tauri::generate_context!(), HostOptions::default())`.
+///
+/// The context must keep the app's access-control layout (ADR 0010): it needs the
+/// app command permissions (`permissions/`) built into its ACL manifest, a
+/// `main` window declared with `"create": false` (the app builds it in setup), and
+/// a capability that grants the app commands to `main` only. A context that does
+/// not grant the app's own commands to `main` is refused at startup, because an
+/// ACL manifest without the app's permissions would leave those commands open to
+/// every window.
+///
+/// # Panics
+/// If the supplied context does not grant the app commands to `main`, or if
+/// Tauri cannot start the app (the same failure `run` has always reported).
+pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
+    assert!(
+        app_commands_are_granted_to_main(&mut context),
+        "the supplied Tauri context does not grant the app commands to the `{}` window: \
+         build its ACL from this app's permissions/ and capabilities (ADR 0010)",
+        windows::MAIN
+    );
+    // Install the redacting `tracing` subscriber first, so kernel/app log lines
+    // are scrubbed before any sink (plan §6.6, personal-cfo-2vs). This owns the
+    // global logger; we deliberately do **not** also install `tauri-plugin-log`,
+    // which would (a) panic on a second `set_logger` and (b) emit log lines that
+    // bypass the redactor.
+    observability::init();
+
+    let builder = ipc_builder();
+
+    register_plugins(tauri::Builder::default(), options)
         .invoke_handler(builder.invoke_handler())
         .setup(|app| {
             use tauri::Manager;
@@ -352,6 +423,29 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
+}
+
+/// Whether `context`'s ACL grants the app's own commands to the `main` window.
+///
+/// Tauri builds the ACL manifest from the crate that calls `generate_context!`.
+/// Without the app's permission files in it, the app's commands would be
+/// unrestricted for local content in every window, including the untrusted ones.
+/// A capability can only grant an app permission that the manifest defines, so a
+/// grant of `vault_status` to `main` proves the manifest carries them.
+/// [`run_with`] refuses a context for which this is false.
+#[must_use]
+pub fn app_commands_are_granted_to_main<R: tauri::Runtime>(
+    context: &mut tauri::Context<R>,
+) -> bool {
+    context
+        .runtime_authority_mut()
+        .resolve_access(
+            "vault_status",
+            windows::MAIN,
+            windows::MAIN,
+            &tauri::ipc::Origin::Local,
+        )
+        .is_some()
 }

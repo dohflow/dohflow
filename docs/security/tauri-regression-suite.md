@@ -18,6 +18,15 @@ evidence for one commit; this suite is what keeps later commits honest.
 | **3. Mock-runtime ACL** | `tests/window_isolation.rs` | The real resolved ACL on Tauri's mock runtime, with windows built by the app's own `windows` module: `main` reaches the general and destructive surfaces; `document_preview` and `agent_report` are rejected for app, destructive, core and plugin commands; the navigation guard refuses remote, `file:` and `data:` navigation from each shell | `cargo test` |
 | **4. Real-WebView probe** | `src/isolation_probe.rs` (debug builds only) | What static tests cannot: in each **real** WebView (`main` and both shells) the first-load origin, no Tauri global, `invoke` accepted or rejected as above, and the **effective** CSP, read from the browser's own `securitypolicyviolation` reports. An injected inline script and `eval` are refused, a remote `fetch` is refused by `connect-src`, and an inline `style` attribute still applies. `window.open` creates nothing, and a remote navigation is cancelled by the guard itself (its per-window count must rise) and leaves the page on the app origin. | CI step "Runtime isolation probe (real WebView, ADR 0010)" (Ubuntu, WebKitGTK under Xvfb); on demand locally (macOS WKWebView) |
 
+One more mock-runtime test file covers the app's generic embedding point
+(`personal-cfo-i93n3.8`): **`tests/host_options.rs`** drives `register_plugins`, the
+function `run_with` uses, with the real resolved ACL. A plugin left out through
+`HostOptions` has no commands at all in that build (Tauri answers "plugin updater not
+found" after the ACL has let the request through), the default options keep the
+desktop plugin set, and a supplied context whose ACL does not grant the app commands
+to `main` is refused (`app_commands_are_granted_to_main`), so an embedding crate cannot
+accidentally open the app's commands to every window.
+
 Two build-output checks complete the picture:
 
 - **`scripts/check-dist-csp.mjs`** runs on the frontend job's built `dist/`. It
