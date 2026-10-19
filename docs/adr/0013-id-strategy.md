@@ -351,6 +351,90 @@ same-genesis replay and seed-twin case (ii).  The canonical reference for both
 downstream beads is this section, **“Addendum A … deterministic derived
 identifiers for apply-minted rows.”**
 
+#### 9. Exception: content-derived provider-transaction identifiers (2026-10-18, `personal-cfo-g3m.12`)
+
+The mint-site rule of section 3 covers ids minted *by apply*. One more class of id
+is deliberately **not command-scoped**: the identity of a transaction a connector
+imported from a bank-data provider. Two devices that each fetch the same provider
+transaction with their own credentials must derive the **same** id, whichever
+command carries it and whenever each device fetched it, or the ledger commits it
+twice (ADR 0074 Addendum B). So this id is derived from the provider's own
+identifiers, **never from `issued_at`, a `command_id` or an ordinal**, it is
+computed when the commit command is *constructed*, and it is carried in the
+`CommitStaged` payload like the three caller-minted ids of section 3. It consumes
+no ordinal and is outside the 4,096-id cap.
+
+```text
+label    = ASCII "dohflow/provider-txn-id/v1"                (26 bytes)
+message  = u8(26) || label
+        || connection_id.bytes                               # 16 bytes, RFC UUID order
+        || u16_be(len(provider_account_key)) || provider_account_key
+        || u16_be(len(provider_txn_id))      || provider_txn_id
+digest   = HMAC-SHA256(id_key, message)                      # the same per-vault id_key as section 1
+id_bytes = digest[0..16], then
+           byte 6 = (byte 6 & 0x0f) | 0x80                    # UUID version 8
+           byte 8 = (byte 8 & 0x3f) | 0x80                    # RFC 9562 variant
+```
+
+The id is a UUID version 8 (RFC 9562 custom): it carries no time, so nothing may
+rely on `ORDER BY id` for creation order of provider-derived rows.
+`provider_account_key` and `provider_txn_id` are the provider's own strings,
+used **byte for byte as the adapter received them** (no case folding, no Unicode
+normalization), each 1 to 1,024 bytes of valid UTF-8 and **containing no C0 control
+character or DEL (`0x00..=0x1f`, `0x7f`)**. A transaction whose provider
+identifiers do not satisfy this has no provider identity: it is not given a
+derived id, and no fallback fingerprint stands in for one (Addendum B, item 6).
+The `connection_id` is the replicated connection identity (ADR 0074 Addendum B,
+item 3).
+
+*Domain separation.* The two derivations share `id_key`, so their message spaces
+must not overlap, and they do not, for every input including a hostile
+`command_id`. Suppose a provider message were also a valid section 1 message. Section
+1 reads the byte at offset 16 as `tag_len` and the next `tag_len` bytes as a tag whose
+every byte is printable (`0x21..=0x7e`). In a provider message the byte at offset 16
+is `label[15]`, `r` (`0x72`), so `tag_len` would be 114 and the tag would span offsets
+17 to 130. Offset 43 lies in that span, and in a provider message it is the high byte
+of `u16_be(len(provider_account_key))`, which is `0x00..=0x04` because the length is
+at most 1,024: never printable. So no provider message is a valid section 1 message,
+for any `connection_id` and any provider strings. The outputs are disjoint as well:
+provider-derived ids are UUID version 8 and section 1 ids are version 7, so the two id
+spaces differ in the version nibble even before the messages are compared.
+
+*Adapter stability.* Because identity is byte-exact, **each adapter's
+`provider_account_key` function is part of the identity.** Each adapter defines its key
+canonically, a test pins it, and changing that function is a payload-schema change.
+If the provider starts or stops returning a component of the key for an account that
+is already linked (for example a connection id that appears or disappears), that is an
+identity change, handled as a disposition that queues for the user; it is never a
+silent re-key, which would re-import the account's whole history under new ids.
+
+*Residual.* A provider that reuses one transaction id for two different transactions
+collapses them into one derived id on purpose: the provider is vouching that they
+are the same. Addendum B's rule then decides (equal provider-financial fields: a
+no-op; differing fields: one disposition item).
+
+Known-answer vector (normative; hexadecimal is lowercase; `id_key` is vector A's
+key from section 1):
+
+```text
+id_key               = f2f6ac71bc63e3df2f66370676ead3f3b6b677a87c124f190941659224b42149
+connection_id        = 0198c2c1-5f0a-7c3d-8a4e-9b1d2e3f4a5b
+provider_account_key = ACT-7f3a91
+provider_txn_id      = TXN-2026-10-17-0042
+message_hex          = 1a646f68666c6f772f70726f76696465722d74786e2d69642f76310198c2c15f0a7c3d8a4e9b1d2e3f4a5b000a4143542d376633613931001354584e2d323032362d31302d31372d30303432
+hmac_sha256          = 946109b1f8035430f5e8d148d476d8296f95b704f265c666a5d89fa7c9b21b81
+uuid                 = 946109b1-f803-8430-b5e8-d148d476d829
+
+provider_txn_id      = TXN-2026-10-17-0043      (everything else as above)
+uuid                 = cf5a7fd8-f6b4-8c2f-a9e1-ef4b6ca8e52e
+```
+
+Changing the label, the field encoding or the bit layout is a payload-schema
+change, as for section 1. File imports, which have no provider identifiers,
+derive their identity the same way from a file fingerprint and a row ordinal under
+their own label, fixed by the import-reshape bead (`personal-cfo-0g528`) with its
+own vector.
+
 ### Rejected alternatives
 
 - **Apply receipts containing mint counts and IDs.** Rejected: a refactor that

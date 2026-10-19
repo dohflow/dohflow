@@ -21,7 +21,7 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/categorization", "crates/connector-core", "crates/connectors/lunchflow-adapter", "crates/connectors/simplefin-adapter", "crates/core-ids", "crates/core-money", "crates/core-ledger", "crates/forecast-engine", "crates/db-worker", "crates/finance-kernel", "crates/importers/importer-core", "crates/importers/csv-importer", "crates/importers/ofx-importer", "crates/importers/source-presets", "crates/job-runtime", "crates/observability", "crates/pay-schedule", "crates/synthetic-data", "crates/vault-crypto"]
+members = ["crates/categorization", "crates/connector-core", "crates/connectors/lunchflow-adapter", "crates/connectors/simplefin-adapter", "crates/core-ids", "crates/core-money", "crates/core-ledger", "crates/forecast-engine", "crates/db-worker", "crates/finance-kernel", "crates/importers/importer-core", "crates/importers/csv-importer", "crates/importers/ofx-importer", "crates/importers/source-presets", "crates/job-runtime", "crates/observability", "crates/pay-schedule", "crates/sync-core", "crates/synthetic-data", "crates/vault-crypto"]
 
 [workspace.package]
 edition = "2021"
@@ -41,6 +41,11 @@ publish = false
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# RFC 8785 (JCS) canonical JSON, pinned EXACT (personal-cfo-t2s4b part 3a): used only through
+# `to_vec`, behind sync-core's strict layer, which owns the number, duplicate-key and
+# member-name rules the crate does not enforce. Do not bump without re-running the
+# cross-implementation vectors in crates/sync-core/tests.
+serde_json_canonicalizer = "=0.4.1"
 thiserror = "2"
 tracing = "0.1"
 # Logging redaction layer (personal-cfo-2vs).

@@ -233,6 +233,7 @@ crates/
   categorization/
   importers/
   vault-crypto/
+  sync-core/              # pure Sync format code: canonical JSON, later the envelope; no database
   agent-runtime/
   connector-core/
 services/
