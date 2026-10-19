@@ -242,8 +242,9 @@ synthetic no-app recovery test before any such public claim.
   most 128 levels, a receiver accepts only the canonical encoding of the value it decodes
   to, and C.14 gains the rejection vectors. New wire sections require a
   spec-version bump and their own reviewed vectors.
-- `spec-version = 4` adds C.1.5, the class-1 row digest and primary-key encoding that
-  the write-set hash of C.4 refers to, with known-answer vectors.
+- `spec-version = 4` adds C.1.5, the canonical row encoding (declared-kind tags, primary
+  key, row and deleted-row digests) that the write-set hash of C.4 and the replay-property
+  hash refer to, with known-answer vectors.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -741,21 +742,33 @@ not implement the named suite fails with `UnsupportedSuite`; it never guesses.
 Ciphertext already sealed under suite 1 is not retroactively protected against a
 future quantum adversary; that limitation is accepted for v1.
 
-### C.1.5 Class-1 row digest and primary key (`personal-cfo-t2s4b`)
+### C.1.5 Canonical row encoding and primary key (`personal-cfo-t2s4b`)
 
-The write-set hash (C.4) commits to the final state of every class-1 row a command
-touched. Both halves use CBE1 (C.1.1) with the value kinds below, which carry the SQLite
-**storage class** of each stored value (not the column's declared affinity).
+One encoding of a database row is used everywhere a row is hashed: the write-set hash of
+C.4, the replay-property hash that compares two replicas, and the simulator's equality
+checks. It covers **every table of every class**; the write-set hash applies it to
+class-1 rows only (class-2 rebuilds are excluded from that hash, not from the encoding).
+It uses CBE1 (C.1.1).
 
-| Tag | Storage class | Encoding after the tag byte |
-| --- | --- | --- |
-| `0` | NULL | nothing |
-| `1` | INTEGER | `i64` |
-| `2` | TEXT | `text(2^24)` (valid UTF-8; invalid UTF-8 is an error) |
-| `3` | BLOB | `bytes(2^24)` |
+Each value is tagged by its column's **declared kind**, taken from the column-kind
+manifest, which lists every column of every table with a kind and is aligned with the
+portable export's kinds (B, "Row encoding"). The tag does not depend on SQLite's runtime
+storage class or type affinity, so affinity can never make two devices encode one value
+differently:
 
-A REAL value has no tag and is an error: no class-1 table has a REAL column, and a test
-proves it from the schema. The digests are:
+| Tag | Kind | Stored as | Encoding after the tag byte |
+| --- | --- | --- | --- |
+| `0` | any kind | NULL | nothing |
+| `1` | `int` | INTEGER | `i64` |
+| `2` | `text` | TEXT | `text(2^24)` (valid UTF-8; invalid UTF-8 is an error) |
+| `3` | `uuid` | BLOB of exactly 16 bytes | the 16 raw bytes |
+| `4` | `bytes` | BLOB | `bytes(2^24)` |
+
+A stored value whose storage class does not match its declared kind (a TEXT in an `int`
+column, a BLOB of another length in a `uuid` column, and so on) is an error, never
+coerced. A REAL value has no tag and is an error: no table has a REAL column, and a test
+proves it from the schema. A column absent from the manifest, or a manifest column absent
+from the table, is an error. The digests are:
 
 - `primary_key` is the concatenation, in the table's declared primary-key column order, of
   each key column's tagged value (tag byte, then the value). It is at most 256 bytes; a
@@ -769,22 +782,26 @@ proves it from the schema. The digests are:
   is `SHA-256(label "dohflow/sync-row-absent/v1" ‖ text(64) table ‖ bytes(256)
   primary_key)`, so a deletion changes the write-set hash and is distinguishable from a
   row that was not touched.
-- A row that was inserted and deleted inside the same command is not in the set. A row
-  touched several times appears once, with its final state.
-- The `operation_log` row of the command itself is not in the set: it carries the
+- In the write-set hash, a row that was inserted and deleted inside the same command is
+  not in the set, and a row touched several times appears once, with its final state.
+- The `operation_log` row of the command itself is not in the write set: it carries the
   write-set hash.
+- The digests are bound to the schema version: the column set is the one the manifest
+  lists for the `schema_version` in the envelope header, and a receiver at another schema
+  version does not recompute a hash it cannot reproduce.
 
 The two labels differ in their length prefix and in content, and neither can be parsed as
 the other. Known-answer vectors, derived independently by the contract script
-`scripts/tests/row-digest-contract.test.sh` (`table = tags`; `id` is the 16 bytes of
-`0198c2c1-5f0a-7c3d-8a4e-9b1d00000011`; `name` is `trip é`; `color` is NULL;
-`sort_order` is `-7`):
+`scripts/tests/row-digest-contract.test.sh` (`table = tags`; `id` is a `uuid` column
+holding the 16 bytes of `0198c2c1-5f0a-7c3d-8a4e-9b1d00000011`; `name` is a `text` column
+holding `trip é`; `color` is a `text` column holding NULL; `sort_order` is an `int` column
+holding `-7`):
 
-<!-- row-vector: primary_key=03000000100198c2c15f0a7c3d8a4e9b1d00000011 -->
-<!-- row-vector: row_message=0013646f68666c6f772f73796e632d726f772f76310000000474616773000400000005636f6c6f720000000002696403000000100198c2c15f0a7c3d8a4e9b1d00000011000000046e616d6502000000077472697020c3a90000000a736f72745f6f7264657201fffffffffffffff9 -->
-<!-- row-vector: row_digest=3fa7b8d369d8414ff97397bb4ccb1da5b6593bfc9595452020089a62b7032f8c -->
-<!-- row-vector: absent_message=001a646f68666c6f772f73796e632d726f772d616273656e742f763100000004746167730000001503000000100198c2c15f0a7c3d8a4e9b1d00000011 -->
-<!-- row-vector: absent_digest=fa83576a736e8b5c851c460064c6a97ab771bef66b655d3a463deaadd4575eb4 -->
+<!-- row-vector: primary_key=030198c2c15f0a7c3d8a4e9b1d00000011 -->
+<!-- row-vector: row_message=0013646f68666c6f772f73796e632d726f772f76310000000474616773000400000005636f6c6f7200000000026964030198c2c15f0a7c3d8a4e9b1d00000011000000046e616d6502000000077472697020c3a90000000a736f72745f6f7264657201fffffffffffffff9 -->
+<!-- row-vector: row_digest=2f155b98841dc8b10bc71e369ee216022f9c15ef56a27b5165b36cb220d7b601 -->
+<!-- row-vector: absent_message=001a646f68666c6f772f73796e632d726f772d616273656e742f7631000000047461677300000011030198c2c15f0a7c3d8a4e9b1d00000011 -->
+<!-- row-vector: absent_digest=6d5ad824c2f6c542d09ce9250916c0135574503f89d8719c90292aac69347285 -->
 
 ## C.2 Keys and secrets
 
