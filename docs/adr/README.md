@@ -96,7 +96,7 @@ when the ADR was written (owner-confirmed).
 | 0072 | [Universal binary distribution (Intel + Apple Silicon)](0072-universal-binary-distribution.md) | Public | Accepted |
 | 0073 | [Sync disposition rules](0073-sync-disposition-rules.md) | Public | Accepted |
 | 0074 | [DohFlow Sync architecture](0074-dohflow-sync-architecture.md) | Public | Accepted |
-| 0075 | — internal | Internal | Not yet written (`personal-cfo-oh3hg`) |
+| 0075 | [DohFlow account backup (public stub)](0075-dohflow-account-backup.md) | Public stub (internal decision) | Accepted — the full decision is in `dohflow/internal`; this stub states only the user-visible backup retention rule |
 | 0076 | [Multi-provider connector strategy](0076-multi-provider-connector-strategy.md) | Public + Internal split | Accepted — this file carries the decisions and the D15/FTC sentence; the affiliate-payout terms live in `dohflow/internal` |
 | 0077 | [Data ownership and wire formats](0077-wire-formats.md) | Public | Accepted |
 | 0078 | — internal | Internal | Accepted; the file is in `dohflow/internal` (`personal-cfo-quhmv`) |
