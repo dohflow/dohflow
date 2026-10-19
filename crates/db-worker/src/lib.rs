@@ -43,7 +43,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use thiserror::Error;
 use uuid::Uuid;
 use vault_crypto::Dek;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 mod apply;
 mod assumptions;
@@ -1422,9 +1422,7 @@ impl DbWorker {
         // replacement if its path disappears during that lifetime.
         let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         match &self.key {
-            KeyMaterial::Passphrase(passphrase) => {
-                conn.pragma_update(None, "key", passphrase.as_str())?
-            }
+            KeyMaterial::Passphrase(passphrase) => key_passphrase(&conn, passphrase.as_str())?,
             KeyMaterial::Raw(dek) => key_raw(&conn, dek)?,
         }
         configure_conn(&conn)?;
@@ -4072,19 +4070,59 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
     }
 }
 
+/// Turn SQLCipher's memory security on for the connection, before it is keyed. SQLite keeps its
+/// own copy of a statement's SQL text, and a `PRAGMA key` statement's text holds the key (the hex
+/// DEK, or the passphrase); that copy is freed without being scrubbed. With memory security ON
+/// SQLCipher's allocator wipes freed memory and keeps it out of swap, so the copy does not
+/// outlive the statement. It is OFF by default (`cipher_memory_security` reads 0 on the bundled
+/// SQLCipher 4.14), hence this call at every keying site (personal-cfo-rsjud).
+fn set_memory_security(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch("PRAGMA cipher_memory_security = ON;")?;
+    Ok(())
+}
+
+/// Key a connection with a passphrase (SQLCipher runs its own KDF over it).
+fn key_passphrase(conn: &Connection, key: &str) -> Result<(), DbError> {
+    set_memory_security(conn)?;
+    conn.execute_batch(&passphrase_pragma(key))?;
+    Ok(())
+}
+
+/// The statement that keys SQLCipher from a passphrase: `PRAGMA key = '<passphrase>';` with each
+/// single quote doubled (the SQL escape inside a string literal). It is built here rather than by
+/// `pragma_update`, which assembles the same text in a plain `String` freed unscrubbed
+/// (SQLCipher's memory security does not cover the Rust heap). The buffer is sized exactly (the
+/// fixed text, the passphrase and one extra byte per quote), so it never reallocates and leaves a
+/// freed block holding the key; it is scrubbed on drop.
+fn passphrase_pragma(key: &str) -> Zeroizing<String> {
+    const PREFIX: &str = "PRAGMA key = '";
+    const SUFFIX: &str = "';";
+    let quotes = key.bytes().filter(|b| *b == b'\'').count();
+    let mut pragma = Zeroizing::new(String::with_capacity(
+        PREFIX.len() + key.len() + quotes + SUFFIX.len(),
+    ));
+    pragma.push_str(PREFIX);
+    for ch in key.chars() {
+        if ch == '\'' {
+            pragma.push('\'');
+        }
+        pragma.push(ch);
+    }
+    pragma.push_str(SUFFIX);
+    pragma
+}
+
 /// Open a SQLCipher connection keyed with a **passphrase** (SQLCipher runs its
 /// own KDF over it). Used by [`DbWorker::open`].
 fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
     let conn = Connection::open(path)?;
-    conn.pragma_update(None, "key", key)?;
+    key_passphrase(&conn, key)?;
     configure_conn(&conn)?;
     Ok(conn)
 }
 
 fn open_existing_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
-    open_existing(path, |conn| {
-        conn.pragma_update(None, "key", key).map_err(Into::into)
-    })
+    open_existing(path, |conn| key_passphrase(conn, key))
 }
 
 fn open_existing_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
@@ -4149,19 +4187,29 @@ fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
 }
 
 fn key_raw(conn: &Connection, dek: &Dek) -> Result<(), DbError> {
-    use std::fmt::Write as _;
+    set_memory_security(conn)?;
+    conn.execute_batch(&raw_key_pragma(dek))?;
+    Ok(())
+}
 
-    let mut pragma = String::with_capacity(80);
-    pragma.push_str("PRAGMA key = \"x'");
+/// The statement that keys SQLCipher from the DEK: `PRAGMA key = "x'<64 hex>'";`. The buffer is
+/// sized **exactly** (83 bytes), so it never reallocates: a `String` that grows moves to a new
+/// block and leaves the old one, holding the partly written key, freed without being scrubbed.
+/// It is scrubbed on drop.
+fn raw_key_pragma(dek: &Dek) -> Zeroizing<String> {
+    use std::fmt::Write as _;
+    const PREFIX: &str = "PRAGMA key = \"x'";
+    const SUFFIX: &str = "'\";";
+    let mut pragma = Zeroizing::new(String::with_capacity(
+        PREFIX.len() + 2 * dek.expose_bytes().len() + SUFFIX.len(),
+    ));
+    pragma.push_str(PREFIX);
     for byte in dek.expose_bytes() {
         // Infallible write into a String.
         let _ = write!(pragma, "{byte:02x}");
     }
-    pragma.push_str("'\";");
-    let result = conn.execute_batch(&pragma);
-    pragma.zeroize();
-    result?;
-    Ok(())
+    pragma.push_str(SUFFIX);
+    pragma
 }
 
 /// Apply the non-key connection pragmas shared by both keying paths (WAL,
