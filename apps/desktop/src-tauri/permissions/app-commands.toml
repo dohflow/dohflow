@@ -1,9 +1,9 @@
 # Application-command ACL (personal-cfo-3fdd.6, ADR 0010 addendum 2026-07-04).
 #
 # Any *.toml under src-tauri/permissions/ is picked up by the default
-# `tauri_build::build()` (tauri-build 2.6.2 globs `permissions/**/*`) and becomes the
+# `tauri_build::build()` (tauri-build 2.7.3 globs `permissions/**/*`) and becomes the
 # app's ACL manifest. The moment that manifest exists, Tauri denies EVERY custom
-# command that no capability grants to the calling window (tauri 2.11.2
+# command that no capability grants to the calling window (tauri 2.12.4
 # src/webview/mod.rs, the `has_app_acl_manifest` check) - deny-by-default for the
 # whole surface, not just the commands named here.
 #

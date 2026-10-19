@@ -1076,11 +1076,11 @@ fn audit_fails_on_the_devtools_feature_in_any_form() {
     let table_form = audit_with(|i| {
         replace_once(
             &mut i.cargo_toml,
-            "tauri = { version = \"~2.11.2\", features = [] }\n",
+            "tauri = { version = \"~2.12.4\", features = [] }\n",
             "",
         );
         i.cargo_toml
-            .push_str("\n[dependencies.tauri]\nversion = \"2.11.2\"\nfeatures = [\"devtools\"]\n");
+            .push_str("\n[dependencies.tauri]\nversion = \"2.12.4\"\nfeatures = [\"devtools\"]\n");
     });
     let crate_feature = audit_with(|i| {
         replace_once(

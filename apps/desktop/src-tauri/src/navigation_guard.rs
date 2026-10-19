@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn this_platform_uses_the_origin_tauri_serves_the_bundle_from() {
-        // Mirrors tauri's `tauri_protocol_url` (manager/mod.rs, tauri 2.11.2).
+        // Mirrors tauri's `tauri_protocol_url` (manager/mod.rs, tauri 2.12.4).
         assert_eq!(
             HTTP_APP_ORIGIN,
             cfg!(windows) || cfg!(target_os = "android")

@@ -93,14 +93,14 @@ or, in the browser, add `?template=tauri-upgrade.md` to the compare URL.
 
 ### Vendored-source checklist
 
-Each of these is a claim the security posture rests on, verified at Tauri 2.11.2
+Each of these is a claim the security posture rests on, verified at Tauri 2.12.4 (wry 0.57.0, tao 0.37.1)
 (file paths relative to each crate's source):
 
 | # | Claim | Where to read it | Relied on by |
 |---|---|---|---|
 | 1 | With an app ACL manifest, `Webview::on_message` rejects any app/plugin/core command no capability grants to the calling window, before dispatch | `tauri/src/webview/mod.rs` `on_message` | ADR 0010 addenda 2026-07-04 and 2026-09-27 |
 | 2 | One invoke handler serves every webview, and the IPC bridge is injected into every webview | `tauri/src/manager/webview.rs` `prepare_pending_webview` | addendum 2026-09-27 |
-| 3 | The only ACL exception is `plugin:__TAURI_CHANNEL__\|fetch`, and its queue is app-wide under sequential ids | `tauri/src/ipc/channel.rs` | addendum 2026-09-27, rule 7 |
+| 3 | The only ACL exception is `plugin:__TAURI_CHANNEL__\|fetch`, and its queue is keyed per webview (ids sequential within one webview), so a webview can fetch only its own entries; it was app-wide before 2.12 | `tauri/src/ipc/channel.rs` | addendum 2026-09-27, rule 7 |
 | 4 | Every registered plugin's `on_navigation` can veto a navigation, but the hooks do not see a webview's first load | `tauri/src/manager/webview.rs`, `tauri/src/plugin.rs` | `navigation_guard`, probe `page_origin` |
 | 5 | The bundled origin is `tauri://localhost`, or `http(s)://tauri.localhost` on Windows/Android | `tauri/src/manager/mod.rs` `tauri_protocol_url` | `navigation_guard` |
 | 6 | `is_dev()` (no `custom-protocol`) selects `devUrl` and `devCsp` | `tauri/src/lib.rs`, `tauri/src/manager/mod.rs` `csp()` | release/dev separation |
