@@ -52,6 +52,7 @@ mod backup_history;
 mod band_drift;
 mod categories;
 mod connectors;
+pub mod payload;
 pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
@@ -276,7 +277,7 @@ pub fn validate_idempotency_key(key: &str) -> Result<(), DbError> {
 /// a transaction's amount with its own category / note / tags. A plain data carrier —
 /// the apply mints the [`SplitLineId`], assigns `sort_order` from the vec position, and
 /// validates that the lines' amounts sum to the transaction amount.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SplitLineInput {
     /// The slice amount (same sign + currency as the transaction).
     pub amount: Money,
@@ -290,7 +291,8 @@ pub struct SplitLineInput {
 
 /// A mutating command. The enum is the exhaustive write surface, so the worker's
 /// dispatch is compile-checked. More variants arrive with their feature beads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WriteCommand {
     /// Create a user account (with its backing ledger account). An optional
