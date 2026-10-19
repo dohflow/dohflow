@@ -280,6 +280,14 @@ payload likewise fails closed.
 
 #### 3. Phone containers are a separate, non-restorable destination
 
+> **Superseded (2026-10-18).** The phone-container viewer this section was
+> recorded for is no longer planned, by owner decision on 2026-10-18;
+> `personal-cfo-28js0` and `personal-cfo-7vbdq` are superseded. No phone
+> container is built, so the destination below is not part of the backup format.
+> The text that follows is kept as the record of D24 and is otherwise unchanged.
+> Nothing in the format version 2 container, its envelope or its restore path
+> depended on this section.
+
 Decision D24 is recorded here for the later mobile work: a phone container is
 not a user-restorable backup. `personal-cfo-28js0` builds it, never strips an
 existing SQLite file (a `DELETE` could leave ciphertext in freed pages), and
@@ -330,7 +338,8 @@ fail to reach the phone rather than silently leak there.
   `personal-cfo-klr.4` records the resulting format in the future vault-format
   specification.
 - CLASS-0 is a hard input to the phone-container builder, not an implicit data
-  export rule.
+  export rule. *(The phone container is superseded; see the note in section 3.
+  The CLASS-0 manifest itself is unchanged.)*
 
 ### Revisit if
 
@@ -390,5 +399,5 @@ fail to reach the phone rather than silently leak there.
 - `personal-cfo-3fdd.15` (Argon2id floor and manifest schema hardening)
 - `personal-cfo-8qh` (scheduled backup job)
 - `personal-cfo-w21q7` (CLASS-0 table-class manifest)
-- `personal-cfo-28js0` (MOB-0a phone-container builder)
+- `personal-cfo-28js0` (MOB-0a phone-container builder; superseded 2026-10-18, see section 3)
 - `personal-cfo-5kua` (external cryptographic review)
