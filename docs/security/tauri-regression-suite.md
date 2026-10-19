@@ -23,9 +23,13 @@ One more mock-runtime test file covers the app's generic embedding point
 function `run_with` uses, with the real resolved ACL. A plugin left out through
 `HostOptions` has no commands at all in that build (Tauri answers "plugin updater not
 found" after the ACL has let the request through), the default options keep the
-desktop plugin set, and a supplied context whose ACL does not grant the app commands
-to `main` is refused (`app_commands_are_granted_to_main`), so an embedding crate cannot
-accidentally open the app's commands to every window.
+desktop plugin set, and `run_with` refuses a supplied context that does not confine
+the app commands to `main` (`context_confines_app_commands_to_main`): the context must
+grant `main` the app commands, and must grant no isolated window (`document_preview`,
+`agent_report`, or a `"*"` window pattern) any app or destructive command. This is the
+check an embedding crate's own capability files must pass; the test adds a hostile
+capability to the real context for each case. It does not audit the rest of the
+embedder's capabilities (plugin grants, scopes), which stay that crate's ADR 0010 review.
 
 Two build-output checks complete the picture:
 

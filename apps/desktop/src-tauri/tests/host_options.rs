@@ -10,7 +10,7 @@
 //! exist.
 
 use app_lib::windows::{self, MAIN};
-use app_lib::{app_commands_are_granted_to_main, register_plugins, HostOptions};
+use app_lib::{context_confines_app_commands_to_main, register_plugins, HostOptions};
 use tauri::ipc::{CallbackFn, InvokeBody};
 use tauri::test::{
     get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime, INVOKE_KEY,
@@ -99,8 +99,9 @@ fn with_the_updater_registered_its_commands_exist() {
     let with = app(HostOptions::default());
     let result = invoke(&with, "plugin:updater|download_and_install");
     assert!(
-        !is_unregistered(&result, "updater"),
-        "download_and_install must reach the updater plugin: {result:?}"
+        matches!(&result, Err(e) if e.contains("missing required key rid")),
+        "download_and_install must reach the updater plugin and fail on its missing \
+         argument: {result:?}"
     );
 }
 
@@ -137,9 +138,9 @@ fn omitting_the_optional_plugins_does_not_touch_the_always_on_ones() {
 }
 
 #[test]
-fn a_context_that_grants_the_app_commands_to_main_is_accepted() {
+fn a_context_that_confines_the_app_commands_to_main_is_accepted() {
     let mut context = tauri::generate_context!(test = true);
-    assert!(app_commands_are_granted_to_main::<MockRuntime>(
+    assert!(context_confines_app_commands_to_main::<MockRuntime>(
         &mut context
     ));
 }
@@ -149,7 +150,55 @@ fn a_context_without_the_app_acl_is_refused() {
     // A context built by a crate that did not include this app's permission files
     // grants nothing to main, so `run_with` would refuse to start with it.
     let mut context = mock_context(noop_assets());
-    assert!(!app_commands_are_granted_to_main::<MockRuntime>(
+    assert!(!context_confines_app_commands_to_main::<MockRuntime>(
+        &mut context
+    ));
+}
+
+/// The real context with one extra capability added, as an embedding crate's own
+/// capability file would. (`add_capability` is forbidden in `src/` by
+/// `acl_coverage.rs`; a test building a hostile context is the one place it belongs.)
+fn context_with_extra_capability(capability: &str) -> tauri::Context<MockRuntime> {
+    let mut context = tauri::generate_context!(test = true);
+    context
+        .runtime_authority_mut()
+        .add_capability(capability)
+        .expect("the capability is valid");
+    context
+}
+
+#[test]
+fn a_context_granting_an_app_command_to_an_isolated_window_is_refused() {
+    // The isolation rule of ADR 0010: an untrusted window gets no app command, in
+    // either permission file, and a wildcard window pattern counts too.
+    for (windows, permission) in [
+        ("\"document_preview\"", "allow-app-commands"),
+        ("\"agent_report\"", "allow-app-commands"),
+        ("\"document_preview\"", "allow-destructive-commands"),
+        ("\"agent_report\"", "allow-destructive-commands"),
+        ("\"*\"", "allow-app-commands"),
+        ("\"*\"", "allow-destructive-commands"),
+    ] {
+        let capability = format!(
+            r#"{{"identifier":"hostile","windows":[{windows}],"permissions":["{permission}"]}}"#
+        );
+        let mut context = context_with_extra_capability(&capability);
+        assert!(
+            !context_confines_app_commands_to_main::<MockRuntime>(&mut context),
+            "a capability granting {permission} to {windows} must be refused"
+        );
+    }
+}
+
+#[test]
+fn a_harmless_extra_capability_does_not_trip_the_guard() {
+    // The control for the test above: the same helper with a grant that does not
+    // touch the app commands (a core permission for an isolated window) is accepted,
+    // so the refusals above come from the app-command grants and not from the helper.
+    let mut context = context_with_extra_capability(
+        r#"{"identifier":"harmless","windows":["document_preview"],"permissions":["core:event:default"]}"#,
+    );
+    assert!(context_confines_app_commands_to_main::<MockRuntime>(
         &mut context
     ));
 }

@@ -111,7 +111,7 @@ Each of these is a claim the security posture rests on, verified at Tauri 2.12.4
 | 11 | The updater verifies the minisign signature before install, and insecure transport stays opt-in | `tauri-plugin-updater/src/updater.rs`, `src/config.rs` | addendum 2026-09-08, ADR 0068 |
 | 12 | Without a handler, wry creates no new window on macOS/Linux; `on_new_window` is still available on window builders | `wry/src/wkwebview/…`, `tauri/src/webview/webview_window.rs` | the new-window deny |
 | 13 | `eval_with_callback`, the mock runtime (`tauri::test`), `generate_context!(test = true)` and `INVOKE_KEY` still exist | `tauri/src/webview/mod.rs`, `tauri/src/test/mod.rs` | the probe, `tests/window_isolation.rs` |
-| 14 | `Context::runtime_authority_mut` and `RuntimeAuthority::resolve_access` still exist, so a supplied context's grants can be inspected | `tauri/src/lib.rs`, `tauri/src/ipc/authority.rs` | `app_commands_are_granted_to_main` (`run_with`), `tests/host_options.rs` |
+| 14 | `Context::runtime_authority_mut` and `RuntimeAuthority::resolve_access` still exist, so a supplied context's grants can be inspected | `tauri/src/lib.rs`, `tauri/src/ipc/authority.rs` | `context_confines_app_commands_to_main` (`run_with`), `tests/host_options.rs` |
 
 Anything that no longer holds is either fixed in the same PR, with the fix
 reviewed, or blocks the upgrade. Never loosen a check to make an upgrade pass.

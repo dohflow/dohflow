@@ -331,19 +331,20 @@ pub fn run() {
 /// The context must keep the app's access-control layout (ADR 0010): it needs the
 /// app command permissions (`permissions/`) built into its ACL manifest, a
 /// `main` window declared with `"create": false` (the app builds it in setup), and
-/// a capability that grants the app commands to `main` only. A context that does
-/// not grant the app's own commands to `main` is refused at startup, because an
-/// ACL manifest without the app's permissions would leave those commands open to
-/// every window.
+/// a capability that grants the app commands to `main` and to no isolated window.
+/// A context that does not grant the app's own commands to `main`, or that grants
+/// them to an isolated window, is refused at startup
+/// ([`context_confines_app_commands_to_main`]).
 ///
 /// # Panics
-/// If the supplied context does not grant the app commands to `main`, or if
+/// If the supplied context does not confine the app commands to `main`, or if
 /// Tauri cannot start the app (the same failure `run` has always reported).
 pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
     assert!(
-        app_commands_are_granted_to_main(&mut context),
-        "the supplied Tauri context does not grant the app commands to the `{}` window: \
-         build its ACL from this app's permissions/ and capabilities (ADR 0010)",
+        context_confines_app_commands_to_main(&mut context),
+        "the supplied Tauri context does not confine the app commands to the `{}` window: \
+         build its ACL from this app's permissions/ and capabilities, and grant them to \
+         no isolated window (ADR 0010)",
         windows::MAIN
     );
     // Install the redacting `tracing` subscriber first, so kernel/app log lines
@@ -427,25 +428,33 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
         .expect("error while running tauri application");
 }
 
-/// Whether `context`'s ACL grants the app's own commands to the `main` window.
+/// Whether `context`'s ACL confines the app's own commands to the `main` window.
 ///
 /// Tauri builds the ACL manifest from the crate that calls `generate_context!`.
 /// Without the app's permission files in it, the app's commands would be
 /// unrestricted for local content in every window, including the untrusted ones.
 /// A capability can only grant an app permission that the manifest defines, so a
-/// grant of `vault_status` to `main` proves the manifest carries them.
-/// [`run_with`] refuses a context for which this is false.
+/// grant of `vault_status` to `main` proves the manifest carries them. The other
+/// half is the isolation rule of ADR 0010: neither an app command nor a destructive
+/// one may be granted to any isolated window (a capability for `"*"` counts, since
+/// it matches those labels too). [`run_with`] refuses a context for which this is
+/// false.
 #[must_use]
-pub fn app_commands_are_granted_to_main<R: tauri::Runtime>(
+pub fn context_confines_app_commands_to_main<R: tauri::Runtime>(
     context: &mut tauri::Context<R>,
 ) -> bool {
-    context
-        .runtime_authority_mut()
-        .resolve_access(
-            "vault_status",
-            windows::MAIN,
-            windows::MAIN,
-            &tauri::ipc::Origin::Local,
-        )
-        .is_some()
+    /// One command from each permission file: the general set and the destructive set.
+    const APP_COMMANDS: [&str; 2] = ["vault_status", "delete_vault"];
+    let authority = context.runtime_authority_mut();
+    let granted = |label: &str, command: &str| {
+        authority
+            .resolve_access(command, label, label, &tauri::ipc::Origin::Local)
+            .is_some()
+    };
+    granted(windows::MAIN, "vault_status")
+        && windows::IsolatedSurface::ALL.iter().all(|surface| {
+            APP_COMMANDS
+                .iter()
+                .all(|command| !granted(surface.label(), command))
+        })
 }
