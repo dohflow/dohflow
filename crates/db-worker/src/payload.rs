@@ -18,6 +18,21 @@
 //! so a field added, renamed or retyped fails the test until the version is bumped on
 //! purpose.
 //!
+//! # The first version bump
+//!
+//! When `PAYLOAD_SCHEMA_VERSION` becomes 2, `decode_payload` must decide what to do with
+//! version 1 payloads, which already sit in operation logs and Sync envelopes: either keep a
+//! reader that decodes them (and keep `every_frozen_fixture_decodes_under_its_version`
+//! passing for version 1), or refuse them on purpose with `UnsupportedVersion` and replace
+//! that test's version 1 arm with an explicit "refused" assertion. Silently decoding an
+//! old payload as the new shape is the one thing that must not happen.
+//!
+//! # Free text and NUL
+//!
+//! The canonical codec refuses U+0000 in any string. Where `prepare_payload` is wired into
+//! the dispatcher, user text (notes, imported memos, names) must be stripped of or refused
+//! for NUL at the input boundary so it does not fail at encode time.
+//!
 //! Decoding is strict in the two ways that matter for replay. A payload of a version this
 //! build does not know is refused with [`PayloadError::UnsupportedVersion`], loudly, never
 //! decoded as if it were current. And a document that is not the canonical encoding of the
