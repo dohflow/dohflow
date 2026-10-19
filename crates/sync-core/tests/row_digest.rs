@@ -432,16 +432,35 @@ fn a_parent_that_declares_children_is_not_confused_with_one_that_declares_none()
     let plain = row_digest("ledger_transactions", &parent_columns()).unwrap();
     let empty_section =
         parent_row_digest("ledger_transactions", &parent_columns(), &postings(vec![])).unwrap();
-    let no_children = parent_row_digest("ledger_transactions", &parent_columns(), &[]).unwrap();
     assert_ne!(
         plain, empty_section,
         "a declared child table with 0 rows differs from no section"
     );
-    // A parent with a count-0 child section list and one with an empty-row child table differ.
-    assert_ne!(empty_section, no_children);
-    // The childless digest is exactly row_digest's message plus a zero table count, so the
-    // plain row_digest (no section at all) stays the definition for tables with no children.
-    assert_ne!(plain, no_children);
+}
+
+#[test]
+fn a_parent_with_no_child_tables_has_no_digest_because_the_spec_defines_none() {
+    // C.1.5 has no section for undeclared children: a table that declares none is hashed with
+    // row_digest, and one that declares children always lists them. An empty slice would be a
+    // third form of the same state, so it is refused rather than hashed.
+    assert_eq!(
+        parent_row_digest("ledger_transactions", &parent_columns(), &[]),
+        Err(RowDigestError::BadChildTables)
+    );
+}
+
+#[test]
+fn a_declared_child_table_with_zero_rows_has_a_known_answer() {
+    // u16 count 1 || text(64) "ledger_postings" || u32 row count 0, after the parent's own row
+    // message. The digest was derived independently (scripts/tests/row-digest-contract.test.sh
+    // re-derives it from the layout and checks this literal is the one pinned here).
+    let digest =
+        parent_row_digest("ledger_transactions", &parent_columns(), &postings(vec![])).unwrap();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex,
+        "f7e74df1401e4668ec28eef5310a30807eb613860bacd0fa44364a74f21dea9a"
+    );
 }
 
 #[test]

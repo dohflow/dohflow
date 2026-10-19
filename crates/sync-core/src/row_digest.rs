@@ -102,8 +102,10 @@ pub enum RowDigestError {
     /// A child row encodes to more than 65,536 bytes.
     #[error("a folded child row exceeds the maximum length")]
     ChildRowTooLong,
-    /// Two child tables of one parent have the same name, or a parent has too many.
-    #[error("a parent has a duplicate or too many child tables")]
+    /// A parent was given no child tables, two with the same name, or too many. C.1.5 defines no
+    /// section for undeclared children: a parent that declares none uses [`row_digest`], and
+    /// one that declares children always lists each declared table, with a count of 0 when empty.
+    #[error("a parent has no, a duplicate or too many child tables")]
     BadChildTables,
     /// A primary key has no columns.
     #[error("a primary key has no columns")]
@@ -230,11 +232,13 @@ fn columns_section(out: &mut Vec<u8>, columns: &[Column<'_>]) -> Result<(), RowD
 /// name ‖ u32 count ‖ for each child row: bytes(2^16) child_row`. The child rows of a table
 /// are sorted bytewise by their encoding and **duplicates are kept**, so the section is a
 /// multiset. The section is always present for a parent whose manifest declares children
-/// (`children` may be empty tables, each with a count of 0), and never present for a parent
-/// that declares none (use [`row_digest`]).
+/// (`children` lists every declared table, each possibly with 0 rows and a count of 0), and
+/// never present for a parent that declares none (use [`row_digest`]).
 ///
 /// # Errors
-/// [`RowDigestError`] naming the first rule broken; no value from a row is in it.
+/// [`RowDigestError::BadChildTables`] if `children` is empty (the spec defines no digest for a
+/// parent with undeclared children), names a table twice or is too long; otherwise
+/// [`RowDigestError`] naming the first rule broken. No value from a row is in it.
 pub fn parent_row_digest(
     table: &str,
     columns: &[Column<'_>],
@@ -245,6 +249,9 @@ pub fn parent_row_digest(
     name(&mut message, table)?;
     columns_section(&mut message, columns)?;
 
+    if children.is_empty() {
+        return Err(RowDigestError::BadChildTables);
+    }
     let count = u16::try_from(children.len()).map_err(|_| RowDigestError::BadChildTables)?;
     let mut tables: Vec<&ChildTable<'_>> = children.iter().collect();
     tables.sort_by(|a, b| a.table.as_bytes().cmp(b.table.as_bytes()));
