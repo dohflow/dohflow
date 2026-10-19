@@ -12,14 +12,20 @@ use std::collections::BTreeMap;
 use super::error::CanonicalJsonError;
 use super::node::{insert_member, Node};
 
-/// The deepest nesting accepted. It bounds the parser's recursion.
-pub const MAX_DEPTH: usize = 128;
+use super::node::MAX_DEPTH;
 
-/// Parse a document into a [`Node`], enforcing every rule of the restricted model.
+/// Parse a document into a [`Node`], accepting any JSON whitespace and any escape spelling.
+///
+/// **Lenient on spelling, strict on content.** It enforces every rule of the restricted
+/// model (no number, no duplicate member, legal member names, no lone surrogate, no U+0000,
+/// valid UTF-8, bounded depth) but *not* canonical spelling. Never hash or verify the
+/// re-encoding of what this returns in place of the bytes that were received: different
+/// wire bytes would then share a hash. Use [`parse_canonical_node`] for a document that
+/// arrives from outside, and hash or verify the received bytes.
 ///
 /// # Errors
 /// [`CanonicalJsonError`] naming the rule that was broken.
-pub fn parse_node(bytes: &[u8]) -> Result<Node, CanonicalJsonError> {
+pub fn parse_node_lenient(bytes: &[u8]) -> Result<Node, CanonicalJsonError> {
     let text = std::str::from_utf8(bytes).map_err(|e| CanonicalJsonError::Malformed {
         offset: e.valid_up_to(),
         reason: "invalid UTF-8",
@@ -30,6 +36,20 @@ pub fn parse_node(bytes: &[u8]) -> Result<Node, CanonicalJsonError> {
     parser.skip_whitespace();
     if parser.pos != text.len() {
         return Err(parser.malformed("characters after the document"));
+    }
+    Ok(node)
+}
+
+/// Parse a document that must be in canonical form: [`parse_node_lenient`], then require
+/// that the node's canonical encoding is exactly the bytes received.
+///
+/// # Errors
+/// [`CanonicalJsonError::NotCanonical`] for a valid document in any other spelling, or the
+/// error [`parse_node_lenient`] reports.
+pub fn parse_canonical_node(bytes: &[u8]) -> Result<Node, CanonicalJsonError> {
+    let node = parse_node_lenient(bytes)?;
+    if super::node_to_canonical_vec(&node)? != bytes {
+        return Err(CanonicalJsonError::NotCanonical);
     }
     Ok(node)
 }
@@ -70,11 +90,10 @@ impl Parser<'_> {
         }
     }
 
+    /// `depth` is the number of arrays and objects enclosing this value.
     fn value(&mut self, depth: usize) -> Result<Node, CanonicalJsonError> {
-        if depth > MAX_DEPTH {
-            return Err(CanonicalJsonError::TooDeep(MAX_DEPTH));
-        }
         match self.peek() {
+            Some(b'{' | b'[') if depth >= MAX_DEPTH => Err(CanonicalJsonError::TooDeep(MAX_DEPTH)),
             Some(b'{') => self.object(depth),
             Some(b'[') => self.array(depth),
             Some(b'"') => self.string().map(Node::String),
@@ -231,6 +250,7 @@ impl Parser<'_> {
                 Err(self.malformed("lone surrogate escape"))
             }
             0xDC00..=0xDFFF => Err(self.malformed("lone surrogate escape")),
+            0 => Err(self.malformed("U+0000 is not allowed in a string")),
             _ => char::from_u32(unit).ok_or_else(|| self.malformed("invalid \\u escape")),
         }
     }

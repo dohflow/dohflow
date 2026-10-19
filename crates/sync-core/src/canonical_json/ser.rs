@@ -64,9 +64,12 @@ impl Serializer for NodeSerializer {
         Err(CanonicalJsonError::Float)
     }
     fn serialize_char(self, v: char) -> Result<Node, Self::Error> {
-        Ok(Node::String(v.to_string()))
+        self.serialize_str(v.encode_utf8(&mut [0; 4]))
     }
     fn serialize_str(self, v: &str) -> Result<Node, Self::Error> {
+        if v.contains('\u{0}') {
+            return Err(CanonicalJsonError::Unsupported("U+0000 in a string"));
+        }
         Ok(Node::String(v.to_owned()))
     }
     fn serialize_bytes(self, _: &[u8]) -> Result<Node, Self::Error> {
@@ -76,7 +79,15 @@ impl Serializer for NodeSerializer {
         Ok(Node::Null)
     }
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Node, Self::Error> {
-        value.serialize(self)
+        // `Some(x)` where `x` itself encodes as `null` (`Some(())`, `Some(None)`, a nested
+        // `Option`) would encode exactly like `None`: the origin would apply "set to
+        // nothing" while every replica decodes "leave alone". Refuse it at encode time.
+        match value.serialize(self)? {
+            Node::Null => Err(CanonicalJsonError::Unsupported(
+                "an Option whose value encodes as null",
+            )),
+            node => Ok(node),
+        }
     }
     fn serialize_unit(self) -> Result<Node, Self::Error> {
         Ok(Node::Null)

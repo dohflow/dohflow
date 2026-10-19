@@ -19,13 +19,13 @@ use super::node::Node;
 
 pub(crate) struct NodeDeserializer(pub(crate) Node);
 
-/// Whether `s` matches `-?(0|[1-9][0-9]*)`.
+/// Whether `s` matches `0|-?[1-9][0-9]*`: zero is spelled `0`, never `-0`, and there are no
+/// leading zeros, so every integer has exactly one spelling.
 pub(crate) fn valid_integer_syntax(s: &str) -> bool {
-    let digits = s.strip_prefix('-').unwrap_or(s);
-    match digits.as_bytes() {
-        [] => false,
-        [b'0'] => true,
-        [b'1'..=b'9', rest @ ..] => rest.iter().all(u8::is_ascii_digit),
+    let digits = s.strip_prefix('-').map_or(s, |rest| rest);
+    match (s.starts_with('-'), digits.as_bytes()) {
+        (false, [b'0']) => true,
+        (_, [b'1'..=b'9', rest @ ..]) => rest.iter().all(u8::is_ascii_digit),
         _ => false,
     }
 }

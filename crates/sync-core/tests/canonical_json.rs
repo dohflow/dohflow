@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use sync_core::canonical_json::{
-    from_canonical_slice, node_to_canonical_vec, parse_node, to_canonical_vec, CanonicalJsonError,
-    Node, MAX_DEPTH,
+    from_canonical_slice, node_to_canonical_vec, parse_canonical_node, parse_node_lenient,
+    to_canonical_vec, CanonicalJsonError, Node, MAX_DEPTH,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,6 @@ const POOL: &[char] = &[
     '"',
     '\\',
     '/',
-    '\u{0}',
     '\u{1}',
     '\u{8}',
     '\u{9}',
@@ -280,7 +279,7 @@ fn the_specs_own_export_manifest_vector_is_canonical_under_this_codec() {
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
         .collect();
-    let node = parse_node(&bytes).unwrap();
+    let node = parse_node_lenient(&bytes).unwrap();
     assert_eq!(node_to_canonical_vec(&node).unwrap(), bytes);
     assert_eq!(oracle(&node).as_bytes(), bytes.as_slice());
 }
@@ -456,7 +455,8 @@ fn integer_strings_must_match_the_grammar_and_fit_their_field() {
     }
     // Bad syntax: sign, leading zero, fraction, exponent, space, empty, hex, a lone minus.
     for value in [
-        "+1", "01", "00", "1.0", "1e3", " 1", "1 ", "", "0x10", "-", "--1", "1_000", "١",
+        "+1", "01", "00", "-0", "-00", "1.0", "1e3", " 1", "1 ", "", "0x10", "-", "--1", "1_000",
+        "١",
     ] {
         assert_eq!(
             decode("d", value).unwrap_err(),
@@ -464,11 +464,8 @@ fn integer_strings_must_match_the_grammar_and_fit_their_field() {
             "{value:?}"
         );
     }
-    // "-0" has valid syntax but is not the canonical spelling of zero.
-    assert_eq!(
-        decode("d", "-0").unwrap_err(),
-        CanonicalJsonError::NotCanonical
-    );
+    // Zero has exactly one spelling.
+    assert!(decode("d", "0").is_ok());
     // A number or another type where an integer string is expected.
     let number = ints_with("d", "0").replace("\"d\":\"0\"", "\"d\":0");
     assert_eq!(
@@ -500,7 +497,7 @@ fn a_json_number_anywhere_is_refused() {
         "[true,2]",
     ] {
         assert_eq!(
-            parse_node(doc.as_bytes()).unwrap_err(),
+            parse_node_lenient(doc.as_bytes()).unwrap_err(),
             CanonicalJsonError::NumberNotAllowed,
             "{doc}"
         );
@@ -548,33 +545,38 @@ fn duplicate_member_names_are_refused_however_they_are_spelled() {
     ] {
         assert!(
             matches!(
-                parse_node(doc.as_bytes()),
+                parse_node_lenient(doc.as_bytes()),
                 Err(CanonicalJsonError::DuplicateMember(_))
             ),
             "{doc}"
         );
     }
     // The same name in different objects is fine.
-    assert!(parse_node(br#"{"a":{"a":"1"},"b":{"a":"2"}}"#).is_ok());
+    assert!(parse_node_lenient(br#"{"a":{"a":"1"},"b":{"a":"2"}}"#).is_ok());
 }
 
 #[test]
 fn member_names_are_ascii_lowercase_digits_and_underscore() {
     for name in [
-        "A", "a-b", "a b", "a.b", "\u{e9}", "\u{20ac}", "a\u{0}", "", "Zed", "a/b",
+        "A", "a-b", "a b", "a.b", "\u{e9}", "\u{20ac}", "", "Zed", "a/b",
     ] {
         let doc = format!("{{{}:\"1\"}}", oracle_string(name));
         assert!(
             matches!(
-                parse_node(doc.as_bytes()),
+                parse_node_lenient(doc.as_bytes()),
                 Err(CanonicalJsonError::BadMemberName(_))
             ),
             "{name:?}"
         );
     }
+    // A NUL in a name is refused even earlier, as a malformed string.
+    assert!(matches!(
+        parse_node_lenient(br#"{"a\u0000":"1"}"#),
+        Err(CanonicalJsonError::Malformed { .. })
+    ));
     for name in ["a", "_", "0", "a_0", "snake_case_9"] {
         let doc = format!("{{\"{name}\":\"1\"}}");
-        assert!(parse_node(doc.as_bytes()).is_ok(), "{name}");
+        assert!(parse_node_lenient(doc.as_bytes()).is_ok(), "{name}");
     }
 }
 
@@ -594,7 +596,7 @@ fn lone_surrogate_escapes_are_refused() {
     ] {
         assert!(
             matches!(
-                parse_node(doc.as_bytes()),
+                parse_node_lenient(doc.as_bytes()),
                 Err(CanonicalJsonError::Malformed {
                     reason: "lone surrogate escape",
                     ..
@@ -604,8 +606,11 @@ fn lone_surrogate_escapes_are_refused() {
         );
     }
     // A valid pair parses (but its escaped spelling is not canonical: see below).
-    assert_eq!(parse_node(br#""\ud83d\ude00""#).unwrap(), s("\u{1f600}"));
-    assert!(parse_node(br#""\u0000\u001f\u007f\uffff""#).is_ok());
+    assert_eq!(
+        parse_node_lenient(br#""\ud83d\ude00""#).unwrap(),
+        s("\u{1f600}")
+    );
+    assert!(parse_node_lenient(br#""\u0001\u001f\u007f\uffff""#).is_ok());
 }
 
 #[test]
@@ -622,7 +627,7 @@ fn invalid_utf8_is_refused() {
     ] {
         assert!(
             matches!(
-                parse_node(bytes),
+                parse_node_lenient(bytes),
                 Err(CanonicalJsonError::Malformed {
                     reason: "invalid UTF-8",
                     ..
@@ -668,7 +673,7 @@ fn malformed_documents_are_refused_with_a_reason_and_never_panic() {
         "\"\\\"",
         "\u{feff}{}",
     ] {
-        assert!(parse_node(doc.as_bytes()).is_err(), "{doc:?}");
+        assert!(parse_node_lenient(doc.as_bytes()).is_err(), "{doc:?}");
     }
     for doc in [
         r#"{}"#,
@@ -679,20 +684,38 @@ fn malformed_documents_are_refused_with_a_reason_and_never_panic() {
         r#""""#,
         r#"[null,true,"x",{},[]]"#,
     ] {
-        assert!(parse_node(doc.as_bytes()).is_ok(), "{doc}");
+        assert!(parse_node_lenient(doc.as_bytes()).is_ok(), "{doc}");
     }
 }
 
 #[test]
-fn nesting_depth_is_bounded() {
+fn nesting_depth_is_bounded_on_parsing_and_on_encoding() {
     let nested = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
-    assert!(parse_node(nested(MAX_DEPTH).as_bytes()).is_ok());
+    // The outermost container is level 1; MAX_DEPTH levels are allowed, one more is not.
+    assert!(parse_node_lenient(nested(MAX_DEPTH).as_bytes()).is_ok());
     assert_eq!(
-        parse_node(nested(MAX_DEPTH + 2).as_bytes()).unwrap_err(),
+        parse_node_lenient(nested(MAX_DEPTH + 1).as_bytes()).unwrap_err(),
         CanonicalJsonError::TooDeep(MAX_DEPTH)
     );
+    assert!(parse_node_lenient(br#"{"a":{"a":"x"}}"#).is_ok());
     // A pathological depth is a clean error, not a stack overflow.
-    assert!(parse_node(nested(1_000_000).as_bytes()).is_err());
+    assert!(parse_node_lenient(nested(1_000_000).as_bytes()).is_err());
+
+    // Encoding enforces the same limit, so no origin can emit a document nobody can decode.
+    let tree = |levels: usize| {
+        let mut node = Node::Array(Vec::new());
+        for _ in 1..levels {
+            node = Node::Array(vec![node]);
+        }
+        node
+    };
+    assert!(node_to_canonical_vec(&tree(MAX_DEPTH)).is_ok());
+    assert_eq!(
+        node_to_canonical_vec(&tree(MAX_DEPTH + 1)).unwrap_err(),
+        CanonicalJsonError::TooDeep(MAX_DEPTH)
+    );
+    let bytes = node_to_canonical_vec(&tree(MAX_DEPTH)).unwrap();
+    assert_eq!(parse_canonical_node(&bytes).unwrap(), tree(MAX_DEPTH));
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -893,7 +916,11 @@ fn the_parser_agrees_with_serde_json_on_valid_documents_in_several_spellings() {
         let escaped = ascii_json(&node);
         let pretty = serde_json::to_string_pretty(&serde_json::to_value(&node).unwrap()).unwrap();
         for spelling in [&canonical, &escaped, &pretty] {
-            assert_eq!(parse_node(spelling.as_bytes()).unwrap(), node, "{spelling}");
+            assert_eq!(
+                parse_node_lenient(spelling.as_bytes()).unwrap(),
+                node,
+                "{spelling}"
+            );
             let reference: serde_json::Value = serde_json::from_str(spelling).unwrap();
             assert_eq!(reference, serde_json::to_value(&node).unwrap());
         }
@@ -919,7 +946,7 @@ fn whatever_the_parser_accepts_serde_json_accepts_too_and_it_never_panics() {
                 }
                 _ => {}
             }
-            if parse_node(&bytes).is_ok() {
+            if parse_node_lenient(&bytes).is_ok() {
                 // Our grammar is a strict subset of JSON.
                 assert!(
                     serde_json::from_slice::<serde_json::Value>(&bytes).is_ok(),
@@ -927,5 +954,199 @@ fn whatever_the_parser_accepts_serde_json_accepts_too_and_it_never_panics() {
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rejection vectors, read from vault-format.md C.1.2
+// ---------------------------------------------------------------------------
+
+fn spec_reject_vectors() -> Vec<(String, Vec<u8>)> {
+    const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
+    SPEC.split("<!-- cj-reject: ")
+        .skip(1)
+        .map(|rest| {
+            let entry = rest.split(" -->").next().unwrap();
+            let (name, hex) = entry.split_once('=').unwrap();
+            let bytes = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            (name.to_owned(), bytes)
+        })
+        .collect()
+}
+
+#[test]
+fn every_rejection_vector_of_the_spec_is_refused_by_the_canonical_parser() {
+    let vectors = spec_reject_vectors();
+    assert_eq!(vectors.len(), 21, "the spec lists 21 rejection vectors");
+    for (name, bytes) in &vectors {
+        assert!(
+            parse_canonical_node(bytes).is_err(),
+            "{name} must be refused: {:?}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+    // The table the document shows to people lists the same names as the markers.
+    const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
+    for (name, _) in &vectors {
+        assert!(
+            SPEC.contains(&format!("| `{name}` |")),
+            "{name} is missing from the table"
+        );
+    }
+}
+
+#[test]
+fn the_rejection_vectors_fail_for_the_reasons_the_spec_gives() {
+    use CanonicalJsonError as E;
+    let reason = |name: &str| {
+        let (_, bytes) = spec_reject_vectors()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap();
+        parse_canonical_node(&bytes).unwrap_err()
+    };
+    // Spelling only: the content is fine, the spelling is not canonical.
+    for name in [
+        "whitespace_between_members",
+        "trailing_newline",
+        "members_out_of_order",
+        "escaped_ordinary_character",
+        "escaped_solidus",
+        "uppercase_hex_escape",
+        "escaped_non_ascii_character",
+        "escaped_control_with_wrong_spelling",
+        "escaped_surrogate_pair",
+    ] {
+        assert_eq!(reason(name), E::NotCanonical, "{name}");
+    }
+    assert_eq!(reason("a_json_number"), E::NumberNotAllowed);
+    assert_eq!(reason("a_float"), E::NumberNotAllowed);
+    assert!(matches!(reason("duplicate_member"), E::DuplicateMember(_)));
+    assert!(matches!(
+        reason("duplicate_member_escaped"),
+        E::DuplicateMember(_)
+    ));
+    assert!(matches!(
+        reason("member_name_uppercase"),
+        E::BadMemberName(_)
+    ));
+    assert!(matches!(
+        reason("member_name_with_dot"),
+        E::BadMemberName(_)
+    ));
+    for name in [
+        "lone_high_surrogate",
+        "lone_low_surrogate",
+        "nul_escape",
+        "raw_control_character",
+        "leading_byte_order_mark",
+        "trailing_comma",
+    ] {
+        assert!(matches!(reason(name), E::Malformed { .. }), "{name}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One encoding per value
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_some_whose_content_is_null_is_refused_so_none_and_some_none_never_share_bytes() {
+    #[derive(Debug, Serialize)]
+    struct Patch {
+        field: Option<Option<String>>,
+    }
+    #[derive(Debug, Serialize)]
+    struct UnitInSome {
+        field: Option<()>,
+    }
+    #[derive(Debug, Serialize)]
+    struct Marker;
+    #[derive(Debug, Serialize)]
+    struct MarkerInSome {
+        field: Option<Marker>,
+    }
+    // None is fine, and so is a real value ...
+    assert_eq!(
+        to_canonical_vec(&Patch { field: None }).unwrap(),
+        br#"{"field":null}"#
+    );
+    assert_eq!(
+        to_canonical_vec(&Patch {
+            field: Some(Some("x".into()))
+        })
+        .unwrap(),
+        br#"{"field":"x"}"#
+    );
+    // ... but "present and cleared" would encode exactly like "absent".
+    for refused in [
+        to_canonical_vec(&Patch { field: Some(None) }),
+        to_canonical_vec(&UnitInSome { field: Some(()) }),
+        to_canonical_vec(&MarkerInSome {
+            field: Some(Marker),
+        }),
+    ] {
+        assert!(
+            matches!(refused, Err(CanonicalJsonError::Unsupported(_))),
+            "{refused:?}"
+        );
+    }
+    // An empty string is a real value, not null.
+    assert!(to_canonical_vec(&Patch {
+        field: Some(Some(String::new()))
+    })
+    .is_ok());
+}
+
+#[test]
+fn u0000_is_refused_in_a_string_on_every_path() {
+    assert!(to_canonical_vec(&"a\u{0}b").is_err());
+    assert!(to_canonical_vec(&'\u{0}').is_err());
+    assert!(node_to_canonical_vec(&Node::String("\u{0}".into())).is_err());
+    assert!(parse_node_lenient(br#""\u0000""#).is_err());
+    assert!(parse_node_lenient(b"\"\x00\"").is_err());
+    // Every other control character is fine (escaped on the way out).
+    for c in 1_u8..=0x1f {
+        let text = char::from(c).to_string();
+        assert!(to_canonical_vec(&text).is_ok(), "{c:#x}");
+    }
+}
+
+#[test]
+fn escape_heavy_strings_agree_with_the_oracle_and_survive_a_canonical_round_trip() {
+    let mut texts: Vec<String> = (1_u8..=0x1f).map(|c| char::from(c).to_string()).collect();
+    texts.extend(
+        [
+            "\"",
+            "\\",
+            "/",
+            "\u{7f}",
+            "\u{80}",
+            "\u{2028}",
+            "\u{2029}",
+            "\u{ffff}",
+            "\u{10000}",
+            "\u{10ffff}",
+            "\u{1f600}\u{1f600}",
+            "\\u0041",
+            "a\\\"b\\\\c",
+            "\u{301}\u{e9}",
+            "\r\n\t\u{8}\u{c}",
+        ]
+        .map(str::to_owned),
+    );
+    texts.push((1_u8..=0x1f).map(char::from).collect());
+    for text in texts {
+        let node = obj(&[("v", Node::String(text.clone()))]);
+        let bytes = node_to_canonical_vec(&node).unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            oracle(&node),
+            "{text:?}"
+        );
+        assert_eq!(parse_canonical_node(&bytes).unwrap(), node, "{text:?}");
     }
 }
