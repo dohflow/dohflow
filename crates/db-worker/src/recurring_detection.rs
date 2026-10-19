@@ -230,7 +230,7 @@ fn candidates_for(
     if flow == Flow::Outflow {
         let mut stmt = conn.prepare(
             "SELECT source_merchant_key FROM recurring_events
-              WHERE is_active = 1 AND source_merchant_key IS NOT NULL",
+              WHERE is_active = 1 AND deleted_at IS NULL AND source_merchant_key IS NOT NULL",
         )?;
         // The stored key is already a `normalize_merchant` output (the candidate's key),
         // so it compares directly against `c.merchant_key` — no re-normalization.
@@ -255,6 +255,7 @@ fn candidates_for(
                 td.counterparty, td.memo
            FROM recurring_event_instances i
            JOIN recurring_events e ON e.id = i.recurring_event_id AND e.is_active = 1
+                                    AND e.deleted_at IS NULL
            JOIN transaction_details td ON td.transaction_id = i.linked_transaction_id
            JOIN ledger_postings lp ON lp.transaction_id = i.linked_transaction_id
            JOIN ledger_accounts la ON la.id = lp.ledger_account_id

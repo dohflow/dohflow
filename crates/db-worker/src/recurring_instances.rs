@@ -497,7 +497,7 @@ pub(crate) fn read_unconfirmed_past_due(
          SELECT i.recurring_event_id, e.name, i.scheduled_date,
                 i.expected_amount_minor, i.currency
          FROM recurring_event_instances i
-         JOIN recurring_events e ON e.id = i.recurring_event_id
+         JOIN recurring_events e ON e.id = i.recurring_event_id AND e.deleted_at IS NULL
          JOIN latest_past l ON l.recurring_event_id = i.recurring_event_id
          WHERE i.scheduled_date < ?1
            AND i.linked_transaction_id IS NULL

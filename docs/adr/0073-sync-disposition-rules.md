@@ -31,7 +31,7 @@ logical `correlation_id`, and optional `causation_id` at
 `finance-kernel/src/lib.rs:2503-2505`). A queued child that references a row
 created by a queued parent must not be detached from that causal group.
 
-The current `WriteCommand` enum has 50 variants at
+The `WriteCommand` enum had 50 variants (53 after SYNC-2b, Addendum A) at
 `crates/db-worker/src/lib.rs:223-698`. Their doc comments are the source for
 the four shapes below. The three hard-delete implementations are explicit
 `DELETE FROM` statements in `apply/recurring.rs`:
@@ -262,9 +262,12 @@ receives semantic auto-merge treatment.
 | `ConvertUnexplainedToTransaction` | Base-dependent | auto after residual/assertion re-evaluation |
 | `ApplyScenario` | Base-dependent | queue-choose (reversal handle is command_id) |
 | `RevertScenarioApply` | Base-dependent | queue-choose (reversal handle is command_id) |
-| `DeleteRecurringTransfer` | Tombstone first | tombstone in SYNC-2b; then Toggle |
-| `DeleteIncomeSource` | Tombstone first | tombstone in SYNC-2b; then Toggle |
-| `DeleteRecurringBill` | Tombstone first | tombstone in SYNC-2b; then Toggle |
+| `DeleteRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ReinstateRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `DeleteIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ReinstateIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `DeleteRecurringBill` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ReinstateRecurringBill` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `CreateSourceBatch` | Reshape first | reshape to class-1b artifact envelope in SYNC-2c |
 | `AttachSourceRecord` | Reshape first | reshape to class-1b artifact envelope in SYNC-2c |
 | `UpdateBatchState` | Reshape first | reshape to class-1b artifact envelope in SYNC-2c |
@@ -312,6 +315,29 @@ receives semantic auto-merge treatment.
 - The queue-edit UI proves unusable in dogfood (S3), requiring a new ADR rather
   than an implicit fallback to LWW.
 - ADR 0027's balance-assertion semantics change.
+
+## Addendum A — Tombstones landed (2026-10-19, `personal-cfo-egn67`)
+
+SYNC-2b is done in code. `DeleteRecurringTransfer`, `DeleteIncomeSource` and
+`DeleteRecurringBill` no longer run a `DELETE`: each sets a nullable `deleted_at`
+(schema version 57) to the command's `issued_at`, never the wall clock, and a bill's
+tombstone covers its `recurring_events` row and its `bill_contracts` row. Three new
+commands, `ReinstateRecurringTransfer`, `ReinstateIncomeSource` and
+`ReinstateRecurringBill`, clear the tombstone. Deleting a row that is already
+tombstoned, or reinstating one that is not, is an accepted, logged no-op, so the end
+state is the same on every device. Tombstoning is distinct from archiving: an archived
+income source or bill is hidden and restorable through `Archive*`/`Restore*`, a deleted
+one is absent from every reader until reinstated, and the two states are independent.
+No purge or compaction path exists.
+
+Consequences for the text above, which is otherwise unchanged and describes the state
+before SYNC-2b: the exception "Tombstone first (3)" is resolved and has no rows; the six
+commands are **Toggle** with the outcome of every other Toggle, which makes **Toggle 18**,
+**Tombstone first 0** and 53 appendix rows; and the rough tally reads 29 strict-auto
+candidate rows, 16 scalar/Scenario queue-choose rows, 3 structural queue-edit rows plus
+the generic invalid-reference Create path, 0 tombstone-first rows, 4 reshape-first rows
+and 1 never-ships row. The generated appendix and the `#[test]` that checks it carry the
+new rows; the three `Reinstate*` payloads are additive version 1 payloads.
 
 ## Linked beads
 

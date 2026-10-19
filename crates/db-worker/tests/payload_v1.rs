@@ -213,6 +213,10 @@ fn samples() -> Vec<(&'static str, WriteCommand)> {
             WriteCommand::DeleteRecurringTransfer(RecurringTransferId::from_uuid(u(12))),
         ),
         (
+            "reinstate_recurring_transfer",
+            WriteCommand::ReinstateRecurringTransfer(RecurringTransferId::from_uuid(u(12))),
+        ),
+        (
             "create_income_source",
             WriteCommand::CreateIncomeSource {
                 id: IncomeSourceId::from_uuid(u(13)),
@@ -237,6 +241,10 @@ fn samples() -> Vec<(&'static str, WriteCommand)> {
         (
             "delete_income_source",
             WriteCommand::DeleteIncomeSource(IncomeSourceId::from_uuid(u(13))),
+        ),
+        (
+            "reinstate_income_source",
+            WriteCommand::ReinstateIncomeSource(IncomeSourceId::from_uuid(u(13))),
         ),
         (
             "archive_income_source",
@@ -286,6 +294,12 @@ fn samples() -> Vec<(&'static str, WriteCommand)> {
         (
             "delete_recurring_bill",
             WriteCommand::DeleteRecurringBill {
+                event_id: event(14),
+            },
+        ),
+        (
+            "reinstate_recurring_bill",
+            WriteCommand::ReinstateRecurringBill {
                 event_id: event(14),
             },
         ),
@@ -535,7 +549,7 @@ fn every_write_command_variant_has_exactly_one_sample() {
     expected.sort();
     let mut actual: Vec<String> = samples().iter().map(|(n, _)| (*n).to_owned()).collect();
     actual.sort();
-    assert_eq!(expected.len(), 50, "the enum has 50 variants");
+    assert_eq!(expected.len(), 53, "the enum has 53 variants");
     assert_eq!(
         actual, expected,
         "a variant without a sample, or a sample without a variant"
@@ -781,7 +795,13 @@ fn fixture_digest(files: &[(String, Vec<u8>)]) -> String {
 /// The digest of the version 1 fixtures. Changing a payload's shape changes the bytes, so
 /// this must change, and `PAYLOAD_SCHEMA_VERSION` must be bumped with it, keeping these
 /// files as the version 1 record. Update it only through that deliberate step.
-const PAYLOAD_V1_DIGEST: &str = "4e19301f5392ab42a30e81638b767a4cc7e6dc7093557f17dd5df342f5735b0a";
+///
+/// One exception is recorded here: adding a **variant** is additive, not a change of any
+/// existing payload's shape, so while no released app writes version 2 payloads it re-pins
+/// this digest without a version bump (planning's call, 2026-10-19). The three `Reinstate*`
+/// variants of personal-cfo-egn67 did that: the 50 existing fixtures are byte-identical and
+/// three files were added.
+const PAYLOAD_V1_DIGEST: &str = "e5c78dbea7f84b378c48628607fa1cd459e8ac80b1b1b1068a3802da6d9cd87c";
 
 #[test]
 fn the_frozen_version_1_fixtures_match_the_samples_and_the_pinned_digest() {
@@ -852,7 +872,7 @@ fn every_frozen_fixture_decodes_under_its_version() {
             count += 1;
         }
         assert_eq!(
-            count, 50,
+            count, 53,
             "version {version} has a fixture for every variant"
         );
     }

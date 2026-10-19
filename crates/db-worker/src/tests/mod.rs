@@ -7114,6 +7114,94 @@ fn operation_log_v2_rolls_back_to_55_and_forward_again() {
     assert_eq!(integrity, "ok");
 }
 
+/// `(type, not_null)` of one column of `table`, if it exists.
+fn column_of(conn: &rusqlite::Connection, table: &str, column: &str) -> Option<(String, bool)> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .unwrap();
+    let columns: Vec<(String, String, bool)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)? != 0,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    columns
+        .into_iter()
+        .find(|(name, _, _)| name == column)
+        .map(|(_, ty, not_null)| (ty, not_null))
+}
+
+const TOMBSTONED_TABLES: [&str; 4] = [
+    "recurring_transfers",
+    "income_sources",
+    "recurring_events",
+    "bill_contracts",
+];
+
+#[test]
+fn migration_57_adds_a_nullable_deleted_at_to_the_four_tables() {
+    let (_dir, worker) = worker();
+    let conn = worker.read_connection().unwrap();
+    for table in TOMBSTONED_TABLES {
+        assert_eq!(
+            column_of(&conn, table, "deleted_at"),
+            Some(("TEXT".to_owned(), false)),
+            "{table}: a nullable TEXT tombstone, so every existing row stays live"
+        );
+    }
+}
+
+#[test]
+fn migration_57_leaves_existing_rows_live_and_rolls_back_and_forward() {
+    let (_dir, worker) = worker();
+    // A vault as a 56 build left it: roll the schema back, write one of each kind the way
+    // that build did, then migrate forward.
+    let mut conn = worker.read_connection().unwrap();
+    migrations::migrate_down(&mut conn, 56).unwrap();
+    assert_eq!(user_version(&conn), 56);
+    for table in TOMBSTONED_TABLES {
+        assert_eq!(column_of(&conn, table, "deleted_at"), None, "{table}");
+    }
+    let acct = |n: u8| vec![n; 16];
+    conn.execute(
+        "INSERT INTO income_sources (id, name, net_minor_units, currency, frequency, anchor_date,
+             active, created_at) VALUES (?1, 'Pay', 100, 'USD', 'monthly', '2026-01-01', 1, 't')",
+        [acct(1)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO recurring_events (id, name, amount_expected_minor, currency, frequency,
+             created_at, updated_at) VALUES (?1, 'Rent', 100, 'USD', 'monthly', 't', 't')",
+        [acct(2)],
+    )
+    .unwrap();
+
+    migrations::run_migrations(&mut conn).unwrap();
+    assert_eq!(user_version(&conn), migrations::CURRENT_VERSION);
+    for (table, key) in [("income_sources", "id"), ("recurring_events", "id")] {
+        let tombstoned: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE {key} IS NOT NULL AND deleted_at IS NOT NULL"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let rows: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((rows, tombstoned), (1, 0), "{table}: kept, and still live");
+    }
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+}
+
 #[test]
 fn rebuild_flag_triggers_read_model_rebuild() {
     let (_dir, worker) = worker();

@@ -1839,6 +1839,28 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Tombstones for the three hard deletes (personal-cfo-egn67, SYNC-2b; ADR 0073 exceptions
+    // item 1, invariant 9 "nothing is deleted"). DeleteRecurringTransfer, DeleteIncomeSource and
+    // DeleteRecurringBill used to run a literal DELETE, which has no valid resolution against a
+    // concurrent edit on another device (the row is gone). They now set `deleted_at` to the
+    // command's `issued_at`, and a Reinstate command clears it. NULL means "not deleted", so
+    // every existing row is unaffected. The bill's contract row is tombstoned with its schedule.
+    Migration {
+        version: 57,
+        name: "tombstones_for_recurring_deletes",
+        up: "ALTER TABLE recurring_transfers ADD COLUMN deleted_at TEXT;
+             ALTER TABLE income_sources ADD COLUMN deleted_at TEXT;
+             ALTER TABLE recurring_events ADD COLUMN deleted_at TEXT;
+             ALTER TABLE bill_contracts ADD COLUMN deleted_at TEXT;",
+        down: Some(
+            "ALTER TABLE bill_contracts DROP COLUMN deleted_at;
+             ALTER TABLE recurring_events DROP COLUMN deleted_at;
+             ALTER TABLE income_sources DROP COLUMN deleted_at;
+             ALTER TABLE recurring_transfers DROP COLUMN deleted_at;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 const fn max_version() -> i64 {
