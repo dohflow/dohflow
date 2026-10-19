@@ -201,23 +201,49 @@ impl Kernel {
             Some(stored) if stored.as_bytes() != &material.vault_id => {
                 Err(KernelError::ReleasedUnlock(ReleasedUnlockError::WrongVault))
             }
-            Some(_) => {
-                let worker = DbWorker::open_existing_with_raw_key(db_path, material.dek)?;
-                // The probe and this open each take the runner lock for themselves, so another
-                // process could have rotated the key between them. Re-read the envelope now
-                // that this process owns the vault; a changed fingerprint means the item went
-                // stale in that window. Dropping the worker releases the lock and scrubs the key.
-                let now = std::fs::read(&sidecar)
-                    .map_err(|error| KernelError::Vault(error.to_string()))
-                    .and_then(|bytes| VaultEnvelope::from_bytes(&bytes).map_err(Into::into))?;
-                if !bool::from(material.fingerprint.ct_eq(&dek_fingerprint(&now.wrapped))) {
+            Some(_) => Self::open_with_released_dek(db_path, material),
+        }
+    }
+
+    /// The step after a successful probe: take the runner lock (by opening the worker) and
+    /// make sure the item still matches the envelope. The probe and this open each take the
+    /// runner lock for themselves, so another process can rotate the key between them. Then
+    /// either the open fails (the old key no longer fits; the worker's open reports a failed
+    /// keyed read as an unsupported schema) or it succeeds against a vault the envelope no
+    /// longer matches. Both are the same cause, an item that went stale in that window, so the
+    /// envelope is re-read and a changed fingerprint is `StaleFingerprint`, never a corrupt or
+    /// unsupported vault (ADR 0080: a wrong-key open never yields `CorruptNeedsRecovery`).
+    fn open_with_released_dek(
+        db_path: &Path,
+        material: ReleasedUnlockMaterial,
+    ) -> Result<Self, KernelError> {
+        let sidecar = sidecar_path(db_path);
+        let fingerprint = material.fingerprint;
+        let still_matches = || -> Result<bool, KernelError> {
+            let bytes =
+                std::fs::read(&sidecar).map_err(|error| KernelError::Vault(error.to_string()))?;
+            let envelope = VaultEnvelope::from_bytes(&bytes)?;
+            Ok(bool::from(
+                fingerprint.ct_eq(&dek_fingerprint(&envelope.wrapped)),
+            ))
+        };
+        let stale = || KernelError::ReleasedUnlock(ReleasedUnlockError::StaleFingerprint);
+        match DbWorker::open_existing_with_raw_key(db_path, material.dek) {
+            Ok(worker) => {
+                if still_matches()? {
+                    Ok(Self::with_worker(worker))
+                } else {
+                    // Dropping the worker releases the lock and scrubs the key.
                     drop(worker);
-                    return Err(KernelError::ReleasedUnlock(
-                        ReleasedUnlockError::StaleFingerprint,
-                    ));
+                    Err(stale())
                 }
-                Ok(Self::with_worker(worker))
             }
+            // A failed open with a changed envelope is the race; with an unchanged envelope
+            // it is a genuine persistence or schema error and is reported as such.
+            Err(error) => match still_matches() {
+                Ok(false) => Err(stale()),
+                _ => Err(error.into()),
+            },
         }
     }
 
@@ -978,5 +1004,100 @@ impl VaultController {
             attachments_consistent: worker.attachments_consistent().unwrap_or(false),
             read_models_current: worker.read_models_current().unwrap_or(false),
         })
+    }
+}
+
+#[cfg(test)]
+mod released_dek_race_tests {
+    //! The probe-to-lock race of `unlock_vault_with_dek` (personal-cfo-7ie.13): another process
+    //! can rotate the key after the read-only probe passed and before this process owns the
+    //! runner lock. The post-probe step is tested directly, because the race itself cannot be
+    //! scheduled from outside.
+
+    use super::*;
+    use tempfile::TempDir;
+    use vault_crypto::{derive_kek, unwrap_dek};
+
+    const PASSWORD: &[u8] = b"correct horse battery staple";
+
+    fn material_for(db: &Path) -> ReleasedUnlockMaterial {
+        let envelope =
+            VaultEnvelope::from_bytes(&std::fs::read(sidecar_path(db)).unwrap()).unwrap();
+        let kek = derive_kek(PASSWORD, &envelope.salt, &envelope.kdf).unwrap();
+        let dek = unwrap_dek(&kek, &envelope.wrapped).unwrap();
+        let sealed = ReleasedUnlockMaterial::encode([7; 16], &envelope.wrapped, &dek);
+        ReleasedUnlockMaterial::parse(&sealed).unwrap()
+    }
+
+    fn created() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("vault.db");
+        Kernel::create_vault(&path, PASSWORD).unwrap().lock();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_key_rotated_between_the_probe_and_the_lock_is_stale_not_corrupt() {
+        let (_dir, path) = created();
+        let old = material_for(&path);
+        let mut controller = VaultController::open(&path);
+        controller.unlock(PASSWORD).unwrap();
+        controller.rotate_key(PASSWORD).unwrap();
+        controller.lock().unwrap();
+
+        // The probe had passed against the old key; the open now meets the rotated vault.
+        match Kernel::open_with_released_dek(&path, old) {
+            Err(KernelError::ReleasedUnlock(ReleasedUnlockError::StaleFingerprint)) => {}
+            Err(other) => panic!("expected StaleFingerprint, got {other:?}"),
+            Ok(_) => panic!("an old key must not open the rotated vault"),
+        }
+        // The vault is intact and unlocks with the password, so nothing marked it for recovery.
+        assert_eq!(classify_vault(&path), VaultState::Locked);
+        Kernel::unlock_vault(&path, PASSWORD)
+            .expect("unlocks")
+            .lock();
+    }
+
+    #[test]
+    fn a_password_change_between_the_probe_and_the_lock_is_stale_too() {
+        let (_dir, path) = created();
+        let old = material_for(&path);
+        let mut controller = VaultController::open(&path);
+        controller.unlock(PASSWORD).unwrap();
+        controller
+            .change_password(PASSWORD, b"another password")
+            .unwrap();
+        controller.lock().unwrap();
+        // The DEK is unchanged, so the open succeeds, and the re-check after it catches the
+        // changed envelope.
+        match Kernel::open_with_released_dek(&path, old) {
+            Err(KernelError::ReleasedUnlock(ReleasedUnlockError::StaleFingerprint)) => {}
+            Err(other) => panic!("expected StaleFingerprint, got {other:?}"),
+            Ok(_) => panic!("a stale item must not open the vault"),
+        }
+    }
+
+    #[test]
+    fn an_unchanged_envelope_reports_a_genuine_open_failure_as_it_is() {
+        let (_dir, path) = created();
+        // A wrong key against an unchanged envelope is not the race: it is reported as the
+        // open's own error, never relabeled as a stale item.
+        let mut material = material_for(&path);
+        let envelope =
+            VaultEnvelope::from_bytes(&std::fs::read(sidecar_path(&path)).unwrap()).unwrap();
+        material.fingerprint = dek_fingerprint(&envelope.wrapped);
+        let wrong = vault_crypto::generate_dek().unwrap();
+        let broken = ReleasedUnlockMaterial {
+            vault_id: material.vault_id,
+            fingerprint: material.fingerprint,
+            dek: wrong,
+        };
+        match Kernel::open_with_released_dek(&path, broken) {
+            Err(KernelError::ReleasedUnlock(ReleasedUnlockError::StaleFingerprint)) => {
+                panic!("an unchanged envelope is not a stale item")
+            }
+            Err(_) => {}
+            Ok(_) => panic!("a wrong key must not open the vault"),
+        }
     }
 }
