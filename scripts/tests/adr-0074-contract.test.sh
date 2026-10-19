@@ -96,4 +96,12 @@ require_text "verification scope: LunchFlow pending" "It is **pending for LunchF
 require_text "LunchFlow is not described as covered" "must not be described as covered"
 require_text "Addendum B links the decision bead" "- \`personal-cfo-g3m.7\` (cross-device connector ingestion"
 
+# Privacy: the verification result is stated without the owner's account or transaction counts.
+CASES=$((CASES + 1))
+if grep -Eq '[0-9]+ accounts|[0-9]+ transactions per side|last 30 days, posted' "$ADR"; then
+  echo "    FAIL — Addendum B must not publish the owner's real account or transaction counts" >&2
+  exit 1
+fi
+echo "    ok   — Addendum B publishes no real account or transaction counts"
+
 echo "PASS — $CASES ADR 0074 contract assertions, 0 failures"
