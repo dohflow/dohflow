@@ -5,6 +5,10 @@
 //! section 1), so it is a class-1 logical field that changes only through a logged
 //! command. This is the only code that writes it after the vault's bootstrap row
 //! (`ensure_vault_metadata` seeds the `UTC` default before any command exists).
+//!
+//! The audit event's timestamp is `meta.issued_at`, not the wall clock: `apply` never
+//! reads the clock (ADR 0013 Addendum A), so replaying the command elsewhere reads the
+//! same instant.
 
 use forecast_engine::Tz;
 use rusqlite::{params, Connection};
@@ -14,6 +18,15 @@ use crate::{CommandMeta, DbError};
 
 /// The `audit_events.event_type` recorded for every household timezone change.
 pub(crate) const HOUSEHOLD_TIMEZONE_CHANGED: &str = "household_timezone_changed";
+
+/// The command's `issued_at` as an RFC 3339 UTC timestamp, for a local audit column.
+fn issued_at_rfc3339(meta: &CommandMeta) -> Result<String, DbError> {
+    chrono::DateTime::from_timestamp_micros(meta.issued_at.as_unix_micros())
+        .map(|instant| instant.to_rfc3339())
+        .ok_or_else(|| {
+            DbError::InvalidCommand("issued_at is outside the supported range".to_owned())
+        })
+}
 
 /// Applies [`WriteCommand::SetHouseholdTimezone`](crate::WriteCommand): validate the IANA
 /// name, store it on the singleton `vault_metadata` row, and append an `audit_events` row
@@ -49,7 +62,7 @@ pub(crate) fn apply_set_household_timezone(
             HOUSEHOLD_TIMEZONE_CHANGED,
             meta.command_id,
             meta.correlation_id,
-            chrono::Utc::now().to_rfc3339(),
+            issued_at_rfc3339(meta)?,
         ],
     )?;
     let vault_id: Uuid = tx.query_row(

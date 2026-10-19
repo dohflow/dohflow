@@ -27,9 +27,9 @@ use thiserror::Error;
 
 pub use core_ledger::{
     Account, AccountFlags, AccountId, AccountKind, AccountSubtype, AttachmentId, BillContractId,
-    CashflowRole, CategoryId, IncomeSourceId, LedgerAccount, LedgerAccountId, NormalBalance,
-    RecurringEventId, RecurringTransferId, SourceBatchId, SourceRecordId, SplitLineId,
-    StagedTransactionId, TagId, TransactionId,
+    CashflowRole, CategoryId, IncomeSourceId, IssuedAt, LedgerAccount, LedgerAccountId,
+    NormalBalance, RecurringEventId, RecurringTransferId, SourceBatchId, SourceRecordId,
+    SplitLineId, StagedTransactionId, TagId, TransactionId,
 };
 pub use core_money::{Currency, Money};
 pub use db_worker::{new_idempotency_key, validate_idempotency_key};
@@ -2630,6 +2630,7 @@ fn next_meta(seed: &CommandMeta) -> CommandMeta {
         actor_type: seed.actor_type,
         actor_id: seed.actor_id.clone(),
         idempotency_key: new_idempotency_key(),
+        issued_at: IssuedAt::now(),
     }
 }
 
@@ -4579,7 +4580,19 @@ mod tests {
             actor_type: ActorType::User,
             actor_id: "tester".to_owned(),
             idempotency_key: Uuid::new_v4().to_string(),
+            issued_at: IssuedAt::now(),
         }
+    }
+
+    // personal-cfo-t2s4b: a derived command's metadata is issued fresh, after the seed's,
+    // and every `issued_at` the kernel mints is strictly later than the last.
+    #[test]
+    fn next_meta_issues_a_later_instant_each_time() {
+        let seed = meta();
+        let first = next_meta(&seed);
+        let second = next_meta(&seed);
+        assert!(first.issued_at > seed.issued_at);
+        assert!(second.issued_at > first.issued_at);
     }
 
     // A unit test (not an integration test) so the emitting crate and the

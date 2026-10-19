@@ -20,6 +20,10 @@
 //! (categories, forecast, income, …) shares one ID foundation without depending
 //! on the ledger.
 
+mod issued_at;
+
+pub use issued_at::IssuedAt;
+
 use std::sync::{Mutex, OnceLock};
 
 use uuid::{ContextV7, Timestamp, Uuid};

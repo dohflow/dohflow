@@ -20,6 +20,7 @@ fn meta() -> CommandMeta {
         actor_type: ActorType::User,
         actor_id: "tester".to_owned(),
         idempotency_key: new_idempotency_key(),
+        issued_at: finance_kernel::IssuedAt::now(),
     }
 }
 
