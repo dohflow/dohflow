@@ -129,8 +129,8 @@ fi
 # pin the two the rest of the protocol leans on.
 [ "$(jq -r '.limits.max_envelope_container_bytes' "$JSON")" = "16909058" ] \
   && pass "envelope container bound is 16909058" || fail "envelope container bound changed"
-[ "$(jq -r '.limits.max_snapshot_container_bytes' "$JSON")" = "1073742168" ] \
-  && pass "snapshot container bound is 2^30 + 344" || fail "snapshot container bound changed"
+[ "$(jq -r '.limits.max_snapshot_container_bytes' "$JSON")" = "1073742104" ] \
+  && pass "snapshot container bound is 2^30 + 280 (246-byte snapshot header)" || fail "snapshot container bound changed"
 
 case_start "the comparison detects drift (negative checks)"
 cp "$JSON" "$TMP/drop-error.json"
@@ -168,6 +168,15 @@ need "the never-sees section exists" '## 9. What a server never sees'
 for item in 'the vault password' 'the Sync epoch root `K_e`' 'the tag secret `S`' 'the origin `StorageId`' 'the plaintext idempotency key' 'attachment bytes'; do
   need "never-sees lists: $item" "$item"
 done
+need "genesis retry returns 200" 'unless it is the exact retry'
+need "only a different genesis is VaultExists" 'only a *different* genesis for the vault is'
+need "parsing precedes the reason-dependent checks" 'Parsing comes first because the remaining checks branch'
+need "push failures name the offending envelope" 'name the first offending envelope'
+need "ArtifactMissing lists the missing ids" 'every id of that envelope'"'"'s sidecar that lacks a durable receipt'
+need "installEpoch ArtifactMissing lists the closure ids" 'the closure ids that lack a durable receipt'
+need "pre-genesis uploads bind to one account" 'MUST come from the same account'
+need "a snapshotless grant has no head check" 'has no head check'
+need "forged grant may surface as either code" 'a conformance test accepts either'
 need "compatible-with naming rule" '"Compatible with DohFlow"'
 need "no official-service naming without agreement" 'MUST NOT present itself as the official DohFlow Sync'
 

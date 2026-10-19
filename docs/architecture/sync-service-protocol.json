@@ -364,7 +364,7 @@
   ],
   "limits": {
     "max_envelope_container_bytes": 16909058,
-    "max_snapshot_container_bytes": 1073742168,
+    "max_snapshot_container_bytes": 1073742104,
     "max_membership_record_bytes": 2300,
     "max_epoch_record_bytes": 2421030,
     "max_artifact_manifest_ids": 4096,

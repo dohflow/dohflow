@@ -122,6 +122,12 @@ credential, and a server MAY implement either with any opaque token format:
   in the membership chain. Revoking the device revokes the credential in the
   same transaction (section 6.3).
 
+Before a vault's genesis is installed, the first request that names its
+`vault_id` (a staged snapshot, an artifact upload or the genesis itself) binds
+that `vault_id` to the calling account. Every later pre-genesis request, and the
+genesis, MUST come from the same account; a different account gets `Forbidden`.
+How the server records the binding is its own business.
+
 A missing, malformed or unknown credential is `Unauthorized` (HTTP 401 with a
 `WWW-Authenticate: Bearer` header). A credential for a revoked device is
 `DeviceRevoked` (403). A credential not permitted to act on this vault is
@@ -317,7 +323,8 @@ plus the snapshot published with it. It covers all four reasons of
 
 `base_seq` is the log head the client believes is current. For a genesis it is
 `"0"`. When a snapshot is present, `base_seq` MUST equal the snapshot's header
-`base_seq`. `artifact_manifest` is the snapshot's full closure sidecar: the
+`base_seq`. It is `null` only for a grant without a snapshot (section 6.1,
+check 7). `artifact_manifest` is the snapshot's full closure sidecar: the
 ordered list of `sync_artifact_id` values whose commitment is the snapshot
 header's `artifact_manifest_commitment` (`vault-format.md` C.3); it is required
 when `snapshot_id` is present and empty otherwise. The snapshot MUST have been
@@ -344,8 +351,9 @@ record id, already installed) returns `200` with the original values; this
 makes a lost response safe. Any different record at an occupied position is a
 rejection (section 6), never an overwrite.
 
-The service performs every check of section 6.1 that it can perform on public
-data. It cannot unseal the keys, so it relies on the client to verify them
+`ArtifactMissing` from `installEpoch` carries `{ "key_epoch": "4", "missing":
+["<64 hex>"] }`, the closure ids that lack a durable receipt. The service
+performs every check of section 6.1 that it can perform on public data. It cannot unseal the keys, so it relies on the client to verify them
 (`vault-format.md` C.6, "Sealing the key set").
 
 ### 4.5 `claimCredential`
@@ -356,7 +364,7 @@ genesis, or a grant installed by an existing member), the new device obtains its
 own device credential by proving possession of its signing key:
 
 ```json
-{ "issued_at": "1790000000000000", "proof": "<base64url Ed25519 signature>" }
+{ "issued_at": "<i64 microseconds since the Unix epoch>", "proof": "<base64url Ed25519 signature>" }
 ```
 
 `proof` is an Ed25519 signature, verified strictly under the device's
@@ -416,6 +424,24 @@ The decision procedure is section 5. On success, `200`:
 `results` has one entry per submitted envelope, in order. `duplicate` is `true`
 for an envelope that the accepted-envelope index already held (an exact retry);
 its `seq` and `result_ref` are those of the original acceptance.
+
+**Which envelope failed.** A push is one unit, so these errors reject the whole
+request. Each carries `details` that name the first offending envelope:
+
+```json
+{ "index": 2, "command_id": "<uuid> | null", "accepted_seq": "1002 | null" }
+```
+
+`index` is the zero-based position in the request's `envelopes`; `command_id` is
+read from the clear header (`null` when the container is unparsable);
+`accepted_seq` is, for `ProtocolFork`, the `seq` of the accepted envelope it
+conflicts with (`null` otherwise). This applies to `MalformedObject`,
+`ProtocolFork`, `EpochRejected` and `NonceTupleReused`. `ArtifactMissing` carries
+`{ "index": 2, "key_epoch": "3", "missing": ["<64 hex>"] }`, listing every id of
+that envelope's sidecar that lacks a durable receipt (at most 4096). After
+`ProtocolFork` the client halts the named command and keeps both envelopes for
+diagnosis; it may resubmit the others without it. After `ArtifactMissing` it
+uploads the listed ids and resubmits unchanged.
 
 On `HeadMismatch` (HTTP 409), `details` carries what the client needs to rebase
 without another round trip:
@@ -637,19 +663,24 @@ protocol has no operation that does.
 The service enforces every rule it can check on public data. In order, the first
 failure answers:
 
-1. **Authenticate and locate.** A genesis (`reason 1`) needs an account
-   credential and a vault with no installed genesis; a vault that already has one
-   is `VaultExists`, the code the client turns into "bootstrap as a replica"
-   (ADR 0074 decision 9). Every other reason needs a device credential of an
-   authorized member of an existing vault (`VaultNotFound`). For every reason but
-   the genesis, the signer of the membership record and the sealer of the epoch
+1. **Parse** both records (`MalformedObject`, `UnsupportedSuite`); the
+   `kem_public_key` must be 32 bytes in suite 1. Parsing comes first because the
+   remaining checks branch on the epoch record's `reason`.
+2. **Authenticate and locate.** A genesis (`reason 1`) needs an account
+   credential and a vault with no installed genesis; a genesis against a vault
+   that already has one is `VaultExists`, the code the client turns into
+   "bootstrap as a replica" (ADR 0074 decision 9), **unless it is the exact retry
+   of step 3**. Every other reason needs a device credential of an authorized
+   member of an existing vault (`VaultNotFound`). For every reason but the
+   genesis, the signer of the membership record and the sealer of the epoch
    record MUST be the credential's device; the genesis signer and sealer are the
    founding device itself, and the staged snapshot's header `device_id` MUST be
    that device.
-2. **Parse** both records (`MalformedObject`, `UnsupportedSuite`); the
-   `kem_public_key` must be 32 bytes in suite 1.
 3. **Exact retry.** If this epoch record (and membership record) is already
-   installed byte for byte, answer `200` with the original result.
+   installed byte for byte, answer `200` with the original result, whatever the
+   reason. A lost response to a genesis is therefore safe to retry: the same
+   bytes return `200`, and only a *different* genesis for the vault is
+   `VaultExists`.
 4. **Epoch shape.** The record's `reason`, `key_epoch`, `prev_epoch_id` and
    `membership_head` MUST follow the reason table of `vault-format.md` C.6 and
    the sequencing rules of C.6, relative to the newest installed epoch record:
@@ -669,9 +700,15 @@ failure answers:
    `prev_id` is no longer the newest installed membership record is
    `StaleMembershipHead`. Checks 4 and 5 come first, so an `add` and grant
    prepared before a cutover are reported as `BadEpochSequence` (or
-   `KeyCommitmentMismatch` if forged), as C.7 states.
-7. **Head.** `base_seq` MUST equal the current head, and the snapshot's header
-   `base_seq`: `HeadMismatch`.
+   `KeyCommitmentMismatch` if forged), as C.7 states. A forged grant may surface
+   as either code, depending on which of the two checks it trips first; a
+   conformance test accepts either.
+7. **Head.** When a snapshot is present, `base_seq` MUST equal the current head
+   and the snapshot's header `base_seq`: `HeadMismatch`. A grant (`reason 3`)
+   without a snapshot carries `base_seq` `null`, has no head check, and is
+   recorded at whatever the head is when it is installed: a grant changes no key,
+   so it has no epoch position to protect and need not lose races to ordinary
+   pushes.
 8. **Snapshot and closure.** The staged snapshot MUST exist
    (`SnapshotNotFound`), its header MUST agree with the record (`vault_id`, the
    epoch's `key_epoch`, `object_type 2`, the sidecar's commitment:
@@ -742,7 +779,7 @@ They are derived from the field maxima of `vault-format.md` C.1.1 to C.9.
 | name | value | meaning |
 | --- | --- | --- |
 | `max_envelope_container_bytes` | 16909058 | largest well-formed `DFSY` envelope container |
-| `max_snapshot_container_bytes` | 1073742168 | largest well-formed `DFSY` snapshot container (plaintext at most 2^30) |
+| `max_snapshot_container_bytes` | 1073742104 | largest well-formed `DFSY` snapshot container: plaintext at most 2^30, and a 246-byte header because header fields 7 and 8 are absent for a snapshot (2^30 + 280) |
 | `max_membership_record_bytes` | 2300 | largest signed membership record |
 | `max_epoch_record_bytes` | 2421030 | largest signed epoch record (1024 recipients) |
 | `max_artifact_manifest_ids` | 4096 | ids in one manifest sidecar or one status request |
@@ -832,10 +869,10 @@ server can produce the failure. C.11 failures that only a client can detect
 | `StaleMembershipHead` | 409 | A membership record's `prev_id` is not the newest. Fetch the chain, rebuild. |
 | `BadEpochSequence` | 409 | The record's epoch does not follow the epoch in force. Fetch the chain, rebuild. |
 | `EpochRejected` | 409 | An object's `key_epoch` is not the epoch in force at its position. |
-| `ProtocolFork` | 409 | An identity matches an accepted envelope but not the whole of it. Halt that command; keep both envelopes. |
+| `ProtocolFork` | 409 | An identity matches an accepted envelope but not the whole of it. `details` names the command (section 4.6). Halt it; keep both envelopes. |
 | `NonceTupleReused` | 409 | The same nonce tuple arrived with different bytes. Never retried unchanged. |
 | `ObjectConflict` | 409 | Different bytes for an existing artifact address or snapshot id. |
-| `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. Upload, then retry. |
+| `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. `details.missing` lists the ids. Upload, then retry. |
 | `AckBeyondHead` | 409 | The acked `seq` is above the head. |
 | `TailTruncated` | 410 | `after_seq` is below `floor_seq`. Bootstrap from the latest snapshot. |
 | `PayloadTooLarge` | 413 | An object exceeds a size limit. |
