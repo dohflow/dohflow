@@ -87,9 +87,10 @@ sources give you a choice: Archive keeps the record and lets you restore it
 later; Delete removes it permanently, and always sits behind its own
 confirmation step rather than a single click. Deleting an entire vault is
 different from any of that, and is permanent — it wipes that vault's files
-from disk, and the only way back is restoring a backup you made beforehand. A
-fuller retention-and-deletion reference is planned; this page will link it
-once it exists.
+from disk, and the only way back is restoring a backup you made beforehand. For
+the full picture, including what each kind of removal does and how to remove
+DohFlow and its data completely, see
+[What DohFlow keeps, and how to delete it](data-retention-and-deletion.md).
 
 ## If you lose your password
 
