@@ -106,7 +106,8 @@ a class-4 writer.
 The manifest is the shared input for:
 
 - **MOB-0a / D24**, which builds the phone container from the class-1 + class-2
-  allowlist;
+  allowlist *(superseded 2026-10-18: no phone container is planned; see ADR 0024
+  section 3)*;
 - **SYNC-1c**, which captures class-3 state and performs the rollback-then-replay
   preservation and validation contract;
 - **SYNC-2**, which adds module-level write linting and routes the current

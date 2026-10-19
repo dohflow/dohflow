@@ -440,7 +440,8 @@ artifact objects use AES-256-GCM only with protocol-derived keys from that
 root; `K_e` is never used directly as an AEAD key. Every encrypted object
 belongs to a monotonically increasing `key_epoch`, and `K_e` is sealed only to
 the enrolled devices in that epoch. The same enrollment and `device_id`
-mechanism is reused by the phone-container work in ADR 0024-A. The service
+mechanism is reused by the phone-container work in ADR 0024-A *(superseded
+2026-10-18: no phone container is planned; see ADR 0024 section 3)*. The service
 stores sealed-key blobs and protocol metadata, never a decryption key.
 
 Device revocation is a fresh-key, atomic epoch cutover — not a re-seal of a
