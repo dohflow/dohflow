@@ -130,6 +130,10 @@ accepted under a Contributor License Agreement instead of the DCO.**
 Business model recorded in ADR 0066 (2026-09-05): free local app forever,
 paid services around it; AGPL-3.0-only + CLA reaffirmed.
 
+Pointer (2026-10-18): the license of the DohFlow Sync server is decided
+separately in ADR 0078 (internal tier, `personal-cfo-quhmv`). It does not reopen
+this ADR: the app stays AGPL-3.0-only with the CLA.
+
 ## Revisit if
 
 - ~~Dual-licensing pressure becomes real (commercial license requests, or the cloud
