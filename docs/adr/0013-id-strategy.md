@@ -491,7 +491,9 @@ packing  = uuid::Builder::from_unix_timestamp_millis(0, &counter_random_bytes)
 
 The layout is section 1's, with a fixed zero time field and ordinal zero, so a
 singleton id is a UUID version 7 that sorts before every command-minted id:
-`ORDER BY id` lists the system singletons first, on every replica. The role and
+`ORDER BY id` lists the system singletons first, on every replica. The zero in its
+timestamp is a constant, **not a creation time**: nothing may read a singleton's
+creation instant from its id. The role and
 currency are validated before use, and anything else is a validation error raised
 before any write: the currency is exactly three ASCII uppercase letters, and the role
 is a member of the closed set of system role names defined with the ledger schema
@@ -545,12 +547,13 @@ write-set hash flags a fork. SYNC-1a enforces this with a ratchet test.
 **(d) The no-clock rule covers everything reachable from `apply`.** Section 2
 scoped the rule to the 21 `Utc::now()` calls directly under
 `crates/db-worker/src/apply/`. `apply` also calls helpers elsewhere that read the
-clock themselves, and the rule covers them: the `ingestion` helpers
+clock themselves, and the rule covers them, for example: the `ingestion` helpers
 (`create_source_batch`, `update_batch_status`, `link_provenance`,
 `record_dedupe_decision`), `record_transaction_detail`,
-`reverse_and_hide_transaction`, the household-local "today" read, and the
-**class-2 rebuilds** (`rebuild_in` of the commitments and money-inbox
-projections). Class-2 rows must also be hash-equal across vaults (the exit
+`reverse_and_hide_transaction`, the inbox helpers `record_dismiss` and
+`record_snooze`, the household-local "today" read, and the **class-2 rebuilds**
+(`rebuild_in` of the commitments and money-inbox projections). The list is
+illustrative; the ratchet test derives the actual set from the code. Class-2 rows must also be hash-equal across vaults (the exit
 criterion of the Sync foundations milestone), so a clock read inside a class-2
 rebuild is in scope. Every one of them reads `meta.issued_at`, passed down by the
 caller. `personal-cfo-t2s4b` pins the inventory with a ratchet test that derives

@@ -134,6 +134,8 @@ require_text "(b) singleton packing uses a zero time field" "$ADR" "packing  = u
 require_text "(b) cross-references the provider-transaction exception" "$ADR" "the provider-transaction exception of section 9"
 require_text "(b) validates before deriving" "$ADR" "the currency is exactly three ASCII uppercase letters, and the role"
 require_text "(b) separates from section 9 by first byte and version nibble" "$ADR" "nibble (7 here, 8 there)"
+require_text "(b) a singleton timestamp is not a creation time" "$ADR" "**not a creation time**"
+require_text "(d) the helper list names the inbox helpers" "$ADR" "`record_dismiss` and"
 require_text "(c) mint order is deterministic" "$ADR" "**(c) Mint order is deterministic.**"
 require_text "(c) no unordered collection on a mint path" "$ADR" "no iteration over a \`HashMap\`, a \`HashSet\` or any other unordered"
 require_text "(c) a total ORDER BY feeds every mint loop" "$ADR" "total \`ORDER BY\`"
