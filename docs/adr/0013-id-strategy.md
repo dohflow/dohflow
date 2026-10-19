@@ -577,7 +577,7 @@ message  = u8(34) || label
         || source_vault_id.bytes                             # 16 bytes, RFC UUID order
         || u8(len(entity_tag))  || entity_tag                # ASCII [a-z0-9_], 1..32 bytes
         || u16_be(len(source_row_key)) || source_row_key     # 1..256 bytes
-digest   = c920d88d9c429df3285d8c929e64ae71f82c24c19132e7a423f0188169cd0d6c-SHA256(id_key, message)                      # the HOUSEHOLD vault's id_key (section 1)
+digest   = HMAC-SHA256(id_key, message)                      # the HOUSEHOLD vault's id_key (section 1)
 id_bytes = digest[0..16], then
            byte 6 = (byte 6 & 0x0f) | 0x80                    # UUID version 8
            byte 8 = (byte 8 & 0x3f) | 0x80                    # RFC 9562 variant
@@ -593,6 +593,14 @@ feature bead (`personal-cfo-i93n3.7`); a new tag needs an amendment to this sect
 text-keyed and composite-keyed rows are covered by the same rule and the key is
 byte-exact. The id is a UUID version 8: it carries no time, so nothing may rely on
 `ORDER BY id` for creation order of merge-created rows.
+
+**Every row a merge-replayed command creates carries a merge-derived id in its payload,
+child rows included** (the source child's key under its own entity tag). A replayed command
+never lets its apply mint a child row through section 1's command-scoped helper, because
+that id depends on the `command_id`, which differs between two merge runs and two devices,
+and the second run's "same content" comparison would then see different child ids and queue
+a disposition item where it should find `AlreadyPresent`. Keyless folded children (postings
+and attachment links, `vault-format.md` C.1.5) have no id and compare by content already.
 
 *Domain separation.* It shares `id_key` with sections 1, 9 and 10, so the message spaces
 must not overlap. Against section 9 and section 10 the first byte differs (34, `0x22`,

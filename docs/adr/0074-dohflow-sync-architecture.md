@@ -947,7 +947,22 @@ ids. The id is computed when the command is constructed and carried in its paylo
 the provider-derived ids of Addendum B and the caller-minted ids of ADR 0013-A section 3.
 A second creation of an id that already exists with equal content is the `AlreadyPresent`
 no-op of Addendum B item 4 and ADR 0073 exceptions item 6; with different content it is one
-disposition item for the user, never a silent overwrite.
+disposition item for the user, never a silent overwrite. Every row a replayed command creates
+carries a derived id in its payload, child rows included (ADR 0013-A section 11), so a second
+run compares like with like. A merge cancelled halfway leaves the rows it created in place; a
+later run finds them `AlreadyPresent` and converges.
+
+**A copy of the household's own vault is not a merge source.** Several things share the
+household's actual row ids: its own backup or a restore twin (same `vault_id`), a portable
+export imported into a fresh vault (new `vault_id`, every primary and foreign key preserved),
+and another device's Sync replica. Merging any of them under derived ids would duplicate every
+row. So (a) a source whose `vault_id` equals the household's is refused with a typed error
+("this is a copy of this vault; use restore"), and (b) a source row whose **primary key
+already exists in the same household table is an exact match** that maps to that row and is
+not created (item 4): the same key means the same origin. Equal content is a no-op; differing
+content is one disposition item. Two backups of the same *other* vault taken at different times
+are unaffected: they derive the same ids from the same source `vault_id`, so the newer one
+converges on the rows already merged, and changed rows become disposition items.
 
 **3. The id remap.** A replayed command refers to other rows (an account, a category, tags).
 The merge keeps a **remap from source ids to household ids** for one merge session:
@@ -967,6 +982,8 @@ other devices converge without sharing the remap.
 
 **4. Matching.** *Exact* matches skip creation automatically and need no user input:
 
+- a source row whose primary key already exists in the same household table (the shared
+  origin of a copy, below) maps to that row;
 - a connector transaction or account with the same provider identity (Addendum B items 2
   and 3) maps to the existing row, which the `AlreadyPresent` rule then confirms;
 - a file-imported row with the same file fingerprint and row ordinal maps to the existing
