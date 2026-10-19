@@ -76,6 +76,15 @@ require_text "mismatch blocks sync, repaired by migration" "repaired by a review
 require_text "genesis bead owns the check" "(\`personal-cfo-1cltt\`)"
 require_text "5b delivers the schema tests" "are delivered by part 5b"
 require_text "other schema version is update-required" "update-required state; the hash is never skipped"
+require_text "keyless tables are folded into a parent" "**Folded children.** A replicated table that declares no primary key"
+require_text "ledger_postings folds into ledger_transactions" '| `ledger_postings` | `ledger_transactions` | `transaction_id` (the parent'"'"'s `id`) |'
+require_text "attachment_links folds into attachments" '| `attachment_links` | `attachments` | `attachment_id` (the parent'"'"'s `id`) |'
+require_text "the child section layout" "A parent that has folded children appends a **child section**"
+require_text "child rows sort bytewise and keep duplicates" "bytewise by their \`child_row\`"
+require_text "the child digest is a multiset" "so two identical postings count twice"
+require_text "a child change touches the parent" "An insert, update or delete of"
+require_text "an orphan child is an error" "a child row whose parent does not exist is an error"
+require_text "provenance_links is outside the write set" "\`provenance_links\` is **not** in the write set"
 require_text "digests are bound to the schema version" "The digests are bound to the schema version"
 require_text "C.4 points at C.1.5" "is defined in C.1.5, as is the \`primary_key\` encoding"
 require_text "spec-version 4" "<!-- vault-format: spec-version=4 -->"
@@ -87,7 +96,7 @@ import hashlib, re, struct, sys
 
 text = open(sys.argv[1]).read()
 vectors = dict(re.findall(r"<!-- row-vector: (\w+)=([0-9a-f]+) -->", text))
-assert set(vectors) == {"primary_key", "row_message", "row_digest", "absent_message", "absent_digest"}, vectors
+assert set(vectors) == {"primary_key", "row_message", "row_digest", "absent_message", "absent_digest", "child_row_a", "child_row_b", "parent_message", "parent_digest"}, vectors
 
 def label(s):
     b = s.encode(); assert 1 <= len(b) <= 64 and re.fullmatch(rb"[a-z0-9/_.-]+", b)
@@ -132,6 +141,43 @@ assert msg.hex() == vectors["row_message"], "row_message"
 assert hashlib.sha256(msg).hexdigest() == vectors["row_digest"], "row_digest"
 assert absent.hex() == vectors["absent_message"], "absent_message"
 assert hashlib.sha256(absent).hexdigest() == vectors["absent_digest"], "absent_digest"
+
+# Folded children: a parent's digest carries its child rows as a multiset.
+def cols_enc(cols):
+    out = struct.pack(">H", len(cols))
+    for n in sorted(cols, key=lambda x: x.encode()):
+        out += text_(n, 64) + val(*cols[n])
+    return out
+
+txn = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d00000021")
+acct1 = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d00000031")
+acct2 = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d00000032")
+def posting(acct, minor):
+    return {"transaction_id": ("uuid", txn), "ledger_account_id": ("uuid", acct),
+            "minor_units": ("int", minor), "currency": ("text", "USD"),
+            "currency_exponent": ("int", 2), "posting_date": ("text", "2026-10-17")}
+rows = [cols_enc(posting(acct1, -500)), cols_enc(posting(acct1, -500)), cols_enc(posting(acct2, 1000))]
+assert rows[0] == rows[1] and rows[0] != rows[2], "two identical postings and one other"
+ordered = sorted(rows)                      # bytewise, duplicates kept
+distinct = sorted(set(rows))
+assert distinct[0].hex() == vectors["child_row_a"] and distinct[1].hex() == vectors["child_row_b"]
+parent = {"id": ("uuid", txn), "memo": ("text", "split")}
+pm = label("dohflow/sync-row/v1") + text_("ledger_transactions", 64) + struct.pack(">H", len(parent))
+for n in sorted(parent, key=lambda x: x.encode()):
+    pm += text_(n, 64) + val(*parent[n])
+pm += struct.pack(">H", 1) + text_("ledger_postings", 64) + struct.pack(">I", len(ordered))
+for r in ordered:
+    pm += bytes_(r, 2**16)
+assert pm.hex() == vectors["parent_message"], "parent_message"
+assert hashlib.sha256(pm).hexdigest() == vectors["parent_digest"], "parent_digest"
+# The multiset matters: dropping one copy of the duplicate changes the digest.
+fewer = label("dohflow/sync-row/v1") + text_("ledger_transactions", 64) + struct.pack(">H", len(parent))
+for n in sorted(parent, key=lambda x: x.encode()):
+    fewer += text_(n, 64) + val(*parent[n])
+fewer += struct.pack(">H", 1) + text_("ledger_postings", 64) + struct.pack(">I", 2)
+for r in sorted([rows[0], rows[2]]):
+    fewer += bytes_(r, 2**16)
+assert hashlib.sha256(fewer).hexdigest() != vectors["parent_digest"]
 
 # Domain separation: the labels have different lengths, so neither message parses as the other.
 assert msg[:2] != absent[:2]
