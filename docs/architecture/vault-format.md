@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=2 -->
+<!-- vault-format: spec-version=3 -->
 <!-- vault-format: schema-version=55 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -236,7 +236,11 @@ synthetic no-app recovery test before any such public claim.
 ## Compatibility and change control
 
 - `spec-version = 2` adds Parts B and C, the planned portable and Sync content
-  contract and wire formats, to the shipped formats of Part A. New wire sections require a
+  contract and wire formats, to the shipped formats of Part A.
+- `spec-version = 3` tightens C.1.2 (canonical JSON) before any implementation
+  shipped it: the integer grammar excludes `-0`, strings exclude U+0000, nesting is at
+  most 128 levels, a receiver accepts only the canonical encoding of the value it decodes
+  to, and C.14 gains the rejection vectors. New wire sections require a
   spec-version bump and their own reviewed vectors.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
@@ -661,6 +665,10 @@ that JCS's IEEE-754 number rules never apply:
 | `raw_control_character` | `{"a":"\n"}` |
 | `leading_byte_order_mark` | `\ufeff{"a":"1"}` |
 | `trailing_comma` | `{"a":"1",}` |
+| `empty_member_name` | `{"":"1"}` |
+| `invalid_utf8_in_a_string` | `{"a":"\xff"}` |
+| `overlong_utf8_in_a_string` | `{"a":"\xc0\x80"}` |
+| `nested_129_levels` | `[` x 129 then `]` x 129 |
 
 <!-- cj-reject: whitespace_between_members=7b2261223a202231227d -->
 <!-- cj-reject: trailing_newline=7b2261223a2231227d0a -->
@@ -683,6 +691,10 @@ that JCS's IEEE-754 number rules never apply:
 <!-- cj-reject: raw_control_character=7b2261223a220a227d -->
 <!-- cj-reject: leading_byte_order_mark=efbbbf7b2261223a2231227d -->
 <!-- cj-reject: trailing_comma=7b2261223a2231222c7d -->
+<!-- cj-reject: empty_member_name=7b22223a2231227d -->
+<!-- cj-reject: invalid_utf8_in_a_string=7b2261223a22ff227d -->
+<!-- cj-reject: overlong_utf8_in_a_string=7b2261223a22c080227d -->
+<!-- cj-reject: nested_129_levels=5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d -->
 
 - Member names, when a map is encoded, follow the same `[a-z0-9_]` rule, so user data is
   never a map key (a key such as `user.theme` is refused), and an integer key is its

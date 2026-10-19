@@ -137,4 +137,10 @@ require_text "two-vault tags strict test" "$TEST" "two_vault_strict_rebase_queue
 require_text "two-vault untouched auto test" "$TEST" "two_vault_strict_rebase_auto_applies_only_an_untouched_valid_row"
 require_text "0074 links accepted ADR 0073" "$ADR074" "ADR 0073 (sync disposition rules, accepted"
 
+# AlreadyPresent (personal-cfo-g3m.12).
+require_text "AlreadyPresent exception is recorded" "$ADR" "6. **\`AlreadyPresent\` (provider transactions).**"
+require_text "AlreadyPresent points at ADR 0074 Addendum B" "$ADR" "ADR 0074 Addendum B, item 4"
+require_text "differing fields queue-choose" "$ADR" "are one **queue-choose** item"
+require_text "AlreadyPresent adds no WriteCommand variant" "$ADR" "not a new \`WriteCommand\` variant"
+
 echo "PASS — $CASES ADR 0073 contract assertions, 0 failures"

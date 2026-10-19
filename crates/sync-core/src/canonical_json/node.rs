@@ -61,7 +61,7 @@ impl Node {
                 }
                 for (name, value) in members {
                     if !is_member_name(name) {
-                        return Err(CanonicalJsonError::BadMemberName(name.clone()));
+                        return Err(CanonicalJsonError::BadMemberName);
                     }
                     value.validate_at(containers + 1)?;
                 }
@@ -82,10 +82,10 @@ pub(crate) fn insert_member(
     value: Node,
 ) -> Result<(), CanonicalJsonError> {
     if !is_member_name(&name) {
-        return Err(CanonicalJsonError::BadMemberName(name));
+        return Err(CanonicalJsonError::BadMemberName);
     }
     if object.contains_key(&name) {
-        return Err(CanonicalJsonError::DuplicateMember(name));
+        return Err(CanonicalJsonError::DuplicateMember);
     }
     object.insert(name, value);
     Ok(())

@@ -162,6 +162,15 @@ These rows are deliberately not ordinary shape outcomes:
 5. **Balance assertions.** They are replicated class-1 intent but never
    last-write-wins; the two-value/date choice is mandatory even if the rows
    otherwise look disjoint.
+6. **`AlreadyPresent` (provider transactions).** A replayed `CommitStaged` whose
+   content-derived provider-transaction identity is already present is resolved by
+   ADR 0074 Addendum B, item 4, not by the touched-write-set rule: equal
+   provider-financial fields are a no-op plus a dedupe decision and an audit line
+   (no inbox item); differing fields are one **queue-choose** item; a voided or
+   tombstoned transaction is a no-op. User-editable fields are never compared or
+   overwritten. The same check runs at local commit. This is an exception to the
+   strict auto-iff rule for this one identity, not a new `WriteCommand` variant, so
+   the generated appendix below is unchanged.
 
 The generated appendix reports the rough planning tally from these paths:
 23 strict-auto candidate rows (only when the predicate holds), 16
@@ -312,3 +321,4 @@ receives semantic auto-merge treatment.
 - `personal-cfo-mpep3` — S3-2 queue UI
 - `personal-cfo-tp2ln` — two-vault simulator exit cases
 - `personal-cfo-5ymg8` — five write classes and new command dispositions
+- `personal-cfo-g3m.12` — ADR 0074 Addendum B, which defines the `AlreadyPresent` exception

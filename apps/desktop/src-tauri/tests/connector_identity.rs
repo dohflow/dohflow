@@ -462,6 +462,7 @@ fn rows_synced_before_connections_were_recorded_do_not_flood_the_first_refresh()
                     actor_type: finance_kernel::ActorType::User,
                     actor_id: "tester".to_owned(),
                     idempotency_key: uuid::Uuid::new_v4().to_string(),
+                    issued_at: finance_kernel::IssuedAt::now(),
                 },
             )
             .expect("legacy ingest");

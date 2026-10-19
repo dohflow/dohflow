@@ -28,6 +28,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
+pub use core_ledger::IssuedAt;
 use core_ledger::{
     Account, AccountId, AccountKind, AccountSubtype, BillContractId, CashTier, CategoryId,
     IncomeSourceId, LedgerAccountId, LedgerTransaction, OperationId, Posting, RecurringEventId,
@@ -219,6 +220,10 @@ pub struct CommandMeta {
     pub actor_id: String,
     /// Key for idempotent retries.
     pub idempotency_key: String,
+    /// The instant this command was issued, set where the metadata is built (the command
+    /// boundary), never inside `apply`. `apply` reads this, not the wall clock, so
+    /// replaying the command elsewhere reads the same instant (ADR 0013 Addendum A).
+    pub issued_at: IssuedAt,
 }
 
 impl CommandMeta {

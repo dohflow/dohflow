@@ -258,7 +258,7 @@ fn the_pinned_crate_sorts_members_by_utf16_code_units_like_the_oracle() {
     // ... and the profile itself refuses those names.
     assert!(matches!(
         node_to_canonical_vec(&node),
-        Err(CanonicalJsonError::BadMemberName(_))
+        Err(CanonicalJsonError::BadMemberName)
     ));
 }
 
@@ -546,7 +546,7 @@ fn duplicate_member_names_are_refused_however_they_are_spelled() {
         assert!(
             matches!(
                 parse_node_lenient(doc.as_bytes()),
-                Err(CanonicalJsonError::DuplicateMember(_))
+                Err(CanonicalJsonError::DuplicateMember)
             ),
             "{doc}"
         );
@@ -564,7 +564,7 @@ fn member_names_are_ascii_lowercase_digits_and_underscore() {
         assert!(
             matches!(
                 parse_node_lenient(doc.as_bytes()),
-                Err(CanonicalJsonError::BadMemberName(_))
+                Err(CanonicalJsonError::BadMemberName)
             ),
             "{name:?}"
         );
@@ -861,7 +861,7 @@ fn raw_bytes_and_non_string_map_keys_are_refused() {
     free.insert("Not A Name".to_owned(), "x");
     assert!(matches!(
         to_canonical_vec(&free),
-        Err(CanonicalJsonError::BadMemberName(_))
+        Err(CanonicalJsonError::BadMemberName)
     ));
 }
 
@@ -980,7 +980,7 @@ fn spec_reject_vectors() -> Vec<(String, Vec<u8>)> {
 #[test]
 fn every_rejection_vector_of_the_spec_is_refused_by_the_canonical_parser() {
     let vectors = spec_reject_vectors();
-    assert_eq!(vectors.len(), 21, "the spec lists 21 rejection vectors");
+    assert_eq!(vectors.len(), 25, "the spec lists 25 rejection vectors");
     for (name, bytes) in &vectors {
         assert!(
             parse_canonical_node(bytes).is_err(),
@@ -1022,21 +1022,17 @@ fn the_rejection_vectors_fail_for_the_reasons_the_spec_gives() {
     ] {
         assert_eq!(reason(name), E::NotCanonical, "{name}");
     }
+    assert!(matches!(reason("empty_member_name"), E::BadMemberName));
+    assert_eq!(reason("nested_129_levels"), E::TooDeep(MAX_DEPTH));
     assert_eq!(reason("a_json_number"), E::NumberNotAllowed);
     assert_eq!(reason("a_float"), E::NumberNotAllowed);
-    assert!(matches!(reason("duplicate_member"), E::DuplicateMember(_)));
+    assert!(matches!(reason("duplicate_member"), E::DuplicateMember));
     assert!(matches!(
         reason("duplicate_member_escaped"),
-        E::DuplicateMember(_)
+        E::DuplicateMember
     ));
-    assert!(matches!(
-        reason("member_name_uppercase"),
-        E::BadMemberName(_)
-    ));
-    assert!(matches!(
-        reason("member_name_with_dot"),
-        E::BadMemberName(_)
-    ));
+    assert!(matches!(reason("member_name_uppercase"), E::BadMemberName));
+    assert!(matches!(reason("member_name_with_dot"), E::BadMemberName));
     for name in [
         "lone_high_surrogate",
         "lone_low_surrogate",
@@ -1044,6 +1040,8 @@ fn the_rejection_vectors_fail_for_the_reasons_the_spec_gives() {
         "raw_control_character",
         "leading_byte_order_mark",
         "trailing_comma",
+        "invalid_utf8_in_a_string",
+        "overlong_utf8_in_a_string",
     ] {
         assert!(matches!(reason(name), E::Malformed { .. }), "{name}");
     }
@@ -1149,4 +1147,27 @@ fn escape_heavy_strings_agree_with_the_oracle_and_survive_a_canonical_round_trip
         );
         assert_eq!(parse_canonical_node(&bytes).unwrap(), node, "{text:?}");
     }
+}
+
+#[test]
+fn errors_never_print_the_documents_member_names_or_values() {
+    for doc in [
+        r#"{"Secret-Name-1250":"5"}"#,
+        r#"{"secret_name_1250":"5","secret_name_1250":"6"}"#,
+        r#"{"secret_name_1250":"\ud800"}"#,
+        r#"{"secret_name_1250":1250}"#,
+    ] {
+        let err = parse_canonical_node(doc.as_bytes()).unwrap_err();
+        for text in [err.to_string(), format!("{err:?}")] {
+            assert!(!text.to_lowercase().contains("secret"), "{doc}: {text}");
+            assert!(!text.contains("1250"), "{doc}: {text}");
+        }
+    }
+    let mut map = BTreeMap::new();
+    map.insert("Secret-Name-1250".to_owned(), "x");
+    let err = to_canonical_vec(&map).unwrap_err();
+    assert!(
+        !err.to_string().to_lowercase().contains("secret")
+            && !format!("{err:?}").to_lowercase().contains("secret")
+    );
 }
