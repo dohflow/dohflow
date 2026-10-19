@@ -55,26 +55,6 @@ pub(crate) fn read_household_tz(conn: &Connection) -> Result<Tz, DbError> {
         .map_err(|e| DbError::InvalidCommand(format!("invalid household timezone {tz_str:?}: {e}")))
 }
 
-/// Set the household timezone (`personal-cfo-q329`), validating it is a real IANA name
-/// first — `read_household_tz` and every caller downstream of it (the whole Future Cash
-/// forecast surface, ADR 0021) fails loudly on a bad value, so this is the one gate that
-/// keeps a typo or a stale/removed zone name out of the vault in the first place. A plain
-/// `UPDATE` against `vault_metadata`, like the `schema_version` write in
-/// `ensure_vault_metadata` — this is configuration on the singleton row, not a ledger
-/// mutation, so it bypasses `WriteCommand`/the operation log the same way `set_setting`
-/// bypasses it for app-level settings (`household_timezone` is a `vault_metadata` column,
-/// not a `settings` row, so it does not go through `set_setting` itself).
-pub(crate) fn write_household_tz(conn: &Connection, tz: &str) -> Result<(), DbError> {
-    tz.parse::<Tz>()
-        .map_err(|e| DbError::InvalidCommand(format!("invalid household timezone {tz:?}: {e}")))?;
-    let updated = conn.execute(
-        "UPDATE vault_metadata SET household_timezone = ?1 WHERE singleton = 1",
-        [tz],
-    )?;
-    debug_assert_eq!(updated, 1, "vault_metadata is a singleton row");
-    Ok(())
-}
-
 /// Household-local "today" (ADR 0021 §1: the household timezone is authoritative for
 /// calendar boundaries such as "today" — never UTC, never the machine's local zone).
 /// Reads the clock once at this impure boundary (ADR 0021 §7/§3: an impure caller reads

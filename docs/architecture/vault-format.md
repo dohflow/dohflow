@@ -402,8 +402,8 @@ Rules that apply to the whole inventory:
 6. **The household timezone is user data, not a header.** `household_timezone`
    changes the forecast horizon boundary, so it is a class-1 logical field and is
    changed only through a logged command (`SetHouseholdTimezone`, a
-   `WriteCommand` to be added before the S1 format freeze; today the value is
-   written directly to `vault_metadata`). It is never a manifest-only or
+   `WriteCommand` with an operation-log row and an audit event; the value is
+   stored on the `vault_metadata` row today). It is never a manifest-only or
    genesis-header-only value, because a header would not propagate later changes.
 
 ## B.3 Portable logical model

@@ -45,9 +45,7 @@ pub(crate) use card_cycles::{
 pub use card_cycles::{
     CardCycleView, CardStatementForecastView, CardStatementHistoryView, StoredStatementView,
 };
-pub(crate) use events::{
-    household_today, read_household_tz, reporting_currency, write_household_tz,
-};
+pub(crate) use events::{household_today, read_household_tz, reporting_currency};
 // Only exercised by tests today (`household_today` is the production entry point); gated so
 // a non-test build doesn't warn on it as unused.
 #[cfg(test)]

@@ -8,6 +8,7 @@
 
 pub(crate) mod accounts;
 pub(crate) mod categorization_cmds;
+pub(crate) mod household;
 pub(crate) mod inbox;
 pub(crate) mod ingestion_cmds;
 pub(crate) mod recurring;

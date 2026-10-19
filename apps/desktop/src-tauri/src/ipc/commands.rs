@@ -207,6 +207,19 @@ fn resolve_initial_household_timezone(
     captured.ok()
 }
 
+/// Provenance for a change the app makes on its own while creating a vault: the system is
+/// the actor, and the key is a fresh CSPRNG UUIDv4 like every other minted key.
+fn vault_creation_meta() -> CommandMeta {
+    CommandMeta {
+        command_id: Uuid::now_v7(),
+        correlation_id: Uuid::now_v7(),
+        causation_id: None,
+        actor_type: ActorType::System,
+        actor_id: "vault-creation".to_owned(),
+        idempotency_key: finance_kernel::new_idempotency_key(),
+    }
+}
+
 /// Best-effort: point a freshly created vault's household timezone at the machine's IANA
 /// zone instead of leaving it at the `UTC` default (`personal-cfo-q329`). Mirrors
 /// `unlock_vault_impl`'s "extra step after the controller call succeeds, logged not
@@ -216,7 +229,7 @@ fn set_machine_timezone_on_create(kernel: &Kernel) {
     let Some(tz) = resolve_initial_household_timezone(iana_time_zone::get_timezone()) else {
         return;
     };
-    if let Err(err) = kernel.set_household_timezone(&tz) {
+    if let Err(err) = kernel.set_household_timezone(&vault_creation_meta(), &tz) {
         tracing::warn!(
             error = %err,
             tz,
@@ -2823,13 +2836,18 @@ pub fn household_timezone(state: tauri::State<'_, AppState>) -> Result<String, I
     household_timezone_impl(state.inner())
 }
 
-/// Set the household's IANA timezone (`personal-cfo-q329`). Validated against
+/// Set the household's IANA timezone (`personal-cfo-q329`) through the logged
+/// `SetHouseholdTimezone` command (`personal-cfo-g3m.8`). Validated against
 /// `chrono_tz::Tz` inside the kernel/db-worker layer (`DbError::InvalidCommand` on an
 /// unrecognized name), not re-validated here — one source of truth for "what counts as a
 /// valid timezone," the same rule `read_household_tz` and its callers already enforce on
 /// read.
 pub fn set_household_timezone_impl(state: &AppState, tz: String) -> Result<(), IpcError> {
-    with_kernel(state, |kernel| Ok(kernel.set_household_timezone(&tz)?))
+    // No key from the caller: the Settings control is a single-shot choice, so a blank key
+    // (resolved to a fresh UUIDv4) keeps the IPC signature, and `bindings.ts`, unchanged.
+    with_kernel(state, |kernel| {
+        Ok(kernel.set_household_timezone(&user_meta(""), &tz)?)
+    })
 }
 
 #[tauri::command]
@@ -6050,7 +6068,34 @@ mod connector_tests {
 
 #[cfg(test)]
 mod household_timezone_tests {
-    use super::resolve_initial_household_timezone;
+    use super::{resolve_initial_household_timezone, vault_creation_meta};
+    use finance_kernel::{ActorType, Kernel};
+
+    // personal-cfo-g3m.8: the app's own change at vault creation is a logged command with
+    // the system as the actor, a fresh CSPRNG UUIDv4 key, and its own audit event.
+    #[test]
+    fn the_vault_creation_change_is_a_logged_system_command() {
+        let meta = vault_creation_meta();
+        assert_eq!(meta.actor_type, ActorType::System);
+        assert_eq!(meta.actor_id, "vault-creation");
+        assert!(finance_kernel::validate_idempotency_key(&meta.idempotency_key).is_ok());
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel =
+            Kernel::open(dir.path().join("vault.db"), "correct horse battery staple").unwrap();
+        kernel.set_household_timezone(&meta, "Asia/Tokyo").unwrap();
+        assert_eq!(
+            kernel.vault_metadata().unwrap().household_timezone,
+            "Asia/Tokyo"
+        );
+        assert_eq!(kernel.operation_count().unwrap(), 1);
+        assert_eq!(
+            kernel
+                .audit_event_count("household_timezone_changed")
+                .unwrap(),
+            1
+        );
+    }
 
     // personal-cfo-q329, ADR 0021 addendum: the machine zone is a fine INITIAL default at
     // vault creation (never the authoritative value — that's the stored column, changeable

@@ -168,6 +168,11 @@ const DISPOSITIONS: &[Disposition] = &[
     ),
     d("SetSplits", Shape::Set, "queue-edit (sum invariant)"),
     d("MoveCategory", Shape::Set, "queue-edit (cycle invariant)"),
+    d(
+        "SetHouseholdTimezone",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto)",
+    ),
     // Toggle (12): an equal end state auto-applies only when the strict
     // untouched-and-valid predicate holds; touched or opposed states choose.
     d(
@@ -399,7 +404,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        49,
+        50,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -428,7 +433,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
 
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
     assert_eq!(shape_count(Shape::Create), 8);
-    assert_eq!(shape_count(Shape::Set), 17);
+    assert_eq!(shape_count(Shape::Set), 18);
     assert_eq!(shape_count(Shape::Toggle), 12);
     assert_eq!(shape_count(Shape::BaseDependent), 4);
     assert_eq!(shape_count(Shape::TombstoneFirst), 3);

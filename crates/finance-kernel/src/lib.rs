@@ -1340,6 +1340,48 @@ impl KernelCommand for SetAccountNote {
     }
 }
 
+/// Set the household's IANA timezone (`personal-cfo-g3m.8`, ADR 0021 section 1): the
+/// calendar boundary of the forecast horizon, a class-1 logical field that changes only
+/// through this logged command. The IANA name is validated in the worker, which owns the
+/// timezone database and the same rule the forecast reads with.
+#[derive(Debug, Clone)]
+pub struct SetHouseholdTimezone {
+    timezone: String,
+}
+
+impl SetHouseholdTimezone {
+    /// Build a `SetHouseholdTimezone` command for an IANA zone name.
+    #[must_use]
+    pub fn new(timezone: impl Into<String>) -> Self {
+        Self {
+            timezone: timezone.into(),
+        }
+    }
+}
+
+impl sealed::Sealed for SetHouseholdTimezone {}
+
+impl KernelCommand for SetHouseholdTimezone {
+    fn kind(&self) -> &'static str {
+        "set_household_timezone"
+    }
+
+    fn validate(&self) -> Result<(), KernelError> {
+        if self.timezone.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "a household timezone name is required".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn lower(self) -> WriteCommand {
+        WriteCommand::SetHouseholdTimezone {
+            timezone: self.timezone,
+        }
+    }
+}
+
 /// Link a real asset to the liability that finances it, or clear the link (ADR 0044 §5,
 /// personal-cfo-4d8.22.3). The real-asset/liability role checks need another account's
 /// role, so they are validated in the worker, not here.
@@ -4313,13 +4355,18 @@ impl Kernel {
     }
 
     /// Set the household's IANA timezone (`personal-cfo-q329`) — ADR 0021 §1's
-    /// calendar-boundary authority, previously unsettable after vault creation.
+    /// calendar-boundary authority — through the logged [`SetHouseholdTimezone`] command
+    /// (`personal-cfo-g3m.8`): the change carries `meta`, writes an operation-log row and
+    /// an audit event, and replays on an idempotent retry.
     ///
     /// # Errors
-    /// Returns [`KernelError`] if `tz` is not a valid IANA timezone name, or the write
-    /// fails.
-    pub fn set_household_timezone(&self, tz: &str) -> Result<(), KernelError> {
-        self.worker.set_household_timezone(tz)?;
+    /// Returns [`KernelError`] if `tz` is not a valid IANA timezone name, `meta` is
+    /// invalid, or the write fails.
+    pub fn set_household_timezone(&self, meta: &CommandMeta, tz: &str) -> Result<(), KernelError> {
+        self.dispatch(CommandEnvelope::new(
+            meta.clone(),
+            SetHouseholdTimezone::new(tz),
+        ))?;
         Ok(())
     }
 
