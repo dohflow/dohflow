@@ -245,3 +245,25 @@ fn rows_written_before_the_v2_columns_stay_audit_history() {
         "every row this build wrote carries the v2 columns"
     );
 }
+
+#[test]
+fn the_engine_version_follows_the_specs_grammar() {
+    // vault-format.md C.13: opaque printable ASCII, 1 to 64 bytes, written as
+    // `dohflow-engine-N` for a positive integer N.
+    assert!((1..=64).contains(&ENGINE_VERSION.len()));
+    assert!(ENGINE_VERSION.bytes().all(|b| (0x21..=0x7e).contains(&b)));
+    let n = ENGINE_VERSION
+        .strip_prefix("dohflow-engine-")
+        .expect("dohflow-engine-N");
+    assert!(
+        !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit()),
+        "{ENGINE_VERSION}"
+    );
+    // The spec states the same grammar and the bump rule, so changing either side is visible.
+    let spec: String = include_str!("../../../docs/architecture/vault-format.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(spec.contains("DohFlow writes `dohflow-engine-N` for a positive integer N"));
+    assert!(spec.contains("increments N, in the same change, whenever a change to `apply`"));
+}
