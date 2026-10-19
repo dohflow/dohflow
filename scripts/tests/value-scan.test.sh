@@ -235,6 +235,25 @@ assert_eq "exit 1" "$RC" "1"
 assert_contains "names card finding" "$STDERR" "FOUND: card-number-shaped string"
 
 # ---------------------------------------------------------------------------
+case_start "a hex known-answer vector marker with a 16-digit run does not false-positive"
+new_case_repo
+mkdir -p "$REPO/docs/architecture"
+echo '<!-- row-vector: order_message=0013646f68666c6f772f73796e632d726f772f76310000000b6174746163686d656e74730002000000026964 -->' \
+  > "$REPO/docs/architecture/vault-format.md"
+run_script
+assert_eq "exit 0" "$RC" "0"
+assert_contains "reports clean" "$STDOUT" "value-scan: clean"
+
+case_start "...but the same 16 digits in prose in that file still fail"
+new_case_repo
+mkdir -p "$REPO/docs/architecture"
+printf 'The vector is 1234567812345678 here.\n<!-- row-vector: a=00112233 -->\n' \
+  > "$REPO/docs/architecture/vault-format.md"
+run_script
+assert_eq "exit 1" "$RC" "1"
+assert_contains "names card finding" "$STDERR" "FOUND: card-number-shaped string"
+
+# ---------------------------------------------------------------------------
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "PASS — $CASES cases, 0 failures"
