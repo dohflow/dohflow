@@ -1,0 +1,1 @@
+{"create_recurring_transfer":{"amount":{"currency":"USD","currency_exponent":"2","minor_units":"50000"},"anchor":"2026-01-31","dest_account_id":"0198c2c1-5f0a-7c3d-8a4e-9b1d00000004","frequency":"every_6_weeks","id":"0198c2c1-5f0a-7c3d-8a4e-9b1d0000000c","source_account_id":"0198c2c1-5f0a-7c3d-8a4e-9b1d00000001"}}

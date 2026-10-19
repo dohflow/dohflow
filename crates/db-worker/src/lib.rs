@@ -43,7 +43,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use thiserror::Error;
 use uuid::Uuid;
 use vault_crypto::Dek;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 mod apply;
 mod assumptions;
@@ -52,6 +52,7 @@ mod backup_history;
 mod band_drift;
 mod categories;
 mod connectors;
+pub mod payload;
 pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
@@ -276,7 +277,7 @@ pub fn validate_idempotency_key(key: &str) -> Result<(), DbError> {
 /// a transaction's amount with its own category / note / tags. A plain data carrier —
 /// the apply mints the [`SplitLineId`], assigns `sort_order` from the vec position, and
 /// validates that the lines' amounts sum to the transaction amount.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SplitLineInput {
     /// The slice amount (same sign + currency as the transaction).
     pub amount: Money,
@@ -290,7 +291,8 @@ pub struct SplitLineInput {
 
 /// A mutating command. The enum is the exhaustive write surface, so the worker's
 /// dispatch is compile-checked. More variants arrive with their feature beads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WriteCommand {
     /// Create a user account (with its backing ledger account). An optional
@@ -1323,6 +1325,54 @@ impl DbWorker {
         Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
     }
 
+    /// Probe the SQLCipher database at `path` with `dek` without opening a worker, migrating
+    /// or writing anything (it holds the runner lock only for the probe). A handle is keyed and the
+    /// vault's `vault_id` is read: `Ok(None)` means SQLCipher answered "file is not a
+    /// database", the signature of a wrong key; `Ok(Some(id))` means the key fits. Any other
+    /// failure is an error. A caller holding a key from a platform keystore can therefore
+    /// tell a key that no longer fits from a damaged or unsupported vault, and compare the
+    /// vault's identity, before bootstrap writes anything, and a wrong key is never mistaken
+    /// for corruption (personal-cfo-7ie.10).
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] for a failure other than a wrong key (including a vault with no
+    /// `vault_metadata` row), [`DbError::Io`] if the file cannot be inspected.
+    pub fn probe_raw_key(path: impl AsRef<Path>, dek: &Dek) -> Result<Option<Uuid>, DbError> {
+        // The exclusive runner lock keeps another process from using the vault meanwhile. The
+        // handle is opened read-write (and never written through) rather than read-only: a
+        // vault is in WAL mode, and a read-only connection leaves `-wal` and `-shm` files
+        // behind that only a read-write close removes. Holding the lock makes that close safe.
+        let _runner_lock = acquire_runner_lock(path.as_ref())?;
+        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        key_raw(&conn, dek)?;
+        match conn.query_row(
+            "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+            [],
+            |row| row.get::<_, Uuid>(0),
+        ) {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::NotADatabase =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(DbError::Sqlite(error)),
+        }
+    }
+
+    /// The vault's Sync `vault_id`, from `vault_metadata`.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] if the singleton row cannot be read.
+    pub fn vault_id(&self) -> Result<Uuid, DbError> {
+        let guard = self.lock();
+        Ok(guard.conn.query_row(
+            "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Shared post-keying bootstrap: migrate, seed singletons, self-test. Run
     /// before the worker is usable so no domain query ever touches a
     /// half-migrated vault (personal-cfo-wkn).
@@ -1372,9 +1422,7 @@ impl DbWorker {
         // replacement if its path disappears during that lifetime.
         let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         match &self.key {
-            KeyMaterial::Passphrase(passphrase) => {
-                conn.pragma_update(None, "key", passphrase.as_str())?
-            }
+            KeyMaterial::Passphrase(passphrase) => key_passphrase(&conn, passphrase.as_str())?,
             KeyMaterial::Raw(dek) => key_raw(&conn, dek)?,
         }
         configure_conn(&conn)?;
@@ -4022,19 +4070,59 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
     }
 }
 
+/// Turn SQLCipher's memory security on for the connection, before it is keyed. SQLite keeps its
+/// own copy of a statement's SQL text, and a `PRAGMA key` statement's text holds the key (the hex
+/// DEK, or the passphrase); that copy is freed without being scrubbed. With memory security ON
+/// SQLCipher's allocator wipes freed memory and keeps it out of swap, so the copy does not
+/// outlive the statement. It is OFF by default (`cipher_memory_security` reads 0 on the bundled
+/// SQLCipher 4.14), hence this call at every keying site (personal-cfo-rsjud).
+fn set_memory_security(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch("PRAGMA cipher_memory_security = ON;")?;
+    Ok(())
+}
+
+/// Key a connection with a passphrase (SQLCipher runs its own KDF over it).
+fn key_passphrase(conn: &Connection, key: &str) -> Result<(), DbError> {
+    set_memory_security(conn)?;
+    conn.execute_batch(&passphrase_pragma(key))?;
+    Ok(())
+}
+
+/// The statement that keys SQLCipher from a passphrase: `PRAGMA key = '<passphrase>';` with each
+/// single quote doubled (the SQL escape inside a string literal). It is built here rather than by
+/// `pragma_update`, which assembles the same text in a plain `String` freed unscrubbed
+/// (SQLCipher's memory security does not cover the Rust heap). The buffer is sized exactly (the
+/// fixed text, the passphrase and one extra byte per quote), so it never reallocates and leaves a
+/// freed block holding the key; it is scrubbed on drop.
+fn passphrase_pragma(key: &str) -> Zeroizing<String> {
+    const PREFIX: &str = "PRAGMA key = '";
+    const SUFFIX: &str = "';";
+    let quotes = key.bytes().filter(|b| *b == b'\'').count();
+    let mut pragma = Zeroizing::new(String::with_capacity(
+        PREFIX.len() + key.len() + quotes + SUFFIX.len(),
+    ));
+    pragma.push_str(PREFIX);
+    for ch in key.chars() {
+        if ch == '\'' {
+            pragma.push('\'');
+        }
+        pragma.push(ch);
+    }
+    pragma.push_str(SUFFIX);
+    pragma
+}
+
 /// Open a SQLCipher connection keyed with a **passphrase** (SQLCipher runs its
 /// own KDF over it). Used by [`DbWorker::open`].
 fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
     let conn = Connection::open(path)?;
-    conn.pragma_update(None, "key", key)?;
+    key_passphrase(&conn, key)?;
     configure_conn(&conn)?;
     Ok(conn)
 }
 
 fn open_existing_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
-    open_existing(path, |conn| {
-        conn.pragma_update(None, "key", key).map_err(Into::into)
-    })
+    open_existing(path, |conn| key_passphrase(conn, key))
 }
 
 fn open_existing_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
@@ -4099,19 +4187,29 @@ fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
 }
 
 fn key_raw(conn: &Connection, dek: &Dek) -> Result<(), DbError> {
-    use std::fmt::Write as _;
+    set_memory_security(conn)?;
+    conn.execute_batch(&raw_key_pragma(dek))?;
+    Ok(())
+}
 
-    let mut pragma = String::with_capacity(80);
-    pragma.push_str("PRAGMA key = \"x'");
+/// The statement that keys SQLCipher from the DEK: `PRAGMA key = "x'<64 hex>'";`. The buffer is
+/// sized **exactly** (83 bytes), so it never reallocates: a `String` that grows moves to a new
+/// block and leaves the old one, holding the partly written key, freed without being scrubbed.
+/// It is scrubbed on drop.
+fn raw_key_pragma(dek: &Dek) -> Zeroizing<String> {
+    use std::fmt::Write as _;
+    const PREFIX: &str = "PRAGMA key = \"x'";
+    const SUFFIX: &str = "'\";";
+    let mut pragma = Zeroizing::new(String::with_capacity(
+        PREFIX.len() + 2 * dek.expose_bytes().len() + SUFFIX.len(),
+    ));
+    pragma.push_str(PREFIX);
     for byte in dek.expose_bytes() {
         // Infallible write into a String.
         let _ = write!(pragma, "{byte:02x}");
     }
-    pragma.push_str("'\";");
-    let result = conn.execute_batch(&pragma);
-    pragma.zeroize();
-    result?;
-    Ok(())
+    pragma.push_str(SUFFIX);
+    pragma
 }
 
 /// Apply the non-key connection pragmas shared by both keying paths (WAL,

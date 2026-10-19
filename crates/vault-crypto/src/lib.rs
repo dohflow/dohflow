@@ -31,6 +31,7 @@
 pub mod attachment;
 pub mod backup;
 pub mod envelope;
+pub mod released;
 pub mod secret;
 
 pub use attachment::{
@@ -39,6 +40,10 @@ pub use attachment::{
 };
 pub use envelope::{
     generate_dek, rewrap_envelope, unwrap_dek, wrap_dek, Dek, VaultEnvelope, WrappedDek,
+};
+pub use released::{
+    dek_fingerprint, ReleasedParseError, ReleasedUnlockMaterial, DEK_FINGERPRINT_LABEL,
+    RELEASED_LEN, RELEASED_VERSION,
 };
 pub use secret::SecretBytes;
 use zeroize::Zeroize;
@@ -179,11 +184,11 @@ impl Kek {
         self.0.expose()
     }
 
-    /// Move a derived key into the protected buffer, scrubbing its stack copy.
-    pub(crate) fn from_array(mut bytes: [u8; KEK_LEN]) -> Self {
-        let kek = Kek(SecretBytes::new(bytes));
-        bytes.zeroize();
-        kek
+    /// Build a KEK in place in a protected buffer (no stack copy of the key).
+    pub(crate) fn init<E>(
+        fill: impl FnOnce(&mut [u8; KEK_LEN]) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        SecretBytes::init(fill).map(Kek)
     }
 }
 
@@ -260,18 +265,13 @@ pub fn derive_kek(
 
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
 
-    let mut kek = [0u8; KEK_LEN];
-    let result = argon.hash_password_into(password, salt.as_bytes(), &mut kek);
-    if result.is_err() {
-        kek.zeroize();
-        return Err(VaultCryptoError::Derivation);
-    }
-
-    // Move the bytes into a protected (mlock'd, zeroizing) allocation, then
-    // scrub the transient stack copy.
-    let out = Kek(SecretBytes::new(kek));
-    kek.zeroize();
-    Ok(out)
+    // Argon2 writes the key straight into the protected (mlock'd, zeroizing) buffer: no
+    // transient stack array ever holds it.
+    Kek::init(|out| {
+        argon
+            .hash_password_into(password, salt.as_bytes(), out)
+            .map_err(|_| VaultCryptoError::Derivation)
+    })
 }
 
 #[cfg(test)]

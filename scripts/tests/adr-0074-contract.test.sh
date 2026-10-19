@@ -104,4 +104,24 @@ if grep -Eq '[0-9]+ accounts|[0-9]+ transactions per side|last 30 days, posted' 
 fi
 echo "    ok   — Addendum B publishes no real account or transaction counts"
 
+# Addendum C (personal-cfo-g3m.15): merge-import.
+require_text "Addendum C is dated and named" "## Addendum C — Bring items from another vault: merge-import (2026-10-19, \`personal-cfo-g3m.15\`)"
+require_text "the merge replays ordinary commands" "**replayed into the household vault"
+require_text "no second synced vault" "There is no direct table copy and no"
+require_text "derived identity cross-references ADR 0013-A section 11" "defined in ADR 0013-A section 11"
+require_text "the household id_key is used" "under the"
+require_text "a second creation is AlreadyPresent or a disposition item" "never a silent overwrite"
+require_text "the remap is class 3 and per session" "device-local working state (class 3)"
+require_text "references are rewritten at construction" "References are rewritten **when a command is"
+require_text "children carry derived ids too" "child rows included (ADR 0013-A section 11)"
+require_text "a cancelled merge converges on a rerun" "later run finds them \`AlreadyPresent\` and converges"
+require_text "a copy of the household vault is not a merge source" "**A copy of the household's own vault is not a merge source.**"
+require_text "a same-vault_id source is refused" "is refused with a typed error"
+require_text "an existing primary key is an exact match" "already exists in the same household table is an exact match**"
+require_text "other-vault backups still converge" "converges on the rows already merged"
+require_text "exact matches skip creation" "*Exact* matches skip creation automatically"
+require_text "likely matches are never automatic" "**never automatic**"
+require_text "matched accounts keep the household identity" "the household account stays the"
+require_text "the honest costs are stated" "**6. The honest costs.** History arrives as **new commands with new ids"
+
 echo "PASS — $CASES ADR 0074 contract assertions, 0 failures"

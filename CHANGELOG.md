@@ -7,8 +7,29 @@ record until the first tagged release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
 ### Added
 
+- **Scheduled encrypted backups** (`personal-cfo-8qh`, `personal-cfo-ii3an`).
+  In **Settings → Backups**, choose a destination folder and a schedule: off,
+  daily, weekly (the default) or monthly. A backup that is due runs at the next
+  unlock, never blocks the unlock and does not ask for your password again.
+  **Back up now** makes and verifies one right away, and the card shows your
+  most recent verified backup and any scheduled backup that failed. Backups are
+  kept until you remove them yourself: DohFlow never deletes older backup files.
+  If you pick a folder managed by iCloud Drive, Dropbox or a similar client,
+  that client carries the encrypted file; DohFlow does not upload it. Restoring
+  a backup still needs your vault password, and there is no DohFlow cloud
+  backup and no password reset.
+- **Restore a backup as a new vault** (`personal-cfo-g3m.3`). From the launch
+  screen's locked vault, or from the recovery screen when a vault's files are
+  incomplete, choose **Restore as a new vault…**, pick the backup file, name the
+  restored copy and enter the password that protected the backup. DohFlow makes a
+  separate vault, checks it and opens it; the original vault's files are left
+  exactly as they were, so you do not have to delete anything to get back in.
+- **Manual backup export lives in Settings** (`personal-cfo-lkgf`): **Export
+  backup…** is now in the same Backups card as the schedule.
 - **Rotate encryption key** in Settings (`personal-cfo-2y8`, ADR 0083). It
   gives the vault a new encryption key without changing your password, for
   when you think the key may have been exposed. Your data and attachments are
@@ -16,6 +37,28 @@ record until the first tagged release.
   time DohFlow opens. Backups made before rotating still open with the password
   you had then, and an older vault can move to the current key-derivation
   settings this way.
+- **Local diagnostics** in Settings (`personal-cfo-lyd`). Preview exactly what a
+  diagnostics file would contain, then save it to a file only if you choose to.
+  It holds counts and timings from the current session, with no transaction,
+  account or vault details. Nothing is uploaded, and what was collected is
+  dropped when you lock the vault.
+- **Refresh bank connections automatically** (`personal-cfo-lqk`). Each
+  connection has a **Refresh automatically** setting: every time you open the
+  vault, daily, weekly, or only when you press Refresh now.
+- **Import from another app** (`personal-cfo-gvidg`, `personal-cfo-tulv`). The
+  import dialog has an **Import from** step; **YNAB** register exports are
+  supported, including tab-separated files, decimal commas, and a file that
+  covers several accounts. A mapping step lets you send each source account to
+  an existing account, a new one, or skip it.
+- **Imports tell you what they skipped.** The import summary lists rows that
+  could not be used, with the reason for each (`personal-cfo-pxi.10`). A row the
+  ledger refuses is flagged in the Money Inbox instead of stopping the whole
+  import (`personal-cfo-pxi.9`), and re-uploading the same file no longer fills
+  the inbox with duplicates of rows you already reviewed (`personal-cfo-yl5`).
+- **A newer DohFlow that needs a newer macOS is not offered** (`personal-cfo-md8h2.4`).
+  If the latest release needs a macOS version above yours, Settings says which
+  macOS it needs instead of claiming you are up to date, and this version keeps
+  working.
 
 ### Changed
 
@@ -25,6 +68,27 @@ record until the first tagged release.
   already sent such a key, and the places that made their own now use the same
   random kind. A key saved by an earlier version still protects a retried action
   until it expires after 30 days.
+- **Bank connections check the account's currency** (`personal-cfo-049p6`,
+  `personal-cfo-pxi.8`). A connector account maps to a DohFlow account only when
+  its currency is known and matches your base currency; otherwise the mapping is
+  refused with the reason, and creating a new account from the mapping step no
+  longer leaves an empty account behind when it is refused.
+- **Two connections to one account are caught** (`personal-cfo-6evt`). Mapping a
+  connected account onto one that another connection already feeds asks you what
+  to do (don't import this one, map it elsewhere, or import from both) and says
+  plainly that a transaction reported on different dates can still import twice.
+- **A failed duplicate check is shown as an error** (`personal-cfo-pxi.11`), with
+  a Retry button, instead of reading as "safe to import".
+- The app framework (Tauri) is updated from 2.11 to 2.12.4 (`personal-cfo-md8h2.8`).
+  The same security checks were re-run; nothing changes in your data or
+  settings.
+
+### Security
+
+- The app window is stopped from navigating anywhere outside the app itself, and
+  the strict content-security policy is pinned by tests (`personal-cfo-2rf`).
+- Two sets of dependency security advisories, in the TLS library `rustls` and an
+  unused archive library, are cleared (`personal-cfo-md8h2.5`).
 
 ### Fixed
 

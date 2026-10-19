@@ -8279,3 +8279,50 @@ fn several_scenarios_compose_with_selection_order_as_precedence() {
     // 4. Empty selection is base only — inverting that would apply every scenario at once.
     assert_eq!(rent_under(&[]), None);
 }
+
+// -- The key statements never reallocate (personal-cfo-rsjud) -----------------------------------
+//
+// A `String` that grows moves to a new block and leaves the old one, holding the partly written
+// key, freed without being scrubbed. Both statement builders size their buffer exactly, so the
+// capacity at the end equals the capacity at the start, which is the length.
+
+#[test]
+fn the_raw_key_statement_is_built_without_reallocating() {
+    let dek = vault_crypto::generate_dek().unwrap();
+    let pragma = raw_key_pragma(&dek);
+    assert_eq!(pragma.len(), 83, "PRAGMA key = \"x'<64 hex>'\";");
+    assert_eq!(
+        pragma.capacity(),
+        pragma.len(),
+        "the buffer grew, so a freed copy held the key"
+    );
+    assert!(pragma.starts_with("PRAGMA key = \"x'") && pragma.ends_with("'\";"));
+}
+
+#[test]
+fn the_passphrase_statement_is_built_without_reallocating_whatever_the_quotes() {
+    let many_quotes = "'".repeat(40);
+    let long_mixed = "a'b".repeat(500);
+    for key in [
+        "",
+        "plain",
+        "it's",
+        "'",
+        "''",
+        many_quotes.as_str(),
+        "caf\u{e9} \u{1f512} it's 'x'",
+        long_mixed.as_str(),
+    ] {
+        let pragma = passphrase_pragma(key);
+        let quotes = key.matches('\'').count();
+        assert_eq!(pragma.len(), 16 + key.len() + quotes, "{key:?}");
+        assert_eq!(
+            pragma.capacity(),
+            pragma.len(),
+            "the buffer grew for a passphrase of {} bytes",
+            key.len()
+        );
+        // Quotes are doubled and the text is otherwise the passphrase.
+        assert_eq!(&pragma[14..pragma.len() - 2], key.replace('\'', "''"));
+    }
+}

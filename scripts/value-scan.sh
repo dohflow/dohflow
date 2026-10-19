@@ -68,6 +68,11 @@ excluded_paths=(
 check() {
   local label="$1" pattern="$2" exceptions="$3" matches unexcepted
   matches="$(git grep -nIE "$pattern" -- . "${excluded_paths[@]}" 2>/dev/null || true)"
+  # A known-answer vector marker (`<!-- row-vector: name=HEX -->`, `<!-- sync-vector: ... -->`)
+  # is machine-generated hex that can contain a 16-digit run by pure chance, exactly like a
+  # lockfile checksum; it carries no narrative text. Only the marker LINE is skipped: the same
+  # digits in prose in the same file still fail. (personal-cfo-t2s4b part 5a.)
+  matches="$(echo "$matches" | grep -vE '^[^:]+:[0-9]+:<!-- (row|sync)-vector: [a-z0-9_]+=[0-9a-f]+ -->$' || true)"
   [ -z "$matches" ] && return 0
   if [ -n "$exceptions" ]; then
     unexcepted="$(echo "$matches" | grep -vE "^($exceptions):" || true)"
@@ -142,7 +147,14 @@ done
 #     "ACME-SENTINEL-INC-5999000099990000"), not gitleaks-allowlisted
 #     because gitleaks' credential-shaped rules don't happen to trigger on
 #     it, but this scan's card-shape heuristic does.
-value_fixture_exceptions='crates/observability/src/lib.rs|crates/finance-kernel/tests/log_redaction.rs|crates/finance-kernel/tests/side_file_leak.rs'
+#   - crates/db-worker/tests/payload_v1.rs and its frozen fixture
+#     crates/db-worker/tests/fixtures/payload_v1/set_debt_terms.json — the command
+#     payload test needs an integer above 2^53 (9007199254740993, 2^53+1) to prove that
+#     64-bit values travel as exact decimal strings instead of rounding through a
+#     double. Every integer above 2^53 has 16 or more digits, so any probe value of
+#     that kind is card-number-shaped by construction. It is a power-of-two
+#     neighbor, not an account number (personal-cfo-t2s4b part 3b).
+value_fixture_exceptions='crates/observability/src/lib.rs|crates/finance-kernel/tests/log_redaction.rs|crates/finance-kernel/tests/side_file_leak.rs|crates/db-worker/tests/payload_v1.rs|crates/db-worker/tests/fixtures/payload_v1/set_debt_terms.json'
 
 check "SSN-shaped string" "$SSN_RE" "$value_fixture_exceptions"
 check "card-number-shaped string" "$CARD_RE" "$value_fixture_exceptions"

@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=3 -->
+<!-- vault-format: spec-version=4 -->
 <!-- vault-format: schema-version=56 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -242,6 +242,9 @@ synthetic no-app recovery test before any such public claim.
   most 128 levels, a receiver accepts only the canonical encoding of the value it decodes
   to, and C.14 gains the rejection vectors. New wire sections require a
   spec-version bump and their own reviewed vectors.
+- `spec-version = 4` adds C.1.5, the canonical row encoding (declared-kind tags, primary
+  key, row and deleted-row digests, and folded children) that the write-set hash of C.4
+  and the replay-property hash refer to, with known-answer vectors.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -739,6 +742,183 @@ not implement the named suite fails with `UnsupportedSuite`; it never guesses.
 Ciphertext already sealed under suite 1 is not retroactively protected against a
 future quantum adversary; that limitation is accepted for v1.
 
+### C.1.5 Canonical row encoding and primary key (`personal-cfo-t2s4b`)
+
+One encoding of a database row is used everywhere a row is hashed: the write-set hash of
+C.4, the replay-property hash that compares two replicas, and the simulator's equality
+checks. It covers **every table of every class**; the write-set hash applies it to the
+replicated rows only (class-2 rebuilds are excluded from that hash, not from the
+encoding). It uses CBE1 (C.1.1).
+
+**What the write set covers.** Exactly what Sync replicates, per the B.2 inventory:
+
+- every table of Sync class 1, and each class-4 group that ADR 0074 Decision 5 routes to
+  class 1 (the CLASS-0 manifest names them), with all of their columns, except the
+  **folded children** below and `operation_log` (the command's own row);
+- for each table whose B.2 disposition is `fields`, a **projection**: only the replicated
+  fields B.2 names, as a logical record, so that a device-local or rebuilt column never
+  enters a digest. These are `attachments` (`id`, `plaintext_size`, `mime_type`,
+  `original_filename`, `created_at`; never `storage_id`, wrapped keys or nonces, and not
+  the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys and the
+  six legacy user keys, never `device.*`), and `vault_metadata`, whose
+  `household_timezone` is the single field of the logical `household` record (B.3): its
+  digest uses the table name `household`, the one column `household_timezone`, and the
+  key `int 1`. The projection a command's apply writes is therefore never empty for
+  `SetHouseholdTimezone`.
+
+**Folded children.** A replicated table that declares no primary key cannot be a write-set
+entry of its own, because a rowid is not the same on two devices. Such a table is **folded
+into a parent**: its rows are part of the parent's digest, and the parent is the only
+write-set entry. The column-kind manifest names the mapping:
+
+| Child table | Parent table | Child column naming the parent |
+| --- | --- | --- |
+| `ledger_postings` | `ledger_transactions` | `transaction_id` (the parent's `id`) |
+| `attachment_links` | `attachments` | `attachment_id` (the parent's `id`) |
+
+A parent that has folded children appends a **child section** to its `row_digest` message,
+after its own columns: `u16 child_table_count ‖ for each child table, in raw-name order:
+text(64) child_table ‖ u32 count ‖ for each child row: bytes(2^16) child_row`. A
+`child_row` is `u16 column_count ‖ for each column of the child table, over **all** its
+declared columns and never a rowid, sorted by the raw bytes of the name: text(64) name ‖
+tagged value`. The child rows of one parent are sorted **bytewise by the `child_row` bytes themselves,
+excluding the `bytes(2^16)` length prefix, lexicographically, with a shorter row first when
+it is a prefix of another (the rule of C.4), and duplicates are kept**, so two identical
+postings count twice and the digest is a multiset. Sorting by the length-prefixed form
+gives a different order and therefore a different digest; a vector below fixes the order. A parent with no folded children has no child section, so its message is
+exactly the one defined below. A parent whose manifest declares children always carries the
+section, with a count of 0 when it has no child rows now. An insert, update or delete of
+any child row changes the parent's digest, so the parent's write-set entry is present
+(the state-difference rule); a child row whose parent does not exist is an error, never an
+entry.
+
+**Folded children are bounded and unordered.** The 2^16 child-row bound is a schema-time
+guarantee like the key bound (a schema test checks the folded children's columns). The
+digest is a multiset, so two replicas may hold the same rows in different rowid order and
+still agree: **no reader of a folded child table may depend on row order**, and every query
+over one orders by its content columns.
+
+**Deleting and moving.** A command that deletes a parent removes all its folded children
+in the same transaction (a foreign-key cascade or explicit deletes), and the parent's absent
+digest stands for the whole group. A child left without a parent after apply fails the
+command before commit, deterministically on every replica; it is never discovered at hash
+time. A child whose parent column changes is in both the old and the new parent's digest, so
+both parents are write-set entries, and a capture maps a child write to `OLD` and `NEW`
+parent. Both paths have tests.
+
+`provenance_links` is **not** in the write set: B.2 gives it the disposition `exclude`, like
+`operation_log`, and the write set is exactly what Sync replicates.
+
+Each value is tagged by its column's **declared kind**, taken from the column-kind
+manifest, which lists every column of every table with a kind and is aligned with the
+portable export's kinds (B, "Row encoding"). The tag does not depend on SQLite's runtime
+storage class or type affinity, so affinity can never make two devices encode one value
+differently:
+
+| Tag | Kind | Stored as | Encoding after the tag byte |
+| --- | --- | --- | --- |
+| `0` | any kind | NULL | nothing |
+| `1` | `int` | INTEGER | `i64` |
+| `2` | `text` | TEXT | `text(2^24)` (valid UTF-8; invalid UTF-8 is an error) |
+| `3` | `uuid` | BLOB of exactly 16 bytes | the 16 raw bytes |
+| `4` | `bytes` | BLOB | `bytes(2^24)` |
+
+A stored value whose storage class does not match its declared kind (a TEXT in an `int`
+column, a BLOB of another length in a `uuid` column, and so on) is an error, never
+coerced. A REAL value has no tag and is an error: no table has a REAL column, and a test
+proves it from the schema. A column absent from the manifest, or a manifest column absent
+from the table, is an error. The digests are:
+
+- `primary_key` is the concatenation, in the table's declared primary-key column order, of
+  each key column's tagged value (tag byte, then the value). It is at most 256 bytes; a
+  longer key is an error and is never truncated. Each tagged value is self-delimiting, so
+  the concatenation is unambiguous for a table whose key columns are fixed.
+- `row_digest` of a row that exists is `SHA-256(label "dohflow/sync-row/v1" ‖ text(64)
+  table ‖ u16 column_count ‖ for each column: text(64) name ‖ tagged value)`, with the
+  columns sorted by the **raw bytes of their names** (not by their position in the table,
+  which a table rebuild may change). Every column the manifest lists for the table, or for
+  its projection, is included; a parent with folded children then appends its child
+  section (above). A class-1 table contains only class-1 columns (a schema
+  test checks every class-1 table against CLASS-0), and a projection lists only replicated
+  fields, so no device-local (class-3) or rebuild-timing (class-2) value ever enters a
+  digest.
+- `row_digest` of a row a command **deleted** (it existed before, it does not exist after)
+  is `SHA-256(label "dohflow/sync-row-absent/v1" ‖ text(64) table ‖ bytes(256)
+  primary_key)`, so a deletion changes the write-set hash and is distinguishable from a
+  row that was not touched.
+- **The write set is a state difference, not a record of writes.** It is exactly the
+  class-1 rows whose final state differs from their state before the command: a row
+  created, a row whose digest changed, and a row deleted. A no-op `UPDATE`, an `INSERT OR
+  IGNORE` that hits an identical row, and a delete followed by a re-insert of identical
+  columns are **not** in the set, so two engine builds, or a trigger-based and a
+  diff-based capture, compute the same set. A row inserted and deleted inside the same
+  command is not in the set, and a row touched several times appears once, with its final
+  state. An update that changes a primary key is a deletion of the old key plus the
+  presence of the new key. Rows changed by foreign-key actions (cascaded deletes and
+  updates) are included exactly like direct writes, and a test covers a cascade.
+- **Keys are never SQLite's to assign.** Every class-1 table declares an explicit primary
+  key whose values the command supplies; none relies on an implicit rowid, and no
+  `INTEGER PRIMARY KEY` or `AUTOINCREMENT` key is left for SQLite to allocate, because a
+  rowid is not the same on two devices. Every class-1 key fits the 256-byte limit by
+  construction (a bounded column width, checked by a schema test), so the limit is a
+  schema-time guarantee and not a runtime failure that strands a command.
+- A value that lives in a class-3 table and is not part of a B.2 projection is outside
+  every write set: a divergence there is invisible to the fork check by design. The
+  command that sets such a value carries it in its payload, and apply writes exactly the
+  payload value, never something derived from local state.
+- **Declared-kind validation is mandatory before Sync.** Before a vault's genesis (and
+  as a local health check), the declared-kind check runs over every covered row. A stored
+  value whose storage class disagrees with its kind blocks Sync as a typed state and is
+  repaired by a reviewed migration that rewrites the value to its kind; it is never
+  coerced at hash time. Otherwise a legacy mismatch would leave every later command that
+  touches the row unhashable. The check is an acceptance criterion of the genesis bead
+  (`personal-cfo-1cltt`) and is tested with one seeded mismatch per kind.
+- The schema tests this text promises (no REAL column in a covered table, **every
+  replicated table declares a supplied primary key or is listed as a folded child with its
+  parent column**, key width of at most 256 bytes, class-1 tables hold only class-1
+  columns, the manifest lists exactly each table's columns) are delivered by part 5b.
+- The `operation_log` row of the command itself is not in the write set: it carries the
+  write-set hash.
+- The digests are bound to the schema version: the column set is the one the manifest
+  lists for the `schema_version` in the envelope header. A receiver at another schema
+  version does not apply the envelope and enters the ADR 0074 Decision 3
+  update-required state; the hash is never skipped or recomputed over a different column
+  set.
+
+The two labels differ in their length prefix and in content, and neither can be parsed as
+the other. Known-answer vectors, derived independently by the contract script
+`scripts/tests/row-digest-contract.test.sh` (`table = tags`; `id` is a `uuid` column
+holding the 16 bytes of `0198c2c1-5f0a-7c3d-8a4e-9b1d00000011`; `name` is a `text` column
+holding `trip é`; `color` is a `text` column holding NULL; `sort_order` is an `int` column
+holding `-7`; the first five markers below). The last four markers cover a parent with
+folded children: the parent
+is a `ledger_transactions` row with `id` the 16 bytes of
+`0198c2c1-5f0a-7c3d-8a4e-9b1d00000021` and `memo` `split`; its children are three
+`ledger_postings` rows over the same `transaction_id`, two identical (account
+`...0031`, `-500`, `USD`, exponent `2`, `2026-10-17`) and one other (account `...0032`,
+`1000`); `child_row_a` and `child_row_b` are the two distinct child encodings, and the
+duplicate shows that the multiset keeps both copies (`parent_message` and `parent_digest`
+are the parent's message, with its child section, and its digest). The last three markers
+fix the child **sort order**: an `attachments` parent with two `attachment_links` rows
+whose shorter encoding sorts after the longer one lexicographically (`entity_id` `...4a`
+with entity kind `transaction_document`, and `entity_id` `...4b` with kind `tx`);
+`order_digest` is the digest with the correct order (the longer row first),
+`order_wrong_digest` the digest an implementation gets by sorting the length-prefixed
+form, and the two differ:
+
+<!-- row-vector: primary_key=030198c2c15f0a7c3d8a4e9b1d00000011 -->
+<!-- row-vector: row_message=0013646f68666c6f772f73796e632d726f772f76310000000474616773000400000005636f6c6f7200000000026964030198c2c15f0a7c3d8a4e9b1d00000011000000046e616d6502000000077472697020c3a90000000a736f72745f6f7264657201fffffffffffffff9 -->
+<!-- row-vector: row_digest=2f155b98841dc8b10bc71e369ee216022f9c15ef56a27b5165b36cb220d7b601 -->
+<!-- row-vector: absent_message=001a646f68666c6f772f73796e632d726f772d616273656e742f7631000000047461677300000011030198c2c15f0a7c3d8a4e9b1d00000011 -->
+<!-- row-vector: absent_digest=6d5ad824c2f6c542d09ce9250916c0135574503f89d8719c90292aac69347285 -->
+<!-- row-vector: child_row_a=00060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
+<!-- row-vector: child_row_b=00060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000320000000b6d696e6f725f756e6974730100000000000003e80000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
+<!-- row-vector: parent_message=0013646f68666c6f772f73796e632d726f772f7631000000136c65646765725f7472616e73616374696f6e730002000000026964030198c2c15f0a7c3d8a4e9b1d00000021000000046d656d6f020000000573706c697400010000000f6c65646765725f706f7374696e677300000003000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000310000000b6d696e6f725f756e69747301fffffffffffffe0c0000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021000000b400060000000863757272656e637902000000035553440000001163757272656e63795f6578706f6e656e74010000000000000002000000116c65646765725f6163636f756e745f6964030198c2c15f0a7c3d8a4e9b1d000000320000000b6d696e6f725f756e6974730100000000000003e80000000c706f7374696e675f64617465020000000a323032362d31302d31370000000e7472616e73616374696f6e5f6964030198c2c15f0a7c3d8a4e9b1d00000021 -->
+<!-- row-vector: parent_digest=c31659d4006d3c4609c0b9d330c0d45627160732eddf048b749ac1ee4048ac1c -->
+<!-- row-vector: order_message=0013646f68666c6f772f73796e632d726f772f76310000000b6174746163686d656e74730002000000026964030198c2c15f0a7c3d8a4e9b1d00000041000000096d696d655f747970650200000009696d6167652f706e670001000000106174746163686d656e745f6c696e6b73000000020000008700040000000d6174746163686d656e745f6964030198c2c15f0a7c3d8a4e9b1d000000410000000a637265617465645f6174020000000a323032362d31302d313700000009656e746974795f6964030198c2c15f0a7c3d8a4e9b1d0000004a0000000b656e746974795f6b696e6402000000147472616e73616374696f6e5f646f63756d656e740000007500040000000d6174746163686d656e745f6964030198c2c15f0a7c3d8a4e9b1d000000410000000a637265617465645f6174020000000a323032362d31302d313700000009656e746974795f6964030198c2c15f0a7c3d8a4e9b1d0000004b0000000b656e746974795f6b696e6402000000027478 -->
+<!-- row-vector: order_digest=6b1d556830b76a329b6b35bcb605f5f4267d906bc62da24d9b085a269faf5cfb -->
+<!-- row-vector: order_wrong_digest=a1ad1405a7e7474e666d7f5a2cc74945bdeae13bacd2864b8656555ff98c5f69 -->
+
 ## C.2 Keys and secrets
 
 | Secret | Size | Lifetime and custody |
@@ -877,9 +1057,14 @@ row_digest)`. The count is at most `2^20`, and each `(table, primary_key)` pair
 appears at most once (a duplicate is `MalformedObject`). Rows sort by the **raw bytes** of the
 table name, then by the raw bytes of the primary key, bytewise lexicographically
 with a shorter value first when it is a prefix of the other; they do not sort by
-their length-prefixed encodings. `row_digest`
+their length-prefixed encodings. The primary key's bytes are the C.1.5 tagged
+encoding, never the SQL value, so a negative integer key (two's complement) sorts after a
+positive one; that order is deterministic and is the order. `row_digest`
 is the SHA-256 of the row's one canonical binary encoding, which
-`personal-cfo-t2s4b` defines under C.1.1. Class-2 rebuilds are excluded.
+is defined in C.1.5, as is the `primary_key` encoding and the digest of a deleted row.
+The set of rows is the C.1.5 state difference: the class-1 rows whose final state differs
+from their state before the command. Class-2 rebuilds are excluded, and so is the command's
+own `operation_log` row.
 
 ### Counter register and nonce state
 

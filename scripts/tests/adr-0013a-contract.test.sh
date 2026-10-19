@@ -125,4 +125,149 @@ assert msg[43] == (len(acct) >> 8)
 PY
 echo "    ok   — provider-id vector re-derived independently"
 
+# Section 10 (personal-cfo-g3m.14): the 2026-10-19 correction note.
+require_text "correction note is dated and named" "$ADR" "#### 10. Correction note (2026-10-19, \`personal-cfo-g3m.14\`): payload-only ordinals, singleton ids, mint order and the clock scope"
+require_text "(a) ordinals depend only on payload and metadata" "$ADR" "**(a) Ordinal consumption depends only on the payload and the metadata.**"
+require_text "(b) singletons get a content-derived id" "$ADR" "**(b) Create-if-missing singletons get a content-derived id.**"
+require_text "(b) singleton domain label is fixed" "$ADR" 'label    = ASCII "dohflow/system-account-id/v1"'
+require_text "(b) singleton packing uses a zero time field" "$ADR" "packing  = uuid::Builder::from_unix_timestamp_millis(0, &counter_random_bytes)"
+require_text "(b) cross-references the provider-transaction exception" "$ADR" "the provider-transaction exception of section 9"
+require_text "(b) validates before deriving" "$ADR" "the currency is exactly three ASCII uppercase letters, and the role"
+require_text "(b) separates from section 9 by first byte and version nibble" "$ADR" "nibble (7 here, 8 there)"
+require_text "(b) a singleton timestamp is not a creation time" "$ADR" "**not a creation time**"
+require_text "(d) the helper list names the inbox helpers" "$ADR" "`record_dismiss` and"
+require_text "(c) mint order is deterministic" "$ADR" "**(c) Mint order is deterministic.**"
+require_text "(c) no unordered collection on a mint path" "$ADR" "no iteration over a \`HashMap\`, a \`HashSet\` or any other unordered"
+require_text "(c) a total ORDER BY feeds every mint loop" "$ADR" "total \`ORDER BY\`"
+require_text "(d) the clock rule covers everything reachable" "$ADR" "**(d) The no-clock rule covers everything reachable from \`apply\`.**"
+require_text "(d) class-2 rebuilds are in scope" "$ADR" "**class-2 rebuilds**"
+require_text "section 2 carries a dated pointer" "$ADR" "*(Scope corrected 2026-10-19: the rule covers every clock read reachable from"
+require_text "section 3 carries a dated pointer" "$ADR" "*(Corrected 2026-10-19: \`ensure_system_ledger_account\`, and any other"
+require_text "section 4 carries a dated pointer" "$ADR" "*(Corrected 2026-10-19: the payload and the metadata alone determine the"
+require_text "section 6 carries a dated pointer" "$ADR" "*(Superseded 2026-10-19: a singleton's id is content-derived and outside the"
+require_text "the accepted section 4 sentence is unchanged" "$ADR" "payload, metadata, and base determine the sequence; a rollback-then-replay"
+
+# The singleton vectors are re-derived here, independently of the document's text, with a
+# packer that is first checked against the document's own vector A.
+CASES=$((CASES + 1))
+python3 - "$ADR" <<'PY'
+import hashlib, hmac, re, struct, sys, uuid
+text = open(sys.argv[1]).read()
+def pack_v7(ms, ordinal, high62):
+    c = bytearray(10)
+    c[0] = (ordinal >> 8) & 0x0F
+    c[1] = ordinal & 0xFF
+    c[2:10] = high62.to_bytes(8, "big")
+    b = bytearray(16)
+    b[0:6] = ms.to_bytes(6, "big")
+    b[6] = 0x70 | (c[0] & 0x0F)
+    b[7] = c[1]
+    b[8] = (c[2] & 0x3F) | 0x80
+    b[9:16] = c[3:10]
+    return bytes(c), uuid.UUID(bytes=bytes(b))
+# 1. the packer reproduces section 1's vector A exactly
+a = text.split("vector A", 1)[1].split("vector B", 1)[0]
+def f(name, chunk):
+    m = re.search(r"^" + name + r"\s*=\s*(\S+)", chunk, re.M)
+    assert m, name
+    return m.group(1)
+key = bytes.fromhex(f("id_key", a))
+msg = bytes.fromhex(f("message_hex", a))
+dig = hmac.new(key, msg, hashlib.sha256).digest()
+counter, got = pack_v7(int(f("issued_at_unix_ms", a)), int(f("ordinal", a)), int.from_bytes(dig[:8], "big") >> 2)
+assert counter.hex() == f("counter_random_bytes", a) and str(got) == f("uuid", a), "packer vs vector A"
+# 2. the section 10 singleton vectors
+sec = text.split("#### 10. Correction note", 1)[1]
+block = sec.split("Known-answer vectors (normative; hexadecimal is lowercase; `id_key` is vector A's key", 1)[1]
+block = block.split("```text", 1)[1].split("```", 1)[0]
+label = b"dohflow/system-account-id/v1"
+assert len(label) == 28
+chunks = block.split("\n\n")
+assert len(chunks) == 2, len(chunks)
+for chunk in chunks:
+    role, cur = f("role", chunk).encode(), f("currency", chunk).encode()
+    assert role in (b"opening_balance_equity", b"unmatched_income", b"unmatched_expense")
+    assert re.fullmatch(rb"[A-Z]{3}", cur)
+    m = bytes([len(label)]) + label + bytes([len(role)]) + role + cur
+    d = hmac.new(key, m, hashlib.sha256).digest()
+    counter, u = pack_v7(0, 0, int.from_bytes(d[:8], "big") >> 2)
+    assert m.hex() == f("message_hex", chunk), "message_hex"
+    assert d.hex() == f("hmac_sha256", chunk), "hmac_sha256"
+    assert counter.hex() == f("counter_random_bytes", chunk), "counter_random_bytes"
+    assert str(u) == f("uuid", chunk), "uuid"
+    assert u.version == 7 and str(u).startswith("00000000-0000-7000-")
+    # not a valid section 1 message: its last two bytes cannot be an ordinal below 4096
+    assert struct.unpack(">H", m[-2:])[0] >= 4096
+    # and its first byte differs from the provider derivation's (26)
+    assert m[0] == 0x1C != 0x1A
+    # ... and the id is a version 7 layout, whereas the provider-derived ids are version 8
+    assert u.version == 7
+PY
+echo "    ok   — singleton vectors re-derived independently (packer checked against vector A)"
+
+# Section 11 (personal-cfo-g3m.15): merge-import derived identifiers.
+require_text "section 11 is dated and named" "$ADR" "#### 11. Exception: merge-import derived identifiers (2026-10-19, \`personal-cfo-g3m.15\`)"
+require_text "merge ids are not command-scoped" "$ADR" "Like"
+require_text "merge label is fixed" "$ADR" 'label    = ASCII "dohflow/merge-import-derived-id/v1"'
+require_text "merge message layout" "$ADR" "|| source_vault_id.bytes"
+require_text "merge entity tag grammar" "$ADR" "|| u8(len(entity_tag))  || entity_tag"
+require_text "merge digest is HMAC-SHA256" "$ADR" "digest   = HMAC-SHA256(id_key, message)                      # the HOUSEHOLD"
+require_text "children of a replayed command carry merge-derived ids" "$ADR" "child rows included** (the source child's key under its own entity tag)"
+require_text "apply never mints a merge child through section 1" "$ADR" "never lets its apply mint a child row through section 1's command-scoped helper"
+require_text "merge row key is the C.1.5 key" "$ADR" "|| u16_be(len(source_row_key)) || source_row_key"
+require_text "merge ids use the household id_key" "$ADR" "# the HOUSEHOLD vault's id_key (section 1)"
+require_text "merge ids are UUID version 8" "$ADR" "The id is a UUID version 8: it carries no time"
+require_text "merge domain separation names the offsets" "$ADR" "`tag_len` would be 109 and the tag would span offsets 17 to 125"
+require_text "merge first byte differs from sections 9 and 10" "$ADR" "the first byte differs (34, \`0x22\`,"
+
+CASES=$((CASES + 1))
+python3 -I - "$ADR" <<'PY'
+import hashlib, hmac, re, sys, uuid
+text = open(sys.argv[1]).read()
+sec = text.split("#### 11. Exception: merge-import derived identifiers", 1)[1].split("### Rejected alternatives", 1)[0]
+block = sec.split("Known-answer vector", 1)[1].split("```text", 1)[1].split("```", 1)[0]
+def f(name, chunk):
+    m = re.search(r"^" + name + r"\s*=\s*(\S+)", chunk, re.M)
+    assert m, name
+    return m.group(1)
+parts = block.split("\n\n")
+assert len(parts) == 2, len(parts)
+id_key = bytes.fromhex(f("id_key", parts[0]))
+label = b"dohflow/merge-import-derived-id/v1"
+assert len(label) == 34 and label[15:16] == b"m"
+def derive(src_vault, tag, row_key):
+    assert re.fullmatch(rb"[a-z0-9_]{1,32}", tag) and 1 <= len(row_key) <= 256
+    m = bytes([len(label)]) + label + src_vault + bytes([len(tag)]) + tag + len(row_key).to_bytes(2, "big") + row_key
+    d = hmac.new(id_key, m, hashlib.sha256).digest()
+    b = bytearray(d[:16]); b[6] = (b[6] & 0x0F) | 0x80; b[8] = (b[8] & 0x3F) | 0x80
+    return m, d, uuid.UUID(bytes=bytes(b))
+src = uuid.UUID(f("source_vault_id", parts[0])).bytes
+row = bytes.fromhex(f("source_row_key", parts[0]))
+assert row[0] == 3 and len(row) == 17                     # a uuid key in the C.1.5 encoding
+for chunk, tag in ((parts[0], b"account"), (parts[1], b"category")):
+    if chunk is parts[1]:
+        tag = f("entity_tag", chunk).encode()
+    else:
+        assert f("entity_tag", chunk).encode() == tag
+    m, d, u = derive(src, tag, row)
+    if chunk is parts[0]:
+        assert m.hex() == f("message_hex", chunk), "message_hex"
+        assert d.hex() == f("hmac_sha256", chunk), "hmac_sha256"
+    assert str(u) == f("uuid", chunk), "uuid"
+    assert u.version == 8
+# Domain separation, re-checked on the bytes: against section 1 (offset 16 is label[15]) ...
+m, _, _ = derive(src, b"account", row)
+assert m[16] == label[15] == 0x6D and m[16] == 109
+for n in range(1, 33):
+    offset = 1 + 34 + 16 + 1 + n                       # the u16 high byte of the row-key length
+    assert 17 <= offset <= 16 + 109 and offset < 128
+    for key_len in (1, 17, 255, 256):
+        probe = bytes([34]) + label + src + bytes([n]) + b"t" * n + key_len.to_bytes(2, "big") + b"k" * key_len
+        high = probe[offset]
+        assert high in (0, 1) and not (0x21 <= high <= 0x7E)
+# ... and against sections 9 and 10 (first byte).
+assert m[0] == 34 and 34 not in (26, 28)
+PY
+echo "    ok   — merge-import vectors re-derived independently; domain separation re-checked on the bytes"
+
 echo "PASS — $CASES ADR 0013-A contract assertions, 0 failures"
