@@ -1,0 +1,219 @@
+name: iOS kernel
+
+# Kernel crates cross-compile for Apple mobile targets (personal-cfo-md8h2.7).
+#
+# The kernel crates (everything under crates/, i.e. the root Cargo workspace) build
+# for aarch64-apple-ios and aarch64-apple-ios-sim, including the vendored SQLCipher and
+# OpenSSL C builds, and the vault tests run on an iOS simulator. A kernel change that
+# breaks either — a dependency without iOS support, a macOS-only API — should fail here,
+# not be found later by someone building for a phone. Scope is deliberately the kernel
+# crates only: nothing in this file names or builds any application (ADR 0085, the
+# open-core boundary: the public fact is "the kernel builds for these targets").
+#
+# Two jobs:
+#
+#   1. `iOS cross-compile (kernel crates)` — `cargo check` of the whole workspace,
+#      all targets, for both iOS targets, on every pull request that touches code the
+#      build depends on. Built to be a required check, and built to fail CLOSED: the
+#      macOS build is the job `iOS cross-compile (macOS build)`, and the required name
+#      belongs to a small Linux verdict job that passes only when the gate succeeded and
+#      the build either succeeded or was intentionally skipped (see the gating note).
+#   2. `iOS simulator (vault tests)` — builds the vault create/unlock/wrong-password
+#      and Future Cash read tests for the simulator and runs them there. Nightly and on
+#      demand, not per pull request: it needs a booted simulator and several minutes.
+#      A pull request that changes this workflow or the simulator script does run it, so
+#      the machinery itself is exercised before it merges (a new workflow cannot be
+#      dispatched by hand until it is on the default branch).
+#
+# IPHONEOS_DEPLOYMENT_TARGET is set EXPLICITLY (personal-cfo-ngkyf finding). Left unset,
+# the C layer (SQLCipher, OpenSSL) is compiled for the installed SDK's own version while
+# Rust targets iOS 14.0, so the objects disagree about the minimum OS. 17.0 is the pin
+# the spike and the Apple-target builds used; change it here, in one place, deliberately.
+#
+# Gating follows ci.yml's conventions. A cheap Linux `gate` job decides whether the macOS
+# jobs run, so a docs-only pull request never starts a macOS runner, and the macOS job
+# is skipped by its own `if:` rather than by a workflow-level `paths` filter: a skipped
+# job reports Success to branch protection, whereas a workflow that does not exist for
+# the change would leave a required check "Expected — waiting" forever (the same reason
+# ci.yml filters inside its jobs). A skip also reports Success when the GATE fails, which
+# would let a filter or API error turn the required check green without a build ever
+# running. So the required name is the verdict job (scripts/ios-kernel-ci-verdict.sh),
+# which fails unless the gate succeeded and the build succeeded or was not wanted. `schedule` payloads carry no `repository` object, so
+# the visibility of a scheduled run is read from the REST API, as ci.yml's security-scan
+# does, instead of trusting `github.event.repository.private`.
+#
+# Run it by hand: the Actions tab -> "iOS kernel" -> "Run workflow", or
+#   gh workflow run ios-kernel.yml --ref <branch>
+# The same simulator script runs locally: scripts/ios-kernel-sim-tests.sh.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      simulator:
+        description: 'Also run the simulator job'
+        type: boolean
+        default: true
+  schedule:
+    - cron: '30 7 * * *' # nightly 07:30 UTC, simulator job only
+
+concurrency:
+  group: ios-kernel-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # dorny/paths-filter lists a pull request's changed files through the API.
+  pull-requests: read
+
+env:
+  # Pinned explicitly, see the header. Used by both jobs.
+  IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+
+jobs:
+  gate:
+    name: iOS gate (visibility and changed paths)
+    runs-on: ubuntu-latest
+    outputs:
+      check: ${{ steps.decide.outputs.check }}
+      simulator: ${{ steps.decide.outputs.simulator }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: github.event_name == 'pull_request'
+
+      - name: Detect changed files
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          base: main
+          filters: |
+            code:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ios-kernel.yml'
+              - 'scripts/ios-kernel-sim-tests.sh'
+            simulator:
+              - '.github/workflows/ios-kernel.yml'
+              - 'scripts/ios-kernel-sim-tests.sh'
+
+      - name: Decide which jobs run
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PRIVATE: ${{ github.event.repository.private }}
+          CODE_CHANGED: ${{ steps.filter.outputs.code }}
+          SIMULATOR_CHANGED: ${{ steps.filter.outputs.simulator }}
+          WANT_SIMULATOR: ${{ github.event.inputs.simulator }}
+        run: |
+          set -euo pipefail
+          check=false
+          simulator=false
+          case "$EVENT" in
+            workflow_dispatch)
+              check=true
+              [ "$WANT_SIMULATOR" = "false" ] || simulator=true
+              ;;
+            pull_request)
+              if [ "$PRIVATE" = "false" ] && [ "$CODE_CHANGED" = "true" ]; then
+                check=true
+              fi
+              if [ "$PRIVATE" = "false" ] && [ "$SIMULATOR_CHANGED" = "true" ]; then
+                simulator=true
+              fi
+              ;;
+            schedule)
+              is_private=$(gh api "repos/${{ github.repository }}" --jq .private)
+              if [ "$is_private" = "false" ]; then
+                simulator=true
+              else
+                echo "Repository is still private; skipping this scheduled run."
+              fi
+              ;;
+          esac
+          echo "check=$check" >> "$GITHUB_OUTPUT"
+          echo "simulator=$simulator" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT check=$check simulator=$simulator"
+
+  ios-build:
+    name: iOS cross-compile (macOS build)
+    needs: gate
+    if: needs.gate.outputs.check == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Show toolchain and Apple SDKs
+        run: |
+          set -euo pipefail
+          rustup show
+          xcodebuild -version
+          echo "iphoneos SDK:        $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iphonesimulator SDK: $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          echo "IPHONEOS_DEPLOYMENT_TARGET=$IPHONEOS_DEPLOYMENT_TARGET"
+
+      # The toolchain (channel) comes from rust-toolchain.toml; the iOS targets are added
+      # on top of it for this job only, so Linux CI and local builds do not pay for them.
+      - name: Add the iOS targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ios-build
+
+      # Every workspace crate, lib + bins + tests + benches, against the locked graph.
+      - name: cargo check, aarch64-apple-ios
+        run: cargo check --workspace --all-targets --locked --target aarch64-apple-ios
+
+      - name: cargo check, aarch64-apple-ios-sim
+        run: cargo check --workspace --all-targets --locked --target aarch64-apple-ios-sim
+
+  # The required check. A skipped ios-build reports Success, so this job decides: it passes
+  # only when the gate succeeded and the build either succeeded or was not wanted, and
+  # fails otherwise, including when the gate itself failed or was cancelled.
+  ios-check:
+    name: iOS cross-compile (kernel crates)
+    needs: [gate, ios-build]
+    if: ${{ always() && github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verdict
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+          BUILD_WANTED: ${{ needs.gate.outputs.check }}
+          BUILD_RESULT: ${{ needs.ios-build.result }}
+        run: scripts/ios-kernel-ci-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$BUILD_RESULT"
+
+  ios-simulator:
+    name: iOS simulator (vault tests)
+    needs: gate
+    if: needs.gate.outputs.simulator == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Show toolchain, Apple SDKs and simulator runtimes
+        run: |
+          set -euo pipefail
+          rustup show
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Add the iOS simulator target
+        run: rustup target add aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ios-simulator
+
+      # Builds the selected test binaries for the simulator, boots a throwaway simulator
+      # and runs each one there; any failing binary fails the job.
+      - name: Vault tests on the iOS simulator
+        run: scripts/ios-kernel-sim-tests.sh
