@@ -777,13 +777,34 @@ from the table, is an error. The digests are:
 - `row_digest` of a row that exists is `SHA-256(label "dohflow/sync-row/v1" ‖ text(64)
   table ‖ u16 column_count ‖ for each column: text(64) name ‖ tagged value)`, with the
   columns sorted by the **raw bytes of their names** (not by their position in the table,
-  which a table rebuild may change). Every column of the row is included.
+  which a table rebuild may change). Every column the manifest lists for the table is
+  included. A class-1 table contains only class-1 columns (a schema test checks every
+  class-1 table against CLASS-0), so no device-local (class-3) or rebuild-timing (class-2)
+  value ever enters a class-1 digest.
 - `row_digest` of a row a command **deleted** (it existed before, it does not exist after)
   is `SHA-256(label "dohflow/sync-row-absent/v1" ‖ text(64) table ‖ bytes(256)
   primary_key)`, so a deletion changes the write-set hash and is distinguishable from a
   row that was not touched.
-- In the write-set hash, a row that was inserted and deleted inside the same command is
-  not in the set, and a row touched several times appears once, with its final state.
+- **The write set is a state difference, not a record of writes.** It is exactly the
+  class-1 rows whose final state differs from their state before the command: a row
+  created, a row whose digest changed, and a row deleted. A no-op `UPDATE`, an `INSERT OR
+  IGNORE` that hits an identical row, and a delete followed by a re-insert of identical
+  columns are **not** in the set, so two engine builds, or a trigger-based and a
+  diff-based capture, compute the same set. A row inserted and deleted inside the same
+  command is not in the set, and a row touched several times appears once, with its final
+  state. An update that changes a primary key is a deletion of the old key plus the
+  presence of the new key. Rows changed by foreign-key actions (cascaded deletes and
+  updates) are included exactly like direct writes, and a test covers a cascade.
+- **Keys are never SQLite's to assign.** Every class-1 table declares an explicit primary
+  key whose values the command supplies; none relies on an implicit rowid, and no
+  `INTEGER PRIMARY KEY` or `AUTOINCREMENT` key is left for SQLite to allocate, because a
+  rowid is not the same on two devices. Every class-1 key fits the 256-byte limit by
+  construction (a bounded column width, checked by a schema test), so the limit is a
+  schema-time guarantee and not a runtime failure that strands a command.
+- A field that lives in a class-3 table (for example `household_timezone` in
+  `vault_metadata`) is outside every write set: a divergence there is invisible to the
+  fork check by design, and the command that sets it must carry the value in its payload
+  so replay converges.
 - The `operation_log` row of the command itself is not in the write set: it carries the
   write-set hash.
 - The digests are bound to the schema version: the column set is the one the manifest
@@ -941,9 +962,14 @@ row_digest)`. The count is at most `2^20`, and each `(table, primary_key)` pair
 appears at most once (a duplicate is `MalformedObject`). Rows sort by the **raw bytes** of the
 table name, then by the raw bytes of the primary key, bytewise lexicographically
 with a shorter value first when it is a prefix of the other; they do not sort by
-their length-prefixed encodings. `row_digest`
+their length-prefixed encodings. The primary key's bytes are the C.1.5 tagged
+encoding, never the SQL value, so a negative integer key (two's complement) sorts after a
+positive one; that order is deterministic and is the order. `row_digest`
 is the SHA-256 of the row's one canonical binary encoding, which
-is defined in C.1.5, as is the `primary_key` encoding and the digest of a deleted row. Class-2 rebuilds are excluded, and so is the command's own `operation_log` row.
+is defined in C.1.5, as is the `primary_key` encoding and the digest of a deleted row.
+The set of rows is the C.1.5 state difference: the class-1 rows whose final state differs
+from their state before the command. Class-2 rebuilds are excluded, and so is the command's
+own `operation_log` row.
 
 ### Counter register and nonce state
 
