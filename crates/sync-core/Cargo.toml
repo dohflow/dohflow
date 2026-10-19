@@ -12,4 +12,5 @@ description = "Pure format-level building blocks for DohFlow Sync: the strict ca
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }

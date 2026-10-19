@@ -9,3 +9,4 @@
 //!   metadata.
 
 pub mod canonical_json;
+pub mod row_digest;

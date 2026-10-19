@@ -141,7 +141,8 @@ fn seed_alias(
     now: &str,
 ) -> Result<(), DbError> {
     let key = normalize_merchant(raw);
-    if key.is_empty() {
+    // A seed is static data, never over-wide; an over-wide key would only be skipped.
+    if key.is_empty() || !alias_key_fits(&key) {
         return Ok(());
     }
     conn.execute(
@@ -198,11 +199,24 @@ pub(crate) fn create_identity(
     Ok(id)
 }
 
+/// The longest `merchant_aliases.normalized_key`, in UTF-8 bytes. The key is the table's primary
+/// key, and the canonical row encoding caps a primary key at 256 bytes (vault-format.md
+/// C.1.5): a text key is a tag byte, a `u32` length and the bytes, so 256 - 5 = 251. A
+/// `column_kinds` test pins this against the encoder.
+pub const MAX_ALIAS_KEY_BYTES: usize = 251;
+
+/// Whether `key` fits the replicated key width.
+pub(crate) fn alias_key_fits(key: &str) -> bool {
+    key.len() <= MAX_ALIAS_KEY_BYTES
+}
+
 /// Point a normalized merchant key at an identity. Re-linking a key moves it — the key is the
 /// primary key, since a deterministic key resolves to exactly one identity.
 ///
 /// # Errors
-/// Returns [`DbError`] if the insert fails (e.g. an out-of-domain `source`).
+/// Returns [`DbError::ReplicatedKeyTooLong`] if the key would exceed the replicated key width
+/// (it is rejected, never truncated), or [`DbError`] if the insert fails (e.g. an
+/// out-of-domain `source`).
 pub(crate) fn link_alias(
     conn: &Connection,
     normalized_key: &str,
@@ -210,6 +224,11 @@ pub(crate) fn link_alias(
     source: &str,
     confidence_bps: i64,
 ) -> Result<(), DbError> {
+    if !alias_key_fits(normalized_key) {
+        return Err(DbError::ReplicatedKeyTooLong {
+            table: "merchant_aliases",
+        });
+    }
     conn.execute(
         "INSERT OR REPLACE INTO merchant_aliases
             (normalized_key, merchant_identity_id, source, confidence_bps, created_at)

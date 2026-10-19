@@ -76,6 +76,12 @@ pub(crate) fn mint_anchors(conn: &Connection) -> Result<u32, DbError> {
         if keys.len() < MIN_DISTINCT_LOCATIONS {
             continue;
         }
+        // An anchor derived from transaction text that would exceed the replicated key width
+        // is not minted (no alias, no identity): ingestion must not fail on it, and the key is
+        // never truncated, which would change what it identifies.
+        if !merchant_identity::alias_key_fits(anchor) {
+            continue;
+        }
         let id = Uuid::new_v5(
             &Uuid::NAMESPACE_OID,
             format!("merchant-auto:{anchor}").as_bytes(),

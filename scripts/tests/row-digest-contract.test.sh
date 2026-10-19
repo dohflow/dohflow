@@ -186,6 +186,16 @@ for r in sorted([rows[0], rows[2]]):
     fewer += bytes_(r, 2**16)
 assert hashlib.sha256(fewer).hexdigest() != vectors["parent_digest"]
 
+# A declared child table with zero rows is a section with count 0; the empty-children form is
+# not defined, so sync-core refuses it (see tests/row_digest.rs).
+zero = label("dohflow/sync-row/v1") + text_("ledger_transactions", 64) + struct.pack(">H", len(parent))
+for n in sorted(parent, key=lambda x: x.encode()):
+    zero += text_(n, 64) + val(*parent[n])
+zero += struct.pack(">H", 1) + text_("ledger_postings", 64) + struct.pack(">I", 0)
+zero_digest = hashlib.sha256(zero).hexdigest()
+assert zero_digest != vectors["parent_digest"] and zero_digest != vectors["row_digest"]
+assert zero_digest in open("crates/sync-core/tests/row_digest.rs").read(), "the Rust known answer for zero rows"
+
 # Child sort order: by the child_row bytes without the length prefix.
 att = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d00000041")
 e1 = bytes.fromhex("0198c2c15f0a7c3d8a4e9b1d0000004a")
