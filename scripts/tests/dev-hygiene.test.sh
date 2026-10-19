@@ -16,6 +16,9 @@
 #   - --clean without --yes and without a terminal does nothing;
 #   - the script contains no `rm`, `unlink` of a user path, or `find -delete`.
 
+# The `check && pass "…" || fail "…"` lines below are if-then-else on purpose:
+# pass() always returns 0, so fail() runs only when the check failed.
+# shellcheck disable=SC2015
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
@@ -121,6 +124,7 @@ GONE_DIR="$TMP/wt-gone"
 find "$GONE_DIR" -depth \( -type f -o -type l \) -exec unlink {} \; 2>/dev/null
 find "$GONE_DIR" -depth -type d -exec rmdir {} \; 2>/dev/null
 
+# shellcheck disable=SC2329  # invoked by the EXIT trap below
 cleanup_busy() { kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null; }
 trap 'cleanup_busy; cd /; chmod -R u+w "$TMP" 2>/dev/null; find "$TMP" -depth -mindepth 1 \( -type f -o -type l \) -exec unlink {} \; 2>/dev/null; find "$TMP" -depth -type d -exec rmdir {} \; 2>/dev/null' EXIT
 
@@ -217,7 +221,7 @@ HOOK="$TMP/hook.sh"
 printf '#!/bin/sh\nprintf "late edit\\n" >> "%s/Cargo.toml"\n' "$TMP/wt-idle" > "$HOOK"
 chmod +x "$HOOK"
 : > "$CALLS"
-out="$(DEV_HYGIENE_AFTER_CONFIRM_HOOK="$HOOK" run --clean --yes 2>&1)"
+out="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_AFTER_CONFIRM_HOOK="$HOOK" run --clean --yes 2>&1)"
 if grep -q -- "--target-dir $TMP/wt-idle/target" "$CALLS"; then fail "cleaned a worktree that became dirty after the plan: $(cat "$CALLS")"; else pass "did not clean the worktree that became dirty after the plan"; fi
 printf '%s' "$out" | grep -q "wt-idle — changed since the plan" && pass "said it changed since the plan" || fail "no 'changed since the plan' message: $out"
 grep -q -- "--target-dir $TMP/wt-outer/target" "$CALLS" && pass "still cleaned the unchanged outer worktree" || fail "outer worktree not cleaned"

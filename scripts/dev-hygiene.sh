@@ -40,8 +40,9 @@
 # That is why --clean also checks for running cargo/rustc processes, and why the
 # worst outcome of a wrong guess is a rebuild, never lost work.
 #
-# Environment: DEV_HYGIENE_AFTER_CONFIRM_HOOK (tests only) runs between the
-# confirmation and the apply step. DEV_HYGIENE_PROCESS_NAMES overrides the process names treated as
+# Environment: DEV_HYGIENE_AFTER_CONFIRM_HOOK, honored only when
+# DEV_HYGIENE_TESTING=1 (tests only), runs between the confirmation and the
+# apply step. DEV_HYGIENE_PROCESS_NAMES overrides the process names treated as
 # "a build is running" (default "cargo rustc rust-analyzer"); the tests use it.
 #
 # Bash 3.2 compatible (macOS /bin/bash). No external dependencies beyond git,
@@ -407,6 +408,17 @@ text_row() {
   fi
 }
 
+# json_tri VALUE: "" -> null, "1" -> true, anything else -> false.
+json_tri() {
+  if [ -z "$1" ]; then
+    echo null
+  elif [ "$1" = 1 ]; then
+    echo true
+  else
+    echo false
+  fi
+}
+
 JSON_FIRST=1
 json_row() {
   [ "$JSON_FIRST" = 1 ] && JSON_FIRST=0 || printf ','
@@ -424,9 +436,9 @@ $W_TARGETS
 EOF
   printf '],"target_kib":%s' "$W_TARGET_KIB"
   printf ',"last_activity":%s,"idle_days":%s' "${W_ACTIVITY:-null}" "${W_IDLE_DAYS:-null}"
-  printf ',"dirty":%s' "$( [ -z "$W_DIRTY" ] && echo null || { [ "$W_DIRTY" = 1 ] && echo true || echo false; } )"
+  printf ',"dirty":%s' "$(json_tri "$W_DIRTY")"
   printf ',"unpushed_commits":%s' "${W_UNPUSHED:-null}"
-  printf ',"merged_into_origin_main":%s' "$( [ -z "$W_MERGED" ] && echo null || { [ "$W_MERGED" = 1 ] && echo true || echo false; } )"
+  printf ',"merged_into_origin_main":%s' "$(json_tri "$W_MERGED")"
   printf ',"remote_branch_gone":%s' "$([ "$W_GONE" = 1 ] && echo true || echo false)"
   printf ',"cargo_running":%s' "$([ "$W_BUSY" = 1 ] && echo true || echo false)"
   printf ',"clean_eligible":%s,"skip_reason":' "$([ "$W_ELIGIBLE" = 1 ] && echo true || echo false)"
@@ -565,7 +577,7 @@ clean() {
 
   # Test hook only: an executable run between the confirmation and the apply
   # step, so the tests can change a worktree "while the prompt waited".
-  if [ -n "${DEV_HYGIENE_AFTER_CONFIRM_HOOK:-}" ]; then
+  if [ "${DEV_HYGIENE_TESTING:-}" = 1 ] && [ -n "${DEV_HYGIENE_AFTER_CONFIRM_HOOK:-}" ]; then
     "$DEV_HYGIENE_AFTER_CONFIRM_HOOK" || true
   fi
 
