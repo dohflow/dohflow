@@ -79,4 +79,29 @@ require_text "artifact cache loss has a typed recovery path" "ArtifactRebootstra
 require_text "artifact privacy covers epoch rotation" "A fresh epoch therefore re-addresses and re-seals every"
 require_text "fact-sheet invariant stays intact" "The local app needs no DohFlow server and no DohFlow account."
 
+# Addendum B (personal-cfo-g3m.12): cross-device connector ingestion.
+require_text "Addendum B is dated and named" "## Addendum B — Cross-device connector ingestion (2026-10-18, \`personal-cfo-g3m.12\`)"
+require_text "the problem is class-3 dedupe state" "Every duplicate check that exists today reads class-3 staged"
+require_text "identity is computed at command construction" "It is computed when the commit command is constructed and"
+require_text "the apply rule reads class-1 rows only" "(class-1 rows only; apply never reads class-3 staging)"
+require_text "the check also runs at local commit" "**local commit**, not only at rebase"
+require_text "adapter key function is pinned and versioned" "is part of it: it is defined"
+require_text "AlreadyPresent is a rebase-executor disposition" "\`AlreadyPresent\`, an exception"
+require_text "user-editable fields are never overwritten" "never compared and never overwritten"
+require_text "pending rows are never committed" "A **pending** provider transaction is never"
+require_text "fallback fingerprints never feed identity" "never feeds a derived id"
+require_text "there is no lease" "There is no refresh lease, no designated committer and no"
+require_text "verification scope: SimpleFIN verified" "That is **verified for SimpleFIN**"
+require_text "verification scope: LunchFlow pending" "It is **pending for LunchFlow** until"
+require_text "LunchFlow is not described as covered" "must not be described as covered"
+require_text "Addendum B links the decision bead" "- \`personal-cfo-g3m.7\` (cross-device connector ingestion"
+
+# Privacy: the verification result is stated without the owner's account or transaction counts.
+CASES=$((CASES + 1))
+if grep -Eq '[0-9]+ accounts|[0-9]+ transactions per side|last 30 days, posted' "$ADR"; then
+  echo "    FAIL — Addendum B must not publish the owner's real account or transaction counts" >&2
+  exit 1
+fi
+echo "    ok   — Addendum B publishes no real account or transaction counts"
+
 echo "PASS — $CASES ADR 0074 contract assertions, 0 failures"
