@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=3 -->
+<!-- vault-format: spec-version=4 -->
 <!-- vault-format: schema-version=55 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -242,6 +242,8 @@ synthetic no-app recovery test before any such public claim.
   most 128 levels, a receiver accepts only the canonical encoding of the value it decodes
   to, and C.14 gains the rejection vectors. New wire sections require a
   spec-version bump and their own reviewed vectors.
+- `spec-version = 4` adds C.1.5, the class-1 row digest and primary-key encoding that
+  the write-set hash of C.4 refers to, with known-answer vectors.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -739,6 +741,51 @@ not implement the named suite fails with `UnsupportedSuite`; it never guesses.
 Ciphertext already sealed under suite 1 is not retroactively protected against a
 future quantum adversary; that limitation is accepted for v1.
 
+### C.1.5 Class-1 row digest and primary key (`personal-cfo-t2s4b`)
+
+The write-set hash (C.4) commits to the final state of every class-1 row a command
+touched. Both halves use CBE1 (C.1.1) with the value kinds below, which carry the SQLite
+**storage class** of each stored value (not the column's declared affinity).
+
+| Tag | Storage class | Encoding after the tag byte |
+| --- | --- | --- |
+| `0` | NULL | nothing |
+| `1` | INTEGER | `i64` |
+| `2` | TEXT | `text(2^24)` (valid UTF-8; invalid UTF-8 is an error) |
+| `3` | BLOB | `bytes(2^24)` |
+
+A REAL value has no tag and is an error: no class-1 table has a REAL column, and a test
+proves it from the schema. The digests are:
+
+- `primary_key` is the concatenation, in the table's declared primary-key column order, of
+  each key column's tagged value (tag byte, then the value). It is at most 256 bytes; a
+  longer key is an error and is never truncated. Each tagged value is self-delimiting, so
+  the concatenation is unambiguous for a table whose key columns are fixed.
+- `row_digest` of a row that exists is `SHA-256(label "dohflow/sync-row/v1" ‖ text(64)
+  table ‖ u16 column_count ‖ for each column: text(64) name ‖ tagged value)`, with the
+  columns sorted by the **raw bytes of their names** (not by their position in the table,
+  which a table rebuild may change). Every column of the row is included.
+- `row_digest` of a row a command **deleted** (it existed before, it does not exist after)
+  is `SHA-256(label "dohflow/sync-row-absent/v1" ‖ text(64) table ‖ bytes(256)
+  primary_key)`, so a deletion changes the write-set hash and is distinguishable from a
+  row that was not touched.
+- A row that was inserted and deleted inside the same command is not in the set. A row
+  touched several times appears once, with its final state.
+- The `operation_log` row of the command itself is not in the set: it carries the
+  write-set hash.
+
+The two labels differ in their length prefix and in content, and neither can be parsed as
+the other. Known-answer vectors, derived independently by the contract script
+`scripts/tests/row-digest-contract.test.sh` (`table = tags`; `id` is the 16 bytes of
+`0198c2c1-5f0a-7c3d-8a4e-9b1d00000011`; `name` is `trip é`; `color` is NULL;
+`sort_order` is `-7`):
+
+<!-- row-vector: primary_key=03000000100198c2c15f0a7c3d8a4e9b1d00000011 -->
+<!-- row-vector: row_message=0013646f68666c6f772f73796e632d726f772f76310000000474616773000400000005636f6c6f720000000002696403000000100198c2c15f0a7c3d8a4e9b1d00000011000000046e616d6502000000077472697020c3a90000000a736f72745f6f7264657201fffffffffffffff9 -->
+<!-- row-vector: row_digest=3fa7b8d369d8414ff97397bb4ccb1da5b6593bfc9595452020089a62b7032f8c -->
+<!-- row-vector: absent_message=001a646f68666c6f772f73796e632d726f772d616273656e742f763100000004746167730000001503000000100198c2c15f0a7c3d8a4e9b1d00000011 -->
+<!-- row-vector: absent_digest=fa83576a736e8b5c851c460064c6a97ab771bef66b655d3a463deaadd4575eb4 -->
+
 ## C.2 Keys and secrets
 
 | Secret | Size | Lifetime and custody |
@@ -879,7 +926,7 @@ table name, then by the raw bytes of the primary key, bytewise lexicographically
 with a shorter value first when it is a prefix of the other; they do not sort by
 their length-prefixed encodings. `row_digest`
 is the SHA-256 of the row's one canonical binary encoding, which
-`personal-cfo-t2s4b` defines under C.1.1. Class-2 rebuilds are excluded.
+is defined in C.1.5, as is the `primary_key` encoding and the digest of a deleted row. Class-2 rebuilds are excluded, and so is the command's own `operation_log` row.
 
 ### Counter register and nonce state
 
