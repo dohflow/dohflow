@@ -125,10 +125,29 @@ pub enum MoneyError {
 /// always kept consistent with the currency. Fields are private to preserve
 /// that invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "MoneyWire")]
 pub struct Money {
     minor_units: i64,
     currency: Currency,
     currency_exponent: u8,
+}
+
+/// The wire shape of [`Money`]. Deserialization goes through [`Money::from_parts`], so a
+/// document carrying an exponent that does not match its currency is refused instead of
+/// producing an inconsistent amount (the invariant the private fields exist to protect).
+#[derive(Deserialize)]
+struct MoneyWire {
+    minor_units: i64,
+    currency: Currency,
+    currency_exponent: u8,
+}
+
+impl TryFrom<MoneyWire> for Money {
+    type Error = MoneyError;
+
+    fn try_from(wire: MoneyWire) -> Result<Self, MoneyError> {
+        Money::from_parts(wire.minor_units, wire.currency, wire.currency_exponent)
+    }
 }
 
 impl Money {

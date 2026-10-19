@@ -13,7 +13,7 @@ A closed bead means the work merged. It does **not** by itself mean the feature
 is polished, discoverable, or worth putting on a marketing page. Use this list
 as a **ceiling on claims**, not a to-do list of things to advertise.
 
-Generated 2026-09-05 · 172 shipped features
+Generated 2026-10-19 · 190 shipped features
 
 | Bead | Feature |
 |---|---|
@@ -109,6 +109,7 @@ Generated 2026-09-05 · 172 shipped features
 | `4d8.27.9.5` | Embed the Transactions table on the Debt page, scoped/locked to the selected debt accounts |
 | `4d8.27.9.6` | Per-debt-type visualizations: credit-card balance-over-time + spending-category breakdown |
 | `4d8.27.9.7` | Per-selection debt payoff + tools panel on the Debt page |
+| `4d8.28` | Launch polish round 1: screenshot-ready DohFlow build (rename, icon, brand placement, Support link, demo vault, dogfooding) |
 | `4d8.3` | Accounts: edit + archive/reinstate UI (surface existing kernel commands) |
 | `4d8.5` | Direct balance edit via reconciling transactions (delta-tracking modal) |
 | `4d8.7` | Transaction reviewed-state + unreviewed-items Money Inbox generator |
@@ -132,14 +133,22 @@ Generated 2026-09-05 · 172 shipped features
 | `6wk.5` | Debt-payoff burndown + net-worth timeline visualizations (descriptive) |
 | `6wk.8` | Recurring bill payable from a credit card (charge-to-card forecast attribution) |
 | `7c7a` | Cash Flow: the realized/projected boundary reads from the evidence, not from a dashed line |
+| `7ie.3` | Multi-vault: registry + named-vault lifecycle backend + IPC |
+| `7ie.4` | Multi-vault: vault picker UI + routing state machine |
+| `7ie.5` | Multi-vault: delete vault (crypto-shred + registry audit log) + delete UI |
+| `867.1` | Release packaging: code-signing + notarization + DMG + auto-update |
+| `867.1.2` | Tauri v2 updater: owner minisign keypair, plugin wiring, latest.json on GitHub Releases, public smoke-repo round-trip + tampered-signature refusal (closes miei) |
 | `88o4` | Scenarios: the stack reads as layers, and reordering flips the outcome |
 | `8n24` | Reorder the scenario stack (drag or move-up/down) |
 | `90eg` | Transactions: chart footnote reconciling what the aggregate excludes |
 | `9dgg` | Type-based cash rollups (checking / savings / net cash from account type) |
+| `9ujs` | Synthetic household data generator |
+| `ati` | PLAT-1 FEATURE: Local durable job runtime — schedules persisted in the vault, due jobs run at next unlock and never block it; first consumer is the scheduled backup export (8qh); the runtime for lqk, a13, 9ii and Sync's push/pull worker |
 | `byxe` | Transaction memo/counterparty end-to-end (imported + manual) |
 | `c5en` | Scenarios: the apply confirmation and the change editor say what will happen |
 | `cmx` | Unified ingestion pipeline |
 | `d5qy` | Dashboard: full Future Cash chart (90-day default) + click-through |
+| `dto2j` | CONN-6 Provider picker: the Connections card opens a registry-fed picker (enabled entries only) — name, what it fetches, cost + payer, terms + reviewed date, countries, the per-provider disclosure panel, then that provider's link form; SimpleFIN de-hardcoded; onboarding's connected branch reuses it; D15 referral-disclosure slot |
 | `dvxm` | Backup/restore from the app (IPC + UI) |
 | `dyy4` | Progressive reconciliation: shrink and convert the adjustment plug |
 | `eay` | Define `ImporterPlugin` trait + static registry |
@@ -148,7 +157,10 @@ Generated 2026-09-05 · 172 shipped features
 | `g43x` | Debt page: at-a-glance stat row + Balances-and-terms table |
 | `gglk` | SimpleFIN integration: vault storage, sync-on-open, provenance rows, demo-token gate e2e |
 | `gmnk` | Onboarding: auto-identified income sources from synced data (approve/edit/deny) |
+| `gvidg` | MIGRATE-0 Source-app import presets: a compile-time SourcePreset registry in importer-core (column mapping, date format, sign convention, category/account handling, quirks, verified-against date, help slug) applied by the generic CSV importer; 'Import from <app>' in the import dialog; a preset test harness with a synthesized fixture per preset; the migrate-guide contract per app — the mechanism under YNAB, Monarch Money, Copilot Money and the rest of the ladder |
+| `he3xo` | Dev and release builds share one vault directory - separate them before further development touches the real data |
 | `hxjj` | Set-balance UI (manual-first, additive) |
+| `ii3an` | BACK-0b Backup format_version 2 (ADR 0024-A): export from the in-memory vault DEK with no password prompt — header carries the vault envelope, HKDF-derived backup KEK, disassemble accepts v1 and v2, manifest schema_version (3fdd.15 c), Kernel::export_unattended for the job, BackupView stops asking, threat-model + recovery docs updated (M, security-sensitive) |
 | `j0cg.1` | Cover-it tool: user-steered transfer for a near-term account shortfall |
 | `j0cg.2` | Investment withdrawal source: brokerage->liquid transfers (cover-it / payment source) |
 | `j0cg.3` | Account-role-aware transfer form: expose DCA contributions, withdrawals, debt payments |
@@ -162,19 +174,23 @@ Generated 2026-09-05 · 172 shipped features
 | `klr.1` | core-money crate |
 | `klr.2` | core-ledger crate |
 | `klr.3` | db-worker crate |
+| `klr.4` | Vault, portable export and Sync format contracts: ADR 0077 and vault-format.md (docs first) |
 | `kogu` | Category appearance (emoji + color) on all categories incl. defaults, at create + edit |
 | `kz88` | Auto-categorize connector syncs (respect the on-import setting) |
 | `l8oh` | Per-account and per-group forecast projection (engine) |
 | `l916` | Multi-series Future Cash chart (group balance lines + net-cash area) |
+| `lkgf` | Move Backup from its own tab into Settings (Vault + security) |
 | `lu4tm` | Onboarding: manual-path walkthrough (institution exports + first import) |
 | `m1am` | Scenarios: empty, loading and error states for the page |
 | `mc7f` | Bill autopay flag + autopay-aware forecast + pre-confirm |
+| `md8h2.4` | Updater minimum-macOS guard: an installed app declines an update whose minimum macOS is newer than the running OS, with a clear message (ships in v0.3.0) |
 | `nhmsg` | Onboarding: auto-identified recurring bills from synced data (approve/deny) |
 | `npoe` | Transfer transactions (one-off + recurring account-to-account) |
 | `pezm.1` | Ordinary vs extraordinary expense classifier (pezm sub-bead) |
 | `r7sb` | Mixed-role transfers + editable recurring transfers |
 | `s0iz` | Cash Flow: the uncertainty band stays legible in dark mode |
 | `sbm3` | App shell + main navigation |
+| `sg8.1.1` | macOS Intel (x86_64) support via universal binary |
 | `tch0` | Income sources: edit / delete / archive (near-term, current model) |
 | `ttuy` | Transactions: Balance after column, computed on the full ledger |
 | `ueg6` | Balance assertions + auto-reconciling adjustment (backend) |
@@ -182,48 +198,16 @@ Generated 2026-09-05 · 172 shipped features
 | `vru6` | Scenario create/edit UI (backend already shipped) |
 | `w6o9` | Time-bounded composing forecast overrides (start + end ranges) |
 | `wgpb` | Fast batch balance-update surface (Dashboard replacement) |
+| `wutyj` | CMS: make the homepage, /download and /changelog editable — structured singleton entries around the parts that must stay code |
 | `x6dr` | Provider-neutral connector interface |
 | `xdbm` | Transactions section: fold Bills in as recurring transactions + activity log |
 | `xtz5` | Auto-reconcile forecast rows against real transactions (synced or imported) |
 | `xu32` | Transactions: state copy — empty, no-match, loading, and aggregate-vs-vault errors |
+| `y3s5z` | CMS: make the ten prose pages editable — a 'pages' content collection (privacy, terms, security, pricing, accessibility, contribute, press, sponsor, license, 404) |
 | `ygjs` | Spreadsheet-style projected-activity table (Future Cash tab) |
 | `z5lj` | App-wide search: extend the transactions search bar to every surface |
 | `zl1l` | Recurring bill edit/delete (commands + UI) |
 
 ## Current changelog section
 
-# Changelog
-
-All notable changes to DohFlow are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is pre-1.0
-and releases are not yet published; the **Unreleased** section is the running
-record until the first tagged release.
-
 ## [Unreleased]
-
-### Changed
-
-- **Renamed the app to DohFlow** (ADR 0067, `personal-cfo-fkt5.3`). The product
-  name, window title, bundle name (`DohFlow.app`), and in-app strings now say
-  DohFlow. The bundle identifier (`ai.personalcfo.desktop`) and the data
-  directory are unchanged, so existing vaults open as before.
-
-### Persistence / security
-
-- **Pinned the vault storage engine** (`personal-cfo-7igv`, mitigates risk
-  `personal-cfo-aia0` "SQLCipher version incompatibility"). The vault is a
-  SQLCipher-encrypted SQLite database, and these versions are now pinned **exact**
-  and verified in CI:
-
-  | Engine | Version |
-  |---|---|
-  | SQLCipher (`PRAGMA cipher_version`) | `4.5.7 community` |
-  | SQLite (`rusqlite::version()`) | `3.45.3` |
-  | `rusqlite` | `=0.32.1` (`bundled-sqlcipher-vendored-openssl`) |
-  | `libsqlite3-sys` | `0.30.1` |
-
-  A vault written by one release must stay openable by the next. The pin is
-  asserted on every PR by `crates/finance-kernel/tests/cross_version_vault.rs`
-  — the *linked* engine versions must equal `docs/architecture/stack.md` — so an
-  accidental engine bump fails the build instead of risking unopenable vaults.
-  See the version-pin policy in `docs/architecture/stack.md` before changing these.

@@ -560,6 +560,80 @@ caller. `personal-cfo-t2s4b` pins the inventory with a ratchet test that derives
 the set of clock-reading helpers from the crate and may only shrink; SYNC-1a
 empties it.
 
+#### 11. Exception: merge-import derived identifiers (2026-10-19, `personal-cfo-g3m.15`)
+
+"Bring items from another vault" replays items from a saved second vault into the
+household vault as ordinary commands (ADR 0074 Addendum C). Every row such a merge
+**creates** gets a content-derived id, so running the same merge again, or running it on
+two devices, mints the same ids and converges instead of creating the rows twice. Like
+section 9 it is **not command-scoped**: it is derived from the source row's identity,
+never from `issued_at`, a `command_id` or an ordinal; it is computed when the command is
+*constructed* and carried in the payload; it consumes no ordinal and is outside the
+4,096-id cap.
+
+```text
+label    = ASCII "dohflow/merge-import-derived-id/v1"        (34 bytes)
+message  = u8(34) || label
+        || source_vault_id.bytes                             # 16 bytes, RFC UUID order
+        || u8(len(entity_tag))  || entity_tag                # ASCII [a-z0-9_], 1..32 bytes
+        || u16_be(len(source_row_key)) || source_row_key     # 1..256 bytes
+digest   = HMAC-SHA256(id_key, message)                      # the HOUSEHOLD vault's id_key (section 1)
+id_bytes = digest[0..16], then
+           byte 6 = (byte 6 & 0x0f) | 0x80                    # UUID version 8
+           byte 8 = (byte 8 & 0x3f) | 0x80                    # RFC 9562 variant
+```
+
+`id_key` is the **household** vault's key (`SHA-256("dohflow/derived-id-key/v1" ||
+vault_id)` of the vault being merged *into*), so two households that merge the same
+source mint unrelated ids. `source_vault_id` is the saved vault's own `vault_id`.
+`entity_tag` names the kind of row from a closed registry fixed by the merge-import
+feature bead (`personal-cfo-i93n3.7`); a new tag needs an amendment to this section.
+`source_row_key` is the source row's primary key in the canonical row encoding
+(`vault-format.md` C.1.5: for a `uuid` id, the tag byte `03` and the 16 raw bytes), so
+text-keyed and composite-keyed rows are covered by the same rule and the key is
+byte-exact. The id is a UUID version 8: it carries no time, so nothing may rely on
+`ORDER BY id` for creation order of merge-created rows.
+
+**Every row a merge-replayed command creates carries a merge-derived id in its payload,
+child rows included** (the source child's key under its own entity tag). A replayed command
+never lets its apply mint a child row through section 1's command-scoped helper, because
+that id depends on the `command_id`, which differs between two merge runs and two devices,
+and the second run's "same content" comparison would then see different child ids and queue
+a disposition item where it should find `AlreadyPresent`. Keyless folded children (postings
+and attachment links, `vault-format.md` C.1.5) have no id and compare by content already.
+
+*Domain separation.* It shares `id_key` with sections 1, 9 and 10, so the message spaces
+must not overlap. Against section 9 and section 10 the first byte differs (34, `0x22`,
+against 26 and 28), and each message is a fixed layout from that byte on, so no message of
+one is a message of another. Against section 1: a section 1 message reads the byte at
+offset 16 as `tag_len` and the next `tag_len` bytes as a printable tag
+(`0x21..=0x7e`). In a merge message the byte at offset 16 is `label[15]`, `m` (`0x6d`), so
+`tag_len` would be 109 and the tag would span offsets 17 to 125. The high byte of
+`u16_be(len(source_row_key))` lies at offset `52 + len(entity_tag)`, which is between 53
+and 84 for every legal tag, inside that span, and it is `0x00` or `0x01` because the key is
+at most 256 bytes: never printable. So no merge message is a valid section 1 message. The
+outputs are UUID version 8, like section 9's, so the two spaces are kept apart by the
+message domain (the labels differ in length and content), not by the version nibble.
+
+Known-answer vector (normative; hexadecimal is lowercase; `id_key` is vector A's key from
+section 1):
+
+```text
+id_key           = f2f6ac71bc63e3df2f66370676ead3f3b6b677a87c124f190941659224b42149
+source_vault_id  = 0198c2c1-5f0a-7c3d-8a4e-9b1d00000063
+entity_tag       = account
+source_row_key   = 030198c2c15f0a7c3d8a4e9b1d00000071      (a uuid key, C.1.5)
+message_hex      = 22646f68666c6f772f6d657267652d696d706f72742d646572697665642d69642f76310198c2c15f0a7c3d8a4e9b1d00000063076163636f756e740011030198c2c15f0a7c3d8a4e9b1d00000071
+hmac_sha256      = c920d88d9c429df3285d8c929e64ae71f82c24c19132e7a423f0188169cd0d6c
+uuid             = c920d88d-9c42-8df3-a85d-8c929e64ae71
+
+entity_tag       = category      (everything else as above)
+uuid             = 8af23603-a0c7-88e6-8234-2e0864d732a8
+```
+
+Changing the label, the field encoding or the bit layout is a payload-schema change, as
+for sections 1, 9 and 10.
+
 ### Rejected alternatives
 
 - **Apply receipts containing mint counts and IDs.** Rejected: a refactor that

@@ -205,4 +205,69 @@ for chunk in chunks:
 PY
 echo "    ok   — singleton vectors re-derived independently (packer checked against vector A)"
 
+# Section 11 (personal-cfo-g3m.15): merge-import derived identifiers.
+require_text "section 11 is dated and named" "$ADR" "#### 11. Exception: merge-import derived identifiers (2026-10-19, \`personal-cfo-g3m.15\`)"
+require_text "merge ids are not command-scoped" "$ADR" "Like"
+require_text "merge label is fixed" "$ADR" 'label    = ASCII "dohflow/merge-import-derived-id/v1"'
+require_text "merge message layout" "$ADR" "|| source_vault_id.bytes"
+require_text "merge entity tag grammar" "$ADR" "|| u8(len(entity_tag))  || entity_tag"
+require_text "merge digest is HMAC-SHA256" "$ADR" "digest   = HMAC-SHA256(id_key, message)                      # the HOUSEHOLD"
+require_text "children of a replayed command carry merge-derived ids" "$ADR" "child rows included** (the source child's key under its own entity tag)"
+require_text "apply never mints a merge child through section 1" "$ADR" "never lets its apply mint a child row through section 1's command-scoped helper"
+require_text "merge row key is the C.1.5 key" "$ADR" "|| u16_be(len(source_row_key)) || source_row_key"
+require_text "merge ids use the household id_key" "$ADR" "# the HOUSEHOLD vault's id_key (section 1)"
+require_text "merge ids are UUID version 8" "$ADR" "The id is a UUID version 8: it carries no time"
+require_text "merge domain separation names the offsets" "$ADR" "`tag_len` would be 109 and the tag would span offsets 17 to 125"
+require_text "merge first byte differs from sections 9 and 10" "$ADR" "the first byte differs (34, \`0x22\`,"
+
+CASES=$((CASES + 1))
+python3 -I - "$ADR" <<'PY'
+import hashlib, hmac, re, sys, uuid
+text = open(sys.argv[1]).read()
+sec = text.split("#### 11. Exception: merge-import derived identifiers", 1)[1].split("### Rejected alternatives", 1)[0]
+block = sec.split("Known-answer vector", 1)[1].split("```text", 1)[1].split("```", 1)[0]
+def f(name, chunk):
+    m = re.search(r"^" + name + r"\s*=\s*(\S+)", chunk, re.M)
+    assert m, name
+    return m.group(1)
+parts = block.split("\n\n")
+assert len(parts) == 2, len(parts)
+id_key = bytes.fromhex(f("id_key", parts[0]))
+label = b"dohflow/merge-import-derived-id/v1"
+assert len(label) == 34 and label[15:16] == b"m"
+def derive(src_vault, tag, row_key):
+    assert re.fullmatch(rb"[a-z0-9_]{1,32}", tag) and 1 <= len(row_key) <= 256
+    m = bytes([len(label)]) + label + src_vault + bytes([len(tag)]) + tag + len(row_key).to_bytes(2, "big") + row_key
+    d = hmac.new(id_key, m, hashlib.sha256).digest()
+    b = bytearray(d[:16]); b[6] = (b[6] & 0x0F) | 0x80; b[8] = (b[8] & 0x3F) | 0x80
+    return m, d, uuid.UUID(bytes=bytes(b))
+src = uuid.UUID(f("source_vault_id", parts[0])).bytes
+row = bytes.fromhex(f("source_row_key", parts[0]))
+assert row[0] == 3 and len(row) == 17                     # a uuid key in the C.1.5 encoding
+for chunk, tag in ((parts[0], b"account"), (parts[1], b"category")):
+    if chunk is parts[1]:
+        tag = f("entity_tag", chunk).encode()
+    else:
+        assert f("entity_tag", chunk).encode() == tag
+    m, d, u = derive(src, tag, row)
+    if chunk is parts[0]:
+        assert m.hex() == f("message_hex", chunk), "message_hex"
+        assert d.hex() == f("hmac_sha256", chunk), "hmac_sha256"
+    assert str(u) == f("uuid", chunk), "uuid"
+    assert u.version == 8
+# Domain separation, re-checked on the bytes: against section 1 (offset 16 is label[15]) ...
+m, _, _ = derive(src, b"account", row)
+assert m[16] == label[15] == 0x6D and m[16] == 109
+for n in range(1, 33):
+    offset = 1 + 34 + 16 + 1 + n                       # the u16 high byte of the row-key length
+    assert 17 <= offset <= 16 + 109 and offset < 128
+    for key_len in (1, 17, 255, 256):
+        probe = bytes([34]) + label + src + bytes([n]) + b"t" * n + key_len.to_bytes(2, "big") + b"k" * key_len
+        high = probe[offset]
+        assert high in (0, 1) and not (0x21 <= high <= 0x7E)
+# ... and against sections 9 and 10 (first byte).
+assert m[0] == 34 and 34 not in (26, 28)
+PY
+echo "    ok   — merge-import vectors re-derived independently; domain separation re-checked on the bytes"
+
 echo "PASS — $CASES ADR 0013-A contract assertions, 0 failures"

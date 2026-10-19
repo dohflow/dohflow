@@ -25,9 +25,12 @@
 //!   would avoid this and is tracked as a deeper hardening follow-up.
 //! - `mlock` does **not** protect against core dumps, hibernation images, or an
 //!   attacker with the process's address space. Those are out of scope here.
-//! - The allocator may have briefly held the value elsewhere before it reached
-//!   `SecretBytes::new`; callers should construct secrets in place and scrub any
-//!   transient stack copies (see `derive_kek`).
+//! - [`SecretBytes::new`] takes the key by value, so the caller's array (and the argument
+//!   slot) can leave a copy on the stack that nothing scrubs. Prefer
+//!   [`SecretBytes::init`] and [`SecretBytes::from_slice`], which hand the closure the
+//!   protected buffer itself: the key is generated or decrypted **in place** and no
+//!   un-scrubbed stack array ever holds it (personal-cfo-xzpra). `new` stays for
+//!   callers that already hold a value they must keep (tests).
 
 use zeroize::Zeroize;
 
@@ -53,6 +56,38 @@ impl<const N: usize> SecretBytes<N> {
             bytes: boxed,
             locked,
         }
+    }
+
+    /// Build a secret **in place**: allocate the protected buffer zeroed, lock it, and let
+    /// `fill` write the key straight into it. No intermediate array holds the key, so there is
+    /// no stack copy to scrub. If `fill` fails the partly written buffer is zeroized and
+    /// released by the normal drop.
+    ///
+    /// # Errors
+    /// Whatever `fill` returns.
+    pub fn init<E>(fill: impl FnOnce(&mut [u8; N]) -> Result<(), E>) -> Result<Self, E> {
+        let boxed = Box::new([0_u8; N]);
+        let locked = lock_pages(boxed.as_ptr(), N);
+        let mut secret = Self {
+            bytes: boxed,
+            locked,
+        };
+        fill(&mut secret.bytes)?;
+        Ok(secret)
+    }
+
+    /// Copy `bytes` into a protected buffer in place. `None` unless `bytes` is exactly `N` long.
+    /// The caller still owns (and must scrub) the slice it passed.
+    #[must_use]
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != N {
+            return None;
+        }
+        Self::init::<core::convert::Infallible>(|buffer| {
+            buffer.copy_from_slice(bytes);
+            Ok(())
+        })
+        .ok()
     }
 
     /// Borrow the protected bytes. Callers must not copy these into an
@@ -160,5 +195,39 @@ mod tests {
     fn debug_is_redacted() {
         let s = SecretBytes::new([0u8; 8]);
         assert_eq!(format!("{s:?}"), "SecretBytes([REDACTED])");
+    }
+
+    #[test]
+    fn init_fills_the_protected_buffer_in_place() {
+        let s = SecretBytes::<32>::init::<()>(|buf| {
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = u8::try_from(i).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.expose()[31], 31);
+        assert_eq!(s.expose().iter().map(|b| u32::from(*b)).sum::<u32>(), 496);
+    }
+
+    #[test]
+    fn init_failure_returns_the_error_and_drops_the_partial_buffer() {
+        // The closure sees a zeroed buffer, may write part of a key, and fails: the error
+        // comes back and no secret exists.
+        let result = SecretBytes::<16>::init(|buf| {
+            assert!(buf.iter().all(|b| *b == 0), "the buffer starts zeroed");
+            buf[0] = 0xFF;
+            Err("rng unavailable")
+        });
+        assert_eq!(result.err(), Some("rng unavailable"));
+    }
+
+    #[test]
+    fn from_slice_requires_the_exact_length() {
+        assert!(SecretBytes::<8>::from_slice(&[1; 7]).is_none());
+        assert!(SecretBytes::<8>::from_slice(&[1; 9]).is_none());
+        assert!(SecretBytes::<8>::from_slice(&[]).is_none());
+        let s = SecretBytes::<8>::from_slice(&[9; 8]).unwrap();
+        assert_eq!(s.expose(), &[9; 8]);
     }
 }

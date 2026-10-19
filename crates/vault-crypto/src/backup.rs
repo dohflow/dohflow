@@ -15,7 +15,6 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;
-use zeroize::Zeroize;
 
 use crate::envelope::Dek;
 use crate::VaultCryptoError;
@@ -37,12 +36,10 @@ pub fn derive_backup_kek(
     salt: &[u8; crate::SALT_LEN],
 ) -> Result<crate::Kek, crate::VaultCryptoError> {
     let hkdf = Hkdf::<Sha256>::new(Some(salt), dek.expose_bytes());
-    let mut bytes = [0u8; crate::KEK_LEN];
-    if hkdf.expand(BACKUP_KEK_INFO, &mut bytes).is_err() {
-        bytes.zeroize();
-        return Err(crate::VaultCryptoError::Derivation);
-    }
-    Ok(crate::Kek::from_array(bytes))
+    crate::Kek::init(|out| {
+        hkdf.expand(BACKUP_KEK_INFO, out)
+            .map_err(|_| crate::VaultCryptoError::Derivation)
+    })
 }
 
 /// AES-256-GCM-sealed bytes: ciphertext (with auth tag) + the nonce used. Not

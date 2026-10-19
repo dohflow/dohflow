@@ -625,8 +625,12 @@ fn the_capture_adds_little_to_a_command() {
     // Warm up, then take the best of three of each to keep the comparison steady.
     run(true, 50);
     run(false, 50);
-    let off = (0..3).map(|_| run(true, commands)).min().unwrap();
-    let on = (0..3).map(|_| run(false, commands)).min().unwrap();
+    // Alternate the two so a load spike from other tests hits both, and keep the best of five.
+    let (mut off, mut on) = (std::time::Duration::MAX, std::time::Duration::MAX);
+    for _ in 0..5 {
+        off = off.min(run(true, commands));
+        on = on.min(run(false, commands));
+    }
     let per_command_us = |d: std::time::Duration| d.as_micros() as f64 / commands as f64;
     println!(
         "write-set capture: {:.0} us/command off, {:.0} us/command on ({:.2}x, +{:.0} us)",
@@ -636,18 +640,20 @@ fn the_capture_adds_little_to_a_command() {
         per_command_us(on) - per_command_us(off)
     );
     // Baseline recorded 2026-10-19 on dev hardware: about 255 us off, 430 us on (1.7x, +175 us)
-    // for a command that writes a transaction, two postings and its details. The command
-    // budget of the Definition of Done is P50 < 50 ms; the capture must stay a rounding error
-    // of it. The guards are generous so a loaded CI machine does not flake: under 1 ms added
-    // per command and under 3x the capture-off time. A regression of 2x on the recorded
-    // baseline would show up in the printed numbers long before it trips these.
+    // for a command that writes a transaction, two postings and its details; the same test on a
+    // busier machine reads about 340 us and 680 us (2.0x, +340 us). The command budget of the
+    // Definition of Done is P50 < 50 ms; the capture must stay a rounding error of it. This test
+    // runs beside the whole workspace's tests on a shared machine, where a timing guard that is
+    // tight flakes (it did, once, in a full run), so the guards catch an order-of-magnitude
+    // regression only: under 3 ms added per command and under 6x the capture-off time. The
+    // numbers printed above are the thing to read when changing the capture.
     let added_us = per_command_us(on) - per_command_us(off);
     assert!(
-        added_us < 1_000.0,
+        added_us < 3_000.0,
         "the capture added {added_us:.0} us per command"
     );
     assert!(
-        on.as_secs_f64() < off.as_secs_f64() * 3.0,
-        "the capture tripled the cost of a command: {off:?} -> {on:?}"
+        on.as_secs_f64() < off.as_secs_f64() * 6.0,
+        "the capture multiplied the cost of a command by 6 or more: {off:?} -> {on:?}"
     );
 }

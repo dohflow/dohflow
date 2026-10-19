@@ -1,0 +1,1 @@
+{"update_recurring_bill":{"amount":{"currency":"USD","currency_exponent":"2","minor_units":"-220000"},"anchor":"2026-03-01","autopay_account_id":null,"bill_type":"rent","description":null,"event_id":"0198c2c1-5f0a-7c3d-8a4e-9b1d0000000e","frequency":"every_3_months","name":"Rent"}}

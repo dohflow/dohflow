@@ -357,6 +357,7 @@ dependencies = [
  "pay-schedule",
  "proptest",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
  "sync-core",
