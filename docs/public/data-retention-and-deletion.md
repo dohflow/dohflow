@@ -1,9 +1,5 @@
 # What DohFlow keeps, and how to delete it
 
-> **DRAFT — not for merge.** This draft covers local data only. The uninstall
-> list still needs a clean-Mac drill. Nothing here is a legal
-> statement until the pre-release legal review (`personal-cfo-rv2s`).
-
 This page says what data DohFlow keeps, for how long, and how you remove it. It
 is the plain-language companion to the [privacy page](privacy.md) and the
 [threat model](../security/threat-model.md).
@@ -82,18 +78,28 @@ password change does not alter an older backup.
 
 ## Removing DohFlow and your data completely
 
+DohFlow keeps its data in four places on macOS, all under your own user folder.
+It writes no log file and stores nothing in the macOS Keychain.
+
+| Location | What is there |
+| --- | --- |
+| `~/Library/Application Support/ai.personalcfo.desktop/` | Your vaults (and the list of them), with attachments. This is your data. |
+| `~/Library/Caches/ai.personalcfo.desktop/` | Web view cache for the app's own screens. No vault data. |
+| `~/Library/WebKit/ai.personalcfo.desktop/` | Web view storage for the app's own screens. No vault data. |
+| `~/Library/Preferences/ai.personalcfo.desktop.plist` | macOS's own record of app settings, including the last folder you picked in a file dialog (for example a backup folder). |
+
+To remove all of it:
+
 1. **Delete each vault from inside DohFlow**, or skip this step and remove the
    data folder in step 3. Deleting a vault wipes its files from disk.
 2. **Quit DohFlow and drag it from Applications to the Trash.**
-3. **Delete the data folder** shown above
-   (`~/Library/Application Support/ai.personalcfo.desktop/`). This removes every
-   vault that is still there.
+3. **Delete the four locations above.** In Finder, choose Go → Go to Folder and
+   paste each path. Deleting the first removes every vault that is still there.
 4. **Delete your backups** in the folders you chose, and in any cloud folder that
    synced them. These are yours: DohFlow does not track or remove them.
 
-**TBD — to verify on a clean Mac before this page is final:** whether macOS leaves
-any other per-app folders (for example under `~/Library/Caches` or
-`~/Library/WebKit`) that belong in step 3.
+Deleting the data folder is permanent. Make a backup first if you might want the
+data again.
 
 ## Questions and problems
 
