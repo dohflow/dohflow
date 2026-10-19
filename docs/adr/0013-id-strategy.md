@@ -229,6 +229,10 @@ ingestion commands, recurring commands, scenario promotion, and transactions);
 SYNC-1a replaces each with `meta.issued_at` and tests that no apply path calls
 the clock.
 
+*(Scope corrected 2026-10-19: the rule covers every clock read reachable from
+`apply`, including helpers outside `apply/` and class-2 rebuilds, not only these 21
+sites. See section 10(d).)*
+
 The six kernel-side metadata/dispatch sites to update are the current
 `next_meta` constructor and its five production dispatch families:
 
@@ -255,6 +259,10 @@ promotion.  The keyless recurring-suppression result token is also derived
 when returned from apply; it is not a persistent entity and must never be
 used as a replicated row identity.
 
+*(Corrected 2026-10-19: `ensure_system_ledger_account`, and any other
+create-if-missing singleton, takes a content-derived id outside the ordinal
+sequence instead of an ordinal. See section 10(b).)*
+
 The exception is an ID already present in the command payload: the three
 caller-minted IDs remain caller-minted and are copied, not regenerated:
 `RecordTransaction.transaction_id`, `CreateSourceBatch.id`, and
@@ -273,6 +281,10 @@ so `ORDER BY id` retains creation order within one command.  The command's
 payload, metadata, and base determine the sequence; a rollback-then-replay
 reaches the same sequence on every replica.  No receipt or device mapping is
 needed to make allocation deterministic.
+
+*(Corrected 2026-10-19: the payload and the metadata alone determine the
+sequence, never the base, and the order of mints must itself be deterministic.
+See section 10(a) and 10(c).)*
 
 #### 5. Ordinal cap and validation
 
@@ -300,6 +312,9 @@ helper's create-if-missing branch):
    from `apply/accounts.rs:67`, `apply/ingestion_cmds.rs:236`, and
    `apply/transactions.rs:60`, `:202`, `:360`: select the `(role,currency)`
    singleton first; derive an ID only on the insert path.
+   *(Superseded 2026-10-19: a singleton's id is content-derived and outside the
+   ordinal sequence, so replay does not depend on whether it exists. See section
+   10(b).)*
 2. `apply/recurring.rs:443`, `recurring_event_tags` `INSERT OR IGNORE`:
    join row only; no ID mint.
 3. `apply/recurring.rs:502–509`, recurring-suggestion suppression
@@ -434,6 +449,116 @@ change, as for section 1. File imports, which have no provider identifiers,
 derive their identity the same way from a file fingerprint and a row ordinal under
 their own label, fixed by the import-reshape bead (`personal-cfo-0g528`) with its
 own vector.
+
+#### 10. Correction note (2026-10-19, `personal-cfo-g3m.14`): payload-only ordinals, singleton ids, mint order and the clock scope
+
+Review of the first implementation steps (`personal-cfo-t2s4b`) found four places
+where sections 2, 3, 4 and 6, as accepted, do not give the cross-device determinism
+this addendum exists for. This note corrects them. Where an earlier sentence
+conflicts with this note, this note governs, and those sentences carry a dated
+pointer here; their accepted text is otherwise unchanged.
+
+**(a) Ordinal consumption depends only on the payload and the metadata.** Section 4
+said the payload, the metadata *and the base* determine the ordinal sequence. They
+must not. If a mint happens only on some base states (create-if-missing: the row
+exists on one replica's base and not on another's), then the number of ordinals a
+command consumes depends on the base. A rollback-then-replay onto a base where
+another device already created the row would shift every later id the command mints
+by one, so the rows would get different ids than in the original local apply, and
+later local commands that refer to those ids would fail validation. The rule: **the
+number of ordinals a command consumes, and which mint takes which ordinal, is a
+function of the command's payload and metadata alone.** Any branch that depends on
+base state and mints must use a content-derived id outside the ordinal sequence, as
+in (b).
+
+**(b) Create-if-missing singletons get a content-derived id.**
+`ensure_system_ledger_account`, and any other create-if-missing singleton that the
+SYNC-1a inventory finds, takes an id that is a function of the singleton's identity
+alone, outside the ordinal sequence and outside the 4,096-id cap. Every replica
+that creates the row therefore creates the *same* row, and replaying a command
+neither consumes an ordinal nor mints a second id.
+
+```text
+label    = ASCII "dohflow/system-account-id/v1"              (28 bytes)
+message  = u8(28) || label
+        || u8(len(role)) || role                             # a member of the closed role set, [a-z_]{1,64}
+        || currency                                          # exactly 3 bytes, ASCII A-Z (ISO 4217)
+digest   = HMAC-SHA256(id_key, message)                      # the per-vault id_key of section 1
+rand_b   = u64_be(digest[0..8]) >> 2                         # the high 62 bits, as in section 1
+packing  = uuid::Builder::from_unix_timestamp_millis(0, &counter_random_bytes)
+           counter_random_bytes = 0x00 0x00 || rand_b.to_be_bytes()
+```
+
+The layout is section 1's, with a fixed zero time field and ordinal zero, so a
+singleton id is a UUID version 7 that sorts before every command-minted id:
+`ORDER BY id` lists the system singletons first, on every replica. The zero in its
+timestamp is a constant, **not a creation time**: nothing may read a singleton's
+creation instant from its id. The role and
+currency are validated before use, and anything else is a validation error raised
+before any write: the currency is exactly three ASCII uppercase letters, and the role
+is a member of the closed set of system role names defined with the ledger schema
+(today `opening_balance_equity`, `unmatched_income` and `unmatched_expense`); a new
+role enters the set by a code change, never from data. The validation is what makes
+the next argument hold. The label, its length byte and the fixed-width tail keep this
+message space apart from the other two. From section 9: the first byte (28, `0x1c`)
+differs from the provider derivation's (26, `0x1a`), and the ids differ by version
+nibble (7 here, 8 there). From section 1: a command-scoped message ends with
+`u16_be(ordinal)` for an ordinal below 4,096, so its second-to-last byte is at most
+`0x0f`, whereas the message here always ends with the currency's final two uppercase
+letters (the second-to-last byte is at least `0x41`), so no singleton message can be
+read as a command-scoped one.
+
+Known-answer vectors (normative; hexadecimal is lowercase; `id_key` is vector A's key
+from section 1):
+
+```text
+id_key               = f2f6ac71bc63e3df2f66370676ead3f3b6b677a87c124f190941659224b42149
+role                 = opening_balance_equity
+currency             = USD
+message_hex          = 1c646f68666c6f772f73797374656d2d6163636f756e742d69642f7631166f70656e696e675f62616c616e63655f657175697479555344
+hmac_sha256          = c859852d50d9e3ea52e4a41f13a4be25d457ac6aa8f582194e9de638ecd64440
+counter_random_bytes = 00003216614b543678fa
+uuid                 = 00000000-0000-7000-b216-614b543678fa
+
+role                 = unmatched_income
+currency             = EUR
+message_hex          = 1c646f68666c6f772f73797374656d2d6163636f756e742d69642f763110756e6d6174636865645f696e636f6d65455552
+hmac_sha256          = 981fabd230c3785ecba2e2bed52af266b26be9dd64c4e596bcf88e4960535dec
+counter_random_bytes = 00002607eaf48c30de17
+uuid                 = 00000000-0000-7000-a607-eaf48c30de17
+```
+
+This is the same family as the provider-transaction exception of section 9
+(`personal-cfo-g3m.12`): a domain-separated HMAC under the per-vault `id_key`, a
+content-derived id that does not use `issued_at`, a command id or an ordinal. The
+open-time seeders of section 3 may adopt the same derivation so that devices that
+seed independently also converge; SYNC-1a decides that when it classifies each
+site. Changing the label or the encoding is a payload-schema change, as in section 1.
+
+**(c) Mint order is deterministic.** The ordinal is allocated in the order the mints
+happen, so the order itself must not depend on anything unspecified. On any path
+that mints: no iteration over a `HashMap`, a `HashSet` or any other unordered
+collection; every `SELECT` that feeds a mint loop has a total `ORDER BY` (SQLite
+does not guarantee row order without one, and the key must be unique so that ties
+cannot occur); and no dependence on thread scheduling, addresses or time. Two
+replicas that assign ordinals in different orders mint different ids and the
+write-set hash flags a fork. SYNC-1a enforces this with a ratchet test.
+
+**(d) The no-clock rule covers everything reachable from `apply`.** Section 2
+scoped the rule to the 21 `Utc::now()` calls directly under
+`crates/db-worker/src/apply/`. `apply` also calls helpers elsewhere that read the
+clock themselves, and the rule covers them, for example: the `ingestion` helpers
+(`create_source_batch`, `update_batch_status`, `link_provenance`,
+`record_dedupe_decision`), `record_transaction_detail`,
+`reverse_and_hide_transaction`, the inbox helpers `record_dismiss` and
+`record_snooze`, the household-local "today" read, and the **class-2 rebuilds**
+(`rebuild_in` of the commitments and money-inbox projections). The list is
+illustrative; the ratchet test derives the actual set from the code. Class-2 rows must also be hash-equal across vaults (the exit
+criterion of the Sync foundations milestone), so a clock read inside a class-2
+rebuild is in scope. Every one of them reads `meta.issued_at`, passed down by the
+caller. `personal-cfo-t2s4b` pins the inventory with a ratchet test that derives
+the set of clock-reading helpers from the crate and may only shrink; SYNC-1a
+empties it.
 
 ### Rejected alternatives
 
