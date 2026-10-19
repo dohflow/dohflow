@@ -6,7 +6,8 @@
 //! NULL/empty/zero are all distinct, the key cap is an error, and errors carry no values.
 
 use sync_core::row_digest::{
-    absent_digest, primary_key, row_digest, Column, Kind, RowDigestError, Value, MAX_PRIMARY_KEY,
+    absent_digest, parent_row_digest, primary_key, row_digest, ChildTable, Column, Kind,
+    RowDigestError, Value, MAX_PRIMARY_KEY,
 };
 
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
@@ -290,4 +291,195 @@ fn errors_never_carry_a_value_from_the_row() {
     for text in [err.to_string(), format!("{err:?}")] {
         assert!(!text.contains("SECRET") && !text.contains("4242"), "{text}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Folded children
+// ---------------------------------------------------------------------------
+
+const TXN: [u8; 16] = [
+    0x01, 0x98, 0xc2, 0xc1, 0x5f, 0x0a, 0x7c, 0x3d, 0x8a, 0x4e, 0x9b, 0x1d, 0, 0, 0, 0x21,
+];
+const ACCT1: [u8; 16] = [
+    0x01, 0x98, 0xc2, 0xc1, 0x5f, 0x0a, 0x7c, 0x3d, 0x8a, 0x4e, 0x9b, 0x1d, 0, 0, 0, 0x31,
+];
+const ACCT2: [u8; 16] = [
+    0x01, 0x98, 0xc2, 0xc1, 0x5f, 0x0a, 0x7c, 0x3d, 0x8a, 0x4e, 0x9b, 0x1d, 0, 0, 0, 0x32,
+];
+
+fn posting<'a>(account: &'a [u8; 16], minor: i64) -> Vec<Column<'a>> {
+    vec![
+        Column {
+            name: "transaction_id",
+            kind: Kind::Uuid,
+            value: Value::Blob(&TXN),
+        },
+        Column {
+            name: "ledger_account_id",
+            kind: Kind::Uuid,
+            value: Value::Blob(account),
+        },
+        Column {
+            name: "minor_units",
+            kind: Kind::Int,
+            value: Value::Int(minor),
+        },
+        Column {
+            name: "currency",
+            kind: Kind::Text,
+            value: Value::Text(b"USD"),
+        },
+        Column {
+            name: "currency_exponent",
+            kind: Kind::Int,
+            value: Value::Int(2),
+        },
+        Column {
+            name: "posting_date",
+            kind: Kind::Text,
+            value: Value::Text(b"2026-10-17"),
+        },
+    ]
+}
+
+fn parent_columns() -> Vec<Column<'static>> {
+    vec![
+        Column {
+            name: "id",
+            kind: Kind::Uuid,
+            value: Value::Blob(&TXN),
+        },
+        Column {
+            name: "memo",
+            kind: Kind::Text,
+            value: Value::Text(b"split"),
+        },
+    ]
+}
+
+fn postings(rows: Vec<Vec<Column<'static>>>) -> Vec<ChildTable<'static>> {
+    vec![ChildTable {
+        table: "ledger_postings",
+        rows,
+    }]
+}
+
+#[test]
+fn the_specs_parent_with_children_vector_is_reproduced() {
+    let children = postings(vec![
+        posting(&ACCT1, -500),
+        posting(&ACCT2, 1000),
+        posting(&ACCT1, -500),
+    ]);
+    assert_eq!(
+        parent_row_digest("ledger_transactions", &parent_columns(), &children)
+            .unwrap()
+            .to_vec(),
+        vector("parent_digest")
+    );
+}
+
+#[test]
+fn child_order_and_physical_row_order_do_not_matter_but_duplicates_do() {
+    let base = parent_row_digest(
+        "ledger_transactions",
+        &parent_columns(),
+        &postings(vec![
+            posting(&ACCT1, -500),
+            posting(&ACCT1, -500),
+            posting(&ACCT2, 1000),
+        ]),
+    )
+    .unwrap();
+    let shuffled = parent_row_digest(
+        "ledger_transactions",
+        &parent_columns(),
+        &postings(vec![
+            posting(&ACCT2, 1000),
+            posting(&ACCT1, -500),
+            posting(&ACCT1, -500),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(
+        base, shuffled,
+        "child order is the bytewise sort, not insertion order"
+    );
+    // Dropping one of the two identical postings changes the digest: a multiset.
+    let fewer = parent_row_digest(
+        "ledger_transactions",
+        &parent_columns(),
+        &postings(vec![posting(&ACCT1, -500), posting(&ACCT2, 1000)]),
+    )
+    .unwrap();
+    assert_ne!(base, fewer);
+    // So does changing any child value, or adding a child.
+    let changed = parent_row_digest(
+        "ledger_transactions",
+        &parent_columns(),
+        &postings(vec![
+            posting(&ACCT1, -500),
+            posting(&ACCT1, -501),
+            posting(&ACCT2, 1000),
+        ]),
+    )
+    .unwrap();
+    assert_ne!(base, changed);
+}
+
+#[test]
+fn a_parent_that_declares_children_is_not_confused_with_one_that_declares_none() {
+    let plain = row_digest("ledger_transactions", &parent_columns()).unwrap();
+    let empty_section =
+        parent_row_digest("ledger_transactions", &parent_columns(), &postings(vec![])).unwrap();
+    let no_children = parent_row_digest("ledger_transactions", &parent_columns(), &[]).unwrap();
+    assert_ne!(
+        plain, empty_section,
+        "a declared child table with 0 rows differs from no section"
+    );
+    // A parent with a count-0 child section list and one with an empty-row child table differ.
+    assert_ne!(empty_section, no_children);
+    // The childless digest is exactly row_digest's message plus a zero table count, so the
+    // plain row_digest (no section at all) stays the definition for tables with no children.
+    assert_ne!(plain, no_children);
+}
+
+#[test]
+fn child_tables_are_sorted_by_name_and_must_be_unique() {
+    let a = ChildTable {
+        table: "a_children",
+        rows: vec![posting(&ACCT1, 1)],
+    };
+    let b = ChildTable {
+        table: "b_children",
+        rows: vec![posting(&ACCT2, 2)],
+    };
+    let one = parent_row_digest("p", &parent_columns(), &[a.clone(), b.clone()]).unwrap();
+    let two = parent_row_digest("p", &parent_columns(), &[b.clone(), a.clone()]).unwrap();
+    assert_eq!(one, two);
+    assert_eq!(
+        parent_row_digest("p", &parent_columns(), &[a.clone(), a]),
+        Err(RowDigestError::BadChildTables)
+    );
+}
+
+#[test]
+fn a_child_row_over_the_cap_is_an_error() {
+    let big = vec![b'x'; 70_000];
+    let row = vec![Column {
+        name: "c",
+        kind: Kind::Text,
+        value: Value::Text(&big),
+    }];
+    assert_eq!(
+        parent_row_digest(
+            "p",
+            &parent_columns(),
+            &[ChildTable {
+                table: "k",
+                rows: vec![row]
+            }]
+        ),
+        Err(RowDigestError::ChildRowTooLong)
+    );
 }

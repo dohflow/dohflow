@@ -60,6 +60,20 @@ pub struct Column<'a> {
     pub value: Value<'a>,
 }
 
+/// The folded child rows of one parent, for one child table (C.1.5 "Folded children"). The
+/// rows of a child table that declares no primary key are part of their parent's digest.
+#[derive(Debug, Clone)]
+pub struct ChildTable<'a> {
+    /// The child table's name.
+    pub table: &'a str,
+    /// One entry per child row, each the row's columns (all of the child's declared columns,
+    /// never a rowid).
+    pub rows: Vec<Vec<Column<'a>>>,
+}
+
+/// The longest encoded child row, in bytes.
+pub const MAX_CHILD_ROW: usize = 1 << 16;
+
 /// Why a row could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
@@ -85,6 +99,12 @@ pub enum RowDigestError {
     /// A row has more than 65,535 columns.
     #[error("a row has too many columns")]
     TooManyColumns,
+    /// A child row encodes to more than 65,536 bytes.
+    #[error("a folded child row exceeds the maximum length")]
+    ChildRowTooLong,
+    /// Two child tables of one parent have the same name, or a parent has too many.
+    #[error("a parent has a duplicate or too many child tables")]
+    BadChildTables,
     /// A primary key has no columns.
     #[error("a primary key has no columns")]
     EmptyKey,
@@ -181,19 +201,76 @@ fn finish(message: &[u8]) -> [u8; 32] {
 /// # Errors
 /// [`RowDigestError`] naming the first rule broken; no value from the row is in it.
 pub fn row_digest(table: &str, columns: &[Column<'_>]) -> Result<[u8; 32], RowDigestError> {
+    let mut message = Vec::new();
+    label(&mut message, ROW_LABEL);
+    name(&mut message, table)?;
+    columns_section(&mut message, columns)?;
+    Ok(finish(&message))
+}
+
+/// `u16 column_count ‖ for each column sorted by name bytes: name ‖ tagged value`, shared by a
+/// row and by a folded child row.
+fn columns_section(out: &mut Vec<u8>, columns: &[Column<'_>]) -> Result<(), RowDigestError> {
     let count = u16::try_from(columns.len()).map_err(|_| RowDigestError::TooManyColumns)?;
     let mut sorted: Vec<&Column<'_>> = columns.iter().collect();
     sorted.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
     if sorted.windows(2).any(|pair| pair[0].name == pair[1].name) {
         return Err(RowDigestError::DuplicateColumn);
     }
+    out.extend_from_slice(&count.to_be_bytes());
+    for column in sorted {
+        name(out, column.name)?;
+        tagged(out, column.kind, column.value)?;
+    }
+    Ok(())
+}
+
+/// The digest of a parent row that has folded children: the row's message followed by the
+/// child section `u16 child_table_count ‖ for each child table in raw-name order: text(64)
+/// name ‖ u32 count ‖ for each child row: bytes(2^16) child_row`. The child rows of a table
+/// are sorted bytewise by their encoding and **duplicates are kept**, so the section is a
+/// multiset. The section is always present for a parent whose manifest declares children
+/// (`children` may be empty tables, each with a count of 0), and never present for a parent
+/// that declares none (use [`row_digest`]).
+///
+/// # Errors
+/// [`RowDigestError`] naming the first rule broken; no value from a row is in it.
+pub fn parent_row_digest(
+    table: &str,
+    columns: &[Column<'_>],
+    children: &[ChildTable<'_>],
+) -> Result<[u8; 32], RowDigestError> {
     let mut message = Vec::new();
     label(&mut message, ROW_LABEL);
     name(&mut message, table)?;
+    columns_section(&mut message, columns)?;
+
+    let count = u16::try_from(children.len()).map_err(|_| RowDigestError::BadChildTables)?;
+    let mut tables: Vec<&ChildTable<'_>> = children.iter().collect();
+    tables.sort_by(|a, b| a.table.as_bytes().cmp(b.table.as_bytes()));
+    if tables.windows(2).any(|pair| pair[0].table == pair[1].table) {
+        return Err(RowDigestError::BadChildTables);
+    }
     message.extend_from_slice(&count.to_be_bytes());
-    for column in sorted {
-        name(&mut message, column.name)?;
-        tagged(&mut message, column.kind, column.value)?;
+    for child in tables {
+        name(&mut message, child.table)?;
+        let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(child.rows.len());
+        for row in &child.rows {
+            let mut bytes = Vec::new();
+            columns_section(&mut bytes, row)?;
+            if bytes.len() > MAX_CHILD_ROW {
+                return Err(RowDigestError::ChildRowTooLong);
+            }
+            encoded.push(bytes);
+        }
+        encoded.sort();
+        let rows = u32::try_from(encoded.len()).map_err(|_| RowDigestError::BadChildTables)?;
+        message.extend_from_slice(&rows.to_be_bytes());
+        for bytes in encoded {
+            let length = u32::try_from(bytes.len()).map_err(|_| RowDigestError::ChildRowTooLong)?;
+            message.extend_from_slice(&length.to_be_bytes());
+            message.extend_from_slice(&bytes);
+        }
     }
     Ok(finish(&message))
 }
