@@ -30,6 +30,9 @@ importer-core = { path = "../importers/importer-core" }
 # Raw-key vault open: db-worker keys SQLCipher from the DEK that vault-crypto
 # unwraps (personal-cfo-vhv). vault-crypto is pure (no rusqlite), so no cycle.
 vault-crypto = { path = "../vault-crypto" }
+# The canonical row encoding and the write-set hash (personal-cfo-t2s4b parts 5b and 5c): the
+# capture of the rows a command changed hashes them through it. Pure crate, no database.
+sync-core = { path = "../sync-core" }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
@@ -50,7 +53,4 @@ rusqlite = { workspace = true }
 # Attachment-store integration tests (personal-cfo-bcj): open a raw-key vault and
 # construct entity ids through the public API.
 vault-crypto = { path = "../vault-crypto" }
-# The canonical row encoding (personal-cfo-t2s4b part 5b): the column-kind test encodes every
-# row of a populated vault through it.
-sync-core = { path = "../sync-core" }
 uuid = { workspace = true }

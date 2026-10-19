@@ -24,7 +24,7 @@ fn four() -> Vec<Entry> {
         entry("tags", "030198c2c15f0a7c3d8a4e9b1d00000011", 0xAA),
         entry("accounts", "030198c2c15f0a7c3d8a4e9b1d00000001", 0xBB),
         entry("tags", "01ffffffffffffffff", 0xCC),
-        entry("tag", "0100000000000000ff", 0xDD),
+        entry("tag", "01fffffffffffffffe", 0xDD),
     ]
 }
 
@@ -35,7 +35,7 @@ fn the_known_answer_vectors_match_the_independent_derivation() {
     // before `tags`, and within `tags` the int key (tag 01) sorts before the uuid key (tag 03).
     assert_eq!(
         hex(&write_set_hash(&mut four()).unwrap()),
-        "173def0865e9ee96cf3ee7fb48c27e89941ba5d15510e58995a8c2f6cf09759f"
+        "01d58e040647aeea439caf5317f7843943e7b59cda0ae1e1ac246e2133f99a5e"
     );
     // The empty write set (a command that changed no replicated row) has a hash too.
     assert_eq!(
