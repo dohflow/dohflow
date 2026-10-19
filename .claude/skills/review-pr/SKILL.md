@@ -81,9 +81,17 @@ The comment contains, in order:
 `PASS` · `CHANGES_REQUIRED` · `HUMAN_DECISION_REQUIRED`
 
 **CHANGES_REQUIRED** — post the comment, keep the bead open, send the owning
-session a repair packet. Every new commit gets a **new** review.
+session a repair packet. Every new commit gets a **new** review. Make sure the
+`merge-ready` label is absent: `gh pr edit <N> --remove-label merge-ready` (an
+error that the label is not on the PR is fine). The same applies to
+`HUMAN_DECISION_REQUIRED`.
 
 **PASS** — re-check that the PR head still equals the SHA you reviewed, then:
+
+Apply the label, so the owner can see at a glance that this pull request needs
+their merge: `gh pr edit <N> --add-label merge-ready`. A workflow removes it on any
+new commit, so it can never outlive the SHA you approved. Name the lane in your
+report to `00-overseer`, which notifies the owner.
 
 > **Automatic reviewer merging is DISABLED for the calibration period.** Return
 > `APPROVED_TO_MERGE` with the SHA and stop. The user authorizes or performs the
