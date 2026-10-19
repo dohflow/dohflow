@@ -154,34 +154,82 @@ fn a_passphrase_keyed_connection_has_cipher_memory_security_on() {
     assert_eq!(on, "1");
 }
 
-/// No code outside the two keying helpers sends a key to SQLCipher, so the memory-security pragma
-/// cannot be skipped at a new keying site.
+/// A passphrase that needs SQL escaping still opens the vault it created: the statement text is
+/// built by hand, so quotes (and non-ASCII) must round-trip.
 #[test]
-fn only_the_keying_helpers_send_a_key_pragma() {
+fn a_passphrase_with_quotes_and_unicode_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    for passphrase in [
+        "it's a \"quoted\" pass'phrase",
+        "''",
+        "'",
+        "caf\u{e9} \u{1f512} 'x'",
+        "a;b--c /* d */",
+    ] {
+        let _ = std::fs::remove_file(&path);
+        {
+            let worker = DbWorker::open(&path, passphrase).unwrap();
+            worker.set_setting("user.round_trip", "yes").unwrap();
+        }
+        let reopened =
+            DbWorker::open(&path, passphrase).unwrap_or_else(|e| panic!("{passphrase:?}: {e}"));
+        assert!(reopened.read_connection().is_ok());
+        // A different passphrase does not open it.
+        assert!(DbWorker::open(&path, &format!("{passphrase}x")).is_err());
+    }
+}
+
+/// Only the two keying helpers send a key to SQLCipher, and `pragma_update(None, "key", ..)` is
+/// never used (it builds the key into an unscrubbed `String`), so the memory-security setting and
+/// the scrubbed buffers cannot be skipped at a new keying site. The scan covers `src/` and its
+/// subdirectories. `rekey.rs` additionally sends a *new* key through an `ATTACH ... KEY` and a
+/// rekey statement; those are named below so a change to them is a reviewed one.
+#[test]
+fn only_the_keying_helpers_send_a_key() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut hits = Vec::new();
-    for entry in std::fs::read_dir(&src).unwrap().flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+    let mut files = Vec::new();
+    walk(&src, &mut files);
+    let (mut senders, mut pragma_update_key) = (Vec::new(), Vec::new());
+    for path in files {
+        let name = path.strip_prefix(&src).unwrap().display().to_string();
+        if name.starts_with("tests") || name.ends_with("_tests.rs") {
             continue;
         }
         for (n, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            if code.contains("pragma_update(None, \"key\"") || code.contains("PRAGMA key") {
-                hits.push(format!(
-                    "{}:{}",
-                    path.file_name().unwrap().to_string_lossy(),
-                    n + 1
-                ));
+            if code.contains("pragma_update(None, \"key\"")
+                || code.contains("pragma_update(None, \"rekey\"")
+            {
+                pragma_update_key.push(format!("{name}:{}", n + 1));
+            }
+            if code.contains("PRAGMA key") {
+                senders.push(format!("{name}:{}", n + 1));
             }
         }
     }
-    // Exactly the two senders: key_passphrase and key_raw, both in lib.rs.
-    hits.sort();
-    assert_eq!(
-        hits.len(),
-        2,
-        "key pragmas outside the keying helpers: {hits:?}"
+    assert!(
+        pragma_update_key.is_empty(),
+        "pragma_update builds the key into an unscrubbed String: {pragma_update_key:?}"
     );
-    assert!(hits.iter().all(|h| h.starts_with("lib.rs:")), "{hits:?}");
+    senders.sort();
+    assert_eq!(
+        senders.len(),
+        2,
+        "PRAGMA key outside the keying helpers: {senders:?}"
+    );
+    assert!(
+        senders.iter().all(|h| h.starts_with("lib.rs:")),
+        "{senders:?}"
+    );
 }

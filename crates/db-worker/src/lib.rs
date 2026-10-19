@@ -4034,7 +4034,22 @@ fn set_memory_security(conn: &Connection) -> Result<(), DbError> {
 /// Key a connection with a passphrase (SQLCipher runs its own KDF over it).
 fn key_passphrase(conn: &Connection, key: &str) -> Result<(), DbError> {
     set_memory_security(conn)?;
-    conn.pragma_update(None, "key", key)?;
+    // The statement text is built here, in a buffer that is scrubbed afterwards, rather than by
+    // `pragma_update`, which assembles the same text in a plain `String` that is freed
+    // unscrubbed (SQLCipher's memory security does not cover the Rust heap). A single quote in
+    // the passphrase is doubled, the SQL escape for a quote inside a string literal.
+    let mut pragma = String::with_capacity(key.len() + 16);
+    pragma.push_str("PRAGMA key = '");
+    for ch in key.chars() {
+        if ch == '\'' {
+            pragma.push('\'');
+        }
+        pragma.push(ch);
+    }
+    pragma.push_str("';");
+    let result = conn.execute_batch(&pragma);
+    pragma.zeroize();
+    result?;
     Ok(())
 }
 
