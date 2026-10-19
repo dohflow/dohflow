@@ -21,6 +21,10 @@ use thiserror::Error;
 
 use core_ids::uuid_id;
 
+// A command's issue instant (personal-cfo-t2s4b): re-exported so the schema crates that
+// build command metadata share the one definition without each depending on `core-ids`.
+pub use core_ids::IssuedAt;
+
 mod account;
 pub use account::{Account, AccountFlags, AccountSubtype, CashTier, CashflowRole, NormalBalance};
 

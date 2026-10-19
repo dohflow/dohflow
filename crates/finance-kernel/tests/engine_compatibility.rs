@@ -60,6 +60,7 @@ fn meta(index: u8) -> CommandMeta {
         idempotency_key: uuid::Builder::from_random_bytes([index; 16])
             .into_uuid()
             .to_string(),
+        issued_at: finance_kernel::IssuedAt::now(),
     }
 }
 

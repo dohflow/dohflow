@@ -516,6 +516,7 @@ fn a_1k_record_sync_batch_stages_and_commits_every_row() {
         actor_type: ActorType::User,
         actor_id: "test".to_owned(),
         idempotency_key: format!("bulk-{}", uuid::Uuid::new_v4()),
+        issued_at: finance_kernel::IssuedAt::now(),
     };
     let result = kernel
         .ingest_sync_batch("simplefin", "0.1.0", "bulk test", None, &batch, &map, &meta)

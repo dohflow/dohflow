@@ -651,6 +651,9 @@ mod protocol_tests {
             idempotency_key: uuid::Builder::from_random_bytes([index; 16])
                 .into_uuid()
                 .to_string(),
+            issued_at: core_ledger::IssuedAt::from_unix_micros(
+                1_790_000_000_000_000 + i64::from(index),
+            ),
         }
     }
 
