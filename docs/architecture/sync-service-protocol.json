@@ -1,0 +1,375 @@
+{
+  "protocol": "dohflow-sync-service",
+  "protocol_version": 1,
+  "document": "docs/architecture/sync-service-protocol.md",
+  "operations": [
+    {
+      "op": "getInfo",
+      "method": "GET",
+      "path": "/info",
+      "auth": "none",
+      "success": "200",
+      "errors": []
+    },
+    {
+      "op": "getStatus",
+      "method": "GET",
+      "path": "/vaults/{vault_id}/status",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound"
+      ]
+    },
+    {
+      "op": "getChain",
+      "method": "GET",
+      "path": "/vaults/{vault_id}/chain",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound"
+      ]
+    },
+    {
+      "op": "installEpoch",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/epochs",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultExists",
+        "VaultNotFound",
+        "WritesSuspended",
+        "MembershipChainInvalid",
+        "EpochRecordInvalid",
+        "EpochRecordMissing",
+        "CutoverHeadNotRevoke",
+        "GrantHeadNotAdd",
+        "BadEpochSequence",
+        "KeyCommitmentMismatch",
+        "StaleMembershipHead",
+        "HeadMismatch",
+        "SnapshotNotFound",
+        "ArtifactMissing",
+        "QuotaExceeded",
+        "MalformedObject",
+        "UnsupportedSuite"
+      ]
+    },
+    {
+      "op": "claimCredential",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/devices/{device_id}/credential",
+      "auth": "account",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "DeviceNotFound",
+        "ClaimProofInvalid"
+      ]
+    },
+    {
+      "op": "pushEnvelopes",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/envelopes",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "WritesSuspended",
+        "MalformedObject",
+        "UnsupportedSuite",
+        "ProtocolFork",
+        "EpochRejected",
+        "ArtifactMissing",
+        "NonceTupleReused",
+        "HeadMismatch",
+        "QuotaExceeded",
+        "PayloadTooLarge"
+      ]
+    },
+    {
+      "op": "pullEnvelopes",
+      "method": "GET",
+      "path": "/vaults/{vault_id}/envelopes",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "TailTruncated"
+      ]
+    },
+    {
+      "op": "ack",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/acks",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "AckBeyondHead"
+      ]
+    },
+    {
+      "op": "stageSnapshot",
+      "method": "PUT",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "WritesSuspended",
+        "MalformedObject",
+        "UnsupportedSuite",
+        "EpochRejected",
+        "NonceTupleReused",
+        "ObjectConflict",
+        "SnapshotTooLarge",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "publishSnapshot",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/publish",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "WritesSuspended",
+        "SnapshotNotFound",
+        "MalformedObject",
+        "EpochRejected",
+        "HeadMismatch",
+        "ArtifactMissing",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "getLatestSnapshot",
+      "method": "GET",
+      "path": "/vaults/{vault_id}/snapshots/latest",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "SnapshotNotFound"
+      ]
+    },
+    {
+      "op": "getSnapshot",
+      "method": "GET",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "SnapshotNotFound"
+      ]
+    },
+    {
+      "op": "putArtifact",
+      "method": "PUT",
+      "path": "/vaults/{vault_id}/artifacts/{artifact_id}",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "WritesSuspended",
+        "MalformedObject",
+        "EpochRejected",
+        "ObjectConflict",
+        "PayloadTooLarge",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "getArtifact",
+      "method": "GET",
+      "path": "/vaults/{vault_id}/artifacts/{artifact_id}",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "ArtifactNotFound"
+      ]
+    },
+    {
+      "op": "getArtifactStatus",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/artifacts/status",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound"
+      ]
+    }
+  ],
+  "common_errors": [
+    "Unauthorized",
+    "Forbidden",
+    "DeviceRevoked",
+    "MalformedRequest",
+    "UnsupportedProtocol",
+    "RateLimited",
+    "InternalError",
+    "ServiceUnavailable"
+  ],
+  "errors": [
+    {
+      "code": "MalformedRequest",
+      "status": 400
+    },
+    {
+      "code": "MalformedObject",
+      "status": 400
+    },
+    {
+      "code": "UnsupportedProtocol",
+      "status": 400
+    },
+    {
+      "code": "UnsupportedSuite",
+      "status": 400
+    },
+    {
+      "code": "ClaimProofInvalid",
+      "status": 400
+    },
+    {
+      "code": "MembershipChainInvalid",
+      "status": 400
+    },
+    {
+      "code": "EpochRecordInvalid",
+      "status": 400
+    },
+    {
+      "code": "EpochRecordMissing",
+      "status": 400
+    },
+    {
+      "code": "CutoverHeadNotRevoke",
+      "status": 400
+    },
+    {
+      "code": "GrantHeadNotAdd",
+      "status": 400
+    },
+    {
+      "code": "KeyCommitmentMismatch",
+      "status": 400
+    },
+    {
+      "code": "Unauthorized",
+      "status": 401
+    },
+    {
+      "code": "Forbidden",
+      "status": 403
+    },
+    {
+      "code": "DeviceRevoked",
+      "status": 403
+    },
+    {
+      "code": "WritesSuspended",
+      "status": 403
+    },
+    {
+      "code": "QuotaExceeded",
+      "status": 403
+    },
+    {
+      "code": "VaultNotFound",
+      "status": 404
+    },
+    {
+      "code": "DeviceNotFound",
+      "status": 404
+    },
+    {
+      "code": "SnapshotNotFound",
+      "status": 404
+    },
+    {
+      "code": "ArtifactNotFound",
+      "status": 404
+    },
+    {
+      "code": "VaultExists",
+      "status": 409
+    },
+    {
+      "code": "HeadMismatch",
+      "status": 409
+    },
+    {
+      "code": "StaleMembershipHead",
+      "status": 409
+    },
+    {
+      "code": "BadEpochSequence",
+      "status": 409
+    },
+    {
+      "code": "EpochRejected",
+      "status": 409
+    },
+    {
+      "code": "ProtocolFork",
+      "status": 409
+    },
+    {
+      "code": "NonceTupleReused",
+      "status": 409
+    },
+    {
+      "code": "ObjectConflict",
+      "status": 409
+    },
+    {
+      "code": "ArtifactMissing",
+      "status": 409
+    },
+    {
+      "code": "AckBeyondHead",
+      "status": 409
+    },
+    {
+      "code": "TailTruncated",
+      "status": 410
+    },
+    {
+      "code": "PayloadTooLarge",
+      "status": 413
+    },
+    {
+      "code": "SnapshotTooLarge",
+      "status": 413
+    },
+    {
+      "code": "RateLimited",
+      "status": 429
+    },
+    {
+      "code": "InternalError",
+      "status": 500
+    },
+    {
+      "code": "ServiceUnavailable",
+      "status": 503
+    }
+  ],
+  "limits": {
+    "max_envelope_container_bytes": 16909058,
+    "max_snapshot_container_bytes": 1073742168,
+    "max_membership_record_bytes": 2300,
+    "max_epoch_record_bytes": 2421030,
+    "max_artifact_manifest_ids": 4096,
+    "max_epoch_recipients": 1024,
+    "min_json_body_bytes": 25165824,
+    "claim_skew_seconds": 300
+  }
+}

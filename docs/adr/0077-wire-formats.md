@@ -114,6 +114,12 @@ addendum recording the equality-tag role of `S`, the retry order and a clarifyin
 sentence that Sync reuses the **logical** export model, not the password-wrapped
 bundle. ADR 0017 receives a pointer to the signed-record specification.
 
+The service request interface that carries these objects (upload and download,
+the compare-and-swap check, snapshot and tail, enrollment and membership) is the
+versioned document
+[`docs/architecture/sync-service-protocol.md`](../architecture/sync-service-protocol.md)
+(`personal-cfo-g3m.13`); it cites Part C by section and does not restate it.
+
 ## Consequences
 
 - Implementation beads can start against a merged contract: the portable
