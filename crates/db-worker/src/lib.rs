@@ -52,6 +52,7 @@ mod backup_history;
 mod band_drift;
 mod categories;
 mod connectors;
+pub mod payload;
 pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
@@ -281,7 +282,7 @@ pub fn validate_idempotency_key(key: &str) -> Result<(), DbError> {
 /// a transaction's amount with its own category / note / tags. A plain data carrier —
 /// the apply mints the [`SplitLineId`], assigns `sort_order` from the vec position, and
 /// validates that the lines' amounts sum to the transaction amount.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SplitLineInput {
     /// The slice amount (same sign + currency as the transaction).
     pub amount: Money,
@@ -295,7 +296,8 @@ pub struct SplitLineInput {
 
 /// A mutating command. The enum is the exhaustive write surface, so the worker's
 /// dispatch is compile-checked. More variants arrive with their feature beads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WriteCommand {
     /// Create a user account (with its backing ledger account). An optional
@@ -1334,6 +1336,54 @@ impl DbWorker {
         let runner_lock = acquire_runner_lock(&path)?;
         let conn = open_existing_keyed_raw(&path, &dek)?;
         Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
+    }
+
+    /// Probe the SQLCipher database at `path` with `dek` without opening a worker, migrating
+    /// or writing anything (it holds the runner lock only for the probe). A handle is keyed and the
+    /// vault's `vault_id` is read: `Ok(None)` means SQLCipher answered "file is not a
+    /// database", the signature of a wrong key; `Ok(Some(id))` means the key fits. Any other
+    /// failure is an error. A caller holding a key from a platform keystore can therefore
+    /// tell a key that no longer fits from a damaged or unsupported vault, and compare the
+    /// vault's identity, before bootstrap writes anything, and a wrong key is never mistaken
+    /// for corruption (personal-cfo-7ie.10).
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] for a failure other than a wrong key (including a vault with no
+    /// `vault_metadata` row), [`DbError::Io`] if the file cannot be inspected.
+    pub fn probe_raw_key(path: impl AsRef<Path>, dek: &Dek) -> Result<Option<Uuid>, DbError> {
+        // The exclusive runner lock keeps another process from using the vault meanwhile. The
+        // handle is opened read-write (and never written through) rather than read-only: a
+        // vault is in WAL mode, and a read-only connection leaves `-wal` and `-shm` files
+        // behind that only a read-write close removes. Holding the lock makes that close safe.
+        let _runner_lock = acquire_runner_lock(path.as_ref())?;
+        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        key_raw(&conn, dek)?;
+        match conn.query_row(
+            "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+            [],
+            |row| row.get::<_, Uuid>(0),
+        ) {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::NotADatabase =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(DbError::Sqlite(error)),
+        }
+    }
+
+    /// The vault's Sync `vault_id`, from `vault_metadata`.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] if the singleton row cannot be read.
+    pub fn vault_id(&self) -> Result<Uuid, DbError> {
+        let guard = self.lock();
+        Ok(guard.conn.query_row(
+            "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     /// Shared post-keying bootstrap: migrate, seed singletons, self-test. Run

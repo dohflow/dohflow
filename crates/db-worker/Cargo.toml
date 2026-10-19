@@ -30,7 +30,11 @@ importer-core = { path = "../importers/importer-core" }
 # Raw-key vault open: db-worker keys SQLCipher from the DEK that vault-crypto
 # unwraps (personal-cfo-vhv). vault-crypto is pure (no rusqlite), so no cycle.
 vault-crypto = { path = "../vault-crypto" }
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+# Command payloads (personal-cfo-t2s4b part 3b): serde derives on WriteCommand and the canonical
+# JSON codec of the pure sync-core crate.
+serde = { workspace = true }
+sync-core = { path = "../sync-core" }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 zeroize = { workspace = true }

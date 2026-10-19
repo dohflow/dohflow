@@ -11,7 +11,8 @@ use crate::DbError;
 
 /// How a liability is repaid (ADR 0035 §1) — one model for cards and loans. The forecast maps
 /// each token to a projected payment amount; `Unknown` defaults to the contractual minimum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RepaymentPhilosophy {
     /// Pay the full statement balance (revolving) / owed balance (installment).
     PayInFull,
@@ -64,7 +65,7 @@ impl RepaymentPhilosophy {
 
 /// The settable per-account debt attributes (ADR 0035 §5). `None` fields clear/leave unset;
 /// `SetDebtTerms` is an upsert that replaces the row.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct DebtTermsInput {
     /// Annual percentage rate, in basis points.
     pub apr_bps: Option<i64>,
