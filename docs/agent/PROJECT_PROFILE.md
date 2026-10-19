@@ -353,6 +353,15 @@ makes the `Rust (workspace)` / `Frontend (apps/desktop)` / `IPC codegen
 (apps/desktop/src-tauri)` / `Security scanning (secrets + dependencies)` /
 `Shell scripts` job names required checks.
 
+`.github/workflows/ios-kernel.yml` (`personal-cfo-md8h2.7`) adds a separate check that the
+kernel crates (the root Cargo workspace) cross-compile for `aarch64-apple-ios` and
+`aarch64-apple-ios-sim` with `IPHONEOS_DEPLOYMENT_TARGET` pinned explicitly, and a
+nightly or on-demand run of the vault tests on an iOS simulator
+(`scripts/ios-kernel-sim-tests.sh`, which runs the same way locally on a Mac with Xcode).
+Its `iOS cross-compile (kernel crates)` job always reports, so it is safe to require;
+adding that name to the branch ruleset is a repository-settings step for the owner, not
+something a PR does.
+
 That automatic check is the primary evidence, but agents still record their
 own gate runs, because CI proves the candidate SHA passes — it does not
 prove the implementation agent understood what it ran or the reviewer
