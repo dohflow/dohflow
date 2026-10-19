@@ -1795,26 +1795,41 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // payload encoding it was written under, `write_set_hash` binds the class-1 rows the
     // command touched (part 5), and `engine_version` records the build that applied it.
     //
-    // All four are nullable, and NULL is meaningful: a row written before this migration
-    // has no payload and is **audit history only**. It is never replayed and never
-    // sent as a Sync envelope; `payload_schema_version IS NULL` is how code tells the two
-    // apart. `operation_log` is append-only (triggers refuse UPDATE and DELETE), so the
-    // pre-v2 rows are left exactly as they are: ADD COLUMN rewrites no row and fires no
-    // trigger. The column CHECKs make a half-written v2 row impossible: a version without
-    // a payload, a hash that is not 32 bytes, an empty or oversized engine version.
-    // Additive, so no rebuild and no read-model impact. The down migration drops the
-    // dependent column first (SQLite refuses to drop a column another CHECK refers to).
+    // The four columns are nullable so that a row written before this migration stays
+    // valid, and NULL is meaningful there: it is **audit history only**, never replayed and
+    // never sent as a Sync envelope; `payload_schema_version IS NULL` tells the two apart.
+    // `operation_log` is append-only (triggers refuse UPDATE and DELETE), so the pre-v2 rows
+    // are left exactly as they are: ADD COLUMN rewrites no row and fires no trigger.
+    //
+    // A v2 row is all-or-nothing, enforced by one CHECK on the last-added column, which
+    // can see all four: either all four are NULL, or all four are present and valid (a
+    // payload, a version of at least 1, a 32-byte write-set hash, a 1 to 64 character engine
+    // version). A half-written row could never be repaired in an append-only table, and
+    // SQLite cannot add a CHECK to an existing column later without rebuilding the audit
+    // table, so the invariant is enforced now, before anything writes the columns. The
+    // consequence is deliberate: the dispatcher may write v2 columns only once it can supply
+    // the write-set hash (part 5). The comparisons use COALESCE because a CHECK passes on
+    // NULL. Additive, so no rebuild and no read-model impact. The down migration drops the
+    // CHECK-bearing column first (SQLite refuses to drop a column another CHECK refers to).
     Migration {
         version: 56,
         name: "operation_log_v2",
         up: "ALTER TABLE operation_log ADD COLUMN payload BLOB;
-             ALTER TABLE operation_log ADD COLUMN payload_schema_version INTEGER
-                 CHECK (payload_schema_version IS NULL
-                        OR (payload_schema_version >= 1 AND payload IS NOT NULL));
-             ALTER TABLE operation_log ADD COLUMN write_set_hash BLOB
-                 CHECK (write_set_hash IS NULL OR length(write_set_hash) = 32);
+             ALTER TABLE operation_log ADD COLUMN payload_schema_version INTEGER;
+             ALTER TABLE operation_log ADD COLUMN write_set_hash BLOB;
              ALTER TABLE operation_log ADD COLUMN engine_version TEXT
-                 CHECK (engine_version IS NULL OR length(engine_version) BETWEEN 1 AND 64);",
+                 CHECK (
+                     (engine_version IS NULL
+                         AND payload IS NULL
+                         AND payload_schema_version IS NULL
+                         AND write_set_hash IS NULL)
+                     OR
+                     (engine_version IS NOT NULL
+                         AND length(engine_version) BETWEEN 1 AND 64
+                         AND payload IS NOT NULL
+                         AND COALESCE(payload_schema_version, 0) >= 1
+                         AND COALESCE(length(write_set_hash), 0) = 32)
+                 );",
         down: Some(
             "ALTER TABLE operation_log DROP COLUMN engine_version;
              ALTER TABLE operation_log DROP COLUMN write_set_hash;

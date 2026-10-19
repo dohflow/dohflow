@@ -7020,47 +7020,73 @@ fn the_operation_log_stays_append_only_for_the_v2_columns_too() {
 }
 
 #[test]
-fn operation_log_v2_checks_refuse_a_half_written_row() {
+fn operation_log_v2_is_all_or_nothing() {
     let (_dir, worker) = worker();
     let conn = worker.read_connection().unwrap();
-    let insert = |extra_cols: &str, extra_vals: &str, n: u8| {
+    // Insert a row with exactly the v2 columns named by `present`, each given a valid
+    // value unless `override_` replaces it.
+    let insert = |present: &[&str], override_: &[(&str, &str)], n: u8| {
+        let value = |col: &str| -> String {
+            override_
+                .iter()
+                .find(|(c, _)| *c == col)
+                .map(|(_, v)| (*v).to_owned())
+                .unwrap_or_else(|| match col {
+                    "payload" => "x'7b7d'".to_owned(),
+                    "payload_schema_version" => "1".to_owned(),
+                    "write_set_hash" => "zeroblob(32)".to_owned(),
+                    _ => "'dohflow-0.3.0'".to_owned(),
+                })
+        };
+        let cols: String = present.iter().map(|c| format!(", {c}")).collect();
+        let vals: String = present.iter().map(|c| format!(", {}", value(c))).collect();
         conn.execute(
             &format!(
                 "INSERT INTO operation_log
                  (command_id, correlation_id, actor_type, actor_id, idempotency_key,
                   operation_type, affected_entities, node_id, vault_schema_version,
-                  hlc_timestamp, created_at{extra_cols})
+                  hlc_timestamp, created_at{cols})
                  VALUES (?1, zeroblob(16), 'user', 'u', 'k', 'test', zeroblob(1),
-                         zeroblob(16), 56, 1, '2026-10-18T00:00:00Z'{extra_vals})"
+                         zeroblob(16), 56, 1, '2026-10-18T00:00:00Z'{vals})"
             ),
             [vec![n; 16]],
         )
     };
-    // A complete v2 row is accepted.
-    insert(
-        ", payload, payload_schema_version, write_set_hash, engine_version",
-        ", x'7b7d', 1, zeroblob(32), 'dohflow-0.3.0'",
-        1,
-    )
-    .unwrap();
-    // A payload alone (a version-less payload), or the hash and engine alone, are accepted:
-    // the part that writes them decides what a complete row is; the schema only refuses
-    // values that can never be right.
-    insert(", payload", ", x'7b7d'", 2).unwrap();
-    insert(", engine_version", ", 'dohflow-0.3.0'", 3).unwrap();
-    // A schema version without a payload is a half-written row.
-    for (cols, vals) in [
-        (", payload_schema_version", ", 1"),
-        (", payload_schema_version, payload", ", 0, x'7b7d'"),
-        (", payload_schema_version, payload", ", -1, x'7b7d'"),
-        (", write_set_hash", ", zeroblob(31)"),
-        (", write_set_hash", ", zeroblob(33)"),
-        (", write_set_hash", ", x''"),
-        (", engine_version", ", ''"),
-        (", engine_version", &format!(", '{}'", "v".repeat(65))),
+    const ALL: [&str; 4] = [
+        "payload",
+        "payload_schema_version",
+        "write_set_hash",
+        "engine_version",
+    ];
+
+    // None of the four (a pre-v2 shaped row) and all four (a complete v2 row) are accepted.
+    insert(&[], &[], 1).unwrap();
+    insert(&ALL, &[], 2).unwrap();
+
+    // Every other combination of present columns is a half-written row and is refused.
+    for mask in 1_u8..15 {
+        let present: Vec<&str> = ALL
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0)
+            .map(|(_, c)| *c)
+            .collect();
+        let err = insert(&present, &[], 100 + mask).unwrap_err().to_string();
+        assert!(err.contains("CHECK"), "{present:?}: {err}");
+    }
+
+    // A complete row with a value that can never be right is refused too.
+    for (column, bad) in [
+        ("payload_schema_version", "0"),
+        ("payload_schema_version", "-1"),
+        ("write_set_hash", "zeroblob(31)"),
+        ("write_set_hash", "zeroblob(33)"),
+        ("write_set_hash", "x''"),
+        ("engine_version", "''"),
+        ("engine_version", &format!("'{}'", "v".repeat(65))),
     ] {
-        let err = insert(cols, vals, 100).unwrap_err().to_string();
-        assert!(err.contains("CHECK"), "{cols}{vals}: {err}");
+        let err = insert(&ALL, &[(column, bad)], 200).unwrap_err().to_string();
+        assert!(err.contains("CHECK"), "{column}={bad}: {err}");
     }
 }
 
