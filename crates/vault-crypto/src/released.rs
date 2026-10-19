@@ -93,10 +93,14 @@ impl ReleasedUnlockMaterial {
         fingerprint.copy_from_slice(&bytes[17..49]);
         let mut dek = [0_u8; DEK_LEN];
         dek.copy_from_slice(&bytes[49..49 + DEK_LEN]);
+        // `Dek::from_array` takes the array by value (arrays are `Copy`), so this local
+        // copy of the key must be scrubbed here.
+        let dek_secret = Dek::from_array(dek);
+        zeroize::Zeroize::zeroize(&mut dek);
         Ok(Self {
             vault_id,
             fingerprint,
-            dek: Dek::from_array(dek),
+            dek: dek_secret,
         })
     }
 
