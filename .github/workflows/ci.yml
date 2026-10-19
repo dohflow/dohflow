@@ -232,17 +232,19 @@ jobs:
           echo "layer2.rs public API boundaries OK."
 
       # The pure-types crates (core-ids, core-ledger, core-money), the pure
-      # crypto crate (vault-crypto), the pay-schedule engine, and the
-      # deterministic Future Cash forecast engine (forecast-engine) must not pull
-      # in a database, async runtime, or the Tauri shell — they are domain value
-      # types / a database-free KDF / pure functions only (plan §9.4, §13.3;
-      # vault-crypto per personal-cfo-j0o; forecast-engine per personal-cfo-164u).
+      # crypto crate (vault-crypto), the pay-schedule engine, the deterministic
+      # Future Cash forecast engine (forecast-engine) and the Sync format crate
+      # (sync-core) must not pull in a database, async runtime, or the Tauri
+      # shell — they are domain value types / a database-free KDF / pure
+      # functions only (plan §9.4, §13.3; vault-crypto per personal-cfo-j0o;
+      # forecast-engine per personal-cfo-164u; sync-core per personal-cfo-915.10,
+      # so a Sync server can parse envelopes and manifests without SQLCipher).
       # Checks the resolved dependency tree, so transitive leaks are caught too.
       - name: Enforce pure-types crate boundaries
         if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
-          for crate in core-ids core-money core-ledger vault-crypto pay-schedule forecast-engine; do
+          for crate in core-ids core-money core-ledger vault-crypto pay-schedule forecast-engine sync-core; do
             if [ -d "crates/$crate" ]; then
               if cargo tree -e normal -p "$crate" 2>/dev/null | grep -iE '\b(tokio|tauri|rusqlite)\b'; then
                 echo "::error::$crate must not depend on tokio/tauri/rusqlite (pure-types crate)"
