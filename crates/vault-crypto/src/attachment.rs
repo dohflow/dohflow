@@ -57,11 +57,9 @@ impl ContentKey {
         self.0.expose()
     }
 
-    /// Move `bytes` into a protected allocation, scrubbing the caller's copy.
-    fn from_array(mut bytes: [u8; CONTENT_KEY_LEN]) -> Self {
-        let key = ContentKey(SecretBytes::new(bytes));
-        bytes.zeroize();
-        key
+    /// Build a content key in place in a protected buffer (no stack copy of the key).
+    fn init<E>(fill: impl FnOnce(&mut [u8; CONTENT_KEY_LEN]) -> Result<(), E>) -> Result<Self, E> {
+        SecretBytes::init(fill).map(ContentKey)
     }
 }
 
@@ -126,9 +124,7 @@ pub fn storage_id(dek: &Dek, plaintext: &[u8]) -> StorageId {
 /// # Errors
 /// [`VaultCryptoError::Rng`] if the OS random source is unavailable.
 pub fn generate_content_key() -> Result<ContentKey, VaultCryptoError> {
-    let mut bytes = [0u8; CONTENT_KEY_LEN];
-    getrandom::getrandom(&mut bytes).map_err(|_| VaultCryptoError::Rng)?;
-    Ok(ContentKey::from_array(bytes))
+    ContentKey::init(|out| getrandom::getrandom(out).map_err(|_| VaultCryptoError::Rng))
 }
 
 /// Encrypt `plaintext` under `key` with AES-256-GCM and a fresh random nonce.
@@ -195,10 +191,12 @@ pub fn unwrap_content_key(
         plaintext.zeroize();
         return Err(VaultCryptoError::KeyUnwrap);
     }
-    let mut arr = [0u8; CONTENT_KEY_LEN];
-    arr.copy_from_slice(&plaintext);
+    let key = ContentKey::init(|out| {
+        out.copy_from_slice(&plaintext);
+        Ok(())
+    });
     plaintext.zeroize();
-    Ok(ContentKey::from_array(arr))
+    key
 }
 
 /// Lower-case hex, no allocation beyond the output string.
