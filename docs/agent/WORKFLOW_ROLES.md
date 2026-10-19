@@ -210,8 +210,9 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   If `-d` refuses only because the PR was squash-merged, confirm the PR is
   merged and the branch tip is on `origin` (`git branch -r --contains <branch>`),
   and only then use `git branch -D`; otherwise stop and ask. This is the standing
-  owner authorization for this one case and for nothing else in `AGENTS.md`
-  section 1. A long-lived lane worktree is not removed: after the merge, return it
+  owner authorization for this one case, for the **local** branch only, and for
+  nothing else in `AGENTS.md` section 1. Deleting the branch on `origin` is
+  outside it and stays the owner's call. A long-lived lane worktree is not removed: after the merge, return it
   to a detached `origin/main` (`git switch --detach origin/main`).
 - **Review and escalation.** Both run the project's test suites, so they fill
   `target/` too. Run `cargo clean` after each verdict on a large PR, or whenever
