@@ -76,8 +76,10 @@ fi
 if [ -n "${IOS_SIM_UDID:-}" ]; then
   UDID="$IOS_SIM_UDID"
 else
-  # The newest available iOS runtime, then the newest iPhone that runtime supports (the
-  # iPhone product family also lists iPod touch models, which newer runtimes reject).
+  # The newest available iOS runtime, then an iPhone that runtime supports (the iPhone
+  # product family also lists iPod touch models, which newer runtimes reject, and the
+  # supported list is not in release order, so this is a stable pick, not the newest
+  # model; any supported iPhone runs these tests).
   runtime_json=$(xcrun simctl list runtimes -j \
     | jq -c '[.runtimes[] | select(.isAvailable == true and (.identifier | contains("SimRuntime.iOS-")))]
              | sort_by(.version | split(".") | map(tonumber)) | last // empty')
