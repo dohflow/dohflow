@@ -1,0 +1,15 @@
+[package]
+name = "sync-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Pure format-level building blocks for DohFlow Sync: the strict canonical JSON codec (restricted RFC 8785) shared by command payloads, manifests and logical metadata. No database, no runtime, no UI: a Sync server can build this crate without SQLCipher."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
+thiserror = { workspace = true }
