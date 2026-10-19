@@ -911,10 +911,10 @@ refresh sees again is silent.
 the **same account keys and transaction ids to different credentials** for the same
 accounts. That is **verified for SimpleFIN**: on 2026-10-18 two setup tokens on one
 Bridge subscription, claimed to two different access URLs and each queried once
-(accounts and transactions for the last 30 days, posted only), returned identical
-`(connection id, account id)` keys on all 14 accounts and identical transaction-id
-sets on every account (193 transactions per side) (`personal-cfo-g3m.10`, recorded
-on `personal-cfo-g3m.7`). It is **pending for LunchFlow** until
+(accounts and recent posted transactions), returned identical `(connection id,
+account id)` keys for every account and identical transaction-id sets on every
+account (`personal-cfo-g3m.10`, recorded on `personal-cfo-g3m.7`; only identifiers
+were compared, and the figures stay on the bead). It is **pending for LunchFlow** until
 `personal-cfo-g3m.11` records the equivalent check for a second LunchFlow key
 (planned before paid Sync). **Until then LunchFlow connections are not covered by
 this rule and must not be described as covered.** If a provider's ids differ across

@@ -395,7 +395,7 @@ The id is a UUID version 8 (RFC 9562 custom): it carries no time, so nothing may
 rely on `ORDER BY id` for creation order of provider-derived rows.
 `provider_account_key` and `provider_txn_id` are the provider's own strings,
 used **byte for byte as the adapter received them** (no case folding, no Unicode
-normalization), each 1 to 1,024 bytes of UTF-8 and **containing no C0 control
+normalization), each 1 to 1,024 bytes of valid UTF-8 and **containing no C0 control
 character or DEL (`0x00..=0x1f`, `0x7f`)**. A transaction whose provider
 identifiers do not satisfy this has no provider identity: it is not given a
 derived id, and no fallback fingerprint stands in for one (Addendum B, item 6).
