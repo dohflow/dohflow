@@ -1,7 +1,7 @@
 # What DohFlow keeps, and how to delete it
 
-> **DRAFT — not for merge.** Items marked **TBD** wait on owner decisions, and
-> the uninstall list still needs a clean-Mac drill. Nothing here is a legal
+> **DRAFT — not for merge.** This draft covers local data only. The uninstall
+> list still needs a clean-Mac drill. Nothing here is a legal
 > statement until the pre-release legal review (`personal-cfo-rv2s`).
 
 This page says what data DohFlow keeps, for how long, and how you remove it. It
@@ -10,14 +10,11 @@ is the plain-language companion to the [privacy page](privacy.md) and the
 
 ## The short version
 
-- Your data lives in an encrypted vault on your Mac. DohFlow has no server and
-  no account unless you choose to use an optional paid service such as Sync.
+- Your data lives in an encrypted vault on your Mac. DohFlow needs no server and
+  no account to keep it.
 - DohFlow never deletes your financial history on its own. Every removal is a
   choice you make.
 - Backups you save to a folder are kept until you delete them yourself.
-- If you use an optional DohFlow account service, the service holds ciphertext
-  and a small amount of routing information, and you can export and delete it.
-- Deleting or ending an account never deletes your local vaults.
 - DohFlow collects no telemetry.
 
 ## Data on your Mac
@@ -93,59 +90,10 @@ password change does not alter an older backup.
    vault that is still there.
 4. **Delete your backups** in the folders you chose, and in any cloud folder that
    synced them. These are yours: DohFlow does not track or remove them.
-5. **If you used an optional DohFlow account, delete it too** (see below), so the
-   service erases what it holds for you.
 
 **TBD — to verify on a clean Mac before this page is final:** whether macOS leaves
 any other per-app folders (for example under `~/Library/Caches` or
 `~/Library/WebKit`) that belong in step 3.
-
-## If you use an optional DohFlow account
-
-None of this applies unless you sign in to a DohFlow service. The local app works
-the same without an account.
-
-### What the service holds
-
-Your data is encrypted on your Mac before it leaves. The service stores
-ciphertext, the signed list of your devices, and routing information it needs to
-operate: opaque identifiers, sizes, timestamps, key epochs and sequence numbers.
-It never receives your vault password, any key that opens your data, or your
-data in readable form, and it cannot open what it stores (ADR 0074). Its
-operational logs record only failures and lifecycle events, with no account,
-device or vault identifiers, and are deleted automatically within seven days
-(ADR 0066-A).
-
-### Backup to your DohFlow account
-
-DohFlow Sync includes encrypted backup to your DohFlow account, and restoring a
-backup from your account.
-
-The account keeps about a year of your backups: the newest backup from each of
-the last 7 days, the last 4 weeks and the last 12 months. It also always keeps
-your newest backup that was verified after upload, and never silently deletes it.
-Older backups are pruned by the service. All of this fits within your plan's
-storage, and the app tells you plainly when a backup would not fit.
-
-The free backup to a folder you choose is a separate thing. It needs no account
-and keeps every backup.
-
-### If your subscription ends
-
-1. **Grace period: TBD days.** During it you can sign in, export your encrypted
-   data, restore, or resubscribe. The local app is unchanged and nothing on your
-   Mac is locked, limited or removed.
-2. **Export.** You can take your encrypted data containers and the information
-   needed to restore them with you. They stay encrypted; DohFlow never held a key
-   to give you.
-3. **Erasure: TBD days after the grace period ends.** The service then erases
-   your account's stored data and routing information. It is never erased sooner
-   than the period the service announced when the data was stored.
-
-### Deleting your account
-
-Deleting your DohFlow account erases what the service holds, as above. It never
-deletes your local vaults, your local backups or anything on your Mac.
 
 ## Questions and problems
 
