@@ -12,6 +12,10 @@
     {
       "id": "personal-cfo-r2pow",
       "reason": "disabled at release: the LunchFlow adapter is merged but switched off in the registry until v0.4.0 (personal-cfo-p3f7r enables it)"
+    },
+    {
+      "id": "personal-cfo-7ie.10",
+      "reason": "kernel API only: user-visible Touch ID unlock ships with personal-cfo-xuu; remove this entry when xuu ships"
     }
   ]
 }

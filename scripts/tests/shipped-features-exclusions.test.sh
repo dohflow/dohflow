@@ -51,13 +51,13 @@ gen() { ( cd "$TMP/work" && HOME="$TMP/home" PATH="$TMP/bin:$PATH" node "$GEN" "
 
 OUT="$TMP/work/docs/product/shipped-features.md"
 
-case_start "the shipped exclusion list is valid and names the three beads"
+case_start "the shipped exclusion list is valid and names the four beads"
 if node -e '
   const l = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).exclusions
   const ids = l.map((e) => e.id).sort().join(",")
-  if (ids !== "personal-cfo-28js0,personal-cfo-7vbdq,personal-cfo-r2pow") process.exit(1)
+  if (ids !== "personal-cfo-28js0,personal-cfo-7ie.10,personal-cfo-7vbdq,personal-cfo-r2pow") process.exit(1)
   if (!l.every((e) => typeof e.reason === "string" && e.reason.trim().length > 0)) process.exit(2)
-' "$LIST"; then pass "28js0, 7vbdq and r2pow are listed, each with a reason"; else fail "exclusion list wrong or a reason is missing"; fi
+' "$LIST"; then pass "28js0, 7ie.10, 7vbdq and r2pow are listed, each with a reason"; else fail "exclusion list wrong or a reason is missing"; fi
 
 case_start "excluded beads are omitted and the rest are kept"
 gen >/dev/null 2>&1; rc=$?
