@@ -6516,11 +6516,18 @@ fn apply_command(
 
     // The command's payload (ADR 0074 decision 3, vault-format.md C.5): encoded up front so a
     // command the format cannot carry (text with a U+0000, say) is refused before anything is
-    // written, and the bytes stored in the operation log are exactly the ones encoded here. The
-    // error names the kind of value, never the value.
-    let payload = payload::encode_payload(cmd).map_err(|error| {
+    // written. The origin then applies the command **decoded from those bytes**, not the value
+    // it was handed, so it applies exactly what every replica will decode and a field whose
+    // encoding is not one-to-one can never fork the origin from its own replicas. The bytes
+    // stored in the operation log are the ones the command was prepared from. The error names
+    // the kind of value, never the value.
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut prepared = payload::prepare_payload(cmd).map_err(|error| {
         DbError::InvalidCommand(format!("the command cannot be recorded: {error}"))
     })?;
+    #[cfg(test)]
+    tests::tweak_decoded_command(&mut prepared.command);
+    let cmd = &prepared.command;
 
     // 1. Domain mutation. Each arm yields the affected entity id for provenance.
     let entity_id = match cmd {
@@ -6999,7 +7006,7 @@ fn apply_command(
             schema_version,
             hlc,
             Utc::now().to_rfc3339(),
-            payload,
+            prepared.bytes,
             payload::PAYLOAD_SCHEMA_VERSION,
             write_set.hash.as_slice(),
             ENGINE_VERSION,

@@ -7202,6 +7202,82 @@ fn migration_57_leaves_existing_rows_live_and_rolls_back_and_forward() {
     assert_eq!(integrity, "ok");
 }
 
+thread_local! {
+    /// Test seam: rewrites the command decoded from the payload before it is applied.
+    static DECODED_TWEAK: std::cell::Cell<Option<fn(&mut WriteCommand)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Called by `apply_command` (test builds only) on the command decoded from its payload.
+pub(crate) fn tweak_decoded_command(command: &mut WriteCommand) {
+    if let Some(tweak) = DECODED_TWEAK.with(std::cell::Cell::get) {
+        tweak(command);
+    }
+}
+
+#[test]
+fn the_origin_applies_the_command_decoded_from_its_payload() {
+    // The command a caller hands to dispatch is only the input of the encoding: what the origin
+    // applies is the value decoded from the payload bytes (the one every replica will decode).
+    // The seam rewrites the decoded value; if apply read the original, the note would not change.
+    let (_dir, worker) = worker();
+    let account = sample_account();
+    let account_id = account.id();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(account),
+                opening_balance: None,
+            },
+        )
+        .unwrap();
+    let txn = core_ledger::TransactionId::new();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::RecordTransaction {
+                transaction_id: txn,
+                account_id,
+                amount: Money::new(-500, Currency::Usd),
+                occurred_at: Utc::now(),
+            },
+        )
+        .unwrap();
+
+    DECODED_TWEAK.with(|t| {
+        t.set(Some(|command| {
+            if let WriteCommand::SetNote { note, .. } = command {
+                *note = Some("from the decoded payload".to_owned());
+            }
+        }));
+    });
+    let outcome = worker.dispatch(
+        meta(),
+        WriteCommand::SetNote {
+            transaction_id: txn,
+            note: Some("from the original command".to_owned()),
+        },
+    );
+    DECODED_TWEAK.with(|t| t.set(None));
+    outcome.unwrap();
+
+    let conn = worker.read_connection().unwrap();
+    let (note, payload): (String, Vec<u8>) = conn
+        .query_row(
+            "SELECT (SELECT note FROM transaction_details WHERE transaction_id = ?1),
+                    (SELECT payload FROM operation_log ORDER BY op_seq DESC LIMIT 1)",
+            [txn.as_uuid()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(note, "from the decoded payload");
+    // The stored bytes are the ones prepared from the original command.
+    assert!(String::from_utf8(payload)
+        .unwrap()
+        .contains("from the original command"));
+}
+
 #[test]
 fn migration_57_down_refuses_while_a_tombstone_exists_and_changes_nothing() {
     let (_dir, worker) = worker();

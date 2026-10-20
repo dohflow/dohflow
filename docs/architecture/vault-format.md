@@ -1606,8 +1606,10 @@ typed outcomes of Part B apply unchanged.
   release: two builds with the same value produce the same rows and the same write-set hash
   from the same payload, metadata and base state. DohFlow writes `dohflow-engine-N` for a
   positive integer N, and increments N, in the same change, whenever a change to `apply`
-  alters what it writes for an unchanged payload and base. A reader that meets a value it
-  does not equal is in the update-required state; it never guesses compatibility. The value
+  alters what it writes for an unchanged payload and base. A replica that receives an
+  envelope or snapshot whose `engine_version` it does not equal is in the update-required
+  state; it never guesses compatibility. (A vault reading back its own operation-log rows
+  is not gated by this.) The value
   an operation-log row stores is the one the producing build wrote, unchanged. (The first
   value is `dohflow-engine-1`.)
 
