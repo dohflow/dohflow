@@ -26,7 +26,7 @@ found" after the ACL has let the request through), the default options keep the
 desktop plugin set, and `run_with` refuses a supplied context that does not confine
 the app commands to `main` (`context_confines_app_commands_to_main`): the context must
 grant `main` the app commands, and must grant no isolated window (`document_preview`,
-`agent_report`, or a `"*"` window pattern) any app or destructive command. This is the
+`agent_report`, or a `"*"` window pattern) any app, destructive or self-update command. This is the
 check an embedding crate's own capability files must pass; the test adds a hostile
 capability to the real context for each case. It does not audit the rest of the
 embedder's capabilities (plugin grants, scopes), which stay that crate's ADR 0010 review.

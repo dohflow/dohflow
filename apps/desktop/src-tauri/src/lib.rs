@@ -472,8 +472,10 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
 pub fn context_confines_app_commands_to_main<R: tauri::Runtime>(
     context: &mut tauri::Context<R>,
 ) -> bool {
-    /// One command from each permission file: the general set and the destructive set.
-    const APP_COMMANDS: [&str; 2] = ["vault_status", "delete_vault"];
+    /// One command from each permission file: the general set, the destructive set and
+    /// the desktop self-update set (a capability that grants that set is inactive off
+    /// desktop, so `apply_update` then resolves to nothing, which is what is required).
+    const APP_COMMANDS: [&str; 3] = ["vault_status", "delete_vault", "apply_update"];
     let authority = context.runtime_authority_mut();
     let granted = |label: &str, command: &str| {
         authority
