@@ -32,36 +32,38 @@ use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+// Only the from-source update commands (desktop builds) use these two.
 use crate::ipc::dto::{
     parse_account_id, parse_attachment_id, parse_category_id, parse_currency,
     parse_income_source_id, parse_opt_uuid, parse_recurring_event_id, parse_recurring_transfer_id,
     parse_source_batch_id, parse_staged_transaction_id, parse_subtype, parse_tag_id,
-    parse_transaction_id, AccountViewDto, ApplyUpdateResultDto, AssertBalanceInput,
-    AssertBalanceResult, AssumptionEventDto, AttachSourceRecordInput, AttachSourceRecordResult,
-    AttachmentDto, BackupCadenceDto, BackupHistoryEntryDto, BackupScheduleSettingsDto,
-    BandDriftSignalDto, BatchResultDto, BuildInfoDto, CapabilityUnlockDto,
-    CardStatementForecastDto, CardStatementHistoryDto, CashAvailabilityDto, CashFlowHistoryDto,
-    CashTiersDto, CategoryDto, ChangePasswordInput, CloneScenarioInput, ColumnMappingDto,
-    ComfortBandDto, ConfirmObligationEarlyInput, CreateAccountInput, CreateAccountResult,
-    CreateCategoryInput, CreateCategoryResult, CreateForecastAssumptionInput,
-    CreateIncomeSourceInput, CreateManualFutureEntryInput, CreateRecurringBillInput,
-    CreateRecurringBillResult, CreateRecurringTransferInput, CreateRecurringTransferResult,
-    CreateScenarioInput, CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult,
-    DebtPayoffPlanDto, DebtTermsDto, DiagnosticsPreviewDto, DiagnosticsSaveResult,
-    DismissRecurringSuggestionInput, ForecastReadinessDto, ForecastViewDto, ImportBatchInput,
-    ImportedTransactionFieldsDto, IncomeSourceDto, LoanDoubleCountWarningDto, ManualFutureEntryDto,
-    MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto, MutationResult,
-    RecordTransactionInput, RecordTransactionResult, RecordTransferInput, RecurringBillDto,
-    RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
-    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto,
-    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
-    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
-    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
-    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
-    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
-    UpdateRecurringBillInput, UpdateScenarioInput, UpdateStatusDto, VaultHealthDto, VaultListDto,
-    VaultStatusDto, VaultSummaryDto,
+    parse_transaction_id, AccountViewDto, AssertBalanceInput, AssertBalanceResult,
+    AssumptionEventDto, AttachSourceRecordInput, AttachSourceRecordResult, AttachmentDto,
+    BackupCadenceDto, BackupHistoryEntryDto, BackupScheduleSettingsDto, BandDriftSignalDto,
+    BatchResultDto, BuildInfoDto, CapabilityUnlockDto, CardStatementForecastDto,
+    CardStatementHistoryDto, CashAvailabilityDto, CashFlowHistoryDto, CashTiersDto, CategoryDto,
+    ChangePasswordInput, CloneScenarioInput, ColumnMappingDto, ComfortBandDto,
+    ConfirmObligationEarlyInput, CreateAccountInput, CreateAccountResult, CreateCategoryInput,
+    CreateCategoryResult, CreateForecastAssumptionInput, CreateIncomeSourceInput,
+    CreateManualFutureEntryInput, CreateRecurringBillInput, CreateRecurringBillResult,
+    CreateRecurringTransferInput, CreateRecurringTransferResult, CreateScenarioInput,
+    CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult, DebtPayoffPlanDto,
+    DebtTermsDto, DiagnosticsPreviewDto, DiagnosticsSaveResult, DismissRecurringSuggestionInput,
+    ForecastReadinessDto, ForecastViewDto, ImportBatchInput, ImportedTransactionFieldsDto,
+    IncomeSourceDto, LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
+    MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
+    RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
+    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind,
+    RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto, SetBillAutopayInput,
+    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
+    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
+    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
+    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
+    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
+    UpdateScenarioInput, VaultHealthDto, VaultListDto, VaultStatusDto, VaultSummaryDto,
 };
+#[cfg(desktop)]
+use crate::ipc::dto::{ApplyUpdateResultDto, UpdateStatusDto};
 use crate::ipc::IpcError;
 use crate::state::AppState;
 use crate::vault_registry::{VaultEntry, VaultRegistry};
@@ -3105,6 +3107,7 @@ pub fn recurring_bill_history(
 /// to the current branch's upstream; degrades to `checked = false` with a reason when it can't
 /// run (no checkout / no upstream / git missing). It never fails the IPC layer — the outcome
 /// is entirely in the returned status. Needs no vault, so it takes no `AppState`.
+#[cfg(desktop)]
 #[tauri::command]
 #[specta::specta]
 pub async fn check_for_update() -> UpdateStatusDto {
@@ -3314,6 +3317,7 @@ pub fn record_release_update_failure(error_text: String, failure_kind: ReleaseUp
 /// `scripts/update-app.sh`). Minutes-long; `async` + `spawn_blocking` keeps it off the main
 /// thread so the UI stays responsive with a progress spinner. Returns whether it succeeded and
 /// the tail of its output (for a failure message). Never fails the IPC layer.
+#[cfg(desktop)]
 #[tauri::command]
 #[specta::specta]
 pub async fn apply_update() -> ApplyUpdateResultDto {
@@ -3327,6 +3331,7 @@ pub async fn apply_update() -> ApplyUpdateResultDto {
 
 /// Relaunch into the freshly-installed build: spawn a detached helper that reopens the app once
 /// this process exits, then exit. Called after `apply_update` succeeds.
+#[cfg(desktop)]
 #[tauri::command]
 #[specta::specta]
 pub fn relaunch_app(app: tauri::AppHandle) {

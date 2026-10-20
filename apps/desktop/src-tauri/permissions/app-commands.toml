@@ -123,7 +123,6 @@ commands.allow = [
   "recurring_candidates",
   "income_candidates",
   "recurring_bill_history",
-  "check_for_update",
   "build_info",
   "record_release_update_failure",
   "create_manual_future_entry",

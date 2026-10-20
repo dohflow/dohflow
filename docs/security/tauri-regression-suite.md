@@ -31,6 +31,16 @@ check an embedding crate's own capability files must pass; the test adds a hosti
 capability to the real context for each case. It does not audit the rest of the
 embedder's capabilities (plugin grants, scopes), which stay that crate's ADR 0010 review.
 
+The self-update surface is desktop-only (`personal-cfo-i93n3.11`, ADR 0010 addendum
+2026-10-20), and three things hold that: the capability audit requires every capability
+to declare `platforms` and fails any update grant (`updater:*`, `process:*`,
+`allow-desktop-update-commands`) that applies off desktop; `tests/acl_coverage.rs` pins
+that the three update commands are registered and defined only under `cfg(desktop)` and
+that the two plugins are registered under it and depend only on the desktop target table;
+and `cargo check --lib --target aarch64-apple-ios-sim` builds the crate without them
+(run it after a change here; `ios-kernel.yml` stays kernel-only by ADR 0085). The
+isolated shells are unavailable where `windows::ISOLATED_SHELLS_AVAILABLE` is false.
+
 Two build-output checks complete the picture:
 
 - **`scripts/check-dist-csp.mjs`** runs on the frontend job's built `dist/`. It
