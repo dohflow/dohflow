@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-update",
+  "description": "Self-update grants for the trusted main window, desktop platforms only (personal-cfo-i93n3.11; ADR 0010 addendum 2026-10-20). The real signed-artifact updater (updater:default — check + download_and_install against the single signed endpoint in tauri.conf.json's plugins.updater, personal-cfo-867.1.2, ADR 0068), the process plugin's restart (process:allow-restart, which relaunches the app after the updater installs a new binary), and allow-desktop-update-commands (permissions/desktop-update-commands.toml: the from-source check_for_update, apply_update and relaunch_app). `platforms` excludes every non-desktop target, so a build for one has no update grant of any kind, and the updater and process plugins are not compiled there either (Cargo.toml). The isolated windows must NEVER be added here.",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux"
+  ],
+  "permissions": [
+    "updater:default",
+    "process:allow-restart",
+    "allow-desktop-update-commands"
+  ]
+}

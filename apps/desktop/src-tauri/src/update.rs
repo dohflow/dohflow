@@ -8,18 +8,24 @@
 //! is unchanged (ADR 0003/0010 addendum). Spawning `git`/`bash` is a direct
 //! `std::process::Command`, not the Tauri shell plugin, so it needs no capability grant.
 
+#[cfg(desktop)]
 use std::path::Path;
+#[cfg(desktop)]
 use std::process::Command;
 
 /// The commit the running binary was built from, and the checkout it was built in
 /// (`build.rs`). `PCFO_GIT_COMMIT` is `"unknown"` when built outside a git tree.
+#[cfg(desktop)]
 const BUILT_COMMIT: &str = env!("PCFO_GIT_COMMIT");
+#[cfg(desktop)]
 const REPO_ROOT: &str = env!("PCFO_REPO_ROOT");
 /// Build identity stamped by `build.rs` (personal-cfo-4d8.27.3.1), so the running app can
 /// say WHICH build it is: `dev` vs `release` (or an explicit channel), when it was built,
 /// and whether the worktree had uncommitted changes at the time.
 pub(crate) const BUILD_CHANNEL: &str = env!("PCFO_BUILD_CHANNEL");
+#[cfg(desktop)]
 const BUILD_TIME: &str = env!("PCFO_BUILD_TIME");
+#[cfg(desktop)]
 const BUILD_DIRTY: bool = matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true");
 
 /// The result of an update check. `checked` is false when the check could not run (no source
@@ -43,6 +49,7 @@ pub struct UpdateStatus {
     pub error: Option<String>,
 }
 
+#[cfg(desktop)]
 impl UpdateStatus {
     fn unchecked(built_commit: &str, error: impl Into<String>) -> Self {
         Self {
@@ -61,12 +68,14 @@ impl UpdateStatus {
     }
 }
 
+#[cfg(desktop)]
 /// Check for an update against the app's own source checkout.
 #[must_use]
 pub fn check() -> UpdateStatus {
     check_repo(REPO_ROOT, BUILT_COMMIT)
 }
 
+#[cfg(desktop)]
 /// Testable core: check `repo_root` for commits ahead of `built_commit` on the current
 /// branch's upstream. Deterministic given the repo state.
 fn check_repo(repo_root: &str, built_commit: &str) -> UpdateStatus {
@@ -129,6 +138,7 @@ fn check_repo(repo_root: &str, built_commit: &str) -> UpdateStatus {
     }
 }
 
+#[cfg(desktop)]
 /// Run `git -C <repo_root> <args>` with a PATH that resolves `git` even when the app was
 /// launched from Finder with a minimal environment. Returns trimmed stdout, or stderr on
 /// failure.
@@ -151,6 +161,7 @@ fn run_git(repo_root: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
+#[cfg(desktop)]
 /// PATH with the usual toolchain locations prepended (mirrors `scripts/build-app.sh`), so a
 /// Finder-launched app can still find `git`.
 fn tool_path() -> String {
@@ -160,6 +171,7 @@ fn tool_path() -> String {
     std::env::var("PATH").map_or(extra.clone(), |p| format!("{extra}:{p}"))
 }
 
+#[cfg(desktop)]
 /// Parse `git rev-list --count` output (a bare integer) into a count.
 fn parse_count(s: &str) -> Option<u32> {
     s.trim().parse::<u32>().ok()
@@ -173,6 +185,7 @@ pub struct ApplyResult {
     pub output_tail: String,
 }
 
+#[cfg(desktop)]
 /// Rebuild + reinstall the app from the source checkout by running the shared
 /// `scripts/update-app.sh` (the same engine as the terminal one-liner). Blocking + minutes-long;
 /// the caller runs it off the main thread. The script pulls (when the tree is clean), builds,
@@ -182,6 +195,7 @@ pub fn apply() -> ApplyResult {
     apply_in(REPO_ROOT)
 }
 
+#[cfg(desktop)]
 /// Testable core: run the update script under `repo_root`.
 fn apply_in(repo_root: &str) -> ApplyResult {
     let fail = |tail: String| ApplyResult {
@@ -238,6 +252,7 @@ fn apply_in(repo_root: &str) -> ApplyResult {
     result
 }
 
+#[cfg(desktop)]
 /// Run `scripts/update-app.sh` via `bash` (don't rely on the executable bit surviving), with the
 /// toolchain PATH so git/pnpm/cargo resolve even from a Finder-launched app.
 fn run_update_script(repo_root: &str, script: &str) -> ApplyResult {
@@ -263,6 +278,7 @@ fn run_update_script(repo_root: &str, script: &str) -> ApplyResult {
     }
 }
 
+#[cfg(desktop)]
 /// The last `n` non-empty-trimmed lines of `s`, joined — enough to show why an update failed
 /// without dumping the whole build log.
 fn tail_lines(s: &str, n: usize) -> String {
@@ -271,6 +287,7 @@ fn tail_lines(s: &str, n: usize) -> String {
     lines[start..].join("\n").trim().to_owned()
 }
 
+#[cfg(desktop)]
 /// Relaunch into the freshly-installed app. Spawns a **detached** helper that waits for this
 /// process to exit, then `open`s `/Applications/DohFlow.app` — so the new bundle launches
 /// rather than re-activating the quitting instance. The caller exits right after.
@@ -282,6 +299,7 @@ pub fn relaunch() {
         .spawn();
 }
 
+#[cfg(desktop)]
 #[cfg(test)]
 mod tests {
     use super::*;

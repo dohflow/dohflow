@@ -16,8 +16,10 @@ use capability_audit::{audit, Inputs, Violation};
 const LIB_RS: &str = include_str!("../src/lib.rs");
 const APP_COMMANDS: &str = include_str!("../permissions/app-commands.toml");
 const DESTRUCTIVE_COMMANDS: &str = include_str!("../permissions/destructive-commands.toml");
+const DESKTOP_UPDATE_COMMANDS: &str = include_str!("../permissions/desktop-update-commands.toml");
+const COMMANDS_RS: &str = include_str!("../src/ipc/commands.rs");
 
-/// Command idents out of the `collect_commands![...]` block — the audit's parser,
+/// Command idents out of the command list (`app_commands!` and `ipc_builder`) — the audit's parser,
 /// so there is one command inventory, not two.
 fn registered_commands() -> BTreeSet<String> {
     capability_audit::registered_commands(LIB_RS)
@@ -42,13 +44,38 @@ fn every_registered_command_has_exactly_one_acl_grant() {
     );
     let app = granted(APP_COMMANDS);
     let destructive = granted(DESTRUCTIVE_COMMANDS);
+    let update = granted(DESKTOP_UPDATE_COMMANDS);
     assert!(app.contains("backup_history"));
     assert!(!destructive.contains("backup_history"));
 
-    let both: Vec<_> = app.intersection(&destructive).collect();
-    assert!(both.is_empty(), "commands granted twice: {both:?}");
+    for (a, b, names) in [
+        (
+            "app",
+            "destructive",
+            app.intersection(&destructive).collect::<Vec<_>>(),
+        ),
+        (
+            "app",
+            "update",
+            app.intersection(&update).collect::<Vec<_>>(),
+        ),
+        (
+            "destructive",
+            "update",
+            destructive.intersection(&update).collect::<Vec<_>>(),
+        ),
+    ] {
+        assert!(
+            names.is_empty(),
+            "commands granted by both {a} and {b}: {names:?}"
+        );
+    }
 
-    let all: BTreeSet<_> = app.union(&destructive).cloned().collect();
+    let all: BTreeSet<_> = app
+        .union(&destructive)
+        .chain(update.iter())
+        .cloned()
+        .collect();
     let missing: Vec<_> = registered.difference(&all).collect();
     assert!(
         missing.is_empty(),
@@ -88,6 +115,7 @@ const DEFAULT_CAPABILITY: &str = include_str!("../capabilities/default.json");
 const DESTRUCTIVE_CAPABILITY: &str = include_str!("../capabilities/destructive.json");
 const DOCUMENT_PREVIEW_CAPABILITY: &str = include_str!("../capabilities/document-preview.json");
 const AGENT_REPORT_CAPABILITY: &str = include_str!("../capabilities/agent-report.json");
+const DESKTOP_UPDATE_CAPABILITY: &str = include_str!("../capabilities/desktop-update.json");
 const TAURI_CONF: &str = include_str!("../tauri.conf.json");
 
 /// The only URL pattern the main window may hand to the system browser: pages the
@@ -123,9 +151,10 @@ fn permissions(capability: &str) -> Vec<(String, serde_json::Value)> {
 /// (the opener's `open_url` checks the command scope chained with the global
 /// scope), so a grant in one file silently widens a grant in the other. Any test
 /// that pins "exactly one" of something must therefore look at the union.
-const CAPABILITIES: [(&str, &str); 4] = [
+const CAPABILITIES: [(&str, &str); 5] = [
     ("default.json", DEFAULT_CAPABILITY),
     ("destructive.json", DESTRUCTIVE_CAPABILITY),
+    ("desktop-update.json", DESKTOP_UPDATE_CAPABILITY),
     ("document-preview.json", DOCUMENT_PREVIEW_CAPABILITY),
     ("agent-report.json", AGENT_REPORT_CAPABILITY),
 ];
@@ -258,7 +287,7 @@ fn the_opener_grant_did_not_loosen_the_csp() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_updater_grant_is_exactly_updater_default_in_the_general_capability() {
+fn the_updater_grant_is_exactly_updater_default_in_the_desktop_update_capability() {
     let updater: Vec<(&str, String)> = CAPABILITIES
         .into_iter()
         .flat_map(|(file, capability)| {
@@ -270,9 +299,9 @@ fn the_updater_grant_is_exactly_updater_default_in_the_general_capability() {
         .collect();
     assert_eq!(
         updater,
-        vec![("default.json", "updater:default".to_owned())],
-        "exactly one updater:* permission, in default.json only — the update check itself \
-         is not destructive, unlike the install/relaunch step below"
+        vec![("desktop-update.json", "updater:default".to_owned())],
+        "exactly one updater:* permission, in desktop-update.json only — the file that \
+         applies on the desktop platforms and nowhere else (personal-cfo-i93n3.11)"
     );
 }
 
@@ -303,7 +332,7 @@ fn the_window_theme_grant_is_exactly_allow_set_theme_in_the_general_capability()
 }
 
 #[test]
-fn the_process_grant_is_exactly_allow_restart_in_the_destructive_capability() {
+fn the_process_grant_is_exactly_allow_restart_in_the_desktop_update_capability() {
     let process: Vec<(&str, String)> = CAPABILITIES
         .into_iter()
         .flat_map(|(file, capability)| {
@@ -315,10 +344,11 @@ fn the_process_grant_is_exactly_allow_restart_in_the_destructive_capability() {
         .collect();
     assert_eq!(
         process,
-        vec![("destructive.json", "process:allow-restart".to_owned())],
-        "exactly one process:* permission, in destructive.json only — restarting the app \
+        vec![("desktop-update.json", "process:allow-restart".to_owned())],
+        "exactly one process:* permission, in desktop-update.json only — restarting the app \
          (after the updater has already swapped the binary) belongs beside apply_update/ \
-         relaunch_app, never the default capability future isolated windows might get"
+         relaunch_app, desktop platforms only, never the default capability future isolated \
+         windows might get"
     );
     // process:default additionally grants exit/restart-with-args/plain restart variants this
     // app has no use for — the narrow allow-restart is deliberate, not an oversight.
@@ -561,6 +591,7 @@ fn each_capability_targets_exactly_its_own_window() {
     for (file, capability, label) in [
         ("default.json", DEFAULT_CAPABILITY, "main"),
         ("destructive.json", DESTRUCTIVE_CAPABILITY, "main"),
+        ("desktop-update.json", DESKTOP_UPDATE_CAPABILITY, "main"),
         (
             "document-preview.json",
             DOCUMENT_PREVIEW_CAPABILITY,
@@ -575,8 +606,12 @@ fn each_capability_targets_exactly_its_own_window() {
         );
         let cap: serde_json::Value = serde_json::from_str(capability).expect("valid JSON");
         assert!(
-            cap.get("webviews").is_none() && cap.get("platforms").is_none(),
+            cap.get("webviews").is_none(),
             "{file} scopes by window label only"
+        );
+        assert!(
+            cap["platforms"].as_array().is_some_and(|p| !p.is_empty()),
+            "{file} declares the platforms it applies to (personal-cfo-i93n3.11)"
         );
     }
 }
@@ -1237,4 +1272,187 @@ fn ci_runs_the_audit_on_every_change_it_covers() {
             "{file} lives under src-tauri/"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Desktop-only self-update surface (personal-cfo-i93n3.11, ADR 0010 addendum
+// 2026-10-20). A build for a platform that is not a desktop one has no updater or
+// process plugin, no from-source update command, and no capability that grants either.
+// `tests/host_options.rs` proves the plugin half on the mock runtime; a CI build for
+// an Apple mobile target proves the code compiles without them; these pin the shape.
+// ---------------------------------------------------------------------------
+
+const UPDATE_COMMANDS: [&str; 3] = ["check_for_update", "apply_update", "relaunch_app"];
+
+#[test]
+fn the_update_commands_are_registered_only_by_the_desktop_arm() {
+    let builder_start = LIB_RS
+        .find("pub fn ipc_builder")
+        .expect("ipc_builder exists");
+    let builder = &LIB_RS[builder_start..];
+    let desktop_arm = builder
+        .split("#[cfg(desktop)]")
+        .nth(1)
+        .and_then(|rest| rest.split("#[cfg(not(desktop))]").next())
+        .expect("ipc_builder has a cfg(desktop) arm followed by a cfg(not(desktop)) arm");
+    for name in UPDATE_COMMANDS {
+        assert!(
+            desktop_arm.contains(&format!("ipc::commands::{name}")),
+            "{name} must be registered in the cfg(desktop) arm of ipc_builder"
+        );
+    }
+    let other_arm = builder
+        .split("#[cfg(not(desktop))]")
+        .nth(1)
+        .and_then(|rest| rest.split("Builder::<tauri::Wry>").next())
+        .expect("ipc_builder has a cfg(not(desktop)) arm");
+    assert!(
+        !other_arm.contains("ipc::commands::"),
+        "the non-desktop arm registers no extra command"
+    );
+    // The shared list (the macro body) names none of them.
+    let macro_start = LIB_RS
+        .find("macro_rules! app_commands")
+        .expect("macro exists");
+    let shared = &LIB_RS[macro_start..builder_start];
+    for name in UPDATE_COMMANDS {
+        assert!(
+            !shared.contains(&format!("ipc::commands::{name}")),
+            "{name} must not be in the list every build shares"
+        );
+    }
+}
+
+#[test]
+fn the_update_command_definitions_are_compiled_out_of_a_non_desktop_build() {
+    for name in UPDATE_COMMANDS {
+        let marker = format!("fn {name}(");
+        let at = COMMANDS_RS
+            .find(&marker)
+            .unwrap_or_else(|| panic!("{name} is defined in ipc/commands.rs"));
+        let before = &COMMANDS_RS[..at];
+        let attrs_start = before.rfind("\n\n").map_or(0, |i| i + 2);
+        let attrs = &before[attrs_start..];
+        assert!(
+            attrs.contains("#[cfg(desktop)]"),
+            "{name} must carry #[cfg(desktop)] so a non-desktop build has no such command"
+        );
+    }
+}
+
+#[test]
+fn the_update_plugins_are_registered_and_compiled_only_for_desktop() {
+    // Registered only inside the cfg(desktop) block of `register_plugins`.
+    let registration = LIB_RS
+        .split("pub fn register_plugins")
+        .nth(1)
+        .expect("register_plugins exists");
+    let desktop_block = registration
+        .split("#[cfg(desktop)]")
+        .nth(1)
+        .expect("register_plugins has a cfg(desktop) block");
+    for plugin in ["tauri_plugin_updater::", "tauri_plugin_process::"] {
+        assert_eq!(
+            registration.matches(plugin).count(),
+            1,
+            "{plugin} is registered exactly once"
+        );
+        assert!(
+            desktop_block.contains(plugin),
+            "{plugin} must be registered inside the cfg(desktop) block"
+        );
+    }
+    // Compiled only for desktop targets: the dependencies sit in the target table.
+    let cargo: toml::Table = CARGO_TOML.parse().expect("Cargo.toml parses");
+    for dep in ["tauri-plugin-updater", "tauri-plugin-process"] {
+        assert!(
+            cargo["dependencies"].get(dep).is_none(),
+            "{dep} must not be a dependency of every build"
+        );
+        let desktop_only = cargo["target"]
+            .as_table()
+            .expect("a [target.*] table exists")
+            .iter()
+            .filter(|(cfg, _)| {
+                cfg.contains("not(any(target_os = \"android\", target_os = \"ios\"))")
+            })
+            .any(|(_, table)| table["dependencies"].get(dep).is_some());
+        assert!(
+            desktop_only,
+            "{dep} must sit under the non-android, non-ios target table"
+        );
+    }
+}
+
+#[test]
+fn no_capability_that_applies_off_desktop_grants_any_update_surface() {
+    for (file, capability) in CAPABILITIES {
+        let cap: serde_json::Value = serde_json::from_str(capability).expect("valid JSON");
+        let platforms: BTreeSet<&str> = cap["platforms"]
+            .as_array()
+            .expect("platforms declared")
+            .iter()
+            .map(|p| p.as_str().expect("platform name"))
+            .collect();
+        let off_desktop = platforms
+            .iter()
+            .any(|p| !["macOS", "windows", "linux"].contains(p));
+        for (id, _) in permissions(capability) {
+            let update = id.starts_with("updater:")
+                || id.starts_with("process:")
+                || id == capability_audit::UPDATE_SET;
+            assert!(
+                !(update && off_desktop),
+                "{file} grants `{id}` but also applies off desktop ({platforms:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn audit_fails_when_the_update_capability_gains_a_non_desktop_platform() {
+    let found = audit_with(|i| {
+        edit_capability(i, "desktop-update.json", r#""linux""#, r#""linux", "iOS""#)
+    });
+    assert_reports(&found, "non-desktop-update-grant", "main");
+    assert_reports(&found, "capability-platforms", "desktop-update");
+}
+
+#[test]
+fn audit_fails_when_an_update_grant_moves_into_a_cross_platform_capability() {
+    let found = audit_with(|i| {
+        edit_capability(
+            i,
+            "default.json",
+            r#""core:default","#,
+            r#""core:default", "updater:default","#,
+        )
+    });
+    assert_reports(&found, "non-desktop-update-grant", "main");
+}
+
+#[test]
+fn audit_fails_on_a_capability_without_platforms() {
+    let found = audit_with(|i| {
+        edit_capability(
+            i,
+            "agent-report.json",
+            "\"platforms\": [\n    \"macOS\",\n    \"windows\",\n    \"linux\",\n    \"iOS\",\n    \"android\"\n  ],\n  ",
+            "",
+        )
+    });
+    assert_reports(&found, "capability-platforms", "agent-report.json");
+}
+
+#[test]
+fn audit_fails_when_the_update_command_set_reaches_an_isolated_window() {
+    let found = audit_with(|i| {
+        edit_capability(
+            i,
+            "desktop-update.json",
+            "\"main\"\n  ]",
+            "\"main\", \"agent_report\"\n  ]",
+        )
+    });
+    assert_reports(&found, "destructive-reach", "agent_report");
 }

@@ -170,7 +170,7 @@ fn context_with_extra_capability(capability: &str) -> tauri::Context<MockRuntime
 #[test]
 fn a_context_granting_an_app_command_to_an_isolated_window_is_refused() {
     // The isolation rule of ADR 0010: an untrusted window gets no app command, in
-    // either permission file, and a wildcard window pattern counts too.
+    // any of the three permission files, and a wildcard window pattern counts too.
     for (windows, permission) in [
         ("\"document_preview\"", "allow-app-commands"),
         ("\"agent_report\"", "allow-app-commands"),
@@ -178,6 +178,9 @@ fn a_context_granting_an_app_command_to_an_isolated_window_is_refused() {
         ("\"agent_report\"", "allow-destructive-commands"),
         ("\"*\"", "allow-app-commands"),
         ("\"*\"", "allow-destructive-commands"),
+        ("\"document_preview\"", "allow-desktop-update-commands"),
+        ("\"agent_report\"", "allow-desktop-update-commands"),
+        ("\"*\"", "allow-desktop-update-commands"),
     ] {
         let capability = format!(
             r#"{{"identifier":"hostile","windows":[{windows}],"permissions":["{permission}"]}}"#
