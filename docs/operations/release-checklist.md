@@ -98,6 +98,21 @@ Two scripts, two different jobs — don't confuse them:
   misstates when it happened. Update the heading the morning you actually
   tag, not before. Proofread the section's content here too — `draft` (step
   4) reads it verbatim as the GitHub Release notes.
+- [ ] **The shipped-features oracle is current.** `docs/product/shipped-features.md`
+  is generated from the closed feature beads, and the site copy is checked
+  against it, so a stale file either hides a real feature or keeps a false claim.
+  Run this where `bd` can find the bead database (the primary checkout, or set
+  `BEADS_DIR=<primary>/.beads`); CI has no bead database, so this check cannot
+  run there:
+  ```sh
+  node scripts/generate-shipped-features.mjs --check   # expect: "... is current (N features)"
+  ```
+  **If it says the file is stale, stop the release.** Regenerate with
+  `node scripts/generate-shipped-features.mjs`, read the diff (every new row is a
+  claim the site may now make), and commit it. A closed feature that must not be
+  advertised (superseded, kernel-only, or merged but disabled until a named
+  release) goes in `scripts/shipped-features-exclusions.json` with a one-line
+  reason instead, never edited out of the generated file by hand.
 - [ ] **Icon note:** if the icon-refresh work isn't merged yet, `v0.1.0` ships
   with the legacy `.icns`. Say so explicitly in the release notes if that's
   still the case when this release is cut — don't let it be a silent
