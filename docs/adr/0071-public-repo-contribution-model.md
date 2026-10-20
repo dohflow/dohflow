@@ -56,6 +56,24 @@ The `main` branch ruleset (id `23361528`, verified live 2026-09-17) requires
 }
 ```
 
+**Update 2026-10-20 (`personal-cfo-0rein.5`, item 8).** The listing above is the
+2026-09-17 record and is left as written. The same ruleset (`23361528`) now also
+requires `iOS cross-compile (kernel crates)`, the verdict job of
+`.github/workflows/ios-kernel.yml` (`personal-cfo-md8h2.7`), which the owner added.
+Its required status checks are, exactly:
+
+- `IPC codegen (apps/desktop/src-tauri)`
+- `Rust (workspace)`
+- `Security scanning (secrets + dependencies)`
+- `Shell scripts`
+- `Frontend (apps/desktop)`
+- `iOS cross-compile (kernel crates)`
+
+The other rules and the Admin bypass are as listed above. This list was read from
+the live ruleset on 2026-10-20 by `00-overseer`, which has the API access that the
+implementation role's permission profile denies; the implementation session
+that wrote this paragraph took the names from that reading.
+
 So AGENTS.md §16's "no self-merge" and "review binds to a SHA" rules are
 enforced by **process discipline alone** — nothing in GitHub configuration
 stops the repository owner (or any future second Admin) from merging
