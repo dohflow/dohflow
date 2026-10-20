@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch as relaunchProcess } from "@tauri-apps/plugin-process";
 import { minimumMacOSBlock } from "./minimumMacOS";
+import { useBuildInfo } from "./BuildBadge";
 
 import {
   commands,
@@ -169,6 +170,11 @@ function describeReleaseUpdateFailure(error: unknown): ReleaseUpdateFailure {
 /// `@tauri-apps/plugin-opener` in `openExternal.ts`) — ADR 0003's "IPC flows through generated
 /// commands" governs our OWN custom commands, not first-party plugin bindings.
 export function useSoftwareUpdate() {
+  // Whether the HOST build can update itself (personal-cfo-i93n3.12): `build_info` carries
+  // a flag the host sets (true on a desktop build that kept the updater). Until it is known,
+  // and whenever it is false, nothing below runs: no check, no apply, no relaunch, so a
+  // build without the updater never invokes an update command that does not exist there.
+  const selfUpdate = useBuildInfo()?.self_update_available === true;
   // The live `Update` resource from the most recent release-channel check (holds a backend
   // resource handle — `downloadAndInstall` must be called on this SAME object, not a fresh
   // `check()`, so install always applies exactly what was just verified/shown to the user).
@@ -246,12 +252,16 @@ export function useSoftwareUpdate() {
     // A launch-time check is fine, but don't hammer the network/git on every refocus/remount.
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
+    enabled: selfUpdate,
   });
 
   /// Rebuild + reinstall (dev channel, personal-cfo-1ik.4) or download + verify + install the
   /// signed artifact (release channel). Never throws — a failure comes back as `{ ok: false }`
   /// so the caller can show it inline rather than an unhandled rejection.
   const apply = useCallback(async (): Promise<ApplyOutcome> => {
+    if (!selfUpdate) {
+      return { ok: false, message: "This build can't update itself." };
+    }
     const status = query.data;
     if (status?.kind === "dev") {
       const result = await commands.applyUpdate();
@@ -323,17 +333,18 @@ export function useSoftwareUpdate() {
     } finally {
       setProgress(null);
     }
-  }, [query, queryClient]);
+  }, [query, queryClient, selfUpdate]);
 
   /// Relaunch into the freshly-installed build. Quits this instance, so the promise never
   /// resolves — call it last, after a successful `apply()`.
   const relaunch = useCallback(async () => {
+    if (!selfUpdate) return;
     if (query.data?.kind === "dev") {
       await commands.relaunchApp();
     } else {
       await relaunchProcess();
     }
-  }, [query.data]);
+  }, [query.data, selfUpdate]);
 
   // The annotation is load-bearing, not decoration: returning the bare inferred type of
   // `query.data ?? null` leaves callers unable to narrow on `.kind` at all (see the note
@@ -341,8 +352,13 @@ export function useSoftwareUpdate() {
   const status: SoftwareUpdateStatus | null = query.data ?? null;
   return {
     status,
+    /// Whether the host build can update itself. False (or not yet known) means the
+    /// Software update surface is not shown.
+    selfUpdate,
     checking: query.isFetching,
-    check: () => query.refetch(),
+    check: async () => {
+      if (selfUpdate) await query.refetch();
+    },
     apply,
     relaunch,
     progress,

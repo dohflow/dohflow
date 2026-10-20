@@ -210,7 +210,8 @@ export const commands = {
 	recurringBillHistory: (eventId: string) => typedError<RecurringBillOccurrenceDto[], IpcError>(__TAURI_INVOKE("recurring_bill_history", { eventId })),
 	/**
 	 *  The running binary's build identity: version, commit, channel, build time, dirty flag,
-	 *  plus the running macOS version. Compile-time constants and one local file read — no git,
+	 *  the running macOS version, and whether the host reports self-update (personal-cfo-i93n3.12).
+	 *  Compile-time constants, the host's options and one local file read — no git,
 	 *  no network, no vault — so the UI can show which build you are running immediately,
 	 *  including on the lock screen and while offline.
 	 */
@@ -639,6 +640,13 @@ export type BuildInfoDto = {
 	 *  open (personal-cfo-md8h2.4).
 	 */
 	os_version: string | null,
+	/**
+	 *  Whether this build can update itself, as reported by the host that built it
+	 *  (personal-cfo-i93n3.12): true on a desktop build that kept the updater, false
+	 *  otherwise. The UI shows the Software update surface only when it is true and
+	 *  calls no update command when it is false.
+	 */
+	self_update_available: boolean,
 };
 
 /**  One observed charge behind a recurring candidate (personal-cfo-4d8.25.11). */

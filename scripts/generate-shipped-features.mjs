@@ -9,13 +9,46 @@
  * honestly say ships today", generated from closed feature beads rather than
  * from anyone's memory, and n76x.16 greps site copy against it.
  *
+ * Some closed feature beads must NOT be advertised: ones that were superseded or
+ * that are merged but switched off until a named release. They are listed, each
+ * with a one-line reason, in scripts/shipped-features-exclusions.json, which is
+ * reviewed like code (personal-cfo-md8h2.10). The generator omits them; nothing
+ * else is ever hand-edited out of the generated file.
+ *
  * Usage:  node scripts/generate-shipped-features.mjs [--check]
  *   --check  exit 1 if the committed file is stale (for CI)
+ *
+ * SHIPPED_FEATURES_EXCLUSIONS overrides the exclusion list's path (tests only).
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const OUT = 'docs/product/shipped-features.md'
+const EXCLUSIONS_PATH =
+  process.env.SHIPPED_FEATURES_EXCLUSIONS ??
+  fileURLToPath(new URL('./shipped-features-exclusions.json', import.meta.url))
+
+// Load and validate the exclusion list. A malformed entry is an error, not a
+// silent skip: a typo here would quietly re-advertise a feature we must not.
+function loadExclusions() {
+  const parsed = JSON.parse(readFileSync(EXCLUSIONS_PATH, 'utf8'))
+  const list = parsed.exclusions
+  if (!Array.isArray(list)) throw new Error(`${EXCLUSIONS_PATH}: "exclusions" must be an array`)
+  const seen = new Set()
+  for (const e of list) {
+    if (typeof e?.id !== 'string' || !/^personal-cfo-[A-Za-z0-9.]+$/.test(e.id)) {
+      throw new Error(`${EXCLUSIONS_PATH}: bad bead id: ${JSON.stringify(e)}`)
+    }
+    if (typeof e.reason !== 'string' || e.reason.trim() === '') {
+      throw new Error(`${EXCLUSIONS_PATH}: ${e.id} needs a one-line "reason"`)
+    }
+    if (seen.has(e.id)) throw new Error(`${EXCLUSIONS_PATH}: ${e.id} is listed twice`)
+    seen.add(e.id)
+  }
+  return seen
+}
+const excluded = loadExclusions()
 
 // Invoke the real bd binary. A shell alias on the maintainer's machine points
 // `bd` at an older incompatible CLI, so resolve the absolute path rather than
@@ -44,7 +77,16 @@ if (beads.length >= 50 && beads.length % 50 === 0) {
 // that is entirely features.
 const clean = (t) => t.replace(/^FEATURE:\s*/i, '').trim()
 
+// An entry that matches no closed feature is stale (reopened, renamed, or never
+// shipped): say so, but do not fail, because it hides nothing.
+for (const id of excluded) {
+  if (!beads.some((b) => b.id === id)) {
+    console.warn(`warning: exclusion ${id} matches no closed feature bead; remove it if its reason has ended`)
+  }
+}
+
 const rows = beads
+  .filter((b) => !excluded.has(b.id))
   .map((b) => ({ id: b.id, title: clean(b.title), priority: b.priority }))
   .sort((a, b) => a.id.localeCompare(b.id))
 

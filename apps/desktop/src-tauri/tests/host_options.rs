@@ -205,3 +205,70 @@ fn a_harmless_extra_capability_does_not_trip_the_guard() {
         &mut context
     ));
 }
+
+// ---------------------------------------------------------------------------
+// The host's self-update flag on build info (personal-cfo-i93n3.12).
+// ---------------------------------------------------------------------------
+
+fn build_info_app(options: HostOptions) -> App<MockRuntime> {
+    let app = register_plugins(mock_builder(), options)
+        .manage(options)
+        .invoke_handler(tauri::generate_handler![app_lib::ipc::commands::build_info])
+        .build(tauri::generate_context!(test = true))
+        .expect("mock app builds with the real context");
+    windows::build_main(&app).expect("main builds from its tauri.conf.json entry");
+    app
+}
+
+fn self_update_flag(app: &App<MockRuntime>) -> bool {
+    let webview = app.get_webview_window(MAIN).expect("main exists");
+    let body = get_ipc_response(
+        &webview,
+        InvokeRequest {
+            cmd: "build_info".into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().expect("url"),
+            body: InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .expect("main may call build_info");
+    let info: serde_json::Value = body.deserialize().expect("build_info answers JSON");
+    info["self_update_available"]
+        .as_bool()
+        .expect("build_info carries a boolean self_update_available")
+}
+
+#[test]
+fn the_default_host_reports_self_update_where_the_updater_exists() {
+    assert_eq!(
+        HostOptions::default().self_update_available(),
+        cfg!(desktop)
+    );
+    assert_eq!(
+        self_update_flag(&build_info_app(HostOptions::default())),
+        cfg!(desktop)
+    );
+}
+
+#[test]
+fn a_host_without_the_updater_reports_no_self_update() {
+    let options = HostOptions {
+        updater: false,
+        process: true,
+    };
+    assert!(!options.self_update_available());
+    assert!(!self_update_flag(&build_info_app(options)));
+}
+
+#[test]
+fn the_process_plugin_alone_does_not_make_self_update_available() {
+    let options = HostOptions {
+        updater: false,
+        process: false,
+    };
+    assert!(!options.self_update_available());
+    assert!(!self_update_flag(&build_info_app(options)));
+}

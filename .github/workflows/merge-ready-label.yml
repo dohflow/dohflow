@@ -1,0 +1,41 @@
+# Removes the `merge-ready` label whenever a pull request gets a new commit
+# (personal-cfo-0rein.5, owner decision personal-cfo-915.9).
+#
+# The review session applies `merge-ready` when it posts PASS / APPROVED_TO_MERGE
+# at an exact head SHA. A review binds to that SHA (AGENTS.md section 16, rule 3),
+# so any later commit, including an update-branch merge, makes the label stale.
+# This workflow removes it on every `synchronize` event so a stale label cannot
+# survive. It checks out no code and runs no PR-supplied script; the token is
+# limited to pull-requests: write.
+#
+# Pull requests from forks get a read-only token, so for them the label cannot
+# be removed here; the step is skipped rather than failing. The reviewer re-checks
+# the head SHA against the verdict before the owner merges (WORKFLOW_ROLES.md).
+name: Remove stale merge-ready label
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  remove-merge-ready:
+    name: Remove merge-ready on new commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Remove merge-ready if present
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx 'merge-ready'; then
+            gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label merge-ready
+            echo "Removed merge-ready: a new commit invalidates the review verdict."
+          else
+            echo "No merge-ready label on this pull request."
+          fi

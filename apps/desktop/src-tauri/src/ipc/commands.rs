@@ -3133,12 +3133,19 @@ pub async fn check_for_update() -> UpdateStatusDto {
 // ---- build_info (personal-cfo-4d8.27.3.2) ---------------------------------
 
 /// The running binary's build identity: version, commit, channel, build time, dirty flag,
-/// plus the running macOS version. Compile-time constants and one local file read — no git,
+/// the running macOS version, and whether the host reports self-update (personal-cfo-i93n3.12).
+/// Compile-time constants, the host's options and one local file read — no git,
 /// no network, no vault — so the UI can show which build you are running immediately,
 /// including on the lock screen and while offline.
 #[tauri::command]
 #[specta::specta]
-pub fn build_info() -> BuildInfoDto {
+pub fn build_info(host: tauri::State<'_, crate::HostOptions>) -> BuildInfoDto {
+    build_info_for(*host)
+}
+
+/// [`build_info`] for a given host (separate so it can be tested without a running app).
+#[must_use]
+pub fn build_info_for(host: crate::HostOptions) -> BuildInfoDto {
     BuildInfoDto {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         commit: env!("PCFO_GIT_COMMIT").to_owned(),
@@ -3146,6 +3153,7 @@ pub fn build_info() -> BuildInfoDto {
         built_at: env!("PCFO_BUILD_TIME").to_owned(),
         dirty: matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true"),
         os_version: macos_product_version(),
+        self_update_available: host.self_update_available(),
     }
 }
 
