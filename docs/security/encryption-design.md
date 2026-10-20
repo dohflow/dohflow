@@ -193,8 +193,9 @@ a zeroizing buffer: the DEK as the raw-key literal `x'<64 hex>'` (no KDF), a pas
 its UTF-8 bytes. The key is never SQL text, `PRAGMA key` and `PRAGMA rekey` do not appear
 in the code, and no key is a bound parameter, so SQLite never holds a statement text or
 parameter copy of a key that it frees without scrubbing. SQLCipher copies the key into its
-own key memory, which it always locks (`mlock`) and wipes on free, independent of any
-setting. The rotation export (ADR 0083) attaches its new file with no key and keys the
+own key memory, which it always tries to lock (`mlock`, best effort: a refused lock is
+logged, not fatal) and always overwrites on free, independent of any setting. (Rust-side
+copies of query results were never covered by that setting.) The rotation export (ADR 0083) attaches its new file with no key and keys the
 attached schema through the same call before anything is written. A test scans the source
 and fails if a key could reach SQL, and fails unless `sqlite3_key_v2` is called from
 exactly one place.

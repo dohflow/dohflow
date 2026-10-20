@@ -122,6 +122,16 @@ impl DbWorker {
         // `sqlite3_key_v2` on the attached schema, while it is still empty. The order matters
         // (attach, key, export), and `rekey_copy.rs` pins it: the export is written under the new
         // key, reopens only with the new DEK, and the old DEK no longer opens it.
+        // The file must still be empty, and nothing may touch the schema between the ATTACH and
+        // the keying below: SQLCipher attaches a key-less file under the MAIN key, and it ignores
+        // a later `sqlite3_key_v2` once that codec has been used (the export would then be written
+        // under the OLD DEK). `open_copy` and `verify_rekeyed_copy` would catch that before the
+        // swap; this keeps it from happening at all.
+        if std::fs::metadata(dest)?.len() != 0 {
+            return Err(DbError::InvalidCommand(
+                "rekey copy destination is not empty".to_owned(),
+            ));
+        }
         conn.execute("ATTACH DATABASE ?1 AS rekeyed", params![dest_str])?;
         if let Err(error) = crate::key_raw_schema(conn, "rekeyed", new_dek) {
             let _ = conn.execute_batch("DETACH DATABASE rekeyed;");

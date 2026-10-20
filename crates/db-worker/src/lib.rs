@@ -4130,10 +4130,19 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
 
 /// Hand a key to SQLCipher through its C API (`sqlite3_key_v2`) instead of as SQL text
 /// (personal-cfo-7ie.17, owner decision 2026-10-20), so no statement text containing the key ever
-/// exists inside SQLite. SQLCipher copies the key into its own key memory, which it always locks
-/// and wipes, during the call and keeps no pointer into `key`; the caller's buffer is scrubbed by
-/// its owner. `key` is the passphrase's UTF-8 bytes (SQLCipher runs its KDF over them), or the
-/// raw-key literal `x'<64 hex>'` for a DEK (no KDF), exactly what `PRAGMA key` was given before.
+/// exists inside SQLite. SQLCipher copies the key into its own key memory, which it always tries
+/// to lock (best effort: a refused lock is logged, not fatal) and always overwrites on free,
+/// during the call and keeps no pointer into `key`; the caller's buffer is scrubbed by its owner.
+/// `key` is the passphrase's UTF-8 bytes (SQLCipher runs its KDF over them), or the raw-key
+/// literal `x'<64 hex>'` for a DEK (no KDF), exactly what `PRAGMA key` was given before. An empty
+/// key is refused (`SQLITE_MISUSE`), where `PRAGMA key = ''` used to mean "unencrypted".
+///
+/// **`Ok` means "accepted, or ignored because the target already has a used key".** SQLCipher
+/// returns `SQLITE_OK` and logs "disregarding attempt to set key" when the database (or attached
+/// schema) has already been read or written under a key, so callers must key **before any
+/// access**: right after `open` for `main`, and for an attached schema right after an `ATTACH`
+/// with no `KEY` clause, while the file is still empty (`rekey.rs` asserts that, and a test pins
+/// the ignored-key behavior).
 ///
 /// `schema` names an attached database (`None` is `main`). SQLCipher's broad wipe of freed
 /// memory (`cipher_memory_security`) is never turned on: it cost 4x to 11x and could not be

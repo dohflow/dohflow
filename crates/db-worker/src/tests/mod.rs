@@ -8430,3 +8430,56 @@ fn the_raw_key_literal_is_built_at_its_exact_size() {
         .collect();
     assert_eq!(&literal[2..66], hex.as_bytes());
 }
+
+// -- sqlite3_key_v2 semantics the callers rely on (personal-cfo-7ie.17, 03a-escalation K1) ------
+
+#[test]
+fn an_empty_key_is_refused_where_pragma_key_once_meant_unencrypted() {
+    let dir = TempDir::new().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("empty.vault")).unwrap();
+    assert!(key_connection(&conn, None, b"").is_err());
+    // A refusal leaves the connection unkeyed, so the file stays a plaintext SQLite database
+    // that DohFlow never writes: the vault open paths all key with a non-empty key.
+}
+
+#[test]
+fn a_key_set_after_the_schema_was_used_is_silently_ignored_so_callers_must_key_first() {
+    // The behavior the rekey export is ordered around: ATTACH with no KEY clause attaches the new
+    // file under the MAIN key, and a later sqlite3_key_v2 returns Ok but changes nothing once that
+    // schema has been used. If SQLCipher ever changes this, this test fails and the rekey
+    // ordering is re-derived, instead of the change going unnoticed.
+    let dir = TempDir::new().unwrap();
+    let (old, new) = (
+        vault_crypto::generate_dek().unwrap(),
+        vault_crypto::generate_dek().unwrap(),
+    );
+    let main_path = dir.path().join("main.vault");
+    let copy = dir.path().join("copy.vault");
+    {
+        let conn = rusqlite::Connection::open(&main_path).unwrap();
+        key_raw(&conn, &old).unwrap();
+        conn.execute_batch("CREATE TABLE t (a INTEGER);").unwrap();
+        std::fs::write(&copy, b"").unwrap();
+        conn.execute("ATTACH DATABASE ?1 AS rekeyed", [copy.to_str().unwrap()])
+            .unwrap();
+        // Touch the attached schema BEFORE keying it: now its (old-key) codec has been used.
+        conn.execute_batch("CREATE TABLE rekeyed.t (a INTEGER);")
+            .unwrap();
+        key_raw_schema(&conn, "rekeyed", &new).expect("Ok, though the key is ignored");
+        conn.execute_batch("INSERT INTO rekeyed.t VALUES (1); DETACH DATABASE rekeyed;")
+            .unwrap();
+    }
+    let read = |dek: &vault_crypto::Dek| -> rusqlite::Result<i64> {
+        let conn = rusqlite::Connection::open(&copy)?;
+        key_raw(&conn, dek).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+    };
+    assert_eq!(read(&old).unwrap(), 1, "written under the OLD key");
+    assert!(read(&new).is_err(), "the new key was ignored");
+    // And the rotation's own check refuses such a copy before anything is swapped in: it fails
+    // closed, the vault is untouched.
+    assert!(
+        crate::rekey::verify_rekeyed_copy(&copy, &new, &dir.path().join("blobs"), 0).is_err(),
+        "a copy left under the old key must not verify under the new one"
+    );
+}

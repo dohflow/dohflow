@@ -233,15 +233,34 @@ fn no_key_reaches_sql_and_only_one_place_calls_sqlite3_key_v2() {
         }
         count
     }
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // Workspace-wide: every crate's `src/` (finance-kernel and the desktop app depend on rusqlite
+    // too) and the desktop app's own `src-tauri/src`, so "exactly one caller" holds everywhere.
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
-    walk(&src, &mut files);
-    assert!(files.len() > 20, "found {} source files", files.len());
+    for entry in std::fs::read_dir(workspace.join("crates"))
+        .unwrap()
+        .flatten()
+    {
+        let src = entry.path().join("src");
+        if src.is_dir() {
+            walk(&src, &mut files);
+        }
+    }
+    walk(&workspace.join("apps/desktop/src-tauri/src"), &mut files);
+    assert!(files.len() > 100, "found {} source files", files.len());
     let mut findings = Vec::new();
     let mut key_v2_calls = Vec::new();
     for path in files {
-        let name = path.strip_prefix(&src).unwrap().display().to_string();
-        if name.starts_with("tests") || name.ends_with("_tests.rs") {
+        let relative = path.strip_prefix(&workspace).unwrap();
+        let name = relative.display().to_string();
+        let file_in_crate = relative
+            .components()
+            .skip(1)
+            .collect::<std::path::PathBuf>();
+        if file_in_crate.starts_with("src/tests")
+            || name.ends_with("_tests.rs")
+            || name.contains("/tests/")
+        {
             continue;
         }
         // Comments out, then every run of whitespace (tabs and newlines included) to one space.
@@ -289,7 +308,7 @@ fn no_key_reaches_sql_and_only_one_place_calls_sqlite3_key_v2() {
     assert!(findings.is_empty(), "a key could reach SQL: {findings:?}");
     assert_eq!(
         key_v2_calls,
-        ["lib.rs"],
-        "sqlite3_key_v2 must be called from exactly one place, key_connection in lib.rs"
+        ["crates/db-worker/src/lib.rs"],
+        "sqlite3_key_v2 must be called from exactly one place, key_connection in db-worker's lib.rs"
     );
 }
