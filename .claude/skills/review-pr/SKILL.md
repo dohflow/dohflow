@@ -41,6 +41,11 @@ Check out the candidate SHA in your own worktree, then:
 5. **Tests.** Do they exercise the change, or only assert that it compiles?
    Consult `docs/architecture/definition-of-done.md` for the applicable layers.
 6. **Separate verified from assumed**, explicitly, every time.
+7. **Concurrent PASSes (interim rule, retires with the merge queue).** If another
+   Rust pull request has also PASSed and is waiting for the owner's merge, merge
+   both onto current `main` in a scratch worktree and run the gates before you
+   call them merge-ready together; see `WORKFLOW_ROLES.md` "Interim cross-check of
+   concurrent PASSes". Report the combined result in both comments.
 
 ## Report as a PR comment
 

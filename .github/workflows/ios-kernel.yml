@@ -48,6 +48,9 @@ name: iOS kernel
 on:
   pull_request:
     branches: [main]
+  # Merge queue (personal-cfo-md8h2.11): the required name must report on the
+  # temporary merge commit too, and there it always builds (no path filter).
+  merge_group:
   workflow_dispatch:
     inputs:
       simulator:
@@ -116,6 +119,11 @@ jobs:
             workflow_dispatch)
               check=true
               [ "$WANT_SIMULATOR" = "false" ] || simulator=true
+              ;;
+            merge_group)
+              if [ "$PRIVATE" = "false" ]; then
+                check=true
+              fi
               ;;
             pull_request)
               if [ "$PRIVATE" = "false" ] && [ "$CODE_CHANGED" = "true" ]; then
