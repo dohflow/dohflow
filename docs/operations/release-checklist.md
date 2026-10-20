@@ -25,13 +25,65 @@ Two scripts, two different jobs — don't confuse them:
 
 ## 0. Preconditions
 
-- [ ] Tag signing is configured (`release-signing.md` A-series) — **done once**,
-  2026-09-07: `gpg.format ssh`, `user.signingkey`, `tag.gpgsign true`, the SSH
-  key registered on GitHub as a signing key, verified with a throwaway tag
-  showing "Verified". Confirm it's still true with:
+- [ ] **Tag signing is configured on THIS machine.** It is a **per-machine**
+  setting: it lives in this Mac's global git config and an SSH key on this Mac's
+  disk, so the 2026-09-07 setup on the old build machine covers nothing on a
+  new one. A Mac without it fails at step 3 (`git tag -s`). Check first:
   ```sh
   git config --get tag.gpgsign   # expect: true
+  git config --get gpg.format    # expect: ssh
+  git config --get user.signingkey   # expect: a path to a .pub file that exists
   ```
+  If any is empty, set it up once on this machine (owner-terminal):
+  1. Make a key used only for signing, with a passphrase, and keep the
+     passphrase in the password manager. Never copy a private key from another
+     Mac:
+     ```sh
+     ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_signing -C "dohflow tag signing"
+     ```
+  2. Register the **public** half on GitHub as a **signing** key: Settings,
+     SSH and GPG keys, New SSH key, Key type "Signing Key". A key added only for
+     authentication does not make tags "Verified". `pbcopy < ~/.ssh/id_ed25519_signing.pub`
+     copies it.
+  3. Point git at it, globally:
+     ```sh
+     git config --global gpg.format ssh
+     git config --global user.signingkey ~/.ssh/id_ed25519_signing.pub
+     git config --global tag.gpgsign true
+     ```
+  4. Verify locally with a throwaway tag (nothing is pushed):
+     ```sh
+     touch ~/.ssh/allowed_signers   # appended to below, never overwritten
+     grep -qF "$(cut -d' ' -f1,2 ~/.ssh/id_ed25519_signing.pub)" ~/.ssh/allowed_signers ||
+       printf '%s %s\n' "$(git config user.email)" "$(cat ~/.ssh/id_ed25519_signing.pub)" >> ~/.ssh/allowed_signers
+     git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+     git tag -s signing-check -m "signing check"
+     git tag -v signing-check    # expect: Good "git" signature
+     git tag -d signing-check
+     ```
+  5. Verify GitHub shows the **tag** as "Verified". Push a throwaway signed tag:
+     ```sh
+     git tag -s signing-check-remote -m "signing check"
+     git push origin signing-check-remote
+     ```
+     then either open the repository's **Tags** page
+     (`https://github.com/dohflow/dohflow/tags`) and look for the badge on that
+     tag, or ask the API, which answers about the tag object itself:
+     ```sh
+     gh api repos/dohflow/dohflow/git/tags/"$(git rev-parse signing-check-remote)" --jq .verification.verified   # expect: true
+     ```
+     Do **not** judge it from `/commits/<tag>`: that page shows the badges of the
+     *commits*, which GitHub signs itself on merged commits, so it can say
+     "Verified" for a tag that is not signed at all. Then remove the throwaway
+     tag (the owner's call; it is a throwaway):
+     ```sh
+     git push origin :refs/tags/signing-check-remote
+     git tag -d signing-check-remote
+     ```
+     The tag in step 3 gets the same check on the real release.
+
+  The same setup is a numbered step of the build-machine cutover runbook, so a
+  new machine does it before its first release.
 - [ ] `apps/desktop/src-tauri/tauri.conf.json`'s `version`,
   `apps/desktop/src-tauri/Cargo.toml`'s `version`, and
   `apps/desktop/package.json`'s `version` all read the version being
@@ -101,9 +153,10 @@ continuing — it exits non-zero and names exactly what's wrong.
 ```
 
 Runs preflight again, then `git tag -s vX.Y.Z` and `git push origin vX.Y.Z`.
-Confirm the tag shows **"Verified"** at
-`https://github.com/dohflow/dohflow/releases/tag/vX.Y.Z` (or
-`/commits/vX.Y.Z` before the release exists) — this is the one place a
+Confirm the **tag** shows **"Verified"** at
+`https://github.com/dohflow/dohflow/releases/tag/vX.Y.Z` (or on the
+`/tags` page before the release exists; not `/commits/vX.Y.Z`, which shows the
+commits' own badges and can say "Verified" for an unsigned tag) — this is the one place a
 signing regression would show up silently otherwise.
 
 ## 4. Package + draft (either session)
