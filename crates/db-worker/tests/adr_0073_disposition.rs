@@ -2,7 +2,7 @@
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
 //! silently going stale as `WriteCommand` grows. It deliberately parses the
-//! enum declaration rather than constructing all 49 payloads, so a new variant
+//! enum declaration rather than constructing all 53 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
 //! can ship a command with no rebase rule. It also compares every checked-in
 //! ADR cell against this table and proves that a one-cell outcome drift fails.
@@ -17,6 +17,10 @@ enum Shape {
     Set,
     Toggle,
     BaseDependent,
+    // No variant has this shape any more: SYNC-2b (personal-cfo-egn67) tombstoned the three
+    // hard deletes, so they are Toggle with their Reinstate counterparts. The shape stays so
+    // the appendix vocabulary and its count assertion below remain explicit.
+    #[allow(dead_code)]
     TombstoneFirst,
     ReshapeFirst,
     NeverShips,
@@ -260,18 +264,33 @@ const DISPOSITIONS: &[Disposition] = &[
     // Sync envelope stream.
     d(
         "DeleteRecurringTransfer",
-        Shape::TombstoneFirst,
-        "tombstone in SYNC-2b; then Toggle",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
+    ),
+    d(
+        "ReinstateRecurringTransfer",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "DeleteIncomeSource",
-        Shape::TombstoneFirst,
-        "tombstone in SYNC-2b; then Toggle",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
+    ),
+    d(
+        "ReinstateIncomeSource",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "DeleteRecurringBill",
-        Shape::TombstoneFirst,
-        "tombstone in SYNC-2b; then Toggle",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
+    ),
+    d(
+        "ReinstateRecurringBill",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
         "CreateSourceBatch",
@@ -404,7 +423,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        50,
+        53,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -434,9 +453,9 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
     assert_eq!(shape_count(Shape::Create), 8);
     assert_eq!(shape_count(Shape::Set), 18);
-    assert_eq!(shape_count(Shape::Toggle), 12);
+    assert_eq!(shape_count(Shape::Toggle), 18);
     assert_eq!(shape_count(Shape::BaseDependent), 4);
-    assert_eq!(shape_count(Shape::TombstoneFirst), 3);
+    assert_eq!(shape_count(Shape::TombstoneFirst), 0);
     assert_eq!(shape_count(Shape::ReshapeFirst), 4);
     assert_eq!(shape_count(Shape::NeverShips), 1);
 

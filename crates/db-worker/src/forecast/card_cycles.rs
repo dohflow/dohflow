@@ -539,7 +539,7 @@ fn card_known_charges_per_cycle(
         "SELECT id, amount_expected_minor, frequency, next_expected_date
          FROM recurring_events
          WHERE autopay_account_id = ?1 AND is_active = 1 AND include_in_forecast = 1
-           AND next_expected_date IS NOT NULL",
+           AND deleted_at IS NULL AND next_expected_date IS NOT NULL",
     )?;
     let rows = stmt
         .query_map(params![card_id], |r| {
@@ -744,7 +744,7 @@ fn scheduled_bill_totals_in_windows(
                     AND i.linked_transaction_id IS NOT NULL)
          FROM recurring_events e
          WHERE e.autopay_account_id = ?1 AND e.is_active = 1 AND e.include_in_forecast = 1
-           AND e.next_expected_date IS NOT NULL",
+           AND e.deleted_at IS NULL AND e.next_expected_date IS NOT NULL",
     )?;
     let rows = stmt
         .query_map(params![card_id], |r| {
@@ -1451,7 +1451,7 @@ fn has_forecast_charged_bills(conn: &Connection, card_id: Uuid) -> Result<bool, 
         "SELECT EXISTS (
             SELECT 1 FROM recurring_events
              WHERE autopay_account_id = ?1 AND is_active = 1 AND include_in_forecast = 1
-               AND next_expected_date IS NOT NULL)",
+               AND deleted_at IS NULL AND next_expected_date IS NOT NULL)",
         [card_id],
         |r| r.get(0),
     )?;

@@ -328,7 +328,7 @@ fn canonical_recurring_events(conn: &Connection) -> Result<String, DbError> {
                 e.next_expected_date, b.type
          FROM recurring_events e
          LEFT JOIN bill_contracts b ON b.recurring_event_id = e.id
-         WHERE e.include_in_forecast = 1 AND e.is_active = 1
+         WHERE e.include_in_forecast = 1 AND e.is_active = 1 AND e.deleted_at IS NULL
          ORDER BY e.id",
     )?;
     let mut items = Vec::new();
@@ -352,7 +352,7 @@ fn canonical_recurring_events(conn: &Connection) -> Result<String, DbError> {
 fn canonical_income_sources(conn: &Connection) -> Result<String, DbError> {
     let mut stmt = conn.prepare(
         "SELECT id, name, net_minor_units, currency, frequency, anchor_date
-         FROM income_sources WHERE active = 1 ORDER BY id",
+         FROM income_sources WHERE active = 1 AND deleted_at IS NULL ORDER BY id",
     )?;
     let mut items = Vec::new();
     let mut rows = stmt.query([])?;

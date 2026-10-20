@@ -57,7 +57,7 @@ name = "bill_contracts"
 class = "1"
 write_set = "full"
 primary_key = ["id"]
-columns = ["id:uuid", "name:text", "type:text", "merchant_identity_id:text", "expected_amount_minor:int", "amount_variance_minor:int", "currency:text", "cadence:text", "due_rule_json:text", "autopay_enabled:int", "autopay_account_id:uuid", "payment_method_account_id:uuid", "recurring_event_id:uuid", "status:text", "include_in_forecast:int", "created_at:text", "updated_at:text", "description:text"]
+columns = ["id:uuid", "name:text", "type:text", "merchant_identity_id:text", "expected_amount_minor:int", "amount_variance_minor:int", "currency:text", "cadence:text", "due_rule_json:text", "autopay_enabled:int", "autopay_account_id:uuid", "payment_method_account_id:uuid", "recurring_event_id:uuid", "status:text", "include_in_forecast:int", "created_at:text", "updated_at:text", "description:text", "deleted_at:text"]
 
 [[table]]
 name = "categories"
@@ -225,7 +225,7 @@ name = "income_sources"
 class = "1"
 write_set = "full"
 primary_key = ["id"]
-columns = ["id:uuid", "name:text", "net_minor_units:int", "currency:text", "frequency:text", "anchor_date:text", "deposit_account_id:uuid", "active:int", "created_at:text", "archived_at:text"]
+columns = ["id:uuid", "name:text", "net_minor_units:int", "currency:text", "frequency:text", "anchor_date:text", "deposit_account_id:uuid", "active:int", "created_at:text", "archived_at:text", "deleted_at:text"]
 
 [[table]]
 name = "ledger_accounts"
@@ -340,7 +340,7 @@ name = "recurring_events"
 class = "1"
 write_set = "full"
 primary_key = ["id"]
-columns = ["id:uuid", "name:text", "source:text", "account_id:uuid", "amount_expected_minor:int", "amount_variance_minor:int", "currency:text", "frequency:text", "custom_schedule_json:text", "next_expected_date:text", "category_id:uuid", "detection_confidence_bps:int", "include_in_forecast:int", "autopay_account_id:uuid", "is_active:int", "notes:text", "created_at:text", "updated_at:text", "archived_at:text", "autopay_enabled:int", "source_merchant_key:text"]
+columns = ["id:uuid", "name:text", "source:text", "account_id:uuid", "amount_expected_minor:int", "amount_variance_minor:int", "currency:text", "frequency:text", "custom_schedule_json:text", "next_expected_date:text", "category_id:uuid", "detection_confidence_bps:int", "include_in_forecast:int", "autopay_account_id:uuid", "is_active:int", "notes:text", "created_at:text", "updated_at:text", "archived_at:text", "autopay_enabled:int", "source_merchant_key:text", "deleted_at:text"]
 
 [[table]]
 name = "recurring_suggestion_suppressions"
@@ -354,7 +354,7 @@ name = "recurring_transfers"
 class = "1"
 write_set = "full"
 primary_key = ["id"]
-columns = ["id:uuid", "source_account_id:uuid", "dest_account_id:uuid", "amount_minor:int", "currency:text", "frequency:text", "anchor_date:text", "created_at:text"]
+columns = ["id:uuid", "source_account_id:uuid", "dest_account_id:uuid", "amount_minor:int", "currency:text", "frequency:text", "anchor_date:text", "created_at:text", "deleted_at:text"]
 
 [[table]]
 name = "risk_flags"

@@ -11,7 +11,8 @@ use pay_schedule::Frequency;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::{commitments, currency_from_code, DbError};
+use crate::apply::household::issued_at_rfc3339;
+use crate::{commitments, currency_from_code, CommandMeta, DbError};
 
 /// Applies [`WriteCommand::CreateRecurringTransfer`].
 pub(crate) fn apply_create_recurring_transfer(
@@ -90,17 +91,62 @@ pub(crate) fn apply_create_recurring_transfer(
     Ok(entity_id)
 }
 
-/// Applies [`WriteCommand::DeleteRecurringTransfer`].
+/// Whether the row `id` of `table` exists, and if so whether it is tombstoned. The table and
+/// key column names are compile-time literals at every call site.
+fn tombstone_state(
+    tx: &Connection,
+    table: &str,
+    key_column: &str,
+    id: Uuid,
+) -> Result<Option<bool>, DbError> {
+    Ok(tx
+        .query_row(
+            &format!("SELECT deleted_at IS NOT NULL FROM {table} WHERE {key_column} = ?1"),
+            [id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?)
+}
+
+/// Applies [`WriteCommand::DeleteRecurringTransfer`]: a **tombstone**, not a `DELETE`
+/// (personal-cfo-egn67, ADR 0073 exceptions item 1). The row stays with `deleted_at` set to
+/// the command's `issued_at` (never the wall clock), every reader skips it, and
+/// [`apply_reinstate_recurring_transfer`] clears it. Deleting a row that is already
+/// tombstoned is an accepted, logged no-op, so the end state is the same on every device.
 pub(crate) fn apply_delete_recurring_transfer(
+    tx: &Connection,
+    meta: &CommandMeta,
+    id: &RecurringTransferId,
+) -> Result<Uuid, DbError> {
+    let entity_id = {
+        let updated = tx.execute(
+            "UPDATE recurring_transfers SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            params![id.as_uuid(), issued_at_rfc3339(meta)?],
+        )?;
+        if updated == 0 && tombstone_state(tx, "recurring_transfers", "id", id.as_uuid())?.is_none()
+        {
+            return Err(DbError::InvalidCommand(
+                "recurring transfer does not exist".to_owned(),
+            ));
+        }
+        id.as_uuid()
+    };
+    Ok(entity_id)
+}
+
+/// Applies [`WriteCommand::ReinstateRecurringTransfer`]: clears the tombstone. Reinstating a
+/// transfer that is not deleted is an accepted, logged no-op.
+pub(crate) fn apply_reinstate_recurring_transfer(
     tx: &Connection,
     id: &RecurringTransferId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
-        let n = tx.execute(
-            "DELETE FROM recurring_transfers WHERE id = ?1",
+        let updated = tx.execute(
+            "UPDATE recurring_transfers SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
             [id.as_uuid()],
         )?;
-        if n == 0 {
+        if updated == 0 && tombstone_state(tx, "recurring_transfers", "id", id.as_uuid())?.is_none()
+        {
             return Err(DbError::InvalidCommand(
                 "recurring transfer does not exist".to_owned(),
             ));
@@ -240,7 +286,7 @@ pub(crate) fn apply_update_income_source(
             "UPDATE income_sources
                  SET name = ?2, net_minor_units = ?3, currency = ?4, frequency = ?5,
                      anchor_date = ?6, deposit_account_id = ?7
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND deleted_at IS NULL",
             params![
                 id.as_uuid(),
                 name,
@@ -261,14 +307,41 @@ pub(crate) fn apply_update_income_source(
     Ok(entity_id)
 }
 
-/// Applies [`WriteCommand::DeleteIncomeSource`].
+/// Applies [`WriteCommand::DeleteIncomeSource`]: a tombstone (`deleted_at = issued_at`), not a
+/// `DELETE`; see [`apply_delete_recurring_transfer`]. It is distinct from archiving: an archived
+/// source is hidden and can be restored, a deleted one is gone from every list until reinstated.
 pub(crate) fn apply_delete_income_source(
+    tx: &Connection,
+    meta: &CommandMeta,
+    id: &IncomeSourceId,
+) -> Result<Uuid, DbError> {
+    let entity_id = {
+        let updated = tx.execute(
+            "UPDATE income_sources SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            params![id.as_uuid(), issued_at_rfc3339(meta)?],
+        )?;
+        if updated == 0 && tombstone_state(tx, "income_sources", "id", id.as_uuid())?.is_none() {
+            return Err(DbError::InvalidCommand(
+                "income source does not exist".to_owned(),
+            ));
+        }
+        id.as_uuid()
+    };
+    Ok(entity_id)
+}
+
+/// Applies [`WriteCommand::ReinstateIncomeSource`]: clears the tombstone (the archive flag is
+/// untouched). A source that is not deleted is an accepted, logged no-op.
+pub(crate) fn apply_reinstate_income_source(
     tx: &Connection,
     id: &IncomeSourceId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
-        let deleted = tx.execute("DELETE FROM income_sources WHERE id = ?1", [id.as_uuid()])?;
-        if deleted == 0 {
+        let updated = tx.execute(
+            "UPDATE income_sources SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
+            [id.as_uuid()],
+        )?;
+        if updated == 0 && tombstone_state(tx, "income_sources", "id", id.as_uuid())?.is_none() {
             return Err(DbError::InvalidCommand(
                 "income source does not exist".to_owned(),
             ));
@@ -285,7 +358,7 @@ pub(crate) fn apply_archive_income_source(
 ) -> Result<Uuid, DbError> {
     let entity_id = {
         let updated = tx.execute(
-            "UPDATE income_sources SET active = 0, archived_at = ?2 WHERE id = ?1",
+            "UPDATE income_sources SET active = 0, archived_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
             params![id.as_uuid(), Utc::now().to_rfc3339()],
         )?;
         if updated == 0 {
@@ -305,7 +378,7 @@ pub(crate) fn apply_restore_income_source(
 ) -> Result<Uuid, DbError> {
     let entity_id = {
         let updated = tx.execute(
-            "UPDATE income_sources SET active = 1, archived_at = NULL WHERE id = ?1",
+            "UPDATE income_sources SET active = 1, archived_at = NULL WHERE id = ?1 AND deleted_at IS NULL",
             [id.as_uuid()],
         )?;
         if updated == 0 {
@@ -468,7 +541,8 @@ pub(crate) fn apply_set_bill_autopay(
         let flag = i64::from(*autopay);
         let now = Utc::now().to_rfc3339();
         let updated = tx.execute(
-            "UPDATE recurring_events SET autopay_enabled = ?2, updated_at = ?3 WHERE id = ?1",
+            "UPDATE recurring_events SET autopay_enabled = ?2, updated_at = ?3
+                 WHERE id = ?1 AND deleted_at IS NULL",
             params![event_id.as_uuid(), flag, now],
         )?;
         if updated == 0 {
@@ -478,7 +552,7 @@ pub(crate) fn apply_set_bill_autopay(
         }
         tx.execute(
             "UPDATE bill_contracts SET autopay_enabled = ?2, updated_at = ?3
-                 WHERE recurring_event_id = ?1",
+                 WHERE recurring_event_id = ?1 AND deleted_at IS NULL",
             params![event_id.as_uuid(), flag, now],
         )?;
         commitments::rebuild_in(tx)?;
@@ -583,7 +657,7 @@ pub(crate) fn apply_update_recurring_bill(
                  SET name = ?2, amount_expected_minor = ?3, currency = ?4,
                      frequency = ?5, next_expected_date = ?6, autopay_account_id = ?7,
                      updated_at = ?8
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND deleted_at IS NULL",
             params![
                 event_id.as_uuid(),
                 name,
@@ -607,7 +681,7 @@ pub(crate) fn apply_update_recurring_bill(
                  SET name = ?2, type = ?3, expected_amount_minor = ?4, currency = ?5,
                      cadence = ?6, due_rule_json = ?7,
                      autopay_account_id = ?8, description = ?9, updated_at = ?10
-                 WHERE recurring_event_id = ?1",
+                 WHERE recurring_event_id = ?1 AND deleted_at IS NULL",
             params![
                 event_id.as_uuid(),
                 name,
@@ -630,35 +704,65 @@ pub(crate) fn apply_update_recurring_bill(
     Ok(entity_id)
 }
 
-/// Applies [`WriteCommand::DeleteRecurringBill`].
-pub(crate) fn apply_delete_recurring_bill(
+/// Set or clear the tombstone on a bill's schedule (`recurring_events`) and its contract
+/// (`bill_contracts`) and refresh the commitments projection. `at` is the command's
+/// `issued_at` to tombstone, or `None` to reinstate. One function serves both directions so
+/// the projection refresh has a single call site. Doing nothing because the bill is already in
+/// the requested state is an accepted, logged no-op; a bill that does not exist is an error.
+fn set_bill_tombstone(
     tx: &Connection,
     event_id: &RecurringEventId,
+    at: Option<String>,
 ) -> Result<Uuid, DbError> {
-    let entity_id = {
-        // Drop the contract then the schedule (both keyed by the event id). A
-        // missing schedule means the bill does not exist; the surrounding
-        // transaction rolls back the contract delete on that error.
-        tx.execute(
-            "DELETE FROM bill_contracts WHERE recurring_event_id = ?1",
-            [event_id.as_uuid()],
-        )?;
-        let deleted = tx.execute(
-            "DELETE FROM recurring_events WHERE id = ?1",
-            [event_id.as_uuid()],
-        )?;
-        if deleted == 0 {
+    let id = event_id.as_uuid();
+    let (event_sql, contract_sql) = if at.is_some() {
+        (
+            "UPDATE recurring_events SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            "UPDATE bill_contracts SET deleted_at = ?2
+                 WHERE recurring_event_id = ?1 AND deleted_at IS NULL",
+        )
+    } else {
+        (
+            "UPDATE recurring_events SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NOT NULL",
+            "UPDATE bill_contracts SET deleted_at = ?2
+                 WHERE recurring_event_id = ?1 AND deleted_at IS NOT NULL",
+        )
+    };
+    let changed = tx.execute(event_sql, params![id, at])?;
+    if changed == 0 {
+        if tombstone_state(tx, "recurring_events", "id", id)?.is_none() {
             return Err(DbError::InvalidCommand(
                 "recurring bill does not exist".to_owned(),
             ));
         }
-
+    } else {
+        tx.execute(contract_sql, params![id, at])?;
         // Refresh the forecast-facing commitments projection atomically.
         commitments::rebuild_in(tx)?;
+    }
+    Ok(id)
+}
 
-        event_id.as_uuid()
-    };
-    Ok(entity_id)
+/// Applies [`WriteCommand::DeleteRecurringBill`]: a tombstone on the schedule and on its
+/// contract, both set to the command's `issued_at`, not two `DELETE`s; see
+/// [`apply_delete_recurring_transfer`]. Deleting a bill that is already tombstoned is an
+/// accepted, logged no-op.
+pub(crate) fn apply_delete_recurring_bill(
+    tx: &Connection,
+    meta: &CommandMeta,
+    event_id: &RecurringEventId,
+) -> Result<Uuid, DbError> {
+    set_bill_tombstone(tx, event_id, Some(issued_at_rfc3339(meta)?))
+}
+
+/// Applies [`WriteCommand::ReinstateRecurringBill`]: clears the tombstone on the schedule and
+/// its contract (the archive flag is untouched) and puts the bill back in the commitments
+/// projection. A bill that is not deleted is an accepted, logged no-op.
+pub(crate) fn apply_reinstate_recurring_bill(
+    tx: &Connection,
+    event_id: &RecurringEventId,
+) -> Result<Uuid, DbError> {
+    set_bill_tombstone(tx, event_id, None)
 }
 
 /// Applies [`WriteCommand::ArchiveRecurringBill`].
@@ -671,7 +775,7 @@ pub(crate) fn apply_archive_recurring_bill(
         let updated = tx.execute(
             "UPDATE recurring_events
                  SET is_active = 0, archived_at = ?2, updated_at = ?2
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND deleted_at IS NULL",
             params![event_id.as_uuid(), now],
         )?;
         if updated == 0 {
@@ -696,7 +800,7 @@ pub(crate) fn apply_restore_recurring_bill(
         let updated = tx.execute(
             "UPDATE recurring_events
                  SET is_active = 1, archived_at = NULL, updated_at = ?2
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND deleted_at IS NULL",
             params![event_id.as_uuid(), now],
         )?;
         if updated == 0 {

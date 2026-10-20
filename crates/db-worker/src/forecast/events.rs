@@ -344,12 +344,14 @@ pub(super) fn card_charged_bill_ids(conn: &Connection) -> Result<HashSet<Uuid>, 
          JOIN accounts a ON a.id = e.autopay_account_id
          JOIN debt_terms dt ON dt.account_id = a.id
          WHERE a.cashflow_role = 'credit_facility'
+           AND e.deleted_at IS NULL
            AND a.active = 1
            AND dt.payment_due_day IS NOT NULL
            AND (dt.statement_close_day IS NOT NULL
                 OR EXISTS (
                     SELECT 1 FROM recurring_events q
                      WHERE q.autopay_account_id = a.id AND q.is_active = 1
+                       AND q.deleted_at IS NULL
                        AND q.include_in_forecast = 1 AND q.next_expected_date IS NOT NULL))",
     )?;
     let ids = stmt
@@ -551,6 +553,7 @@ pub(super) fn collect_recurring_transfer_investment_outflows(
          JOIN accounts sa ON sa.id = t.source_account_id
          JOIN accounts da ON da.id = t.dest_account_id
          WHERE sa.cashflow_role = 'liquid_cash' AND da.cashflow_role = 'investment_asset'
+           AND t.deleted_at IS NULL
          ORDER BY t.id",
     )?;
     let rows = stmt
@@ -609,6 +612,7 @@ pub(super) fn collect_transfer_legs(
          FROM recurring_transfers t
          JOIN accounts sa ON sa.id = t.source_account_id
          JOIN accounts da ON da.id = t.dest_account_id
+         WHERE t.deleted_at IS NULL
          ORDER BY t.id",
     )?;
     let rows = stmt
