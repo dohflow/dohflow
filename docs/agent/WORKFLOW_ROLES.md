@@ -108,7 +108,8 @@ in the `main` ruleset**, this rule applies:
   and the reverse order if both are plausible) and run the gates (`cargo fmt
   --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
   --workspace`, and the desktop crate's tests). Report the combined result in the
-  verdict comments of both pull requests.
+  verdict comments of both pull requests, and **state the safe merge order in
+  both verdicts, or "either order"**.
 - If the combination fails, neither is "merge-ready together": say which one must
   rebase on the other, and remove the `merge-ready` label from the one that must
   change.

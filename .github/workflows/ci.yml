@@ -21,10 +21,10 @@ name: CI
 #   2. IN-JOB PATH FILTERING (rust/frontend/ipc-codegen only, not a
 #      workflow-level `paths-ignore`): a `dorny/paths-filter` step is each of
 #      those jobs' own first real step; their expensive compile/test steps run
-#      only `if: steps.filter.outputs.code == 'true' || github.event_name ==
-#      'workflow_dispatch'` (the dispatch escape hatch is what makes the
-#      verification run below actually exercise every step, not just prove
-#      the filter itself works). A workflow-level `paths-ignore` on the
+#      only `if: steps.filter.outputs.code == 'true' || github.event_name !=
+#      'pull_request'` (so a manual dispatch, a push to main and a merge-queue
+#      run always exercise every step; only a pull request is filtered, see 3
+#      below). A workflow-level `paths-ignore` on the
 #      trigger would make the whole workflow run NOT EXIST for a docs-only
 #      push — and personal-cfo-fkt5.9 makes these job names required checks,
 #      which would then sit at "Expected — waiting for status" forever. A job

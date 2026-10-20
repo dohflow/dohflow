@@ -45,7 +45,8 @@ Check out the candidate SHA in your own worktree, then:
    Rust pull request has also PASSed and is waiting for the owner's merge, merge
    both onto current `main` in a scratch worktree and run the gates before you
    call them merge-ready together; see `WORKFLOW_ROLES.md` "Interim cross-check of
-   concurrent PASSes". Report the combined result in both comments.
+   concurrent PASSes". Report the combined result in both comments, and state the
+   safe merge order in both verdicts (or "either order").
 
 ## Report as a PR comment
 
