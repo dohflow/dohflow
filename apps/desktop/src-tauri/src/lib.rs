@@ -274,6 +274,17 @@ pub struct HostOptions {
     pub process: bool,
 }
 
+impl HostOptions {
+    /// Whether this build can update itself: a desktop target whose host kept the
+    /// updater plugin (personal-cfo-i93n3.12). The shared UI reads it through
+    /// `build_info` and shows no update surface, and calls no update command, when it
+    /// is false. A non-desktop build has no updater whatever the options say.
+    #[must_use]
+    pub const fn self_update_available(self) -> bool {
+        cfg!(desktop) && self.updater
+    }
+}
+
 impl Default for HostOptions {
     fn default() -> Self {
         Self {
@@ -386,6 +397,9 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
     let builder = ipc_builder();
 
     register_plugins(tauri::Builder::default(), options)
+        // The host's own options, for the commands that report what this build can do
+        // (`build_info`'s self-update flag).
+        .manage(options)
         .invoke_handler(builder.invoke_handler())
         .setup(|app| {
             use tauri::Manager;

@@ -25,6 +25,7 @@ function buildInfo(over: Partial<BuildInfoDto> = {}): BuildInfoDto {
     built_at: "2026-07-20T14:32:05Z",
     dirty: false,
     os_version: "15.7.9",
+    self_update_available: true,
     ...over,
   };
 }
@@ -117,5 +118,18 @@ describe("release channel", () => {
     );
     await waitFor(() => expect(mocks.pluginCheck).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("a host without self-update (personal-cfo-i93n3.12)", () => {
+  test("no notice, and no update check is made", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo({ self_update_available: false }));
+    mocks.checkForUpdate.mockResolvedValue(status());
+    const { container } = renderWithClient(<UpdateAvailableNotice onGoToSettings={vi.fn()} />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container).toBeEmptyDOMElement();
+    expect(mocks.checkForUpdate).not.toHaveBeenCalled();
+    expect(mocks.pluginCheck).not.toHaveBeenCalled();
   });
 });
