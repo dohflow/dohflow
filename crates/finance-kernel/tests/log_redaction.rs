@@ -25,12 +25,45 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use finance_kernel::{
-    Account, AccountFlags, AccountId, ActorType, CashflowRole, CommandEnvelope, CommandMeta,
-    CreateAccount, Currency, Kernel, LedgerAccountId, Money, RecordTransaction, TransactionId,
+    Account, AccountFlags, AccountId, ActorType, BackupHistoryKind, BackupSink, BackupSinkEntry,
+    BackupSinkError, CashflowRole, CommandEnvelope, CommandMeta, CreateAccount, Currency, Kernel,
+    LedgerAccountId, Money, PutMode, RecordTransaction, TransactionId,
 };
 use observability::RedactingMakeWriter;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
+
+/// A destination label and credential-shaped text a non-folder destination might
+/// carry (personal-cfo-7ie.15). Neither may reach a log through the backup code.
+const SINK_LABEL: &str = "acct-sink://household-7q3z-label/backup.pcfobk";
+
+/// A destination that stores in memory and labels items with [`SINK_LABEL`].
+#[derive(Default)]
+struct LabelledSink(Mutex<Vec<(String, Vec<u8>)>>);
+
+impl BackupSink for LabelledSink {
+    fn describe(&self, _name: &str) -> String {
+        SINK_LABEL.to_owned()
+    }
+    fn put(&self, name: &str, package: &[u8], _mode: PutMode) -> Result<u64, BackupSinkError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((name.to_owned(), package.to_vec()));
+        Ok(package.len() as u64)
+    }
+    fn get(&self, name: &str) -> Result<Vec<u8>, BackupSinkError> {
+        let items = self.0.lock().unwrap();
+        items
+            .iter()
+            .find(|(stored, _)| stored == name)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or(BackupSinkError)
+    }
+    fn list(&self) -> Result<Vec<BackupSinkEntry>, BackupSinkError> {
+        Ok(Vec::new())
+    }
+}
 
 /// §6.6 known-positive corpus: `(log line, the raw secret that must be absent
 /// after redaction)`. Covers every pattern class the redactor enforces — account
@@ -150,6 +183,14 @@ fn no_sensitive_value_survives_into_logs() {
                 Uuid::from_bytes([0x42; 16]),
             )
             .unwrap();
+        // A backup through a non-folder destination: its label must not reach a log.
+        kernel
+            .run_backup_to_sink(
+                &LabelledSink::default(),
+                "0.3.0-test",
+                BackupHistoryKind::Scheduled,
+            )
+            .unwrap();
         kernel
             .dispatch(CommandEnvelope::new(
                 meta(),
@@ -185,6 +226,10 @@ fn no_sensitive_value_survives_into_logs() {
     assert!(
         !logged.contains(NAME_EMBEDDED_NUMBER),
         "an account number leaked into the log (source discipline + backstop):\n{logged}"
+    );
+    assert!(
+        !logged.contains("household-7q3z-label"),
+        "a backup destination label leaked into the log:\n{logged}"
     );
     assert!(
         !logged.contains("redaction gate pw"),

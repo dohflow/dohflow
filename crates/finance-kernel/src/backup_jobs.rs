@@ -8,6 +8,7 @@ use job_runtime::{BackoffPolicy, JobSpec, Schedule};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::backup_sink::{BackupSink, BackupSinkError, FolderSink, PutMode};
 use crate::{Kernel, KernelError};
 
 /// Stable row identity for the one scheduled-backup consumer in each vault.
@@ -187,7 +188,21 @@ impl Kernel {
         app_version: &str,
     ) -> Result<BackupHistoryEntry, KernelError> {
         let result = validate_backup_file_path(package_path).and_then(|()| {
-            self.perform_backup_export(package_path, app_version, BackupHistoryKind::Manual, false)
+            // Validated above: absolute, `.pcfobk`, an existing parent, UTF-8.
+            let name = package_path.file_name().and_then(|value| value.to_str());
+            let folder = package_path.parent();
+            match (folder, name) {
+                (Some(folder), Some(name)) => self.perform_backup_export(
+                    &FolderSink::new(folder),
+                    name,
+                    app_version,
+                    BackupHistoryKind::Manual,
+                    PutMode::Replace,
+                ),
+                _ => Err(KernelError::Validation(
+                    "backup file path is not supported".to_owned(),
+                )),
+            }
         });
         self.record_backup_outcome(&result);
         result
@@ -205,8 +220,11 @@ impl Kernel {
         let folder = settings.destination.ok_or_else(|| {
             KernelError::Validation("choose a backup folder in Settings first".to_owned())
         })?;
-        let path = scheduled_backup_path(&folder, self.vault_metadata()?.vault_id, Utc::now());
-        self.perform_backup_export(&path, app_version, BackupHistoryKind::Manual, true)
+        self.backup_to_sink(
+            &FolderSink::new(folder),
+            app_version,
+            BackupHistoryKind::Manual,
+        )
     }
 
     /// Execute one durable scheduled-backup invocation.
@@ -232,69 +250,102 @@ impl Kernel {
         let folder = settings.destination.ok_or_else(|| {
             KernelError::Validation("choose a backup folder in Settings first".to_owned())
         })?;
-        let path = scheduled_backup_path(&folder, self.vault_metadata()?.vault_id, Utc::now());
-        self.perform_backup_export(&path, app_version, BackupHistoryKind::Scheduled, true)
+        self.backup_to_sink(
+            &FolderSink::new(folder),
+            app_version,
+            BackupHistoryKind::Scheduled,
+        )
+    }
+
+    /// Write one new verified backup to `sink` and record its receipt.
+    ///
+    /// The container is assembled from the unlocked vault's in-memory key (ADR
+    /// 0024-A), stored under a fresh timestamped name that can never replace an
+    /// earlier backup ([`PutMode::CreateNew`]), read back from the sink and verified
+    /// against that same key, and only then recorded as verified. This is the one
+    /// path the folder destination and every other destination share; nothing is
+    /// ever deleted (keep-all). A failure records a path-free receipt and returns the
+    /// same fixed error text as a folder failure always did.
+    ///
+    /// # Errors
+    /// [`KernelError::Vault`] with a fixed message if the write or the verification
+    /// fails; [`KernelError::Persistence`] if the receipt cannot be saved.
+    pub fn run_backup_to_sink(
+        &self,
+        sink: &dyn BackupSink,
+        app_version: &str,
+        kind: BackupHistoryKind,
+    ) -> Result<BackupHistoryEntry, KernelError> {
+        let result = self.backup_to_sink(sink, app_version, kind);
+        self.record_backup_outcome(&result);
+        result
+    }
+
+    fn backup_to_sink(
+        &self,
+        sink: &dyn BackupSink,
+        app_version: &str,
+        kind: BackupHistoryKind,
+    ) -> Result<BackupHistoryEntry, KernelError> {
+        let name = scheduled_backup_name(self.vault_metadata()?.vault_id, Utc::now());
+        self.perform_backup_export(sink, &name, app_version, kind, PutMode::CreateNew)
     }
 
     fn perform_backup_export(
         &self,
-        package_path: &Path,
+        sink: &dyn BackupSink,
+        name: &str,
         app_version: &str,
         kind: BackupHistoryKind,
-        exclusive: bool,
+        mode: PutMode,
     ) -> Result<BackupHistoryEntry, KernelError> {
         self.perform_backup_export_with_verifier(
-            package_path,
+            sink,
+            name,
             app_version,
             kind,
-            exclusive,
-            |kernel, path, backup_id| kernel.verify_unattended_backup(path, backup_id).map(|_| ()),
+            mode,
+            |kernel, package, backup_id| {
+                kernel
+                    .verify_unattended_backup_bytes(package, backup_id)
+                    .map(|_| ())
+            },
         )
     }
 
     fn perform_backup_export_with_verifier(
         &self,
-        package_path: &Path,
+        sink: &dyn BackupSink,
+        name: &str,
         app_version: &str,
         kind: BackupHistoryKind,
-        exclusive: bool,
-        verify: impl FnOnce(&Self, &Path, Uuid) -> Result<(), KernelError>,
+        mode: PutMode,
+        verify: impl FnOnce(&Self, &[u8], Uuid) -> Result<(), KernelError>,
     ) -> Result<BackupHistoryEntry, KernelError> {
         let vault_id = self.vault_metadata()?.vault_id;
         let backup_id = Uuid::now_v7();
         let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-        let export_result = if exclusive {
-            self.export_unattended_new(package_path, app_version, created_at.clone(), backup_id)
-        } else {
-            self.export_unattended(package_path, app_version, created_at.clone(), backup_id)
-        };
-        let write_succeeded = export_result.is_ok();
-        let failure = match export_result {
+        let stored = self
+            .assemble_unattended_backup(app_version, created_at.clone(), backup_id)
+            .map_err(|_| BackupSinkError)
+            .and_then(|package| sink.put(name, &package, mode));
+        let failure = match &stored {
             Err(_) => Some("Could not write the backup file."),
-            Ok(()) => verify(self, package_path, backup_id)
+            Ok(_) => sink
+                .get(name)
+                .map_err(|_| KernelError::Vault("reading backup failed".to_owned()))
+                .and_then(|package| verify(self, &package, backup_id))
                 .err()
                 .map(|_| "Could not verify the backup file."),
         };
-        let size_bytes = if write_succeeded {
-            std::fs::metadata(package_path)
-                .ok()
-                .filter(|metadata| metadata.is_file())
-                .map_or(0, |metadata| metadata.len())
-        } else {
-            0
-        };
-        let destination = package_path
-            .to_str()
-            .ok_or_else(|| KernelError::Validation("backup file path is not supported".to_owned()))?
-            .to_owned();
         let entry = BackupHistoryEntry {
             backup_id,
             vault_id,
             created_at,
             kind,
-            destination,
+            destination: sink.describe(name),
             format_version: 2,
-            size_bytes,
+            size_bytes: stored.unwrap_or(0),
             verified: failure.is_none(),
             error: failure.map(str::to_owned),
         };
@@ -327,13 +378,13 @@ fn validate_backup_file_path(path: &Path) -> Result<(), KernelError> {
     Ok(())
 }
 
-fn scheduled_backup_path(folder: &Path, vault_id: Uuid, now: DateTime<Utc>) -> PathBuf {
+fn scheduled_backup_name(vault_id: Uuid, now: DateTime<Utc>) -> String {
     let timestamp = format!(
         "{}{:09}Z",
         now.format("%Y%m%dT%H%M%S"),
         now.timestamp_subsec_nanos()
     );
-    folder.join(format!("{vault_id}-{timestamp}.pcfobk"))
+    format!("{vault_id}-{timestamp}.pcfobk")
 }
 
 #[cfg(test)]
@@ -365,10 +416,11 @@ mod tests {
 
         let error = kernel
             .perform_backup_export_with_verifier(
-                &package_path,
+                &FolderSink::new(&backup_dir),
+                "failed-verification.pcfobk",
                 "0.2.0-test",
                 BackupHistoryKind::Scheduled,
-                true,
+                PutMode::CreateNew,
                 |_, _, _| Err(KernelError::Vault("injected verifier failure".to_owned())),
             )
             .unwrap_err();
