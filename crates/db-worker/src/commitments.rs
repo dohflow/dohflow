@@ -94,7 +94,7 @@ pub(crate) fn rebuild_in(conn: &Connection) -> Result<u64, DbError> {
                 b.type, b.due_rule_json, e.autopay_enabled
          FROM recurring_events e
          LEFT JOIN bill_contracts b ON b.recurring_event_id = e.id
-         WHERE e.is_active = 1 AND e.include_in_forecast = 1
+         WHERE e.is_active = 1 AND e.include_in_forecast = 1 AND e.deleted_at IS NULL
          ORDER BY e.name COLLATE NOCASE, e.id",
     )?;
     let derived = stmt

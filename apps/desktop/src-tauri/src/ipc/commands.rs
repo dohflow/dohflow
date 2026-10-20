@@ -19,11 +19,12 @@ use finance_kernel::{
     DeleteIncomeSource, DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem,
     DismissRecurringSuggestion, Kernel, MarkReviewed, Money, MoveCategory, NewScenario,
     ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, RecurringEventId,
-    RecurringTransferId, ReinstateAccount, ReinstateCategory, RestoreIncomeSource,
-    RestoreRecurringBill, RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote,
-    SetAccountSubtype, SetBillAutopay, SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits,
-    SetTags, SkipStaged, SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock,
-    TagId, TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
+    RecurringTransferId, ReinstateAccount, ReinstateCategory, ReinstateIncomeSource,
+    ReinstateRecurringBill, ReinstateRecurringTransfer, RestoreIncomeSource, RestoreRecurringBill,
+    RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype,
+    SetBillAutopay, SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged,
+    SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock, TagId,
+    TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
     UpdateIncomeSource, UpdateRecurringBill, VaultController, VaultState, VoidTransaction,
     COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
@@ -3576,6 +3577,33 @@ pub fn delete_income_source(
     delete_income_source_impl(state.inner(), income_source_id, idempotency_key)
 }
 
+/// Reinstate a deleted net-pay income source (personal-cfo-egn67): the undo of
+/// `delete_income_source`, which tombstones rather than removes the source.
+pub fn reinstate_income_source_impl(
+    state: &AppState,
+    income_source_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    with_kernel(state, |kernel| {
+        let id = parse_income_source_id(&income_source_id)?;
+        let outcome = kernel.dispatch(CommandEnvelope::new(
+            user_meta(&idempotency_key),
+            ReinstateIncomeSource::new(id),
+        ))?;
+        Ok(outcome.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn reinstate_income_source(
+    state: tauri::State<'_, AppState>,
+    income_source_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    reinstate_income_source_impl(state.inner(), income_source_id, idempotency_key)
+}
+
 /// Archive a net-pay income source (soft-hide: leaves the active list + forecast,
 /// retained with its dates, restorable).
 pub fn archive_income_source_impl(
@@ -3881,6 +3909,33 @@ pub fn delete_recurring_transfer(
     idempotency_key: String,
 ) -> Result<MutationResult, IpcError> {
     delete_recurring_transfer_impl(state.inner(), recurring_transfer_id, idempotency_key)
+}
+
+/// Reinstate a deleted recurring transfer (personal-cfo-egn67): the undo of
+/// `delete_recurring_transfer`, which tombstones rather than removes the transfer.
+pub fn reinstate_recurring_transfer_impl(
+    state: &AppState,
+    recurring_transfer_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    with_kernel(state, |kernel| {
+        let id = parse_recurring_transfer_id(&recurring_transfer_id)?;
+        let outcome = kernel.dispatch(CommandEnvelope::new(
+            user_meta(&idempotency_key),
+            ReinstateRecurringTransfer::new(id),
+        ))?;
+        Ok(outcome.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn reinstate_recurring_transfer(
+    state: tauri::State<'_, AppState>,
+    recurring_transfer_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    reinstate_recurring_transfer_impl(state.inner(), recurring_transfer_id, idempotency_key)
 }
 
 /// The full category taxonomy (plan §9.6, ADR 0030, personal-cfo-bac) — the seeded
@@ -4364,6 +4419,33 @@ pub fn delete_recurring_bill(
     idempotency_key: String,
 ) -> Result<MutationResult, IpcError> {
     delete_recurring_bill_impl(state.inner(), bill_id, idempotency_key)
+}
+
+/// Reinstate a deleted manual recurring bill (personal-cfo-egn67): the undo of
+/// `delete_recurring_bill`, which tombstones rather than removes the bill.
+pub fn reinstate_recurring_bill_impl(
+    state: &AppState,
+    bill_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    with_kernel(state, |kernel| {
+        let id = parse_recurring_event_id(&bill_id)?;
+        let outcome = kernel.dispatch(CommandEnvelope::new(
+            user_meta(&idempotency_key),
+            ReinstateRecurringBill::new(id),
+        ))?;
+        Ok(outcome.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn reinstate_recurring_bill(
+    state: tauri::State<'_, AppState>,
+    bill_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    reinstate_recurring_bill_impl(state.inner(), bill_id, idempotency_key)
 }
 
 /// Archive a recurring bill (personal-cfo-4d8.2): soft-hide it — it leaves the

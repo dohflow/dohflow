@@ -18,6 +18,19 @@ evidence for one commit; this suite is what keeps later commits honest.
 | **3. Mock-runtime ACL** | `tests/window_isolation.rs` | The real resolved ACL on Tauri's mock runtime, with windows built by the app's own `windows` module: `main` reaches the general and destructive surfaces; `document_preview` and `agent_report` are rejected for app, destructive, core and plugin commands; the navigation guard refuses remote, `file:` and `data:` navigation from each shell | `cargo test` |
 | **4. Real-WebView probe** | `src/isolation_probe.rs` (debug builds only) | What static tests cannot: in each **real** WebView (`main` and both shells) the first-load origin, no Tauri global, `invoke` accepted or rejected as above, and the **effective** CSP, read from the browser's own `securitypolicyviolation` reports. An injected inline script and `eval` are refused, a remote `fetch` is refused by `connect-src`, and an inline `style` attribute still applies. `window.open` creates nothing, and a remote navigation is cancelled by the guard itself (its per-window count must rise) and leaves the page on the app origin. | CI step "Runtime isolation probe (real WebView, ADR 0010)" (Ubuntu, WebKitGTK under Xvfb); on demand locally (macOS WKWebView) |
 
+One more mock-runtime test file covers the app's generic embedding point
+(`personal-cfo-i93n3.8`): **`tests/host_options.rs`** drives `register_plugins`, the
+function `run_with` uses, with the real resolved ACL. A plugin left out through
+`HostOptions` has no commands at all in that build (Tauri answers "plugin updater not
+found" after the ACL has let the request through), the default options keep the
+desktop plugin set, and `run_with` refuses a supplied context that does not confine
+the app commands to `main` (`context_confines_app_commands_to_main`): the context must
+grant `main` the app commands, and must grant no isolated window (`document_preview`,
+`agent_report`, or a `"*"` window pattern) any app or destructive command. This is the
+check an embedding crate's own capability files must pass; the test adds a hostile
+capability to the real context for each case. It does not audit the rest of the
+embedder's capabilities (plugin grants, scopes), which stay that crate's ADR 0010 review.
+
 Two build-output checks complete the picture:
 
 - **`scripts/check-dist-csp.mjs`** runs on the frontend job's built `dist/`. It

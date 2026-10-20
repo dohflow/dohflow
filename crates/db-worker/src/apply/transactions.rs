@@ -132,7 +132,7 @@ pub(crate) fn apply_confirm_obligation_early(
             // currency must match the bill's currency (as well as the paying account's below).
             let bill_currency: Option<String> = tx
                 .query_row(
-                    "SELECT currency FROM recurring_events WHERE id = ?1",
+                    "SELECT currency FROM recurring_events WHERE id = ?1 AND deleted_at IS NULL",
                     [event_uuid],
                     |r| r.get(0),
                 )
@@ -156,7 +156,8 @@ pub(crate) fn apply_confirm_obligation_early(
                      SELECT 1 FROM recurring_events e
                      JOIN accounts a ON a.id = e.autopay_account_id
                      JOIN debt_terms dt ON dt.account_id = a.id
-                     WHERE e.id = ?1 AND a.cashflow_role = 'credit_facility' AND a.active = 1
+                     WHERE e.id = ?1 AND e.deleted_at IS NULL
+                       AND a.cashflow_role = 'credit_facility' AND a.active = 1
                        AND dt.statement_close_day IS NOT NULL AND dt.payment_due_day IS NOT NULL
                  )",
                 [event_uuid],

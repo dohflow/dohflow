@@ -51,8 +51,12 @@ mod attachments;
 mod backup_history;
 mod band_drift;
 mod categories;
+mod column_manifest;
 mod connectors;
 pub mod payload;
+pub mod write_set;
+#[cfg(test)]
+mod write_set_tests;
 pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
@@ -439,8 +443,13 @@ pub enum WriteCommand {
         anchor: NaiveDate,
     },
     /// Delete a recurring transfer (personal-cfo-npoe). Stops future projection;
-    /// any already-posted one-off transfers are untouched.
+    /// any already-posted one-off transfers are untouched. A **tombstone**
+    /// (`deleted_at = issued_at`, personal-cfo-egn67), not a row delete; reversed by
+    /// [`WriteCommand::ReinstateRecurringTransfer`].
     DeleteRecurringTransfer(RecurringTransferId),
+    /// Reinstate a deleted recurring transfer (personal-cfo-egn67): clear the tombstone.
+    /// A transfer that is not deleted is an accepted, logged no-op.
+    ReinstateRecurringTransfer(RecurringTransferId),
     /// Create a recurring net-pay income source (personal-cfo-le79).
     CreateIncomeSource {
         /// The new income source's id.
@@ -472,8 +481,13 @@ pub enum WriteCommand {
         /// New optional deposit account (currency must match).
         deposit_account_id: Option<AccountId>,
     },
-    /// Delete a net-pay income source (personal-cfo-tch0): drop its row by id.
+    /// Delete a net-pay income source (personal-cfo-tch0): a **tombstone**
+    /// (`deleted_at = issued_at`, personal-cfo-egn67) that drops it from every list and the
+    /// forecast; reversed by [`WriteCommand::ReinstateIncomeSource`]. Distinct from archiving.
     DeleteIncomeSource(IncomeSourceId),
+    /// Reinstate a deleted income source (personal-cfo-egn67): clear the tombstone (the
+    /// archive flag is untouched). A source that is not deleted is an accepted, logged no-op.
+    ReinstateIncomeSource(IncomeSourceId),
     /// Archive a net-pay income source (personal-cfo-tch0): set `active = 0` +
     /// `archived_at`, dropping it from the forecast while keeping its history.
     ArchiveIncomeSource(IncomeSourceId),
@@ -543,11 +557,20 @@ pub enum WriteCommand {
         /// New optional free-text description.
         description: Option<String>,
     },
-    /// Delete a manual recurring bill (personal-cfo-zl1l): drop its `recurring_event`
-    /// and `bill_contract` rows by recurring-event id, then refresh the commitments
-    /// projection. Only the forward-looking schedule is removed.
+    /// Delete a manual recurring bill (personal-cfo-zl1l): a **tombstone** on its
+    /// `recurring_event` and `bill_contract` rows (`deleted_at = issued_at`,
+    /// personal-cfo-egn67), keyed by recurring-event id, then a refresh of the commitments
+    /// projection. Only the forward-looking schedule is removed; reversed by
+    /// [`WriteCommand::ReinstateRecurringBill`].
     DeleteRecurringBill {
         /// The recurring event id identifying the bill to delete.
+        event_id: RecurringEventId,
+    },
+    /// Reinstate a deleted recurring bill (personal-cfo-egn67): clear the tombstone on the
+    /// schedule and its contract and refresh the commitments projection. A bill that is not
+    /// deleted is an accepted, logged no-op.
+    ReinstateRecurringBill {
+        /// The recurring event id identifying the bill to reinstate.
         event_id: RecurringEventId,
     },
     /// Archive a manual recurring bill (personal-cfo-4d8.2): set `is_active = 0` +
@@ -809,15 +832,18 @@ impl WriteCommand {
             WriteCommand::Transfer { .. } => "transfer",
             WriteCommand::CreateRecurringTransfer { .. } => "create_recurring_transfer",
             WriteCommand::DeleteRecurringTransfer(_) => "delete_recurring_transfer",
+            WriteCommand::ReinstateRecurringTransfer(_) => "reinstate_recurring_transfer",
             WriteCommand::CreateIncomeSource { .. } => "create_income_source",
             WriteCommand::UpdateIncomeSource { .. } => "update_income_source",
             WriteCommand::DeleteIncomeSource(_) => "delete_income_source",
+            WriteCommand::ReinstateIncomeSource(_) => "reinstate_income_source",
             WriteCommand::ArchiveIncomeSource(_) => "archive_income_source",
             WriteCommand::RestoreIncomeSource(_) => "restore_income_source",
             WriteCommand::CreateRecurringBill { .. } => "create_recurring_bill",
             WriteCommand::SetBillAutopay { .. } => "set_bill_autopay",
             WriteCommand::UpdateRecurringBill { .. } => "update_recurring_bill",
             WriteCommand::DeleteRecurringBill { .. } => "delete_recurring_bill",
+            WriteCommand::ReinstateRecurringBill { .. } => "reinstate_recurring_bill",
             WriteCommand::ArchiveRecurringBill(_) => "archive_recurring_bill",
             WriteCommand::RestoreRecurringBill(_) => "restore_recurring_bill",
             WriteCommand::CreateSourceBatch { .. } => "create_source_batch",
@@ -1235,6 +1261,9 @@ struct Inner {
     state: WorkerState,
     /// Monotonic hybrid-logical-clock counter (sync-readiness, §9.1.2).
     last_hlc: i64,
+    /// The write set of the last command this writer applied (vault-format.md C.4). The
+    /// operation-log write that stores it is a later part of personal-cfo-t2s4b.
+    last_write_set: Option<write_set::WriteSet>,
 }
 
 impl Inner {
@@ -1401,12 +1430,16 @@ impl DbWorker {
         ensure_system_accounts(&conn)?;
         ensure_default_categories(&conn)?;
         merchant_identity::ensure_seed_merchants(&conn)?;
+        // The write-set capture (vault-format.md C.1.5): temp triggers on the writer
+        // connection, installed after the migrations and the seed writes so neither is captured.
+        write_set::install(&conn)?;
         let last_hlc = current_max_hlc(&conn)?;
         let worker = Self {
             inner: Mutex::new(Inner {
                 conn,
                 state: WorkerState::Healthy,
                 last_hlc,
+                last_write_set: None,
             }),
             runner_gate: Mutex::new(()),
             path,
@@ -1417,6 +1450,13 @@ impl DbWorker {
         };
         worker.self_test()?;
         Ok(worker)
+    }
+
+    /// The write set of the last command this worker applied: the write-set hash and the
+    /// `(table, primary_key)` of every replicated row it changed (vault-format.md C.4).
+    #[must_use]
+    pub fn last_write_set(&self) -> Option<write_set::WriteSet> {
+        self.lock().last_write_set.clone()
     }
 
     /// The current writer health.
@@ -6202,6 +6242,7 @@ pub(crate) fn read_income_source_views(
                 s.deposit_account_id, a.name, s.active, s.created_at, s.archived_at
          FROM income_sources s
          LEFT JOIN accounts a ON a.id = s.deposit_account_id
+         WHERE s.deleted_at IS NULL
          ORDER BY s.name COLLATE NOCASE, s.id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -6276,7 +6317,7 @@ pub(crate) fn read_recurring_bill_views(
          LEFT JOIN (SELECT recurring_event_id, group_concat(lower(hex(tag_id))) AS tag_concat
                       FROM recurring_event_tags GROUP BY recurring_event_id) rt
                 ON rt.recurring_event_id = e.id
-         WHERE e.source = 'manual'
+         WHERE e.source = 'manual' AND e.deleted_at IS NULL
          ORDER BY e.name COLLATE NOCASE, e.id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -6364,6 +6405,7 @@ pub(crate) fn read_recurring_transfer_views(
          FROM recurring_transfers t
          JOIN accounts sa ON sa.id = t.source_account_id
          JOIN accounts da ON da.id = t.dest_account_id
+         WHERE t.deleted_at IS NULL
          ORDER BY t.created_at, t.id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -6460,6 +6502,9 @@ fn apply_command(
     // Advance the HLC before borrowing the connection for the transaction.
     let hlc = inner.next_hlc();
     let tx = inner.conn.transaction()?;
+    // A direct (non-command) writer may have left before-images in the capture tables; the
+    // command starts from an empty capture.
+    write_set::clear(&tx)?;
 
     // 1. Domain mutation. Each arm yields the affected entity id for provenance.
     let entity_id = match cmd {
@@ -6569,7 +6614,10 @@ fn apply_command(
             anchor,
         )?,
         WriteCommand::DeleteRecurringTransfer(id) => {
-            apply::recurring::apply_delete_recurring_transfer(&tx, id)?
+            apply::recurring::apply_delete_recurring_transfer(&tx, meta, id)?
+        }
+        WriteCommand::ReinstateRecurringTransfer(id) => {
+            apply::recurring::apply_reinstate_recurring_transfer(&tx, id)?
         }
         WriteCommand::CreateIncomeSource {
             id,
@@ -6604,7 +6652,10 @@ fn apply_command(
             deposit_account_id,
         )?,
         WriteCommand::DeleteIncomeSource(id) => {
-            apply::recurring::apply_delete_income_source(&tx, id)?
+            apply::recurring::apply_delete_income_source(&tx, meta, id)?
+        }
+        WriteCommand::ReinstateIncomeSource(id) => {
+            apply::recurring::apply_reinstate_income_source(&tx, id)?
         }
         WriteCommand::ArchiveIncomeSource(id) => {
             apply::recurring::apply_archive_income_source(&tx, id)?
@@ -6664,7 +6715,10 @@ fn apply_command(
             description,
         )?,
         WriteCommand::DeleteRecurringBill { event_id } => {
-            apply::recurring::apply_delete_recurring_bill(&tx, event_id)?
+            apply::recurring::apply_delete_recurring_bill(&tx, meta, event_id)?
+        }
+        WriteCommand::ReinstateRecurringBill { event_id } => {
+            apply::recurring::apply_reinstate_recurring_bill(&tx, event_id)?
         }
         WriteCommand::ArchiveRecurringBill(event_id) => {
             apply::recurring::apply_archive_recurring_bill(&tx, event_id)?
@@ -6830,6 +6884,9 @@ fn apply_command(
 
     fault.maybe_panic(FaultPoint::AfterMutation);
 
+    // The rows this command changed, as a state difference (vault-format.md C.1.5 and C.4).
+    let write_set = write_set::finish(&tx)?;
+
     // 2. Operation-log row (full §9.1.2 / ADR 0011 metadata, system-stamped).
     //    Provenance UUIDs bind as BLOBs; affected_entities is JSON bytes. Most
     //    commands affect an account row; income-source creation affects its own
@@ -6838,11 +6895,13 @@ fn apply_command(
         WriteCommand::CreateIncomeSource { .. }
         | WriteCommand::UpdateIncomeSource { .. }
         | WriteCommand::DeleteIncomeSource(_)
+        | WriteCommand::ReinstateIncomeSource(_)
         | WriteCommand::ArchiveIncomeSource(_)
         | WriteCommand::RestoreIncomeSource(_) => "income_sources",
         WriteCommand::CreateRecurringBill { .. }
         | WriteCommand::UpdateRecurringBill { .. }
         | WriteCommand::DeleteRecurringBill { .. }
+        | WriteCommand::ReinstateRecurringBill { .. }
         | WriteCommand::ArchiveRecurringBill(_)
         | WriteCommand::RestoreRecurringBill(_) => "recurring_events",
         WriteCommand::CreateSourceBatch { .. } | WriteCommand::UpdateBatchState { .. } => {
@@ -6865,9 +6924,9 @@ fn apply_command(
         WriteCommand::SetTags { .. } => "transaction_tags",
         WriteCommand::SetNote { .. } => "transaction_details",
         WriteCommand::SetSplits { .. } => "split_lines",
-        WriteCommand::CreateRecurringTransfer { .. } | WriteCommand::DeleteRecurringTransfer(_) => {
-            "recurring_transfers"
-        }
+        WriteCommand::CreateRecurringTransfer { .. }
+        | WriteCommand::DeleteRecurringTransfer(_)
+        | WriteCommand::ReinstateRecurringTransfer(_) => "recurring_transfers",
         WriteCommand::SkipStaged { .. } => "staged_transactions",
         WriteCommand::SnoozeInboxItem { .. } | WriteCommand::DismissInboxItem { .. } => {
             "money_inbox_read_model"
@@ -6953,6 +7012,7 @@ fn apply_command(
     fault.maybe_panic(FaultPoint::AfterOpLog);
 
     tx.commit()?;
+    inner.last_write_set = Some(write_set);
     Ok(Outcome::Applied { op_seq })
 }
 
