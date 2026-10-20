@@ -233,3 +233,29 @@ fn only_the_keying_helpers_send_a_key() {
         "{senders:?}"
     );
 }
+
+/// Memory security makes SQLCipher warn, per allocation, when `mlock` is refused (a small
+/// `RLIMIT_MEMLOCK`); the warning flood starved a CI runner. Every keyed connection runs with the
+/// log threshold at ERROR, so that best-effort warning is not printed while real errors still are.
+#[test]
+fn a_keyed_connection_does_not_log_sqlcipher_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw =
+        DbWorker::open_with_raw_key(dir.path().join("raw.vault"), generate_dek().unwrap()).unwrap();
+    let pass = DbWorker::open(
+        dir.path().join("pass.vault"),
+        "correct horse battery staple",
+    )
+    .unwrap();
+    for (label, worker) in [("raw", &raw), ("passphrase", &pass)] {
+        let level: String = worker
+            .read_connection()
+            .unwrap()
+            .query_row("PRAGMA cipher_log_level", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            level, "ERROR",
+            "{label}: WARN is the SQLCipher default and floods stderr"
+        );
+    }
+}

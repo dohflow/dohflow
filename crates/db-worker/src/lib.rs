@@ -4134,8 +4134,15 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
 /// SQLCipher's allocator wipes freed memory and keeps it out of swap, so the copy does not
 /// outlive the statement. It is OFF by default (`cipher_memory_security` reads 0 on the bundled
 /// SQLCipher 4.14), hence this call at every keying site (personal-cfo-rsjud).
+///
+/// Memory security also makes SQLCipher try to `mlock` every allocation, and it logs a `WARN`
+/// line to stderr, per allocation, whenever the lock is refused (a small `RLIMIT_MEMLOCK`, the
+/// default on a Linux runner or desktop, returns ENOMEM). That is best-effort hardening failing
+/// quietly, not an error, but unthrottled it produced ~430,000 lines in one CI run and starved
+/// the runner. So the same call raises SQLCipher's (process-wide) log threshold from its
+/// default `WARN` to `ERROR`: real SQLCipher errors still log, the lock-refusal warning does not.
 fn set_memory_security(conn: &Connection) -> Result<(), DbError> {
-    conn.execute_batch("PRAGMA cipher_memory_security = ON;")?;
+    conn.execute_batch("PRAGMA cipher_log_level = ERROR; PRAGMA cipher_memory_security = ON;")?;
     Ok(())
 }
 
