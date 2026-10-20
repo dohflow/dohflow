@@ -206,22 +206,55 @@ fn only_the_known_statements_carry_a_key() {
             }
         }
     }
-    /// The token after each `PRAGMA ` in `code`, up to whitespace, `=`, `(` or `;`.
+    /// The token after each `PRAGMA` in `code` (any whitespace between), up to whitespace, `=`,
+    /// `(`, `;` or a quote.
     fn pragma_names(code: &str) -> Vec<String> {
         let upper = code.to_ascii_uppercase();
         let mut names = Vec::new();
         let mut from = 0;
-        while let Some(at) = upper[from..].find("PRAGMA ") {
-            let start = from + at + "PRAGMA ".len();
+        while let Some(at) = upper[from..].find("PRAGMA") {
+            let start = from + at + "PRAGMA".len();
             let name: String = code[start..]
                 .trim_start()
                 .chars()
                 .take_while(|c| !c.is_whitespace() && !matches!(c, '=' | '(' | ';' | '"' | '\\'))
                 .collect();
-            names.push(name.to_ascii_lowercase());
+            if !name.is_empty() {
+                names.push(name.to_ascii_lowercase());
+            }
             from = start;
         }
         names
+    }
+    /// Count the `ATTACH` statements in `code` that carry a `KEY` word before the string literal
+    /// ends. The `DATABASE` keyword is optional in SQLite, and the statement may be split over
+    /// lines or contain tabs, so the code is flattened to single-spaced text first.
+    fn attach_key_statements(code: &str) -> usize {
+        let upper = code.to_ascii_uppercase();
+        let mut count = 0;
+        let mut from = 0;
+        while let Some(at) = upper[from..].find("ATTACH") {
+            let begin = from + at;
+            let start = begin + "ATTACH".len();
+            from = start;
+            // A statement keyword, not part of an identifier like `attach_source_record`.
+            let standalone = !upper[..begin]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                && upper[start..].starts_with(' ');
+            if !standalone {
+                continue;
+            }
+            let statement: String = upper[start..].chars().take_while(|c| *c != '"').collect();
+            if statement
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|word| word == "KEY")
+            {
+                count += 1;
+            }
+        }
+        count
     }
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
@@ -233,31 +266,36 @@ fn only_the_known_statements_carry_a_key() {
         if name.starts_with("tests") || name.ends_with("_tests.rs") {
             continue;
         }
-        for (n, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("");
-            let site = format!("{name}:{}", n + 1);
-            if code.contains("pragma_update(None, \"key\"")
-                || code.contains("pragma_update(None, \"rekey\"")
+        // Comments out, then every run of whitespace (tabs and newlines included) to one space.
+        let code: String = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ")
+            // A `\t`, `\n` or `\r` escape inside a string literal is whitespace in the SQL.
+            .replace("\\t", " ")
+            .replace("\\n", " ")
+            .replace("\\r", " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if code.contains("pragma_update(None, \"key\"")
+            || code.contains("pragma_update(None, \"rekey\"")
+        {
+            pragma_update_key.push(name.clone());
+        }
+        for pragma in pragma_names(&code) {
+            if pragma == "key"
+                || pragma == "rekey"
+                || pragma.ends_with(".key")
+                || pragma.ends_with(".rekey")
             {
-                pragma_update_key.push(site.clone());
+                keys.push(format!("{name} (PRAGMA {pragma})"));
             }
-            for pragma in pragma_names(code) {
-                if pragma == "key"
-                    || pragma == "rekey"
-                    || pragma.ends_with(".key")
-                    || pragma.ends_with(".rekey")
-                {
-                    keys.push(format!("{site} (PRAGMA {pragma})"));
-                }
-            }
-            let upper = code.to_ascii_uppercase();
-            if upper.contains("ATTACH DATABASE")
-                && upper
-                    .split(|c: char| !c.is_ascii_alphanumeric())
-                    .any(|word| word == "KEY")
-            {
-                attaches.push(site);
-            }
+        }
+        for _ in 0..attach_key_statements(&code) {
+            attaches.push(name.clone());
         }
     }
     assert!(
@@ -270,17 +308,13 @@ fn only_the_known_statements_carry_a_key() {
         2,
         "PRAGMA key statements outside the keying helpers: {keys:?}"
     );
-    assert!(
-        keys.iter()
-            .all(|h| h.starts_with("lib.rs:") && h.ends_with("(PRAGMA key)")),
-        "{keys:?}"
-    );
+    assert!(keys.iter().all(|h| h == "lib.rs (PRAGMA key)"), "{keys:?}");
     assert_eq!(
         attaches.len(),
         1,
         "ATTACH ... KEY outside the rekey copy: {attaches:?}"
     );
-    assert!(attaches[0].starts_with("rekey.rs:"), "{attaches:?}");
+    assert_eq!(attaches[0], "rekey.rs", "{attaches:?}");
 }
 
 /// Memory security makes SQLCipher warn, per allocation, when `mlock` is refused (a small
