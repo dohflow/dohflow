@@ -291,8 +291,20 @@ cross-version tests are extended to include a vault that has been rotated.
 - The vault grows large enough that a full database copy no longer fits
   comfortably on typical free disk space.
 
+## Addendum A — Keying the export copy through the C API (2026-10-20, `personal-cfo-7ie.17`)
+
+Section 2's "`ATTACH … KEY` + `sqlcipher_export`" is superseded in its mechanism, not its
+result. No key reaches SQL: `vault.db` is keyed through `sqlite3_key_v2`, and the export
+copy is attached **without** a `KEY` clause and then keyed through the same call on the
+attached schema while the file is still empty, before `sqlcipher_export` runs. The result
+is unchanged: the copy is one closed file under the new DEK alone. `rekey_copy.rs` pins it
+(not plaintext; the new key reads it and `integrity_check` passes; the old key and no key
+do not). The reasons and the accepted trade-off are in
+[encryption-design.md](../security/encryption-design.md).
+
 ## Linked beads
 
+- `personal-cfo-7ie.17` (keys through `sqlite3_key_v2`; Addendum A)
 - `personal-cfo-2y8` (implementation)
 - `personal-cfo-g3m.5` (engine remediation; implementation follows it)
 - `personal-cfo-zxq` (password change — the KEK-only re-wrap this extends)

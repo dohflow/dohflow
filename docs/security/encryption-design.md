@@ -186,6 +186,29 @@ plus `docs/architecture/stack.md` and the release notes, and add the
 *outgoing* engine's vault to a cross-version corpus so the new engine is
 proven to still open vaults written by the old one.
 
+## How a key reaches SQLCipher (2026-10-20, `personal-cfo-7ie.17`)
+
+Every connection to `vault.db` is keyed through SQLCipher's C API, `sqlite3_key_v2`, from
+a zeroizing buffer: the DEK as the raw-key literal `x'<64 hex>'` (no KDF), a passphrase as
+its UTF-8 bytes. The key is never SQL text, `PRAGMA key` and `PRAGMA rekey` do not appear
+in the code, and no key is a bound parameter, so SQLite never holds a statement text or
+parameter copy of a key that it frees without scrubbing. SQLCipher copies the key into its
+own key memory, which it always locks (`mlock`) and wipes on free, independent of any
+setting. The rotation export (ADR 0083) attaches its new file with no key and keys the
+attached schema through the same call before anything is written. A test scans the source
+and fails if a key could reach SQL, and fails unless `sqlite3_key_v2` is called from
+exactly one place.
+
+**Accepted trade-off.** SQLCipher's broad `cipher_memory_security` is never turned on. It
+makes SQLCipher overwrite every freed block of SQLite memory (decrypted pages, query
+results, not just keys). PR #106 enabled it to stop the key's SQL text lingering; that
+purpose is now met by the key API instead. The broad wipe cost 4x on a macOS migration
+workload and 6x to 11x on Linux CI (where `mlock` is refused and each allocation also
+attempted it), it cannot be switched back off in a process once enabled, and it cannot be
+scoped to key handling. The owner accepted giving that wipe up (2026-10-20). It may return
+later as a deliberate, measured hardening choice, with its own budget. SQLCipher's
+private-heap key lock is kept (the library is not built with `OMIT_MEMLOCK`).
+
 ## Verification
 
 ```sh

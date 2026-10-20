@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OpenFlags};
 use uuid::Uuid;
 use vault_crypto::{Dek, WrappedContentKey};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::{attachments, migrations, DbError, DbWorker, WorkerState};
 
@@ -49,19 +49,6 @@ fn assert_no_side_files(path: &Path) -> Result<(), DbError> {
         }
     }
     Ok(())
-}
-
-/// Build the raw-key SQL fragment `"x'<64 hex>'"`. The caller must zeroize the
-/// returned string after use, as `key_raw` does for `PRAGMA key`.
-fn raw_key_literal(dek: &Dek) -> Zeroizing<String> {
-    use std::fmt::Write as _;
-    let mut literal = Zeroizing::new(String::with_capacity(70));
-    literal.push_str("\"x'");
-    for byte in dek.expose_bytes() {
-        let _ = write!(literal, "{byte:02x}");
-    }
-    literal.push_str("'\"");
-    literal
 }
 
 /// Open `path` keyed with `dek`, in rollback-journal mode, never creating it.
@@ -130,11 +117,16 @@ impl DbWorker {
         let dest_str = dest
             .to_str()
             .ok_or_else(|| DbError::InvalidCommand("rekey copy path is not UTF-8".to_owned()))?;
-        let mut attach = Zeroizing::new(String::from("ATTACH DATABASE ?1 AS rekeyed KEY "));
-        attach.push_str(&raw_key_literal(new_dek));
-        let attached = conn.execute(&attach, params![dest_str]);
-        attach.zeroize();
-        attached?;
+        // The new key never appears in SQL text or as a bound parameter (personal-cfo-7ie.17,
+        // option 4c): the file is attached WITHOUT a KEY clause, then keyed through
+        // `sqlite3_key_v2` on the attached schema, while it is still empty. The order matters
+        // (attach, key, export), and `rekey_copy.rs` pins it: the export is written under the new
+        // key, reopens only with the new DEK, and the old DEK no longer opens it.
+        conn.execute("ATTACH DATABASE ?1 AS rekeyed", params![dest_str])?;
+        if let Err(error) = crate::key_raw_schema(conn, "rekeyed", new_dek) {
+            let _ = conn.execute_batch("DETACH DATABASE rekeyed;");
+            return Err(error);
+        }
         let exported = conn
             .query_row("SELECT sqlcipher_export('rekeyed')", [], |_| Ok(()))
             .map_err(DbError::from)
