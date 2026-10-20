@@ -4141,6 +4141,14 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
 /// quietly, not an error, but unthrottled it produced ~430,000 lines in one CI run and starved
 /// the runner. So the same call raises SQLCipher's (process-wide) log threshold from its
 /// default `WARN` to `ERROR`: real SQLCipher errors still log, the lock-refusal warning does not.
+///
+/// What the threshold hides, from the bundled SQLCipher 4.14 source (re-check on a SQLCipher
+/// bump): the `mlock`/`VirtualLock` refusal above; "skipping encryption/decryption for fully
+/// plaintext header" (plaintext-header vaults, which DohFlow does not use); the `cipher_migrate`
+/// DETACH failure text (the failure is also returned as an error code); and SQLCipher's own
+/// simulated-failure paths (its test builds). Both settings are process-wide in SQLCipher, so
+/// "at every keying site" only guarantees they are on before any key is sent, not that each
+/// connection has its own.
 fn set_memory_security(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch("PRAGMA cipher_log_level = ERROR; PRAGMA cipher_memory_security = ON;")?;
     Ok(())

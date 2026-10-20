@@ -180,13 +180,22 @@ fn a_passphrase_with_quotes_and_unicode_round_trips() {
     }
 }
 
-/// Only the two keying helpers send a key to SQLCipher, and `pragma_update(None, "key", ..)` is
-/// never used (it builds the key into an unscrubbed `String`), so the memory-security setting and
-/// the scrubbed buffers cannot be skipped at a new keying site. The scan covers `src/` and its
-/// subdirectories. `rekey.rs` additionally sends a *new* key through an `ATTACH ... KEY` and a
-/// rekey statement; those are named below so a change to them is a reviewed one.
+/// Every statement that carries a key to SQLCipher is known, and the memory-security setting
+/// cannot be skipped at a new one. A key-bearing statement is any of:
+///
+/// * `PRAGMA key` / `PRAGMA <schema>.key` / `PRAGMA rekey` / `PRAGMA <schema>.rekey`, as SQL text;
+/// * `ATTACH DATABASE ... KEY ...`, which keys the attached database;
+/// * `pragma_update(None, "key" | "rekey", ..)`, which builds the key into an unscrubbed `String`
+///   and so is never allowed.
+///
+/// The allowed sites, exactly: the two keying helpers (`key_passphrase` and `raw_key_pragma`, both
+/// in `lib.rs`) and the rekey copy's `ATTACH` in `rekey.rs`, which runs on the live writer
+/// connection (already keyed through `key_raw`, so memory security is on for the statement text)
+/// and builds its key literal in a `Zeroizing` buffer. Anything else, a new `PRAGMA rekey` or a
+/// second `ATTACH ... KEY` included, fails here and gets reviewed. The scan covers `src/` and its
+/// subdirectories (test modules excluded).
 #[test]
-fn only_the_keying_helpers_send_a_key() {
+fn only_the_known_statements_carry_a_key() {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
@@ -197,10 +206,28 @@ fn only_the_keying_helpers_send_a_key() {
             }
         }
     }
+    /// The token after each `PRAGMA ` in `code`, up to whitespace, `=`, `(` or `;`.
+    fn pragma_names(code: &str) -> Vec<String> {
+        let upper = code.to_ascii_uppercase();
+        let mut names = Vec::new();
+        let mut from = 0;
+        while let Some(at) = upper[from..].find("PRAGMA ") {
+            let start = from + at + "PRAGMA ".len();
+            let name: String = code[start..]
+                .trim_start()
+                .chars()
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '=' | '(' | ';' | '"' | '\\'))
+                .collect();
+            names.push(name.to_ascii_lowercase());
+            from = start;
+        }
+        names
+    }
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     walk(&src, &mut files);
-    let (mut senders, mut pragma_update_key) = (Vec::new(), Vec::new());
+    assert!(files.len() > 20, "found {} source files", files.len());
+    let (mut keys, mut attaches, mut pragma_update_key) = (Vec::new(), Vec::new(), Vec::new());
     for path in files {
         let name = path.strip_prefix(&src).unwrap().display().to_string();
         if name.starts_with("tests") || name.ends_with("_tests.rs") {
@@ -208,13 +235,28 @@ fn only_the_keying_helpers_send_a_key() {
         }
         for (n, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
+            let site = format!("{name}:{}", n + 1);
             if code.contains("pragma_update(None, \"key\"")
                 || code.contains("pragma_update(None, \"rekey\"")
             {
-                pragma_update_key.push(format!("{name}:{}", n + 1));
+                pragma_update_key.push(site.clone());
             }
-            if code.contains("PRAGMA key") {
-                senders.push(format!("{name}:{}", n + 1));
+            for pragma in pragma_names(code) {
+                if pragma == "key"
+                    || pragma == "rekey"
+                    || pragma.ends_with(".key")
+                    || pragma.ends_with(".rekey")
+                {
+                    keys.push(format!("{site} (PRAGMA {pragma})"));
+                }
+            }
+            let upper = code.to_ascii_uppercase();
+            if upper.contains("ATTACH DATABASE")
+                && upper
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| word == "KEY")
+            {
+                attaches.push(site);
             }
         }
     }
@@ -222,16 +264,23 @@ fn only_the_keying_helpers_send_a_key() {
         pragma_update_key.is_empty(),
         "pragma_update builds the key into an unscrubbed String: {pragma_update_key:?}"
     );
-    senders.sort();
+    keys.sort();
     assert_eq!(
-        senders.len(),
+        keys.len(),
         2,
-        "PRAGMA key outside the keying helpers: {senders:?}"
+        "PRAGMA key statements outside the keying helpers: {keys:?}"
     );
     assert!(
-        senders.iter().all(|h| h.starts_with("lib.rs:")),
-        "{senders:?}"
+        keys.iter()
+            .all(|h| h.starts_with("lib.rs:") && h.ends_with("(PRAGMA key)")),
+        "{keys:?}"
     );
+    assert_eq!(
+        attaches.len(),
+        1,
+        "ATTACH ... KEY outside the rekey copy: {attaches:?}"
+    );
+    assert!(attaches[0].starts_with("rekey.rs:"), "{attaches:?}");
 }
 
 /// Memory security makes SQLCipher warn, per allocation, when `mlock` is refused (a small
