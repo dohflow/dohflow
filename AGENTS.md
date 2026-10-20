@@ -306,6 +306,14 @@ The full policy, including the lightweight and explicitly-authorized exception
 paths, is `docs/agent/WORKFLOW_ROLES.md`. The procedures are the `plan-bead`,
 `implement-bead`, `escalate-bead` and `review-pr` skills.
 
+Work runs in durable **parallel lanes** (owner decision `personal-cfo-915.9`): each
+lane has its own implementation, escalation and review sessions, suffixed with the
+lane letter (`02a`/`03a`/`04a`, `02b`/`03b`/`04b`, `02c`/`03c`/`04c`), while
+`00-overseer`, `01-planning` and `05-decisions` stay single and shared. A pull
+request with a `PASS` at an exact SHA carries the `merge-ready` label until its
+next commit. `WORKFLOW_ROLES.md` has the lane model, the file-ownership and hotspot
+rules, and the merge-ready procedure.
+
 Five rules hold regardless of which path is taken:
 
 1. **One owner at a time.** Only the session that claimed the bead edits it.
