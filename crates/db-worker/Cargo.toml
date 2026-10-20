@@ -31,8 +31,9 @@ importer-core = { path = "../importers/importer-core" }
 # unwraps (personal-cfo-vhv). vault-crypto is pure (no rusqlite), so no cycle.
 vault-crypto = { path = "../vault-crypto" }
 chrono = { workspace = true, features = ["serde"] }
-# Command payloads (personal-cfo-t2s4b part 3b): serde derives on WriteCommand and the canonical
-# JSON codec of the pure sync-core crate.
+# Command payloads (personal-cfo-t2s4b part 3b): serde derives on WriteCommand. sync-core is the
+# canonical JSON codec, the canonical row encoding (5b) and the write-set hash that the capture
+# of the rows a command changed hashes through (5c). Pure crate, no database.
 serde = { workspace = true }
 sync-core = { path = "../sync-core" }
 thiserror = { workspace = true }

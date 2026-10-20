@@ -51,8 +51,12 @@ mod attachments;
 mod backup_history;
 mod band_drift;
 mod categories;
+mod column_manifest;
 mod connectors;
 pub mod payload;
+pub mod write_set;
+#[cfg(test)]
+mod write_set_tests;
 pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
@@ -1235,6 +1239,9 @@ struct Inner {
     state: WorkerState,
     /// Monotonic hybrid-logical-clock counter (sync-readiness, §9.1.2).
     last_hlc: i64,
+    /// The write set of the last command this writer applied (vault-format.md C.4). The
+    /// operation-log write that stores it is a later part of personal-cfo-t2s4b.
+    last_write_set: Option<write_set::WriteSet>,
 }
 
 impl Inner {
@@ -1401,12 +1408,16 @@ impl DbWorker {
         ensure_system_accounts(&conn)?;
         ensure_default_categories(&conn)?;
         merchant_identity::ensure_seed_merchants(&conn)?;
+        // The write-set capture (vault-format.md C.1.5): temp triggers on the writer
+        // connection, installed after the migrations and the seed writes so neither is captured.
+        write_set::install(&conn)?;
         let last_hlc = current_max_hlc(&conn)?;
         let worker = Self {
             inner: Mutex::new(Inner {
                 conn,
                 state: WorkerState::Healthy,
                 last_hlc,
+                last_write_set: None,
             }),
             runner_gate: Mutex::new(()),
             path,
@@ -1417,6 +1428,13 @@ impl DbWorker {
         };
         worker.self_test()?;
         Ok(worker)
+    }
+
+    /// The write set of the last command this worker applied: the write-set hash and the
+    /// `(table, primary_key)` of every replicated row it changed (vault-format.md C.4).
+    #[must_use]
+    pub fn last_write_set(&self) -> Option<write_set::WriteSet> {
+        self.lock().last_write_set.clone()
     }
 
     /// The current writer health.
@@ -6460,6 +6478,9 @@ fn apply_command(
     // Advance the HLC before borrowing the connection for the transaction.
     let hlc = inner.next_hlc();
     let tx = inner.conn.transaction()?;
+    // A direct (non-command) writer may have left before-images in the capture tables; the
+    // command starts from an empty capture.
+    write_set::clear(&tx)?;
 
     // 1. Domain mutation. Each arm yields the affected entity id for provenance.
     let entity_id = match cmd {
@@ -6830,6 +6851,9 @@ fn apply_command(
 
     fault.maybe_panic(FaultPoint::AfterMutation);
 
+    // The rows this command changed, as a state difference (vault-format.md C.1.5 and C.4).
+    let write_set = write_set::finish(&tx)?;
+
     // 2. Operation-log row (full §9.1.2 / ADR 0011 metadata, system-stamped).
     //    Provenance UUIDs bind as BLOBs; affected_entities is JSON bytes. Most
     //    commands affect an account row; income-source creation affects its own
@@ -6953,6 +6977,7 @@ fn apply_command(
     fault.maybe_panic(FaultPoint::AfterOpLog);
 
     tx.commit()?;
+    inner.last_write_set = Some(write_set);
     Ok(Outcome::Applied { op_seq })
 }
 
