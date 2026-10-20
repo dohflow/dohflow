@@ -4,6 +4,7 @@ import { renderWithClient } from "@/test/renderWithClient";
 import { BackupScheduleCard } from "./BackupScheduleCard";
 
 const mocks = vi.hoisted(() => ({
+  buildInfo: vi.fn(),
   backupScheduleSettings: vi.fn(),
   backupHistory: vi.fn(),
   configureBackup: vi.fn(),
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/bindings", () => ({
   commands: {
+    buildInfo: mocks.buildInfo,
     backupScheduleSettings: mocks.backupScheduleSettings,
     backupHistory: mocks.backupHistory,
     configureBackup: mocks.configureBackup,
@@ -39,7 +41,24 @@ const initialSettings = {
   last_error: null,
 } as const;
 
+/// A `build_info` result for the card's host (personal-cfo-i93n3.9): the desktop reports no
+/// system-backup device; a host that does passes its own name.
+function buildInfo(systemBackupDevice: string | null) {
+  return {
+    version: "0.3.0",
+    commit: "abc1234",
+    channel: "release",
+    built_at: "2026-07-20T14:32:05Z",
+    dirty: false,
+    os_version: null,
+    self_update_available: false,
+    system_backup_device: systemBackupDevice,
+  };
+}
+
 beforeEach(() => {
+  mocks.buildInfo.mockReset();
+  mocks.buildInfo.mockResolvedValue(buildInfo(null));
   mocks.backupScheduleSettings.mockReset();
   mocks.backupHistory.mockReset();
   mocks.configureBackup.mockReset();
@@ -196,5 +215,44 @@ describe("BackupScheduleCard", () => {
 
     finishRun(ok({ destination: "/Users/test/Backups/new.pcfobk" }));
     await waitFor(() => expect(manual).toBeEnabled());
+  });
+});
+
+describe("system-backup disclosure (personal-cfo-i93n3.9)", () => {
+  test("shows nothing when the host reports no system-backup device (the desktop)", async () => {
+    renderWithClient(<BackupScheduleCard />);
+    await screen.findByText("Schedule");
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    expect(screen.queryByTestId("system-backup-disclosure")).not.toBeInTheDocument();
+    expect(screen.queryByText(/include your encrypted vault/i)).not.toBeInTheDocument();
+  });
+
+  test("shows the exact sentence with the host's device name", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo("Test Device"));
+    renderWithClient(<BackupScheduleCard />);
+    const note = await screen.findByTestId("system-backup-disclosure");
+    expect(note).toHaveTextContent(
+      "Test Device backups include your encrypted vault; your password is still required.",
+    );
+    expect(note.textContent).toBe(
+      "Test Device backups include your encrypted vault; your password is still required.",
+    );
+  });
+
+  test("is a named note inside the Backups region, in normal-size text", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo("Test Device"));
+    renderWithClient(<BackupScheduleCard />);
+    const note = await screen.findByRole("note");
+    expect(screen.getByRole("region", { name: "Backups" })).toContainElement(note);
+    // Not the small `text-xs` used for hints: a privacy statement stays readable at large sizes.
+    expect(note.className).not.toMatch(/text-xs/);
+  });
+
+  test("uses whatever device name the host passes, hard-coding none", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo("Another Device"));
+    renderWithClient(<BackupScheduleCard />);
+    expect(await screen.findByTestId("system-backup-disclosure")).toHaveTextContent(
+      /^Another Device backups include/,
+    );
   });
 });

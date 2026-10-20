@@ -164,6 +164,7 @@ beforeEach(() => {
     dirty: false,
     os_version: "15.7.9",
     self_update_available: true,
+    system_backup_device: null,
   });
   mocks.openUrl.mockReset();
   mocks.openUrl.mockResolvedValue(undefined);

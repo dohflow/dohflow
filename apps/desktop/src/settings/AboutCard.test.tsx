@@ -20,6 +20,7 @@ function info(over: Partial<BuildInfoDto> = {}): BuildInfoDto {
     dirty: false,
     os_version: "15.7.9",
     self_update_available: true,
+    system_backup_device: null,
     ...over,
   };
 }

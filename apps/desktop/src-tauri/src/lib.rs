@@ -272,7 +272,15 @@ pub struct HostOptions {
     pub updater: bool,
     /// Register the process plugin (restart after an update).
     pub process: bool,
+    /// The device name to show in Settings when the host's system backups include this
+    /// app's encrypted vault (personal-cfo-i93n3.9), or `None` when they do not, which is
+    /// the desktop default and shows nothing. The host supplies the name; this crate
+    /// hard-codes none. Kept short and plain: see [`HostOptions::system_backup_device_label`].
+    pub system_backup_device: Option<&'static str>,
 }
+
+/// The longest device name `build_info` passes to the UI.
+const MAX_DEVICE_LABEL_CHARS: usize = 32;
 
 impl HostOptions {
     /// Whether this build can update itself: a desktop target whose host kept the
@@ -285,11 +293,26 @@ impl HostOptions {
     }
 }
 
+impl HostOptions {
+    /// The device name for the system-backup disclosure, or `None` if the host gave none
+    /// or one the UI should not show: blank, over [`MAX_DEVICE_LABEL_CHARS`], or holding
+    /// a control character. A bad value hides the disclosure rather than showing odd text.
+    #[must_use]
+    pub fn system_backup_device_label(self) -> Option<&'static str> {
+        self.system_backup_device.map(str::trim).filter(|name| {
+            !name.is_empty()
+                && name.chars().count() <= MAX_DEVICE_LABEL_CHARS
+                && !name.chars().any(char::is_control)
+        })
+    }
+}
+
 impl Default for HostOptions {
     fn default() -> Self {
         Self {
             updater: true,
             process: true,
+            system_backup_device: None,
         }
     }
 }

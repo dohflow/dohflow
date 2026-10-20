@@ -65,7 +65,8 @@ fn the_default_options_register_every_optional_plugin() {
         HostOptions::default(),
         HostOptions {
             updater: true,
-            process: true
+            process: true,
+            system_backup_device: None,
         }
     );
 }
@@ -75,6 +76,7 @@ fn with_the_updater_omitted_its_commands_do_not_exist() {
     let without = app(HostOptions {
         updater: false,
         process: true,
+        ..HostOptions::default()
     });
     // The real context grants `updater:default` to main, so the ACL lets these
     // through and the answer comes from dispatch: no such command.
@@ -110,6 +112,7 @@ fn with_the_process_plugin_omitted_restart_does_not_exist() {
     let without = app(HostOptions {
         updater: true,
         process: false,
+        ..HostOptions::default()
     });
     // `restart` is granted to main in the destructive capability; it is only ever
     // invoked here on an app WITHOUT the plugin, where it must not dispatch.
@@ -125,6 +128,7 @@ fn omitting_the_optional_plugins_does_not_touch_the_always_on_ones() {
     let bare = app(HostOptions {
         updater: false,
         process: false,
+        ..HostOptions::default()
     });
     // The app's own command still dispatches, so only the optional plugins left.
     let ok = invoke(&bare, "vault_status").expect("an app command still dispatches");
@@ -258,6 +262,7 @@ fn a_host_without_the_updater_reports_no_self_update() {
     let options = HostOptions {
         updater: false,
         process: true,
+        ..HostOptions::default()
     };
     assert!(!options.self_update_available());
     assert!(!self_update_flag(&build_info_app(options)));
@@ -268,7 +273,87 @@ fn the_process_plugin_alone_does_not_make_self_update_available() {
     let options = HostOptions {
         updater: false,
         process: false,
+        ..HostOptions::default()
     };
     assert!(!options.self_update_available());
     assert!(!self_update_flag(&build_info_app(options)));
+}
+
+// ---------------------------------------------------------------------------
+// The host-supplied system-backup device name (personal-cfo-i93n3.9).
+// ---------------------------------------------------------------------------
+
+fn backup_device(app: &App<MockRuntime>) -> serde_json::Value {
+    let webview = app.get_webview_window(MAIN).expect("main exists");
+    let body = get_ipc_response(
+        &webview,
+        InvokeRequest {
+            cmd: "build_info".into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().expect("url"),
+            body: InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .expect("main may call build_info");
+    let info: serde_json::Value = body.deserialize().expect("build_info answers JSON");
+    info["system_backup_device"].clone()
+}
+
+#[test]
+fn the_desktop_default_reports_no_system_backup_device() {
+    assert_eq!(
+        backup_device(&build_info_app(HostOptions::default())),
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn a_host_supplied_device_name_reaches_build_info() {
+    let options = HostOptions {
+        system_backup_device: Some("Test Device"),
+        ..HostOptions::default()
+    };
+    assert_eq!(
+        backup_device(&build_info_app(options)),
+        serde_json::json!("Test Device")
+    );
+}
+
+#[test]
+fn a_blank_overlong_or_control_character_name_is_dropped_not_shown() {
+    for name in [
+        "",
+        "   ",
+        "a\nb",
+        "tab\there",
+        "this device name is much too long to show in a sentence",
+    ] {
+        let options = HostOptions {
+            system_backup_device: Some(name),
+            ..HostOptions::default()
+        };
+        assert_eq!(options.system_backup_device_label(), None, "{name:?}");
+        assert_eq!(
+            backup_device(&build_info_app(options)),
+            serde_json::Value::Null,
+            "{name:?}"
+        );
+    }
+    // Surrounding space is trimmed; a name at the limit is kept.
+    let padded = HostOptions {
+        system_backup_device: Some("  Test Device  "),
+        ..HostOptions::default()
+    };
+    assert_eq!(padded.system_backup_device_label(), Some("Test Device"));
+    let at_limit = HostOptions {
+        system_backup_device: Some("abcdefghijklmnopqrstuvwxyzabcdef"),
+        ..HostOptions::default()
+    };
+    assert_eq!(
+        at_limit.system_backup_device_label().map(str::len),
+        Some(32)
+    );
 }
