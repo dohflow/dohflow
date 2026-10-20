@@ -1,0 +1,17 @@
+{
+  "_comment": "Beads that are CLOSED features but must not appear in docs/product/shipped-features.md (the oracle the site copy is checked against). Every entry needs a one-line reason. Reviewed like code: remove an entry when its reason ends. personal-cfo-md8h2.10.",
+  "exclusions": [
+    {
+      "id": "personal-cfo-28js0",
+      "reason": "superseded: the M0 phone-container builder was dropped when the iPhone app became a standalone app (owner decision 2026-10-18)"
+    },
+    {
+      "id": "personal-cfo-7vbdq",
+      "reason": "superseded: the M0 phone-container viewer was dropped with 28js0 (owner decision 2026-10-18)"
+    },
+    {
+      "id": "personal-cfo-r2pow",
+      "reason": "disabled at release: the LunchFlow adapter is merged but switched off in the registry until v0.4.0 (personal-cfo-p3f7r enables it)"
+    }
+  ]
+}
