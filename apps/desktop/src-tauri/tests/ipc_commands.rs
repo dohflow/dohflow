@@ -23,6 +23,7 @@ use app_lib::ipc::commands::{
     move_category_impl, rebuild_read_models_impl, recategorize_transaction_impl,
     record_transaction_impl, record_transfer_impl, recurring_bill_list_impl,
     recurring_transfer_list_impl, reinstate_account_impl, reinstate_category_impl,
+    reinstate_income_source_impl, reinstate_recurring_bill_impl, reinstate_recurring_transfer_impl,
     restore_income_source_impl, restore_recurring_bill_impl, scenario_list_impl,
     set_account_subtype_impl, set_base_currency_impl, set_household_timezone_impl,
     set_minimum_cash_floor_impl, set_note_impl, skip_staged_transaction_impl,
@@ -606,8 +607,16 @@ fn recurring_transfer_round_trips_through_ipc() {
     assert_eq!(list[0].dest_account_name, "Savings");
     assert_eq!(list[0].amount.minor_units, 30_000);
 
-    delete_recurring_transfer_impl(&state, created.recurring_transfer_id, String::new()).unwrap();
+    delete_recurring_transfer_impl(&state, created.recurring_transfer_id.clone(), String::new())
+        .unwrap();
     assert!(recurring_transfer_list_impl(&state).unwrap().is_empty());
+
+    // The delete is a tombstone, so the undo brings the same transfer back (personal-cfo-egn67).
+    reinstate_recurring_transfer_impl(&state, created.recurring_transfer_id, String::new())
+        .unwrap();
+    let back = recurring_transfer_list_impl(&state).unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].amount.minor_units, 30_000);
 }
 
 /// r52x: an account with an old balance assertion surfaces a stale-balance Money
@@ -904,9 +913,13 @@ fn income_source_edit_archive_restore_delete_round_trips() {
     restore_income_source_impl(&state, id.clone(), String::new()).unwrap();
     assert!(income_source_list_impl(&state).unwrap()[0].active);
 
-    // Delete -> gone.
-    delete_income_source_impl(&state, id, String::new()).unwrap();
+    // Delete -> gone; reinstate (the undo of a tombstone) -> back, still active.
+    delete_income_source_impl(&state, id.clone(), String::new()).unwrap();
     assert!(income_source_list_impl(&state).unwrap().is_empty());
+    reinstate_income_source_impl(&state, id, String::new()).unwrap();
+    let back = income_source_list_impl(&state).unwrap();
+    assert_eq!(back.len(), 1);
+    assert!(back[0].active);
 }
 
 fn bill_input(frequency: &str, bill_type: &str) -> CreateRecurringBillInput {
@@ -1082,9 +1095,13 @@ fn recurring_bill_update_and_delete_round_trip() {
     assert_eq!(edited[0].anchor_date, "2026-09-15");
     assert_eq!(edited[0].description.as_deref(), Some("4K family plan"));
 
-    // Delete it; the list goes empty.
-    delete_recurring_bill_impl(&state, bill_id, String::new()).unwrap();
+    // Delete it; the list goes empty. The delete is a tombstone, so the undo brings it back.
+    delete_recurring_bill_impl(&state, bill_id.clone(), String::new()).unwrap();
     assert!(recurring_bill_list_impl(&state).unwrap().is_empty());
+    reinstate_recurring_bill_impl(&state, bill_id, String::new()).unwrap();
+    let back = recurring_bill_list_impl(&state).unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].name, "Streaming");
 }
 
 #[test]
@@ -1118,8 +1135,13 @@ fn update_or_delete_missing_recurring_bill_is_an_error() {
         IpcError::Validation(_)
     ));
 
-    // Deleting an unknown bill is likewise an error.
-    assert!(delete_recurring_bill_impl(&state, missing, String::new()).is_err());
+    // Deleting or reinstating an unknown bill is likewise an error.
+    assert!(delete_recurring_bill_impl(&state, missing.clone(), String::new()).is_err());
+    assert!(reinstate_recurring_bill_impl(&state, missing, String::new()).is_err());
+    assert!(matches!(
+        reinstate_recurring_bill_impl(&state, "not-a-uuid".to_owned(), String::new()).unwrap_err(),
+        IpcError::Validation(_)
+    ));
 }
 
 #[test]

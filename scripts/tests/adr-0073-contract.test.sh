@@ -78,6 +78,15 @@ require_text "scenario uses reversal handle" "$ADR" "\`command_id\` is ADR 0055'
 
 require_text "tombstone exception is counted" "$ADR" "**Tombstone first (3).**"
 require_text "reshape exception is counted" "$ADR" "**Reshape first (4).**"
+require_text "exception item 1 is marked resolved" "$ADR" "**Resolved 2026-10-19 (\`personal-cfo-egn67\`): tombstones, now Toggle; see"
+require_text "tombstones landed (addendum)" "$ADR" "## Addendum A — Tombstones landed (2026-10-19, \`personal-cfo-egn67\`)"
+require_text "tombstone uses issued_at" "$ADR" "to the command's \`issued_at\`, never the wall clock"
+require_text "bill tombstone covers the contract" "$ADR" "tombstone covers its \`recurring_events\` row and its \`bill_contracts\` row"
+require_text "repeat delete and reinstate are no-ops" "$ADR" "is an accepted, logged no-op, so the end"
+require_text "tombstone is distinct from archive" "$ADR" "Tombstoning is distinct from archiving"
+require_text "no purge path" "$ADR" "No purge or compaction path exists."
+require_text "toggle count after tombstones" "$ADR" "**Toggle 18**"
+require_text "tombstone-first is empty after tombstones" "$ADR" "**Tombstone first 0**"
 require_text "never-ships exception is counted" "$ADR" "**Never ships (1).**"
 require_text "staging bypass is forbidden" "$ADR" "a replica never looks up an origin"
 require_text "rough tally is strict" "$ADR" "23 strict-auto candidate rows (only when the predicate holds)"
@@ -118,7 +127,7 @@ variants=(
   SkipStaged SnoozeInboxItem DismissInboxItem DismissRecurringSuggestion CreateCategory
   UpdateCategory MoveCategory ArchiveCategory ReinstateCategory RecategorizeTransaction
   VoidTransaction MarkReviewed ApplyScenario RevertScenarioApply CreateTag SetTags SetNote
-  SetSplits
+  SetSplits ReinstateRecurringTransfer ReinstateIncomeSource ReinstateRecurringBill
 )
 for variant in "${variants[@]}"; do
   require_text "appendix maps $variant" "$ADR" "| \`$variant\` |"
@@ -129,7 +138,7 @@ require_text "test parses the ADR table" "$TEST" "fn parse_adr_appendix"
 require_text "test compares every ADR cell" "$TEST" "fn compare_adr_appendix"
 require_text "test proves one-cell drift fails" "$TEST" "adr_appendix_comparison_rejects_one_cell_outcome_drift"
 require_text "test asserts live enum count" "$TEST" "variants.len(),"
-require_text "test pins the current enum count" "$TEST" "        50,"
+require_text "test pins the current enum count" "$TEST" "        53,"
 require_text "test asserts shape counts" "$TEST" "assert_eq!(shape_count(Shape::Create), 8"
 require_text "test rejects unmapped variants" "$TEST" "exactly one disposition row"
 require_text "two-vault toggle strict test" "$TEST" "two_vault_strict_rebase_queues_equal_end_state_toggle_when_touched"

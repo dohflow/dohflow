@@ -615,6 +615,37 @@ impl KernelCommand for DeleteRecurringTransfer {
     }
 }
 
+/// Reinstate a deleted recurring transfer (personal-cfo-egn67): clear the tombstone that
+/// [`DeleteRecurringTransfer`] set. A transfer that is not deleted is an accepted, logged no-op.
+#[derive(Debug, Clone, Copy)]
+pub struct ReinstateRecurringTransfer {
+    id: RecurringTransferId,
+}
+
+impl ReinstateRecurringTransfer {
+    /// Build a `ReinstateRecurringTransfer` for `id`.
+    #[must_use]
+    pub const fn new(id: RecurringTransferId) -> Self {
+        Self { id }
+    }
+}
+
+impl sealed::Sealed for ReinstateRecurringTransfer {}
+
+impl KernelCommand for ReinstateRecurringTransfer {
+    fn kind(&self) -> &'static str {
+        "reinstate_recurring_transfer"
+    }
+
+    fn validate(&self) -> Result<(), KernelError> {
+        Ok(())
+    }
+
+    fn lower(self) -> WriteCommand {
+        WriteCommand::ReinstateRecurringTransfer(self.id)
+    }
+}
+
 /// Create a recurring net-pay income source (personal-cfo-le79): a take-home
 /// amount on a [`PaySchedule`] cadence, optionally deposited into an account.
 #[derive(Debug, Clone)]
@@ -773,6 +804,37 @@ impl KernelCommand for DeleteIncomeSource {
 
     fn lower(self) -> WriteCommand {
         WriteCommand::DeleteIncomeSource(self.id)
+    }
+}
+
+/// Reinstate a deleted income source (personal-cfo-egn67): clear the tombstone that
+/// [`DeleteIncomeSource`] set. Not an un-archive (see `RestoreIncomeSource`).
+#[derive(Debug, Clone, Copy)]
+pub struct ReinstateIncomeSource {
+    id: IncomeSourceId,
+}
+
+impl ReinstateIncomeSource {
+    /// Build a `ReinstateIncomeSource` command for `id`.
+    #[must_use]
+    pub const fn new(id: IncomeSourceId) -> Self {
+        Self { id }
+    }
+}
+
+impl sealed::Sealed for ReinstateIncomeSource {}
+
+impl KernelCommand for ReinstateIncomeSource {
+    fn kind(&self) -> &'static str {
+        "reinstate_income_source"
+    }
+
+    fn validate(&self) -> Result<(), KernelError> {
+        Ok(())
+    }
+
+    fn lower(self) -> WriteCommand {
+        WriteCommand::ReinstateIncomeSource(self.id)
     }
 }
 
@@ -1102,6 +1164,40 @@ impl KernelCommand for DeleteRecurringBill {
 
     fn lower(self) -> WriteCommand {
         WriteCommand::DeleteRecurringBill {
+            event_id: self.event_id,
+        }
+    }
+}
+
+/// Reinstate a deleted recurring bill (personal-cfo-egn67): clear the tombstone that
+/// [`DeleteRecurringBill`] set on its schedule and contract. Not an un-archive (see
+/// `RestoreRecurringBill`).
+#[derive(Debug, Clone)]
+pub struct ReinstateRecurringBill {
+    event_id: RecurringEventId,
+}
+
+impl ReinstateRecurringBill {
+    /// Build a `ReinstateRecurringBill` from the bill's recurring-event id.
+    #[must_use]
+    pub fn new(event_id: RecurringEventId) -> Self {
+        Self { event_id }
+    }
+}
+
+impl sealed::Sealed for ReinstateRecurringBill {}
+
+impl KernelCommand for ReinstateRecurringBill {
+    fn kind(&self) -> &'static str {
+        "reinstate_recurring_bill"
+    }
+
+    fn validate(&self) -> Result<(), KernelError> {
+        Ok(())
+    }
+
+    fn lower(self) -> WriteCommand {
+        WriteCommand::ReinstateRecurringBill {
             event_id: self.event_id,
         }
     }

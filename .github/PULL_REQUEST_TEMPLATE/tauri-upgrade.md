@@ -61,7 +61,7 @@ appears.
 
 ## Vendored-source re-verification
 
-<!-- docs/agent/TAURI_UPGRADES.md, checklist items 1–13. For each, confirm it
+<!-- docs/agent/TAURI_UPGRADES.md, checklist items 1–14. For each, confirm it
      still holds in the new sources, or say what changed and how it was handled.
      Anything that no longer holds is fixed here (and reviewed) or blocks the
      upgrade. -->
@@ -81,6 +81,7 @@ appears.
 | 11 | Updater verifies the signature before install | | |
 | 12 | wry new-window behavior; `on_new_window` available | | |
 | 13 | `eval_with_callback`, mock runtime, `generate_context!(test = true)` exist | | |
+| 14 | `runtime_authority_mut` / `resolve_access` still let a supplied context's grants be inspected | | |
 
 ## Acceptance criteria
 

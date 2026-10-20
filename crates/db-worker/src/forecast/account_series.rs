@@ -659,7 +659,10 @@ fn build_attribution(
         ("income_sources", "deposit_account_id"),
         ("recurring_events", "autopay_account_id"),
     ] {
-        let sql = format!("SELECT id, {account_col} FROM {table} WHERE {account_col} IS NOT NULL");
+        let sql = format!(
+            "SELECT id, {account_col} FROM {table}
+              WHERE {account_col} IS NOT NULL AND deleted_at IS NULL"
+        );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, Uuid>(0)?, r.get::<_, Uuid>(1)?)))?;
         for row in rows {

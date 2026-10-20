@@ -58,7 +58,7 @@ pub(crate) fn active_income_schedules(conn: &Connection) -> Result<Vec<ScheduleS
     let mut stmt = conn.prepare(
         "SELECT id, name, net_minor_units, currency, frequency, anchor_date
          FROM income_sources
-         WHERE active = 1
+         WHERE active = 1 AND deleted_at IS NULL
          ORDER BY name COLLATE NOCASE, id",
     )?;
     let rows = stmt
@@ -92,7 +92,7 @@ pub(crate) fn active_obligation_schedules(
                 e.next_expected_date, b.type, e.autopay_account_id
          FROM recurring_events e
          LEFT JOIN bill_contracts b ON b.recurring_event_id = e.id
-         WHERE e.include_in_forecast = 1 AND e.is_active = 1
+         WHERE e.include_in_forecast = 1 AND e.is_active = 1 AND e.deleted_at IS NULL
          ORDER BY e.name COLLATE NOCASE, e.id",
     )?;
     let rows = stmt
