@@ -20,12 +20,20 @@ import {
 
 const mocks = vi.hoisted(() => ({
   buildInfo: vi.fn(),
+  checkForUpdate: vi.fn(),
+  applyUpdate: vi.fn(),
+  relaunchApp: vi.fn(),
   pluginCheck: vi.fn(),
   pluginRelaunch: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
-  commands: { buildInfo: mocks.buildInfo },
+  commands: {
+    buildInfo: mocks.buildInfo,
+    checkForUpdate: mocks.checkForUpdate,
+    applyUpdate: mocks.applyUpdate,
+    relaunchApp: mocks.relaunchApp,
+  },
 }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: mocks.pluginCheck }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: mocks.pluginRelaunch }));
@@ -38,6 +46,7 @@ function buildInfo(over: Partial<BuildInfoDto> = {}): BuildInfoDto {
     built_at: "2026-07-20T14:32:05Z",
     dirty: false,
     os_version: "15.7.9",
+    self_update_available: true,
     ...over,
   };
 }
@@ -234,4 +243,70 @@ test("an update whose macOS floor this Mac meets is offered as before", async ()
     expect(screen.getByTestId("first-result")).toHaveTextContent(JSON.stringify({ ok: true })),
   );
   expect(update.downloadAndInstall).toHaveBeenCalledTimes(1);
+});
+
+// personal-cfo-i93n3.12: a host whose build cannot update itself reports it in build_info,
+// and the hook then invokes nothing — neither the plugin nor any update command.
+describe("a host without self-update", () => {
+  function Probe() {
+    const { status, selfUpdate, check, apply, relaunch } = useSoftwareUpdate();
+    return (
+      <div>
+        <div data-testid="supported">{String(selfUpdate)}</div>
+        <div data-testid="status">{String(status)}</div>
+        <button
+          onClick={() => {
+            void check();
+            void apply().then((r) => {
+              document.title = JSON.stringify(r);
+            });
+            void relaunch();
+          }}
+        >
+          try-everything
+        </button>
+      </div>
+    );
+  }
+
+  function renderProbe() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={client}>
+        <Probe />
+      </QueryClientProvider>,
+    );
+  }
+
+  function expectNoUpdateCall() {
+    expect(mocks.pluginCheck).not.toHaveBeenCalled();
+    expect(mocks.pluginRelaunch).not.toHaveBeenCalled();
+    expect(mocks.checkForUpdate).not.toHaveBeenCalled();
+    expect(mocks.applyUpdate).not.toHaveBeenCalled();
+    expect(mocks.relaunchApp).not.toHaveBeenCalled();
+  }
+
+  test.each(["dev", "release"])("%s channel: no check, apply or relaunch ever runs", async (channel) => {
+    mocks.buildInfo.mockResolvedValue(buildInfo({ channel, self_update_available: false }));
+    renderProbe();
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId("supported")).toHaveTextContent("false"));
+    expect(screen.getByTestId("status")).toHaveTextContent("null");
+
+    fireEvent.click(screen.getByRole("button", { name: "try-everything" }));
+    await waitFor(() =>
+      expect(document.title).toBe(
+        JSON.stringify({ ok: false, message: "This build can't update itself." }),
+      ),
+    );
+    expectNoUpdateCall();
+  });
+
+  test("while build info is still unknown nothing runs either", async () => {
+    mocks.buildInfo.mockReturnValue(new Promise(() => undefined));
+    renderProbe();
+    expect(screen.getByTestId("supported")).toHaveTextContent("false");
+    fireEvent.click(screen.getByRole("button", { name: "try-everything" }));
+    expectNoUpdateCall();
+  });
 });

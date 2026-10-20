@@ -16,6 +16,7 @@ function info(over: Partial<BuildInfoDto> = {}): BuildInfoDto {
     built_at: "2026-07-20T14:32:05Z",
     dirty: false,
     os_version: "15.7.9",
+    self_update_available: true,
     ...over,
   };
 }

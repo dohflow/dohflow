@@ -35,6 +35,7 @@ function buildInfo(over: Partial<BuildInfoDto> = {}): BuildInfoDto {
     built_at: "2026-07-20T14:32:05Z",
     dirty: false,
     os_version: "15.7.9",
+    self_update_available: true,
     ...over,
   };
 }
@@ -305,5 +306,21 @@ describe("release channel", () => {
     expect(mocks.pluginCheck).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: /check for updates/i }));
     await waitFor(() => expect(mocks.pluginCheck).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("a host without self-update (personal-cfo-i93n3.12)", () => {
+  test.each(["dev", "release"])("%s channel: the card renders nothing and no update call is made", async (channel) => {
+    mocks.buildInfo.mockResolvedValue(buildInfo({ channel, self_update_available: false }));
+    const { container } = renderWithClient(<SoftwareUpdateCard />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    // Let any (wrongly) enabled update query run before asserting it did not.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText(/software update/i)).not.toBeInTheDocument();
+    expect(mocks.pluginCheck).not.toHaveBeenCalled();
+    expect(mocks.checkForUpdate).not.toHaveBeenCalled();
+    expect(mocks.applyUpdate).not.toHaveBeenCalled();
+    expect(mocks.relaunchApp).not.toHaveBeenCalled();
   });
 });
