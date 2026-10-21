@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { useBuildInfo } from "@/settings/BuildBadge";
 import { backupFolderHint } from "./backupFolderHint";
+import { systemBackupDisclosure } from "./systemBackupDisclosure";
 import { ManualBackupExport } from "./BackupView";
 import {
   useBackupHistory,
@@ -35,13 +36,6 @@ function formatTimestamp(timestamp: string): string {
         dateStyle: "medium",
         timeStyle: "short",
       }).format(parsed);
-}
-
-/// The system-backup disclosure (personal-cfo-i93n3.9). The host that built this app says
-/// whether ITS system backups include the encrypted vault, and what to call the device; the
-/// desktop says nothing, so nothing shows. The sentence is the UI's, the name is the host's.
-function systemBackupDisclosure(device: string): string {
-  return `${device} backups include your encrypted vault; your password is still required.`;
 }
 
 export function BackupScheduleCard() {
