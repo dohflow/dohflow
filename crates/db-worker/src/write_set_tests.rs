@@ -702,23 +702,78 @@ fn the_capture_adds_little_to_a_command() {
     }
 }
 
-/// How many times the slowdown test runs the capture's read-and-hash pass per command. The pass
-/// is only part of the capture (the TEMP triggers are the rest): measured, running it six times
-/// moves the ratio from about 1.8x to about 3.6x, below the 4x ceiling. Twenty passes makes the
-/// whole capture cost well over six times what it normally does, and keeps the ratio far above
-/// the ceiling even on a machine where the capture is cheap (1.5x at multiplier 1 reads over 5x
-/// at 20).
+/// The relative predicate's decision on FIXED numbers: no timing at all, so it cannot flake.
+/// This is the REQUIRED proof that the check can fail (a timed must-fail test under load read
+/// only 3.76x once and turned `main` red, personal-cfo-g3m.16): the real `within_relative_budget`
+/// accepts a capture that costs 1.5x or 3.9x the capture-off time and rejects 4.0x and 7.5x, and
+/// it enforces the added-time cap on its own.
+#[test]
+fn the_relative_predicate_decides_on_fixed_numbers() {
+    use std::time::Duration;
+
+    /// A run of `COMMANDS` commands that costs `off_us` microseconds per command with the capture
+    /// off, and `ratio` times that with it on.
+    fn runs(off_us: f64, ratio: f64) -> (Duration, Duration) {
+        let total = |per_command_us: f64| {
+            Duration::from_micros((per_command_us * COMMANDS as f64).round() as u64)
+        };
+        (total(off_us), total(off_us * ratio))
+    }
+    let verdict = |off_us: f64, ratio: f64| {
+        let (off, on) = runs(off_us, ratio);
+        within_relative_budget(off, on)
+    };
+
+    // Inside the ratio ceiling: the typical ratio, and just under the limit.
+    assert!(verdict(300.0, 1.5).is_ok());
+    assert!(verdict(300.0, 1.7).is_ok());
+    assert!(
+        verdict(300.0, 2.5).is_ok(),
+        "the worst ratio seen (hosted Linux)"
+    );
+    assert!(verdict(300.0, 3.9).is_ok());
+    // At and above the ceiling the check fails, and says why.
+    let at = verdict(300.0, MAX_RATIO).expect_err("exactly the ceiling must fail");
+    assert!(at.contains("multiplied the cost of a command"), "{at}");
+    assert!(verdict(300.0, 5.0).is_err());
+    let slowed = verdict(300.0, 7.5).expect_err("a capture slowed to 7.5x must fail");
+    assert!(
+        slowed.contains("multiplied the cost of a command"),
+        "{slowed}"
+    );
+    // The ratio does not depend on how fast the machine is.
+    assert!(verdict(30.0, 3.9).is_ok() && verdict(30.0, 4.0).is_err());
+    assert!(verdict(3_000.0, 3.9).is_ok() && verdict(3_000.0, 4.0).is_err());
+
+    // The loose added-time cap (50 ms) on its own: a ratio well inside the ceiling whose absolute
+    // added time per command reaches the cap still fails, and just under it passes.
+    let cap = verdict(100_000.0, 1.6).expect_err("60 ms added per command must fail");
+    assert!(cap.contains("added"), "{cap}");
+    assert!(
+        verdict(100_000.0, 1.4).is_ok(),
+        "40 ms added per command is inside the cap"
+    );
+}
+
+/// How many times the timed slowdown run repeats the capture's read-and-hash pass per command.
+/// The pass is only part of the capture (the TEMP triggers are the rest): measured, running it six
+/// times moves the ratio from about 1.8x to about 3.6x, below the 4x ceiling; twenty passes makes
+/// the whole capture cost well over six times what it normally does.
 const SLOWDOWN_PASSES: u32 = 20;
 
-/// Proof that the relative check can fail: with the capture's read-and-hash pass repeated
-/// `SLOWDOWN_PASSES` times per command (the test-only `CAPTURE_COST_MULTIPLIER`), the same check
-/// must reject it. If a change made the check unable to fail, this test would go red.
+/// The TIMED slowdown run: with the capture's read-and-hash pass repeated `SLOWDOWN_PASSES` times
+/// per command (the test-only `CAPTURE_COST_MULTIPLIER`), the real predicate should reject the
+/// measurement. It is `#[ignore]`d from the required run, because a timed must-fail check is
+/// itself subject to machine load (it once read only 3.76x under load and turned `main` red). The
+/// non-required perf job runs it and reports the measured ratio, which is the recorded
+/// end-to-end proof that the pipeline of hook, measurement and predicate can fail.
 #[test]
+#[ignore = "timed slowdown proof; run by the non-required perf job (cargo test ... -- --ignored)"]
 fn the_relative_check_rejects_a_much_slower_capture() {
     write_set::CAPTURE_COST_MULTIPLIER.with(|m| m.set(SLOWDOWN_PASSES));
     let (off, on) = measure();
     write_set::CAPTURE_COST_MULTIPLIER.with(|m| m.set(1));
-    println!("write-set capture, slowed: {}", describe(off, on));
+    println!("write-set capture SLOWED: {}", describe(off, on));
     assert!(
         within_relative_budget(off, on).is_err(),
         "the relative check accepted a much slower capture: {}",

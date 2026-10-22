@@ -430,20 +430,29 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
 
-      - name: Absolute write-set capture budget (< 3 ms added per command)
+      - name: Absolute capture budget (< 3 ms added) and the timed slowdown proof
         if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/perf.txt"
           status=0
-          cargo test -p db-worker --lib write_set_tests::the_capture_stays_inside_the_absolute_budget \
-            -- --ignored --nocapture 2>&1 | tee "$out" || status=$?
-          line=$(grep 'write-set capture ABSOLUTE' "$out" || echo "no measurement line printed")
+          # Both tests are #[ignore]d from the required run; this non-required job runs them
+          # and reports the numbers. The REQUIRED proof that the relative check can fail is the
+          # deterministic predicate test in the Rust job.
+          cargo test -p db-worker --lib write_set_tests:: -- --ignored --nocapture --test-threads=1 2>&1 \
+            | tee "$out" || status=$?
+          absolute=$(grep 'write-set capture ABSOLUTE' "$out" || echo "no measurement line printed")
+          slowed=$(grep 'write-set capture SLOWED' "$out" || echo "no measurement line printed")
           {
-            echo "### Perf budget: write-set capture (absolute, not a required check)"
-            echo "Runner: ${RUNNER_OS} ${RUNNER_ARCH} (${RUNNER_ENVIRONMENT:-unknown}). Budget: under 3000 us added per command."
+            echo "### Perf budget: write-set capture (not a required check)"
+            echo "Runner: ${RUNNER_OS} ${RUNNER_ARCH} (${RUNNER_ENVIRONMENT:-unknown})."
+            echo "Absolute budget: under 3000 us added per command."
             echo '```'
-            echo "$line"
+            echo "$absolute"
+            echo '```'
+            echo "Timed slowdown proof (the relative check must reject it; it needs a ratio of 4x or more):"
+            echo '```'
+            echo "$slowed"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
