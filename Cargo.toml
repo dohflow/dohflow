@@ -107,7 +107,7 @@ csv = "1"
 # no tokio — the connector tier stays sync) plus base64 for the setup-token
 # decode. Used only by connector adapter crates; the desktop app itself still
 # makes no direct network calls (ADR 0004 boundary).
-ureq = "2"
+ureq = "3"
 base64 = "0.22"
 
 # Lint posture is enforced in CI via `cargo clippy --workspace --all-targets -- -D warnings`.

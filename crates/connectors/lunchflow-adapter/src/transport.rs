@@ -1,6 +1,6 @@
 //! The HTTP seam. Everything network-shaped goes through [`Transport`] so the
 //! adapter's tests run entirely on fixtures; [`UreqTransport`] is the one real
-//! implementation (blocking `ureq`, rustls).
+//! implementation (blocking `ureq` 3, rustls).
 //!
 //! LEAK RULE: the API key is passed to [`Transport::get`] separately from the
 //! URL and travels only in the `x-api-key` header, so no URL, error or log line
@@ -13,6 +13,10 @@
 
 use std::sync::OnceLock;
 use std::time::Duration;
+
+/// The largest response body read; a longer one is refused (ureq's own default, stated here
+/// so the limit is this crate's and is tested).
+pub const MAX_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// A completed HTTP exchange. Error statuses are returned as a normal
 /// response — LunchFlow puts `{error, message}` bodies on them — never as a
@@ -84,22 +88,74 @@ impl UreqTransport {
     }
 
     fn agent(&self) -> &ureq::Agent {
-        self.agent.get_or_init(|| {
-            ureq::AgentBuilder::new()
-                .redirects(0)
-                .timeout(Duration::from_secs(60))
-                .https_only(true)
-                .build()
-        })
+        self.agent
+            .get_or_init(|| ureq::Agent::new_with_config(agent_config(true)))
     }
+}
 
-    fn read(resp: ureq::Response) -> Result<HttpResponse, TransportError> {
-        let status = resp.status();
-        let body = resp
-            .into_string() // ureq caps this at 10 MiB — bounded by default
-            .map_err(|_| TransportError("unreadable response body".to_owned()))?;
-        Ok(HttpResponse { status, body })
+/// The failure *class* of a ureq error, and nothing else. ureq's own `Display` can embed the
+/// URL (for SimpleFIN the URL is the credential), so it is never used. The strings are the
+/// ones the ureq 2 transport produced (`ErrorKind`'s names), so what a user sees is unchanged.
+fn failure_class(error: &ureq::Error) -> &'static str {
+    match error {
+        ureq::Error::HostNotFound => "Dns Failed",
+        ureq::Error::ConnectionFailed => "Connection Failed",
+        // ureq 3 reports a refused or dropped connection as an I/O error; ureq 2 named it.
+        ureq::Error::Io(io)
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+            ) =>
+        {
+            "Connection Failed"
+        }
+        ureq::Error::BadUri(_) | ureq::Error::RequireHttpsOnly(_) => "Invalid URL",
+        ureq::Error::TooManyRedirects | ureq::Error::RedirectFailed => "Too Many Redirects",
+        _ => "Network Error",
     }
+}
+
+/// Read a response into text. Bodies up to and including [`MAX_RESPONSE_BYTES`] are read; a
+/// longer one is refused. (ureq 3's reader errors once it has read exactly its limit, so it
+/// is given one byte more and the length is checked here: the cap stays inclusive.)
+fn read_response(
+    response: ureq::http::Response<ureq::Body>,
+) -> Result<HttpResponse, TransportError> {
+    let unreadable = || TransportError("unreadable response body".to_owned());
+    let (parts, mut body) = response.into_parts();
+    let text = body
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES + 1)
+        .read_to_string()
+        .map_err(|_| unreadable())?;
+    if text.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(unreadable());
+    }
+    Ok(HttpResponse {
+        status: parts.status.as_u16(),
+        body: text,
+    })
+}
+
+/// The agent's configuration, shared by production and the stub-server tests (the tests
+/// switch off `https_only` only, because a local stub has no certificate).
+fn agent_config(https_only: bool) -> ureq::config::Config {
+    ureq::Agent::config_builder()
+        // No redirect following: a followed redirect strips Authorization and turns a POST
+        // into a GET. A 3xx must surface as itself, as a normal response.
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        // HTTP error statuses are normal responses: their bodies carry meaning.
+        .http_status_as_error(false)
+        // Bound a stalled peer; sync runs on vault open.
+        .timeout_global(Some(Duration::from_secs(60)))
+        .https_only(https_only)
+        // ureq 3 reads proxy settings from the environment by default; ureq 2 did not. A
+        // credential must not ride through an ambient proxy, so there is none.
+        .proxy(None)
+        .build()
 }
 
 impl Default for UreqTransport {
@@ -118,16 +174,15 @@ impl Transport for UreqTransport {
         let mut request = self
             .agent()
             .get(url)
-            .set("x-api-key", api_key)
-            .set("Accept", "application/json");
+            .header("x-api-key", api_key)
+            .header("Accept", "application/json");
         for (key, value) in query {
             request = request.query(key, value);
         }
         match request.call() {
-            Ok(resp) => Self::read(resp),
-            Err(ureq::Error::Status(_, resp)) => Self::read(resp),
-            // Kind only — a ureq transport Display can embed the URL.
-            Err(ureq::Error::Transport(t)) => Err(TransportError(t.kind().to_string())),
+            Ok(response) => read_response(response),
+            // Class only — never ureq's Display, which can embed the URL.
+            Err(error) => Err(TransportError(failure_class(&error).to_owned())),
         }
     }
 }
@@ -144,5 +199,225 @@ mod tests {
         };
         let debug = format!("{response:?}");
         assert!(!debug.contains("Checking"), "body leaked: {debug}");
+    }
+
+    // ---- a local stub server for the wire-level properties (personal-cfo-pxi.23) ----------
+    // The production agent is https-only, so these tests build the SAME agent configuration
+    // with https_only off (the stub has no certificate). Everything else is production.
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread::JoinHandle;
+    use std::time::Instant;
+
+    fn plain_http_transport() -> UreqTransport {
+        let transport = UreqTransport::new();
+        transport
+            .agent
+            .set(ureq::Agent::new_with_config(agent_config(false)))
+            .ok();
+        transport
+    }
+
+    /// Serve ONE exchange: read the request head, run `respond`, then watch briefly for a
+    /// second connection. Returns the request head and how many further connections came.
+    fn stub(
+        respond: impl FnOnce(&mut TcpStream) + Send + 'static,
+    ) -> (u16, JoinHandle<(String, usize)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = std::thread::spawn(move || {
+            let started = Instant::now();
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(_) if started.elapsed() < Duration::from_secs(5) => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return (String::new(), 0),
+                }
+            };
+            stream.set_nonblocking(false).expect("blocking stream");
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+                head.push(byte[0]);
+            }
+            respond(&mut stream);
+            let _ = stream.flush();
+            drop(stream);
+            let watch = Instant::now();
+            let mut extra = 0;
+            while watch.elapsed() < Duration::from_millis(400) {
+                if listener.accept().is_ok() {
+                    extra += 1;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            (String::from_utf8_lossy(&head).into_owned(), extra)
+        });
+        (port, handle)
+    }
+
+    fn body_of(length: usize) -> impl FnOnce(&mut TcpStream) + Send + 'static {
+        move |stream| {
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+            );
+            let chunk = vec![b'a'; 64 * 1024];
+            let mut left = length;
+            while left > 0 {
+                let n = left.min(chunk.len());
+                if stream.write_all(&chunk[..n]).is_err() {
+                    return;
+                }
+                left -= n;
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_at_the_cap_is_read_and_one_byte_over_is_refused() {
+        let cap = usize::try_from(MAX_RESPONSE_BYTES).unwrap();
+        let (port, at_cap) = stub(body_of(cap));
+        let t = plain_http_transport();
+        let response = t
+            .get(
+                &format!("http://127.0.0.1:{port}/accounts"),
+                "key-not-for-logs",
+                &[("page".to_owned(), "1".to_owned())],
+            )
+            .expect("a body at the cap is read");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.len(), cap);
+        at_cap.join().unwrap();
+
+        let (port, over) = stub(body_of(cap + 1));
+        let t = plain_http_transport();
+        let refused = t.get(
+            &format!("http://127.0.0.1:{port}/accounts"),
+            "key-not-for-logs",
+            &[("page".to_owned(), "1".to_owned())],
+        );
+        assert!(
+            matches!(refused, Err(TransportError(ref m)) if m == "unreadable response body"),
+            "{refused:?}"
+        );
+        over.join().unwrap();
+    }
+
+    #[test]
+    fn a_redirect_is_returned_as_itself_and_never_followed() {
+        let (port, server) = stub(|stream| {
+            let _ = stream.write_all(
+                b"HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let t = plain_http_transport();
+        let response = t
+            .get(
+                &format!("http://127.0.0.1:{port}/accounts"),
+                "key-not-for-logs",
+                &[("page".to_owned(), "1".to_owned())],
+            )
+            .expect("a 3xx is a response");
+        let (head, extra) = server.join().unwrap();
+        assert_eq!(response.status, 302);
+        assert!(head.starts_with("GET /accounts"), "{head}");
+        assert_eq!(extra, 0, "the redirect target must never be requested");
+    }
+
+    #[test]
+    fn an_error_status_is_a_normal_response_with_its_body() {
+        let (port, server) = stub(|stream| {
+            let _ = stream.write_all(
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnope!",
+            );
+        });
+        let t = plain_http_transport();
+        let response = t
+            .get(
+                &format!("http://127.0.0.1:{port}/accounts"),
+                "key-not-for-logs",
+                &[("page".to_owned(), "1".to_owned())],
+            )
+            .expect("a 4xx is a response");
+        server.join().unwrap();
+        assert_eq!((response.status, response.body.as_str()), (403, "nope!"));
+    }
+
+    #[test]
+    fn the_production_agent_refuses_plain_http_without_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let refused = UreqTransport::new().get(
+            &format!("http://127.0.0.1:{port}/accounts"),
+            "key-not-for-logs",
+            &[],
+        );
+        assert!(
+            matches!(refused, Err(TransportError(ref m)) if m == "Invalid URL"),
+            "{refused:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            listener.accept().is_err(),
+            "a connection was made to a plain-http URL"
+        );
+    }
+
+    #[test]
+    fn a_failure_names_its_class_and_never_the_url_or_credential() {
+        // A port nothing listens on: bind, note the port, drop the listener.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let failure = plain_http_transport()
+            .get(
+                &format!("http://127.0.0.1:{port}/secret-path-token"),
+                "key-not-for-logs",
+                &[],
+            )
+            .expect_err("nothing is listening");
+        assert_eq!(failure.0, "Connection Failed");
+        for secret in [
+            "secret-path-token",
+            "user-secret",
+            "pa55-secret",
+            "key-not-for-logs",
+        ] {
+            assert!(!failure.0.contains(secret) && !format!("{failure:?}").contains(secret));
+        }
+    }
+
+    #[test]
+    fn the_key_and_query_travel_as_before_and_only_in_the_header() {
+        let (port, server) = stub(|stream| {
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        });
+        let t = plain_http_transport();
+        let response = t
+            .get(
+                &format!("http://127.0.0.1:{port}/accounts"),
+                "key-not-for-logs",
+                &[("page".to_owned(), "1".to_owned())],
+            )
+            .expect("ok");
+        let (head, _) = server.join().unwrap();
+        assert_eq!(response.body, "{}");
+        let lower = head.to_ascii_lowercase();
+        assert!(head.starts_with("GET /accounts?page=1 "), "{head}");
+        assert!(lower.contains("x-api-key: key-not-for-logs"), "{head}");
+        assert!(lower.contains("accept: application/json"), "{head}");
+        // The key is in the header, never in the request line.
+        assert!(
+            !head.lines().next().unwrap().contains("key-not-for-logs"),
+            "{head}"
+        );
     }
 }
