@@ -63,6 +63,13 @@ by default and all generic (no platform is named anywhere in this crate):
   no unlock-with-key IPC path yet; when one lands it must take its options from the same
   `HostOptions::unlock_options()`.
 
+`register_host_options(HostOptions)` (`personal-cfo-i93n3.15`) is how a host that starts the app
+through the mobile entry point (`run()`) supplies all of the above: it cannot pass options itself.
+Call it **once, before `run()`**; the desktop never calls it and `run()` then uses
+`HostOptions::default()`. A second call, or a call after `run()` has resolved its options, returns
+`Err` with the options handed back unchanged and has no effect (a late registration would otherwise
+silently do nothing). A host that owns its own entry point calls `run_with` and does not need it.
+
 `lock_active_vault(&AppHandle)` is the one new **host-callable** surface: a plain function (not an
 IPC command, in no permission set, granted to no window) that does what `lock_vault` does
 (checkpoint, close, zeroize) and is idempotent for a vault that is not unlocked. Review it, and

@@ -419,9 +419,89 @@ pub fn register_plugins<R: tauri::Runtime>(
     builder
 }
 
+/// Where a host's options wait for [`run`] (personal-cfo-i93n3.15). One host registration is
+/// allowed, and only before `run` has resolved its options: after that the options are in use
+/// and a registration would silently do nothing, so it is refused instead. A `Mutex`, not two
+/// atomics, so a registration racing with the resolve is either fully before it or refused.
+#[doc(hidden)]
+pub struct HostRegistry(std::sync::Mutex<RegistryState>);
+
+enum RegistryState {
+    /// Nothing registered and nothing resolved yet.
+    Open,
+    /// A host registered its options; `run` has not resolved them yet.
+    Registered(HostOptions),
+    /// `run` has resolved its options; they are final.
+    Resolved,
+}
+
+impl HostRegistry {
+    /// An empty registry, open for one registration.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(std::sync::Mutex::new(RegistryState::Open))
+    }
+
+    /// Register `options`. The first call before [`HostRegistry::resolve`] succeeds; any later
+    /// call, whether a second registration or one after resolution, returns the options back and
+    /// changes nothing.
+    ///
+    /// # Errors
+    /// The unchanged `options`, when the registry is no longer open.
+    pub fn register(&self, options: HostOptions) -> Result<(), HostOptions> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *state {
+            RegistryState::Open => {
+                *state = RegistryState::Registered(options);
+                Ok(())
+            }
+            RegistryState::Registered(_) | RegistryState::Resolved => Err(options),
+        }
+    }
+
+    /// The registered options, or the defaults when none were registered. Closes the registry:
+    /// from here on [`HostRegistry::register`] is refused.
+    #[must_use]
+    pub fn resolve(&self) -> HostOptions {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let options = match *state {
+            RegistryState::Registered(options) => options,
+            RegistryState::Open | RegistryState::Resolved => HostOptions::default(),
+        };
+        *state = RegistryState::Resolved;
+        options
+    }
+}
+
+impl Default for HostRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static HOST_REGISTRY: HostRegistry = HostRegistry::new();
+
+/// Register the options [`run`] will use, for a host that starts the app through the mobile entry
+/// point and so cannot pass them itself (personal-cfo-i93n3.15). Call it **once, before** `run`
+/// (a host that owns its own entry point calls [`run_with`] instead and never needs this). The
+/// desktop build never calls it, so `run` uses [`HostOptions::default`] there.
+///
+/// # Errors
+/// The unchanged `options`, if one registration already happened or `run` has already resolved
+/// its options. The earlier options stay in effect.
+pub fn register_host_options(options: HostOptions) -> Result<(), HostOptions> {
+    HOST_REGISTRY.register(options)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    run_with(tauri::generate_context!(), HostOptions::default());
+    run_with(tauri::generate_context!(), HOST_REGISTRY.resolve());
 }
 
 /// Run the app with its own Tauri context and the chosen optional plugins.
