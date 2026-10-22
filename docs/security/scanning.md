@@ -68,6 +68,49 @@ Tauri's Linux webview stack, which the macOS app does not use. If a warning ever
 becomes an actual advisory, address it (update the dependency, or document an
 explicit ignore with rationale).
 
+### When the advisory scans are required, and the daily main audit (personal-cfo-md8h2.14)
+
+The advisory database changes under us: a new advisory, or a withdrawn one that
+leaves an allowance stale, can turn the scan red with no code change. Owner decision
+`personal-cfo-915.15` (option B) therefore splits the work:
+
+- **On a pull request or merge group** the required check
+  `Security scanning (secrets + dependencies)` always runs and always reports. The
+  **advisory scans** inside it (cargo audit, pnpm audit) are required only when the
+  change touches a manifest, a lockfile or the audit setup (`Cargo.toml`,
+  `Cargo.lock`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`,
+  `deny.toml`, `audit.toml`, `scripts/cargo-audit.py` and its test; the list is
+  `scripts/dependency-change-check.sh`). On any other change they are skipped with
+  an explicit "no dependency change" notice, and the job still succeeds. The check
+  name does not change.
+- **Always, on every change:** secrets scanning (gitleaks), the real-value scan, the
+  ADR tier check, and the license scans (cargo deny, the frontend license script).
+  None of them reads the advisory database.
+- **On every push to `main`, on schedule and on manual dispatch** the advisory scans
+  run in full, so a red advisory still turns `main` red and raises the
+  `ci-main-red` alert.
+- **Every day** `.github/workflows/advisory-audit.yml` audits `main` itself. On any
+  finding, or on a stale allowance (an exception in `scripts/cargo-audit.py` that
+  matches nothing), it opens, or comments on, **one** open issue labeled
+  `security-advisory` that names the advisory IDs and includes the tool output. A
+  clean run only comments on an open issue; it never closes one. A manual dispatch
+  with `simulate` set exercises the issue path with a made-up finding (close the
+  issue afterwards).
+
+**Response to the daily alert.** The agent on duty, who sees the issue first:
+
+1. Reads the issue and the linked run.
+2. Files a **P0 bead** for it (ADR 0069: P0 bypasses queues), after telling
+   `01-planning`, and links the issue and the bead to each other.
+3. Fixes it (bump the dependency, or for a stale allowance remove it from
+   `scripts/cargo-audit.py`), as the dependency-changing pull request that this
+   split deliberately makes the one place the advisory scans are required.
+4. Closes the issue once `main`'s audit is clean again.
+
+While `main` is red on an advisory, a pull request that fails only on it may use the
+red-main fast path (`docs/agent/WORKFLOW_ROLES.md`), except where an exclusion
+applies.
+
 ## Dependency license scanning — cargo deny + a frontend script (personal-cfo-o1nxk)
 
 DohFlow is AGPL-3.0-only (ADR 0043). A dependency under an incompatible

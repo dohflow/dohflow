@@ -1,0 +1,120 @@
+# Daily audit of main for dependency advisories (personal-cfo-md8h2.14, owner
+# decision personal-cfo-915.15 option B).
+#
+# The advisory scans in ci.yml (cargo audit, pnpm audit) are required on a pull
+# request only when it changes a dependency or the audit setup, so a new advisory
+# cannot block unrelated work. This workflow is the other half: every day it
+# audits main itself, and on any finding it opens (or updates) ONE issue labeled
+# `security-advisory`. A stale allowance (an exception in scripts/cargo-audit.py
+# that matches nothing) fails the audit too, so it raises the same issue. A clean
+# run only comments on an open issue; it never closes one. The agent on duty files
+# a P0 bead from the issue (ADR 0069: P0 bypasses queues); see
+# docs/security/scanning.md.
+#
+# `simulate` (manual dispatch only) replaces the audit output with a made-up
+# finding so the issue path can be exercised without a real advisory.
+name: Daily advisory audit
+
+on:
+  schedule:
+    - cron: '23 5 * * *' # 05:23 UTC daily
+  workflow_dispatch:
+    inputs:
+      simulate:
+        description: 'Dry run: report a made-up finding instead of auditing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisory-audit
+  cancel-in-progress: false
+
+jobs:
+  audit-main:
+    name: Audit main for advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # A schedule payload carries no repository object, so the visibility is read
+      # from the API (the same reason as ci.yml's security-scan job).
+      - name: Resolve visibility
+        id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          is_private=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .private)
+          if [ "$is_private" = "false" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Repository is private; skipping the scheduled advisory audit."
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: steps.visibility.outputs.run == 'true'
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        if: steps.visibility.outputs.run == 'true'
+        with:
+          tool: cargo-audit
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        if: steps.visibility.outputs.run == 'true'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.visibility.outputs.run == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Audit (cargo audit on both lockfiles, pnpm audit)
+        id: audit
+        if: steps.visibility.outputs.run == 'true'
+        env:
+          SIMULATE: ${{ github.event.inputs.simulate }}
+        run: |
+          set -uo pipefail
+          report="$RUNNER_TEMP/advisory-report.txt"
+          : > "$report"
+          if [ "${SIMULATE:-false}" = "true" ]; then
+            printf 'SIMULATED DRY RUN (no real finding)\nID: RUSTSEC-0000-0000\nCrate: example-crate 0.0.0\n' >> "$report"
+            status=failed
+          else
+            status=clean
+            echo "== cargo audit (scripts/cargo-audit.py) ==" >> "$report"
+            python3 -I scripts/cargo-audit.py >> "$report" 2>&1 || status=failed
+            echo "== pnpm audit --prod ==" >> "$report"
+            pnpm install --frozen-lockfile >> "$report" 2>&1 || status=failed
+            pnpm audit --prod >> "$report" 2>&1 || status=failed
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "report=$report" >> "$GITHUB_OUTPUT"
+          cat "$report"
+
+      - name: File or update the security-advisory issue
+        if: steps.visibility.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.audit.outputs.status }}
+          REPORT: ${{ steps.audit.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          bash scripts/audit-alert.sh --status "$STATUS" --report "$REPORT" --run-url "$RUN_URL"
+
+      # Make the run itself red on a finding too, so it shows in the Actions tab.
+      - name: Fail the run if the audit found something
+        if: steps.visibility.outputs.run == 'true' && steps.audit.outputs.status == 'failed'
+        run: |
+          echo "::error::The daily advisory audit of main found something; see the security-advisory issue."
+          exit 1
