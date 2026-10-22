@@ -119,7 +119,7 @@ on the Xcode 27 build machine (`personal-cfo-zz7f7.13`).
 
 ### Configuration validated by the spike
 
-- `PRAGMA key` is applied immediately after `open`, before any other access.
+- The key is applied immediately after `open`, before any other access, through `sqlite3_key_v2` (never as `PRAGMA key` SQL text; `personal-cfo-7ie.17`).
 - `journal_mode = WAL`; `busy_timeout` set.
 - WAL sidecar (`-wal`) is created on write and is itself encrypted.
 

@@ -8407,49 +8407,79 @@ fn several_scenarios_compose_with_selection_order_as_precedence() {
     assert_eq!(rent_under(&[]), None);
 }
 
-// -- The key statements never reallocate (personal-cfo-rsjud) -----------------------------------
+// -- The key buffer (personal-cfo-7ie.17) -------------------------------------------------------
 //
-// A `String` that grows moves to a new block and leaves the old one, holding the partly written
-// key, freed without being scrubbed. Both statement builders size their buffer exactly, so the
-// capacity at the end equals the capacity at the start, which is the length.
+// The raw-key literal passed to `sqlite3_key_v2` is built in an exactly-sized, zeroizing buffer, so
+// it never reallocates (a grown `Vec` leaves the old block holding the key, freed unscrubbed).
 
 #[test]
-fn the_raw_key_statement_is_built_without_reallocating() {
+fn the_raw_key_literal_is_built_at_its_exact_size() {
     let dek = vault_crypto::generate_dek().unwrap();
-    let pragma = raw_key_pragma(&dek);
-    assert_eq!(pragma.len(), 83, "PRAGMA key = \"x'<64 hex>'\";");
+    let literal = raw_key_bytes(&dek);
+    assert_eq!(literal.len(), 67, "x' + 64 hex digits + '");
     assert_eq!(
-        pragma.capacity(),
-        pragma.len(),
-        "the buffer grew, so a freed copy held the key"
+        literal.capacity(),
+        literal.len(),
+        "the buffer grew, so a freed block held the key"
     );
-    assert!(pragma.starts_with("PRAGMA key = \"x'") && pragma.ends_with("'\";"));
+    assert!(literal.starts_with(b"x'") && literal.ends_with(b"'"));
+    let hex: String = dek
+        .expose_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(&literal[2..66], hex.as_bytes());
+}
+
+// -- sqlite3_key_v2 semantics the callers rely on (personal-cfo-7ie.17, 03a-escalation K1) ------
+
+#[test]
+fn an_empty_key_is_refused_where_pragma_key_once_meant_unencrypted() {
+    let dir = TempDir::new().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("empty.vault")).unwrap();
+    assert!(key_connection(&conn, None, b"").is_err());
+    // A refusal leaves the connection unkeyed, so the file stays a plaintext SQLite database
+    // that DohFlow never writes: the vault open paths all key with a non-empty key.
 }
 
 #[test]
-fn the_passphrase_statement_is_built_without_reallocating_whatever_the_quotes() {
-    let many_quotes = "'".repeat(40);
-    let long_mixed = "a'b".repeat(500);
-    for key in [
-        "",
-        "plain",
-        "it's",
-        "'",
-        "''",
-        many_quotes.as_str(),
-        "caf\u{e9} \u{1f512} it's 'x'",
-        long_mixed.as_str(),
-    ] {
-        let pragma = passphrase_pragma(key);
-        let quotes = key.matches('\'').count();
-        assert_eq!(pragma.len(), 16 + key.len() + quotes, "{key:?}");
-        assert_eq!(
-            pragma.capacity(),
-            pragma.len(),
-            "the buffer grew for a passphrase of {} bytes",
-            key.len()
-        );
-        // Quotes are doubled and the text is otherwise the passphrase.
-        assert_eq!(&pragma[14..pragma.len() - 2], key.replace('\'', "''"));
+fn a_key_set_after_the_schema_was_used_is_silently_ignored_so_callers_must_key_first() {
+    // The behavior the rekey export is ordered around: ATTACH with no KEY clause attaches the new
+    // file under the MAIN key, and a later sqlite3_key_v2 returns Ok but changes nothing once that
+    // schema has been used. If SQLCipher ever changes this, this test fails and the rekey
+    // ordering is re-derived, instead of the change going unnoticed.
+    let dir = TempDir::new().unwrap();
+    let (old, new) = (
+        vault_crypto::generate_dek().unwrap(),
+        vault_crypto::generate_dek().unwrap(),
+    );
+    let main_path = dir.path().join("main.vault");
+    let copy = dir.path().join("copy.vault");
+    {
+        let conn = rusqlite::Connection::open(&main_path).unwrap();
+        key_raw(&conn, &old).unwrap();
+        conn.execute_batch("CREATE TABLE t (a INTEGER);").unwrap();
+        std::fs::write(&copy, b"").unwrap();
+        conn.execute("ATTACH DATABASE ?1 AS rekeyed", [copy.to_str().unwrap()])
+            .unwrap();
+        // Touch the attached schema BEFORE keying it: now its (old-key) codec has been used.
+        conn.execute_batch("CREATE TABLE rekeyed.t (a INTEGER);")
+            .unwrap();
+        key_raw_schema(&conn, "rekeyed", &new).expect("Ok, though the key is ignored");
+        conn.execute_batch("INSERT INTO rekeyed.t VALUES (1); DETACH DATABASE rekeyed;")
+            .unwrap();
     }
+    let read = |dek: &vault_crypto::Dek| -> rusqlite::Result<i64> {
+        let conn = rusqlite::Connection::open(&copy)?;
+        key_raw(&conn, dek).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+    };
+    assert_eq!(read(&old).unwrap(), 1, "written under the OLD key");
+    assert!(read(&new).is_err(), "the new key was ignored");
+    // And the rotation's own check refuses such a copy before anything is swapped in: it fails
+    // closed, the vault is untouched.
+    assert!(
+        crate::rekey::verify_rekeyed_copy(&copy, &new, &dir.path().join("blobs"), 0).is_err(),
+        "a copy left under the old key must not verify under the new one"
+    );
 }
