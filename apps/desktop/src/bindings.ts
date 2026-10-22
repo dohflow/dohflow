@@ -1832,6 +1832,12 @@ export type IpcError =
 "VaultUnlockFailed" |
 /**  This vault was written by a newer schema; do not offer a downgrade. */
 "NewerVaultSchema" |
+/**
+ *  The pre-unlock integrity check a host asked for found problems
+ *  (personal-cfo-i93n3.13). Nothing was opened or written. Carries no detail:
+ *  the UI says the vault may be damaged and offers a restore from a backup.
+ */
+"VaultIntegrityCheckFailed" |
 /**  This existing vault is not a verified supported migration layout. */
 "UnsupportedVaultSchema" |
 /**

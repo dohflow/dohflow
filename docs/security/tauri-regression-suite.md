@@ -41,6 +41,31 @@ and `cargo check --lib --target aarch64-apple-ios-sim` builds the crate without 
 (run it after a change here; `ios-kernel.yml` stays kernel-only by ADR 0085). The
 isolated shells are unavailable where `windows::ISOLATED_SHELLS_AVAILABLE` is false.
 
+### Host hooks on `HostOptions` (`personal-cfo-i93n3.13`)
+
+An embedding host can reach three things the default desktop build leaves alone, all `None`
+by default and all generic (no platform is named anywhere in this crate):
+
+- `on_ready: Option<fn(&AppHandle)>`: called once, at the end of setup, so a host can keep the
+  handle for its own lifecycle events.
+- `after_unlock: Option<fn(&AppHandle)>`: called after every successful unlock.
+- `unlock_integrity_check: Option<fn() -> bool>`: asked at every unlock; `true` runs the engine's
+  `PRAGMA integrity_check` before anything opens, migrates or writes (`UnlockOptions`, 7ie.14).
+  A failure is the typed `VaultIntegrityCheckFailed` IPC error; the unlock screen says the vault
+  may be damaged, nothing was changed, and offers the existing restore-as-new flow. The app has
+  no unlock-with-key IPC path yet; when one lands it must take its options from the same
+  `HostOptions::unlock_options()`.
+
+`lock_active_vault(&AppHandle)` is the one new **host-callable** surface: a plain function (not an
+IPC command, in no permission set, granted to no window) that does what `lock_vault` does
+(checkpoint, close, zeroize) and is idempotent for a vault that is not unlocked. Review it, and
+`on_ready`, as the entry points through which a host reaches the vault. `tests/host_hooks.rs`
+proves each hook fires when set and is inert when `None`, the option reaches the kernel (a damaged
+vault is refused byte-identical), the lock leaves no `-wal` content, and `lock_active_vault` is in
+no command list or permission file. Because a host can lock without the page knowing, the
+frontend re-reads the vault status when the page becomes visible again and, only if the vault is
+no longer unlocked, drops its cached read-models; with the vault still unlocked it does nothing.
+
 Two build-output checks complete the picture:
 
 - **`scripts/check-dist-csp.mjs`** runs on the frontend job's built `dist/`. It

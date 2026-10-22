@@ -18,6 +18,7 @@ pub mod update;
 pub mod vault_registry;
 pub mod windows;
 
+pub use ipc::commands::lock_active_vault;
 pub use state::AppState;
 
 // Link anchor (personal-cfo-cu8): importer plugins contribute only `inventory`
@@ -266,7 +267,8 @@ pub fn export_bindings(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 /// uses, so the default desktop build is unchanged. A plugin left out here is
 /// not registered at all, so its commands do not exist in that build
 /// (`tests/host_options.rs`), whatever a capability file says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// No `PartialEq`: the hooks are function pointers, whose equality is not meaningful.
+#[derive(Clone, Copy, Debug)]
 pub struct HostOptions {
     /// Register the signed-artifact updater plugin (ADR 0068).
     pub updater: bool,
@@ -277,6 +279,17 @@ pub struct HostOptions {
     /// the desktop default and shows nothing. The host supplies the name; this crate
     /// hard-codes none. Kept short and plain: see [`HostOptions::system_backup_device_label`].
     pub system_backup_device: Option<&'static str>,
+    /// Called once, at the end of setup, with the app's handle (personal-cfo-i93n3.13), so a
+    /// host can keep it for its own lifecycle events. `None` (the default) does nothing.
+    pub on_ready: Option<fn(&tauri::AppHandle)>,
+    /// Called after every successful unlock (personal-cfo-i93n3.13), with the app's handle.
+    /// `None` (the default) does nothing.
+    pub after_unlock: Option<fn(&tauri::AppHandle)>,
+    /// Consulted at every unlock (personal-cfo-i93n3.13): `true` runs the engine's
+    /// `PRAGMA integrity_check` before anything opens, migrates or writes, and a failure is
+    /// the typed `VaultIntegrityCheckFailed` error. A host with a reason to distrust the files
+    /// (a restored install) answers `true` once. `None` (the default) never checks.
+    pub unlock_integrity_check: Option<fn() -> bool>,
 }
 
 /// The longest device name `build_info` passes to the UI.
@@ -290,6 +303,27 @@ impl HostOptions {
     #[must_use]
     pub const fn self_update_available(self) -> bool {
         cfg!(desktop) && self.updater
+    }
+}
+
+/// Call a host hook with its argument, or do nothing when the host set none
+/// (personal-cfo-i93n3.13). Generic so a test can prove "fires when set, inert when `None`" for the
+/// very function the app uses, without a native `AppHandle`.
+#[doc(hidden)]
+pub fn call_host_hook<A>(hook: Option<fn(&A)>, argument: &A) {
+    if let Some(hook) = hook {
+        hook(argument);
+    }
+}
+
+impl HostOptions {
+    /// The options for the next unlock: the integrity check when the host asks for it.
+    #[must_use]
+    pub fn unlock_options(self) -> finance_kernel::UnlockOptions {
+        match self.unlock_integrity_check {
+            Some(ask) if ask() => finance_kernel::UnlockOptions::with_integrity_check(),
+            _ => finance_kernel::UnlockOptions::default(),
+        }
     }
 }
 
@@ -313,6 +347,9 @@ impl Default for HostOptions {
             updater: true,
             process: true,
             system_backup_device: None,
+            on_ready: None,
+            after_unlock: None,
+            unlock_integrity_check: None,
         }
     }
 }
@@ -424,7 +461,7 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
         // (`build_info`'s self-update flag).
         .manage(options)
         .invoke_handler(builder.invoke_handler())
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager;
 
             // Resolve the per-user vault location and classify it (NoVault /
@@ -477,6 +514,10 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
             // WebView (IPC rejection, effective CSP, navigation, window.open) and exits.
             #[cfg(debug_assertions)]
             isolation_probe::start_if_requested(app.handle())?;
+
+            // The host's ready hook (personal-cfo-i93n3.13): once, with the app's handle, after
+            // the app's own setup has finished. None for the desktop.
+            call_host_hook(options.on_ready, app.handle());
 
             // CI launch smoke (personal-cfo-rr0lm, DIST-5): a headless proof that
             // the binary starts and setup() completes without a display or a

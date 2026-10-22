@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -102,6 +103,30 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     void refresh();
     void refreshVaults();
   }, [refresh, refreshVaults]);
+
+  // A host can lock the vault on its own (a device that locks or goes to the background), so
+  // the screen can be showing an unlocked vault the engine has already closed. When the page
+  // becomes visible again, re-read the status; if the vault is no longer unlocked, drop the
+  // cached read-models (ADR 0003) and show whatever the engine says. With the vault still
+  // unlocked this changes nothing at all (personal-cfo-i93n3.13).
+  const statusRef = useRef<VaultStatusDto | null>(null);
+  statusRef.current = status;
+  useEffect(() => {
+    async function onVisible() {
+      if (document.visibilityState !== "visible") return;
+      if (statusRef.current?.state !== "Unlocked") return;
+      try {
+        const result = await commands.vaultStatus();
+        if (result.status !== "ok" || result.data.state === "Unlocked") return;
+        queryClient.clear();
+        setStatus(result.data);
+      } catch {
+        // A failed read leaves the screen as it is; the next IPC call reports the real state.
+      }
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [queryClient]);
 
   const run = useCallback(
     async (call: Promise<VaultResult>): Promise<IpcError | null> => {
@@ -284,6 +309,8 @@ export function describeIpcError(error: IpcError): string {
         return "This vault requires a newer version of DohFlow. Open it with a compatible newer version.";
       case "UnsupportedVaultSchema":
         return "This vault's format could not be verified. It was not changed. Open it with a compatible version of DohFlow or restore a known-good backup.";
+      case "VaultIntegrityCheckFailed":
+        return "DohFlow checked this vault before opening it and found damage. Nothing was opened or changed. Restore it from a backup you made earlier.";
       case "VaultLocked":
         return "The vault is locked.";
       case "WriterPanicked":

@@ -126,6 +126,7 @@ fn ipc_error_code(error: &IpcError) -> &'static str {
         IpcError::VaultUnlockFailed => "vault_unlock_failed",
         IpcError::NewerVaultSchema => "newer_vault_schema",
         IpcError::UnsupportedVaultSchema => "unsupported_vault_schema",
+        IpcError::VaultIntegrityCheckFailed => "vault_integrity_check_failed",
         IpcError::Unavailable(_) => "unavailable",
         IpcError::InsufficientDiskSpace => "insufficient_disk_space",
         IpcError::WriterPanicked => "writer_panicked",
@@ -268,9 +269,20 @@ pub fn create_vault(
 /// Unlock the existing vault with `password`. A wrong password returns
 /// [`IpcError::VaultUnlockFailed`] and leaves the vault locked.
 pub fn unlock_vault_impl(state: &AppState, password: String) -> Result<VaultStatusDto, IpcError> {
+    unlock_vault_with_options_impl(state, password, finance_kernel::UnlockOptions::default())
+}
+
+/// [`unlock_vault_impl`] with the host's [`finance_kernel::UnlockOptions`]
+/// (personal-cfo-i93n3.13). With `integrity_check` a damaged vault returns
+/// [`IpcError::VaultIntegrityCheckFailed`] before anything is opened or written.
+pub fn unlock_vault_with_options_impl(
+    state: &AppState,
+    password: String,
+    options: finance_kernel::UnlockOptions,
+) -> Result<VaultStatusDto, IpcError> {
     let password = Zeroizing::new(password);
     let mut guard = state.lock_controller()?;
-    guard.unlock(password.as_bytes())?;
+    guard.unlock_with_options(password.as_bytes(), options)?;
     // Daily-on-open: persist a forecast run so actualization (ADR 0026 §9/§15,
     // personal-cfo-5ie.3) accrues a time-spanning history. Deduped on
     // (input content_hash, day) inside the kernel, so repeated opens with
@@ -346,9 +358,15 @@ pub fn spawn_due_jobs_on_unlock_for_state(
 pub fn unlock_vault(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    host: tauri::State<'_, crate::HostOptions>,
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
-    let status = unlock_vault_impl(state.inner(), password)?;
+    // The host decides per unlock whether to run the pre-unlock integrity check
+    // (a restored install, for example); the desktop has no such host and passes none.
+    let options = host.unlock_options();
+    let status = unlock_vault_with_options_impl(state.inner(), password, options)?;
+    // The host's after-unlock hook (personal-cfo-i93n3.13): after every successful unlock.
+    crate::call_host_hook(host.after_unlock, &app);
     // Local durable jobs (personal-cfo-ati): the production dispatcher is
     // always installed in AppState, so every successful unlock runs one
     // post-unlock sweep. The blocking work is fire-and-forget and never delays
@@ -379,6 +397,35 @@ pub fn unlock_vault(
         .await;
     });
     Ok(status)
+}
+
+/// Lock the active vault now, for a HOST that has its own reasons to (personal-cfo-i93n3.13):
+/// it does what the `lock_vault` command does (checkpoint the write-ahead log, close the
+/// connection, drop and zeroize the key) and nothing else. It is a plain function, not an IPC
+/// command: no webview can call it and no capability grants it. A host may call it at any
+/// lifecycle event, so it is idempotent: a vault that is not unlocked is left as it is.
+///
+/// # Errors
+/// [`IpcError::Persistence`] if the lock's checkpoint could not complete (the vault is
+/// locked either way), or if the controller cannot be reached.
+pub fn lock_active_vault(app: &tauri::AppHandle) -> Result<(), IpcError> {
+    lock_active_vault_in(app)
+}
+
+/// [`lock_active_vault`] for any runtime (so a test can drive it on the mock runtime).
+///
+/// # Errors
+/// As [`lock_active_vault`].
+pub fn lock_active_vault_in<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), IpcError> {
+    use tauri::Manager as _;
+    let state = app.state::<AppState>();
+    {
+        let guard = state.lock_controller()?;
+        if guard.state() != finance_kernel::VaultState::Unlocked {
+            return Ok(());
+        }
+    }
+    lock_vault_impl(state.inner()).map(|_| ())
 }
 
 /// Lock the vault, dropping (and zeroizing) the in-memory DEK.
