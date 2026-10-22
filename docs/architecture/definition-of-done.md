@@ -83,10 +83,13 @@ A test that captures `tracing` output to prove something is, or is not, logged f
   (TEMP triggers plus a read-and-hash pass). The **required** check is relative and in the same
   run: capture on against capture off, interleaved, median of 7 runs of 400 commands after a
   50-command warm-up, passing below a **4× ratio** and below a loose **50 ms added** per command
-  (`write_set_tests::the_capture_adds_little_to_a_command`; a second test slows the capture
-  down on purpose and requires the check to fail). The **absolute budget** is **under 3 ms added
-  per command**, asserted by `write_set_tests::the_capture_stays_inside_the_absolute_budget` in
-  the non-required perf job, which prints the numbers into every pull request's checks. The
+  (`write_set_tests::the_capture_adds_little_to_a_command`). That the check can fail is proved
+  two ways: a required, deterministic test of the predicate on fixed numbers (no timing,
+  `the_relative_predicate_decides_on_fixed_numbers`), and a timed run that slows the capture on
+  purpose (`the_relative_check_rejects_a_much_slower_capture`) in the non-required perf job, which
+  reports its measured ratio. The **absolute budget** is **under 3 ms added per command**,
+  asserted by `write_set_tests::the_capture_stays_inside_the_absolute_budget` in that same job,
+  which prints the numbers into every pull request's checks. The
   absolute number depends on the machine, so it is recorded per runner type: **about 0.25 ms on
   a quiet laptop (1.7×) and up to about 3.6 ms on a loaded hosted Linux runner (2.5×)**, measured
   2026-10-21/22; the ratio stayed between 1.5× and 2.5× everywhere.
