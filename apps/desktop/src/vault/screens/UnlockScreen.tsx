@@ -10,6 +10,7 @@ import {
   CardDescription,
   CardHeader,
 } from "@/components/ui/card";
+import { RestoreFromBackup } from "@/backup/RestoreFromBackup";
 import { describeIpcError, useVault } from "@/vault/useVault";
 import { Screen } from "./Screen";
 
@@ -18,6 +19,8 @@ export function UnlockScreen() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // The host asked for an integrity check and the vault failed it: the only way on is a backup.
+  const [damaged, setDamaged] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null);
 
   async function onSubmit(event: FormEvent) {
@@ -25,9 +28,11 @@ export function UnlockScreen() {
     if (password.length === 0 || submitting) return;
     setSubmitting(true);
     setError(null);
+    setDamaged(false);
     const failure = await unlockVault(password);
     if (failure) {
       setError(describeIpcError(failure));
+      setDamaged(failure === "VaultIntegrityCheckFailed");
       setPassword("");
       setSubmitting(false);
       passwordInput.current?.focus();
@@ -72,6 +77,15 @@ export function UnlockScreen() {
               {submitting ? "Unlocking…" : "Unlock"}
             </Button>
           </form>
+
+          {damaged && (
+            <div className="mt-4">
+              <RestoreFromBackup
+                mode="newNamed"
+                caption="Restore from a backup. This makes a separate vault from the backup file and leaves the damaged one untouched."
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
     </Screen>

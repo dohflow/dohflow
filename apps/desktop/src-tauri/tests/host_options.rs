@@ -61,14 +61,13 @@ fn is_unregistered(result: &Result<String, String>, plugin: &str) -> bool {
 fn the_default_options_register_every_optional_plugin() {
     // `run()` is `run_with(generate_context!(), HostOptions::default())`, so the
     // default must keep the desktop app's plugin set exactly.
-    assert_eq!(
-        HostOptions::default(),
-        HostOptions {
-            updater: true,
-            process: true,
-            system_backup_device: None,
-        }
-    );
+    let defaults = HostOptions::default();
+    assert!(defaults.updater && defaults.process);
+    assert_eq!(defaults.system_backup_device, None);
+    // Every host hook is off by default: the desktop build calls none of them.
+    assert!(defaults.on_ready.is_none());
+    assert!(defaults.after_unlock.is_none());
+    assert!(defaults.unlock_integrity_check.is_none());
 }
 
 #[test]

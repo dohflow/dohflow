@@ -887,8 +887,23 @@ impl VaultController {
     /// [`KernelError::IllegalVaultTransition`] if not in `Locked`, or any
     /// [`Kernel::unlock_vault`] error.
     pub fn unlock(&mut self, password: &[u8]) -> Result<(), KernelError> {
+        self.unlock_with_options(password, UnlockOptions::default())
+    }
+
+    /// [`VaultController::unlock`] with the host's [`UnlockOptions`] (personal-cfo-i93n3.13):
+    /// with `integrity_check`, `PRAGMA integrity_check` runs before anything opens, migrates
+    /// or writes, and a failure is [`KernelError::IntegrityCheckFailed`] with the controller
+    /// back in `Locked`, the file untouched.
+    ///
+    /// # Errors
+    /// As [`VaultController::unlock`], plus [`KernelError::IntegrityCheckFailed`].
+    pub fn unlock_with_options(
+        &mut self,
+        password: &[u8],
+        options: UnlockOptions,
+    ) -> Result<(), KernelError> {
         self.transition_to(VaultState::Unlocking)?;
-        match Kernel::unlock_vault(&self.path, password) {
+        match Kernel::unlock_vault_with_options(&self.path, password, options) {
             Ok(kernel) => {
                 self.transition_to(VaultState::Unlocked)?;
                 self.kernel = Some(kernel);

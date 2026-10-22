@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, CashflowRole, CommandEnvelope, CommandMeta,
-    CreateAccount, Currency, Kernel, KernelError, LedgerAccountId, UnlockOptions,
+    CreateAccount, Currency, Kernel, KernelError, LedgerAccountId, UnlockOptions, VaultController,
+    VaultState,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -170,4 +171,45 @@ fn a_wrong_password_is_still_a_wrong_password_with_the_check_on() {
         Err(KernelError::VaultUnlockFailed) => {}
         other => panic!("expected VaultUnlockFailed, got {:?}", other.err()),
     }
+}
+
+// ---- the controller carries the option (personal-cfo-i93n3.13) ------------------------
+
+#[test]
+fn the_controller_unlock_is_unchanged_and_unlock_with_options_adds_the_check() {
+    let dir = TempDir::new().unwrap();
+    let (path, kernel) = written_vault(&dir);
+    kernel.lock();
+
+    // `unlock` is `unlock_with_options` with the default: it unlocks and never checks.
+    let mut controller = VaultController::open(path.clone());
+    controller.unlock(PASSWORD).expect("plain unlock");
+    assert_eq!(controller.state(), VaultState::Unlocked);
+    controller.lock().expect("lock");
+
+    // With the check on, a sound vault unlocks.
+    controller
+        .unlock_with_options(PASSWORD, UnlockOptions::with_integrity_check())
+        .expect("sound vault passes");
+    assert_eq!(controller.state(), VaultState::Unlocked);
+    controller.lock().expect("lock");
+
+    // A damaged vault is refused, the controller is back to Locked, and the file is untouched.
+    let mut bytes = fs::read(&path).unwrap();
+    let mut page = 1;
+    while (page + 1) * 4096 <= bytes.len() {
+        for byte in &mut bytes[page * 4096 + 64..page * 4096 + 192] {
+            *byte ^= 0xA5;
+        }
+        page += 1;
+    }
+    fs::write(&path, &bytes).unwrap();
+    let damaged = fs::read(&path).unwrap();
+    let refused = controller.unlock_with_options(PASSWORD, UnlockOptions::with_integrity_check());
+    assert!(
+        matches!(refused, Err(KernelError::IntegrityCheckFailed { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(controller.state(), VaultState::Locked);
+    assert_eq!(fs::read(&path).unwrap(), damaged);
 }

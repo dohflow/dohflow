@@ -35,6 +35,12 @@ pub enum IpcError {
     #[error("this vault requires a newer version of DohFlow")]
     NewerVaultSchema,
 
+    /// The pre-unlock integrity check a host asked for found problems
+    /// (personal-cfo-i93n3.13). Nothing was opened or written. Carries no detail:
+    /// the UI says the vault may be damaged and offers a restore from a backup.
+    #[error("the vault failed its integrity check")]
+    VaultIntegrityCheckFailed,
+
     /// This existing vault is not a verified supported migration layout.
     #[error("this vault's format is unsupported or incomplete")]
     UnsupportedVaultSchema,
@@ -77,6 +83,8 @@ impl From<KernelError> for IpcError {
             KernelError::VaultUnlockFailed => IpcError::VaultUnlockFailed,
             KernelError::NewerVaultSchema { .. } => IpcError::NewerVaultSchema,
             KernelError::UnsupportedVaultSchema => IpcError::UnsupportedVaultSchema,
+            // The problem count stays out of the IPC surface: the UI needs the verdict only.
+            KernelError::IntegrityCheckFailed { .. } => IpcError::VaultIntegrityCheckFailed,
             KernelError::VaultExists => {
                 IpcError::Validation("a vault already exists at this location".to_owned())
             }
