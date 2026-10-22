@@ -397,6 +397,57 @@ jobs:
           fi
           echo "Importer isolation boundaries OK."
 
+  # The ABSOLUTE write-set capture budget (under 3 ms added per command), as a job that is NOT a
+  # required check (personal-cfo-g3m.16, owner decision personal-cfo-915.15 option C). The
+  # required test of the same cost is relative; the absolute number varies about 20x between a
+  # laptop and a loaded hosted runner, so it must not be able to stall a merge. This job runs the
+  # ignored test, prints the numbers into the check's step summary with the runner type (the
+  # per-runner record the Definition of Done asks for), and may go red without blocking anything.
+  # It is deliberately absent from the ruleset's required checks.
+  perf-budget:
+    name: Perf budget (absolute, not required)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed files
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          base: main
+          filters: |
+            code:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+
+      - name: Absolute write-set capture budget (< 3 ms added per command)
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/perf.txt"
+          status=0
+          cargo test -p db-worker --lib write_set_tests::the_capture_stays_inside_the_absolute_budget \
+            -- --ignored --nocapture 2>&1 | tee "$out" || status=$?
+          line=$(grep 'write-set capture ABSOLUTE' "$out" || echo "no measurement line printed")
+          {
+            echo "### Perf budget: write-set capture (absolute, not a required check)"
+            echo "Runner: ${RUNNER_OS} ${RUNNER_ARCH} (${RUNNER_ENVIRONMENT:-unknown}). Budget: under 3000 us added per command."
+            echo '```'
+            echo "$line"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
   frontend:
     name: Frontend (apps/desktop)
     runs-on: ubuntu-latest

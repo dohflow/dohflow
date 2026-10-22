@@ -564,96 +564,182 @@ fn the_digest_of_an_inserted_row_equals_an_independent_encoding_of_the_stored_ro
     assert_eq!(set.hash, write_set_hash(&mut expected).unwrap());
 }
 
-/// The cost of the capture on the busiest command shape (one transaction with two postings),
-/// measured against the same commands with the capture off. The Definition of Done budget is
-/// "regressions of 2x or more fail CI"; the capture must stay far inside that on a command that
-/// writes several replicated tables.
-#[test]
-fn the_capture_adds_little_to_a_command() {
+// ---- the cost of the capture -------------------------------------------------------------------
+//
+// The capture adds a per-command cost (TEMP triggers plus the read-and-hash at the end). The
+// REQUIRED check on it is RELATIVE: capture on against capture off, in the same process,
+// interleaved, so a slow or loaded machine slows both sides alike. The absolute added time is not
+// a required check, because it varies 20x with the machine: 5c measured +175 us on a quiet laptop
+// and +3,600 us on a loaded hosted runner, with the ratio staying between 1.5x and 2.5x
+// (personal-cfo-g3m.16, measurements by the Sync engine lane). The absolute 3 ms budget is
+// asserted by the `#[ignore]`d test below, which the non-required perf job in ci.yml runs and
+// reports on every pull request.
+
+/// A warm-up of commands per side, the commands timed per run, and the runs per side.
+const WARM_UP: usize = 50;
+const COMMANDS: usize = 400;
+const RUNS: usize = 7;
+/// The required ratio ceiling: capture on may cost less than this many times capture off. The
+/// first cut of the capture was 3.2x; the worst ratio seen since is 2.5x.
+const MAX_RATIO: f64 = 4.0;
+/// A loose cap on the TIME the capture adds to one command, in microseconds: the Definition of
+/// Done budget for a whole command (P50 < 50 ms). It cannot flake on any real machine.
+const MAX_ADDED_US: f64 = 50_000.0;
+
+/// Time `commands` busy commands (one transaction with two postings and its details) on a fresh
+/// vault, with the capture off (`disable`) or on.
+fn time_commands(disable: bool, commands: usize) -> std::time::Duration {
     use std::time::Instant;
 
-    fn run(disable: bool, commands: usize) -> std::time::Duration {
-        write_set::DISABLED.with(|d| d.set(disable));
-        let (_dir, worker) = worker();
-        let account = core_ledger::Account::new(
-            core_ledger::AccountId::new(),
-            core_ledger::LedgerAccountId::new(),
-            "Checking",
-            core_ledger::CashflowRole::LiquidCash,
-            core_money::Currency::Usd,
-            core_ledger::AccountFlags::default(),
-        );
-        let id = account.id();
-        let meta = || crate::CommandMeta {
-            command_id: Uuid::now_v7(),
-            correlation_id: Uuid::now_v7(),
-            causation_id: None,
-            actor_type: crate::ActorType::User,
-            actor_id: "tester".to_owned(),
-            idempotency_key: Uuid::new_v4().to_string(),
-            issued_at: crate::IssuedAt::now(),
-        };
+    write_set::DISABLED.with(|d| d.set(disable));
+    let (_dir, worker) = worker();
+    let account = core_ledger::Account::new(
+        core_ledger::AccountId::new(),
+        core_ledger::LedgerAccountId::new(),
+        "Checking",
+        core_ledger::CashflowRole::LiquidCash,
+        core_money::Currency::Usd,
+        core_ledger::AccountFlags::default(),
+    );
+    let id = account.id();
+    let meta = || crate::CommandMeta {
+        command_id: Uuid::now_v7(),
+        correlation_id: Uuid::now_v7(),
+        causation_id: None,
+        actor_type: crate::ActorType::User,
+        actor_id: "tester".to_owned(),
+        idempotency_key: Uuid::new_v4().to_string(),
+        issued_at: crate::IssuedAt::now(),
+    };
+    worker
+        .dispatch(
+            meta(),
+            crate::WriteCommand::CreateAccount {
+                account: Box::new(account),
+                opening_balance: None,
+            },
+        )
+        .unwrap();
+    let start = Instant::now();
+    for _ in 0..commands {
         worker
             .dispatch(
                 meta(),
-                crate::WriteCommand::CreateAccount {
-                    account: Box::new(account),
-                    opening_balance: None,
+                crate::WriteCommand::RecordTransaction {
+                    transaction_id: core_ledger::TransactionId::new(),
+                    account_id: id,
+                    amount: core_money::Money::new(100, core_money::Currency::Usd),
+                    occurred_at: chrono::Utc::now(),
                 },
             )
             .unwrap();
-        let start = Instant::now();
-        for _ in 0..commands {
-            worker
-                .dispatch(
-                    meta(),
-                    crate::WriteCommand::RecordTransaction {
-                        transaction_id: core_ledger::TransactionId::new(),
-                        account_id: id,
-                        amount: core_money::Money::new(100, core_money::Currency::Usd),
-                        occurred_at: chrono::Utc::now(),
-                    },
-                )
-                .unwrap();
-        }
-        let elapsed = start.elapsed();
-        write_set::DISABLED.with(|d| d.set(false));
-        elapsed
     }
+    let elapsed = start.elapsed();
+    write_set::DISABLED.with(|d| d.set(false));
+    elapsed
+}
 
-    let commands = 400;
-    // Warm up, then take the best of three of each to keep the comparison steady.
-    run(true, 50);
-    run(false, 50);
-    // Alternate the two so a load spike from other tests hits both, and keep the best of five.
-    let (mut off, mut on) = (std::time::Duration::MAX, std::time::Duration::MAX);
-    for _ in 0..5 {
-        off = off.min(run(true, commands));
-        on = on.min(run(false, commands));
+fn median(mut v: Vec<std::time::Duration>) -> std::time::Duration {
+    v.sort();
+    v[v.len() / 2]
+}
+
+/// Interleave capture-off and capture-on runs (after a warm-up of each), and return the MEDIAN
+/// of each side. Interleaving puts a load spike on both sides; the median ignores the outliers.
+fn measure() -> (std::time::Duration, std::time::Duration) {
+    time_commands(true, WARM_UP);
+    time_commands(false, WARM_UP);
+    let (mut off, mut on) = (Vec::new(), Vec::new());
+    for _ in 0..RUNS {
+        off.push(time_commands(true, COMMANDS));
+        on.push(time_commands(false, COMMANDS));
     }
-    let per_command_us = |d: std::time::Duration| d.as_micros() as f64 / commands as f64;
-    println!(
-        "write-set capture: {:.0} us/command off, {:.0} us/command on ({:.2}x, +{:.0} us)",
+    (median(off), median(on))
+}
+
+fn per_command_us(d: std::time::Duration) -> f64 {
+    d.as_micros() as f64 / COMMANDS as f64
+}
+
+/// The line the numbers are printed on, for the logs and the perf job's summary.
+fn describe(off: std::time::Duration, on: std::time::Duration) -> String {
+    format!(
+        "{:.0} us/command off, {:.0} us/command on ({:.2}x, +{:.0} us)",
         per_command_us(off),
         per_command_us(on),
         on.as_secs_f64() / off.as_secs_f64(),
         per_command_us(on) - per_command_us(off)
+    )
+}
+
+/// The REQUIRED check: the ratio ceiling and the loose added-time cap. `Err` says why not.
+fn within_relative_budget(off: std::time::Duration, on: std::time::Duration) -> Result<(), String> {
+    let ratio = on.as_secs_f64() / off.as_secs_f64();
+    let added_us = per_command_us(on) - per_command_us(off);
+    if ratio >= MAX_RATIO {
+        return Err(format!(
+            "the capture multiplied the cost of a command by {ratio:.2}x (limit {MAX_RATIO}x): {}",
+            describe(off, on)
+        ));
+    }
+    if added_us >= MAX_ADDED_US {
+        return Err(format!(
+            "the capture added {added_us:.0} us per command (limit {MAX_ADDED_US:.0} us): {}",
+            describe(off, on)
+        ));
+    }
+    Ok(())
+}
+
+/// The cost of the capture on the busiest command shape, against the same commands with the
+/// capture off, in the same run: a ratio, not a wall-clock number (see the note above).
+#[test]
+fn the_capture_adds_little_to_a_command() {
+    let (off, on) = measure();
+    println!("write-set capture: {}", describe(off, on));
+    if let Err(why) = within_relative_budget(off, on) {
+        panic!("{why}");
+    }
+}
+
+/// How many times the slowdown test runs the capture's read-and-hash pass per command. The pass
+/// is only part of the capture (the TEMP triggers are the rest): measured, running it six times
+/// moves the ratio from about 1.8x to about 3.6x, below the 4x ceiling. Twenty passes makes the
+/// whole capture cost well over six times what it normally does, and keeps the ratio far above
+/// the ceiling even on a machine where the capture is cheap (1.5x at multiplier 1 reads over 5x
+/// at 20).
+const SLOWDOWN_PASSES: u32 = 20;
+
+/// Proof that the relative check can fail: with the capture's read-and-hash pass repeated
+/// `SLOWDOWN_PASSES` times per command (the test-only `CAPTURE_COST_MULTIPLIER`), the same check
+/// must reject it. If a change made the check unable to fail, this test would go red.
+#[test]
+fn the_relative_check_rejects_a_much_slower_capture() {
+    write_set::CAPTURE_COST_MULTIPLIER.with(|m| m.set(SLOWDOWN_PASSES));
+    let (off, on) = measure();
+    write_set::CAPTURE_COST_MULTIPLIER.with(|m| m.set(1));
+    println!("write-set capture, slowed: {}", describe(off, on));
+    assert!(
+        within_relative_budget(off, on).is_err(),
+        "the relative check accepted a much slower capture: {}",
+        describe(off, on)
     );
-    // Baseline recorded 2026-10-19 on dev hardware: about 255 us off, 430 us on (1.7x, +175 us)
-    // for a command that writes a transaction, two postings and its details; the same test on a
-    // busier machine reads about 340 us and 680 us (2.0x, +340 us). The command budget of the
-    // Definition of Done is P50 < 50 ms; the capture must stay a rounding error of it. This test
-    // runs beside the whole workspace's tests on a shared machine, where a timing guard that is
-    // tight flakes (it did, once, in a full run), so the guards catch an order-of-magnitude
-    // regression only: under 3 ms added per command and under 6x the capture-off time. The
-    // numbers printed above are the thing to read when changing the capture.
+}
+
+/// The ABSOLUTE budget: under 3 ms added per command. This is not a required check, because the
+/// number depends on the machine (about 0.2 ms on a laptop, about 3.6 ms on a loaded hosted
+/// runner). It is `#[ignore]`d from `cargo test --workspace` and run by the non-required perf job
+/// in ci.yml, which prints the numbers into each pull request's checks, and it belongs to the
+/// release perf budget (docs/architecture/definition-of-done.md).
+#[test]
+#[ignore = "absolute perf budget; run by the non-required perf job (cargo test ... -- --ignored)"]
+fn the_capture_stays_inside_the_absolute_budget() {
+    let (off, on) = measure();
+    println!("write-set capture ABSOLUTE: {}", describe(off, on));
     let added_us = per_command_us(on) - per_command_us(off);
     assert!(
         added_us < 3_000.0,
-        "the capture added {added_us:.0} us per command"
-    );
-    assert!(
-        on.as_secs_f64() < off.as_secs_f64() * 6.0,
-        "the capture multiplied the cost of a command by 6 or more: {off:?} -> {on:?}"
+        "the capture added {added_us:.0} us per command (budget 3000 us): {}",
+        describe(off, on)
     );
 }
