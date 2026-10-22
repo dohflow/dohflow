@@ -101,8 +101,10 @@ owner without a fresh decision, after the reviewer has also shown that the red i
 `main`'s own at the commit the run merged onto and that no later step of the failing
 job was masked. It never applies to a pull request that touches the failing area
 itself (including a failing step's workflow, scripts, lockfiles and audit
-configuration), nor when `main`'s red is a security finding in that pull request's
-own dependencies. The rule and its procedure are in
+configuration), nor, when `main`'s red is a security advisory, to a pull request
+that changes manifests or lockfiles; a code-only pull request may use it only if
+the reviewer's `PASS` explicitly confirms that it does not start using the
+advisory's affected API (owner decision 2026-10-21). The rule and its procedure are in
 `docs/agent/WORKFLOW_ROLES.md` ("Red-main fast path"). Nothing in the ruleset
 changes; this records how the existing bypass is used.
 
