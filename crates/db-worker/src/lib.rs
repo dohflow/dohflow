@@ -1569,18 +1569,40 @@ impl DbWorker {
         let _runner_lock = acquire_runner_lock(path.as_ref())?;
         let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         key_raw(&conn, dek)?;
-        // How a SQLite error during the check maps: a key that does not open the file (the header
-        // page fails to decrypt) is `WrongKey`, never corruption; a page that decrypts wrongly or
-        // fails its HMAC later in the file is damage, reported before any row is returned.
-        let classify = |error: rusqlite::Error| -> Result<IntegrityOutcome, DbError> {
+        // Step 1, the key: read page 1 only (`PRAGMA schema_version` reads the database header and
+        // parses no schema, which would touch further pages once it grows past page 1). A key that
+        // does not open the file fails here, and a damaged page 1 fails the same way: the header
+        // cannot be told apart from a key that does not fit, so both are `WrongKey`, and the caller
+        // handles both as "this vault will not open".
+        match conn.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0)) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(failure, _))
+                if matches!(
+                    failure.code,
+                    rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt
+                ) =>
+            {
+                return Ok(IntegrityOutcome::WrongKey)
+            }
+            Err(error) => return Err(DbError::Sqlite(error)),
+        }
+        // Step 2, the check. The key has now been shown good, so a failure partway through is
+        // damage to a later page, whichever of SQLite's codes it surfaces as (a page that fails its
+        // HMAC can come back as CORRUPT, NOTADB or a bare SQL logic error, depending on what the
+        // page holds), and is reported as `Damaged`; it never reaches the caller as a persistence
+        // error. Other failures (I/O, busy) are not damage and stay errors.
+        let damaged = |error: rusqlite::Error| -> Result<IntegrityOutcome, DbError> {
             match &error {
-                rusqlite::Error::SqliteFailure(failure, _) => match failure.code {
-                    rusqlite::ErrorCode::NotADatabase => Ok(IntegrityOutcome::WrongKey),
-                    rusqlite::ErrorCode::DatabaseCorrupt => {
-                        Ok(IntegrityOutcome::Damaged { problems: 1 })
-                    }
-                    _ => Err(DbError::Sqlite(error)),
-                },
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if matches!(
+                        failure.code,
+                        rusqlite::ErrorCode::DatabaseCorrupt
+                            | rusqlite::ErrorCode::NotADatabase
+                            | rusqlite::ErrorCode::Unknown
+                    ) =>
+                {
+                    Ok(IntegrityOutcome::Damaged { problems: 1 })
+                }
                 _ => Err(DbError::Sqlite(error)),
             }
         };
@@ -1592,7 +1614,7 @@ impl DbWorker {
                         .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
                 }) {
                 Ok(lines) => lines,
-                Err(error) => return classify(error),
+                Err(error) => return damaged(error),
             };
         Ok(match lines.as_slice() {
             [only] if only == "ok" => IntegrityOutcome::Intact,

@@ -121,15 +121,22 @@ fn a_damaged_vault_fails_the_integrity_check_and_nothing_is_written() {
     let (path, kernel) = written_vault(&dir);
     kernel.lock();
 
-    // Damage a page in the middle of the file (not the header, which would read as a wrong key).
+    // Damage every page after the first, so the outcome does not depend on which page holds what
+    // (page 1 carries the header and the schema root; damaging it would read as a wrong key). The
+    // failure SQLite reports differs by page contents (corrupt, not-a-database, or a bare SQL
+    // logic error), and the unlock must call all of them damage.
     let mut bytes = fs::read(&path).unwrap();
     assert!(
         bytes.len() > 4096 * 4,
         "the vault has several pages ({})",
         bytes.len()
     );
-    for byte in &mut bytes[4096 * 3 + 64..4096 * 3 + 192] {
-        *byte ^= 0xA5;
+    let mut page = 1;
+    while (page + 1) * 4096 <= bytes.len() {
+        for byte in &mut bytes[page * 4096 + 64..page * 4096 + 192] {
+            *byte ^= 0xA5;
+        }
+        page += 1;
     }
     fs::write(&path, &bytes).unwrap();
     let damaged = fs::read(&path).unwrap();
