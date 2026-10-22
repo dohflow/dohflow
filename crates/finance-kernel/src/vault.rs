@@ -23,7 +23,7 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use db_worker::{DbWorker, WorkerState};
+use db_worker::{DbWorker, IntegrityOutcome, WorkerState};
 use subtle::ConstantTimeEq;
 use vault_crypto::{
     dek_fingerprint, derive_kek, generate_dek, generate_salt, rewrap_envelope, unwrap_dek,
@@ -33,6 +33,29 @@ use vault_crypto::{
 
 use crate::rekey::{self, CrashPoint, RekeyPaths, RekeyRecovery};
 use crate::{Kernel, KernelError, ReleasedUnlockError};
+
+/// Host-chosen options for the unlock calls ([`Kernel::unlock_vault_with_options`],
+/// [`Kernel::unlock_vault_with_dek_options`]). Generic: the kernel does not know why a host sets
+/// one (personal-cfo-7ie.14; ADR 0085).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UnlockOptions {
+    /// Run `PRAGMA integrity_check` before anything opens, migrates, stamps or writes the
+    /// vault; problems are [`KernelError::IntegrityCheckFailed`]. A host sets this when it has
+    /// reason to doubt the file, for example after it detects a restored install. It reads the
+    /// whole database, so it is opt-in.
+    pub integrity_check: bool,
+}
+
+impl UnlockOptions {
+    /// Options with the pre-unlock integrity check on.
+    #[must_use]
+    pub const fn with_integrity_check() -> Self {
+        Self {
+            integrity_check: true,
+        }
+    }
+}
 
 /// The sidecar that holds a vault's unlock material, derived from the DB path by
 /// appending `.envelope` (so `…/vault.db` → `…/vault.db.envelope`).
@@ -107,6 +130,20 @@ impl Kernel {
     /// - [`KernelError::NewerVaultSchema`] or [`KernelError::UnsupportedVaultSchema`]
     ///   before migrations/seed writes when existing schema inspection refuses.
     pub fn unlock_vault(path: impl AsRef<Path>, password: &[u8]) -> Result<Self, KernelError> {
+        Self::unlock_vault_with_options(path, password, UnlockOptions::default())
+    }
+
+    /// [`Kernel::unlock_vault`] with host-chosen [`UnlockOptions`]. With
+    /// `integrity_check`, `PRAGMA integrity_check` runs first, before the worker is opened,
+    /// migrated, stamped or written, and a failure is [`KernelError::IntegrityCheckFailed`].
+    ///
+    /// # Errors
+    /// As [`Kernel::unlock_vault`], plus [`KernelError::IntegrityCheckFailed`].
+    pub fn unlock_vault_with_options(
+        path: impl AsRef<Path>,
+        password: &[u8],
+        options: UnlockOptions,
+    ) -> Result<Self, KernelError> {
         let db_path = path.as_ref();
         let sidecar = sidecar_path(db_path);
 
@@ -120,6 +157,16 @@ impl Kernel {
         let envelope = VaultEnvelope::from_bytes(&bytes)?;
         let kek = derive_kek(password, &envelope.salt, &envelope.kdf)?;
         let dek = unwrap_dek(&kek, &envelope.wrapped)?;
+        if options.integrity_check {
+            // A wrong key is not corruption: only reported problems stop the unlock, and a
+            // key that does not fit falls through to the open below, which reports it as it
+            // always has.
+            if let IntegrityOutcome::Damaged { problems } =
+                DbWorker::integrity_check_with_raw_key(db_path, &dek)?
+            {
+                return Err(KernelError::IntegrityCheckFailed { problems });
+            }
+        }
         let worker = DbWorker::open_existing_with_raw_key(db_path, dek)?;
         Ok(Self::with_worker(worker))
     }
@@ -159,6 +206,21 @@ impl Kernel {
     pub fn unlock_vault_with_dek(
         path: impl AsRef<Path>,
         released: SecretBytes<RELEASED_LEN>,
+    ) -> Result<Self, KernelError> {
+        Self::unlock_vault_with_dek_options(path, released, UnlockOptions::default())
+    }
+
+    /// [`Kernel::unlock_vault_with_dek`] with host-chosen [`UnlockOptions`]. With
+    /// `integrity_check`, the check runs after the released material has been accepted (the key
+    /// opens the file and the vault is the right one) and before the worker is opened,
+    /// migrated, stamped or written.
+    ///
+    /// # Errors
+    /// As [`Kernel::unlock_vault_with_dek`], plus [`KernelError::IntegrityCheckFailed`].
+    pub fn unlock_vault_with_dek_options(
+        path: impl AsRef<Path>,
+        released: SecretBytes<RELEASED_LEN>,
+        options: UnlockOptions,
     ) -> Result<Self, KernelError> {
         let db_path = path.as_ref();
         // A rotation journal means the database and envelope may be a half-rotated pair; the
@@ -201,7 +263,16 @@ impl Kernel {
             Some(stored) if stored.as_bytes() != &material.vault_id => {
                 Err(KernelError::ReleasedUnlock(ReleasedUnlockError::WrongVault))
             }
-            Some(_) => Self::open_with_released_dek(db_path, material),
+            Some(_) => {
+                if options.integrity_check {
+                    if let IntegrityOutcome::Damaged { problems } =
+                        DbWorker::integrity_check_with_raw_key(db_path, &material.dek)?
+                    {
+                        return Err(KernelError::IntegrityCheckFailed { problems });
+                    }
+                }
+                Self::open_with_released_dek(db_path, material)
+            }
         }
     }
 
@@ -247,11 +318,29 @@ impl Kernel {
         }
     }
 
-    /// Lock the vault by consuming the kernel. Dropping it drops the db-worker,
-    /// whose raw key (the DEK) is zeroized on drop (ADR 0002, `personal-cfo-1t0`).
+    /// Lock the vault by consuming the kernel: checkpoint the write-ahead log into the main
+    /// file (`wal_checkpoint(TRUNCATE)`), then drop the db-worker, which closes its connection
+    /// and zeroizes the raw key (the DEK) (ADR 0002, `personal-cfo-1t0`; personal-cfo-7ie.14).
+    /// A system backup taken afterwards sees one consistent `vault.db` with no `-wal` content.
+    ///
+    /// The vault is locked whether or not the checkpoint succeeded; a host that wants to know
+    /// uses [`Kernel::lock_checked`].
     pub fn lock(self) {
-        // The work is in `Drop`; this method exists to make intent explicit and
-        // to statically guarantee the unlocked kernel is no longer usable.
+        let _ = self.lock_checked();
+    }
+
+    /// [`Kernel::lock`], reporting whether the checkpoint completed. The kernel is consumed,
+    /// the connection closed and the key zeroized in every case; an `Err` only means the
+    /// on-disk vault may still carry `-wal` content (a reader outside the kernel held the
+    /// database open), so a host may retry its backup-sensitive step later.
+    ///
+    /// # Errors
+    /// [`KernelError::Persistence`] with a generic message if the checkpoint did not complete.
+    pub fn lock_checked(self) -> Result<(), KernelError> {
+        let checkpointed = self.worker.checkpoint_truncate();
+        // Drop the db-worker (its connection closes, its DEK is zeroized) before reporting.
+        drop(self);
+        checkpointed.map_err(KernelError::from)
     }
 
     /// Export an encrypted backup of this unlocked vault to `out_path` (ADR
@@ -843,8 +932,14 @@ impl VaultController {
     /// [`KernelError::IllegalVaultTransition`] if not in `Unlocked`.
     pub fn lock(&mut self) -> Result<(), KernelError> {
         self.transition_to(VaultState::Locking)?;
-        self.kernel = None; // drop → DEK zeroized (personal-cfo-1t0)
-        self.transition_to(VaultState::Locked)
+        // Checkpoint the WAL and close the connection; drop → DEK zeroized (personal-cfo-1t0,
+        // personal-cfo-7ie.14). The vault ends `Locked` even if the checkpoint reports busy.
+        let checkpointed = match self.kernel.take() {
+            Some(kernel) => kernel.lock_checked(),
+            None => Ok(()),
+        };
+        self.transition_to(VaultState::Locked)?;
+        checkpointed
     }
 
     /// Change the vault's master password (personal-cfo-zxq): verify `old`
