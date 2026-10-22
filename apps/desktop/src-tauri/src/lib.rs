@@ -35,6 +35,181 @@ use simplefin_adapter as _;
 
 use tauri_specta::{collect_commands, Builder};
 
+/// The IPC command list, written once. `$desktop_only` is spliced in after the commands
+/// every build has, so a target that lacks a command does not carry a second copy of
+/// the list (`tests/acl_coverage.rs` reads this macro and `ipc_builder` as one list).
+macro_rules! app_commands {
+    ($($desktop_only:tt)*) => {
+        collect_commands![
+            ipc::commands::vault_status,
+            ipc::commands::no_reset_warning,
+            ipc::commands::acknowledge_no_reset_warning,
+            ipc::commands::create_vault,
+            ipc::commands::unlock_vault,
+            ipc::commands::lock_vault,
+            ipc::commands::change_password,
+            ipc::commands::rotate_vault_key,
+            ipc::commands::delete_vault,
+            ipc::commands::list_vaults,
+            ipc::commands::create_vault_named,
+            ipc::commands::switch_vault,
+            ipc::commands::rename_vault,
+            ipc::commands::vault_health,
+            ipc::commands::rebuild_read_models,
+            ipc::commands::create_account,
+            ipc::commands::record_transaction,
+            ipc::commands::record_transfer,
+            ipc::commands::create_source_batch,
+            ipc::commands::attach_source_record,
+            ipc::commands::update_batch_state,
+            ipc::commands::import_batch,
+            ipc::commands::import_preview_columns,
+            ipc::commands::import_preview_accounts,
+            ipc::commands::list_source_presets,
+            ipc::commands::update_account,
+            ipc::commands::set_account_subtype,
+            ipc::commands::set_account_note,
+            ipc::commands::set_account_link,
+            ipc::commands::set_debt_terms,
+            ipc::commands::set_card_statement_balance,
+            ipc::commands::debt_terms,
+            ipc::commands::debt_terms_list,
+            ipc::commands::archive_account,
+            ipc::commands::reinstate_account,
+            ipc::commands::account_count,
+            ipc::commands::cash_tiers,
+            ipc::commands::cash_availability,
+            ipc::commands::set_minimum_cash_floor,
+            ipc::commands::comfort_band,
+            ipc::commands::set_comfort_band_upper,
+            ipc::commands::band_drift_signal,
+            ipc::commands::household_timezone,
+            ipc::commands::set_household_timezone,
+            ipc::commands::forecast_readiness,
+            ipc::commands::pending_capability_unlocks,
+            ipc::commands::acknowledge_capability,
+            ipc::commands::apply_merchant_memory,
+            ipc::commands::auto_categorize_on_import,
+            ipc::commands::set_auto_categorize_on_import,
+            ipc::commands::future_cash_series_selection,
+            ipc::commands::set_future_cash_series_selection,
+            ipc::commands::account_balance,
+            ipc::commands::account_view,
+            ipc::commands::create_income_source,
+            ipc::commands::income_source_list,
+            ipc::commands::update_income_source,
+            ipc::commands::delete_income_source,
+            ipc::commands::reinstate_income_source,
+            ipc::commands::archive_income_source,
+            ipc::commands::restore_income_source,
+            ipc::commands::create_recurring_bill,
+            ipc::commands::confirm_obligation_early,
+            ipc::commands::unconfirm_obligation,
+            ipc::commands::set_bill_autopay,
+            ipc::commands::recurring_bill_list,
+            ipc::commands::create_recurring_transfer,
+            ipc::commands::recurring_transfer_list,
+            ipc::commands::delete_recurring_transfer,
+            ipc::commands::reinstate_recurring_transfer,
+            ipc::commands::category_list,
+            ipc::commands::create_category,
+            ipc::commands::update_category,
+            ipc::commands::move_category,
+            ipc::commands::archive_category,
+            ipc::commands::reinstate_category,
+            ipc::commands::update_recurring_bill,
+            ipc::commands::delete_recurring_bill,
+            ipc::commands::reinstate_recurring_bill,
+            ipc::commands::archive_recurring_bill,
+            ipc::commands::restore_recurring_bill,
+            ipc::commands::base_currency,
+            ipc::commands::set_base_currency,
+            ipc::commands::account_list,
+            ipc::commands::transaction_list,
+            ipc::commands::transaction_page,
+            ipc::commands::recategorize_transaction,
+            ipc::commands::money_inbox_list,
+            ipc::commands::accept_low_confidence_categories,
+            ipc::commands::mark_inbox_reviewed_bulk,
+            ipc::commands::transaction_rows_by_ids,
+            ipc::commands::import_staged_anyway,
+            ipc::commands::skip_staged_transaction,
+            ipc::commands::snooze_inbox_item,
+            ipc::commands::dismiss_inbox_item,
+            ipc::commands::dismiss_recurring_suggestion,
+            ipc::commands::future_cash_forecast,
+            ipc::commands::future_cash_by_account,
+            ipc::commands::cash_flow_history,
+            ipc::commands::card_statement_forecast,
+            ipc::commands::card_statement_history,
+            ipc::commands::debt_payoff_comparison,
+            ipc::commands::unconfirmed_past_due,
+            ipc::commands::loan_double_count_warnings,
+            ipc::commands::recurring_candidates,
+            ipc::commands::income_candidates,
+            ipc::commands::recurring_bill_history,
+            ipc::commands::build_info,
+            ipc::commands::record_release_update_failure,
+            ipc::commands::create_manual_future_entry,
+            ipc::commands::manual_future_entry_list,
+            ipc::commands::update_manual_future_entry,
+            ipc::commands::delete_manual_future_entry,
+            ipc::commands::create_scenario,
+            ipc::commands::scenario_list,
+            ipc::commands::update_scenario,
+            ipc::commands::delete_scenario,
+            ipc::commands::archive_scenario,
+            ipc::commands::apply_scenario,
+            ipc::commands::revert_scenario_apply,
+            ipc::commands::spend_by_category,
+            ipc::commands::clone_scenario,
+            ipc::commands::set_scenario_expiry,
+            ipc::commands::create_forecast_assumption,
+            ipc::commands::forecast_assumption_list,
+            ipc::commands::delete_forecast_assumption,
+            ipc::commands::assert_balance,
+            ipc::commands::account_unexplained,
+            ipc::commands::convert_unexplained_to_transaction,
+            ipc::commands::attach_document,
+            ipc::commands::transaction_attachments,
+            ipc::commands::imported_transaction_fields,
+            ipc::commands::remove_attachment,
+            ipc::commands::void_transaction,
+            ipc::commands::mark_reviewed,
+            ipc::commands::tag_list,
+            ipc::commands::create_tag,
+            ipc::commands::set_tags,
+            ipc::commands::set_note,
+            ipc::commands::set_splits,
+            ipc::commands::transaction_splits,
+            ipc::commands::duplicate_candidates,
+            ipc::commands::backup_schedule_settings,
+            ipc::commands::backup_history,
+            ipc::commands::export_backup,
+            ipc::commands::configure_backup,
+            ipc::commands::run_backup_now,
+            ipc::commands::export_transactions_csv,
+            // Local diagnostics (personal-cfo-lyd).
+            ipc::commands::diagnostics_preview,
+            ipc::commands::diagnostics_save,
+            ipc::commands::diagnostics_discard,
+            ipc::commands::restore_backup,
+            ipc::commands::restore_backup_as_new_vault,
+            // Connectors (personal-cfo-gglk, ADR 0060).
+            ipc::commands::connector_link,
+            ipc::commands::connector_adapters,
+            ipc::commands::connector_connections,
+            ipc::commands::connector_set_account_link,
+            ipc::commands::connector_set_refresh_cadence,
+            ipc::commands::connector_create_mapped_account,
+            ipc::commands::connector_sync,
+            ipc::commands::connector_auto_sync,
+            ipc::commands::connector_forget,
+            $($desktop_only)*
+        ]
+    };
+}
+
 /// Build the tauri-specta [`Builder`] holding the full IPC command surface.
 ///
 /// Used both to mount the live `invoke` handler in [`run`] and to generate the
@@ -42,175 +217,19 @@ use tauri_specta::{collect_commands, Builder};
 /// never drift apart.
 #[must_use]
 pub fn ipc_builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![
-        ipc::commands::vault_status,
-        ipc::commands::no_reset_warning,
-        ipc::commands::acknowledge_no_reset_warning,
-        ipc::commands::create_vault,
-        ipc::commands::unlock_vault,
-        ipc::commands::lock_vault,
-        ipc::commands::change_password,
-        ipc::commands::rotate_vault_key,
-        ipc::commands::delete_vault,
-        ipc::commands::list_vaults,
-        ipc::commands::create_vault_named,
-        ipc::commands::switch_vault,
-        ipc::commands::rename_vault,
-        ipc::commands::vault_health,
-        ipc::commands::rebuild_read_models,
-        ipc::commands::create_account,
-        ipc::commands::record_transaction,
-        ipc::commands::record_transfer,
-        ipc::commands::create_source_batch,
-        ipc::commands::attach_source_record,
-        ipc::commands::update_batch_state,
-        ipc::commands::import_batch,
-        ipc::commands::import_preview_columns,
-        ipc::commands::import_preview_accounts,
-        ipc::commands::list_source_presets,
-        ipc::commands::update_account,
-        ipc::commands::set_account_subtype,
-        ipc::commands::set_account_note,
-        ipc::commands::set_account_link,
-        ipc::commands::set_debt_terms,
-        ipc::commands::set_card_statement_balance,
-        ipc::commands::debt_terms,
-        ipc::commands::debt_terms_list,
-        ipc::commands::archive_account,
-        ipc::commands::reinstate_account,
-        ipc::commands::account_count,
-        ipc::commands::cash_tiers,
-        ipc::commands::cash_availability,
-        ipc::commands::set_minimum_cash_floor,
-        ipc::commands::comfort_band,
-        ipc::commands::set_comfort_band_upper,
-        ipc::commands::band_drift_signal,
-        ipc::commands::household_timezone,
-        ipc::commands::set_household_timezone,
-        ipc::commands::forecast_readiness,
-        ipc::commands::pending_capability_unlocks,
-        ipc::commands::acknowledge_capability,
-        ipc::commands::apply_merchant_memory,
-        ipc::commands::auto_categorize_on_import,
-        ipc::commands::set_auto_categorize_on_import,
-        ipc::commands::future_cash_series_selection,
-        ipc::commands::set_future_cash_series_selection,
-        ipc::commands::account_balance,
-        ipc::commands::account_view,
-        ipc::commands::create_income_source,
-        ipc::commands::income_source_list,
-        ipc::commands::update_income_source,
-        ipc::commands::delete_income_source,
-        ipc::commands::reinstate_income_source,
-        ipc::commands::archive_income_source,
-        ipc::commands::restore_income_source,
-        ipc::commands::create_recurring_bill,
-        ipc::commands::confirm_obligation_early,
-        ipc::commands::unconfirm_obligation,
-        ipc::commands::set_bill_autopay,
-        ipc::commands::recurring_bill_list,
-        ipc::commands::create_recurring_transfer,
-        ipc::commands::recurring_transfer_list,
-        ipc::commands::delete_recurring_transfer,
-        ipc::commands::reinstate_recurring_transfer,
-        ipc::commands::category_list,
-        ipc::commands::create_category,
-        ipc::commands::update_category,
-        ipc::commands::move_category,
-        ipc::commands::archive_category,
-        ipc::commands::reinstate_category,
-        ipc::commands::update_recurring_bill,
-        ipc::commands::delete_recurring_bill,
-        ipc::commands::reinstate_recurring_bill,
-        ipc::commands::archive_recurring_bill,
-        ipc::commands::restore_recurring_bill,
-        ipc::commands::base_currency,
-        ipc::commands::set_base_currency,
-        ipc::commands::account_list,
-        ipc::commands::transaction_list,
-        ipc::commands::transaction_page,
-        ipc::commands::recategorize_transaction,
-        ipc::commands::money_inbox_list,
-        ipc::commands::accept_low_confidence_categories,
-        ipc::commands::mark_inbox_reviewed_bulk,
-        ipc::commands::transaction_rows_by_ids,
-        ipc::commands::import_staged_anyway,
-        ipc::commands::skip_staged_transaction,
-        ipc::commands::snooze_inbox_item,
-        ipc::commands::dismiss_inbox_item,
-        ipc::commands::dismiss_recurring_suggestion,
-        ipc::commands::future_cash_forecast,
-        ipc::commands::future_cash_by_account,
-        ipc::commands::cash_flow_history,
-        ipc::commands::card_statement_forecast,
-        ipc::commands::card_statement_history,
-        ipc::commands::debt_payoff_comparison,
-        ipc::commands::unconfirmed_past_due,
-        ipc::commands::loan_double_count_warnings,
-        ipc::commands::recurring_candidates,
-        ipc::commands::income_candidates,
-        ipc::commands::recurring_bill_history,
+    // The from-source self-update commands exist only in a desktop build
+    // (personal-cfo-i93n3.11): a build for another platform has no command that
+    // rebuilds, replaces or restarts the app, and no permission or capability that
+    // would grant one (`capabilities/desktop-update.json`).
+    #[cfg(desktop)]
+    let commands = app_commands![
         ipc::commands::check_for_update,
-        ipc::commands::build_info,
-        ipc::commands::record_release_update_failure,
         ipc::commands::apply_update,
         ipc::commands::relaunch_app,
-        ipc::commands::create_manual_future_entry,
-        ipc::commands::manual_future_entry_list,
-        ipc::commands::update_manual_future_entry,
-        ipc::commands::delete_manual_future_entry,
-        ipc::commands::create_scenario,
-        ipc::commands::scenario_list,
-        ipc::commands::update_scenario,
-        ipc::commands::delete_scenario,
-        ipc::commands::archive_scenario,
-        ipc::commands::apply_scenario,
-        ipc::commands::revert_scenario_apply,
-        ipc::commands::spend_by_category,
-        ipc::commands::clone_scenario,
-        ipc::commands::set_scenario_expiry,
-        ipc::commands::create_forecast_assumption,
-        ipc::commands::forecast_assumption_list,
-        ipc::commands::delete_forecast_assumption,
-        ipc::commands::assert_balance,
-        ipc::commands::account_unexplained,
-        ipc::commands::convert_unexplained_to_transaction,
-        ipc::commands::attach_document,
-        ipc::commands::transaction_attachments,
-        ipc::commands::imported_transaction_fields,
-        ipc::commands::remove_attachment,
-        ipc::commands::void_transaction,
-        ipc::commands::mark_reviewed,
-        ipc::commands::tag_list,
-        ipc::commands::create_tag,
-        ipc::commands::set_tags,
-        ipc::commands::set_note,
-        ipc::commands::set_splits,
-        ipc::commands::transaction_splits,
-        ipc::commands::duplicate_candidates,
-        ipc::commands::backup_schedule_settings,
-        ipc::commands::backup_history,
-        ipc::commands::export_backup,
-        ipc::commands::configure_backup,
-        ipc::commands::run_backup_now,
-        ipc::commands::export_transactions_csv,
-        // Local diagnostics (personal-cfo-lyd).
-        ipc::commands::diagnostics_preview,
-        ipc::commands::diagnostics_save,
-        ipc::commands::diagnostics_discard,
-        ipc::commands::restore_backup,
-        ipc::commands::restore_backup_as_new_vault,
-        // Connectors (personal-cfo-gglk, ADR 0060).
-        ipc::commands::connector_link,
-        ipc::commands::connector_adapters,
-        ipc::commands::connector_connections,
-        ipc::commands::connector_set_account_link,
-        ipc::commands::connector_set_refresh_cadence,
-        ipc::commands::connector_create_mapped_account,
-        ipc::commands::connector_sync,
-        ipc::commands::connector_auto_sync,
-        ipc::commands::connector_forget,
-    ])
+    ];
+    #[cfg(not(desktop))]
+    let commands = app_commands![];
+    Builder::<tauri::Wry>::new().commands(commands)
 }
 
 /// Export the TypeScript bindings for the IPC surface to `path`.
@@ -253,6 +272,39 @@ pub struct HostOptions {
     pub updater: bool,
     /// Register the process plugin (restart after an update).
     pub process: bool,
+    /// The device name to show in Settings when the host's system backups include this
+    /// app's encrypted vault (personal-cfo-i93n3.9), or `None` when they do not, which is
+    /// the desktop default and shows nothing. The host supplies the name; this crate
+    /// hard-codes none. Kept short and plain: see [`HostOptions::system_backup_device_label`].
+    pub system_backup_device: Option<&'static str>,
+}
+
+/// The longest device name `build_info` passes to the UI.
+const MAX_DEVICE_LABEL_CHARS: usize = 32;
+
+impl HostOptions {
+    /// Whether this build can update itself: a desktop target whose host kept the
+    /// updater plugin (personal-cfo-i93n3.12). The shared UI reads it through
+    /// `build_info` and shows no update surface, and calls no update command, when it
+    /// is false. A non-desktop build has no updater whatever the options say.
+    #[must_use]
+    pub const fn self_update_available(self) -> bool {
+        cfg!(desktop) && self.updater
+    }
+}
+
+impl HostOptions {
+    /// The device name for the system-backup disclosure, or `None` if the host gave none
+    /// or one the UI should not show: blank, over [`MAX_DEVICE_LABEL_CHARS`], or holding
+    /// a control character. A bad value hides the disclosure rather than showing odd text.
+    #[must_use]
+    pub fn system_backup_device_label(self) -> Option<&'static str> {
+        self.system_backup_device.map(str::trim).filter(|name| {
+            !name.is_empty()
+                && name.chars().count() <= MAX_DEVICE_LABEL_CHARS
+                && !name.chars().any(char::is_control)
+        })
+    }
 }
 
 impl Default for HostOptions {
@@ -260,6 +312,7 @@ impl Default for HostOptions {
         Self {
             updater: true,
             process: true,
+            system_backup_device: None,
         }
     }
 }
@@ -270,6 +323,7 @@ impl Default for HostOptions {
 ///
 /// Generic over the runtime so a test can drive it on Tauri's mock runtime.
 #[must_use]
+#[cfg_attr(not(desktop), allow(unused_mut, unused_variables))]
 pub fn register_plugins<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
     options: HostOptions,
@@ -299,22 +353,28 @@ pub fn register_plugins<R: tauri::Runtime>(
                 .open_js_links_on_click(false)
                 .build(),
         );
-    if options.updater {
-        // The real signed-artifact updater (personal-cfo-867.1.2, ADR 0068). Config-driven —
-        // reads `plugins.updater.pubkey`/`endpoints` from tauri.conf.json, no builder options
-        // needed. Release builds call its JS API (`@tauri-apps/plugin-updater`) directly from
-        // `useSoftwareUpdate.ts`; the from-source dev updater (`update.rs`) is unaffected and
-        // stays the path when `PCFO_BUILD_CHANNEL == dev`. Granted `updater:default` only
-        // (capabilities/default.json).
-        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    }
-    if options.process {
-        // Restarts the app after the updater installs a new binary (`Update::download_and_install`
-        // relaunches nothing on its own — the frontend calls this plugin's `relaunch()` after a
-        // successful install). Granted `process:allow-restart` only, in the DESTRUCTIVE capability
-        // (capabilities/destructive.json) alongside `apply_update`/`relaunch_app` — swapping the
-        // running binary is exactly the class of action that capability exists to gate.
-        builder = builder.plugin(tauri_plugin_process::init());
+    // Self-update plugins exist only in a desktop build (personal-cfo-i93n3.11): on any
+    // other target they are not compiled (Cargo.toml) or registered, so nothing here
+    // downloads or swaps the app's own binary and `options` has no effect.
+    #[cfg(desktop)]
+    {
+        if options.updater {
+            // The real signed-artifact updater (personal-cfo-867.1.2, ADR 0068). Config-driven —
+            // reads `plugins.updater.pubkey`/`endpoints` from tauri.conf.json, no builder options
+            // needed. Release builds call its JS API (`@tauri-apps/plugin-updater`) directly from
+            // `useSoftwareUpdate.ts`; the from-source dev updater (`update.rs`) is unaffected and
+            // stays the path when `PCFO_BUILD_CHANNEL == dev`. Granted `updater:default` only
+            // (capabilities/desktop-update.json).
+            builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        }
+        if options.process {
+            // Restarts the app after the updater installs a new binary (`Update::download_and_install`
+            // relaunches nothing on its own — the frontend calls this plugin's `relaunch()` after a
+            // successful install). Granted `process:allow-restart` only, beside `apply_update`/
+            // `relaunch_app` in capabilities/desktop-update.json — swapping the running binary is
+            // exactly the class of action that capability exists to gate.
+            builder = builder.plugin(tauri_plugin_process::init());
+        }
     }
     builder
 }
@@ -360,6 +420,9 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
     let builder = ipc_builder();
 
     register_plugins(tauri::Builder::default(), options)
+        // The host's own options, for the commands that report what this build can do
+        // (`build_info`'s self-update flag).
+        .manage(options)
         .invoke_handler(builder.invoke_handler())
         .setup(|app| {
             use tauri::Manager;
@@ -446,8 +509,10 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
 pub fn context_confines_app_commands_to_main<R: tauri::Runtime>(
     context: &mut tauri::Context<R>,
 ) -> bool {
-    /// One command from each permission file: the general set and the destructive set.
-    const APP_COMMANDS: [&str; 2] = ["vault_status", "delete_vault"];
+    /// One command from each permission file: the general set, the destructive set and
+    /// the desktop self-update set (a capability that grants that set is inactive off
+    /// desktop, so `apply_update` then resolves to nothing, which is what is required).
+    const APP_COMMANDS: [&str; 3] = ["vault_status", "delete_vault", "apply_update"];
     let authority = context.runtime_authority_mut();
     let granted = |label: &str, command: &str| {
         authority

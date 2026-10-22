@@ -56,6 +56,24 @@ The `main` branch ruleset (id `23361528`, verified live 2026-09-17) requires
 }
 ```
 
+**Update 2026-10-20 (`personal-cfo-0rein.5`, item 8).** The listing above is the
+2026-09-17 record and is left as written. The same ruleset (`23361528`) now also
+requires `iOS cross-compile (kernel crates)`, the verdict job of
+`.github/workflows/ios-kernel.yml` (`personal-cfo-md8h2.7`), which the owner added.
+Its required status checks are, exactly:
+
+- `IPC codegen (apps/desktop/src-tauri)`
+- `Rust (workspace)`
+- `Security scanning (secrets + dependencies)`
+- `Shell scripts`
+- `Frontend (apps/desktop)`
+- `iOS cross-compile (kernel crates)`
+
+The other rules and the Admin bypass are as listed above. This list was read from
+the live ruleset on 2026-10-20 by `00-overseer`, which has the API access that the
+implementation role's permission profile denies; the implementation session
+that wrote this paragraph took the names from that reading.
+
 So AGENTS.md §16's "no self-merge" and "review binds to a SHA" rules are
 enforced by **process discipline alone** — nothing in GitHub configuration
 stops the repository owner (or any future second Admin) from merging
@@ -72,6 +90,23 @@ Branch deletion and non-fast-forward pushes to `main` are blocked by the
 same ruleset regardless of bypass status (`deletion` and
 `non_fast_forward` rule types have no bypass-relevant parameters — they
 apply to the ref, not the actor).
+
+**Enforcement note, 2026-10-21 (`personal-cfo-0rein.8`, owner decision
+`personal-cfo-915.15` option D).** The accepted text above is unchanged. The Admin
+bypass is also the mechanism of a standing exception, the red-main fast path: when
+`main` is red, a pull request whose only failing required checks are `main`'s
+current, tracked failures, and which has a reviewer `PASS` stating that it "fails
+only on main's known red `<check>` (bead `<id>`)", may be admin-merged by the
+owner without a fresh decision, after the reviewer has also shown that the red is
+`main`'s own at the commit the run merged onto and that no later step of the failing
+job was masked. It never applies to a pull request that touches the failing area
+itself (including a failing step's workflow, scripts, lockfiles and audit
+configuration), nor, when `main`'s red is a security advisory, to a pull request
+that changes manifests or lockfiles; a code-only pull request may use it only if
+the reviewer's `PASS` explicitly confirms that it does not start using the
+advisory's affected API (owner decision 2026-10-21). The rule and its procedure are in
+`docs/agent/WORKFLOW_ROLES.md` ("Red-main fast path"). Nothing in the ruleset
+changes; this records how the existing bypass is used.
 
 ### 2. Fork-PR secret isolation
 

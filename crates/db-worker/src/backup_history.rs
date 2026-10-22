@@ -6,7 +6,6 @@
 
 use rusqlite::{params, OptionalExtension};
 use std::fmt;
-use std::path::Path;
 use uuid::Uuid;
 
 use crate::{DbError, DbWorker};
@@ -50,7 +49,8 @@ pub struct BackupHistoryEntry {
     pub created_at: String,
     /// Manual or scheduled export.
     pub kind: BackupHistoryKind,
-    /// Full local path to the package; never sent to a service.
+    /// The destination's label for the item: the full local path for a folder
+    /// destination. Kept only inside the vault, never sent to a service.
     pub destination: String,
     /// Container format version.
     pub format_version: u16,
@@ -87,8 +87,10 @@ impl DbWorker {
         chrono::DateTime::parse_from_rfc3339(&entry.created_at).map_err(|_| {
             DbError::InvalidCommand("backup creation time must be RFC 3339".to_owned())
         })?;
-        if !Path::new(&entry.destination).is_absolute()
-            || entry.destination.trim().is_empty()
+        // The destination is the sink's label for the item (a folder sink's is the
+        // full path, so it is absolute; another destination's is its own text), so
+        // only its shape is checked here (personal-cfo-7ie.15).
+        if entry.destination.trim().is_empty()
             || entry.destination.len() > 4096
             || entry.destination.chars().any(char::is_control)
         {

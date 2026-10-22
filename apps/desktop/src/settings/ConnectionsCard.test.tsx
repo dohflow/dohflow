@@ -533,7 +533,10 @@ describe("ConnectionsCard", () => {
     expect(dialog).toHaveTextContent("If they report it on different dates, both copies are imported");
     expect(dialog).not.toHaveTextContent(/never\s+counted\s+twice/i);
     // The default action is the safe one.
-    expect(document.activeElement).toHaveTextContent("Don’t import this one");
+    // Focus lands in an effect after the dialog mounts: poll for it (personal-cfo-v9xls).
+    await waitFor(() =>
+      expect(document.activeElement).toHaveTextContent("Don’t import this one"),
+    );
     expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
   });
 
@@ -543,7 +546,7 @@ describe("ConnectionsCard", () => {
     await waitFor(() => expect(queryByRole("alertdialog")).toBeNull());
     expect(mocks.connectorSetAccountLink).toHaveBeenCalledTimes(1);
     expect(select).toHaveValue("");
-    expect(document.activeElement).toBe(select);
+    await waitFor(() => expect(document.activeElement).toBe(select));
     expect(await findByRole("combobox", { name: /account for demo checking/i })).toBeTruthy();
   });
 

@@ -87,8 +87,10 @@ pub use vault::{classify_vault, VaultController, VaultHealth, VaultState};
 
 pub mod backup;
 mod backup_jobs;
+pub mod backup_sink;
 pub mod connector_currency_guard;
 pub use backup_jobs::{BackupCadence, BackupScheduleSettings, BACKUP_JOB_ID, BACKUP_JOB_KIND};
+pub use backup_sink::{BackupSink, BackupSinkEntry, BackupSinkError, FolderSink, PutMode};
 
 mod sealed {
     /// Private supertrait that seals [`KernelCommand`](super::KernelCommand):

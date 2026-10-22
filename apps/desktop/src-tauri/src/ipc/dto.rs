@@ -2997,6 +2997,16 @@ pub struct BuildInfoDto {
     /// `latest.json`'s `minimumSystemVersion` and declines an update this Mac couldn't
     /// open (personal-cfo-md8h2.4).
     pub os_version: Option<String>,
+    /// Whether this build can update itself, as reported by the host that built it
+    /// (personal-cfo-i93n3.12): true on a desktop build that kept the updater, false
+    /// otherwise. The UI shows the Software update surface only when it is true and
+    /// calls no update command when it is false.
+    pub self_update_available: bool,
+    /// The device name the host gave for the system-backup disclosure
+    /// (personal-cfo-i93n3.9), or `None` on a host whose system backups do not include the
+    /// vault (the desktop). When present, Settings tells the user those backups include
+    /// the encrypted vault; the wording is the UI's, the name is the host's.
+    pub system_backup_device: Option<String>,
 }
 
 /// The outcome of applying an in-app update (personal-cfo-1ik.4): whether the rebuild+reinstall

@@ -68,7 +68,9 @@ fn history_rejects_other_vaults_and_inconsistent_verification_receipts() {
     assert!(worker.record_backup_history(&foreign).is_err());
 
     foreign.vault_id = vault_id;
-    foreign.destination = "relative/folder/test.pcfobk".to_owned();
+    foreign.destination = "   ".to_owned();
+    assert!(worker.record_backup_history(&foreign).is_err());
+    foreign.destination = "/tmp/line\nbreak/test.pcfobk".to_owned();
     assert!(worker.record_backup_history(&foreign).is_err());
 
     foreign.destination = "/tmp/private-account-nickname/test.pcfobk".to_owned();
@@ -106,4 +108,21 @@ fn debug_output_redacts_destination_and_error_text() {
     assert!(!debug.contains("private-account-nickname"));
     assert!(!debug.contains("private error details"));
     assert!(debug.contains("[REDACTED]"));
+}
+
+#[test]
+fn history_accepts_a_non_path_destination_label() {
+    // A destination that is not a folder supplies its own label (personal-cfo-7ie.15).
+    let (_dir, worker) = worker();
+    let vault_id = worker.vault_metadata().unwrap().vault_id;
+    let mut receipt = entry(
+        Uuid::now_v7(),
+        vault_id,
+        BackupHistoryKind::Scheduled,
+        "2026-09-22T12:00:00Z",
+    );
+    receipt.destination = "memory://test/one.pcfobk".to_owned();
+    worker.record_backup_history(&receipt).unwrap();
+    let history = worker.backup_history(vault_id).unwrap();
+    assert_eq!(history[0].destination, "memory://test/one.pcfobk");
 }

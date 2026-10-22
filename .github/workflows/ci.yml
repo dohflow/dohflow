@@ -1095,12 +1095,16 @@ jobs:
       # Dependency scanning (7t7) — both Cargo workspaces (root + the standalone
       # desktop crate). Fails on a known-vulnerable crate; unmaintained-advisory
       # warnings (e.g. Tauri's Linux-only GTK3 deps) are informational by default.
+      # scripts/cargo-audit.py runs `cargo audit` on both lockfiles. Any vulnerability fails;
+      # its only allowance mechanism is a scoped, dated exception matched by advisory + crate
+      # + version (never id alone) that also fails once it matches nothing. There are no
+      # exceptions today (see the script for the history).
       - name: Dependency scan — Rust (cargo audit)
         if: steps.visibility.outputs.run == 'true'
         run: |
           set -euo pipefail
-          cargo audit
-          cargo audit -f apps/desktop/src-tauri/Cargo.lock
+          python3 -I scripts/cargo-audit.py
+          bash scripts/tests/cargo-audit.test.sh
 
       # AGPL-3.0-only dependency LICENSE audit (personal-cfo-o1nxk item 3) —
       # two separate Cargo workspaces, two deny.toml files (see either for the

@@ -156,3 +156,56 @@ fn prepare_refuses_an_existing_destination_and_a_vault_without_attachments_works
     )
     .unwrap();
 }
+
+/// Open `path` with a raw PRAGMA key (test code only; production keys through `sqlite3_key_v2`)
+/// and run `sql` against it.
+fn read_with_key(path: &Path, dek: Option<&Dek>, sql: &str) -> rusqlite::Result<String> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    if let Some(dek) = dek {
+        let hex: String = dek
+            .expose_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        conn.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))?;
+    }
+    conn.query_row(sql, [], |row| row.get::<_, String>(0))
+}
+
+/// The rekey export attaches the new file WITHOUT a KEY clause and keys the attached schema
+/// through `sqlite3_key_v2` before anything is exported (personal-cfo-7ie.17, option 4c). The
+/// order is what makes the copy encrypted under the new DEK alone: a copy left under the main
+/// database's key, or in plaintext, or keyed after the export, would fail one of these checks.
+#[test]
+fn the_copy_is_encrypted_under_the_new_dek_alone() {
+    let (_dir, path, old_dek, worker, _ids) = seeded();
+    let copy = with_suffix(&path, ".rekey-new");
+    let new_dek = generate_dek().unwrap();
+    worker.prepare_rekeyed_copy(&new_dek, &copy).unwrap();
+
+    // Not plaintext: an unencrypted SQLite file starts with this 16-byte header.
+    let head = fs::read(&copy).unwrap();
+    assert!(
+        !head.starts_with(b"SQLite format 3\0"),
+        "the copy is plaintext"
+    );
+
+    // The new key reads it, and the database is sound.
+    let integrity = read_with_key(&copy, Some(&new_dek), "PRAGMA integrity_check").unwrap();
+    assert_eq!(integrity, "ok");
+    let tables = read_with_key(
+        &copy,
+        Some(&new_dek),
+        "SELECT CAST(count(*) AS TEXT) FROM sqlite_master",
+    )
+    .unwrap();
+    assert!(
+        tables.parse::<u32>().unwrap() > 10,
+        "schema was exported: {tables}"
+    );
+
+    // The old key does not, and neither does no key at all.
+    assert!(read_with_key(&copy, Some(&old_dek), "SELECT count(*) FROM sqlite_master").is_err());
+    assert!(read_with_key(&copy, None, "SELECT count(*) FROM sqlite_master").is_err());
+}

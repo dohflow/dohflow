@@ -23,6 +23,25 @@ pub const UNTRUSTED_WINDOWS: [&str; 2] = ["document_preview", "agent_report"];
 /// The app permission that carries the destructive/exfiltration commands.
 pub const DESTRUCTIVE_SET: &str = "allow-destructive-commands";
 
+/// The app permission that carries the from-source self-update commands
+/// (personal-cfo-i93n3.11). It is as restricted as [`DESTRUCTIVE_SET`]: `apply_update`
+/// and `relaunch_app` replace and restart the running binary.
+pub const UPDATE_SET: &str = "allow-desktop-update-commands";
+
+/// App permission sets only the trusted main window may hold.
+const RESTRICTED_SETS: [&str; 2] = [DESTRUCTIVE_SET, UPDATE_SET];
+
+/// The target names a capability's `platforms` may list (Tauri's own spelling).
+const KNOWN_PLATFORMS: [&str; 5] = ["macOS", "windows", "linux", "iOS", "android"];
+const DESKTOP_PLATFORMS: [&str; 3] = ["macOS", "windows", "linux"];
+
+/// Whether a permission identifier belongs to the self-update surface: the updater and
+/// process plugins and the app's own update-command set. None of it may apply on a
+/// non-desktop platform.
+fn is_update_grant(id: &str) -> bool {
+    id.starts_with("updater:") || id.starts_with("process:") || id == UPDATE_SET
+}
+
 /// Every input the audit reads, as file contents.
 #[derive(Clone)]
 pub struct Inputs {
@@ -65,6 +84,9 @@ struct Baseline {
     #[serde(default)]
     scopes: Vec<ScopeEntry>,
     permission_sets: BTreeMap<String, PermissionSetEntry>,
+    /// `capability identifier -> platforms`. Every capability declares them
+    /// (personal-cfo-i93n3.11), so a grant never silently applies on a new platform.
+    capability_platforms: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +155,8 @@ struct Capability {
     file: String,
     identifier: String,
     windows: Vec<String>,
+    /// The declared `platforms`; `None` when the file declares none (a violation).
+    platforms: Option<Vec<String>>,
     /// `(identifier, scope)` — `scope` is `Some((allow, deny))` for object-form entries.
     permissions: Vec<(String, Option<(serde_json::Value, serde_json::Value)>)>,
     extra_keys: Vec<String>,
@@ -169,6 +193,7 @@ fn parse_capability(file: &str, text: &str) -> Result<Capability, Violation> {
         "identifier",
         "description",
         "windows",
+        "platforms",
         "permissions",
     ];
     let extra_keys = obj
@@ -189,6 +214,15 @@ fn parse_capability(file: &str, text: &str) -> Result<Capability, Violation> {
         .iter()
         .map(|w| w.as_str().unwrap_or("<non-string>").to_owned())
         .collect();
+    let platforms = obj.get("platforms").map(|p| {
+        p.as_array()
+            .map(|list| {
+                list.iter()
+                    .map(|v| v.as_str().unwrap_or("<non-string>").to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
     let mut permissions = Vec::new();
     for entry in obj
         .get("permissions")
@@ -224,21 +258,26 @@ fn parse_capability(file: &str, text: &str) -> Result<Capability, Violation> {
             .unwrap_or("")
             .to_owned(),
         windows,
+        platforms,
         permissions,
         extra_keys,
     })
 }
 
-/// Command idents out of the `collect_commands![...]` block. Scans for every
-/// `ipc::commands::` occurrence rather than line-by-line, so a rustfmt reflow can
-/// never silently drop a command from the comparison.
+/// Command idents out of the command list: the `app_commands!` macro (the commands
+/// every build has) and `ipc_builder` (the desktop-only ones it splices in). Scans for
+/// every `ipc::commands::` occurrence in that region rather than line-by-line, so a
+/// rustfmt reflow can never silently drop a command from the comparison.
 pub fn registered_commands(lib_rs: &str) -> BTreeSet<String> {
-    let Some(start) = lib_rs.find("collect_commands![") else {
+    let Some(start) = lib_rs.find("macro_rules! app_commands") else {
         return BTreeSet::new();
     };
-    let end = lib_rs[start..]
-        .find(']')
-        .map_or(lib_rs.len(), |e| e + start);
+    let Some(builder) = lib_rs[start..].find("pub fn ipc_builder") else {
+        return BTreeSet::new();
+    };
+    let end = lib_rs[start + builder..]
+        .find("\n}\n")
+        .map_or(lib_rs.len(), |e| e + start + builder);
     lib_rs[start..end]
         .split("ipc::commands::")
         .skip(1)
@@ -538,12 +577,14 @@ fn grant_invariants(
                 ),
             ));
         }
-        if set.contains(DESTRUCTIVE_SET) && (untrusted || window != "main") {
-            out.push(v(
-                "destructive-reach",
-                window.clone(),
-                format!("{source} grants {DESTRUCTIVE_SET} beyond the trusted main window"),
-            ));
+        for restricted in RESTRICTED_SETS {
+            if set.contains(restricted) && (untrusted || window != "main") {
+                out.push(v(
+                    "destructive-reach",
+                    window.clone(),
+                    format!("{source} grants {restricted} beyond the trusted main window"),
+                ));
+            }
         }
         for id in set {
             let forbidden = ["shell:", "fs:", "http:"].iter().any(|p| id.starts_with(p))
@@ -736,6 +777,10 @@ pub fn audit(inputs: &Inputs) -> Vec<Violation> {
 
     // --- capabilities → effective grants per window ----------------------------
     let mut grants: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // What a non-desktop build is granted: the capabilities that apply on any platform
+    // that is not a desktop one. Nothing in the self-update surface may appear here.
+    let mut non_desktop_grants: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut actual_platforms: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut caps_by_window: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut scopes: BTreeSet<ScopeKey> = BTreeSet::new();
     for (file, text) in &inputs.capabilities {
@@ -758,6 +803,37 @@ pub fn audit(inputs: &Inputs) -> Vec<Violation> {
                 format!("declares `{key}` — capabilities scope by explicit window labels only"),
             ));
         }
+        match &cap.platforms {
+            None => out.push(v(
+                "capability-platforms",
+                cap.file.clone(),
+                "declares no `platforms` — every capability names the platforms it applies to \
+                 (personal-cfo-i93n3.11)",
+            )),
+            Some(list) => {
+                for platform in list
+                    .iter()
+                    .filter(|p| !KNOWN_PLATFORMS.contains(&p.as_str()))
+                {
+                    out.push(v(
+                        "capability-platforms",
+                        cap.file.clone(),
+                        format!("`{platform}` is not a Tauri target name"),
+                    ));
+                }
+                actual_platforms.insert(cap.identifier.clone(), list.iter().cloned().collect());
+            }
+        }
+        // A capability with no `platforms` applies everywhere (Tauri's default), so it
+        // counts on both sides; the missing declaration is already a violation above.
+        let on_desktop = cap
+            .platforms
+            .as_ref()
+            .is_none_or(|list| list.iter().any(|p| DESKTOP_PLATFORMS.contains(&p.as_str())));
+        let off_desktop = cap.platforms.as_ref().is_none_or(|list| {
+            list.iter()
+                .any(|p| !DESKTOP_PLATFORMS.contains(&p.as_str()))
+        });
         for window in &cap.windows {
             if window.contains('*') || window.contains('?') {
                 out.push(v(
@@ -765,6 +841,13 @@ pub fn audit(inputs: &Inputs) -> Vec<Violation> {
                     cap.file.clone(),
                     format!("targets `{window}` — every capability names its windows exactly"),
                 ));
+            }
+            if off_desktop {
+                let set = non_desktop_grants.entry(window.clone()).or_default();
+                set.extend(cap.permissions.iter().map(|(id, _)| id.clone()));
+            }
+            if !on_desktop {
+                continue;
             }
             caps_by_window
                 .entry(window.clone())
@@ -822,6 +905,47 @@ pub fn audit(inputs: &Inputs) -> Vec<Violation> {
             &expected_grants,
             &mut out,
         );
+    }
+
+    // --- platforms: drift against the baseline, and no update grant off desktop ---
+    for (identifier, expected) in &baseline.capability_platforms {
+        let expected: BTreeSet<String> = expected.iter().cloned().collect();
+        match actual_platforms.get(identifier) {
+            Some(actual) => diff_sets(
+                "capability-platforms",
+                identifier,
+                "platform",
+                actual,
+                &expected,
+                &mut out,
+            ),
+            None => out.push(v(
+                "capability-platforms",
+                identifier.clone(),
+                "the baseline lists this capability but no file declares it",
+            )),
+        }
+    }
+    for identifier in actual_platforms.keys() {
+        if !baseline.capability_platforms.contains_key(identifier) {
+            out.push(v(
+                "capability-platforms",
+                identifier.clone(),
+                "declares platforms but is not in the baseline's capability_platforms",
+            ));
+        }
+    }
+    for (window, set) in &non_desktop_grants {
+        for id in set.iter().filter(|id| is_update_grant(id)) {
+            out.push(v(
+                "non-desktop-update-grant",
+                window.clone(),
+                format!(
+                    "`{id}` applies on a non-desktop platform — the self-update surface is \
+                     desktop-only (personal-cfo-i93n3.11)"
+                ),
+            ));
+        }
     }
 
     // --- scopes ---------------------------------------------------------------

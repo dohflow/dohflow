@@ -87,9 +87,53 @@ The comment contains, in order:
 `PASS` · `CHANGES_REQUIRED` · `HUMAN_DECISION_REQUIRED`
 
 **CHANGES_REQUIRED** — post the comment, keep the bead open, send the owning
-session a repair packet. Every new commit gets a **new** review.
+session a repair packet. Every new commit gets a **new** review. Make sure the
+`merge-ready` label is absent: `gh pr edit <N> --remove-label merge-ready` (an
+error that the label is not on the PR is fine). The same applies to
+`HUMAN_DECISION_REQUIRED`.
 
 **PASS** — re-check that the PR head still equals the SHA you reviewed, then:
+
+**Red-main fast path** (`WORKFLOW_ROLES.md` "Red-main fast path"). If a required
+check fails on this pull request only because `main` itself is red, you may still
+`PASS` it, but the verdict **must contain this line, naming the check and the
+bead**:
+
+> fails only on main's known red `<check>` (bead `<id>`)
+
+Before writing it, establish all three of these:
+
+1. **The failure is `main`'s own.** CI tests `refs/pull/N/merge`, which sits on
+   `main`'s tip when the run started, not on the PR's base. Compare against the
+   **first parent of the failing run's merge commit**, and confirm `main` is
+   still red there, in the same check, the same way, with a bead tracking it.
+2. **Nothing was masked.** A failing step skips the later steps of its job. Account
+   for every later step: it ran, or you ran it locally, or it provably cannot
+   differ from `main` (identical lockfiles, for example). The verdict names any
+   step you could not run.
+3. **No exclusion applies:** the PR does not touch the failing area (including the
+   workflow step, its scripts, the lockfiles and the audit config for an audit
+   failure). And if `main`'s red is a security advisory: the PR changes **no
+   manifest or lockfile** (nothing added, changed or bumped); a code-only PR may
+   still use the fast path, but then **your verdict must state explicitly that the
+   PR does not start using the advisory's affected API**, and you must have
+   checked that (read the diff and search it for the affected crate and API). Make
+   the check mechanical:
+   - **The affected API** is the advisory's listed affected functions; if the
+     advisory lists none, it is any use of the affected crate.
+   - **"Starts using"** includes newly reaching it through a wrapper crate (for
+     example a new TLS client or connection for a TLS advisory).
+   - **Record in the verdict which advisory and which API you checked.**
+
+   If you cannot confirm it, the verdict is `CHANGES_REQUIRED`.
+
+If you cannot establish all three, the verdict is `CHANGES_REQUIRED`, not a
+fast-path `PASS`. Every other required check must be green.
+
+Apply the label, so the owner can see at a glance that this pull request needs
+their merge: `gh pr edit <N> --add-label merge-ready`. A workflow removes it on any
+new commit, so it can never outlive the SHA you approved. Name the lane in your
+report to `00-overseer`, which notifies the owner.
 
 > **Automatic reviewer merging is DISABLED for the calibration period.** Return
 > `APPROVED_TO_MERGE` with the SHA and stop. The user authorizes or performs the

@@ -5,5 +5,12 @@
   "windows": [
     "agent_report"
   ],
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux",
+    "iOS",
+    "android"
+  ],
   "permissions": []
 }

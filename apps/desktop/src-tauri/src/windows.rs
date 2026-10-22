@@ -94,15 +94,45 @@ pub fn build_main<R: Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Webvi
         .build()
 }
 
+/// Whether this build can open an untrusted shell at all (personal-cfo-i93n3.11,
+/// ADR 0010 addendum 2026-10-20).
+///
+/// A shell is isolated by being its own webview with a capability that grants nothing.
+/// A host that cannot create a second webview (a mobile platform shows one) cannot
+/// give that isolation, and the rule is that untrusted content is then **unavailable**,
+/// never rendered in the main webview, where it would share the trusted window's
+/// grants. A feature that wants to show a shell (vrng, z6pn) reads this first and
+/// shows its own "not available on this device" state when it is false.
+pub const ISOLATED_SHELLS_AVAILABLE: bool = cfg!(desktop);
+
+/// The error for a host without isolated shells; it names no platform.
+fn unavailable() -> tauri::Error {
+    tauri::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "isolated windows are not available on this device",
+    ))
+}
+
+fn require_isolated_shells(available: bool) -> tauri::Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(unavailable())
+    }
+}
+
 /// Open an untrusted shell, or focus it if it is already open (one window per
 /// label). Closing the window destroys it; the next call builds a fresh one.
 ///
 /// # Errors
-/// Returns an error if the window cannot be created or focused.
+/// Returns an error if the window cannot be created or focused, and an
+/// [`std::io::ErrorKind::Unsupported`] error where [`ISOLATED_SHELLS_AVAILABLE`] is
+/// false: it never falls back to another window.
 pub fn open_isolated_shell<R: Runtime, M: Manager<R>>(
     manager: &M,
     surface: IsolatedSurface,
 ) -> tauri::Result<WebviewWindow<R>> {
+    require_isolated_shells(ISOLATED_SHELLS_AVAILABLE)?;
     if let Some(existing) = manager.get_webview_window(surface.label()) {
         existing.set_focus()?;
         return Ok(existing);
@@ -129,4 +159,26 @@ pub fn open_smoke_shells_if_requested<R: Runtime, M: Manager<R>>(manager: &M) ->
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_host_without_isolated_shells_refuses_with_an_unsupported_error() {
+        match require_isolated_shells(false) {
+            Err(tauri::Error::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+                assert!(error.to_string().contains("not available on this device"));
+            }
+            other => panic!("expected an Unsupported error, got {other:?}"),
+        }
+        assert!(require_isolated_shells(true).is_ok());
+    }
+
+    #[test]
+    fn shells_are_available_exactly_where_the_desktop_build_is() {
+        assert_eq!(ISOLATED_SHELLS_AVAILABLE, cfg!(desktop));
+    }
 }

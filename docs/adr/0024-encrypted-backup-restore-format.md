@@ -352,6 +352,12 @@ fail to reach the phone rather than silently leak there.
   parser policy rather than silently widen these restore-time resource bounds.
 - A cloud destination needs a different transport contract; it should reuse
   this self-contained container rather than create a second backup format.
+  *(2026-10-19, `personal-cfo-7ie.15`: the kernel now reaches every destination
+  through the `BackupSink` interface — store a finished container, list, return
+  the bytes — with the folder as its first implementation. The container, the
+  key model and keep-all (no automatic deletion) are unchanged, and the
+  interface has no delete. A destination that is not a folder implements the
+  trait in its own crate; the kernel names no platform or service.)*
 - Sync-key rotation (ADR 0074) needs a separate rotation story; it must not
   silently redefine this backup key hierarchy.
 
@@ -398,6 +404,7 @@ fail to reach the phone rather than silently leak there.
 - `personal-cfo-ii3an` (BACK-0b format-version-2 implementation)
 - `personal-cfo-3fdd.15` (Argon2id floor and manifest schema hardening)
 - `personal-cfo-8qh` (scheduled backup job)
+- `personal-cfo-7ie.15` (the `BackupSink` destination seam)
 - `personal-cfo-w21q7` (CLASS-0 table-class manifest)
 - `personal-cfo-28js0` (MOB-0a phone-container builder; superseded 2026-10-18, see section 3)
 - `personal-cfo-5kua` (external cryptographic review)

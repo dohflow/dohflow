@@ -1,0 +1,18 @@
+# Self-update commands (personal-cfo-i93n3.11, ADR 0010 addendum 2026-10-20). They exist
+# only in a desktop build (`cfg(desktop)` in src/lib.rs and src/ipc/commands.rs) and are
+# granted only by capabilities/desktop-update.json, whose `platforms` are the desktop
+# targets, so a build for another platform has neither the commands nor a grant for them.
+# `apply_update` and `relaunch_app` rebuild/replace and restart the running binary, so
+# they stay out of every isolated window like the destructive set; `check_for_update`
+# only reads, but it is the same feature and moves with it.
+# See app-commands.toml for how this directory drives the app ACL and for the
+# maintenance rule that every src/lib.rs command must appear in exactly one file.
+
+[[permission]]
+identifier = "allow-desktop-update-commands"
+description = "From-source self-update on the desktop platforms: check_for_update, apply_update (rebuild and reinstall the app from its checkout) and relaunch_app. Granted only by capabilities/desktop-update.json (main window, desktop platforms)."
+commands.allow = [
+  "check_for_update",
+  "apply_update",
+  "relaunch_app",
+]

@@ -314,11 +314,15 @@ the artifact set explicitly. `icons/icon.icns` is present, so the DMG has an ico
 - `tauri-plugin-updater` (crate + JS guest bindings `@tauri-apps/plugin-updater`,
   pinned exactly to match, `2.11.0`) and `tauri-plugin-process`
   (`@tauri-apps/plugin-process`, `2.3.1`) added.
-- `capabilities/default.json` grants `updater:default`; `capabilities/destructive.json`
-  grants `process:allow-restart` alongside `apply_update`/`relaunch_app` — a new
-  binary swap belongs in the same capability those already gate. Pinned by
-  `tests/acl_coverage.rs`'s `the_updater_grant_is_exactly_updater_default_in_the_general_capability`
-  / `the_process_grant_is_exactly_allow_restart_in_the_destructive_capability`.
+- `capabilities/desktop-update.json` grants `updater:default`, `process:allow-restart` and
+  the from-source `allow-desktop-update-commands` (`check_for_update`, `apply_update`,
+  `relaunch_app`) to `main`, on the desktop platforms only (`platforms`); a binary swap
+  belongs beside the commands that gate it, and a build for any other platform has
+  neither the plugins nor a grant (`personal-cfo-i93n3.11`, ADR 0010 addendum 2026-10-20;
+  before that, `default.json` held `updater:default` and `destructive.json` the rest).
+  Pinned by `tests/acl_coverage.rs`'s
+  `the_updater_grant_is_exactly_updater_default_in_the_desktop_update_capability` /
+  `the_process_grant_is_exactly_allow_restart_in_the_desktop_update_capability`.
 - `plugins.updater`: `pubkey` (A6's public key) and `endpoints` —
   `["https://github.com/dohflow/dohflow/releases/latest/download/latest.json"]`
   (ADR 0068 point 2) — both pinned by

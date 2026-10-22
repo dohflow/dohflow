@@ -125,7 +125,8 @@ test("newer schema refusal resets busy state, focuses retry, and permits back wi
     "This vault requires a newer version of DohFlow. Open it with a compatible newer version.",
   );
   expect(password).toHaveValue("");
-  expect(password).toHaveFocus();
+  // Focus returns in an effect after the refusal renders: poll for it (personal-cfo-v9xls).
+  await waitFor(() => expect(password).toHaveFocus());
   expect(screen.getByRole("dialog", { name: /unlock real/i })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /force|downgrade|repair/i })).not.toBeInTheDocument();
   fireEvent.change(password, { target: { value: "retry-password" } });

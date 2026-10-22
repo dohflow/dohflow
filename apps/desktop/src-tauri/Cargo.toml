@@ -79,21 +79,6 @@ tauri-plugin-dialog = "~2.7.1"
 # npm `@tauri-apps/plugin-opener` exact pin (same version) — the two halves stay
 # in lockstep by requirement, not just by the lockfile.
 tauri-plugin-opener = "=2.5.5"
-# The real signed-artifact update channel (personal-cfo-867.1.2, ADR 0068) — release
-# builds only (`PCFO_BUILD_CHANNEL == dev` keeps the from-source updater, `update.rs`).
-# Pinned exactly, like the opener pair above: the Rust plugin verifies a minisign
-# signature and the JS half (`@tauri-apps/plugin-updater`) drives the same check/
-# download/install flow, so a routine `cargo update` moving one without the other
-# would leave mismatched signing/verification expectations between the two halves.
-# Default features minus `zip` (personal-cfo-md8h2.5): that feature only adds the
-# Windows-only `zip` dependency (RUSTSEC-2026-0367/0368/0369 in zip 4.x). The macOS
-# `.app.tar.gz` install path uses `tar`/`flate2`, which the plugin always enables on macOS.
-tauri-plugin-updater = { version = "=2.11.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
-# Restarts the app after an update installs (`process:allow-restart` only —
-# capabilities/destructive.json). No lockstep-pin need: this plugin has no signing
-# semantics to keep in sync with its JS half, so it follows the looser convention
-# `tauri-plugin-dialog` above already uses.
-tauri-plugin-process = "~2.3.1"
 
 # personal-cfo-40t: typed IPC command pattern + serde→TS codegen.
 #
@@ -147,6 +132,28 @@ iana-time-zone = "0.1"
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
+
+# Self-update machinery is desktop-only (personal-cfo-i93n3.11): the updater and
+# process plugins are not even compiled for a mobile target, so a build there carries
+# no code that downloads or swaps the app's own binary. `lib.rs` registers them only
+# under `cfg(desktop)`, and `capabilities/desktop-update.json` grants them only on the
+# desktop platforms.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# The real signed-artifact update channel (personal-cfo-867.1.2, ADR 0068) — release
+# builds only (`PCFO_BUILD_CHANNEL == dev` keeps the from-source updater, `update.rs`).
+# Pinned exactly, like the opener pair above: the Rust plugin verifies a minisign
+# signature and the JS half (`@tauri-apps/plugin-updater`) drives the same check/
+# download/install flow, so a routine `cargo update` moving one without the other
+# would leave mismatched signing/verification expectations between the two halves.
+# Default features minus `zip` (personal-cfo-md8h2.5): that feature only adds the
+# Windows-only `zip` dependency (RUSTSEC-2026-0367/0368/0369 in zip 4.x). The macOS
+# `.app.tar.gz` install path uses `tar`/`flate2`, which the plugin always enables on macOS.
+tauri-plugin-updater = { version = "=2.11.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
+# Restarts the app after an update installs (`process:allow-restart` only —
+# capabilities/desktop-update.json). No lockstep-pin need: this plugin has no signing
+# semantics to keep in sync with its JS half, so it follows the looser convention
+# `tauri-plugin-dialog` above already uses.
+tauri-plugin-process = "~2.3.1"
 
 [dev-dependencies]
 # Tauri's mock runtime (`tauri::test`, a feature with no extra dependencies) drives

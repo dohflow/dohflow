@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { UnlockScreen } from "./UnlockScreen";
 
@@ -18,6 +18,7 @@ test("newer schema refusal stays on unlock with actionable copy, cleared passwor
     "This vault requires a newer version of DohFlow. Open it with a compatible newer version.",
   );
   expect(password).toHaveValue("");
-  expect(password).toHaveFocus();
+  // Focus returns in an effect after the refusal renders: poll for it (personal-cfo-v9xls).
+  await waitFor(() => expect(password).toHaveFocus());
   expect(screen.getByRole("button", { name: /^unlock$/i })).toBeDisabled();
 });
