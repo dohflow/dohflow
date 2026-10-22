@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=5 -->
+<!-- vault-format: spec-version=6 -->
 <!-- vault-format: schema-version=57 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -248,6 +248,11 @@ synthetic no-app recovery test before any such public claim.
 - `spec-version = 5` defines `engine_version` (C.13): what the value means, who writes it
   and when it changes. No wire layout or vector changes; the vectors' `dohflow-0.3.0` stays
   an illustrative value.
+- `spec-version = 6` makes two rules explicit before any implementation ships them, with no
+  wire layout or vector change: C.4 receiver check 4 refuses a present manifest commitment
+  for an empty delta manifest (a second valid encoding of one envelope), and C.13 freezes the
+  prefix of every clear header and container so a newer protocol is reported as unsupported,
+  not as a corrupt object.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -1037,7 +1042,13 @@ index reconciliation, a receiver:
 3. for an envelope, requires a UUIDv4 idempotency key (C.5);
 4. checks the manifest commitment rule of header field 17: the plaintext's delta
    manifest is strictly ascending and duplicate-free, and the header's commitment
-   is its commitment, or both are empty and the header field is absent.
+   is its commitment, or both are empty and the header field is absent. A header that
+   carries a commitment for an empty delta manifest (even the commitment of the empty
+   list) is refused, because it would be a second valid encoding of the same envelope
+   with a different `canonical_envelope_digest`;
+5. checks that the header's `object_id` is the plaintext's `command_id`, that its
+   `device_id` is the plaintext's `device_id`, and that its `nonce_domain` is the one
+   derived (C.3) for its epoch, device fingerprint and object type.
 
 ### Envelope plaintext (`EnvelopePlaintextV1`)
 
@@ -1598,6 +1609,15 @@ typed outcomes of Part B apply unchanged.
   error. No version promises that every future version opens.
 - Any new field, label, kind or registry value is a new version of its structure,
   and a changed derivation is a new label version (`/v2`), never a silent edit.
+- The first bytes of every clear header and container are frozen across all protocol
+  versions: a header starts with `label "dohflow/sync-header/v1" ‖ u16 protocol_version`
+  and a container with `magic "DFSY" ‖ u16 container_version`. A newer layout changes
+  `protocol_version` or `container_version` and leaves those prefixes alone, so an older
+  reader reports `UnsupportedProtocol` or `UnsupportedContainer` (an update-required
+  state) instead of `MalformedObject`. A reader checks the version before it trusts any
+  later field.
+- `engine_version` is checked as it is parsed: a header whose value is not 1 to 64
+  bytes of printable ASCII is `MalformedObject`.
 - A change to this part bumps `spec-version` and requires new reviewed vectors.
 - `engine_version` and `schema_version` skew is handled by ADR 0074 (R40): the
   client asks the user to update before continuing.

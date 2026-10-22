@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 /// only defines it.
 const ALLOWED: &[&str] = &[
     "crates/sync-core/src/header.rs",
+    // The metadata and manifest commitments (C.3), derived here from CBE1 bytes.
+    "crates/sync-core/src/envelope.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];

@@ -4,8 +4,9 @@
 
 use sync_core::cbe::WireError;
 use sync_core::header::{
-    encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag,
-    ManifestCommitment, MetadataCommitment, NonceDomain, ObjectKind, MAX_INVOCATION_COUNTER,
+    encode_container, parse_container, parse_container_with_limit, ClearHeader, Fingerprint,
+    IdempotencyKeyTag, ManifestCommitment, MetadataCommitment, NonceDomain, ObjectKind,
+    MAX_ENVELOPE_CONTAINER_LEN, MAX_INVOCATION_COUNTER,
 };
 
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
@@ -276,10 +277,10 @@ fn engine_version_is_bounded_at_sixty_four_bytes_and_must_be_utf8() {
         header
     );
     header.engine_version = "e".repeat(65);
-    assert_eq!(header.encode(), Err(WireError::TooLong));
-    // Multi-byte characters count bytes, not characters.
+    assert_eq!(header.encode(), Err(WireError::BadEngineVersion));
+    // Multi-byte characters count bytes, not characters (and are not ASCII besides).
     header.engine_version = "\u{e9}".repeat(33); // 66 bytes
-    assert_eq!(header.encode(), Err(WireError::TooLong));
+    assert_eq!(header.encode(), Err(WireError::BadEngineVersion));
 
     // On the wire: an oversize length, then invalid UTF-8.
     let marker = b"dohflow-0.3.0";
@@ -297,14 +298,50 @@ fn engine_version_is_bounded_at_sixty_four_bytes_and_must_be_utf8() {
 }
 
 #[test]
-fn the_empty_engine_version_follows_the_spec_text_64_rule() {
-    // C.4 types the field text(64), with no minimum: the codec follows the spec exactly. (The
-    // operation log refuses an empty engine_version; whether the wire should is a spec change.)
-    let mut header = sample_envelope();
-    header.engine_version = String::new();
+fn engine_version_is_printable_ascii_one_to_sixty_four_bytes() {
+    // C.13: opaque printable ASCII (0x21..=0x7e), compared byte for byte.
+    for bad in ["", " ", "a b", "a\tb", "caf\u{e9}", "\u{7f}", "x\u{0}"] {
+        let mut header = sample_envelope();
+        header.engine_version = bad.to_owned();
+        assert_eq!(header.encode(), Err(WireError::BadEngineVersion), "{bad:?}");
+    }
+    for good in [
+        "a",
+        "dohflow-0.3.0",
+        "dohflow-engine-1",
+        "!~",
+        &"z".repeat(64),
+    ] {
+        let mut header = sample_envelope();
+        header.engine_version = good.to_owned();
+        assert_eq!(
+            ClearHeader::decode(&header.encode().unwrap()).unwrap(),
+            header
+        );
+    }
+    // And on the wire: patch a good header's engine version to each bad value of equal length.
+    let bytes = header_bytes();
+    let marker = b"dohflow-0.3.0";
+    let at = bytes
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .unwrap();
+    for poisoned in *b"\x20\x7f\x00\x0a" {
+        let mut bytes = bytes.clone();
+        bytes[at + 3] = poisoned;
+        assert_eq!(
+            ClearHeader::decode(&bytes),
+            Err(WireError::BadEngineVersion),
+            "byte {poisoned:#x}"
+        );
+    }
+    // A zero-length engine version on the wire.
+    let mut empty = bytes[..at - 4].to_vec();
+    empty.extend_from_slice(&0_u32.to_be_bytes());
+    empty.extend_from_slice(&bytes[at + marker.len()..]);
     assert_eq!(
-        ClearHeader::decode(&header.encode().unwrap()).unwrap(),
-        header
+        ClearHeader::decode(&empty),
+        Err(WireError::BadEngineVersion)
     );
 }
 
@@ -400,4 +437,42 @@ fn a_ciphertext_shorter_than_a_gcm_tag_is_refused() {
     least.extend_from_slice(&16_u64.to_be_bytes());
     least.extend_from_slice(&[0xAA; 16]);
     assert_eq!(parse_container(&least).unwrap().ciphertext.len(), 16);
+}
+
+#[test]
+fn nonce_domain_is_derived_from_the_key_and_object_type() {
+    let fingerprint = Fingerprint::from_derived(array(&vector("fingerprint_a")));
+    let domain = NonceDomain::derive(&[0x11; 16], 1, &fingerprint, 1);
+    assert_eq!(
+        domain.as_bytes().as_slice(),
+        vector("nonce_domain_a_envelope")
+    );
+    // Device B's differs, and so do other epochs and object types.
+    let fingerprint_b = Fingerprint::from_derived(array(&vector("fingerprint_b")));
+    assert_eq!(
+        NonceDomain::derive(&[0x11; 16], 1, &fingerprint_b, 1)
+            .as_bytes()
+            .as_slice(),
+        vector("nonce_domain_b_envelope")
+    );
+    assert_ne!(domain, NonceDomain::derive(&[0x11; 16], 2, &fingerprint, 1));
+    assert_ne!(domain, NonceDomain::derive(&[0x11; 16], 1, &fingerprint, 2));
+    assert_ne!(domain, NonceDomain::derive(&[0x12; 16], 1, &fingerprint, 1));
+}
+
+#[test]
+fn an_envelope_container_over_the_size_cap_is_refused_before_it_is_read() {
+    let good = vector("envelope_container");
+    assert!(parse_container_with_limit(&good, good.len()).is_ok());
+    assert_eq!(
+        parse_container_with_limit(&good, good.len() - 1),
+        Err(WireError::ObjectTooLarge)
+    );
+    // Even bytes that are not a container at all are refused on size first.
+    let junk = vec![0_u8; MAX_ENVELOPE_CONTAINER_LEN + 1];
+    assert_eq!(
+        parse_container_with_limit(&junk, MAX_ENVELOPE_CONTAINER_LEN),
+        Err(WireError::ObjectTooLarge)
+    );
+    const { assert!(MAX_ENVELOPE_CONTAINER_LEN > (1 << 24)) };
 }

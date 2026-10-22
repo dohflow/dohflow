@@ -68,6 +68,24 @@ pub enum WireError {
     /// The ciphertext is shorter than an AES-256-GCM tag, so it cannot be a sealed object.
     #[error("the ciphertext is shorter than an authentication tag")]
     CiphertextTooShort,
+    /// The envelope's idempotency key is not a UUID version 4 (C.5; the typed
+    /// `InvalidIdempotencyKey` of C.11, which is not a `MalformedObject`).
+    #[error("the idempotency key is not a UUID version 4")]
+    InvalidIdempotencyKey,
+    /// The `engine_version` is not 1 to 64 bytes of printable ASCII (`0x21..=0x7e`), C.13.
+    #[error("the engine version is not 1 to 64 printable ASCII bytes")]
+    BadEngineVersion,
+    /// A list is not in strictly ascending byte order (a manifest list; a duplicate is out of
+    /// order too).
+    #[error("a list is not in strictly ascending order")]
+    ListNotAscending,
+    /// An `actor_type` outside the registry of C.1.3 (`1` user, `2` system, `3` importer, `4`
+    /// agent).
+    #[error("an actor type outside the registry")]
+    UnknownActorType,
+    /// The whole object is larger than the transport's cap for this object type.
+    #[error("the object is larger than the permitted size")]
+    ObjectTooLarge,
     /// The container magic is not `DFSY`.
     #[error("bad container magic")]
     BadMagic,
@@ -81,10 +99,13 @@ pub enum WireError {
 
 impl WireError {
     /// Whether this is the typed `MalformedObject` failure of C.11 (any CBE1 or container
-    /// violation), as opposed to `UnsupportedProtocol`.
+    /// violation), as opposed to `UnsupportedProtocol` or `InvalidIdempotencyKey`.
     #[must_use]
     pub const fn is_malformed(&self) -> bool {
-        !matches!(self, Self::UnsupportedProtocol | Self::UnsupportedContainer)
+        !matches!(
+            self,
+            Self::UnsupportedProtocol | Self::UnsupportedContainer | Self::InvalidIdempotencyKey
+        )
     }
 }
 
@@ -173,6 +194,27 @@ impl Writer {
     /// [`WireError::TooLong`] if the UTF-8 encoding is longer than `max`.
     pub fn text(&mut self, max: usize, value: &str) -> Result<&mut Self, WireError> {
         self.bytes(max, value.as_bytes())
+    }
+
+    /// Append `list(T, max)`: a `u32` count no greater than `max`, then each item.
+    ///
+    /// # Errors
+    /// [`WireError::TooLong`] if there are more than `max` items.
+    pub fn list<T>(
+        &mut self,
+        max: usize,
+        items: &[T],
+        write: impl Fn(&mut Self, &T),
+    ) -> Result<&mut Self, WireError> {
+        if items.len() > max {
+            return Err(WireError::TooLong);
+        }
+        let count = u32::try_from(items.len()).map_err(|_| WireError::TooLong)?;
+        self.0.extend_from_slice(&count.to_be_bytes());
+        for item in items {
+            write(self, item);
+        }
+        Ok(self)
     }
 
     /// Append `opt(T)`: `0` when absent, else `1` and whatever `write` appends.
@@ -337,6 +379,36 @@ impl<'a> Reader<'a> {
             1 => read(self).map(Some),
             _ => Err(WireError::BadPresence),
         }
+    }
+
+    /// Read `list(T, max)`. Each item is at least `min_item_size` bytes on the wire, so a count
+    /// that could not fit in what remains is refused **before** anything is allocated: the
+    /// vector's capacity is only ever reserved for items the input can actually hold.
+    ///
+    /// # Errors
+    /// [`WireError::TooLong`] if the count is above `max`, [`WireError::LengthExceedsInput`] if
+    /// `count * min_item_size` exceeds the remaining bytes, plus whatever `read` returns.
+    pub fn list<T>(
+        &mut self,
+        max: usize,
+        min_item_size: usize,
+        mut read: impl FnMut(&mut Self) -> Result<T, WireError>,
+    ) -> Result<Vec<T>, WireError> {
+        let count = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;
+        if count > max {
+            return Err(WireError::TooLong);
+        }
+        let needed = count
+            .checked_mul(min_item_size)
+            .ok_or(WireError::LengthExceedsInput)?;
+        if needed > self.rest.len() {
+            return Err(WireError::LengthExceedsInput);
+        }
+        let mut items = Vec::with_capacity(count);
+        for _ in 0..count {
+            items.push(read(self)?);
+        }
+        Ok(items)
     }
 
     /// Require that nothing is left.
