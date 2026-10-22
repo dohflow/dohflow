@@ -181,19 +181,41 @@ standing rule:
   `PASS` comment is the artifact the merge cites.
 - `05-decisions` still lists such a pull request at the top of the ledger as
   merge-ready, with the named check and bead beside it.
-- The reviewer names the check **and the bead** every time, and confirms that the
-  same check fails the same way on `main` at the pull request's base commit. A
-  failure the reviewer cannot match to a tracked red on `main` is a
-  `CHANGES_REQUIRED`, not a fast-path `PASS`.
+- The reviewer names the check **and the bead** every time, and establishes
+  three things before writing the line:
+  1. **The failure is `main`'s own.** A pull request's CI tests
+     `refs/pull/N/merge`, a merge commit that sits on `main`'s tip *at the time of
+     that run*, not on the pull request's base. Compare against the **first parent
+     of the failing run's merge commit** (the `main` commit the run actually
+     merged onto), and confirm `main` is **still red there** in the same check,
+     the same way. A failure the reviewer cannot match to a tracked red on `main`
+     is a `CHANGES_REQUIRED`, not a fast-path `PASS`.
+  2. **Nothing was masked.** A step that fails early skips the later steps of the
+     same job, so a known-red step can hide a real problem in the pull request
+     (for example, a failing `cargo audit` step skips `cargo deny`, `pnpm audit`
+     and the frontend license scan that follow it). The reviewer accounts for
+     **every later step** of each failing job: it ran and passed, or the reviewer
+     ran it locally and says so, or it provably cannot differ from `main` (for
+     example the lockfiles are identical to `main`'s). The verdict **names any step
+     that could not be run**.
+  3. **No exclusion applies** (below).
 
 **Two exclusions, with no exceptions:**
 
 1. **Never for a pull request that touches the failing area itself.** If the
    change is in the crate, test, workflow or file that is red on `main`, its
-   failure is not provably `main`'s, so it waits for a green run.
+   failure is not provably `main`'s, so it waits for a green run. For an audit
+   or other CI failure the failing area includes the **workflow step and the
+   scripts it runs, the lockfiles, and the audit configuration** (`deny.toml`,
+   audit allowances).
 2. **Never when `main`'s red is a security finding in that pull request's own
-   dependencies.** A pull request that adds or changes a dependency with an open
-   advisory does not ride on a red audit.
+   dependencies.** Read broadly, to be safe: "its own dependencies" means any
+   dependency the pull request adds or changes, **and** any dependency of a crate
+   or package the pull request modifies, so a pull request that changes code in a
+   crate that depends on the flagged crate does not ride on that red audit.
+   *This is the stricter of two readings of the owner's wording; the owner is
+   asked to confirm it (through `05-decisions`), and it is relaxed to "adds or
+   changes a dependency" only if the owner says so.*
 
 The rule does not relax anything else: every other required check must be green,
 a new commit voids the `PASS`, and the owner still merges (rule 2 of `AGENTS.md`

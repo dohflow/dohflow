@@ -79,9 +79,12 @@ bypass is also the mechanism of a standing exception, the red-main fast path: wh
 `main` is red, a pull request whose only failing required checks are `main`'s
 current, tracked failures, and which has a reviewer `PASS` stating that it "fails
 only on main's known red `<check>` (bead `<id>`)", may be admin-merged by the
-owner without a fresh decision. It never applies to a pull request that touches
-the failing area itself, nor when `main`'s red is a security finding in that pull
-request's own dependencies. The rule and its procedure are in
+owner without a fresh decision, after the reviewer has also shown that the red is
+`main`'s own at the commit the run merged onto and that no later step of the failing
+job was masked. It never applies to a pull request that touches the failing area
+itself (including a failing step's workflow, scripts, lockfiles and audit
+configuration), nor when `main`'s red is a security finding in that pull request's
+own dependencies. The rule and its procedure are in
 `docs/agent/WORKFLOW_ROLES.md` ("Red-main fast path"). Nothing in the ruleset
 changes; this records how the existing bypass is used.
 
