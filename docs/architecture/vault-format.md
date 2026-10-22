@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=6 -->
+<!-- vault-format: spec-version=7 -->
 <!-- vault-format: schema-version=57 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -253,6 +253,9 @@ synthetic no-app recovery test before any such public claim.
   for an empty delta manifest (a second valid encoding of one envelope), and C.13 freezes the
   prefix of every clear header and container so a newer protocol is reported as unsupported,
   not as a corrupt object.
+- `spec-version = 7` makes one more rule explicit, with no wire layout or vector change: a
+  present `result_ref` in the accepted-envelope record (C.10) is 1 to 64 bytes, because an
+  empty one would be a second encoding of an absent one.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -1510,7 +1513,11 @@ survives tail truncation, snapshot bootstrap and restart. Each record is
 idempotency_key_tag ‖ digest canonical_envelope_digest ‖ digest
 immutable_metadata_commitment ‖ u64 key_epoch ‖ u64 seq ‖ opt(bytes(64))
 result_ref`. It holds no plaintext key and no payload, and the exact original
-command metadata is bound by `immutable_metadata_commitment`.
+command metadata is bound by `immutable_metadata_commitment`. A present `result_ref` is 1 to
+64 bytes of opaque, service-chosen data (an empty one is refused), and the index holds at most
+one record per `command_id` and one per tag. The service computes `canonical_envelope_digest`
+itself from the received header bytes and ciphertext; a pusher's claimed digest is never
+trusted.
 
 On a push the service decides in this order:
 
