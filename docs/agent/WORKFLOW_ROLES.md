@@ -215,7 +215,16 @@ standing rule:
    (including one in a crate that depends on the flagged crate) **may** use the
    fast path, **but only if the reviewer's `PASS` explicitly confirms that the
    pull request does not start using the advisory's affected API.** If the
-   reviewer cannot confirm that, the verdict is `CHANGES_REQUIRED`.
+   reviewer cannot confirm that, the verdict is `CHANGES_REQUIRED`. To make the
+   guard checkable:
+   - **The affected API** is the advisory's listed affected functions; if the
+     advisory lists none, it is **any use of the affected crate**.
+   - **"Starts using"** includes newly reaching it **through a wrapper crate**: for
+     example a new TLS client or connection for a TLS advisory counts, even though
+     the pull request never names the flagged crate.
+   - **The verdict records which advisory and which API were checked** (the
+     advisory ID and the functions or crate), so the owner can see what was
+     confirmed.
 
 The rule does not relax anything else: every other required check must be green,
 a new commit voids the `PASS`, and the owner still merges (rule 2 of `AGENTS.md`
