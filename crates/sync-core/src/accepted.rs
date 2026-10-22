@@ -27,6 +27,15 @@
 //! 4. only for [`PushDecision::Unknown`]: reject an old `key_epoch` (`EpochRejected`), then the
 //!    compare-and-swap on `base_seq`, then append and insert the new record.
 //!
+//! **Steps 3 and 4 and the insert are one atomic transaction with the append**, under the vault's
+//! single serialization point. If the append and the insert were separate steps, a crash or a
+//! race between them could leave an appended envelope with no index record, and a later retry
+//! would be treated as a fresh command; two concurrent pushes sharing a tag but not a command id
+//! could both see `Unknown`. An insert that fails [`DuplicateIdentity`] after [`decide_push`]
+//! returned `Unknown` means the index changed under the transaction: it is
+//! [`IndexInconsistent`], and the append aborts. (The service's storage layer implements this;
+//! the contract is here.)
+//!
 //! Nothing here replays or requeues a command. A match returns the recorded `seq` and result so
 //! the caller can *bind* its outbox entry to them; the sealed bytes are never re-sent as a new
 //! command and never re-encrypted.
@@ -37,7 +46,9 @@ use thiserror::Error;
 
 use crate::cbe::{Reader, WireError, Writer};
 use crate::envelope::canonical_envelope_digest;
-use crate::header::{IdempotencyKeyTag, MetadataCommitment, ObjectKind, ParsedContainer};
+use crate::header::{
+    Fingerprint, IdempotencyKeyTag, MetadataCommitment, ObjectKind, ParsedContainer,
+};
 
 /// The record's label.
 pub const ACCEPTED_LABEL: &str = "dohflow/sync-accepted/v1";
@@ -157,6 +168,7 @@ struct Identity {
     envelope_digest: [u8; 32],
     metadata_commitment: MetadataCommitment,
     device_id: [u8; 16],
+    device_key_fingerprint: Fingerprint,
 }
 
 impl Identity {
@@ -179,6 +191,7 @@ impl Identity {
             envelope_digest,
             metadata_commitment: immutable_metadata_commitment,
             device_id: container.header.device_id,
+            device_key_fingerprint: container.header.device_key_fingerprint,
         })
     }
 }
@@ -322,7 +335,9 @@ pub fn decide_push<'a>(
     })
 }
 
-/// A reference [`AcceptedIndex`] over two hash maps, for one vault.
+/// A reference [`AcceptedIndex`] over two hash maps, for one vault. It keeps a clone of each
+/// record under each key; a real index stores one record with two unique keys, so the two copies
+/// cannot drift.
 #[derive(Debug, Default)]
 pub struct InMemoryIndex {
     by_command: HashMap<[u8; 16], AcceptedRecord>,
@@ -389,6 +404,14 @@ impl OutboxEntry {
 /// An envelope pulled from the log, **already authenticated and checked** (AEAD opened,
 /// `check_envelope` passed, membership verified), with what the service assigned to it. The
 /// `seq` and `result_ref` come from the service's response and index, never from the AAD.
+///
+/// The type does not enforce that order (the caller must run the checks first). And
+/// authentication does not settle where `seq` comes from: the service holds the client's own
+/// pushed bytes and could return them, which authenticate perfectly, with a fabricated `seq`, so
+/// the client would bind its outbox entry to an acceptance that never happened. `seq` must be the
+/// log position at which the client actually pulled the envelope, and the client must later
+/// confirm that its bound `seq` appears with that digest in the tail it pulls; a mismatch is a
+/// fork-consistency failure, not a bind. (That confirmation belongs to the client engine.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PulledEnvelope {
     identity: Identity,
@@ -417,6 +440,14 @@ impl PulledEnvelope {
     #[must_use]
     pub const fn device_id(&self) -> &[u8; 16] {
         &self.identity.device_id
+    }
+
+    /// The fingerprint of the key that sealed it. The member chain identifies keys by
+    /// fingerprint, so a fork report needs it beside `device_id` to tell two enrollments' keys
+    /// apart.
+    #[must_use]
+    pub const fn device_key_fingerprint(&self) -> &Fingerprint {
+        &self.identity.device_key_fingerprint
     }
 }
 

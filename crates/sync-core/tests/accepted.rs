@@ -418,6 +418,11 @@ fn the_same_command_with_a_different_envelope_is_a_fork_and_an_unrelated_one_is_
         PullMatch::NotMine
     );
     assert_eq!(pulled(BASE, 1).device_id(), &[0xa1; 16]);
+    // The fork report can name the key as well as the device.
+    assert_eq!(
+        pulled(BASE, 1).device_key_fingerprint(),
+        &Fingerprint::from_derived([0xa1; 32])
+    );
 }
 
 // ---- the t2s4b acceptance criteria this part closes -----------------------------------------
@@ -518,4 +523,49 @@ fn two_different_records_are_a_fork_even_if_each_matches_the_push_digest() {
         decide_push(&Split(by_command, by_tag), &identity).unwrap(),
         PushDecision::ProtocolFork
     );
+}
+
+#[test]
+fn a_restore_twin_binds_what_the_original_had_accepted_and_pushes_what_it_had_not() {
+    // A restore twin's outbox holds the sealed bytes of the ORIGINAL device (the outbox keeps the
+    // sealed container and never re-seals), so the identities it derives are the original's.
+    let accepted_before_backup = Spec {
+        command: 1,
+        tag: 2,
+        ..BASE
+    };
+    let never_accepted = Spec {
+        command: 5,
+        tag: 6,
+        ciphertext: 0x66,
+        ..BASE
+    };
+    let restored_outbox = [outbox(accepted_before_backup), outbox(never_accepted)];
+
+    // The log (the service's index) holds only the first.
+    let index = index_with(&[accepted(accepted_before_backup, 41)]);
+
+    // The entry accepted before the backup binds to its seq: the exact bytes give the same digest.
+    assert_eq!(
+        match_pulled(&restored_outbox[0], &pulled(accepted_before_backup, 41)),
+        PullMatch::BindToAccepted {
+            seq: 41,
+            result_ref: Some(vec![9, 9])
+        }
+    );
+    // The one never accepted is unrelated to that pulled envelope, and pushing it is Unknown to
+    // the service, so it goes through the normal epoch and CAS steps.
+    assert_eq!(
+        match_pulled(&restored_outbox[1], &pulled(accepted_before_backup, 41)),
+        PullMatch::NotMine
+    );
+    assert_eq!(
+        decide_push(&index, &push(never_accepted)).unwrap(),
+        PushDecision::Unknown
+    );
+    // And the first, retried as a push, is a replay, not a duplicate append.
+    assert!(matches!(
+        decide_push(&index, &push(accepted_before_backup)).unwrap(),
+        PushDecision::Replay(record) if record.seq == 41
+    ));
 }
