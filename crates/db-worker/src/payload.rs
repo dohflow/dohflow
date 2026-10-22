@@ -29,9 +29,11 @@
 //!
 //! # Free text and NUL
 //!
-//! The canonical codec refuses U+0000 in any string. Where `prepare_payload` is wired into
-//! the dispatcher, user text (notes, imported memos, names) must be stripped of or refused
-//! for NUL at the input boundary so it does not fail at encode time.
+//! The canonical codec refuses U+0000 in any string. `prepare_payload` is wired into the
+//! dispatcher (`apply_command`): a command whose user text (notes, imported memos, names)
+//! holds a NUL is refused with a typed `InvalidCommand` before anything is written, naming
+//! the kind of value and never the value. An input boundary that wants to accept such text
+//! must strip it before it builds the command.
 //!
 //! Decoding is strict in the two ways that matter for replay. A payload of a version this
 //! build does not know is refused with [`PayloadError::UnsupportedVersion`], loudly, never

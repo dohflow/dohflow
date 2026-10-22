@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=4 -->
+<!-- vault-format: spec-version=5 -->
 <!-- vault-format: schema-version=57 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -245,6 +245,9 @@ synthetic no-app recovery test before any such public claim.
 - `spec-version = 4` adds C.1.5, the canonical row encoding (declared-kind tags, primary
   key, row and deleted-row digests, and folded children) that the write-set hash of C.4
   and the replay-property hash refer to, with known-answer vectors.
+- `spec-version = 5` defines `engine_version` (C.13): what the value means, who writes it
+  and when it changes. No wire layout or vector changes; the vectors' `dohflow-0.3.0` stays
+  an illustrative value.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -1598,6 +1601,17 @@ typed outcomes of Part B apply unchanged.
 - A change to this part bumps `spec-version` and requires new reviewed vectors.
 - `engine_version` and `schema_version` skew is handled by ADR 0074 (R40): the
   client asks the user to update before continuing.
+- `engine_version` is opaque printable ASCII (`0x21..=0x7e`), 1 to 64 bytes, compared byte
+  for byte for equality and never ordered. It names the **apply semantics**, not the
+  release: two builds with the same value produce the same rows and the same write-set hash
+  from the same payload, metadata and base state. DohFlow writes `dohflow-engine-N` for a
+  positive integer N, and increments N, in the same change, whenever a change to `apply`
+  alters what it writes for an unchanged payload and base. A replica that receives an
+  envelope or snapshot whose `engine_version` it does not equal is in the update-required
+  state; it never guesses compatibility. (A vault reading back its own operation-log rows
+  is not gated by this.) The value
+  an operation-log row stores is the one the producing build wrote, unchanged. (The first
+  value is `dohflow-engine-1`.)
 
 ## C.14 Conformance tests and vectors
 
