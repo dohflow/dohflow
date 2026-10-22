@@ -379,3 +379,25 @@ fn a_header_decoded_from_a_container_equals_its_own_canonical_encoding() {
         assert_eq!(header.encode().unwrap(), bytes, "{name}");
     }
 }
+
+#[test]
+fn a_ciphertext_shorter_than_a_gcm_tag_is_refused() {
+    let good = vector("envelope_container");
+    let header_len = u32::from_be_bytes(good[6..10].try_into().unwrap()) as usize;
+    let ct_len_at = 10 + header_len;
+    for length in [0_usize, 1, 15] {
+        let mut short = good[..ct_len_at].to_vec();
+        short.extend_from_slice(&(length as u64).to_be_bytes());
+        short.extend(std::iter::repeat_n(0xAA, length));
+        assert_eq!(
+            parse_container(&short),
+            Err(WireError::CiphertextTooShort),
+            "{length}-byte ciphertext"
+        );
+    }
+    // Exactly one tag's worth is the smallest accepted.
+    let mut least = good[..ct_len_at].to_vec();
+    least.extend_from_slice(&16_u64.to_be_bytes());
+    least.extend_from_slice(&[0xAA; 16]);
+    assert_eq!(parse_container(&least).unwrap().ciphertext.len(), 16);
+}

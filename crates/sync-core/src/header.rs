@@ -293,6 +293,8 @@ impl ClearHeader {
 pub const CONTAINER_MAGIC: &[u8; 4] = b"DFSY";
 /// The one container version this build speaks.
 pub const CONTAINER_VERSION: u16 = 1;
+/// The AES-256-GCM tag length: the least a sealed object's ciphertext can be.
+pub const MIN_CIPHERTEXT_LEN: usize = 16;
 
 /// A parsed container: the header, the header bytes exactly as received (the AAD), and the
 /// ciphertext (AES-256-GCM output including its tag), which is never interpreted here.
@@ -332,7 +334,8 @@ pub fn encode_container(header: &ClearHeader, ciphertext: &[u8]) -> Result<Vec<u
 ///
 /// # Errors
 /// [`WireError::BadMagic`], [`WireError::UnsupportedContainer`], [`WireError::Truncated`],
-/// [`WireError::LengthExceedsInput`], [`WireError::TrailingBytes`], and anything
+/// [`WireError::LengthExceedsInput`], [`WireError::CiphertextTooShort`] (under a 16-byte GCM
+/// tag), [`WireError::TrailingBytes`], and anything
 /// [`ClearHeader::decode`] returns (it must consume exactly `header_len` bytes).
 pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer<'_>, WireError> {
     let mut r = Reader::new(bytes);
@@ -355,6 +358,9 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer<'_>, WireError> {
         return Err(WireError::LengthExceedsInput);
     }
     let ciphertext_start = bytes.len() - r.remaining();
+    if ciphertext_len < MIN_CIPHERTEXT_LEN {
+        return Err(WireError::CiphertextTooShort);
+    }
     let ciphertext = &bytes[ciphertext_start..ciphertext_start + ciphertext_len];
     Reader::new(&bytes[ciphertext_start + ciphertext_len..]).finish()?;
     Ok(ParsedContainer {

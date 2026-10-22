@@ -65,6 +65,9 @@ pub enum WireError {
     /// The invocation counter is above the per-key cap of `2^32 - 1`.
     #[error("the invocation counter is above the per-key cap")]
     CounterAboveCap,
+    /// The ciphertext is shorter than an AES-256-GCM tag, so it cannot be a sealed object.
+    #[error("the ciphertext is shorter than an authentication tag")]
+    CiphertextTooShort,
     /// The container magic is not `DFSY`.
     #[error("bad container magic")]
     BadMagic,
