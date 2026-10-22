@@ -7,7 +7,11 @@
 //! * [`canonical_json`]: the strict canonical JSON codec of `docs/architecture/vault-format.md`
 //!   C.1.2 (restricted RFC 8785), shared by command payloads, manifests and logical
 //!   metadata.
+//! * [`cbe`]: CBE1, the canonical binary encoding of C.1.1 (strict writer and reader).
+//! * [`header`]: the C.4 clear header (the AEAD's AAD) and the `DFSY` container.
 
 pub mod canonical_json;
+pub mod cbe;
+pub mod header;
 pub mod row_digest;
 pub mod write_set;
