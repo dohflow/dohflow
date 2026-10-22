@@ -208,14 +208,14 @@ standing rule:
    or other CI failure the failing area includes the **workflow step and the
    scripts it runs, the lockfiles, and the audit configuration** (`deny.toml`,
    audit allowances).
-2. **Never when `main`'s red is a security finding in that pull request's own
-   dependencies.** Read broadly, to be safe: "its own dependencies" means any
-   dependency the pull request adds or changes, **and** any dependency of a crate
-   or package the pull request modifies, so a pull request that changes code in a
-   crate that depends on the flagged crate does not ride on that red audit.
-   *This is the stricter of two readings of the owner's wording; the owner is
-   asked to confirm it (through `05-decisions`), and it is relaxed to "adds or
-   changes a dependency" only if the owner says so.*
+2. **Never when `main`'s red is a security advisory and the pull request changes
+   manifests or lockfiles** (owner decision 2026-10-21). A pull request that adds,
+   changes or bumps a dependency (any `Cargo.toml`, `Cargo.lock`, `package.json`
+   or lockfile change) does not ride on a red audit. **A code-only pull request**
+   (including one in a crate that depends on the flagged crate) **may** use the
+   fast path, **but only if the reviewer's `PASS` explicitly confirms that the
+   pull request does not start using the advisory's affected API.** If the
+   reviewer cannot confirm that, the verdict is `CHANGES_REQUIRED`.
 
 The rule does not relax anything else: every other required check must be green,
 a new commit voids the `PASS`, and the owner still merges (rule 2 of `AGENTS.md`

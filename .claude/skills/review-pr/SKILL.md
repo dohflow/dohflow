@@ -107,8 +107,12 @@ Before writing it, establish all three of these:
    step you could not run.
 3. **No exclusion applies:** the PR does not touch the failing area (including the
    workflow step, its scripts, the lockfiles and the audit config for an audit
-   failure), and `main`'s red is not a security finding in the PR's own
-   dependencies (including dependencies of crates the PR modifies).
+   failure). And if `main`'s red is a security advisory: the PR changes **no
+   manifest or lockfile** (nothing added, changed or bumped); a code-only PR may
+   still use the fast path, but then **your verdict must state explicitly that the
+   PR does not start using the advisory's affected API**, and you must have
+   checked that (read the diff and search it for the affected crate and API). If
+   you cannot confirm it, the verdict is `CHANGES_REQUIRED`.
 
 If you cannot establish all three, the verdict is `CHANGES_REQUIRED`, not a
 fast-path `PASS`. Every other required check must be green.
