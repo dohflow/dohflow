@@ -386,8 +386,10 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer<'_>, WireError> {
 pub const MAX_ENVELOPE_CONTAINER_LEN: usize = (1 << 24) + 4096 * 32 + 4096;
 
 /// [`parse_container`] for an object with a known size cap (every command envelope): a container
-/// longer than `max_len` is refused before a byte of it is read, so a hostile service cannot make
-/// the client parse, or buffer, an arbitrarily large object.
+/// longer than `max_len` is refused before any of it is parsed. This bounds the parser's work on
+/// bytes already in memory; it does not bound what is read. The transport must itself stop
+/// reading an envelope at `max_len` (and refuse a declared length above it), or a hostile service
+/// can still make the client buffer an arbitrarily large object before this check runs.
 ///
 /// # Errors
 /// [`WireError::ObjectTooLarge`] if `bytes.len() > max_len`, otherwise as [`parse_container`].

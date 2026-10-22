@@ -60,6 +60,20 @@ fn spec_tag() -> IdempotencyKeyTag {
     IdempotencyKeyTag::from_derived(array(&vector("idempotency_tag")))
 }
 
+/// Stands in for the vault-crypto HMAC: the spec's tag for the spec's key, and a different tag for
+/// any other key (as a keyed hash would give).
+fn tagger(key: &IdempotencyKey) -> IdempotencyKeyTag {
+    if key == &sample_meta().idempotency_key {
+        spec_tag()
+    } else {
+        let mut bytes = *spec_tag().as_bytes();
+        for (byte, key_byte) in bytes.iter_mut().zip(key.as_bytes().iter().cycle()) {
+            *byte ^= key_byte | 1;
+        }
+        IdempotencyKeyTag::from_derived(bytes)
+    }
+}
+
 // ---- idempotency keys (C.5, AC13) ---------------------------------------------------------
 
 #[test]
@@ -350,8 +364,7 @@ fn the_plaintext_round_trips_for_an_empty_manifest_and_a_causation_id() {
 
 #[test]
 fn the_spec_envelope_passes_every_receiver_check() {
-    check_envelope(&spec_header(), &spec_plaintext(), spec_tag())
-        .expect("the spec envelope is valid");
+    check_envelope(&spec_header(), &spec_plaintext(), tagger).expect("the spec envelope is valid");
 }
 
 #[test]
@@ -369,7 +382,7 @@ fn a_tampered_clear_tag_or_commitment_fails_before_anything_is_trusted() {
         *idempotency_key_tag = IdempotencyKeyTag::from_derived(bytes);
     }
     assert_eq!(
-        check_envelope(&header, &plaintext, spec_tag()),
+        check_envelope(&header, &plaintext, tagger),
         Err(ReceiverError::TagMismatch)
     );
 
@@ -384,7 +397,7 @@ fn a_tampered_clear_tag_or_commitment_fails_before_anything_is_trusted() {
         *immutable_metadata_commitment = MetadataCommitment::from_derived(bytes);
     }
     assert_eq!(
-        check_envelope(&header, &plaintext, spec_tag()),
+        check_envelope(&header, &plaintext, tagger),
         Err(ReceiverError::MetadataCommitmentMismatch)
     );
 
@@ -392,7 +405,7 @@ fn a_tampered_clear_tag_or_commitment_fails_before_anything_is_trusted() {
     let mut changed = spec_plaintext();
     changed.meta.issued_at += 1;
     assert_eq!(
-        check_envelope(&spec_header(), &changed, spec_tag()),
+        check_envelope(&spec_header(), &changed, tagger),
         Err(ReceiverError::MetadataCommitmentMismatch)
     );
 }
@@ -402,13 +415,13 @@ fn the_header_and_plaintext_must_agree_on_the_command_and_the_device() {
     let mut header = spec_header();
     header.object_id[0] ^= 1;
     assert_eq!(
-        check_envelope(&header, &spec_plaintext(), spec_tag()),
+        check_envelope(&header, &spec_plaintext(), tagger),
         Err(ReceiverError::ObjectIdMismatch)
     );
     let mut header = spec_header();
     header.device_id[0] ^= 1;
     assert_eq!(
-        check_envelope(&header, &spec_plaintext(), spec_tag()),
+        check_envelope(&header, &spec_plaintext(), tagger),
         Err(ReceiverError::DeviceMismatch)
     );
 }
@@ -418,7 +431,7 @@ fn a_nonce_domain_that_is_not_the_derived_one_fails_closed() {
     let mut header = spec_header();
     header.nonce_domain = NonceDomain::from_derived([0, 0, 0, 0]);
     assert_eq!(
-        check_envelope(&header, &spec_plaintext(), spec_tag()),
+        check_envelope(&header, &spec_plaintext(), tagger),
         Err(ReceiverError::NonceDomainMismatch)
     );
     // A domain derived for the other object type is also refused.
@@ -430,7 +443,7 @@ fn a_nonce_domain_that_is_not_the_derived_one_fails_closed() {
         2,
     );
     assert_eq!(
-        check_envelope(&header, &spec_plaintext(), spec_tag()),
+        check_envelope(&header, &spec_plaintext(), tagger),
         Err(ReceiverError::NonceDomainMismatch)
     );
 }
@@ -463,24 +476,24 @@ fn the_header_manifest_commitment_is_present_exactly_when_the_delta_manifest_is_
         check_envelope(
             &with_manifest(&header, Some(empty_commitment)),
             &empty_plaintext,
-            spec_tag()
+            tagger
         ),
         Err(ReceiverError::ManifestCommitmentMismatch)
     );
     // An empty manifest with the commitment absent is the one valid form.
-    check_envelope(&with_manifest(&header, None), &empty_plaintext, spec_tag())
+    check_envelope(&with_manifest(&header, None), &empty_plaintext, tagger)
         .expect("empty manifest, absent commitment");
 
     // A non-empty manifest with the commitment absent, or with the wrong commitment, is refused.
     assert_eq!(
-        check_envelope(&with_manifest(&header, None), &plaintext, spec_tag()),
+        check_envelope(&with_manifest(&header, None), &plaintext, tagger),
         Err(ReceiverError::ManifestCommitmentMismatch)
     );
     assert_eq!(
         check_envelope(
             &with_manifest(&header, Some(empty_commitment)),
             &plaintext,
-            spec_tag()
+            tagger
         ),
         Err(ReceiverError::ManifestCommitmentMismatch)
     );
@@ -490,7 +503,7 @@ fn the_header_manifest_commitment_is_present_exactly_when_the_delta_manifest_is_
 fn a_snapshot_header_is_not_an_envelope() {
     let snapshot = ClearHeader::decode(&vector("header_snapshot")).unwrap();
     assert_eq!(
-        check_envelope(&snapshot, &spec_plaintext(), spec_tag()),
+        check_envelope(&snapshot, &spec_plaintext(), tagger),
         Err(ReceiverError::NotAnEnvelope)
     );
 }
@@ -502,4 +515,93 @@ fn the_fingerprint_type_is_not_a_digest_stand_in() {
     let bytes = [7_u8; 32];
     assert_eq!(Fingerprint::from_derived(bytes).as_bytes(), &bytes);
     assert_eq!(IdempotencyKeyTag::from_derived(bytes).as_bytes(), &bytes);
+}
+
+// ---- 03a's conditions ------------------------------------------------------------------
+
+#[test]
+fn the_tag_is_computed_from_the_plaintext_key_so_echoing_the_header_proves_nothing() {
+    let header = spec_header();
+    let header_tag = match header.object {
+        ObjectKind::Envelope {
+            idempotency_key_tag,
+            ..
+        } => idempotency_key_tag,
+        ObjectKind::Snapshot { .. } => unreachable!(),
+    };
+    // A plaintext under a different key, with the header's own tag echoed back by the tagger: the
+    // tag check is satisfied by construction, but the metadata commitment (which binds the key)
+    // still refuses it.
+    let mut other = spec_plaintext();
+    other.meta.idempotency_key =
+        IdempotencyKey::parse("4a3b2c1d-9e8f-4a7b-8c6d-5e4f3a2b1c0e").unwrap();
+    assert_eq!(
+        check_envelope(&header, &other, |_| header_tag),
+        Err(ReceiverError::MetadataCommitmentMismatch)
+    );
+    // With an honest tagger and a header whose commitment was re-forged for the new key but whose
+    // tag is still the old key's, only the tag check can catch it, and does.
+    let mut forged = header.clone();
+    if let ObjectKind::Envelope {
+        immutable_metadata_commitment,
+        ..
+    } = &mut forged.object
+    {
+        *immutable_metadata_commitment = other.meta.commitment().unwrap();
+    }
+    assert_eq!(
+        check_envelope(&forged, &other, tagger),
+        Err(ReceiverError::TagMismatch)
+    );
+}
+
+#[test]
+fn debug_output_never_carries_the_payload_or_the_actor() {
+    let plaintext = EnvelopePlaintext {
+        payload: br#"{"amount_minor":"-1250","note":"rent"}"#.to_vec(),
+        ..spec_plaintext()
+    };
+    let shown = format!("{plaintext:?} {:?}", plaintext.meta);
+    for secret in ["amount_minor", "-1250", "rent", "device-a-user", "4a3b2c1d"] {
+        assert!(!shown.contains(secret), "Debug leaked {secret:?}: {shown}");
+    }
+    assert!(shown.contains("payload_len"));
+}
+
+#[test]
+fn the_largest_legal_envelope_fits_the_container_cap() {
+    use sync_core::header::{
+        encode_container, parse_container_with_limit, MAX_ENGINE_VERSION,
+        MAX_ENVELOPE_CONTAINER_LEN,
+    };
+    let manifest_ids: Vec<[u8; 32]> = (0..4096_u32)
+        .map(|n| {
+            let mut id = [0xff; 32];
+            id[..4].copy_from_slice(&n.to_be_bytes());
+            id
+        })
+        .collect();
+    let plaintext = EnvelopePlaintext {
+        meta: ImmutableMeta {
+            causation_id: Some([0x33; 16]),
+            actor_id: "a".repeat(256),
+            ..sample_meta()
+        },
+        write_set_hash: [0x44; 32],
+        delta_manifest: ArtifactManifest::new(manifest_ids).unwrap(),
+        payload: vec![b' '; 1 << 24],
+    };
+    let mut header = spec_header();
+    header.engine_version = "e".repeat(MAX_ENGINE_VERSION);
+    header.invocation_counter = u64::from(u32::MAX);
+    // The ciphertext is the plaintext plus the 16-byte GCM tag.
+    let mut ciphertext = plaintext.encode().unwrap();
+    ciphertext.extend_from_slice(&[0; 16]);
+    let container = encode_container(&header, &ciphertext).unwrap();
+    assert!(
+        container.len() <= MAX_ENVELOPE_CONTAINER_LEN,
+        "the maximal envelope is {} bytes, over the {MAX_ENVELOPE_CONTAINER_LEN}-byte cap",
+        container.len()
+    );
+    parse_container_with_limit(&container, MAX_ENVELOPE_CONTAINER_LEN).unwrap();
 }

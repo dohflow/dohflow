@@ -385,6 +385,12 @@ impl<'a> Reader<'a> {
     /// that could not fit in what remains is refused **before** anything is allocated: the
     /// vector's capacity is only ever reserved for items the input can actually hold.
     ///
+    /// `min_item_size` must be at least 1: every CBE1 item is at least one byte, and a zero would
+    /// switch the bound off.
+    ///
+    /// # Panics
+    /// If `min_item_size` is 0 (a programming error in the structure's reader).
+    ///
     /// # Errors
     /// [`WireError::TooLong`] if the count is above `max`, [`WireError::LengthExceedsInput`] if
     /// `count * min_item_size` exceeds the remaining bytes, plus whatever `read` returns.
@@ -394,6 +400,7 @@ impl<'a> Reader<'a> {
         min_item_size: usize,
         mut read: impl FnMut(&mut Self) -> Result<T, WireError>,
     ) -> Result<Vec<T>, WireError> {
+        assert!(min_item_size >= 1, "a list item is at least one byte");
         let count = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;
         if count > max {
             return Err(WireError::TooLong);

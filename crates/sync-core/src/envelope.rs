@@ -104,7 +104,9 @@ fn lower_hex(byte: u8) -> Option<u8> {
 
 /// The complete original `CommandMeta` of a command, immutable for the life of the command
 /// (C.4): what the metadata commitment binds and what a rebase reads back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` prints the ids' presence and the issue time only, never the actor id.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ImmutableMeta {
     /// The command's immutable id (may be a UUID version 7).
     pub command_id: [u8; 16],
@@ -129,6 +131,16 @@ fn check_actor_type(actor_type: u8) -> Result<(), WireError> {
         Ok(())
     } else {
         Err(WireError::UnknownActorType)
+    }
+}
+
+impl core::fmt::Debug for ImmutableMeta {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ImmutableMeta")
+            .field("actor_type", &self.actor_type)
+            .field("has_causation_id", &self.causation_id.is_some())
+            .field("issued_at", &self.issued_at)
+            .finish_non_exhaustive()
     }
 }
 
@@ -212,7 +224,10 @@ fn manifest_bytes(ids: &[[u8; 32]]) -> Vec<u8> {
 }
 
 /// `EnvelopePlaintextV1` (C.4): what is encrypted under the envelope's AEAD key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` prints sizes and a short prefix of the write-set hash, never the payload (canonical
+/// JSON of financial data) or the actor id.
+#[derive(Clone, PartialEq, Eq)]
 pub struct EnvelopePlaintext {
     /// The command's complete immutable metadata.
     pub meta: ImmutableMeta,
@@ -222,6 +237,22 @@ pub struct EnvelopePlaintext {
     pub delta_manifest: ArtifactManifest,
     /// The canonical-JSON command payload, at most [`MAX_PAYLOAD`] bytes.
     pub payload: Vec<u8>,
+}
+
+impl core::fmt::Debug for EnvelopePlaintext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EnvelopePlaintext")
+            .field("payload_len", &self.payload.len())
+            .field("delta_manifest_len", &self.delta_manifest.ids().len())
+            .field(
+                "write_set_hash",
+                &format_args!(
+                    "{:02x}{:02x}..",
+                    self.write_set_hash[0], self.write_set_hash[1]
+                ),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl EnvelopePlaintext {
@@ -343,12 +374,21 @@ pub enum ReceiverError {
     UnencodableMetadata,
 }
 
-/// The checks of C.4 "Receiver checks" that need no key and no membership chain, run **after**
+/// The checks of C.4 "Receiver checks" that need no membership chain, run **after**
 /// authenticated decryption and **before** any apply, rebase, queue or accepted-index
-/// reconciliation. `recomputed_tag` is the idempotency-key tag the receiver derived (with the
-/// vault's tag secret, in `vault-crypto`) from the plaintext's key. The membership check (that
-/// `device_id` and `device_key_fingerprint` belong to one member at the object's epoch) is the
-/// caller's, because it needs the chain.
+/// reconciliation.
+///
+/// `tag_for` computes the idempotency-key tag of a key (HMAC under the vault's tag secret, in
+/// `vault-crypto`). It is a function rather than a value so the only input to the comparison is
+/// the plaintext's own key: a caller cannot satisfy check 1 by passing the header's tag back.
+/// `sync-core` still holds no secret.
+///
+/// What this does **not** check, and the caller must, because it needs state `sync-core` does not
+/// have: that `device_id` and `device_key_fingerprint` belong to one member of the membership
+/// chain at the object's epoch; and that the AEAD key was derived from the receiver's expected
+/// `vault_id`, the accepted `key_epoch` and the chain's fingerprint for `device_id`, **not** from
+/// the header's own values (the header is only bound to the ciphertext because the key it was
+/// opened with came from independent expectations).
 ///
 /// # Errors
 /// The first failing check, as a [`ReceiverError`]. All of them are tampering or a producer bug;
@@ -356,7 +396,7 @@ pub enum ReceiverError {
 pub fn check_envelope(
     header: &ClearHeader,
     plaintext: &EnvelopePlaintext,
-    recomputed_tag: IdempotencyKeyTag,
+    tag_for: impl FnOnce(&IdempotencyKey) -> IdempotencyKeyTag,
 ) -> Result<(), ReceiverError> {
     let ObjectKind::Envelope {
         idempotency_key_tag,
@@ -372,7 +412,7 @@ pub fn check_envelope(
     if header.device_id != plaintext.meta.device_id {
         return Err(ReceiverError::DeviceMismatch);
     }
-    if *idempotency_key_tag != recomputed_tag {
+    if *idempotency_key_tag != tag_for(&plaintext.meta.idempotency_key) {
         return Err(ReceiverError::TagMismatch);
     }
     let commitment = plaintext

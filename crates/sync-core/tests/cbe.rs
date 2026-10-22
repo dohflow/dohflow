@@ -192,5 +192,17 @@ fn a_list_round_trips_and_is_bounded_before_it_allocates() {
     );
     // An item that fails to parse fails the list.
     let mut r = Reader::new(&[0, 0, 0, 2, 1]);
-    assert_eq!(r.list(4, 0, |r| r.u16()), Err(WireError::Truncated));
+    assert_eq!(
+        r.list(4, 1, |r| r.u16()),
+        Err(WireError::LengthExceedsInput)
+    );
+    let mut r = Reader::new(&[0, 0, 0, 1, 1]);
+    assert_eq!(r.list(4, 1, |r| r.u16()), Err(WireError::Truncated));
+}
+
+#[test]
+#[should_panic(expected = "at least one byte")]
+fn a_zero_minimum_item_size_is_a_programming_error() {
+    let mut r = Reader::new(&[0, 0, 0, 1, 1]);
+    let _ = r.list(4, 0, |r| r.u8());
 }
