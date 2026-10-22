@@ -91,6 +91,21 @@ same ruleset regardless of bypass status (`deletion` and
 `non_fast_forward` rule types have no bypass-relevant parameters — they
 apply to the ref, not the actor).
 
+**Enforcement note, 2026-10-21 (`personal-cfo-0rein.8`, owner decision
+`personal-cfo-915.15` option D).** The accepted text above is unchanged. The Admin
+bypass is also the mechanism of a standing exception, the red-main fast path: when
+`main` is red, a pull request whose only failing required checks are `main`'s
+current, tracked failures, and which has a reviewer `PASS` stating that it "fails
+only on main's known red `<check>` (bead `<id>`)", may be admin-merged by the
+owner without a fresh decision, after the reviewer has also shown that the red is
+`main`'s own at the commit the run merged onto and that no later step of the failing
+job was masked. It never applies to a pull request that touches the failing area
+itself (including a failing step's workflow, scripts, lockfiles and audit
+configuration), nor when `main`'s red is a security finding in that pull request's
+own dependencies. The rule and its procedure are in
+`docs/agent/WORKFLOW_ROLES.md` ("Red-main fast path"). Nothing in the ruleset
+changes; this records how the existing bypass is used.
+
 ### 2. Fork-PR secret isolation
 
 GitHub's platform default already isolates `pull_request`-triggered runs

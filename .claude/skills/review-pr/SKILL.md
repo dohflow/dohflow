@@ -88,6 +88,31 @@ error that the label is not on the PR is fine). The same applies to
 
 **PASS** — re-check that the PR head still equals the SHA you reviewed, then:
 
+**Red-main fast path** (`WORKFLOW_ROLES.md` "Red-main fast path"). If a required
+check fails on this pull request only because `main` itself is red, you may still
+`PASS` it, but the verdict **must contain this line, naming the check and the
+bead**:
+
+> fails only on main's known red `<check>` (bead `<id>`)
+
+Before writing it, establish all three of these:
+
+1. **The failure is `main`'s own.** CI tests `refs/pull/N/merge`, which sits on
+   `main`'s tip when the run started, not on the PR's base. Compare against the
+   **first parent of the failing run's merge commit**, and confirm `main` is
+   still red there, in the same check, the same way, with a bead tracking it.
+2. **Nothing was masked.** A failing step skips the later steps of its job. Account
+   for every later step: it ran, or you ran it locally, or it provably cannot
+   differ from `main` (identical lockfiles, for example). The verdict names any
+   step you could not run.
+3. **No exclusion applies:** the PR does not touch the failing area (including the
+   workflow step, its scripts, the lockfiles and the audit config for an audit
+   failure), and `main`'s red is not a security finding in the PR's own
+   dependencies (including dependencies of crates the PR modifies).
+
+If you cannot establish all three, the verdict is `CHANGES_REQUIRED`, not a
+fast-path `PASS`. Every other required check must be green.
+
 Apply the label, so the owner can see at a glance that this pull request needs
 their merge: `gh pr edit <N> --add-label merge-ready`. A workflow removes it on any
 new commit, so it can never outlive the SHA you approved. Name the lane in your
