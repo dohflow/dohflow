@@ -48,6 +48,17 @@ thread_local! {
     pub(crate) static DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: runs the read-and-hash pass of [`finish`] this many times per command (1 is
+    /// normal), so a test can prove that its relative performance check really fails when the
+    /// capture gets much slower. The pass is only part of the capture's cost (the TEMP triggers are
+    /// the rest), so a multiplier of N slows the whole capture by less than N. It only repeats work
+    /// that changes nothing: the capture tables are cleared once, at the end. Compiled out of every
+    /// non-test build.
+    pub(crate) static CAPTURE_COST_MULTIPLIER: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
 fn disabled() -> bool {
     #[cfg(test)]
     {
@@ -450,6 +461,16 @@ fn parent_id(row_key: &[u8]) -> Option<Vec<u8>> {
 /// Compute the write set of the command that just ran in the current transaction, then clear
 /// the capture tables.
 pub(crate) fn finish(conn: &Connection) -> Result<WriteSet, DbError> {
+    #[cfg(test)]
+    for _ in 1..CAPTURE_COST_MULTIPLIER.with(std::cell::Cell::get) {
+        // The same read-only work again, without clearing, to simulate a slower capture.
+        finish_once(conn, false)?;
+    }
+    finish_once(conn, true)
+}
+
+/// One pass of [`finish`]. With `clear` false it leaves the capture tables as they were.
+fn finish_once(conn: &Connection, clear: bool) -> Result<WriteSet, DbError> {
     if disabled() {
         return Ok(WriteSet {
             hash: [0; 32],
@@ -652,7 +673,9 @@ pub(crate) fn finish(conn: &Connection) -> Result<WriteSet, DbError> {
         }
     }
 
-    clear_tables(conn, &dirty)?;
+    if clear {
+        clear_tables(conn, &dirty)?;
+    }
     let hash = write_set_hash(&mut entries)
         .map_err(|e| DbError::InvalidCommand(format!("write set: {e}")))?;
     let rows = entries
