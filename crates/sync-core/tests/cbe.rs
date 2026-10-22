@@ -150,3 +150,59 @@ fn only_a_wire_failure_other_than_unsupported_versions_is_a_malformed_object() {
     assert!(!WireError::UnsupportedProtocol.is_malformed());
     assert!(!WireError::UnsupportedContainer.is_malformed());
 }
+
+#[test]
+fn a_list_round_trips_and_is_bounded_before_it_allocates() {
+    let mut w = Writer::with_label("t/list");
+    w.list(4, &[1_u16, 2, 3], |w, v| {
+        w.u16(*v);
+    })
+    .unwrap();
+    let bytes = w.finish();
+    let mut r = Reader::new(&bytes);
+    r.label("t/list").unwrap();
+    assert_eq!(r.list(4, 2, |r| r.u16()).unwrap(), [1, 2, 3]);
+    r.finish().unwrap();
+
+    // Writing more than the maximum is refused.
+    let mut w = Writer::with_label("t/list");
+    assert_eq!(
+        w.list(2, &[1_u8, 2, 3], |w, v| {
+            w.u8(*v);
+        })
+        .err(),
+        Some(WireError::TooLong)
+    );
+
+    // A count above the maximum.
+    let mut r = Reader::new(&[0, 0, 0, 5]);
+    assert_eq!(r.list(4, 1, |r| r.u8()), Err(WireError::TooLong));
+    // A count the remaining bytes cannot hold, with the largest allowed maximum: refused with no
+    // allocation (a Vec of u32::MAX items would not fit in memory).
+    let mut r = Reader::new(&[0xff, 0xff, 0xff, 0xff, 1, 2, 3]);
+    assert_eq!(
+        r.list(usize::MAX, 1, |r| r.u8()),
+        Err(WireError::LengthExceedsInput)
+    );
+    // count * min_item_size overflowing usize is refused, not wrapped.
+    let mut r = Reader::new(&[0, 0, 0, 2, 1, 2, 3, 4]);
+    assert_eq!(
+        r.list(usize::MAX, usize::MAX, |r| r.u8()),
+        Err(WireError::LengthExceedsInput)
+    );
+    // An item that fails to parse fails the list.
+    let mut r = Reader::new(&[0, 0, 0, 2, 1]);
+    assert_eq!(
+        r.list(4, 1, |r| r.u16()),
+        Err(WireError::LengthExceedsInput)
+    );
+    let mut r = Reader::new(&[0, 0, 0, 1, 1]);
+    assert_eq!(r.list(4, 1, |r| r.u16()), Err(WireError::Truncated));
+}
+
+#[test]
+#[should_panic(expected = "at least one byte")]
+fn a_zero_minimum_item_size_is_a_programming_error() {
+    let mut r = Reader::new(&[0, 0, 0, 1, 1]);
+    let _ = r.list(4, 0, |r| r.u8());
+}

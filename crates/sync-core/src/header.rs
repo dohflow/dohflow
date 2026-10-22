@@ -28,6 +28,8 @@
 //! let _manifest: ManifestCommitment = commitment; // one kind of digest never stands in for another
 //! ```
 
+use sha2::{Digest, Sha256};
+
 use crate::cbe::{Reader, WireError, Writer};
 
 /// The one protocol version this build speaks.
@@ -39,8 +41,18 @@ pub const MAX_INVOCATION_COUNTER: u64 = (1 << 32) - 1;
 /// The longest `engine_version`, in bytes.
 pub const MAX_ENGINE_VERSION: usize = 64;
 
-const OBJECT_ENVELOPE: u8 = 1;
-const OBJECT_SNAPSHOT: u8 = 2;
+/// The `object_type` byte of a command envelope.
+pub const OBJECT_ENVELOPE: u8 = 1;
+/// The `object_type` byte of a snapshot.
+pub const OBJECT_SNAPSHOT: u8 = 2;
+
+/// Whether `value` is a legal `engine_version` (C.13): opaque printable ASCII (`0x21..=0x7e`),
+/// 1 to [`MAX_ENGINE_VERSION`] bytes, compared byte for byte.
+#[must_use]
+pub fn is_valid_engine_version(value: &str) -> bool {
+    (1..=MAX_ENGINE_VERSION).contains(&value.len())
+        && value.bytes().all(|b| (0x21..=0x7e).contains(&b))
+}
 
 macro_rules! digest_newtype {
     ($(#[$meta:meta])* $name:ident) => {
@@ -107,6 +119,25 @@ impl NonceDomain {
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 4] {
         &self.0
+    }
+
+    /// The domain of a device key for an object type (C.3): the first 4 bytes of
+    /// `SHA-256(label "dohflow/sync-nonce/v1" ‖ uuid vault_id ‖ u64 key_epoch ‖ fingerprint ‖
+    /// u8 object_type)`. A receiver recomputes it and refuses a header that names another.
+    #[must_use]
+    pub fn derive(
+        vault_id: &[u8; 16],
+        key_epoch: u64,
+        fingerprint: &Fingerprint,
+        object_type: u8,
+    ) -> Self {
+        let mut w = Writer::with_label("dohflow/sync-nonce/v1");
+        w.fixed(vault_id)
+            .u64(key_epoch)
+            .fixed(&fingerprint.0)
+            .u8(object_type);
+        let digest = Sha256::digest(w.as_bytes());
+        Self([digest[0], digest[1], digest[2], digest[3]])
     }
 }
 
@@ -182,6 +213,9 @@ impl ClearHeader {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         if self.invocation_counter > MAX_INVOCATION_COUNTER {
             return Err(WireError::CounterAboveCap);
+        }
+        if !is_valid_engine_version(&self.engine_version) {
+            return Err(WireError::BadEngineVersion);
         }
         let mut w = Writer::with_label(HEADER_LABEL);
         w.u16(PROTOCOL_VERSION)
@@ -272,6 +306,9 @@ impl ClearHeader {
         if invocation_counter > MAX_INVOCATION_COUNTER {
             return Err(WireError::CounterAboveCap);
         }
+        if !is_valid_engine_version(&engine_version) {
+            return Err(WireError::BadEngineVersion);
+        }
         Ok(Self {
             vault_id,
             key_epoch,
@@ -338,6 +375,35 @@ pub fn encode_container(header: &ClearHeader, ciphertext: &[u8]) -> Result<Vec<u
 /// tag), [`WireError::TrailingBytes`], and anything
 /// [`ClearHeader::decode`] returns (it must consume exactly `header_len` bytes).
 pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer<'_>, WireError> {
+    parse_container_inner(bytes)
+}
+
+/// The most a command envelope's container can hold: the header (labels, ids, digests and a
+/// 64-byte engine version come to well under 512 bytes), the plaintext's payload bound of 2^24,
+/// its delta manifest of at most 4096 digests, its metadata (a 256-byte actor id and the fixed
+/// fields, under 1 KiB), the length fields, and the 16-byte GCM tag, rounded up to 4 KiB of
+/// slack. A transport reads at most this many bytes of an envelope before it parses anything.
+pub const MAX_ENVELOPE_CONTAINER_LEN: usize = (1 << 24) + 4096 * 32 + 4096;
+
+/// [`parse_container`] for an object with a known size cap (every command envelope): a container
+/// longer than `max_len` is refused before any of it is parsed. This bounds the parser's work on
+/// bytes already in memory; it does not bound what is read. The transport must itself stop
+/// reading an envelope at `max_len` (and refuse a declared length above it), or a hostile service
+/// can still make the client buffer an arbitrarily large object before this check runs.
+///
+/// # Errors
+/// [`WireError::ObjectTooLarge`] if `bytes.len() > max_len`, otherwise as [`parse_container`].
+pub fn parse_container_with_limit(
+    bytes: &[u8],
+    max_len: usize,
+) -> Result<ParsedContainer<'_>, WireError> {
+    if bytes.len() > max_len {
+        return Err(WireError::ObjectTooLarge);
+    }
+    parse_container_inner(bytes)
+}
+
+fn parse_container_inner(bytes: &[u8]) -> Result<ParsedContainer<'_>, WireError> {
     let mut r = Reader::new(bytes);
     if &r.fixed::<4>()? != CONTAINER_MAGIC {
         return Err(WireError::BadMagic);
