@@ -282,9 +282,12 @@ pub struct HostOptions {
     /// Called once, at the end of setup, with the app's handle (personal-cfo-i93n3.13), so a
     /// host can keep it for its own lifecycle events. `None` (the default) does nothing.
     pub on_ready: Option<fn(&tauri::AppHandle)>,
-    /// Called after every successful unlock (personal-cfo-i93n3.13), with the app's handle.
-    /// `None` (the default) does nothing.
-    pub after_unlock: Option<fn(&tauri::AppHandle)>,
+    /// Called after EVERY transition to Unlocked, with the app's handle (personal-cfo-i93n3.13,
+    /// i93n3.14): a vault created, a backup restored (as a fresh vault or as a new named one),
+    /// a named vault created, and a password unlock. It is never called for a failed unlock,
+    /// create or restore, and never for a transition to any other state. A transition that ends
+    /// Unlocked calls it exactly once. `None` (the default) does nothing.
+    pub on_unlocked: Option<fn(&tauri::AppHandle)>,
     /// Consulted at every unlock (personal-cfo-i93n3.13): `true` runs the engine's
     /// `PRAGMA integrity_check` before anything opens, migrates or writes, and a failure is
     /// the typed `VaultIntegrityCheckFailed` error. A host with a reason to distrust the files
@@ -348,7 +351,7 @@ impl Default for HostOptions {
             process: true,
             system_backup_device: None,
             on_ready: None,
-            after_unlock: None,
+            on_unlocked: None,
             unlock_integrity_check: None,
         }
     }

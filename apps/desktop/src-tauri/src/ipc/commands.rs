@@ -257,13 +257,33 @@ pub fn create_vault_impl(state: &AppState, password: String) -> Result<VaultStat
     vault_status_dto(&guard)
 }
 
+/// Call the host's `on_unlocked` hook iff `outcome` is a successful transition to Unlocked
+/// (personal-cfo-i93n3.14). Every command that can end the vault Unlocked routes its result through
+/// this one function, so the hook fires exactly once per such transition and never on a failure or
+/// on a transition to another state. Generic so a test can prove the whole matrix without a native
+/// `AppHandle`.
+#[doc(hidden)]
+pub fn call_if_unlocked<A>(
+    hook: Option<fn(&A)>,
+    argument: &A,
+    outcome: &Result<VaultStatusDto, IpcError>,
+) {
+    if matches!(outcome, Ok(status) if status.state == crate::ipc::dto::VaultStateDto::Unlocked) {
+        crate::call_host_hook(hook, argument);
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn create_vault(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    host: tauri::State<'_, crate::HostOptions>,
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
-    create_vault_impl(state.inner(), password)
+    let outcome = create_vault_impl(state.inner(), password);
+    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    outcome
 }
 
 /// Unlock the existing vault with `password`. A wrong password returns
@@ -364,9 +384,10 @@ pub fn unlock_vault(
     // The host decides per unlock whether to run the pre-unlock integrity check
     // (a restored install, for example); the desktop has no such host and passes none.
     let options = host.unlock_options();
-    let status = unlock_vault_with_options_impl(state.inner(), password, options)?;
-    // The host's after-unlock hook (personal-cfo-i93n3.13): after every successful unlock.
-    crate::call_host_hook(host.after_unlock, &app);
+    let outcome = unlock_vault_with_options_impl(state.inner(), password, options);
+    // The host's hook for every transition to Unlocked (personal-cfo-i93n3.13/.14).
+    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    let status = outcome?;
     // Local durable jobs (personal-cfo-ati): the production dispatcher is
     // always installed in AppState, so every successful unlock runs one
     // post-unlock sweep. The blocking work is fire-and-forget and never delays
@@ -663,11 +684,15 @@ pub fn create_vault_named_impl(
 #[tauri::command]
 #[specta::specta]
 pub fn create_vault_named(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    host: tauri::State<'_, crate::HostOptions>,
     name: String,
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
-    create_vault_named_impl(state.inner(), name, password)
+    let outcome = create_vault_named_impl(state.inner(), name, password);
+    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    outcome
 }
 
 /// Switch to another registered vault (personal-cfo-j0cg.6): lock the current one and point at the
@@ -1227,11 +1252,15 @@ pub fn restore_backup_impl(
 #[tauri::command]
 #[specta::specta]
 pub fn restore_backup(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    host: tauri::State<'_, crate::HostOptions>,
     package_path: String,
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
-    restore_backup_impl(state.inner(), package_path, password)
+    let outcome = restore_backup_impl(state.inner(), package_path, password);
+    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    outcome
 }
 
 /// Return to the previously selected vault before removing a failed attempt's files. A failed
@@ -1413,12 +1442,16 @@ mod restore_collision_tests {
 #[tauri::command]
 #[specta::specta]
 pub fn restore_backup_as_new_vault(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    host: tauri::State<'_, crate::HostOptions>,
     package_path: String,
     password: String,
     name: String,
 ) -> Result<VaultStatusDto, IpcError> {
-    restore_backup_as_new_vault_impl(state.inner(), package_path, password, name)
+    let outcome = restore_backup_as_new_vault_impl(state.inner(), package_path, password, name);
+    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    outcome
 }
 
 // ---- create_account --------------------------------------------------------

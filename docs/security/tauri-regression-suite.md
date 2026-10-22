@@ -48,7 +48,14 @@ by default and all generic (no platform is named anywhere in this crate):
 
 - `on_ready: Option<fn(&AppHandle)>`: called once, at the end of setup, so a host can keep the
   handle for its own lifecycle events.
-- `after_unlock: Option<fn(&AppHandle)>`: called after every successful unlock.
+- `on_unlocked: Option<fn(&AppHandle)>`: called after **every transition to Unlocked**: a vault
+  created, a named vault created, a backup restored (fresh, or as a new named vault from the
+  locked picker or the recovery screen) and a password unlock. Exactly once per transition; never
+  on a failed unlock, create or restore, and never when the result is any other state (a vault
+  switch comes up Locked). All five commands route their result through one function
+  (`call_if_unlocked`), pinned by a source test and exercised per transition and per failure in
+  `tests/host_hooks.rs`. (It was `after_unlock`, and fired only for a password unlock, before
+  `personal-cfo-i93n3.14`.)
 - `unlock_integrity_check: Option<fn() -> bool>`: asked at every unlock; `true` runs the engine's
   `PRAGMA integrity_check` before anything opens, migrates or writes (`UnlockOptions`, 7ie.14).
   A failure is the typed `VaultIntegrityCheckFailed` IPC error; the unlock screen says the vault
