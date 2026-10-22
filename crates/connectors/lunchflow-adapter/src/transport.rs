@@ -420,4 +420,54 @@ mod tests {
             "{head}"
         );
     }
+
+    #[test]
+    fn the_agent_has_no_proxy_even_when_the_environment_names_one() {
+        // ureq 3 reads proxy settings from the environment by default; ureq 2 did not. A
+        // bank credential must never ride through an ambient proxy, so the agent has none.
+        assert!(agent_config(true).proxy().is_none());
+        assert!(agent_config(false).proxy().is_none());
+
+        // Behavior: with every proxy variable pointing at a listener we control, a request
+        // to the stub still goes straight to the stub. (The variables are process-wide,
+        // but every transport in this crate's tests builds its agent with no proxy.)
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let proxy_url = format!("http://127.0.0.1:{}", proxy.local_addr().unwrap().port());
+        let names = [
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+        ];
+        for name in names {
+            std::env::set_var(name, &proxy_url);
+        }
+        let (port, server) = stub(|stream| {
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        });
+        let t = plain_http_transport();
+        let response = t.get(
+            &format!("http://127.0.0.1:{port}/accounts"),
+            "key-not-for-logs",
+            &[],
+        );
+        for name in names {
+            std::env::remove_var(name);
+        }
+        let (head, _) = server.join().unwrap();
+        assert_eq!(response.expect("direct request").body, "{}");
+        assert!(
+            head.starts_with("GET /accounts"),
+            "the stub did not get the request: {head}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            proxy.accept().is_err(),
+            "a request went to the environment's proxy"
+        );
+    }
 }
