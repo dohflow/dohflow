@@ -83,7 +83,7 @@ use uuid::Uuid;
 mod rekey;
 pub use rekey::RekeyRecovery;
 mod vault;
-pub use vault::{classify_vault, VaultController, VaultHealth, VaultState};
+pub use vault::{classify_vault, UnlockOptions, VaultController, VaultHealth, VaultState};
 
 pub mod backup;
 mod backup_jobs;
@@ -2858,6 +2858,15 @@ pub enum KernelError {
         /// Bytes available.
         available: u64,
     },
+    /// The pre-unlock `PRAGMA integrity_check` a host asked for found problems
+    /// (`UnlockOptions::integrity_check`, personal-cfo-7ie.14). Nothing was opened, migrated,
+    /// stamped or written. The count is all that is reported: the check's own messages name
+    /// tables and indexes and stay out of the error.
+    #[error("the vault failed its integrity check ({problems} problem(s) reported)")]
+    IntegrityCheckFailed {
+        /// How many problems the check reported (capped at 100 by the pragma).
+        problems: usize,
+    },
     /// A vault state transition not permitted by the §6.2.1 state machine
     /// (`personal-cfo-tg5`).
     #[error("illegal vault transition from {from:?} to {to:?}")]
@@ -2899,6 +2908,10 @@ impl From<DbError> for KernelError {
             DbError::WriterPanicked => KernelError::WriterPanicked,
             DbError::InvalidCommand(message) => KernelError::Validation(message),
             DbError::SelfTestFailed(message) => KernelError::Persistence(message),
+            // Generic text; no path or key crosses the boundary.
+            DbError::CheckpointBusy => KernelError::Persistence(
+                "the write-ahead log could not be fully checkpointed".to_owned(),
+            ),
             // Bind the inner error without naming `rusqlite`; flatten to text.
             DbError::Sqlite(inner) => KernelError::Persistence(inner.to_string()),
             // Attachment store (ADR 0023). Generic messages — no key bytes,

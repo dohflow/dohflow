@@ -210,6 +210,20 @@ scoped to key handling. The owner accepted giving that wipe up (2026-10-20). It 
 later as a deliberate, measured hardening choice, with its own budget. SQLCipher's
 private-heap key lock is kept (the library is not built with `OMIT_MEMLOCK`).
 
+## Lock and unlock (2026-10-22, `personal-cfo-7ie.14`)
+
+**Lock** consumes the kernel: it runs `PRAGMA wal_checkpoint(TRUNCATE)`, closes the connection and
+zeroizes the key, so the vault on disk is one consistent `vault.db` with no `-wal` content (a copy of
+that file alone opens). `Kernel::lock_checked` reports a checkpoint that could not complete (a reader
+outside the kernel pinned the log); the vault is locked either way.
+
+**Unlock** takes optional, generic `UnlockOptions` (`Kernel::unlock_vault_with_options`,
+`Kernel::unlock_vault_with_dek_options`). With `integrity_check`, `PRAGMA integrity_check` runs
+before the vault is opened, migrated, stamped or written, and a failure is the typed
+`KernelError::IntegrityCheckFailed { problems }` (a count only; the check's messages name tables
+and indexes). A key that does not open the file is a wrong key, never corruption. A host sets the
+option when it has reason to doubt the file; the kernel does not know why.
+
 ## Verification
 
 ```sh

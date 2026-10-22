@@ -1161,9 +1161,27 @@ pub struct SelfTestReport {
     pub journal_size_limit: i64,
 }
 
+/// The result of [`DbWorker::integrity_check_with_raw_key`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrityOutcome {
+    /// `PRAGMA integrity_check` reported `ok`.
+    Intact,
+    /// It reported problems; the count is capped at 100 by the pragma's own limit.
+    Damaged {
+        /// How many problems were reported.
+        problems: usize,
+    },
+    /// The key does not open the file. This is not corruption.
+    WrongKey,
+}
+
 /// Errors from the db-worker.
 #[derive(Debug, Error)]
 pub enum DbError {
+    /// The write-ahead log could not be fully truncated because a reader still holds the
+    /// database open (`wal_checkpoint(TRUNCATE)` reported busy).
+    #[error("the write-ahead log could not be fully checkpointed: a reader is still open")]
+    CheckpointBusy,
     /// A required metadata field was empty.
     #[error("missing required command metadata: {0}")]
     MissingMetadata(&'static str),
@@ -1502,6 +1520,86 @@ impl DbWorker {
             .conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(std::fs::read(&self.path)?)
+    }
+
+    /// Fold the write-ahead log into the main database file and truncate it
+    /// (`wal_checkpoint(TRUNCATE)`), so the vault on disk is one consistent file with no `-wal`
+    /// content (personal-cfo-7ie.14). Takes the writer lock, so no write interleaves.
+    ///
+    /// A reader that holds the database open blocks the truncate: SQLite then reports the
+    /// checkpoint as busy, and this returns [`DbError::CheckpointBusy`] instead of claiming a
+    /// clean file. Every committed frame is still copied into the main file in that case.
+    ///
+    /// # Errors
+    /// [`DbError::WorkerUnavailable`] if the worker is not healthy, [`DbError::CheckpointBusy`]
+    /// if the log could not be fully truncated, or [`DbError::Sqlite`].
+    pub fn checkpoint_truncate(&self) -> Result<(), DbError> {
+        let guard = self.lock();
+        if guard.state != WorkerState::Healthy {
+            return Err(DbError::WorkerUnavailable(guard.state));
+        }
+        let busy: i64 = guard
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        if busy == 0 {
+            Ok(())
+        } else {
+            Err(DbError::CheckpointBusy)
+        }
+    }
+
+    /// Run `PRAGMA integrity_check` on the vault at `path` with `dek`, **before** the worker is
+    /// opened, migrated or written (personal-cfo-7ie.14). For a host that has reason to doubt the
+    /// file (a restored install): the caller learns the vault is damaged before anything touches
+    /// it. The result is the count of problems only; the messages name tables and indexes, and
+    /// stay out of the error. A key that does not open the file is [`IntegrityOutcome::WrongKey`],
+    /// never corruption.
+    ///
+    /// Takes the exclusive runner lock for the duration, as [`DbWorker::probe_raw_key`] does, and
+    /// opens read-write (never created) so a hot `-wal` is recovered and the close leaves no side
+    /// files.
+    ///
+    /// # Errors
+    /// [`DbError::VaultInUse`] if another process owns the vault, [`DbError::Io`] or
+    /// [`DbError::Sqlite`] for a failure that is neither a wrong key nor an integrity problem.
+    pub fn integrity_check_with_raw_key(
+        path: impl AsRef<Path>,
+        dek: &Dek,
+    ) -> Result<IntegrityOutcome, DbError> {
+        let _runner_lock = acquire_runner_lock(path.as_ref())?;
+        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        key_raw(&conn, dek)?;
+        // How a SQLite error during the check maps: a key that does not open the file (the header
+        // page fails to decrypt) is `WrongKey`, never corruption; a page that decrypts wrongly or
+        // fails its HMAC later in the file is damage, reported before any row is returned.
+        let classify = |error: rusqlite::Error| -> Result<IntegrityOutcome, DbError> {
+            match &error {
+                rusqlite::Error::SqliteFailure(failure, _) => match failure.code {
+                    rusqlite::ErrorCode::NotADatabase => Ok(IntegrityOutcome::WrongKey),
+                    rusqlite::ErrorCode::DatabaseCorrupt => {
+                        Ok(IntegrityOutcome::Damaged { problems: 1 })
+                    }
+                    _ => Err(DbError::Sqlite(error)),
+                },
+                _ => Err(DbError::Sqlite(error)),
+            }
+        };
+        let lines: Vec<String> =
+            match conn
+                .prepare("PRAGMA integrity_check(100)")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>(0))
+                        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                }) {
+                Ok(lines) => lines,
+                Err(error) => return classify(error),
+            };
+        Ok(match lines.as_slice() {
+            [only] if only == "ok" => IntegrityOutcome::Intact,
+            _ => IntegrityOutcome::Damaged {
+                problems: lines.len(),
+            },
+        })
     }
 
     /// Run a synchronous, non-escaping operation with the unlocked raw DEK.
