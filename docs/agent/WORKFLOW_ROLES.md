@@ -16,8 +16,36 @@ observation rather than defending the initial design.
 | `03-escalation` | Opus 5 | xhigh | Diagnosis; implementation only after authorized takeover | None by default |
 | `04-review` | Fable | high | The review verdict | **None** |
 
-Each runs in its own worktree. **One implementation agent is active at a time.**
-No parallel implementation workers in this pilot.
+Each runs in its own worktree.
+
+**The parallel-lane model** (owner decision `personal-cfo-915.9`, 2026-10-18,
+replacing the pilot's "one implementation agent at a time"). Work is organized in
+durable **lanes**. Each lane has its own implementation, escalation and review
+sessions, suffixed with the lane's letter (`02a`/`03a`/`04a`, `02b`/`03b`/`04b`,
+and so on); the table above names the roles without a suffix.
+
+| Lane | Work | Sessions |
+|---|---|---|
+| a | the Sync engine (the priority lane) | `02a`, `03a`, `04a` |
+| b | the iPhone app | `02b`, `03b`, `04b` |
+| c | the Sync substrate: accounts, billing, storage, the ops floor, the public Sync protocol | `02c`, `03c`, `04c` |
+
+A further lane adds the next letter. Three sessions stay single and shared by every
+lane: `00-overseer` (routing, notifications, build-machine hygiene),
+`01-planning` (plans, beads, and the docket) and `05-decisions` (owner decisions).
+
+- **One owner per bead at a time** (`AGENTS.md` section 16, rule 1) still holds. Two
+  lanes never edit the same bead or the same file at once.
+- **Each lane records its file-ownership split** on its milestone beads: which
+  crates, directories and docs it owns.
+- **Shared hotspots are coordinated by `01-planning`.** Ask before editing a
+  migration number, a shared frontend file, `Cargo.lock`, `pnpm-lock.yaml`, a
+  shared CI workflow (`ci.yml`), or a shared policy document such as this one.
+  Whichever change merges second rebases.
+- **The two cargo-heavy jobs limit is unchanged and is across all lanes** (see
+  "Usage and hardware constraints").
+- **A lane's review session reviews that lane's pull requests.** The review gate,
+  the SHA binding and the no-self-merge rule are the same in every lane.
 
 Role permissions come from `.claude/role-settings/*.json`, merged by hand into
 each worktree's `.claude/settings.local.json`. They are **tool-level guardrails,
@@ -112,6 +140,95 @@ transition, not a failure.
   Both are accepted, recorded limitations.
 - Do not configure a required second-party GitHub approval; no second account
   exists to satisfy it.
+
+### Merge-ready pull requests
+
+A pull request that has a `PASS` (`APPROVED_TO_MERGE`) verdict at an exact SHA and
+now needs the owner's merge must be unmistakable. The procedure
+(`personal-cfo-0rein.5`):
+
+1. **The lane's review session applies the `merge-ready` label** when it posts the
+   verdict, after re-checking that the head still equals the reviewed SHA. On any
+   other verdict it makes sure the label is absent.
+2. **A workflow removes the label on every new commit.**
+   `.github/workflows/merge-ready-label.yml` removes `merge-ready` on every
+   `pull_request` `synchronize` event, so a label cannot outlive the SHA it
+   approved. It cannot do so for a pull request from a fork (read-only token); for
+   those, check the head against the verdict before merging.
+3. **`00-overseer` sends the owner a push notification** naming the pull request,
+   its SHA and its lane, when a pull request becomes merge-ready.
+4. **`05-decisions` lists the merge-ready pull requests first** in every ledger
+   presentation to the owner:
+   ```bash
+   for r in dohflow/dohflow dohflow/internal dohflow/dohflow-site; do
+     gh pr list --repo "$r" --label merge-ready
+   done
+   ```
+5. The label is a signal for the owner, not a check: nothing enforces it, and a
+   merge never closes a bead by itself (rule 4 of `AGENTS.md` section 16).
+
+### Red-main fast path (owner decision `personal-cfo-915.15`, option D)
+
+When `main` itself is red, a pull request can fail a required check through no
+fault of its own, and waiting for `main` to be fixed blocks unrelated work. The
+standing rule:
+
+- A pull request whose **only** failing required checks are `main`'s current,
+  already-tracked failures (a bead exists for each), and which has a reviewer
+  `PASS` that states, in the verdict, **"fails only on main's known red `<check>`
+  (bead `<id>`)"**, **may be admin-merged by the owner without a fresh decision**.
+  The Admin bypass of the `main` ruleset (ADR 0071) is the mechanism, and the
+  `PASS` comment is the artifact the merge cites.
+- `05-decisions` still lists such a pull request at the top of the ledger as
+  merge-ready, with the named check and bead beside it.
+- The reviewer names the check **and the bead** every time, and establishes
+  three things before writing the line:
+  1. **The failure is `main`'s own.** A pull request's CI tests
+     `refs/pull/N/merge`, a merge commit that sits on `main`'s tip *at the time of
+     that run*, not on the pull request's base. Compare against the **first parent
+     of the failing run's merge commit** (the `main` commit the run actually
+     merged onto), and confirm `main` is **still red there** in the same check,
+     the same way. A failure the reviewer cannot match to a tracked red on `main`
+     is a `CHANGES_REQUIRED`, not a fast-path `PASS`.
+  2. **Nothing was masked.** A step that fails early skips the later steps of the
+     same job, so a known-red step can hide a real problem in the pull request
+     (for example, a failing `cargo audit` step skips `cargo deny`, `pnpm audit`
+     and the frontend license scan that follow it). The reviewer accounts for
+     **every later step** of each failing job: it ran and passed, or the reviewer
+     ran it locally and says so, or it provably cannot differ from `main` (for
+     example the lockfiles are identical to `main`'s). The verdict **names any step
+     that could not be run**.
+  3. **No exclusion applies** (below).
+
+**Two exclusions, with no exceptions:**
+
+1. **Never for a pull request that touches the failing area itself.** If the
+   change is in the crate, test, workflow or file that is red on `main`, its
+   failure is not provably `main`'s, so it waits for a green run. For an audit
+   or other CI failure the failing area includes the **workflow step and the
+   scripts it runs, the lockfiles, and the audit configuration** (`deny.toml`,
+   audit allowances).
+2. **Never when `main`'s red is a security advisory and the pull request changes
+   manifests or lockfiles** (owner decision 2026-10-21). A pull request that adds,
+   changes or bumps a dependency (any `Cargo.toml`, `Cargo.lock`, `package.json`
+   or lockfile change) does not ride on a red audit. **A code-only pull request**
+   (including one in a crate that depends on the flagged crate) **may** use the
+   fast path, **but only if the reviewer's `PASS` explicitly confirms that the
+   pull request does not start using the advisory's affected API.** If the
+   reviewer cannot confirm that, the verdict is `CHANGES_REQUIRED`. To make the
+   guard checkable:
+   - **The affected API** is the advisory's listed affected functions; if the
+     advisory lists none, it is **any use of the affected crate**.
+   - **"Starts using"** includes newly reaching it **through a wrapper crate**: for
+     example a new TLS client or connection for a TLS advisory counts, even though
+     the pull request never names the flagged crate.
+   - **The verdict records which advisory and which API were checked** (the
+     advisory ID and the functions or crate), so the owner can see what was
+     confirmed.
+
+The rule does not relax anything else: every other required check must be green,
+a new commit voids the `PASS`, and the owner still merges (rule 2 of `AGENTS.md`
+section 16).
 
 ## What the guardrails do not do
 
@@ -242,7 +359,7 @@ administrator rights. Free space can take a few minutes to catch up.
 ## Bead access across worktrees
 
 All worktrees share one embedded-Dolt bead database. Under this pilot's
-sequential ownership — one implementation agent, no simultaneous writes to the
+one-owner-per-bead ownership — no simultaneous writes to the
 same bead — that is the intended configuration, not a hazard. Observe how lock
 contention is reported if it occurs, and record it here. Do not manufacture
 concurrent writes against real bead data to test it.
@@ -305,3 +422,13 @@ Record per PR: planning revisions before ready; first-pass completion; repair
 cycles; escalations and cause; reviewer findings by severity; defects found
 after review; usage pressure; human interventions; steps that added overhead
 without improving quality. Use these to simplify or strengthen the workflow.
+
+### Entries
+
+- **2026-10-18/19 — parallel lanes adopted** (`personal-cfo-915.9`, owner option
+  b; recorded by `personal-cfo-0rein.5`). The one-implementation-agent pilot rule
+  is replaced by durable lanes, each with its own implementation, escalation and
+  review sessions. Watch: hotspot collisions between lanes; reviewer contention
+  (the Sync engine lane wins ties); whether per-lane review keeps findings per
+  PR where they were; whether the `merge-ready` label is ever stale or missing;
+  and the cargo-heavy limit across lanes.

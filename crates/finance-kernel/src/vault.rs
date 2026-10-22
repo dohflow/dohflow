@@ -296,7 +296,7 @@ impl Kernel {
         Ok(())
     }
 
-    fn assemble_unattended_backup(
+    pub(crate) fn assemble_unattended_backup(
         &self,
         app_version: &str,
         created_at: String,
@@ -334,8 +334,18 @@ impl Kernel {
     ) -> Result<crate::backup::Manifest, KernelError> {
         let package = std::fs::read(package_path)
             .map_err(|_| KernelError::Vault("reading backup file failed".to_owned()))?;
+        self.verify_unattended_backup_bytes(&package, expected_backup_id)
+    }
+
+    /// [`Kernel::verify_unattended_backup`] over the container's bytes, for a
+    /// destination that is not a file (a [`crate::BackupSink`] returns bytes).
+    pub fn verify_unattended_backup_bytes(
+        &self,
+        package: &[u8],
+        expected_backup_id: uuid::Uuid,
+    ) -> Result<crate::backup::Manifest, KernelError> {
         let restored = self.worker.with_dek(|dek| {
-            crate::backup::disassemble_with_vault_dek(dek, &package)
+            crate::backup::disassemble_with_vault_dek(dek, package)
                 .map_err(|_| KernelError::Vault("backup verification failed".to_owned()))
         })??;
         if restored.manifest.backup_id != expected_backup_id.to_string() {
@@ -368,7 +378,21 @@ impl Kernel {
         //    envelope — before any byte is written to disk.
         let package = std::fs::read(package_path)
             .map_err(|e| KernelError::Vault(format!("reading backup: {e}")))?;
-        let restored = crate::backup::disassemble(password, &package).map_err(map_restore_err)?;
+        Self::restore_backup_bytes(&package, password, dest_db_path)
+    }
+
+    /// [`Kernel::restore_backup`] over the container's bytes, so a backup read back
+    /// from a [`crate::BackupSink`] restores without a file path. The same
+    /// verify-then-install rules apply.
+    ///
+    /// # Errors
+    /// The same as [`Kernel::restore_backup`], except the read error.
+    pub fn restore_backup_bytes(
+        package: &[u8],
+        password: &[u8],
+        dest_db_path: &Path,
+    ) -> Result<Self, KernelError> {
+        let restored = crate::backup::disassemble(password, package).map_err(map_restore_err)?;
 
         // 2. Version compatibility: a backup newer than this build understands
         //    cannot be restored (no silent corruption). An older schema migrates

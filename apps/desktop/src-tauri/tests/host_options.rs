@@ -65,7 +65,8 @@ fn the_default_options_register_every_optional_plugin() {
         HostOptions::default(),
         HostOptions {
             updater: true,
-            process: true
+            process: true,
+            system_backup_device: None,
         }
     );
 }
@@ -75,6 +76,7 @@ fn with_the_updater_omitted_its_commands_do_not_exist() {
     let without = app(HostOptions {
         updater: false,
         process: true,
+        ..HostOptions::default()
     });
     // The real context grants `updater:default` to main, so the ACL lets these
     // through and the answer comes from dispatch: no such command.
@@ -110,6 +112,7 @@ fn with_the_process_plugin_omitted_restart_does_not_exist() {
     let without = app(HostOptions {
         updater: true,
         process: false,
+        ..HostOptions::default()
     });
     // `restart` is granted to main in the destructive capability; it is only ever
     // invoked here on an app WITHOUT the plugin, where it must not dispatch.
@@ -125,6 +128,7 @@ fn omitting_the_optional_plugins_does_not_touch_the_always_on_ones() {
     let bare = app(HostOptions {
         updater: false,
         process: false,
+        ..HostOptions::default()
     });
     // The app's own command still dispatches, so only the optional plugins left.
     let ok = invoke(&bare, "vault_status").expect("an app command still dispatches");
@@ -170,7 +174,7 @@ fn context_with_extra_capability(capability: &str) -> tauri::Context<MockRuntime
 #[test]
 fn a_context_granting_an_app_command_to_an_isolated_window_is_refused() {
     // The isolation rule of ADR 0010: an untrusted window gets no app command, in
-    // either permission file, and a wildcard window pattern counts too.
+    // any of the three permission files, and a wildcard window pattern counts too.
     for (windows, permission) in [
         ("\"document_preview\"", "allow-app-commands"),
         ("\"agent_report\"", "allow-app-commands"),
@@ -178,6 +182,9 @@ fn a_context_granting_an_app_command_to_an_isolated_window_is_refused() {
         ("\"agent_report\"", "allow-destructive-commands"),
         ("\"*\"", "allow-app-commands"),
         ("\"*\"", "allow-destructive-commands"),
+        ("\"document_preview\"", "allow-desktop-update-commands"),
+        ("\"agent_report\"", "allow-desktop-update-commands"),
+        ("\"*\"", "allow-desktop-update-commands"),
     ] {
         let capability = format!(
             r#"{{"identifier":"hostile","windows":[{windows}],"permissions":["{permission}"]}}"#
@@ -201,4 +208,152 @@ fn a_harmless_extra_capability_does_not_trip_the_guard() {
     assert!(context_confines_app_commands_to_main::<MockRuntime>(
         &mut context
     ));
+}
+
+// ---------------------------------------------------------------------------
+// The host's self-update flag on build info (personal-cfo-i93n3.12).
+// ---------------------------------------------------------------------------
+
+fn build_info_app(options: HostOptions) -> App<MockRuntime> {
+    let app = register_plugins(mock_builder(), options)
+        .manage(options)
+        .invoke_handler(tauri::generate_handler![app_lib::ipc::commands::build_info])
+        .build(tauri::generate_context!(test = true))
+        .expect("mock app builds with the real context");
+    windows::build_main(&app).expect("main builds from its tauri.conf.json entry");
+    app
+}
+
+fn self_update_flag(app: &App<MockRuntime>) -> bool {
+    let webview = app.get_webview_window(MAIN).expect("main exists");
+    let body = get_ipc_response(
+        &webview,
+        InvokeRequest {
+            cmd: "build_info".into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().expect("url"),
+            body: InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .expect("main may call build_info");
+    let info: serde_json::Value = body.deserialize().expect("build_info answers JSON");
+    info["self_update_available"]
+        .as_bool()
+        .expect("build_info carries a boolean self_update_available")
+}
+
+#[test]
+fn the_default_host_reports_self_update_where_the_updater_exists() {
+    assert_eq!(
+        HostOptions::default().self_update_available(),
+        cfg!(desktop)
+    );
+    assert_eq!(
+        self_update_flag(&build_info_app(HostOptions::default())),
+        cfg!(desktop)
+    );
+}
+
+#[test]
+fn a_host_without_the_updater_reports_no_self_update() {
+    let options = HostOptions {
+        updater: false,
+        process: true,
+        ..HostOptions::default()
+    };
+    assert!(!options.self_update_available());
+    assert!(!self_update_flag(&build_info_app(options)));
+}
+
+#[test]
+fn the_process_plugin_alone_does_not_make_self_update_available() {
+    let options = HostOptions {
+        updater: false,
+        process: false,
+        ..HostOptions::default()
+    };
+    assert!(!options.self_update_available());
+    assert!(!self_update_flag(&build_info_app(options)));
+}
+
+// ---------------------------------------------------------------------------
+// The host-supplied system-backup device name (personal-cfo-i93n3.9).
+// ---------------------------------------------------------------------------
+
+fn backup_device(app: &App<MockRuntime>) -> serde_json::Value {
+    let webview = app.get_webview_window(MAIN).expect("main exists");
+    let body = get_ipc_response(
+        &webview,
+        InvokeRequest {
+            cmd: "build_info".into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().expect("url"),
+            body: InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .expect("main may call build_info");
+    let info: serde_json::Value = body.deserialize().expect("build_info answers JSON");
+    info["system_backup_device"].clone()
+}
+
+#[test]
+fn the_desktop_default_reports_no_system_backup_device() {
+    assert_eq!(
+        backup_device(&build_info_app(HostOptions::default())),
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn a_host_supplied_device_name_reaches_build_info() {
+    let options = HostOptions {
+        system_backup_device: Some("Test Device"),
+        ..HostOptions::default()
+    };
+    assert_eq!(
+        backup_device(&build_info_app(options)),
+        serde_json::json!("Test Device")
+    );
+}
+
+#[test]
+fn a_blank_overlong_or_control_character_name_is_dropped_not_shown() {
+    for name in [
+        "",
+        "   ",
+        "a\nb",
+        "tab\there",
+        "this device name is much too long to show in a sentence",
+    ] {
+        let options = HostOptions {
+            system_backup_device: Some(name),
+            ..HostOptions::default()
+        };
+        assert_eq!(options.system_backup_device_label(), None, "{name:?}");
+        assert_eq!(
+            backup_device(&build_info_app(options)),
+            serde_json::Value::Null,
+            "{name:?}"
+        );
+    }
+    // Surrounding space is trimmed; a name at the limit is kept.
+    let padded = HostOptions {
+        system_backup_device: Some("  Test Device  "),
+        ..HostOptions::default()
+    };
+    assert_eq!(padded.system_backup_device_label(), Some("Test Device"));
+    let at_limit = HostOptions {
+        system_backup_device: Some("abcdefghijklmnopqrstuvwxyzabcdef"),
+        ..HostOptions::default()
+    };
+    assert_eq!(
+        at_limit.system_backup_device_label().map(str::len),
+        Some(32)
+    );
 }

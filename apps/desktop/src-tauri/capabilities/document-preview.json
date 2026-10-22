@@ -5,5 +5,12 @@
   "windows": [
     "document_preview"
   ],
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux",
+    "iOS",
+    "android"
+  ],
   "permissions": []
 }

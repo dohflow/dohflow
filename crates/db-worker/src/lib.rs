@@ -4136,46 +4136,59 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
     }
 }
 
-/// Turn SQLCipher's memory security on for the connection, before it is keyed. SQLite keeps its
-/// own copy of a statement's SQL text, and a `PRAGMA key` statement's text holds the key (the hex
-/// DEK, or the passphrase); that copy is freed without being scrubbed. With memory security ON
-/// SQLCipher's allocator wipes freed memory and keeps it out of swap, so the copy does not
-/// outlive the statement. It is OFF by default (`cipher_memory_security` reads 0 on the bundled
-/// SQLCipher 4.14), hence this call at every keying site (personal-cfo-rsjud).
-fn set_memory_security(conn: &Connection) -> Result<(), DbError> {
-    conn.execute_batch("PRAGMA cipher_memory_security = ON;")?;
-    Ok(())
+/// Hand a key to SQLCipher through its C API (`sqlite3_key_v2`) instead of as SQL text
+/// (personal-cfo-7ie.17, owner decision 2026-10-20), so no statement text containing the key ever
+/// exists inside SQLite. SQLCipher copies the key into its own key memory, which it always tries
+/// to lock (best effort: a refused lock is logged, not fatal) and always overwrites on free,
+/// during the call and keeps no pointer into `key`; the caller's buffer is scrubbed by its owner.
+/// `key` is the passphrase's UTF-8 bytes (SQLCipher runs its KDF over them), or the raw-key
+/// literal `x'<64 hex>'` for a DEK (no KDF), exactly what `PRAGMA key` was given before. An empty
+/// key is refused (`SQLITE_MISUSE`), where `PRAGMA key = ''` used to mean "unencrypted".
+///
+/// **`Ok` means "accepted, or ignored because the target already has a used key".** SQLCipher
+/// returns `SQLITE_OK` and logs "disregarding attempt to set key" when the database (or attached
+/// schema) has already been read or written under a key, so callers must key **before any
+/// access**: right after `open` for `main`, and for an attached schema right after an `ATTACH`
+/// with no `KEY` clause, while the file is still empty (`rekey.rs` asserts that, and a test pins
+/// the ignored-key behavior).
+///
+/// `schema` names an attached database (`None` is `main`). SQLCipher's broad wipe of freed
+/// memory (`cipher_memory_security`) is never turned on: it cost 4x to 11x and could not be
+/// scoped, and the key itself no longer passes through anything that needs it.
+fn key_connection(conn: &Connection, schema: Option<&str>, key: &[u8]) -> Result<(), DbError> {
+    let len = std::ffi::c_int::try_from(key.len())
+        .map_err(|_| DbError::InvalidCommand("the key is too long".to_owned()))?;
+    let schema = schema
+        .map(std::ffi::CString::new)
+        .transpose()
+        .map_err(|_| DbError::InvalidCommand("a schema name holds a NUL".to_owned()))?;
+    // SAFETY: `conn.handle()` is the live connection for the duration of the borrow (the
+    // `&Connection` keeps it open and nothing else runs on it during the call); `key` points to
+    // `len` readable bytes; `schema` is either null (`main`) or a NUL-terminated string that
+    // outlives the call; SQLCipher copies the key before returning.
+    let rc = unsafe {
+        rusqlite::ffi::sqlite3_key_v2(
+            conn.handle(),
+            schema
+                .as_ref()
+                .map_or(std::ptr::null(), |name| name.as_ptr()),
+            key.as_ptr().cast(),
+            len,
+        )
+    };
+    if rc == rusqlite::ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(DbError::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rc),
+            None,
+        )))
+    }
 }
 
 /// Key a connection with a passphrase (SQLCipher runs its own KDF over it).
 fn key_passphrase(conn: &Connection, key: &str) -> Result<(), DbError> {
-    set_memory_security(conn)?;
-    conn.execute_batch(&passphrase_pragma(key))?;
-    Ok(())
-}
-
-/// The statement that keys SQLCipher from a passphrase: `PRAGMA key = '<passphrase>';` with each
-/// single quote doubled (the SQL escape inside a string literal). It is built here rather than by
-/// `pragma_update`, which assembles the same text in a plain `String` freed unscrubbed
-/// (SQLCipher's memory security does not cover the Rust heap). The buffer is sized exactly (the
-/// fixed text, the passphrase and one extra byte per quote), so it never reallocates and leaves a
-/// freed block holding the key; it is scrubbed on drop.
-fn passphrase_pragma(key: &str) -> Zeroizing<String> {
-    const PREFIX: &str = "PRAGMA key = '";
-    const SUFFIX: &str = "';";
-    let quotes = key.bytes().filter(|b| *b == b'\'').count();
-    let mut pragma = Zeroizing::new(String::with_capacity(
-        PREFIX.len() + key.len() + quotes + SUFFIX.len(),
-    ));
-    pragma.push_str(PREFIX);
-    for ch in key.chars() {
-        if ch == '\'' {
-            pragma.push('\'');
-        }
-        pragma.push(ch);
-    }
-    pragma.push_str(SUFFIX);
-    pragma
+    key_connection(conn, None, key.as_bytes())
 }
 
 /// Open a SQLCipher connection keyed with a **passphrase** (SQLCipher runs its
@@ -4252,30 +4265,27 @@ fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
     Ok(conn)
 }
 
-fn key_raw(conn: &Connection, dek: &Dek) -> Result<(), DbError> {
-    set_memory_security(conn)?;
-    conn.execute_batch(&raw_key_pragma(dek))?;
-    Ok(())
+/// The raw-key literal `x'<64 hex>'`, in an exactly-sized buffer that is scrubbed on drop.
+pub(crate) fn raw_key_bytes(dek: &Dek) -> Zeroizing<Vec<u8>> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut literal = Zeroizing::new(Vec::with_capacity(3 + 2 * dek.expose_bytes().len()));
+    literal.extend_from_slice(b"x'");
+    for byte in dek.expose_bytes() {
+        literal.push(HEX[usize::from(byte >> 4)]);
+        literal.push(HEX[usize::from(byte & 0x0f)]);
+    }
+    literal.push(b'\'');
+    literal
 }
 
-/// The statement that keys SQLCipher from the DEK: `PRAGMA key = "x'<64 hex>'";`. The buffer is
-/// sized **exactly** (83 bytes), so it never reallocates: a `String` that grows moves to a new
-/// block and leaves the old one, holding the partly written key, freed without being scrubbed.
-/// It is scrubbed on drop.
-fn raw_key_pragma(dek: &Dek) -> Zeroizing<String> {
-    use std::fmt::Write as _;
-    const PREFIX: &str = "PRAGMA key = \"x'";
-    const SUFFIX: &str = "'\";";
-    let mut pragma = Zeroizing::new(String::with_capacity(
-        PREFIX.len() + 2 * dek.expose_bytes().len() + SUFFIX.len(),
-    ));
-    pragma.push_str(PREFIX);
-    for byte in dek.expose_bytes() {
-        // Infallible write into a String.
-        let _ = write!(pragma, "{byte:02x}");
-    }
-    pragma.push_str(SUFFIX);
-    pragma
+/// Key a connection from the DEK (no KDF): the raw-key literal goes through `sqlite3_key_v2`.
+fn key_raw(conn: &Connection, dek: &Dek) -> Result<(), DbError> {
+    key_connection(conn, None, &raw_key_bytes(dek))
+}
+
+/// Key an **attached** database from the DEK, after an `ATTACH` with no `KEY` clause.
+pub(crate) fn key_raw_schema(conn: &Connection, schema: &str, dek: &Dek) -> Result<(), DbError> {
+    key_connection(conn, Some(schema), &raw_key_bytes(dek))
 }
 
 /// Apply the non-key connection pragmas shared by both keying paths (WAL,

@@ -526,9 +526,63 @@ Other behavior changes read in the same upgrade, none of which widens a grant
   `core:window:allow-set-fullscreen-on-monitor`); `core:default` does not
   include them and no capability grants them.
 
+## Addendum (2026-10-20): the self-update surface is desktop-only, and an isolated window needs an isolated webview
+
+`personal-cfo-i93n3.11`. A build of this app for a platform that is not a desktop one
+must carry no code that downloads, replaces or restarts the app's own binary, and must
+grant none. Nothing about the desktop build changes: the effective grant of every window
+on a desktop is identical before and after (`scripts/tauri-acl-expansion.mjs`, diffed
+against the previous commit: only the file that carries each grant moved).
+
+### What changes
+
+- `tauri-plugin-updater` and `tauri-plugin-process` become dependencies of desktop
+  targets only (`Cargo.toml`, a `cfg(not(any(target_os = "android", target_os = "ios")))`
+  table), and `register_plugins` registers them only under `cfg(desktop)`. On another
+  target they are not compiled, so `HostOptions` has no effect on them.
+- `check_for_update`, `apply_update` and `relaunch_app`, and the code in `update.rs`
+  that spawns `git`, `bash` and the relaunch helper, exist only under `cfg(desktop)`.
+  `ipc_builder` registers the three in a desktop arm; every other build's command
+  list does not have them.
+- The three commands leave `allow-app-commands` and `allow-destructive-commands` for a
+  new permission set, `allow-desktop-update-commands`
+  (`permissions/desktop-update-commands.toml`). It is held to the same rule as the
+  destructive set: main only, never an isolated window.
+- A new capability, `capabilities/desktop-update.json` (`platforms`: macOS, windows,
+  linux), grants `updater:default`, `process:allow-restart` and that set to `main`.
+  `updater:default` leaves `default.json` and `process:allow-restart` leaves
+  `destructive.json`.
+- Every capability file now declares `platforms`. The cross-platform ones list all five
+  targets; only `desktop-update.json` lists the desktop three.
+
+### Isolated windows off desktop
+
+An isolated window is a second webview with a capability that grants nothing. A host
+that cannot create a second webview (a mobile host shows one) cannot give that
+isolation, so on such a host the untrusted surfaces (`document_preview`,
+`agent_report`) are **unavailable**: `windows::ISOLATED_SHELLS_AVAILABLE` is false,
+`open_isolated_shell` refuses with an `Unsupported` error, and a feature that wants to
+show one reads the constant and presents a typed "not available on this device" state.
+Untrusted content is never rendered in the main webview, because that webview holds the
+trusted grants. If a host later gains a way to create an isolated webview, that is a new
+addendum to this ADR before the constant changes.
+
+### What pins it
+
+- `expected-capabilities.toml` records each capability's platforms and the new
+  permission set; the audit (`tests/support/capability_audit.rs`) fails a capability
+  without `platforms`, any update grant (`updater:*`, `process:*`,
+  `allow-desktop-update-commands`) that applies on a non-desktop platform, and the new set
+  reaching any window but `main`.
+- `tests/acl_coverage.rs` pins where the three commands are registered and defined, that
+  the two plugins are registered under `cfg(desktop)` and depend only on the desktop
+  target table, and that no capability applying off desktop grants any update surface.
+- `cargo check` for `aarch64-apple-ios-sim` builds the crate without them.
+
 ## Linked beads
 
 - `personal-cfo-2no` (window topology + empty-capability isolation — 2026-09-27 addendum)
+- `personal-cfo-i93n3.11` (desktop-only self-update surface; isolated windows off desktop — 2026-10-20 addendum)
 - `personal-cfo-md8h2.8` (Tauri 2.12.4 upgrade — 2026-10-18 addendum), `personal-cfo-md8h2.9` (fullscreen follow-up)
 - `personal-cfo-n76x.18` (About card, Support row, scoped opener grant — 2026-09-06 addendum)
 - `personal-cfo-867.1.2` (updater + process capability grants — 2026-09-08 addendum)

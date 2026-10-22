@@ -63,7 +63,8 @@ test("ready: shows the exact bundle text and counts, and moves focus to it", asy
   render(<DiagnosticsCard />);
   const region = await openPreview();
   expect(region).toHaveTextContent('"records_retained": 3');
-  expect(document.activeElement).toBe(region);
+  // Focus moves in a useEffect after the preview renders, so poll for it (personal-cfo-v9xls).
+  await waitFor(() => expect(document.activeElement).toBe(region));
   expect(screen.getByText(/3 records · 2 older records dropped · 1 rejected/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /save/i })).toBeEnabled();
 });
@@ -117,8 +118,10 @@ test("saving then success: busy while writing, then saved, closed, focus returne
   await act(async () => finish({ status: "ok", data: "saved" }));
   expect(await screen.findByRole("status")).toHaveTextContent("Diagnostics saved.");
   expect(screen.queryByLabelText(/exactly what will be saved/i)).not.toBeInTheDocument();
-  expect(document.activeElement).toBe(
-    screen.getByRole("button", { name: /preview diagnostics/i }),
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: /preview diagnostics/i }),
+    ),
   );
   expect(noteText()).not.toContain("jane");
 });
@@ -165,8 +168,10 @@ test("keyboard: Escape closes the preview, discards it, and returns focus", asyn
     expect(screen.queryByLabelText(/exactly what will be saved/i)).not.toBeInTheDocument(),
   );
   expect(mocks.diagnosticsDiscard).toHaveBeenCalledWith(7);
-  expect(document.activeElement).toBe(
-    screen.getByRole("button", { name: /preview diagnostics/i }),
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: /preview diagnostics/i }),
+    ),
   );
 });
 

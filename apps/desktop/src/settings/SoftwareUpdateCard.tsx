@@ -39,7 +39,7 @@ function looksOffline(message: string): boolean {
 /// "Update & relaunch" action and error surface — only the wording and the availability signal
 /// differ, via `useSoftwareUpdate`'s discriminated `status.kind`.
 export function SoftwareUpdateCard() {
-  const { status, checking, check, apply, relaunch, progress } =
+  const { status, selfUpdate, checking, check, apply, relaunch, progress } =
     useSoftwareUpdate();
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -56,6 +56,10 @@ export function SoftwareUpdateCard() {
       setApplyError(result.message);
     }
   }
+
+  // A build whose host cannot update itself has no Software update surface at all
+  // (personal-cfo-i93n3.12); the hook has already declined to run any update command.
+  if (!selfUpdate) return null;
 
   const dev = isDevUpdate(status) ? status : null;
   const release = isReleaseUpdate(status) ? status : null;

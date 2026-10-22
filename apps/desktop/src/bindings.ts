@@ -209,16 +209,9 @@ export const commands = {
 	incomeCandidates: () => typedError<RecurringCandidateDto[], IpcError>(__TAURI_INVOKE("income_candidates")),
 	recurringBillHistory: (eventId: string) => typedError<RecurringBillOccurrenceDto[], IpcError>(__TAURI_INVOKE("recurring_bill_history", { eventId })),
 	/**
-	 *  Check whether a newer build is available in the app's own source checkout — a from-source,
-	 *  dev-machine updater (ADR 0003/0010 addendum). Runs `git fetch` + compares the built commit
-	 *  to the current branch's upstream; degrades to `checked = false` with a reason when it can't
-	 *  run (no checkout / no upstream / git missing). It never fails the IPC layer — the outcome
-	 *  is entirely in the returned status. Needs no vault, so it takes no `AppState`.
-	 */
-	checkForUpdate: () => __TAURI_INVOKE<UpdateStatusDto>("check_for_update"),
-	/**
 	 *  The running binary's build identity: version, commit, channel, build time, dirty flag,
-	 *  plus the running macOS version. Compile-time constants and one local file read — no git,
+	 *  the running macOS version, and whether the host reports self-update (personal-cfo-i93n3.12).
+	 *  Compile-time constants, the host's options and one local file read — no git,
 	 *  no network, no vault — so the UI can show which build you are running immediately,
 	 *  including on the lock screen and while offline.
 	 */
@@ -229,18 +222,6 @@ export const commands = {
 	 *  the user needs to see.
 	 */
 	recordReleaseUpdateFailure: (errorText: string, failureKind: ReleaseUpdateFailureKind) => __TAURI_INVOKE<void>("record_release_update_failure", { errorText, failureKind }),
-	/**
-	 *  Apply an update: rebuild + reinstall the app from the source checkout (via the shared
-	 *  `scripts/update-app.sh`). Minutes-long; `async` + `spawn_blocking` keeps it off the main
-	 *  thread so the UI stays responsive with a progress spinner. Returns whether it succeeded and
-	 *  the tail of its output (for a failure message). Never fails the IPC layer.
-	 */
-	applyUpdate: () => __TAURI_INVOKE<ApplyUpdateResultDto>("apply_update"),
-	/**
-	 *  Relaunch into the freshly-installed build: spawn a detached helper that reopens the app once
-	 *  this process exits, then exit. Called after `apply_update` succeeds.
-	 */
-	relaunchApp: () => __TAURI_INVOKE<void>("relaunch_app"),
 	createManualFutureEntry: (input: CreateManualFutureEntryInput) => typedError<ManualFutureEntryDto, IpcError>(__TAURI_INVOKE("create_manual_future_entry", { input })),
 	manualFutureEntryList: () => typedError<ManualFutureEntryDto[], IpcError>(__TAURI_INVOKE("manual_future_entry_list")),
 	updateManualFutureEntry: (input: UpdateManualFutureEntryInput) => typedError<ManualFutureEntryDto, IpcError>(__TAURI_INVOKE("update_manual_future_entry", { input })),
@@ -309,6 +290,26 @@ export const commands = {
 	connectorSync: (input: ConnectorSyncInput) => typedError<ConnectorSyncResultDto, IpcError>(__TAURI_INVOKE("connector_sync", { input })),
 	connectorAutoSync: () => typedError<ConnectorSyncResultDto[], IpcError>(__TAURI_INVOKE("connector_auto_sync")),
 	connectorForget: (input: ConnectorForgetInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_forget", { input })),
+	/**
+	 *  Check whether a newer build is available in the app's own source checkout — a from-source,
+	 *  dev-machine updater (ADR 0003/0010 addendum). Runs `git fetch` + compares the built commit
+	 *  to the current branch's upstream; degrades to `checked = false` with a reason when it can't
+	 *  run (no checkout / no upstream / git missing). It never fails the IPC layer — the outcome
+	 *  is entirely in the returned status. Needs no vault, so it takes no `AppState`.
+	 */
+	checkForUpdate: () => __TAURI_INVOKE<UpdateStatusDto>("check_for_update"),
+	/**
+	 *  Apply an update: rebuild + reinstall the app from the source checkout (via the shared
+	 *  `scripts/update-app.sh`). Minutes-long; `async` + `spawn_blocking` keeps it off the main
+	 *  thread so the UI stays responsive with a progress spinner. Returns whether it succeeded and
+	 *  the tail of its output (for a failure message). Never fails the IPC layer.
+	 */
+	applyUpdate: () => __TAURI_INVOKE<ApplyUpdateResultDto>("apply_update"),
+	/**
+	 *  Relaunch into the freshly-installed build: spawn a detached helper that reopens the app once
+	 *  this process exits, then exit. Called after `apply_update` succeeds.
+	 */
+	relaunchApp: () => __TAURI_INVOKE<void>("relaunch_app"),
 };
 
 /* Types */
@@ -639,6 +640,20 @@ export type BuildInfoDto = {
 	 *  open (personal-cfo-md8h2.4).
 	 */
 	os_version: string | null,
+	/**
+	 *  Whether this build can update itself, as reported by the host that built it
+	 *  (personal-cfo-i93n3.12): true on a desktop build that kept the updater, false
+	 *  otherwise. The UI shows the Software update surface only when it is true and
+	 *  calls no update command when it is false.
+	 */
+	self_update_available: boolean,
+	/**
+	 *  The device name the host gave for the system-backup disclosure
+	 *  (personal-cfo-i93n3.9), or `None` on a host whose system backups do not include the
+	 *  vault (the desktop). When present, Settings tells the user those backups include
+	 *  the encrypted vault; the wording is the UI's, the name is the host's.
+	 */
+	system_backup_device: string | null,
 };
 
 /**  One observed charge behind a recurring candidate (personal-cfo-4d8.25.11). */

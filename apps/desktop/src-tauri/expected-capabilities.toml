@@ -77,10 +77,13 @@ tauri_features = []
 trust = "trusted"
 # Declared in tauri.conf.json ("create": false; built by src/windows.rs).
 in_config = true
-# Two named capabilities on purpose (ADR 0010 addendum 2026-07-04).
-capabilities = ["default", "destructive"]
+# Three named capabilities on purpose (ADR 0010 addenda 2026-07-04 and 2026-10-20):
+# the general surface, the destructive set, and the desktop-only self-update grants.
+# This is the DESKTOP view; `capability_platforms` below says where each applies.
+capabilities = ["default", "desktop-update", "destructive"]
 grants = [
   "allow-app-commands",
+  "allow-desktop-update-commands",
   "allow-destructive-commands",
   "core:default",
   "core:window:allow-set-theme",
@@ -104,6 +107,19 @@ capabilities = ["agent-report"]
 grants = []
 
 # ---------------------------------------------------------------------------
+# Platforms (personal-cfo-i93n3.11, ADR 0010 addendum 2026-10-20): every capability
+# declares where it applies. The audit also fails any update grant (updater:*,
+# process:*, allow-desktop-update-commands) that applies on a non-desktop platform,
+# whatever this table says.
+# ---------------------------------------------------------------------------
+[capability_platforms]
+default = ["macOS", "windows", "linux", "iOS", "android"]
+destructive = ["macOS", "windows", "linux", "iOS", "android"]
+document-preview = ["macOS", "windows", "linux", "iOS", "android"]
+agent-report = ["macOS", "windows", "linux", "iOS", "android"]
+desktop-update = ["macOS", "windows", "linux"]
+
+# ---------------------------------------------------------------------------
 # Scoped grants: every object-form permission, per window it reaches.
 # ---------------------------------------------------------------------------
 [[scopes]]
@@ -121,11 +137,19 @@ allow = [{ url = "https://dohflow.app/*" }]
 file = "app-commands.toml"
 inventory = "lockstep"
 
+[permission_sets.allow-desktop-update-commands]
+file = "desktop-update-commands.toml"
+inventory = "exact"
+commands = [
+  "apply_update",
+  "check_for_update",
+  "relaunch_app",
+]
+
 [permission_sets.allow-destructive-commands]
 file = "destructive-commands.toml"
 inventory = "exact"
 commands = [
-  "apply_update",
   "configure_backup",
   # Hard, un-op-logged DELETE of a stored connector credential (personal-cfo-gglk).
   "connector_forget",
@@ -135,7 +159,6 @@ commands = [
   "diagnostics_save",
   "export_backup",
   "export_transactions_csv",
-  "relaunch_app",
   "restore_backup",
   "restore_backup_as_new_vault",
   # Re-encrypts and replaces vault.db under a new DEK (personal-cfo-2y8, ADR 0083).
