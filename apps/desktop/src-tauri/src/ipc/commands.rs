@@ -3154,6 +3154,7 @@ pub fn build_info_for(host: crate::HostOptions) -> BuildInfoDto {
         dirty: matches!(env!("PCFO_GIT_DIRTY").as_bytes(), b"true"),
         os_version: macos_product_version(),
         self_update_available: host.self_update_available(),
+        system_backup_device: host.system_backup_device_label().map(str::to_owned),
     }
 }
 

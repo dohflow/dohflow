@@ -7,7 +7,9 @@ import type { BackupCadenceDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { useBuildInfo } from "@/settings/BuildBadge";
 import { backupFolderHint } from "./backupFolderHint";
+import { systemBackupDisclosure } from "./systemBackupDisclosure";
 import { ManualBackupExport } from "./BackupView";
 import {
   useBackupHistory,
@@ -37,6 +39,7 @@ function formatTimestamp(timestamp: string): string {
 }
 
 export function BackupScheduleCard() {
+  const hostDevice = useBuildInfo()?.system_backup_device ?? null;
   const settingsQuery = useBackupScheduleSettings();
   const historyQuery = useBackupHistory();
   const configureBackup = useConfigureBackup();
@@ -138,6 +141,15 @@ export function BackupScheduleCard() {
           Scheduled backups use the unlocked vault key without asking for your password. If a
           backup comes due while DohFlow is closed or locked, it runs the next time you unlock.
         </CardDescription>
+        {hostDevice && (
+          <p
+            role="note"
+            data-testid="system-backup-disclosure"
+            className="mt-2 text-sm text-foreground"
+          >
+            {systemBackupDisclosure(hostDevice)}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         {loading ? (

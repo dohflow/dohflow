@@ -647,6 +647,13 @@ export type BuildInfoDto = {
 	 *  calls no update command when it is false.
 	 */
 	self_update_available: boolean,
+	/**
+	 *  The device name the host gave for the system-backup disclosure
+	 *  (personal-cfo-i93n3.9), or `None` on a host whose system backups do not include the
+	 *  vault (the desktop). When present, Settings tells the user those backups include
+	 *  the encrypted vault; the wording is the UI's, the name is the host's.
+	 */
+	system_backup_device: string | null,
 };
 
 /**  One observed charge behind a recurring candidate (personal-cfo-4d8.25.11). */

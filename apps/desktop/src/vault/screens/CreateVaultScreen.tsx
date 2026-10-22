@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/card";
 import { describeIpcError, useVault } from "@/vault/useVault";
 import { RestoreFromBackup } from "@/backup/RestoreFromBackup";
+import { systemBackupDisclosure } from "@/backup/systemBackupDisclosure";
+import { useBuildInfo } from "@/settings/BuildBadge";
 import { PasswordStrengthMeter } from "@/vault/PasswordStrengthMeter";
 import { NoResetWarning } from "./NoResetWarning";
 import { Screen } from "./Screen";
@@ -20,6 +22,8 @@ const MIN_LENGTH = 8;
 
 export function CreateVaultScreen() {
   const { createVault } = useVault();
+  // Set only by a host whose system backups include the encrypted vault (personal-cfo-i93n3.9).
+  const systemBackupDevice = useBuildInfo()?.system_backup_device ?? null;
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [baseCurrency, setBaseCurrency] = useState("USD");
@@ -134,8 +138,19 @@ export function CreateVaultScreen() {
 
           <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
             <Lock className="size-3.5" aria-hidden />
-            Encrypted on this device. Never uploaded.
+            {systemBackupDevice
+              ? "Encrypted on this device. DohFlow never uploads it."
+              : "Encrypted on this device. Never uploaded."}
           </p>
+          {systemBackupDevice && (
+            <p
+              role="note"
+              data-testid="system-backup-disclosure"
+              className="mt-1 text-center text-xs text-muted-foreground"
+            >
+              {systemBackupDisclosure(systemBackupDevice)}
+            </p>
+          )}
 
           <div className="mt-4">
             <RestoreFromBackup />
