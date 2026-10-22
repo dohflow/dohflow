@@ -77,7 +77,8 @@ fence="$(grep -E '^~{9,}$' "$CALLS" | head -1)"
 case_start "bad usage is an error"
 run --status bogus --report "$TMP/ok.txt" >/dev/null 2>&1 && fail "accepted a bogus status" || pass "rejects a bogus status"
 run --status failed --report "$TMP/nope.txt" >/dev/null 2>&1 && fail "accepted a missing report" || pass "rejects a missing report file"
-( "$SCRIPT" --status failed --report "$TMP/ok.txt" >/dev/null 2>&1 ) && fail "accepted a missing repository" || pass "rejects a missing repository"
+# GitHub Actions sets GITHUB_REPOSITORY, which the script falls back to, so unset it for this case.
+( env -u GITHUB_REPOSITORY "$SCRIPT" --status failed --report "$TMP/ok.txt" >/dev/null 2>&1 ) && fail "accepted a missing repository" || pass "rejects a missing repository"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
