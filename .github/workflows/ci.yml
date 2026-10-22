@@ -1031,6 +1031,45 @@ jobs:
         with:
           fetch-depth: 0 # gitleaks scans the full commit history
 
+      # Which scans are REQUIRED to pass on this change (personal-cfo-md8h2.14, owner
+      # decision personal-cfo-915.15 option B). The advisory scans (cargo audit and
+      # pnpm audit) read an advisory database that changes under us, so on a pull
+      # request or merge group that touches no dependency they would block unrelated
+      # work with a failure nobody introduced. They run when a pull request or merge
+      # group changes a manifest, a lockfile or the audit setup (see
+      # scripts/dependency-change-check.sh), and always on a push to main, a schedule
+      # or a manual dispatch; the daily advisory-audit workflow watches main.
+      # Secrets scanning, the real-value scan, the ADR tier check and the LICENSE
+      # scans do NOT depend on the advisory database and run on every change. The
+      # job (and so the required check name) always runs and reports success, with
+      # an explicit message, when the advisory scans are not needed: never a
+      # silently skipped required check. If the diff itself fails, the job fails.
+      - name: Decide whether the advisory scans are required
+        id: deps
+        if: steps.visibility.outputs.run == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) changed=$(git diff --name-only HEAD^1 HEAD) ;;
+            merge_group) changed=$(git diff --name-only "$MG_BASE" "$MG_HEAD") ;;
+            *)
+              echo "advisory=true" >> "$GITHUB_OUTPUT"
+              echo "Event '$EVENT': the advisory scans run in full."
+              exit 0 ;;
+          esac
+          if matches=$(printf '%s\n' "$changed" | bash scripts/dependency-change-check.sh); then
+            echo "advisory=true" >> "$GITHUB_OUTPUT"
+            echo "Dependency or audit-config files changed, so the advisory scans are required:"
+            printf '%s\n' "$matches"
+          else
+            echo "advisory=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Advisory scans not required::No dependency or audit-config change in this ${EVENT}; cargo audit and pnpm audit are skipped by design. The daily main audit covers advisories."
+          fi
+
       - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
         if: steps.visibility.outputs.run == 'true'
         with:
@@ -1100,11 +1139,17 @@ jobs:
       # + version (never id alone) that also fails once it matches nothing. There are no
       # exceptions today (see the script for the history).
       - name: Dependency scan — Rust (cargo audit)
-        if: steps.visibility.outputs.run == 'true'
+        if: steps.visibility.outputs.run == 'true' && steps.deps.outputs.advisory == 'true'
         run: |
           set -euo pipefail
           python3 -I scripts/cargo-audit.py
           bash scripts/tests/cargo-audit.test.sh
+
+      - name: Advisory scans not required for this change
+        if: steps.visibility.outputs.run == 'true' && steps.deps.outputs.advisory != 'true'
+        run: |
+          echo "No dependency or audit-config change: cargo audit and pnpm audit are not required for this change (success, by design)."
+          echo "Advisory scans: not required, no dependency change. The daily main audit watches advisories." >> "$GITHUB_STEP_SUMMARY"
 
       # AGPL-3.0-only dependency LICENSE audit (personal-cfo-o1nxk item 3) —
       # two separate Cargo workspaces, two deny.toml files (see either for the
@@ -1125,12 +1170,13 @@ jobs:
           cache: pnpm
 
       # Dependency scanning (7t7) — the frontend dependency tree.
-      - name: Dependency scan — frontend (pnpm audit)
+      - name: Install frontend dependencies
         if: steps.visibility.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile
-          pnpm audit --prod
+        run: pnpm install --frozen-lockfile
+
+      - name: Dependency scan — frontend (pnpm audit)
+        if: steps.visibility.outputs.run == 'true' && steps.deps.outputs.advisory == 'true'
+        run: pnpm audit --prod
 
       # AGPL-3.0-only dependency LICENSE audit (personal-cfo-o1nxk item 3) —
       # frontend equivalent of the cargo-deny steps above; no frontend
