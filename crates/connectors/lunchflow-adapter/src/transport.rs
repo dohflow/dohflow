@@ -118,21 +118,27 @@ fn failure_class(error: &ureq::Error) -> &'static str {
 }
 
 /// Read a response into text. Bodies up to and including [`MAX_RESPONSE_BYTES`] are read; a
-/// longer one is refused. (ureq 3's reader errors once it has read exactly its limit, so it
-/// is given one byte more and the length is checked here: the cap stays inclusive.)
+/// longer one is refused.
+///
+/// The cap is applied to the bytes THIS function reads (`take`), after any content decoding,
+/// so it bounds memory whatever the server sends. (ureq 3's own `limit` counts the raw bytes
+/// and decodes above it, and the `gzip` feature is off for the same reason; this stays the
+/// bound even if a feature is ever turned back on.)
 fn read_response(
     response: ureq::http::Response<ureq::Body>,
 ) -> Result<HttpResponse, TransportError> {
+    use std::io::Read as _;
     let unreadable = || TransportError("unreadable response body".to_owned());
     let (parts, mut body) = response.into_parts();
-    let text = body
-        .with_config()
-        .limit(MAX_RESPONSE_BYTES + 1)
-        .read_to_string()
+    let mut bytes = Vec::new();
+    body.as_reader()
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|_| unreadable())?;
-    if text.len() as u64 > MAX_RESPONSE_BYTES {
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
         return Err(unreadable());
     }
+    let text = String::from_utf8(bytes).map_err(|_| unreadable())?;
     Ok(HttpResponse {
         status: parts.status.as_u16(),
         body: text,
@@ -442,6 +448,7 @@ mod tests {
             "HTTPS_PROXY",
             "https_proxy",
         ];
+        let saved: Vec<_> = names.iter().map(std::env::var_os).collect();
         for name in names {
             std::env::set_var(name, &proxy_url);
         }
@@ -455,8 +462,12 @@ mod tests {
             "key-not-for-logs",
             &[],
         );
-        for name in names {
-            std::env::remove_var(name);
+        // Put the environment back exactly as it was.
+        for (name, before) in names.iter().zip(saved) {
+            match before {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
         }
         let (head, _) = server.join().unwrap();
         assert_eq!(response.expect("direct request").body, "{}");
@@ -468,6 +479,37 @@ mod tests {
         assert!(
             proxy.accept().is_err(),
             "a request went to the environment's proxy"
+        );
+    }
+
+    #[test]
+    fn a_small_gzip_reply_cannot_expand_past_the_cap() {
+        // 11 KB of gzip that decodes to 11 MiB (over the 10 MiB cap). ureq 3 applies its own
+        // body limit to the raw bytes and decodes above it, so with gzip support a reply like
+        // this would decode in full. The transport neither asks for gzip nor decodes it.
+        let bomb: &'static [u8] = include_bytes!("../tests/fixtures/gzip-bomb-11mib.gz");
+        let (port, server) = stub(move |stream| {
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bomb.len()
+            );
+            let _ = stream.write_all(bomb);
+        });
+        let t = plain_http_transport();
+        let refused = t.get(
+            &format!("http://127.0.0.1:{port}/accounts"),
+            "key-not-for-logs",
+            &[],
+        );
+        let (head, _) = server.join().unwrap();
+        assert!(
+            !head.to_ascii_lowercase().contains("accept-encoding"),
+            "the request must not offer to accept a compressed body: {head}"
+        );
+        assert!(
+            matches!(refused, Err(TransportError(ref m)) if m == "unreadable response body"),
+            "{refused:?}"
         );
     }
 }
