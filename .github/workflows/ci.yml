@@ -1076,10 +1076,10 @@ jobs:
       # Dependency scanning (7t7) — both Cargo workspaces (root + the standalone
       # desktop crate). Fails on a known-vulnerable crate; unmaintained-advisory
       # warnings (e.g. Tauri's Linux-only GTK3 deps) are informational by default.
-      # scripts/cargo-audit.py runs `cargo audit` on both lockfiles and allows ONE scoped,
-      # dated exception (the webpki-roots 0.26.11 shim advisory only; owner decision
-      # 2026-10-20, removed by personal-cfo-pxi.23). It is matched by advisory + crate +
-      # version, expires, and fails when it matches nothing, unlike a blanket ignore.
+      # scripts/cargo-audit.py runs `cargo audit` on both lockfiles. Any vulnerability fails;
+      # its only allowance mechanism is a scoped, dated exception matched by advisory + crate
+      # + version (never id alone) that also fails once it matches nothing. There are no
+      # exceptions today (see the script for the history).
       - name: Dependency scan — Rust (cargo audit)
         if: steps.visibility.outputs.run == 'true'
         run: |

@@ -13,6 +13,8 @@ Usage:
   python3 -I scripts/cargo-audit.py --json-file F ...    # test mode: check these cargo-audit
                                                          # --json outputs instead of running it
   --today YYYY-MM-DD                                     # test mode: override the date
+  --exceptions-file F                                    # test mode: use the exceptions in this
+                                                         # JSON list instead of EXCEPTIONS
 """
 
 import argparse
@@ -24,22 +26,15 @@ import sys
 LOCKFILES = [None, "apps/desktop/src-tauri/Cargo.lock"]  # None = the root workspace
 
 # (advisory id, crate, version) -> reason. Every entry carries an expiry and the bead that
-# removes it. An exception is NEVER matched by advisory id alone.
-EXCEPTIONS = [
-    {
-        "id": "RUSTSEC-2026-0381",
-        "crate": "webpki-roots",
-        "version": "0.26.11",
-        "expires": "2026-12-31",
-        "removed_by": "personal-cfo-pxi.23",
-        "decision": "owner, 2026-10-20 (personal-cfo-md8h2.13)",
-        "reason": (
-            "webpki-roots 0.26.11 is a 1,177-byte semver-trick shim that re-exports "
-            "webpki-roots 1.x, which is the fixed 1.0.10 in both lockfiles; it carries no "
-            "certificate data of its own. Only ureq 2.12.1 pulls it, and no 0.26.12 exists."
-        ),
-    },
-]
+# removes it. An exception is NEVER matched by advisory id alone. There are none today.
+#
+# History: RUSTSEC-2026-0381 on webpki-roots 0.26.11 (a re-export shim of the fixed
+# webpki-roots 1.0.10; owner decision 2026-10-20, personal-cfo-md8h2.13) was allowed here until
+# the advisory database stopped flagging the shim (2026-10-21); the script then failed as
+# designed ("matches nothing") and the entry was removed. personal-cfo-pxi.23 (ureq 2 -> 3)
+# still drops the shim itself. To add an exception, give it all of: id, crate, version,
+# expires (YYYY-MM-DD), removed_by (a bead), decision, reason.
+EXCEPTIONS = []
 
 
 def run_audit(lockfile):
@@ -64,7 +59,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--json-file", action="append", default=[])
     parser.add_argument("--today", default=None)
+    parser.add_argument("--exceptions-file", default=None)
     args = parser.parse_args()
+    exceptions = EXCEPTIONS
+    if args.exceptions_file:
+        with open(args.exceptions_file, encoding="utf-8") as handle:
+            exceptions = json.load(handle)
     today = datetime.date.fromisoformat(args.today) if args.today else datetime.date.today()
 
     outputs = []
@@ -81,7 +81,7 @@ def main():
                 return 2
             outputs.append((label, text))
 
-    allowed = {(e["id"], e["crate"], e["version"]): e for e in EXCEPTIONS}
+    allowed = {(e["id"], e["crate"], e["version"]): e for e in exceptions}
     used = set()
     problems = []
     for label, text in outputs:

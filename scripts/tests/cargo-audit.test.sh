@@ -40,6 +40,14 @@ expect() {  # expect LABEL WANT_EXIT -- args...
   echo "    ok   — $label"
 }
 
+# The real exception list is empty, so the mechanism is exercised with a fixture list holding
+# the entry that used to be there. EXC is that fixture.
+cat > "$WORK/exceptions.json" <<'JSON'
+[{"id": "RUSTSEC-2026-0381", "crate": "webpki-roots", "version": "0.26.11",
+  "expires": "2026-12-31", "removed_by": "personal-cfo-pxi.23",
+  "decision": "fixture", "reason": "fixture"}]
+JSON
+EXC="$WORK/exceptions.json"
 NEW=RUSTSEC-2026-0381
 report "$WORK/clean.json"
 report "$WORK/shim.json" $NEW webpki-roots 0.26.11
@@ -48,14 +56,18 @@ report "$WORK/real-crate.json" $NEW webpki-roots 1.0.9
 report "$WORK/other-crate.json" $NEW some-other-crate 0.26.11
 echo "not json" > "$WORK/garbage.json"
 
-expect "the shim finding in both lockfiles is allowed" 0 -- --json-file "$WORK/shim.json" --json-file "$WORK/shim.json" --today 2026-11-01
-expect "the shim finding in one lockfile is allowed" 0 -- --json-file "$WORK/shim.json" --json-file "$WORK/clean.json" --today 2026-11-01
-expect "any other vulnerability still fails" 1 -- --json-file "$WORK/shim-and-other.json" --today 2026-11-01
-expect "the same advisory on the 1.x crate is NOT excepted" 1 -- --json-file "$WORK/real-crate.json" --today 2026-11-01
-expect "the same advisory on another crate is NOT excepted" 1 -- --json-file "$WORK/other-crate.json" --today 2026-11-01
-expect "the exception expires" 1 -- --json-file "$WORK/shim.json" --today 2027-01-01
-expect "an exception that matches nothing fails, so it gets removed" 1 -- --json-file "$WORK/clean.json" --json-file "$WORK/clean.json" --today 2026-11-01
-expect "unreadable audit output is an error, not a pass" 2 -- --json-file "$WORK/garbage.json" --today 2026-11-01
+expect "the shim finding in both lockfiles is allowed" 0 -- --exceptions-file "$EXC" --json-file "$WORK/shim.json" --json-file "$WORK/shim.json" --today 2026-11-01
+expect "the shim finding in one lockfile is allowed" 0 -- --exceptions-file "$EXC" --json-file "$WORK/shim.json" --json-file "$WORK/clean.json" --today 2026-11-01
+expect "any other vulnerability still fails" 1 -- --exceptions-file "$EXC" --json-file "$WORK/shim-and-other.json" --today 2026-11-01
+expect "the same advisory on the 1.x crate is NOT excepted" 1 -- --exceptions-file "$EXC" --json-file "$WORK/real-crate.json" --today 2026-11-01
+expect "the same advisory on another crate is NOT excepted" 1 -- --exceptions-file "$EXC" --json-file "$WORK/other-crate.json" --today 2026-11-01
+expect "the exception expires" 1 -- --exceptions-file "$EXC" --json-file "$WORK/shim.json" --today 2027-01-01
+expect "an exception that matches nothing fails, so it gets removed" 1 -- --exceptions-file "$EXC" --json-file "$WORK/clean.json" --json-file "$WORK/clean.json" --today 2026-11-01
+expect "unreadable audit output is an error, not a pass" 2 -- --exceptions-file "$EXC" --json-file "$WORK/garbage.json" --today 2026-11-01
+
+# With the real (empty) list nothing is excepted: the shim finding fails like any other.
+expect "with no exceptions the same finding fails" 1 -- --json-file "$WORK/shim.json" --today 2026-11-01
+expect "with no exceptions a clean report passes" 0 -- --json-file "$WORK/clean.json" --json-file "$WORK/clean.json" --today 2026-11-01
 
 CASES=$((CASES + 1))
 if grep -q "RUSTSEC-2026-0381" "$REPO_ROOT/.github/workflows/ci.yml"; then
