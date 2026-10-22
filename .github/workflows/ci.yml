@@ -1068,6 +1068,67 @@ jobs:
             echo "::notice title=Advisory scans not required::No dependency or audit-config change in this ${EVENT}; cargo audit and pnpm audit are skipped by design. The daily main audit covers advisories."
           fi
 
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        if: steps.visibility.outputs.run == 'true'
+        with:
+          tool: cargo-audit,cargo-deny
+
+      # taiki-e/install-action has no gitleaks manifest at all (confirmed:
+      # no manifests/gitleaks.json in that repo) and its cargo-binstall
+      # fallback can never work for it either — gitleaks is a Go binary,
+      # never published to crates.io. This went undetected for months
+      # because this whole workflow was workflow_dispatch-only and, per
+      # this branch's own real run history, was never actually dispatched
+      # after gitleaks was added to this job — personal-cfo-fkt5.7's own
+      # required verification run is what caught it for the first time.
+      # Installed directly from gitleaks' own GitHub releases instead,
+      # checksum-verified against that release's published SHA256SUMS
+      # (the direct-binary equivalent of the SHA-pinning every Action in
+      # this file gets — there's no source to pin a commit of here, only a
+      # released binary, so a checksum is the trust mechanism instead).
+      - name: Install gitleaks
+        if: steps.visibility.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          checksum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          asset="gitleaks_${version}_linux_x64.tar.gz"
+          curl -sSLO "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}"
+          echo "${checksum}  ${asset}" | sha256sum -c -
+          tar -xzf "$asset" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # Secret scanning (6r6): fail on any committed credential. The .gitleaks.toml
+      # allowlist excludes generated bead data + the redaction-test fixtures, which
+      # embed secret-shaped strings by design (personal-cfo-zobt).
+      - name: Secret scan (gitleaks)
+        if: steps.visibility.outputs.run == 'true'
+        run: gitleaks detect --config .gitleaks.toml --no-banner --redact
+
+      # Real-value scan (personal-cfo-o1nxk item 10) — a different,
+      # complementary risk from gitleaks above: real bank/brokerage names,
+      # SSN-shaped strings, card-number-shaped strings — none of which are
+      # "secrets," but all of which would be a privacy incident. Runs
+      # against the COMMITTED tree (this is exactly why this step exists:
+      # two real bugs in this script — see its own header comment — were
+      # each caught only by a reviewer running it against a tree the
+      # implementer's own working copy hadn't yet committed; a CI step
+      # against the actual pushed tree closes that gap structurally rather
+      # than relying on remembering to re-run it by hand).
+      - name: Real-value scan (bank names, SSN/card shapes)
+        if: steps.visibility.outputs.run == 'true'
+        run: ./scripts/value-scan.sh
+
+      # ADR 0082 disclosure-boundary tripwire (personal-cfo-0uxwt) — rides on
+      # this already-required job rather than adding a new required check to
+      # the branch-protection ruleset. Business-tier phrases in docs/adr/ or
+      # docs/research/ mean a business decision was written into the public
+      # repo instead of dohflow/internal.
+      - name: ADR tier check (business phrases in docs/adr, docs/research)
+        if: steps.visibility.outputs.run == 'true'
+        run: ./scripts/adr-tier-check.sh
+
       # Dependency scanning (7t7) — both Cargo workspaces (root + the standalone
       # desktop crate). Fails on a known-vulnerable crate; unmaintained-advisory
       # warnings (e.g. Tauri's Linux-only GTK3 deps) are informational by default.
