@@ -33,6 +33,7 @@ pub mod backup;
 pub mod envelope;
 pub mod released;
 pub mod secret;
+pub mod sync;
 
 pub use attachment::{
     decrypt_blob, encrypt_blob, generate_content_key, storage_id, unwrap_content_key,
