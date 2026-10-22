@@ -66,7 +66,7 @@ fn the_default_options_register_every_optional_plugin() {
     assert_eq!(defaults.system_backup_device, None);
     // Every host hook is off by default: the desktop build calls none of them.
     assert!(defaults.on_ready.is_none());
-    assert!(defaults.after_unlock.is_none());
+    assert!(defaults.on_unlocked.is_none());
     assert!(defaults.unlock_integrity_check.is_none());
 }
 
