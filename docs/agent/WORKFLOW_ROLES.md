@@ -120,6 +120,35 @@ transition, not a failure.
 - Remaining context or plan allowance is insufficient for a responsible
   completion **and** review handoff.
 
+## Interim cross-check of concurrent PASSes (retires with the merge queue)
+
+Two pull requests can each pass review against their own base and still break
+`main` together: on 2026-10-19 the PRs #100 and #109 did, and `cargo test -p
+db-worker --test column_kinds` failed on `main` once both had merged
+(`personal-cfo-md8h2.11`, decision `personal-cfo-915.13`). The merge queue (CI
+runs the full gates on the temporary merge commit) is the fix. **Until it is live
+in the `main` ruleset**, this rule applies:
+
+- When two or more **Rust** pull requests have each PASSed and are waiting for the
+  owner's merge at the same time, the reviewer **re-checks them against each
+  other** before saying they are merge-ready together: merge them onto current
+  `main` in a scratch worktree (in the order the owner is likely to merge them,
+  and the reverse order if both are plausible) and run the gates (`cargo fmt
+  --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
+  --workspace`, and the desktop crate's tests). Report the combined result in the
+  verdict comments of both pull requests, and **state the safe merge order in
+  both verdicts, or "either order"**.
+- If the combination fails, neither is "merge-ready together": say which one must
+  rebase on the other, and remove the `merge-ready` label from the one that must
+  change.
+- This is the reviewer's job, not the implementer's, and it costs one extra build
+  per concurrent pair, so it counts toward the two-cargo-heavy-jobs limit.
+
+**This rule retires when the merge queue is enabled in the `main` ruleset**
+(`personal-cfo-md8h2.11` records the ruleset id); delete this section then. Until
+then every push to `main` also runs the full gates, never cancelled and never
+path-filtered, and a failure opens an issue labeled `ci-main-red`.
+
 ## Review and merge policy
 
 - A verdict binds to one commit SHA. A review of a PR title, branch name, or

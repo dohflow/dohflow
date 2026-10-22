@@ -21,10 +21,10 @@ name: CI
 #   2. IN-JOB PATH FILTERING (rust/frontend/ipc-codegen only, not a
 #      workflow-level `paths-ignore`): a `dorny/paths-filter` step is each of
 #      those jobs' own first real step; their expensive compile/test steps run
-#      only `if: steps.filter.outputs.code == 'true' || github.event_name ==
-#      'workflow_dispatch'` (the dispatch escape hatch is what makes the
-#      verification run below actually exercise every step, not just prove
-#      the filter itself works). A workflow-level `paths-ignore` on the
+#      only `if: steps.filter.outputs.code == 'true' || github.event_name !=
+#      'pull_request'` (so a manual dispatch, a push to main and a merge-queue
+#      run always exercise every step; only a pull request is filtered, see 3
+#      below). A workflow-level `paths-ignore` on the
 #      trigger would make the whole workflow run NOT EXIST for a docs-only
 #      push — and personal-cfo-fkt5.9 makes these job names required checks,
 #      which would then sit at "Expected — waiting for status" forever. A job
@@ -32,6 +32,14 @@ name: CI
 #      security-scan and Shell scripts run unconditionally (visibility guard
 #      only) — they're either already fast (Shell scripts) or need to run on
 #      every change regardless of which files changed (security-scan).
+#
+#   3. FULL GATES OFF PULL REQUESTS (personal-cfo-md8h2.11): the in-job path
+#      filter above applies to `pull_request` events ONLY. Every `push` to main
+#      (never cancelled, see `concurrency`) and every `merge_group` (merge queue)
+#      run executes each job's full gates, so a docs-only or non-Rust commit
+#      can never report a skipped-steps "success" that hides a red main. A
+#      failed push to main opens or updates a `ci-main-red` issue
+#      (`main-red-alert`, last job).
 #
 # Manual dispatch still works exactly as before, for a pre-flip hosted check:
 #   - the Actions tab → "CI" → "Run workflow", or
@@ -41,6 +49,10 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # The merge queue (personal-cfo-md8h2.11): GitHub builds a temporary merge of
+  # the queued PR onto main and waits for the required checks on THAT commit.
+  # Every required job below runs its full gates on this event.
+  merge_group:
   workflow_dispatch:
   schedule:
     # Weekly, security-scan only — every other job explicitly excludes
@@ -48,10 +60,14 @@ on:
     # minutes re-running the compile/test jobs with nothing new to check.
     - cron: '0 6 * * 1' # Monday 06:00 UTC
 
-# Cancel superseded runs on the same ref.
+# Cancel superseded runs on the same pull request branch, but NEVER on main
+# (personal-cfo-md8h2.11). Cancelling main's runs hid a semantic break between
+# two PRs that each passed alone. A run on main gets a group of its own (its
+# commit SHA), so no push to main is ever cancelled or replaced in a "pending"
+# slot by a later one; every commit on main gets a complete verdict.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref == 'refs/heads/main' && format('main-{0}', github.sha) || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -78,6 +94,7 @@ jobs:
       # and not a workflow-level `paths-ignore`.
       - name: Detect changed files
         id: filter
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           base: main
@@ -93,11 +110,11 @@ jobs:
       # The pinned toolchain (channel + rustfmt/clippy) comes from
       # rust-toolchain.toml, which rustup honors automatically.
       - name: Show toolchain
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: rustup show
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
 
       # During the bootstrap phase the root workspace has zero member crates,
       # and cargo cannot build/test/clippy/fmt a virtual manifest with no
@@ -105,7 +122,7 @@ jobs:
       # first crate lands (core-money, personal-cfo-klr.1), at which point the
       # full gates activate automatically — no workflow edit required.
       - name: Rust gates (auto-activate with first crate)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           members=$(cargo metadata --format-version 1 --no-deps | jq '.packages | length')
@@ -124,7 +141,7 @@ jobs:
       # just with the pinned 1.99 above. A 1.99 pass proves nothing about the
       # floor, so this checks the complete locked graph with the floor itself.
       - name: Declared MSRV builds (root workspace)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           msrv=$(cargo metadata --format-version 1 --no-deps --locked | jq -r '[.packages[].rust_version] | unique | join(" ")')
@@ -181,7 +198,7 @@ jobs:
       #      confirmed to catch a synthetic `pub fn ... -> f64` planted in
       #      this exact file, not just in an unrelated one.
       - name: Forbid floating-point in money-critical crates
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           files=$(find crates/core-* crates/forecast-engine -name '*.rs' \
@@ -217,7 +234,7 @@ jobs:
       # table) are left alone. Comment-stripped the same way as the check
       # above, for the same reason (a doc comment naming "f64" isn't code).
       - name: layer2.rs public API boundaries stay integer-cent
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           f=crates/forecast-engine/src/layer2.rs
@@ -241,7 +258,7 @@ jobs:
       # so a Sync server can parse envelopes and manifests without SQLCipher).
       # Checks the resolved dependency tree, so transitive leaks are caught too.
       - name: Enforce pure-types crate boundaries
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           for crate in core-ids core-money core-ledger vault-crypto pay-schedule forecast-engine sync-core; do
@@ -258,7 +275,7 @@ jobs:
       # may write it. Command code (lib.rs) must never INSERT/UPDATE/DELETE it
       # (plan beads personal-cfo-9x4 + lxj).
       - name: Read model is written only by the projection module
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           if [ -f crates/db-worker/src/lib.rs ]; then
@@ -272,7 +289,7 @@ jobs:
       # db-worker is the single owner of the SQLCipher connection: it must be the
       # only crate that declares a dependency on rusqlite (plan §2.6, klr.3).
       - name: Only db-worker may depend on rusqlite
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           offenders=$(grep -rl '^rusqlite' crates/*/Cargo.toml 2>/dev/null \
@@ -289,7 +306,7 @@ jobs:
       # The plain assignment makes a cargo-tree failure fail the step (set -e)
       # instead of an empty grep input silently passing.
       - name: Enforce connector-core compile barrier
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           tree=$(cargo tree -e normal -p connector-core)
@@ -316,7 +333,7 @@ jobs:
       # no cargo-deny); it scans each manifest's [dependencies] section for a
       # connector-core entry enabling the feature.
       - name: Forbid the connector mock in production dependencies
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           offenders=""
@@ -343,7 +360,7 @@ jobs:
       # annotation, never a failure — it asks a human to re-check the
       # provider's pages without blocking unrelated releases.
       - name: Connector registry review cadence (warning only)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: cargo run --quiet -p connector-core --example registry_review
 
       # Importer plugins register at COMPILE TIME (personal-cfo-eay) and parse
@@ -351,7 +368,7 @@ jobs:
       # dynamic loading, and no database / async runtime / Tauri shell in the
       # parsing crates (a plugin holds no keys, DB, network, or IPC).
       - name: Enforce importer isolation boundaries
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           if [ -d crates/importers ]; then
@@ -391,6 +408,7 @@ jobs:
 
       - name: Detect changed files
         id: filter
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           base: main
@@ -405,32 +423,32 @@ jobs:
               - '.github/workflows/ci.yml'
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: pnpm typecheck
 
       - name: Lint
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: pnpm lint
 
       - name: Test
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: pnpm test
 
       - name: Build
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: pnpm -r build
 
       # personal-cfo-0hp6, ADR 0010: the built HTML must not contain anything that
@@ -438,7 +456,7 @@ jobs:
       # nonce, which disables the accepted 'unsafe-inline'), an inline script, or a
       # remote script/stylesheet.
       - name: Built HTML keeps the CSP effective (ADR 0010)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: node scripts/check-dist-csp.mjs apps/desktop/dist
 
   # The IPC command surface (personal-cfo-40t): compile the standalone desktop
@@ -470,6 +488,7 @@ jobs:
       # as well, not just a source-side regeneration.
       - name: Detect changed files
         id: filter
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           base: main
@@ -489,7 +508,7 @@ jobs:
       # ADR 0010: the WebView must always have a Content Security Policy. Fail
       # fast if app.security.csp regresses to null (the gap this ADR closed).
       - name: Content Security Policy is configured (ADR 0010)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -505,7 +524,7 @@ jobs:
       # OpenSSL are compiled from vendored sources by rusqlite, so no database
       # system libraries are required.
       - name: Install Tauri system dependencies
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -519,11 +538,11 @@ jobs:
 
       # The pinned toolchain comes from rust-toolchain.toml (rustup honors it).
       - name: Show toolchain
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: rustup show
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         with:
           workspaces: apps/desktop/src-tauri
 
@@ -531,13 +550,13 @@ jobs:
       # the frontend, so a placeholder `dist/` is all `tauri-build` needs. The
       # real bundle is built by the frontend job (and, later, personal-cfo-rhci).
       - name: Placeholder frontend dist
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: |
           mkdir -p apps/desktop/dist
           echo '<!doctype html><title>codegen</title>' > apps/desktop/dist/index.html
 
       - name: Rust gates (desktop crate)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         working-directory: apps/desktop/src-tauri
         run: |
           set -euo pipefail
@@ -549,7 +568,7 @@ jobs:
       # 2026-09-28, personal-cfo-g3m.5): it must equal the root workspace's and
       # build with that exact compiler, including the bindings-export feature.
       - name: Declared MSRV builds (desktop crate)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         working-directory: apps/desktop/src-tauri
         run: |
           set -euo pipefail
@@ -567,7 +586,7 @@ jobs:
       # Regenerate the bindings and fail if the committed file is stale. This is
       # the enforced Rust↔TS schema-sync gate (personal-cfo-40t / rs1v).
       - name: TypeScript bindings are in sync
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         working-directory: apps/desktop/src-tauri
         run: |
           set -euo pipefail
@@ -590,7 +609,7 @@ jobs:
       # in the reserved .invalid domain, and every check requires positive
       # evidence of a refusal, so none depends on the network.
       - name: Runtime isolation probe (real WebView, ADR 0010)
-        if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         working-directory: apps/desktop/src-tauri
         run: |
           set -euo pipefail
@@ -1160,3 +1179,37 @@ jobs:
   # NOTE: Building the macOS release binary (with capability/CSP hardening and a
   # launch smoke test) is owned by bead personal-cfo-rhci and will be added as a
   # macOS job there.
+
+  # Opens (or comments on) a `ci-main-red` issue when any gate fails on a push to
+  # main, so a red main cannot go unnoticed (personal-cfo-md8h2.11). Not a
+  # required check and not run on pull requests. The issue text is built only
+  # from values GitHub computes (SHA, run URL, job results); nothing from a
+  # commit message or a pull request title is interpolated into a shell.
+  main-red-alert:
+    name: Alert if main is red
+    runs-on: ubuntu-latest
+    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false && contains(needs.*.result, 'failure') }}
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the ci-main-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create ci-main-red --repo "$GITHUB_REPOSITORY" --color b60205 \
+            --description "A gate failed on a push to main" 2>/dev/null || true
+          failed=$(printf '%s' "$NEEDS" | jq -r 'to_entries[] | select(.value.result == "failure") | "- " + .key')
+          body=$(printf 'A gate failed on main at commit %s.\n\nFailed jobs:\n%s\n\nRun: %s\n\nFix forward or revert, then close this issue.' "$SHA" "$failed" "$RUN_URL")
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci-main-red --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label ci-main-red \
+              --title "main is red at ${SHA:0:12}" --body "$body"
+          fi
