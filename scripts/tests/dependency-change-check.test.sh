@@ -47,6 +47,11 @@ expect_required .cargo/audit.toml
 expect_required scripts/cargo-audit.py
 expect_required scripts/tests/cargo-audit.test.sh
 expect_required scripts/dependency-change-check.sh
+expect_required scripts/advisory-scans-required.sh
+expect_required scripts/tests/advisory-scans-required.test.sh
+expect_required scripts/tests/dependency-change-check.test.sh
+expect_required .npmrc
+expect_required apps/desktop/.npmrc
 
 case_start "other paths do not (docs, source, workflows, look-alikes)"
 expect_not_required README.md docs/architecture/vault-format.md

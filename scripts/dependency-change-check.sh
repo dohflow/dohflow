@@ -13,14 +13,14 @@
 # personal-cfo-915.15, option B). Secrets scanning does not use this: it always runs.
 #
 # Matched paths: any Cargo.toml / Cargo.lock / package.json / pnpm-lock.yaml /
-# pnpm-workspace.yaml / deny.toml / audit.toml at any depth, and the audit wrapper
+# pnpm-workspace.yaml / .npmrc / deny.toml / audit.toml at any depth, and the audit wrapper
 # and its tests. Everything else, including .github/workflows/ci.yml, is a
 # non-match: a workflow edit is exercised by the full run on the push to main and on
 # the merge queue.
 
 set -uo pipefail
 
-PATTERN='(^|/)(Cargo\.toml|Cargo\.lock|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|deny\.toml|audit\.toml)$|^scripts/cargo-audit\.py$|^scripts/tests/cargo-audit\.test\.sh$|^scripts/dependency-change-check\.sh$'
+PATTERN='(^|/)(Cargo\.toml|Cargo\.lock|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc|deny\.toml|audit\.toml)$|^scripts/cargo-audit\.py$|^scripts/tests/cargo-audit\.test\.sh$|^scripts/dependency-change-check\.sh$|^scripts/advisory-scans-required\.sh$|^scripts/tests/(dependency-change-check|advisory-scans-required)\.test\.sh$'
 
 matches="$(grep -E -- "$PATTERN" || true)"
 if [ -n "$matches" ]; then

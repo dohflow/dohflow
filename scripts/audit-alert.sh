@@ -66,15 +66,19 @@ fi
 
 # Cap the report so the issue stays readable; the full output is in the run.
 report_text="$(head -c 40000 "$REPORT")"
+# A fence longer than any run of ~ in the report, so the report cannot close it early.
+longest="$(printf '%s' "$report_text" | grep -o '~*' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
+fence_len=$(( longest + 1 > 4 ? longest + 1 : 4 ))
+fence="$(printf '~%.0s' $(seq 1 "$fence_len"))"
 body="The daily dependency audit of \`main\` failed. ${stale}${run_line}
 
 The agent on duty files a P0 bead from this issue (ADR 0069: P0 bypasses queues); see docs/security/scanning.md.
 
 Report (tool output):
 
-~~~~
+${fence}
 ${report_text}
-~~~~"
+${fence}"
 
 if [ -n "$existing" ]; then
   gh issue comment "$existing" --repo "$REPO" --body "$body"

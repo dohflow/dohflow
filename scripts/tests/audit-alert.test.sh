@@ -68,6 +68,12 @@ case_start "a clean audit with no open issue does nothing to issues"
 : > "$CALLS"; STUB_EXISTING="" run --status clean --report "$TMP/ok.txt" >/dev/null
 grep -q "^issue create\|^issue comment\|^issue close" "$CALLS" && fail "touched an issue: $(cat "$CALLS")" || pass "no issue created, commented or closed"
 
+case_start "a report that contains a tilde fence cannot close the issue's code fence early"
+printf 'before\n~~~~\ninjected ~~~~~~~~ text\n```\nafter\n' > "$TMP/fence.txt"
+: > "$CALLS"; STUB_EXISTING="" run --status failed --report "$TMP/fence.txt" >/dev/null
+fence="$(grep -E '^~{9,}$' "$CALLS" | head -1)"
+{ [ -n "$fence" ] && [ "$(grep -cxF "$fence" "$CALLS")" = 2 ]; } && pass "the body is fenced by a longer run of tildes (${#fence}), used exactly twice" || fail "fence not longer than the longest run in the report: $(grep -E '^~+$' "$CALLS" | tr '\n' ' ')"
+
 case_start "bad usage is an error"
 run --status bogus --report "$TMP/ok.txt" >/dev/null 2>&1 && fail "accepted a bogus status" || pass "rejects a bogus status"
 run --status failed --report "$TMP/nope.txt" >/dev/null 2>&1 && fail "accepted a missing report" || pass "rejects a missing report file"

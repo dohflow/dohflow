@@ -47,10 +47,11 @@ jobs:
         id: visibility
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           is_private=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .private)
-          if [ "$is_private" = "false" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$is_private" = "false" ] || [ "$EVENT" = "workflow_dispatch" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
