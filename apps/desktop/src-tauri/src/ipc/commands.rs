@@ -257,19 +257,35 @@ pub fn create_vault_impl(state: &AppState, password: String) -> Result<VaultStat
     vault_status_dto(&guard)
 }
 
+/// The registry id of the active vault, in text form, for the host hooks (personal-cfo-i93n3.18):
+/// the same identifier the vault picker uses. `None` when no vault is registered as active (a
+/// legacy layout, or a vault the registry does not know yet) or the registry cannot be read; a
+/// host treats `None` as an unknown vault and, for the integrity check, runs the check.
+#[doc(hidden)]
+#[must_use]
+pub fn active_vault_id(state: &AppState) -> Option<String> {
+    let registry = state.lock_registry().ok()?;
+    registry.active.map(|id| id.to_string())
+}
+
 /// Call the host's `on_unlocked` hook iff `outcome` is a successful transition to Unlocked
 /// (personal-cfo-i93n3.14). Every command that can end the vault Unlocked routes its result through
 /// this one function, so the hook fires exactly once per such transition and never on a failure or
-/// on a transition to another state. Generic so a test can prove the whole matrix without a native
-/// `AppHandle`.
+/// on a transition to another state. `vault_id` is asked for only when the hook will run, and is the
+/// active vault's registry id after the transition (personal-cfo-i93n3.18). Generic so a test can
+/// prove the whole matrix without a native `AppHandle`.
 #[doc(hidden)]
 pub fn call_if_unlocked<A>(
-    hook: Option<fn(&A)>,
+    hook: Option<fn(&A, Option<&str>)>,
     argument: &A,
     outcome: &Result<VaultStatusDto, IpcError>,
+    vault_id: impl FnOnce() -> Option<String>,
 ) {
-    if matches!(outcome, Ok(status) if status.state == crate::ipc::dto::VaultStateDto::Unlocked) {
-        crate::call_host_hook(hook, argument);
+    if let Some(hook) = hook {
+        if matches!(outcome, Ok(status) if status.state == crate::ipc::dto::VaultStateDto::Unlocked)
+        {
+            hook(argument, vault_id().as_deref());
+        }
     }
 }
 
@@ -282,7 +298,9 @@ pub fn create_vault(
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
     let outcome = create_vault_impl(state.inner(), password);
-    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    call_if_unlocked(host.on_unlocked, &app, &outcome, || {
+        active_vault_id(state.inner())
+    });
     outcome
 }
 
@@ -383,10 +401,14 @@ pub fn unlock_vault(
 ) -> Result<VaultStatusDto, IpcError> {
     // The host decides per unlock whether to run the pre-unlock integrity check
     // (a restored install, for example); the desktop has no such host and passes none.
-    let options = host.unlock_options();
+    // The host decides per vault whether to run the pre-unlock integrity check (a restored install,
+    // for example), given the registry id of the vault being unlocked (personal-cfo-i93n3.18).
+    let options = host.unlock_options(active_vault_id(state.inner()).as_deref());
     let outcome = unlock_vault_with_options_impl(state.inner(), password, options);
-    // The host's hook for every transition to Unlocked (personal-cfo-i93n3.13/.14).
-    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    // The host's hook for every transition to Unlocked (personal-cfo-i93n3.13/.14/.18).
+    call_if_unlocked(host.on_unlocked, &app, &outcome, || {
+        active_vault_id(state.inner())
+    });
     let status = outcome?;
     // Local durable jobs (personal-cfo-ati): the production dispatcher is
     // always installed in AppState, so every successful unlock runs one
@@ -691,7 +713,9 @@ pub fn create_vault_named(
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
     let outcome = create_vault_named_impl(state.inner(), name, password);
-    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    call_if_unlocked(host.on_unlocked, &app, &outcome, || {
+        active_vault_id(state.inner())
+    });
     outcome
 }
 
@@ -1259,7 +1283,9 @@ pub fn restore_backup(
     password: String,
 ) -> Result<VaultStatusDto, IpcError> {
     let outcome = restore_backup_impl(state.inner(), package_path, password);
-    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    call_if_unlocked(host.on_unlocked, &app, &outcome, || {
+        active_vault_id(state.inner())
+    });
     outcome
 }
 
@@ -1450,7 +1476,9 @@ pub fn restore_backup_as_new_vault(
     name: String,
 ) -> Result<VaultStatusDto, IpcError> {
     let outcome = restore_backup_as_new_vault_impl(state.inner(), package_path, password, name);
-    call_if_unlocked(host.on_unlocked, &app, &outcome);
+    call_if_unlocked(host.on_unlocked, &app, &outcome, || {
+        active_vault_id(state.inner())
+    });
     outcome
 }
 

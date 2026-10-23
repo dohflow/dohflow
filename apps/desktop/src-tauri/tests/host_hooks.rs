@@ -7,10 +7,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use app_lib::ipc::commands::{
-    call_if_unlocked, create_vault_impl, create_vault_named_impl, export_backup_impl,
-    list_vaults_impl, lock_active_vault_in, lock_vault_impl, restore_backup_as_new_vault_impl,
-    restore_backup_impl, switch_vault_impl, unlock_vault_impl, unlock_vault_with_options_impl,
-    vault_status_impl,
+    active_vault_id, call_if_unlocked, create_vault_impl, create_vault_named_impl,
+    export_backup_impl, list_vaults_impl, lock_active_vault_in, lock_vault_impl,
+    restore_backup_as_new_vault_impl, restore_backup_impl, switch_vault_impl, unlock_vault_impl,
+    unlock_vault_with_options_impl, vault_status_impl,
 };
 use app_lib::ipc::dto::VaultStateDto;
 use app_lib::ipc::IpcError;
@@ -110,7 +110,7 @@ fn the_app_calls_its_hooks_through_those_functions_and_only_from_the_places_plan
         );
     }
     // The unlock command asks the host before it unlocks.
-    assert!(commands.contains("host.unlock_options()"));
+    assert!(commands.contains("host.unlock_options(active_vault_id(state.inner()).as_deref())"));
 }
 
 // ---- on_unlocked: exactly once per transition to Unlocked, never on a failure ----------------
@@ -119,8 +119,18 @@ thread_local! {
     static UNLOCKED_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn bump(_: &u32) {
+thread_local! {
+    static UNLOCKED_IDS: std::cell::RefCell<Vec<Option<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn bump(_: &u32, vault_id: Option<&str>) {
     UNLOCKED_CALLS.with(|calls| calls.set(calls.get() + 1));
+    UNLOCKED_IDS.with(|ids| ids.borrow_mut().push(vault_id.map(str::to_owned)));
+}
+
+fn seen_ids() -> Vec<Option<String>> {
+    UNLOCKED_IDS.with(|ids| ids.borrow().clone())
 }
 
 fn calls() -> usize {
@@ -129,7 +139,12 @@ fn calls() -> usize {
 
 /// What the commands do with their result: route it through the one helper.
 fn fire(outcome: &Result<app_lib::ipc::dto::VaultStatusDto, IpcError>) {
-    call_if_unlocked(Some(bump as fn(&u32)), &0_u32, outcome);
+    call_if_unlocked(
+        Some(bump as fn(&u32, Option<&str>)),
+        &0_u32,
+        outcome,
+        || Some("a-vault-id".to_owned()),
+    );
 }
 
 fn status(state: VaultStateDto) -> Result<app_lib::ipc::dto::VaultStatusDto, IpcError> {
@@ -161,7 +176,7 @@ fn on_unlocked_fires_only_for_a_successful_transition_to_unlocked() {
     }
     assert_eq!(calls(), 1, "no other state and no failure fires it");
     // And inert when the host set none.
-    call_if_unlocked::<u32>(None, &0, &status(VaultStateDto::Unlocked));
+    call_if_unlocked::<u32>(None, &0, &status(VaultStateDto::Unlocked), || None);
     assert_eq!(calls(), 1);
 }
 
@@ -291,10 +306,10 @@ fn switching_vaults_does_not_fire_it_because_the_target_comes_up_locked() {
 
 // ---- the integrity-check decision ---------------------------------------------------
 
-fn always() -> bool {
+fn always(_: Option<&str>) -> bool {
     true
 }
-fn never() -> bool {
+fn never(_: Option<&str>) -> bool {
     false
 }
 
@@ -302,7 +317,7 @@ fn never() -> bool {
 fn the_unlock_options_follow_the_hosts_answer() {
     let none = HostOptions::default();
     assert!(
-        !none.unlock_options().integrity_check,
+        !none.unlock_options(Some("any")).integrity_check,
         "desktop: never checks"
     );
 
@@ -310,14 +325,17 @@ fn the_unlock_options_follow_the_hosts_answer() {
         unlock_integrity_check: Some(always),
         ..HostOptions::default()
     };
-    assert!(yes.unlock_options().integrity_check);
-    assert_eq!(yes.unlock_options(), UnlockOptions::with_integrity_check());
+    assert!(yes.unlock_options(Some("any")).integrity_check);
+    assert_eq!(
+        yes.unlock_options(None),
+        UnlockOptions::with_integrity_check()
+    );
 
     let no = HostOptions {
         unlock_integrity_check: Some(never),
         ..HostOptions::default()
     };
-    assert!(!no.unlock_options().integrity_check);
+    assert!(!no.unlock_options(Some("any")).integrity_check);
 }
 
 #[test]
@@ -494,4 +512,172 @@ fn run_resolves_through_the_registry_and_the_desktop_never_registers() {
         1,
         "only its definition"
     );
+}
+
+// ---- the hooks carry the vault id (personal-cfo-i93n3.18) ---------------------------------
+
+fn registry_state(root: &Path) -> AppState {
+    let registry = VaultRegistry::load(root);
+    let path = registry
+        .active_path(root)
+        .unwrap_or_else(|| root.join("vault.db"));
+    AppState::with_registry(VaultController::open(path), registry, root.to_path_buf())
+}
+
+fn vault_file(root: &Path, id: &str) -> std::path::PathBuf {
+    let registry = VaultRegistry::load(root);
+    let entry = registry
+        .vaults
+        .iter()
+        .find(|v| v.id.to_string() == id)
+        .expect("the vault is registered");
+    root.join(&entry.path)
+}
+
+thread_local! {
+    static TO_CHECK: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A host that checks exactly the vaults it was told to, and every vault it cannot identify.
+fn check_listed_or_unknown(vault_id: Option<&str>) -> bool {
+    match vault_id {
+        None => true,
+        Some(id) => TO_CHECK.with(|list| list.borrow().iter().any(|listed| listed == id)),
+    }
+}
+
+#[test]
+fn on_unlocked_receives_each_vaults_own_registry_id_across_two_vaults() {
+    let dir = tempdir().unwrap();
+    let state = registry_state(dir.path());
+
+    fire_with_id(
+        &state,
+        create_vault_named_impl(&state, "One".to_owned(), PASSWORD.to_owned()),
+    );
+    let one = active_vault_id(&state).expect("a registered vault has an id");
+    fire_with_id(
+        &state,
+        create_vault_named_impl(&state, "Two".to_owned(), PASSWORD.to_owned()),
+    );
+    let two = active_vault_id(&state).expect("a registered vault has an id");
+    assert_ne!(one, two, "two vaults, two ids");
+
+    let package = dir.path().join("one.pcfobk");
+    switch_vault_impl(&state, one.clone()).unwrap();
+    unlock_vault_impl(&state, PASSWORD.to_owned()).unwrap();
+    export_backup_impl(&state, package.to_string_lossy().into_owned()).unwrap();
+    lock_vault_impl(&state).unwrap();
+    fire_with_id(
+        &state,
+        restore_backup_as_new_vault_impl(
+            &state,
+            package.to_string_lossy().into_owned(),
+            PASSWORD.to_owned(),
+            "Restored".to_owned(),
+        ),
+    );
+    let restored = active_vault_id(&state).expect("a registered vault has an id");
+    assert!(
+        restored != one && restored != two,
+        "the restored vault is a third vault"
+    );
+
+    // Each transition delivered the id of the vault that became unlocked, in order.
+    assert_eq!(
+        seen_ids(),
+        vec![Some(one.clone()), Some(two.clone()), Some(restored)]
+    );
+    // And it is the picker's identifier, a UUID in text form: not a path or a name.
+    for id in [&one, &two] {
+        assert!(uuid::Uuid::parse_str(id).is_ok(), "{id}");
+        assert!(!id.contains('/') && !id.contains("One") && !id.contains("Two"));
+    }
+}
+
+fn fire_with_id(state: &AppState, outcome: Result<app_lib::ipc::dto::VaultStatusDto, IpcError>) {
+    call_if_unlocked(
+        Some(bump as fn(&u32, Option<&str>)),
+        &0_u32,
+        &outcome,
+        || active_vault_id(state),
+    );
+}
+
+#[test]
+fn the_integrity_decision_is_per_vault_and_reaches_the_kernel() {
+    let dir = tempdir().unwrap();
+    let state = registry_state(dir.path());
+    create_vault_named_impl(&state, "One".to_owned(), PASSWORD.to_owned()).unwrap();
+    let one = active_vault_id(&state).unwrap();
+    create_vault_named_impl(&state, "Two".to_owned(), PASSWORD.to_owned()).unwrap();
+    let two = active_vault_id(&state).unwrap();
+    lock_vault_impl(&state).unwrap();
+    // Damage BOTH vaults' files; the host asks for a check on One only.
+    damage_a_later_page(&vault_file(dir.path(), &one));
+    damage_a_later_page(&vault_file(dir.path(), &two));
+    TO_CHECK.with(|list| *list.borrow_mut() = vec![one.clone()]);
+    let host = HostOptions {
+        unlock_integrity_check: Some(check_listed_or_unknown),
+        ..HostOptions::default()
+    };
+
+    switch_vault_impl(&state, one).unwrap();
+    let id = active_vault_id(&state);
+    assert!(host.unlock_options(id.as_deref()).integrity_check);
+    let refused = unlock_vault_with_options_impl(
+        &state,
+        PASSWORD.to_owned(),
+        host.unlock_options(id.as_deref()),
+    );
+    assert!(
+        matches!(refused, Err(IpcError::VaultIntegrityCheckFailed)),
+        "{refused:?}"
+    );
+
+    switch_vault_impl(&state, two).unwrap();
+    let id = active_vault_id(&state);
+    assert!(
+        !host.unlock_options(id.as_deref()).integrity_check,
+        "the host did not ask for Two, so the kernel is not told to check it"
+    );
+    let opened = unlock_vault_with_options_impl(
+        &state,
+        PASSWORD.to_owned(),
+        host.unlock_options(id.as_deref()),
+    );
+    assert!(
+        !matches!(opened, Err(IpcError::VaultIntegrityCheckFailed)),
+        "no check was requested for Two: {opened:?}"
+    );
+}
+
+#[test]
+fn a_vault_with_no_registry_id_reports_none_and_a_host_that_checks_unknowns_checks_it() {
+    // The legacy layout (no registry entry): the id is None, and the documented host rule is that
+    // None means "run the check".
+    let dir = tempdir().unwrap();
+    let state = locked_vault(dir.path());
+    assert_eq!(active_vault_id(&state), None);
+    damage_a_later_page(&dir.path().join("vault.db"));
+    let host = HostOptions {
+        unlock_integrity_check: Some(check_listed_or_unknown),
+        ..HostOptions::default()
+    };
+    let options = host.unlock_options(active_vault_id(&state).as_deref());
+    assert!(options.integrity_check, "None is checked");
+    let refused = unlock_vault_with_options_impl(&state, PASSWORD.to_owned(), options);
+    assert!(
+        matches!(refused, Err(IpcError::VaultIntegrityCheckFailed)),
+        "{refused:?}"
+    );
+    // And the hook receives None for such a vault.
+    fire_with_id(
+        &state,
+        Ok(app_lib::ipc::dto::VaultStatusDto {
+            state: VaultStateDto::Unlocked,
+            account_count: None,
+        }),
+    );
+    assert_eq!(seen_ids().last(), Some(&None));
 }

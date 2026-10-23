@@ -48,7 +48,7 @@ by default and all generic (no platform is named anywhere in this crate):
 
 - `on_ready: Option<fn(&AppHandle)>`: called once, at the end of setup, so a host can keep the
   handle for its own lifecycle events.
-- `on_unlocked: Option<fn(&AppHandle)>`: called after **every transition to Unlocked**: a vault
+- `on_unlocked: Option<fn(&AppHandle, Option<&str>)>`: called after **every transition to Unlocked**: a vault
   created, a named vault created, a backup restored (fresh, or as a new named vault from the
   locked picker or the recovery screen) and a password unlock. Exactly once per transition; never
   on a failed unlock, create or restore, and never when the result is any other state (a vault
@@ -56,12 +56,25 @@ by default and all generic (no platform is named anywhere in this crate):
   (`call_if_unlocked`), pinned by a source test and exercised per transition and per failure in
   `tests/host_hooks.rs`. (It was `after_unlock`, and fired only for a password unlock, before
   `personal-cfo-i93n3.14`.)
-- `unlock_integrity_check: Option<fn() -> bool>`: asked at every unlock; `true` runs the engine's
+- `unlock_integrity_check: Option<fn(Option<&str>) -> bool>`: asked at every unlock, with the id of the vault being unlocked; `true` runs the engine's
   `PRAGMA integrity_check` before anything opens, migrates or writes (`UnlockOptions`, 7ie.14).
   A failure is the typed `VaultIntegrityCheckFailed` IPC error; the unlock screen says the vault
   may be damaged, nothing was changed, and offers the existing restore-as-new flow. The app has
   no unlock-with-key IPC path yet; when one lands it must take its options from the same
   `HostOptions::unlock_options()`.
+
+**The vault id** (`personal-cfo-i93n3.18`). Both hooks receive the vault's registry identifier: the
+same UUID, in text form, that the vault picker uses (`VaultRegistry` `active`). It is never a path, a
+name, key material or contents. It is `None` when the vault is not registered yet (a legacy layout,
+or one just created before the registry knows it) or the registry cannot be read. **A host MUST
+treat `None` as "unknown vault"; for `unlock_integrity_check` that means run the check.** A host that
+keeps per-vault state (for example, which vaults it has already checked on this install) keys it by
+this id. `on_unlocked` receives the id of the vault that became unlocked (after the registry commit
+for a restore-as-new or a named create); `unlock_integrity_check` receives the id of the vault the
+unlock will open (the active one: the picker switches to a vault before it unlocks it).
+`tests/host_hooks.rs` covers two vaults (each transition delivers its own id, in order), the
+decision per vault reaching the kernel (a damaged vault refused for the vault the host listed,
+not checked for the other) and `None` for a legacy layout.
 
 `register_host_options(HostOptions)` (`personal-cfo-i93n3.15`) is how a host that starts the app
 through the mobile entry point (`run()`) supplies all of the above: it cannot pass options itself.
