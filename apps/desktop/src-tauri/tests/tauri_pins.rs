@@ -480,13 +480,13 @@ fn rust_and_npm_out_of_lockstep_is_rejected() {
     let found = check_with(|i| {
         replace_once(
             &mut i.pins,
-            "tauri-plugin-dialog = \"2.7.1\"",
-            "tauri-plugin-dialog = \"2.8.0\"",
+            "tauri-plugin-dialog = \"2.8.3\"",
+            "tauri-plugin-dialog = \"2.9.0\"",
         );
         replace_once(
             &mut i.cargo_lock,
-            "name = \"tauri-plugin-dialog\"\nversion = \"2.7.1\"",
-            "name = \"tauri-plugin-dialog\"\nversion = \"2.8.0\"",
+            "name = \"tauri-plugin-dialog\"\nversion = \"2.8.3\"",
+            "name = \"tauri-plugin-dialog\"\nversion = \"2.9.0\"",
         );
     });
     assert!(

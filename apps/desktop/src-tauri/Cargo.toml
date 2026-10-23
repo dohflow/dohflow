@@ -70,7 +70,7 @@ tauri = { version = "~2.12.4", features = [] }
 plist = "1.10.1"
 # Native file dialogs for backup export (Save) / restore (Open) — personal-cfo-dvxm.
 # Scoped to open/save only in capabilities/default.json (ADR 0010).
-tauri-plugin-dialog = "~2.7.1"
+tauri-plugin-dialog = "~2.8.3"
 # System-browser opener for the About card / Support row (personal-cfo-n76x.18).
 # The main window is granted ONLY `opener:allow-open-url` scoped to
 # `https://dohflow.app/*` in capabilities/default.json — never `opener:default`,
@@ -78,7 +78,7 @@ tauri-plugin-dialog = "~2.7.1"
 # like the specta pair below) so a routine `cargo update` cannot move it off the
 # npm `@tauri-apps/plugin-opener` exact pin (same version) — the two halves stay
 # in lockstep by requirement, not just by the lockfile.
-tauri-plugin-opener = "=2.5.5"
+tauri-plugin-opener = "=2.7.1"
 
 # personal-cfo-40t: typed IPC command pattern + serde→TS codegen.
 #
