@@ -84,7 +84,10 @@ preflight() {
   : "${APPLE_SIGNING_IDENTITY:?set it (source ~/.config/personal-cfo/release.env) — see docs/operations/release-signing.md}"
 
   # The identity must be a VALID codesigning identity in the keychain (chain + private key).
-  if ! security find-identity -v -p codesigning | grep -qF "$APPLE_SIGNING_IDENTITY"; then
+  # Capture first, then match: `cmd | grep -q` under pipefail can report a false failure when
+  # grep -q exits at the first match and the producer takes SIGPIPE (personal-cfo-md8h2.15).
+  identities="$(security find-identity -v -p codesigning || true)"
+  if ! grep -qF -- "$APPLE_SIGNING_IDENTITY" <<<"$identities"; then
     echo "Valid codesigning identities on this machine:" >&2
     security find-identity -v -p codesigning >&2 || true
     fail "APPLE_SIGNING_IDENTITY ('$APPLE_SIGNING_IDENTITY') is not a valid identity. See release-signing.md A3."
