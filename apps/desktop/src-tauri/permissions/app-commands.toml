@@ -186,4 +186,8 @@ commands.allow = [
   "connector_create_mapped_account",
   "connector_sync",
   "connector_auto_sync",
+  # Opens a connection's provider site in the system browser for the re-authentication notice
+  # (personal-cfo-pxi.22). Takes only a connection id; the backend looks the https address up from
+  # the connection's adapter. No opener scope is involved (ADR 0060 addendum 2026-10-23).
+  "open_provider_site",
 ]

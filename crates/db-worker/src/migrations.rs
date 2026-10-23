@@ -1879,10 +1879,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // that every healthy sync clears, and a one-bank `con.auth` is not even a failed sync. This
     // is this device's own operational state (class 3: never replicated, ADR 0074/CLASS-0), kept in
     // its own table rather than a column because `connector_connections` is about to be
-    // restructured (personal-cfo-07u). `attention` is a small JSON object the desktop layer writes
-    // and reads, never the UI: {"kind": "reauth_institution" | "relink_connection",
-    // "institutions": [sanitized provider-supplied bank names]}. One row per connection, replaced
-    // on every refresh that has something to say and removed by the next healthy one.
+    // restructured (personal-cfo-07u). `attention` is a small JSON array the desktop layer writes
+    // and reads, never the UI: [{"kind": "reauth_institution" | "relink_connection",
+    // "institution": <sanitized provider-supplied bank name, optional>}, ...]. One row per
+    // connection, replaced on every refresh that has something to say and removed by the next
+    // healthy one.
     Migration {
         version: 58,
         name: "connector_attention",
