@@ -6608,3 +6608,54 @@ mod release_update_failure_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod provider_site_tests {
+    use super::{provider_site_url, require_https};
+    use crate::ipc::IpcError;
+
+    // personal-cfo-pxi.22: the address the notice opens is refused unless it is https.
+    #[test]
+    fn anything_that_is_not_https_is_refused_with_a_typed_error_that_names_nothing() {
+        for url in [
+            "http://bridge.simplefin.org",
+            "ftp://bridge.simplefin.org",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "HTTPS://bridge.simplefin.org",
+            "https:/bridge.simplefin.org",
+            "bridge.simplefin.org",
+            "",
+        ] {
+            match require_https(url) {
+                Err(IpcError::Validation(message)) => {
+                    assert!(!message.contains(url) || url.is_empty(), "{message}");
+                }
+                other => panic!("{url:?} was not refused: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_https_address_passes_unchanged() {
+        assert_eq!(
+            require_https("https://bridge.simplefin.org").unwrap(),
+            "https://bridge.simplefin.org"
+        );
+    }
+
+    #[test]
+    fn every_registered_provider_resolves_to_an_https_site_and_an_unknown_one_to_nothing() {
+        let mut seen = 0;
+        for registration in connector_core::all_registrations() {
+            let url = provider_site_url(registration.adapter.id()).unwrap();
+            assert!(url.starts_with("https://"), "{url}");
+            seen += 1;
+        }
+        assert!(seen >= 2, "the real providers are registered: {seen}");
+        assert!(matches!(
+            provider_site_url("no-such-provider"),
+            Err(IpcError::Unavailable(_))
+        ));
+    }
+}
