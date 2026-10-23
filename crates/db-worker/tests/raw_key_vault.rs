@@ -312,3 +312,81 @@ fn no_key_reaches_sql_and_only_one_place_calls_sqlite3_key_v2() {
         "sqlite3_key_v2 must be called from exactly one place, key_connection in db-worker's lib.rs"
     );
 }
+
+/// Every connection to a vault is opened through `open_vault_connection`, which first waits for
+/// SQLCipher to finish its start-up (personal-cfo-g3m.20); a new open path that bypassed it would
+/// bring the cold-start race back. In non-test `src/` code (an inline `#[cfg(test)] mod ... {`
+/// ends the scan of a file), `Connection::open_with_flags(` appears exactly once, inside that
+/// function, and `Connection::open_in_memory(` exactly once, in the readiness probe itself. Plain
+/// `Connection::open(` and any other opener appear nowhere.
+#[test]
+fn every_vault_connection_is_opened_through_the_readiness_gate() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+    /// The file's code up to its inline test module, with line comments removed.
+    fn non_test_code(source: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let mut kept = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            if *line == "#[cfg(test)]" {
+                let next = lines.get(n + 1).copied().unwrap_or("");
+                if next.starts_with("mod ") && next.trim_end().ends_with('{') {
+                    break;
+                }
+            }
+            kept.push(line.split("//").next().unwrap_or(""));
+        }
+        kept.join("\n")
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&src, &mut files);
+    let (mut with_flags, mut in_memory) = (Vec::new(), Vec::new());
+    let mut other = Vec::new();
+    for path in files {
+        let name = path.strip_prefix(&src).unwrap().display().to_string();
+        if name.starts_with("tests") || name.ends_with("_tests.rs") {
+            continue;
+        }
+        let code = non_test_code(&std::fs::read_to_string(&path).unwrap());
+        for _ in code.matches("Connection::open_with_flags(") {
+            with_flags.push(name.clone());
+        }
+        for _ in code.matches("Connection::open_in_memory(") {
+            in_memory.push(name.clone());
+        }
+        // Any other way to open: plain `Connection::open(`, a VFS variant, or a builder.
+        for needle in [
+            "Connection::open(",
+            "Connection::open_with_flags_and_vfs(",
+            "Connection::open_with_vfs(",
+            "Connection::open_in_memory_with_flags(",
+        ] {
+            if code.contains(needle) {
+                other.push(format!("{name}: {needle}"));
+            }
+        }
+    }
+    assert!(
+        other.is_empty(),
+        "a connection is opened outside the gate: {other:?}"
+    );
+    assert_eq!(
+        with_flags,
+        ["lib.rs"],
+        "open_with_flags must appear only in open_vault_connection"
+    );
+    assert_eq!(
+        in_memory,
+        ["lib.rs"],
+        "open_in_memory must appear only in the readiness probe"
+    );
+}

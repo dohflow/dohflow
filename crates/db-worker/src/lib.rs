@@ -1186,6 +1186,10 @@ pub enum IntegrityOutcome {
 /// Errors from the db-worker.
 #[derive(Debug, Error)]
 pub enum DbError {
+    /// SQLCipher did not finish starting up within the wait in `ensure_cipher_ready`
+    /// (personal-cfo-g3m.20), so no connection was keyed.
+    #[error("the encryption library did not finish starting up")]
+    CipherUnavailable,
     /// The write-ahead log could not be fully truncated because a reader still holds the
     /// database open (`wal_checkpoint(TRUNCATE)` reported busy).
     #[error("the write-ahead log could not be fully checkpointed: a reader is still open")]
@@ -1411,7 +1415,7 @@ impl DbWorker {
         // vault is in WAL mode, and a read-only connection leaves `-wal` and `-shm` files
         // behind that only a read-write close removes. Holding the lock makes that close safe.
         let _runner_lock = acquire_runner_lock(path.as_ref())?;
-        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let conn = open_vault_connection(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         key_raw(&conn, dek)?;
         match conn.query_row(
             "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
@@ -1499,7 +1503,7 @@ impl DbWorker {
     pub fn read_connection(&self) -> Result<Connection, DbError> {
         // A worker already owns a supported vault. Reads must never create a
         // replacement if its path disappears during that lifetime.
-        let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let conn = open_vault_connection(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         match &self.key {
             KeyMaterial::Passphrase(passphrase) => key_passphrase(&conn, passphrase.as_str())?,
             KeyMaterial::Raw(dek) => key_raw(&conn, dek)?,
@@ -1575,7 +1579,7 @@ impl DbWorker {
         dek: &Dek,
     ) -> Result<IntegrityOutcome, DbError> {
         let _runner_lock = acquire_runner_lock(path.as_ref())?;
-        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let conn = open_vault_connection(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         key_raw(&conn, dek)?;
         // Step 1, the key: read page 1 only (`PRAGMA schema_version` reads the database header and
         // parses no schema, which would touch further pages once it grows past page 1). A key that
@@ -4276,6 +4280,112 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
 /// memory (`cipher_memory_security`) is never turned on: it cost 4x to 11x and could not be
 /// scoped, and the key itself no longer passes through anything that needs it.
 fn key_connection(conn: &Connection, schema: Option<&str>, key: &[u8]) -> Result<(), DbError> {
+    if !ensure_cipher_ready() {
+        return Err(DbError::CipherUnavailable);
+    }
+    let rc = key_rc(conn, schema, key)?;
+    if rc == rusqlite::ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(DbError::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rc),
+            None,
+        )))
+    }
+}
+
+/// Wait until SQLCipher has finished its own start-up (personal-cfo-g3m.20).
+///
+/// `sqlite3_initialize` sets SQLite's "initialized" flag **before** it runs SQLCipher's start-up
+/// (`SQLITE_EXTRA_INIT`, which sets `sqlcipher_init` and only afterwards registers the
+/// `sqlcipher_export` auto-extension) and runs that start-up outside its mutex. A second thread
+/// that calls `sqlite3_initialize` in that window returns at once and opens a connection. Keying
+/// it then fails with SQLCipher's stale `SQLITE_ERROR` (code 1, no message), and a connection
+/// opened in the window never gets `sqlcipher_export` for its whole life. It only affects the
+/// first connections of a process, and only when several threads open vaults at the same moment.
+///
+/// This probes rather than wrapping `sqlite3_initialize` in a lock, because the thread that
+/// starts initialization need not be ours: any code in the process that opens a connection (an
+/// unkeyed `rusqlite` open, a library) can win the race and leave SQLCipher half started while our
+/// thread's `sqlite3_initialize` returns early. Only asking SQLCipher itself tells us it is ready:
+/// a fresh in-memory connection must accept a key **and** have `sqlcipher_export`. The probe
+/// connection is opened inside the window too, so a half-started answer simply retries.
+///
+/// Every vault connection is opened through [`open_vault_connection`], which calls this first, and
+/// [`key_connection`] calls it again as a backstop. Only success is remembered: after the bounded
+/// wait fails, the next call probes again, so a machine that stalled at start-up recovers without
+/// a restart. A failure is the typed [`DbError::CipherUnavailable`]; no connection is used unkeyed.
+fn ensure_cipher_ready() -> bool {
+    // 32 zero bytes as a raw-key literal: no KDF, so the probe is cheap, and it is never used for
+    // anything but this check.
+    const PROBE_KEY: &[u8] = b"x'0000000000000000000000000000000000000000000000000000000000000000'";
+    static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if READY.load(std::sync::atomic::Ordering::Acquire) {
+        return true;
+    }
+    let ready = wait_until_ready(
+        || match Connection::open_in_memory() {
+            Ok(conn) => {
+                let keyed = key_rc(&conn, None, PROBE_KEY)
+                    .map_or(true, |rc| rc != rusqlite::ffi::SQLITE_ERROR);
+                keyed && has_export_function(&conn)
+            }
+            // Not ours to report: the real open reports it with its own error.
+            Err(_) => true,
+        },
+        std::time::Duration::from_secs(10),
+    );
+    if ready {
+        READY.store(true, std::sync::atomic::Ordering::Release);
+    }
+    ready
+}
+
+/// Whether `conn` has the `sqlcipher_export` function. A connection opened before SQLCipher's
+/// auto-extension was registered does not, and never will.
+fn has_export_function(conn: &Connection) -> bool {
+    function_exists(conn, "sqlcipher_export")
+}
+
+/// Whether SQL function `name` is defined on `conn`: call it with no arguments and look for SQLite's
+/// "no such function" (any other outcome, including an argument error, means it exists).
+fn function_exists(conn: &Connection, name: &str) -> bool {
+    match conn.query_row(&format!("SELECT {name}()"), [], |_| Ok(())) {
+        // SQLite reports a missing function while preparing the statement, which rusqlite
+        // surfaces as an input error with the message; at run time it is a plain failure.
+        Err(
+            rusqlite::Error::SqlInputError { msg: message, .. }
+            | rusqlite::Error::SqliteFailure(_, Some(message)),
+        ) => !message.contains("no such function"),
+        _ => true,
+    }
+}
+
+/// Open a vault connection, after making sure SQLCipher is ready, so the connection is never
+/// opened inside the cold-start window (personal-cfo-g3m.20).
+fn open_vault_connection(path: &Path, flags: OpenFlags) -> Result<Connection, DbError> {
+    if !ensure_cipher_ready() {
+        return Err(DbError::CipherUnavailable);
+    }
+    Ok(Connection::open_with_flags(path, flags)?)
+}
+
+/// Call `probe` until it returns `true` (every millisecond) or `limit` passes. `true` means ready.
+fn wait_until_ready(mut probe: impl FnMut() -> bool, limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if probe() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// The one call into SQLCipher's keying C function; returns its result code.
+fn key_rc(conn: &Connection, schema: Option<&str>, key: &[u8]) -> Result<std::ffi::c_int, DbError> {
     let len = std::ffi::c_int::try_from(key.len())
         .map_err(|_| DbError::InvalidCommand("the key is too long".to_owned()))?;
     let schema = schema
@@ -4296,14 +4406,7 @@ fn key_connection(conn: &Connection, schema: Option<&str>, key: &[u8]) -> Result
             len,
         )
     };
-    if rc == rusqlite::ffi::SQLITE_OK {
-        Ok(())
-    } else {
-        Err(DbError::from(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rc),
-            None,
-        )))
-    }
+    Ok(rc)
 }
 
 /// Key a connection with a passphrase (SQLCipher runs its own KDF over it).
@@ -4314,7 +4417,7 @@ fn key_passphrase(conn: &Connection, key: &str) -> Result<(), DbError> {
 /// Open a SQLCipher connection keyed with a **passphrase** (SQLCipher runs its
 /// own KDF over it). Used by [`DbWorker::open`].
 fn open_keyed(path: &Path, key: &str) -> Result<Connection, DbError> {
-    let conn = Connection::open(path)?;
+    let conn = open_vault_connection(path, OpenFlags::default())?;
     key_passphrase(&conn, key)?;
     configure_conn(&conn)?;
     Ok(conn)
@@ -4337,7 +4440,7 @@ fn open_existing(
     key: impl Fn(&Connection) -> Result<(), DbError>,
 ) -> Result<Connection, DbError> {
     let source = File::open(path).map_err(|_| DbError::UnsupportedSchema)?;
-    let reader = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let reader = open_vault_connection(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     key(&reader)?;
     reader.execute_batch("BEGIN DEFERRED")?;
     let inspected = migrations::inspect_existing(&reader);
@@ -4346,7 +4449,7 @@ fn open_existing(
     drop(reader);
     verify_file_identity(&source, path)?;
 
-    let writer = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let writer = open_vault_connection(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     key(&writer)?;
     verify_file_identity(&source, path)?;
     migrations::inspect_existing(&writer)?;
@@ -4379,7 +4482,7 @@ fn verify_file_identity(source: &File, path: &Path) -> Result<(), DbError> {
 /// `pragma_update` (which would quote the value and be treated as a passphrase).
 /// The PRAGMA string holds the key in hex and is zeroized immediately after use.
 fn open_keyed_raw(path: &Path, dek: &Dek) -> Result<Connection, DbError> {
-    let conn = Connection::open(path)?;
+    let conn = open_vault_connection(path, OpenFlags::default())?;
     key_raw(&conn, dek)?;
     configure_conn(&conn)?;
     Ok(conn)

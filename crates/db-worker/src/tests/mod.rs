@@ -8559,3 +8559,152 @@ fn a_key_set_after_the_schema_was_used_is_silently_ignored_so_callers_must_key_f
         "a copy left under the old key must not verify under the new one"
     );
 }
+
+// -- Cold start (personal-cfo-g3m.20) -----------------------------------------------------------
+//
+// `sqlite3_initialize` sets SQLite's "initialized" flag BEFORE it runs SQLCipher's own start-up
+// (`SQLITE_EXTRA_INIT`, which sets `sqlcipher_init`), and runs that start-up outside its mutex. A
+// second thread that calls `sqlite3_initialize` in that window returns at once, opens a
+// connection and keys it while SQLCipher is not yet initialized: `sqlite3_key_v2` then returns the
+// stale `SQLITE_ERROR` (code 1, no message), and a connection opened in that window never gets the
+// `sqlcipher_export` function (SQLCipher registers it after `sqlcipher_init`). It can only happen
+// for the first connections of a process, so the test re-runs itself as fresh child processes,
+// each opening and keying connections from many threads released together.
+
+const COLD_START_CHILD: &str = "DBWORKER_COLD_START_CHILD";
+const COLD_START_THREADS: usize = 64;
+const COLD_START_PROCESSES: usize = 500;
+
+fn cold_start_child() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    // CPU pressure makes the race far likelier: a thread that is descheduled inside SQLCipher's
+    // start-up leaves the window open while the others run. Spinners stop when the opens are done.
+    let stop = Arc::new(AtomicBool::new(false));
+    let spinners: Vec<_> = (0..std::thread::available_parallelism().map_or(4, |n| 2 * n.get()))
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            })
+        })
+        .collect();
+    let barrier = Arc::new(Barrier::new(COLD_START_THREADS));
+    let handles: Vec<_> = (0..COLD_START_THREADS)
+        .map(|n| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || -> Result<(), String> {
+                let dek = vault_crypto::generate_dek().unwrap();
+                let dir = TempDir::new().unwrap();
+                barrier.wait();
+                if n % 4 == 0 {
+                    // The way every vault connection is opened: ready first, then open, then key.
+                    let conn =
+                        open_vault_connection(&dir.path().join("cold.db"), OpenFlags::default())
+                            .map_err(|error| format!("open: {error:?}"))?;
+                    key_raw(&conn, &dek).map_err(|error| format!("key: {error:?}"))?;
+                    // A connection opened in the start-up window would never get this function.
+                    if has_export_function(&conn) {
+                        Ok(())
+                    } else {
+                        Err("the connection has no sqlcipher_export".to_owned())
+                    }
+                } else {
+                    // The bare shape that failed in CI: an in-memory open, then keying.
+                    let conn = Connection::open_in_memory().unwrap();
+                    key_raw(&conn, &dek).map_err(|error| format!("key: {error:?}"))
+                }
+            })
+        })
+        .collect();
+    let mut failed = false;
+    for handle in handles {
+        if let Err(message) = handle.join().unwrap() {
+            eprintln!("COLD-START-KEY-FAILED: {message}");
+            failed = true;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    for spinner in spinners {
+        spinner.join().unwrap();
+    }
+    std::process::exit(i32::from(failed));
+}
+
+#[test]
+fn the_first_keyed_connections_of_a_process_can_be_keyed_at_the_same_moment() {
+    if std::env::var_os(COLD_START_CHILD).is_some() {
+        cold_start_child();
+    }
+    let exe = std::env::current_exe().unwrap();
+    let mut failures = Vec::new();
+    for run in 0..COLD_START_PROCESSES {
+        let output = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "tests::the_first_keyed_connections_of_a_process_can_be_keyed_at_the_same_moment",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(COLD_START_CHILD, "1")
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            failures.push(format!(
+                "run {run}: {}",
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .filter(|line| line.contains("COLD-START-KEY-FAILED"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {COLD_START_PROCESSES} fresh processes failed to key a connection:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn the_cipher_wait_returns_true_once_ready_and_false_when_it_never_is() {
+    // Ready on the fourth probe: true, and the probe ran four times.
+    let mut calls = 0;
+    assert!(wait_until_ready(
+        || {
+            calls += 1;
+            calls == 4
+        },
+        std::time::Duration::from_secs(5)
+    ));
+    assert_eq!(calls, 4);
+
+    // Never ready: gives up at the bound with false (the caller turns that into a typed error,
+    // never an unkeyed connection and never a panic).
+    let started = std::time::Instant::now();
+    assert!(!wait_until_ready(
+        || false,
+        std::time::Duration::from_millis(40)
+    ));
+    assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+    // And in this process, where SQLCipher is fine, the readiness answer is true.
+    assert!(ensure_cipher_ready());
+}
+
+#[test]
+fn the_function_probe_tells_a_defined_function_from_a_missing_one() {
+    let conn = Connection::open_in_memory().unwrap();
+    assert!(
+        function_exists(&conn, "abs"),
+        "abs() with no argument is an argument error"
+    );
+    assert!(function_exists(&conn, "sqlcipher_export"));
+    assert!(!function_exists(&conn, "definitely_not_a_function"));
+    assert!(has_export_function(&conn));
+}

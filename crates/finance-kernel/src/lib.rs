@@ -2909,6 +2909,9 @@ impl From<DbError> for KernelError {
             DbError::InvalidCommand(message) => KernelError::Validation(message),
             DbError::SelfTestFailed(message) => KernelError::Persistence(message),
             // Generic text; no path or key crosses the boundary.
+            DbError::CipherUnavailable => KernelError::Persistence(
+                "the encryption library did not finish starting up".to_owned(),
+            ),
             DbError::CheckpointBusy => KernelError::Persistence(
                 "the write-ahead log could not be fully checkpointed".to_owned(),
             ),
