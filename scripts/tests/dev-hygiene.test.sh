@@ -147,12 +147,12 @@ after="$(snapshot)"
 [ "$rc" = 0 ] && pass "exits 0" || fail "exit status $rc"
 [ "$before" = "$after" ] && pass "changes nothing (worktrees, files, refs identical)" || fail "report changed something"
 [ ! -s "$CALLS" ] && pass "never ran cargo" || fail "report ran cargo: $(cat "$CALLS")"
-printf '%s' "$out" | grep -q "Nothing was changed" && pass "says nothing was changed" || fail "missing the read-only line"
-printf '%s' "$out" | grep -q "wt-idle" && pass "lists the worktrees" || fail "idle worktree not listed"
-printf '%s' "$out" | grep -q "UNCOMMITTED CHANGES" && pass "flags the dirty worktree" || fail "dirty worktree not flagged"
-printf '%s' "$out" | grep -q "1 commit(s) on no remote" && pass "flags the unpushed commit" || fail "unpushed commit not flagged"
-printf '%s' "$out" | grep -q "directory is gone" && pass "flags the registration whose directory is gone" || fail "missing-directory registration not flagged"
-printf '%s' "$out" | grep -q "Disk:" && pass "reports disk space" || fail "no disk line"
+grep -q "Nothing was changed" <<<"$out" && pass "says nothing was changed" || fail "missing the read-only line"
+grep -q "wt-idle" <<<"$out" && pass "lists the worktrees" || fail "idle worktree not listed"
+grep -q "UNCOMMITTED CHANGES" <<<"$out" && pass "flags the dirty worktree" || fail "dirty worktree not flagged"
+grep -q "1 commit(s) on no remote" <<<"$out" && pass "flags the unpushed commit" || fail "unpushed commit not flagged"
+grep -q "directory is gone" <<<"$out" && pass "flags the registration whose directory is gone" || fail "missing-directory registration not flagged"
+grep -q "Disk:" <<<"$out" && pass "reports disk space" || fail "no disk line"
 
 case_start "--json is valid JSON and agrees with the text report"
 if command -v jq >/dev/null 2>&1; then
@@ -178,15 +178,15 @@ n="$(wc -l < "$CALLS" | tr -d ' ')"
 [ "$n" = 2 ] && pass "ran cargo clean exactly twice (the idle and the outer worktree)" || fail "ran cargo $n times: $(cat "$CALLS")"
 grep -q -- "--target-dir $TMP/wt-outer/target" "$CALLS" && pass "cleaned the outer worktree's own target" || fail "outer worktree not cleaned: $(cat "$CALLS")"
 if grep -q "worktrees/n1" "$CALLS"; then fail "cleaned the DIRTY nested worktree's target through its outer worktree: $(cat "$CALLS")"; else pass "did not descend into the nested worktree"; fi
-printf '%s' "$out" | grep -q "worktrees/n1.*uncommitted changes" && pass "the plan skips the dirty nested worktree" || fail "nested worktree not shown as skipped: $out"
+grep -q "worktrees/n1.*uncommitted changes" <<<"$out" && pass "the plan skips the dirty nested worktree" || fail "nested worktree not shown as skipped: $out"
 grep -q -- "--target-dir $TMP/wt-idle/target" "$CALLS" && pass "cleaned the idle worktree, with an explicit --target-dir" || fail "wrong or no clean: $(cat "$CALLS")"
 grep -q -- "--manifest-path $TMP/wt-idle/Cargo.toml" "$CALLS" && pass "passed the manifest beside the target dir" || fail "no --manifest-path"
-printf '%s' "$out" | grep -q "wt-dirty.*uncommitted changes" && pass "refused the dirty worktree" || fail "dirty worktree not refused: $out"
-printf '%s' "$out" | grep -q "wt-unpushed.*no remote" && pass "refused the unpushed worktree" || fail "unpushed worktree not refused"
-printf '%s' "$out" | grep -q "wt-fresh.*active" && pass "skipped the recently active worktree" || fail "fresh worktree not skipped"
-printf '%s' "$out" | grep -q "wt-busy.*cargo/rustc process" && pass "skipped the worktree with a running cargo process" || fail "busy worktree not skipped"
-printf '%s' "$out" | grep -q "pruned\|Removing" && pass "pruned the registration whose directory is gone" || fail "gone registration not pruned"
-git -C "$MAIN" worktree list --porcelain | grep -q "wt-gone" && fail "wt-gone is still registered" || pass "wt-gone is no longer registered"
+grep -q "wt-dirty.*uncommitted changes" <<<"$out" && pass "refused the dirty worktree" || fail "dirty worktree not refused: $out"
+grep -q "wt-unpushed.*no remote" <<<"$out" && pass "refused the unpushed worktree" || fail "unpushed worktree not refused"
+grep -q "wt-fresh.*active" <<<"$out" && pass "skipped the recently active worktree" || fail "fresh worktree not skipped"
+grep -q "wt-busy.*cargo/rustc process" <<<"$out" && pass "skipped the worktree with a running cargo process" || fail "busy worktree not skipped"
+grep -q "pruned\|Removing" <<<"$out" && pass "pruned the registration whose directory is gone" || fail "gone registration not pruned"
+grep -q "wt-gone" <<<"$(git -C "$MAIN" worktree list --porcelain)" && fail "wt-gone is still registered" || pass "wt-gone is no longer registered"
 
 case_start "--clean removes no worktree, branch or file of the user"
 for name in idle dirty unpushed fresh busy; do
@@ -196,13 +196,13 @@ for name in idle dirty unpushed fresh busy gone; do
   git -C "$MAIN" rev-parse --verify -q "refs/heads/br-$name" >/dev/null && pass "branch br-$name still exists" || fail "branch br-$name was removed"
 done
 [ -f "$TMP/wt-dirty/Cargo.toml" ] && grep -q edit "$TMP/wt-dirty/Cargo.toml" && pass "the uncommitted edit is intact" || fail "uncommitted edit was lost"
-git -C "$TMP/wt-unpushed" log --oneline -1 | grep -q local-only && pass "the unpushed commit is intact" || fail "unpushed commit lost"
+grep -q local-only <<<"$(git -C "$TMP/wt-unpushed" log --oneline -1)" && pass "the unpushed commit is intact" || fail "unpushed commit lost"
 
 case_start "--clean never touches the worktree it is run from"
 : > "$CALLS"
 out="$( cd "$TMP/wt-idle" && "$SCRIPT" --repo "$MAIN" --scratch-dir "$TMP/no-scratch" --clean --yes 2>&1 )"
 if grep -q -- "--target-dir $TMP/wt-idle/target" "$CALLS"; then fail "cleaned the worktree it was run from"; else pass "did not clean its own worktree"; fi
-printf '%s' "$out" | grep -q "wt-idle.*runs from" && pass "said why" || fail "no explanation for skipping the current worktree"
+grep -q "wt-idle.*runs from" <<<"$out" && pass "said why" || fail "no explanation for skipping the current worktree"
 
 case_start "--clean needs a terminal or --yes"
 : > "$CALLS"
@@ -223,7 +223,7 @@ chmod +x "$HOOK"
 : > "$CALLS"
 out="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_AFTER_CONFIRM_HOOK="$HOOK" run --clean --yes 2>&1)"
 if grep -q -- "--target-dir $TMP/wt-idle/target" "$CALLS"; then fail "cleaned a worktree that became dirty after the plan: $(cat "$CALLS")"; else pass "did not clean the worktree that became dirty after the plan"; fi
-printf '%s' "$out" | grep -q "wt-idle — changed since the plan" && pass "said it changed since the plan" || fail "no 'changed since the plan' message: $out"
+grep -q "wt-idle — changed since the plan" <<<"$out" && pass "said it changed since the plan" || fail "no 'changed since the plan' message: $out"
 grep -q -- "--target-dir $TMP/wt-outer/target" "$CALLS" && pass "still cleaned the unchanged outer worktree" || fail "outer worktree not cleaned"
 
 case_start "a long idle threshold cleans nothing"
@@ -233,9 +233,9 @@ out="$(run --clean --yes --idle-days 100000 2>&1)"
 
 case_start "the script cannot delete user files"
 code="$(grep -v '^[[:space:]]*#' "$SCRIPT")"
-if printf '%s\n' "$code" | grep -E -q '(^|[^[:alnum:]_.-])rm([[:space:]]|$)'; then fail "script calls rm"; else pass "no rm"; fi
-if printf '%s\n' "$code" | grep -E -q 'rmdir|-delete|shred|truncate'; then fail "script calls a deleting command"; else pass "no rmdir, find -delete, shred or truncate"; fi
-if printf '%s\n' "$code" | grep -E -q 'git (branch|worktree (remove|move))|git push|git reset|git checkout|git clean|git stash'; then fail "script changes branches, worktrees or history"; else pass "no branch, worktree remove, push, reset, checkout, clean or stash"; fi
+if grep -E -q '(^|[^[:alnum:]_.-])rm([[:space:]]|$)' <<<"$code"; then fail "script calls rm"; else pass "no rm"; fi
+if grep -E -q 'rmdir|-delete|shred|truncate' <<<"$code"; then fail "script calls a deleting command"; else pass "no rmdir, find -delete, shred or truncate"; fi
+if grep -E -q 'git (branch|worktree (remove|move))|git push|git reset|git checkout|git clean|git stash' <<<"$code"; then fail "script changes branches, worktrees or history"; else pass "no branch, worktree remove, push, reset, checkout, clean or stash"; fi
 bash -n "$SCRIPT" && pass "bash -n is clean" || fail "bash -n failed"
 
 echo

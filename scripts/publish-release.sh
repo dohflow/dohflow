@@ -410,7 +410,9 @@ cmd_verify() {
 
   echo
   echo "── Checking dohflow.app/download mentions $v ─────────────────────"
-  if curl -fsS "https://dohflow.app/download" | grep -qF "$v"; then
+  # Fetch first, then match: under pipefail, `curl | grep -q` can fail a page that does mention $v
+  # (grep -q exits at the first match, curl takes SIGPIPE on a page bigger than the pipe buffer).
+  if page="$(curl -fsS "https://dohflow.app/download")" && grep -qF -- "$v" <<<"$page"; then
     ok "dohflow.app/download mentions $v"
   else
     echo "✗ dohflow.app/download does not (yet) mention $v — the site rebuild may still be in progress; re-check in a minute." >&2

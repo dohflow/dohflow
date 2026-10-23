@@ -33,7 +33,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          if gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx 'merge-ready'; then
+          # Capture first, then match. As a pipe into `grep -q` under pipefail, an early grep exit
+          # could make a present label read as absent, and a gh failure inside the `if` condition
+          # was read as "no label" instead of failing the step (personal-cfo-md8h2.15).
+          labels="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')"
+          if grep -qx 'merge-ready' <<<"$labels"; then
             gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label merge-ready
             echo "Removed merge-ready: a new commit invalidates the review verdict."
           else
