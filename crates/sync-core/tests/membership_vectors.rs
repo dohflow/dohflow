@@ -724,6 +724,28 @@ fn all_cases() -> Vec<Case> {
             ),
         ],
     });
+    let foreign_genesis = membership(&intruder, 1, None, Action::Add, &intruder);
+    cases.push(Case {
+        name: "invalid_foreign_genesis_is_not_a_fork",
+        description: "a validly self-signed genesis from a device that is not the founder, for the same vault, is not evidence of a fork",
+        steps: vec![
+            (refs(&[&t.m1]), refs(&[&t.e1])),
+            (vec![foreign_genesis], vec![]),
+        ],
+    });
+    let founder_regenesis = {
+        let mut body = membership_body(a, 1, None, Action::Add, a);
+        body.issued_at += 1;
+        sign(&body.encode().unwrap(), &a.signing)
+    };
+    cases.push(Case {
+        name: "invalid_second_genesis_signed_by_the_founder_is_a_fork",
+        description: "the founding device signed two different genesis records: a real fork",
+        steps: vec![
+            (refs(&[&t.m1]), refs(&[&t.e1])),
+            (vec![founder_regenesis], vec![]),
+        ],
+    });
     let conflicting_epoch = |sealer: &Dev, signer: Option<&Dev>| {
         let body = epoch_body(
             sealer,
@@ -1424,6 +1446,11 @@ fn every_invalid_case_fails_for_its_intended_reason() {
             "invalid_conflicting_epoch_from_a_non_member_is_not_equivocation",
             "SealerNotAuthorized",
         ),
+        ("invalid_foreign_genesis_is_not_a_fork", "BadGenesis"),
+        (
+            "invalid_second_genesis_signed_by_the_founder_is_a_fork",
+            "Fork",
+        ),
         ("invalid_wrong_prev_id", "WrongPrevId"),
         ("invalid_wrong_version", "WrongVersion"),
         ("invalid_fork", "Fork"),
@@ -1622,5 +1649,12 @@ fn unauthenticated_conflicts_never_halt_sync() {
         }
     }
     halting.sort();
-    assert_eq!(halting, ["invalid_epoch_equivocation", "invalid_fork"]);
+    assert_eq!(
+        halting,
+        [
+            "invalid_epoch_equivocation",
+            "invalid_fork",
+            "invalid_second_genesis_signed_by_the_founder_is_a_fork"
+        ]
+    );
 }

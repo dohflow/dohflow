@@ -882,6 +882,78 @@
       ]
     },
     {
+      "description": "a validly self-signed genesis from a device that is not the founder, for the same vault, is not evidence of a fork",
+      "name": "invalid_foreign_genesis_is_not_a_fork",
+      "steps": [
+        {
+          "epochs": [
+            "0000018b001c646f68666c6f772f73796e632d65706f63682d7265636f72642f7631000100010020000000000000400080000000000000f0000000000000000101fbcbc4300bbbcc5bf9ad3dd50de0f8f5c415271b31d3668e4cf676e1197d24260016156b9f1b7f51d1ccc619ceed437ea0f210bdcf0f49d1b025daf16697a3a286167c64fc25c8d0263ab7c97212d9db70903890eb88675e107661ca55528054793dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd7000000010000000000004000800000000000a0113dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd70001002000000020eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000006dccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdb476a7b100c4f18fdbd3b8b924022d4aefba7b6cba363aff05b3aa840a50b4c95647a7d7907ebbd7002a171bc9fa09fc03bfcd23e7e6a643731646ee4d36d0f"
+          ],
+          "expect": {
+            "authorized": [
+              "3dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd7"
+            ],
+            "epoch_head_id": "9184bd3b054aac2f55a3027d851cc115f3bf9a38833368bc9b7283a009bdf490",
+            "head_id": "fbcbc4300bbbcc5bf9ad3dd50de0f8f5c415271b31d3668e4cf676e1197d2426",
+            "head_version": 1,
+            "key_epoch": 1,
+            "result": "valid"
+          },
+          "memberships": [
+            "000000b8001a646f68666c6f772f73796e632d6d656d626572736869702f7631000100010020000000000000400080000000000000f0000000000000000100013dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd70000000000004000800000000000a011d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873700000020414141414141414141414141414141414141414141414141414141414141414100065bfeda352240198594b3b1c1d127b98ec39b1ccd566f5842c5c7de58c4848a9ce17503d2d3f0d47dcc45f14839f2e84351c5d318c96c445a39d6d06c56c20797a494c00e6a08"
+          ]
+        },
+        {
+          "epochs": [],
+          "expect": {
+            "halts_sync": false,
+            "kind": "MembershipChainInvalid",
+            "position": 0,
+            "result": "invalid"
+          },
+          "memberships": [
+            "000000b8001a646f68666c6f772f73796e632d6d656d626572736869702f7631000100010020000000000000400080000000000000f00000000000000001000155eeee8269a2b8cac69767920c92b00884a5e4ce2b0186af06b1d4debd511a040000000000004000800000000000a077c853ad0f0cd2b619aea92ceec4fd56a24d6499d584ce79257e45cfd8139b60a700000020a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a72700065bfeda3522403ec05f7d75e087ec1a5a14e3f3b1710745699e89d922aaead9b314b153e2b4072cb41dfde3b7093f446d31b14883c483fbba1d28a503b314e0c6560ffe04590b"
+          ]
+        }
+      ]
+    },
+    {
+      "description": "the founding device signed two different genesis records: a real fork",
+      "name": "invalid_second_genesis_signed_by_the_founder_is_a_fork",
+      "steps": [
+        {
+          "epochs": [
+            "0000018b001c646f68666c6f772f73796e632d65706f63682d7265636f72642f7631000100010020000000000000400080000000000000f0000000000000000101fbcbc4300bbbcc5bf9ad3dd50de0f8f5c415271b31d3668e4cf676e1197d24260016156b9f1b7f51d1ccc619ceed437ea0f210bdcf0f49d1b025daf16697a3a286167c64fc25c8d0263ab7c97212d9db70903890eb88675e107661ca55528054793dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd7000000010000000000004000800000000000a0113dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd70001002000000020eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000006dccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdb476a7b100c4f18fdbd3b8b924022d4aefba7b6cba363aff05b3aa840a50b4c95647a7d7907ebbd7002a171bc9fa09fc03bfcd23e7e6a643731646ee4d36d0f"
+          ],
+          "expect": {
+            "authorized": [
+              "3dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd7"
+            ],
+            "epoch_head_id": "9184bd3b054aac2f55a3027d851cc115f3bf9a38833368bc9b7283a009bdf490",
+            "head_id": "fbcbc4300bbbcc5bf9ad3dd50de0f8f5c415271b31d3668e4cf676e1197d2426",
+            "head_version": 1,
+            "key_epoch": 1,
+            "result": "valid"
+          },
+          "memberships": [
+            "000000b8001a646f68666c6f772f73796e632d6d656d626572736869702f7631000100010020000000000000400080000000000000f0000000000000000100013dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd70000000000004000800000000000a011d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873700000020414141414141414141414141414141414141414141414141414141414141414100065bfeda352240198594b3b1c1d127b98ec39b1ccd566f5842c5c7de58c4848a9ce17503d2d3f0d47dcc45f14839f2e84351c5d318c96c445a39d6d06c56c20797a494c00e6a08"
+          ]
+        },
+        {
+          "epochs": [],
+          "expect": {
+            "halts_sync": true,
+            "kind": "MembershipChainFork",
+            "position": null,
+            "result": "invalid"
+          },
+          "memberships": [
+            "000000b8001a646f68666c6f772f73796e632d6d656d626572736869702f7631000100010020000000000000400080000000000000f0000000000000000100013dc234f724422523dc7f5a3139ca6e00fa7fc88da1c0937da724e0a88392ffd70000000000004000800000000000a011d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873700000020414141414141414141414141414141414141414141414141414141414141414100065bfeda3522416ff8d1ba69192f460eee19db49cd2fd2540f71c993af8f234c850f55505538a81f70441a81132761f4b29977d70379be5f3ece8cb56a94cd5f0896adc3301e0c"
+          ]
+        }
+      ]
+    },
+    {
       "description": "an epoch record after an accepted prev_epoch_id with no valid signature is garbage, not equivocation",
       "name": "invalid_unsigned_conflicting_epoch_is_not_equivocation",
       "steps": [

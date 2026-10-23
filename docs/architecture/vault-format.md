@@ -1369,8 +1369,10 @@ requires all of the following. The checks above are evaluated for each record
    `EpochEquivocation`; two different membership records for one `version` are
    `MembershipChainFork`. A conflicting record counts only if it would itself have been valid at
    that position: a membership record with the right `prev_id`, a signer authorized there and a
-   valid signature under the chain's key, or an epoch record whose sealer is authorized at its
-   named head with a valid signature. Anything else at that position is an ordinary invalid
+   valid signature under the chain's key (for a second genesis record, one signed by the
+   accepted founding device: a self-signed genesis from anyone else has no authority over the
+   chain), or an epoch record whose sealer is authorized at its named head with a valid
+   signature. Anything else at that position is an ordinary invalid
    record, because unauthenticated bytes must never put a device into the halt state below. Both records are retained, nothing from either is
    installed, and the device halts as below. An exact duplicate is idempotent.
 5. **Verified state is rollback-protected.** The newest verified membership head,

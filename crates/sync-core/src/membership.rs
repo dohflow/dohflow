@@ -1235,7 +1235,14 @@ fn conflicting_membership(
         {
             return ChainError::KeyUnacceptable { at };
         }
-        ed25519_verify_strict(&body.ed25519_pk, &record.body, &record.signature)
+        // A competing genesis is evidence of a fork only if the ACCEPTED founding device signed
+        // it. A self-signed genesis needs no secret (the vault id is routing data), so one from
+        // anyone else has no authority over the chain and is just a bad genesis.
+        let founder = &state.members[0];
+        if body.signer_fingerprint != founder.fingerprint {
+            return ChainError::BadGenesis { at };
+        }
+        ed25519_verify_strict(&founder.ed25519_pk, &record.body, &record.signature)
     } else {
         if body.prev_id != Some(state.steps[position - 2].id) {
             return ChainError::WrongPrevId { at };
