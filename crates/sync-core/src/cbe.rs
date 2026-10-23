@@ -72,6 +72,9 @@ pub enum WireError {
     /// `InvalidIdempotencyKey` of C.11, which is not a `MalformedObject`).
     #[error("the idempotency key is not a UUID version 4")]
     InvalidIdempotencyKey,
+    /// An optional `bytes` field is present but empty, which would be a second encoding of absent.
+    #[error("an optional byte string is present but empty")]
+    EmptyOptionalBytes,
     /// The `engine_version` is not 1 to 64 bytes of printable ASCII (`0x21..=0x7e`), C.13.
     #[error("the engine version is not 1 to 64 printable ASCII bytes")]
     BadEngineVersion,

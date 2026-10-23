@@ -7,10 +7,13 @@
 //! * [`canonical_json`]: the strict canonical JSON codec of `docs/architecture/vault-format.md`
 //!   C.1.2 (restricted RFC 8785), shared by command payloads, manifests and logical
 //!   metadata.
+//! * [`accepted`]: the C.10 accepted-envelope record, the service's push decision and the
+//!   client's outbox binding.
 //! * [`cbe`]: CBE1, the canonical binary encoding of C.1.1 (strict writer and reader).
 //! * [`header`]: the C.4 clear header (the AEAD's AAD) and the `DFSY` container.
 //! * [`envelope`]: the envelope plaintext, its commitments and digest, and the receiver checks.
 
+pub mod accepted;
 pub mod canonical_json;
 pub mod cbe;
 pub mod envelope;
