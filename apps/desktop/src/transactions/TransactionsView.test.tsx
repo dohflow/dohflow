@@ -376,6 +376,20 @@ describe("TransactionsView", () => {
     expect(within(row!).getByText("Checking")).toBeInTheDocument();
   });
 
+  it("shows the schema's amount message when an empty transaction form is submitted, and records nothing (zod resolver)", async () => {
+    mockTransactionPage([]);
+    renderWithClient(<TransactionsView />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /add transaction/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+
+    expect(await screen.findByText("Enter an amount above zero.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/amount/i)).toHaveAttribute("aria-invalid", "true");
+    expect(mocks.recordTransaction).not.toHaveBeenCalled();
+  });
+
   it("records an expense with the correct signed amount and refreshes", async () => {
     // First fetch: an empty vault; after the mutation invalidates, the new row.
     mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) =>
