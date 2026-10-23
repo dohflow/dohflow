@@ -282,17 +282,23 @@ pub struct HostOptions {
     /// Called once, at the end of setup, with the app's handle (personal-cfo-i93n3.13), so a
     /// host can keep it for its own lifecycle events. `None` (the default) does nothing.
     pub on_ready: Option<fn(&tauri::AppHandle)>,
-    /// Called after EVERY transition to Unlocked, with the app's handle (personal-cfo-i93n3.13,
-    /// i93n3.14): a vault created, a backup restored (as a fresh vault or as a new named one),
-    /// a named vault created, and a password unlock. It is never called for a failed unlock,
-    /// create or restore, and never for a transition to any other state. A transition that ends
-    /// Unlocked calls it exactly once. `None` (the default) does nothing.
-    pub on_unlocked: Option<fn(&tauri::AppHandle)>,
-    /// Consulted at every unlock (personal-cfo-i93n3.13): `true` runs the engine's
-    /// `PRAGMA integrity_check` before anything opens, migrates or writes, and a failure is
-    /// the typed `VaultIntegrityCheckFailed` error. A host with a reason to distrust the files
-    /// (a restored install) answers `true` once. `None` (the default) never checks.
-    pub unlock_integrity_check: Option<fn() -> bool>,
+    /// Called after EVERY transition to Unlocked, with the app's handle and the id of the vault
+    /// that became unlocked (personal-cfo-i93n3.13, i93n3.14, i93n3.18): a vault created, a backup
+    /// restored (as a fresh vault or as a new named one), a named vault created, and a password
+    /// unlock. It is never called for a failed unlock, create or restore, and never for a
+    /// transition to any other state. A transition that ends Unlocked calls it exactly once.
+    /// The id is the vault's registry identifier, the same one the vault picker uses (a UUID in
+    /// text form): never a path, a name or contents. It is `None` for a vault that is not
+    /// registered yet (a legacy layout, or one just created before the registry knows it); a
+    /// host must treat `None` as "unknown vault". `None` (the default) does nothing.
+    pub on_unlocked: Option<fn(&tauri::AppHandle, Option<&str>)>,
+    /// Consulted at every unlock with the id of the vault being unlocked (personal-cfo-i93n3.13,
+    /// i93n3.18): `true` runs the engine's `PRAGMA integrity_check` before anything opens,
+    /// migrates or writes, and a failure is the typed `VaultIntegrityCheckFailed` error. A host
+    /// with a reason to distrust a vault's files (a restored install) answers `true` for each such
+    /// vault until it has passed once. The id is as for `on_unlocked`; **a host MUST treat `None`
+    /// as "run the check"**. `None` for the option (the default) never checks.
+    pub unlock_integrity_check: Option<fn(Option<&str>) -> bool>,
 }
 
 /// The longest device name `build_info` passes to the UI.
@@ -320,11 +326,12 @@ pub fn call_host_hook<A>(hook: Option<fn(&A)>, argument: &A) {
 }
 
 impl HostOptions {
-    /// The options for the next unlock: the integrity check when the host asks for it.
+    /// The options for the next unlock of the vault with registry id `vault_id`: the integrity
+    /// check when the host asks for it.
     #[must_use]
-    pub fn unlock_options(self) -> finance_kernel::UnlockOptions {
+    pub fn unlock_options(self, vault_id: Option<&str>) -> finance_kernel::UnlockOptions {
         match self.unlock_integrity_check {
-            Some(ask) if ask() => finance_kernel::UnlockOptions::with_integrity_check(),
+            Some(ask) if ask(vault_id) => finance_kernel::UnlockOptions::with_integrity_check(),
             _ => finance_kernel::UnlockOptions::default(),
         }
     }
