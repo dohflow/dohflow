@@ -11,6 +11,8 @@
 //!   client's outbox binding.
 //! * [`cbe`]: CBE1, the canonical binary encoding of C.1.1 (strict writer and reader).
 //! * [`header`]: the C.4 clear header (the AEAD's AAD) and the `DFSY` container.
+//! * [`keys`]: the exact Ed25519 and X25519 key acceptance rules of C.6.
+//! * [`membership`]: the C.6 membership chain and epoch records and their reference verifier.
 //! * [`envelope`]: the envelope plaintext, its commitments and digest, and the receiver checks.
 
 pub mod accepted;
@@ -18,5 +20,7 @@ pub mod canonical_json;
 pub mod cbe;
 pub mod envelope;
 pub mod header;
+pub mod keys;
+pub mod membership;
 pub mod row_digest;
 pub mod write_set;
