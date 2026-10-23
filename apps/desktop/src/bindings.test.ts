@@ -90,6 +90,7 @@ describe("generated IPC bindings", () => {
     "connectorCreateMappedAccount",
     "connectorSync",
     "connectorAutoSync",
+    "openProviderSite",
     "connectorForget",
         "noResetWarning",
         "acknowledgeNoResetWarning",

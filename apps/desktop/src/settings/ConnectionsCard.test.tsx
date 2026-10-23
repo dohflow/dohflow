@@ -48,6 +48,7 @@ function connection(over: Record<string, unknown> = {}) {
     last_synced_at: "2026-08-22T10:00:00Z",
     last_error: null,
     refresh_cadence: "every_open",
+    attention: [],
     links: [
       {
         external_id: "ACT-1",
@@ -96,6 +97,18 @@ describe("ConnectionsCard", () => {
     expect(await findByRole("alert")).toHaveTextContent(
       "Could not load connections.",
     );
+  });
+
+  it("flags a connection that needs a sign-in at the provider, even when its last refresh worked (pxi.22)", async () => {
+    mocks.connectorConnections.mockResolvedValue(
+      ok([
+        connection({
+          attention: [{ kind: "reauth_institution", institution: "First Bank" }],
+        }),
+      ]),
+    );
+    const { findByText } = renderWithClient(<ConnectionsCard />);
+    expect(await findByText("Needs attention")).toBeInTheDocument();
   });
 
   it("renders a healthy connection with its refresh stamp and links", async () => {
