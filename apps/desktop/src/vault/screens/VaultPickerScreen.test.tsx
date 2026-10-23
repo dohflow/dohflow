@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import type { VaultSummaryDto } from "@/bindings";
 import { sparklinePoints, VaultPickerScreen } from "./VaultPickerScreen";
@@ -187,4 +187,62 @@ test("sparklines are deterministic per vault id and differ across vaults", () =>
   expect(sparklinePoints("vault-a").points).not.toEqual(
     sparklinePoints("vault-b").points,
   );
+});
+
+// personal-cfo-i93n3.16: a host that asks for an integrity check, and a vault that fails it.
+async function submitWith(failure: string, password = "synthetic-password") {
+  ops.unlockVault.mockResolvedValue(failure);
+  fireEvent.click(screen.getByRole("button", { name: /real/i }));
+  const field = await screen.findByLabelText(/master password/i);
+  fireEvent.change(field, { target: { value: password } });
+  fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
+  return field;
+}
+
+test("a failed integrity check shows the message, opens the restore flow in the sheet and moves focus to the message", async () => {
+  render(<VaultPickerScreen />);
+  const field = await submitWith("VaultIntegrityCheckFailed");
+  const dialog = await screen.findByRole("dialog", { name: /unlock real/i });
+  const message = await within(dialog).findByRole("alert");
+  expect(message).toHaveTextContent("found damage");
+  expect(message).toHaveTextContent("Nothing was opened or changed");
+  expect(message).toHaveTextContent("Restore it from a backup you made earlier");
+  // The existing restore-as-new flow, inside the sheet (not only on the screen behind it).
+  const restore = within(dialog).getByTestId("restore");
+  expect(restore).toHaveAttribute("data-mode", "newNamed");
+  // Focus moves to the message (announced, and the restore action is the next stop), not back to
+  // the password field the user cannot use to fix this.
+  await waitFor(() => expect(message).toHaveFocus());
+  expect(field).not.toHaveFocus();
+  // Generic wording: no platform named.
+  expect(dialog.textContent ?? "").not.toMatch(/\b(iphone|ios|android)\b/i);
+});
+
+test("a wrong password offers no restore action and returns focus to the password field", async () => {
+  render(<VaultPickerScreen />);
+  const field = await submitWith("VaultUnlockFailed", "wrong");
+  const dialog = await screen.findByRole("dialog", { name: /unlock real/i });
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Incorrect password");
+  expect(within(dialog).queryByTestId("restore")).not.toBeInTheDocument();
+  await waitFor(() => expect(field).toHaveFocus());
+});
+
+test("the newer-schema refusal is unchanged: no restore action in the sheet", async () => {
+  render(<VaultPickerScreen />);
+  await submitWith("NewerVaultSchema");
+  const dialog = await screen.findByRole("dialog", { name: /unlock real/i });
+  await within(dialog).findByRole("alert");
+  expect(within(dialog).queryByTestId("restore")).not.toBeInTheDocument();
+});
+
+test("the restore action goes away on the next attempt when it fails for another reason", async () => {
+  render(<VaultPickerScreen />);
+  const field = await submitWith("VaultIntegrityCheckFailed");
+  const dialog = await screen.findByRole("dialog", { name: /unlock real/i });
+  await waitFor(() => expect(within(dialog).getByTestId("restore")).toBeInTheDocument());
+  ops.unlockVault.mockResolvedValue("VaultUnlockFailed");
+  fireEvent.change(field, { target: { value: "another" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: /^unlock$/i }));
+  expect(await within(dialog).findByText(/incorrect password/i)).toBeInTheDocument();
+  expect(within(dialog).queryByTestId("restore")).not.toBeInTheDocument();
 });

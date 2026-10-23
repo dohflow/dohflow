@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   ChevronRight,
@@ -231,13 +231,24 @@ function UnlockVaultModal({
   const [error, setError] = useState<string | null>(null);
   const [forgot, setForgot] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // The host asked for an integrity check and the vault failed it (personal-cfo-i93n3.16): the only
+  // way on is a backup, so the restore flow opens in this sheet next to the message.
+  const [damaged, setDamaged] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null);
+  const damagedMessage = useRef<HTMLParagraphElement>(null);
+
+  // Move focus to the message so a screen reader announces it and the restore action is the
+  // next stop, instead of returning to the password field the user cannot use to fix this.
+  useEffect(() => {
+    if (damaged) damagedMessage.current?.focus();
+  }, [damaged]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (password.length === 0 || submitting) return;
     setSubmitting(true);
     setError(null);
+    setDamaged(false);
     const failure = await unlockVault(password);
     // Drop the typed password from state either way (defense-in-depth); on success the
     // provider status flips to Unlocked and the router swaps screens.
@@ -245,7 +256,11 @@ function UnlockVaultModal({
     if (failure) {
       setError(describeIpcError(failure));
       setSubmitting(false);
-      passwordInput.current?.focus();
+      if (failure === "VaultIntegrityCheckFailed") {
+        setDamaged(true);
+      } else {
+        passwordInput.current?.focus();
+      }
     }
   }
 
@@ -332,7 +347,12 @@ function UnlockVaultModal({
           )}
 
           {error && (
-            <p role="alert" className="text-sm text-loss">
+            <p
+              role="alert"
+              ref={damaged ? damagedMessage : undefined}
+              tabIndex={damaged ? -1 : undefined}
+              className="text-sm text-loss focus:outline-none"
+            >
               {error}
             </p>
           )}
@@ -346,6 +366,15 @@ function UnlockVaultModal({
             {submitting ? "Unlocking…" : "Unlock"}
           </Button>
         </form>
+
+        {damaged && (
+          <div className="mt-4">
+            <RestoreFromBackup
+              mode="newNamed"
+              caption="Restore from a backup. This makes a separate vault from the backup file and leaves the damaged one untouched."
+            />
+          </div>
+        )}
       </div>
     </div>
   );
