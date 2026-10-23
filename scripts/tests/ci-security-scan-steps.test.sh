@@ -70,12 +70,15 @@ step_if() {
 
 # check <file>: prints one line per problem; no output means the file is fine.
 check() {
-  local f="$1" s cond
-  job_text "$f" | grep -qF "tool: cargo-audit,cargo-deny" || echo "the cargo-audit,cargo-deny install is missing"
-  job_text "$f" | grep -qF "name: Security scanning (secrets + dependencies)" || true
+  local f="$1" s cond job
+  # Match with bash, not `job_text | grep -q`: under `pipefail`, grep -q exits at the first match,
+  # the producer can get SIGPIPE, and the pipeline then reports failure on a file that is fine
+  # (it did, on the hosted Linux runner: "the decision step is missing").
+  job="$(job_text "$f")"
+  [[ "$job" == *"tool: cargo-audit,cargo-deny"* ]] || echo "the cargo-audit,cargo-deny install is missing"
   grep -qF "name: Security scanning (secrets + dependencies)" "$f" || echo "the required check name changed or the job is gone"
-  job_text "$f" | grep -qF "      - name: Decide whether the advisory scans are required" || echo "the decision step is missing"
-  job_text "$f" | grep -qF "      - name: Advisory scans not required for this change" || echo "the explicit not-required step is missing"
+  [[ "$job" == *"      - name: Decide whether the advisory scans are required"* ]] || echo "the decision step is missing"
+  [[ "$job" == *"      - name: Advisory scans not required for this change"* ]] || echo "the explicit not-required step is missing"
   for s in "${ALWAYS[@]}"; do
     if [ -z "$(step_block "$f" "$s")" ]; then
       echo "step MISSING: $s"
