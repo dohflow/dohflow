@@ -757,9 +757,10 @@ fn the_relative_predicate_decides_on_fixed_numbers() {
 
 /// How many times the timed slowdown run repeats the capture's read-and-hash pass per command.
 /// The pass is only part of the capture (the TEMP triggers are the rest): measured, running it six
-/// times moves the ratio from about 1.8x to about 3.6x, below the 4x ceiling; twenty passes makes
-/// the whole capture cost well over six times what it normally does.
-const SLOWDOWN_PASSES: u32 = 20;
+/// times moves the ratio from about 1.8x to about 3.6x, below the 4x ceiling. Twenty passes read
+/// 6.4x-7.5x locally but only 4.14x on a hosted runner (personal-cfo-g3m.19), barely above the
+/// ceiling, so thirty keeps the proof run clearly above it wherever the capture is cheap.
+const SLOWDOWN_PASSES: u32 = 30;
 
 /// The TIMED slowdown run: with the capture's read-and-hash pass repeated `SLOWDOWN_PASSES` times
 /// per command (the test-only `CAPTURE_COST_MULTIPLIER`), the real predicate should reject the
