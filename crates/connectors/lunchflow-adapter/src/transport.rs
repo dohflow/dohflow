@@ -237,7 +237,7 @@ mod tests {
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
-                    Err(_) if started.elapsed() < Duration::from_secs(5) => {
+                    Err(_) if started.elapsed() < Duration::from_secs(30) => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     Err(_) => return (String::new(), 0),

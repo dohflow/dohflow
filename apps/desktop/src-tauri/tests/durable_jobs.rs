@@ -134,15 +134,18 @@ fn production_dispatcher_is_nonblocking_and_debounces_one_unlock_window() {
         dispatcher,
         "unlock-desktop-test".to_owned(),
     );
+    // The handler blocks until `release` is set below, so a dispatch that waited for it would
+    // never return; this bound only catches a dispatch that is slow for some other reason, and it
+    // is generous on purpose (the old 100 ms wall-clock bound failed under load, g3m.19).
     assert!(
-        dispatch_started.elapsed() < StdDuration::from_millis(100),
+        dispatch_started.elapsed() < StdDuration::from_secs(10),
         "post-unlock dispatch must return without waiting for the handler"
     );
 
     let wait_started = Instant::now();
     while !started.load(Ordering::Acquire) {
         assert!(
-            wait_started.elapsed() < StdDuration::from_secs(2),
+            wait_started.elapsed() < StdDuration::from_secs(30),
             "blocking handler should be scheduled"
         );
         thread::sleep(StdDuration::from_millis(2));

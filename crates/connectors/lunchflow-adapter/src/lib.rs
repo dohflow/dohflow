@@ -1235,7 +1235,9 @@ mod tests {
         let huge = format!("{}{KEY}", "\u{200B}".repeat(2_000_000));
         let started = std::time::Instant::now();
         let cleaned = clean(&huge, KEY);
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // Generous: only a pathological scan of the 2M-character text would take this long; this
+        // is not a performance budget (personal-cfo-g3m.19).
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
         assert!(cleaned.chars().count() <= MAX_PROVIDER_CHARS + 1);
         assert_no_key_fragment(&cleaned, KEY);
     }
@@ -1253,17 +1255,30 @@ mod tests {
             Err(IdRefusal::CarriesKey)
         );
 
-        // Multi-megabyte ids, with and without key material at the far end.
+        // Multi-megabyte ids, with and without key material at the far end. "Bounded" is judged
+        // RELATIVE: refusing a 4-million-character id must cost about what refusing a
+        // 40,000-character one does, because only the first MAX_PROVIDER_ID_CHARS + 1 characters
+        // are examined. A scan of the whole id would cost 100 times more. The minimum of several
+        // runs ignores load spikes; the old fixed 50 ms bound failed under load (g3m.19).
+        let min_of = |id: &str| {
+            (0..15)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    assert_eq!(check_provider_id(id, KEY), Err(IdRefusal::TooLong));
+                    started.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let baseline = min_of(&"q".repeat(40_000));
         for huge in [
             "q".repeat(4_000_000),
             format!("{}{KEY}", "\u{200B}".repeat(2_000_000)),
         ] {
-            let started = std::time::Instant::now();
-            assert_eq!(check_provider_id(&huge, KEY), Err(IdRefusal::TooLong));
+            let took = min_of(&huge);
             assert!(
-                started.elapsed() < std::time::Duration::from_millis(50),
-                "took {:?}",
-                started.elapsed()
+                took < baseline * 25 + std::time::Duration::from_micros(200),
+                "refusing a huge id took {took:?} against {baseline:?} for a 40k one"
             );
         }
     }

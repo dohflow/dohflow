@@ -79,6 +79,14 @@ A test that captures `tracing` output to prove something is, or is not, logged f
   - Read-model rebuild on 50k transaction fixture: < 2s.
   - App cold start to "vault unlock screen visible": < 1s on dev hardware.
 - Budgets are baseline-recorded; regressions ≥ 2× the baseline fail CI.
+- **Absolute wall-clock numbers are never asserted in a required test (`personal-cfo-g3m.19`).** A
+  required test asserts a ratio measured in the same run, a scaling shape, a deterministic
+  predicate, or a generous bound that only catches a hang (30 s or more). The absolute
+  budgets live in `#[ignore]`d tests run by the non-required perf job (`Perf budget (absolute,
+  not required)`), which prints each number: transaction-display rebuild of 300 accounts under
+  2 s (`rebuild_stays_inside_the_absolute_budget`); a job cancellation reaching a running handler
+  under 500 ms (`CANCELLATION_SLA`; `db_cancel_request_reaches_a_running_handler_within_the_sla`
+  and `cancellation_is_visible_within_the_absolute_sla`); and the write-set capture below.
 - **Write-set capture on a command (Sync; `personal-cfo-g3m.16`).** The capture adds per-command cost
   (TEMP triggers plus a read-and-hash pass). The **required** check is relative and in the same
   run: capture on against capture off, interleaved, median of 7 runs of 400 commands after a
