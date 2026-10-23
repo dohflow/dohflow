@@ -15,7 +15,7 @@ use app_lib::ipc::commands::{
 use app_lib::ipc::dto::VaultStateDto;
 use app_lib::ipc::IpcError;
 use app_lib::vault_registry::VaultRegistry;
-use app_lib::{call_host_hook, AppState, HostOptions};
+use app_lib::{call_host_hook, AppState, HostOptions, HostRegistry};
 use finance_kernel::{UnlockOptions, VaultController};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -432,4 +432,66 @@ fn lock_active_vault_is_not_an_ipc_command() {
     let destructive = include_str!("../permissions/destructive-commands.toml");
     assert!(!permissions.contains("lock_active_vault"));
     assert!(!destructive.contains("lock_active_vault"));
+}
+
+// ---- register_host_options (personal-cfo-i93n3.15) ----------------------------------------
+
+fn marked(device: &'static str) -> HostOptions {
+    HostOptions {
+        system_backup_device: Some(device),
+        ..HostOptions::default()
+    }
+}
+
+#[test]
+fn registered_options_are_what_run_resolves_and_the_default_when_none() {
+    let none = HostRegistry::new();
+    assert!(
+        none.resolve().system_backup_device.is_none(),
+        "default when none"
+    );
+
+    let some = HostRegistry::new();
+    some.register(marked("Test Device"))
+        .expect("the first registration");
+    assert_eq!(some.resolve().system_backup_device, Some("Test Device"));
+}
+
+#[test]
+fn a_second_registration_is_refused_and_changes_nothing() {
+    let registry = HostRegistry::new();
+    registry.register(marked("First")).expect("first");
+    let refused = registry
+        .register(marked("Second"))
+        .expect_err("second is refused");
+    assert_eq!(
+        refused.system_backup_device,
+        Some("Second"),
+        "handed back unchanged"
+    );
+    assert_eq!(registry.resolve().system_backup_device, Some("First"));
+}
+
+#[test]
+fn a_registration_after_run_resolved_its_options_is_refused() {
+    let registry = HostRegistry::new();
+    let resolved = registry.resolve();
+    assert!(resolved.system_backup_device.is_none());
+    assert!(
+        registry.register(marked("Late")).is_err(),
+        "too late: the options are in use"
+    );
+    // And it stays the defaults afterwards.
+    assert!(registry.resolve().system_backup_device.is_none());
+}
+
+#[test]
+fn run_resolves_through_the_registry_and_the_desktop_never_registers() {
+    // `run` is the only caller of resolve; nothing but a host calls register_host_options.
+    assert_eq!(LIB_RS.matches("HOST_REGISTRY.resolve()").count(), 1);
+    assert_eq!(
+        LIB_RS.matches("register_host_options(").count(),
+        1,
+        "only its definition"
+    );
 }
