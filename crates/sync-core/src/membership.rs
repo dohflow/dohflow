@@ -533,11 +533,19 @@ pub enum ChainError {
         /// Which record.
         at: usize,
     },
-    /// Two different membership records for one version (`MembershipChainFork`).
+    /// Two different membership records for one version (`MembershipChainFork`). Reported only
+    /// when the second record would itself have been valid at that position (right `prev_id`,
+    /// signer authorized there, signature valid under the chain's key), so garbage injected at an
+    /// accepted position cannot trigger the halt class. Both ids are carried so the caller can
+    /// retain and show both records.
     #[error("two membership records share version {version}")]
     Fork {
         /// The version.
         version: u64,
+        /// The id of the record already accepted at that version.
+        accepted: [u8; 32],
+        /// The id of the conflicting, otherwise valid record.
+        conflicting: [u8; 32],
     },
     /// A membership record that no epoch record names (`EpochRecordMissing`).
     #[error("membership version {version} has no epoch record")]
@@ -545,9 +553,15 @@ pub enum ChainError {
         /// The version.
         version: u64,
     },
-    /// Two different epoch records follow one `prev_epoch_id` (`EpochEquivocation`).
+    /// Two different epoch records follow one `prev_epoch_id` (`EpochEquivocation`). Reported only
+    /// when the second record's sealer is authorized at its named head and its signature is valid.
     #[error("epoch equivocation")]
-    EpochEquivocation,
+    EpochEquivocation {
+        /// The id of the epoch record already accepted.
+        accepted: [u8; 32],
+        /// The id of the conflicting, otherwise valid record.
+        conflicting: [u8; 32],
+    },
     /// A cutover epoch record that does not name a `revoke` record.
     #[error("epoch {at}: a cutover must name a revoke")]
     CutoverHeadNotRevoke {
@@ -654,7 +668,7 @@ impl ChainError {
             Self::UnsupportedSuite { .. } => FailureKind::UnsupportedSuite,
             Self::Fork { .. } => FailureKind::MembershipChainFork,
             Self::EpochRecordMissing { .. } => FailureKind::EpochRecordMissing,
-            Self::EpochEquivocation => FailureKind::EpochEquivocation,
+            Self::EpochEquivocation { .. } => FailureKind::EpochEquivocation,
             Self::CutoverHeadNotRevoke { .. } => FailureKind::CutoverHeadNotRevoke,
             Self::GrantHeadNotAdd { .. } => FailureKind::GrantHeadNotAdd,
             Self::BadEpochSequence { .. } | Self::UnknownHead { .. } => {
@@ -675,10 +689,20 @@ impl ChainError {
         debug.split([' ', '{', '(']).next().unwrap_or("").to_owned()
     }
 
+    /// Whether the caller should fetch more records and try again rather than treat the input as
+    /// bad: the service has not (yet) delivered the epoch record that names the newest membership
+    /// record. [`extend`] cannot tell a withheld coupled epoch record from a stale anchor, so both
+    /// are this; a client engine that was shown an explicit anchor naming an older head reports it
+    /// as `StaleMembershipHead`.
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        matches!(self, Self::EpochRecordMissing { .. })
+    }
+
     /// Whether this is the halt class (`MembershipChainFork`, `EpochEquivocation`).
     #[must_use]
     pub const fn halts_sync(&self) -> bool {
-        matches!(self, Self::Fork { .. } | Self::EpochEquivocation)
+        matches!(self, Self::Fork { .. } | Self::EpochEquivocation { .. })
     }
 
     /// The position of the offending record in the call's input, where the error has one.
@@ -714,7 +738,7 @@ impl ChainError {
             Self::TooLong
             | Self::Fork { .. }
             | Self::EpochRecordMissing { .. }
-            | Self::EpochEquivocation => None,
+            | Self::EpochEquivocation { .. } => None,
         }
     }
 }
@@ -998,7 +1022,13 @@ pub fn verify_chain(
 /// order; every record in them is verified in full (a superset of C.6's backward walk from the
 /// anchor, which exists to skip work a forward pass has already paid for). A record that repeats
 /// one already accepted at its position is idempotent; a different record at an accepted position
-/// is [`ChainError::Fork`] or [`ChainError::EpochEquivocation`]. Afterwards the newest epoch record
+/// is [`ChainError::Fork`] or [`ChainError::EpochEquivocation`] **only if it would itself have been
+/// valid at that position**; unauthenticated bytes are an ordinary error, never the halt class.
+/// If the newest epoch record does not name the newest membership record the result is
+/// [`ChainError::EpochRecordMissing`], which is retryable ([`ChainError::is_retryable`]): `extend`
+/// cannot tell a withheld coupled epoch record from a stale anchor, and a client engine that was
+/// shown an explicit anchor naming an older head reports it as `StaleMembershipHead`.
+/// Afterwards the newest epoch record
 /// must name the newest membership record: every membership change after the genesis is installed
 /// with exactly one epoch record that names it, so anything else is
 /// [`ChainError::EpochRecordMissing`].
@@ -1049,9 +1079,9 @@ fn apply_membership(state: &mut VerifiedState, at: usize, bytes: &[u8]) -> Resul
             return if state.steps[position - 1].id == id {
                 Ok(())
             } else {
-                Err(ChainError::Fork {
-                    version: body.version,
-                })
+                Err(conflicting_membership(
+                    state, at, position, &body, &record, id,
+                ))
             };
         }
     }
@@ -1181,6 +1211,92 @@ fn apply_membership(state: &mut VerifiedState, at: usize, bytes: &[u8]) -> Resul
     Ok(())
 }
 
+/// A membership record that conflicts with the one accepted at its version: a [`ChainError::Fork`]
+/// only if it would itself have been valid there, otherwise the ordinary error it earns, so that
+/// unauthenticated bytes can never put a device into the halt class.
+fn conflicting_membership(
+    state: &VerifiedState,
+    at: usize,
+    position: usize,
+    body: &MembershipBody,
+    record: &SignedRecord,
+    id: [u8; 32],
+) -> ChainError {
+    let valid_there = if position == 1 {
+        if body.version != 1
+            || body.prev_id.is_some()
+            || body.action != Action::Add
+            || body.signer_fingerprint != body.fingerprint()
+        {
+            return ChainError::BadGenesis { at };
+        }
+        if !ed25519_public_key_acceptable(&body.ed25519_pk)
+            || !x25519_public_key_acceptable(&body.kem_public_key)
+        {
+            return ChainError::KeyUnacceptable { at };
+        }
+        ed25519_verify_strict(&body.ed25519_pk, &record.body, &record.signature)
+    } else {
+        if body.prev_id != Some(state.steps[position - 2].id) {
+            return ChainError::WrongPrevId { at };
+        }
+        let Some(signer) = state.authorized_member(&body.signer_fingerprint, (position - 1) as u64)
+        else {
+            return if state
+                .members
+                .iter()
+                .any(|m| m.fingerprint == body.signer_fingerprint)
+            {
+                ChainError::SignerRevoked { at }
+            } else {
+                ChainError::SignerUnknown { at }
+            };
+        };
+        ed25519_verify_strict(&signer.ed25519_pk, &record.body, &record.signature)
+    };
+    if valid_there {
+        ChainError::Fork {
+            version: body.version,
+            accepted: state.steps[position - 1].id,
+            conflicting: id,
+        }
+    } else {
+        ChainError::BadSignature { at }
+    }
+}
+
+/// An epoch record that conflicts with the one accepted after the same `prev_epoch_id`: an
+/// [`ChainError::EpochEquivocation`] only if its sealer is authorized at its named head and its
+/// signature is valid under the chain's key, otherwise the ordinary error it earns.
+fn conflicting_epoch(
+    state: &VerifiedState,
+    at: usize,
+    body: &EpochBody,
+    record: &SignedRecord,
+    accepted: [u8; 32],
+    conflicting: [u8; 32],
+) -> ChainError {
+    let Some(head_index) = state
+        .steps
+        .iter()
+        .position(|s| s.id == body.membership_head)
+    else {
+        return ChainError::UnknownHead { at };
+    };
+    let Some(sealer) = state.authorized_member(&body.sealer_fingerprint, (head_index + 1) as u64)
+    else {
+        return ChainError::SealerNotAuthorized { at };
+    };
+    if ed25519_verify_strict(&sealer.ed25519_pk, &record.body, &record.signature) {
+        ChainError::EpochEquivocation {
+            accepted,
+            conflicting,
+        }
+    } else {
+        ChainError::EpochBadSignature { at }
+    }
+}
+
 fn apply_epoch(state: &mut VerifiedState, at: usize, bytes: &[u8]) -> Result<(), ChainError> {
     if state.epochs.len() >= MAX_CHAIN_LEN {
         return Err(ChainError::TooLong);
@@ -1200,10 +1316,11 @@ fn apply_epoch(state: &mut VerifiedState, at: usize, bytes: &[u8]) -> Result<(),
         .iter()
         .find(|e| e.prev_epoch_id == body.prev_epoch_id)
     {
-        return if existing.id == id {
+        let accepted = existing.id;
+        return if accepted == id {
             Ok(())
         } else {
-            Err(ChainError::EpochEquivocation)
+            Err(conflicting_epoch(state, at, &body, &record, accepted, id))
         };
     }
 

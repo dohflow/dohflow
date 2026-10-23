@@ -12,7 +12,7 @@
 //! Regenerate with `DOHFLOW_UPDATE_VECTORS=1 cargo test -p sync-core --test membership_vectors`
 //! (a spec change under C.13 change control).
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sync_core::cbe::Writer;
@@ -656,6 +656,114 @@ fn all_cases() -> Vec<Case> {
         &|sig| sig[..32].copy_from_slice(&noncanonical_valid_point()),
     ));
 
+    // A mixed-order key and a mixed-order R: valid points, canonical encodings, not torsion-free.
+    let mut mixed_key = Dev::new(0x8c);
+    mixed_key.ed25519_pk = add_torsion(&mixed_key.ed25519_pk);
+    cases.push(one(
+        "invalid_mixed_order_ed25519_key",
+        "an add whose Ed25519 key is a full-order point plus a point of order 8",
+        refs(&[&t.m1])
+            .into_iter()
+            .chain([membership(
+                a,
+                2,
+                Some(id_of(&t.m1)),
+                Action::Add,
+                &mixed_key,
+            )])
+            .collect(),
+        refs(&[&t.e1]),
+    ));
+    cases.push(sig_case(
+        "invalid_signature_mixed_order_r",
+        "R is the real R plus a point of order 8",
+        &|sig| {
+            let r: [u8; 32] = sig[..32].try_into().unwrap();
+            sig[..32].copy_from_slice(&add_torsion(&r));
+        },
+    ));
+
+    // ---- invalid: conflicts that are not authenticated are not forks ----
+    let conflicting_add = |sign_with: Option<&Dev>| {
+        let body = membership_body(a, 2, Some(id_of(&t.m1)), Action::Add, c)
+            .encode()
+            .unwrap();
+        match sign_with {
+            Some(dev) => sign(&body, &dev.signing),
+            None => SignedRecord {
+                body,
+                signature: [0; 64],
+            }
+            .encode()
+            .unwrap(),
+        }
+    };
+    cases.push(Case {
+        name: "invalid_unsigned_conflicting_record_is_not_a_fork",
+        description:
+            "a record at an accepted version with no valid signature is garbage, not a fork",
+        steps: vec![
+            (refs(&[&t.m1, &t.m2]), refs(&[&t.e1, &t.e2])),
+            (vec![conflicting_add(None)], vec![]),
+        ],
+    });
+    cases.push(Case {
+        name: "invalid_conflicting_record_from_a_non_member_is_not_a_fork",
+        description:
+            "a record at an accepted version signed by a device that is not a member is not a fork",
+        steps: vec![
+            (refs(&[&t.m1, &t.m2]), refs(&[&t.e1, &t.e2])),
+            (
+                vec![sign(
+                    &membership_body(&intruder, 2, Some(id_of(&t.m1)), Action::Add, c)
+                        .encode()
+                        .unwrap(),
+                    &intruder.signing,
+                )],
+                vec![],
+            ),
+        ],
+    });
+    let conflicting_epoch = |sealer: &Dev, signer: Option<&Dev>| {
+        let body = epoch_body(
+            sealer,
+            2,
+            Reason::Rotation,
+            id_of(&t.m3),
+            Some(id_of(&t.e3)),
+            ke(3),
+            s_commitment(),
+            &[a, b, c],
+        )
+        .encode()
+        .unwrap();
+        match signer {
+            Some(dev) => sign(&body, &dev.signing),
+            None => SignedRecord {
+                body,
+                signature: [0; 64],
+            }
+            .encode()
+            .unwrap(),
+        }
+    };
+    cases.push(Case {
+        name: "invalid_unsigned_conflicting_epoch_is_not_equivocation",
+        description: "an epoch record after an accepted prev_epoch_id with no valid signature is garbage, not equivocation",
+        steps: vec![
+            (refs(&[&t.m1, &t.m2, &t.m3]), refs(&[&t.e1, &t.e2, &t.e3, &t.e4])),
+            (vec![], vec![conflicting_epoch(b, None)]),
+        ],
+    });
+    cases.push(Case {
+        name: "invalid_conflicting_epoch_from_a_non_member_is_not_equivocation",
+        description: "an epoch record after an accepted prev_epoch_id sealed by a non-member is not equivocation",
+        steps: vec![
+            (refs(&[&t.m1, &t.m2, &t.m3]), refs(&[&t.e1, &t.e2, &t.e3, &t.e4])),
+            (vec![], vec![conflicting_epoch(&intruder, Some(&intruder))]),
+        ],
+    });
+
     // ---- invalid: epoch side ----
     cases.push(one(
         "invalid_membership_without_an_epoch_record",
@@ -983,6 +1091,18 @@ fn noncanonical_valid_point() -> [u8; 32] {
     panic!("no non-canonical encoding of a full-order point among y in 2..19");
 }
 
+/// A valid point plus a point of order 8: still on the curve and canonically encoded, but of mixed
+/// order, so outside the prime-order subgroup.
+fn add_torsion(point: &[u8; 32]) -> [u8; 32] {
+    let order_8: [u8; 32] =
+        unhex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a")
+            .try_into()
+            .unwrap();
+    let torsion = VerifyingKey::from_bytes(&order_8).unwrap().to_edwards();
+    let base = VerifyingKey::from_bytes(point).unwrap().to_edwards();
+    (base + torsion).compress().to_bytes()
+}
+
 /// `sig` with `S` replaced by `S + L` (the same scalar mod L, but not below L).
 fn add_group_order(sig: &mut [u8; 64]) {
     const L: [u8; 32] = [
@@ -1035,6 +1155,7 @@ fn document() -> Value {
         "kem_id": KEM_ID,
         "vault_id": hex(&VAULT),
         "placeholders": "In epoch records, each recipient's enc is 32 bytes of 0xee and its ciphertext is 109 bytes of 0xcc: placeholders of the exact suite-1 lengths. HPKE is out of scope of these vectors.",
+        "check_order": "Every invalid case has exactly one defect, so the order in which an implementation checks does not change its answer. Where a record has several defects, C.6 fixes the order: parse and protocol version, then suite and vault, then position and linkage, then signer and signature, then the rule checks.",
         "how_to_read": "Each case is a list of steps. Step n passes its memberships and epochs (hex of the signed record containers, in chain order) to extend(state, ...), where state is the result of the previous successful step (the empty state for the first). 'expect' is the outcome: 'valid' with the state summary, or 'invalid' with the C.11 failure name (kind), the zero-based position of the offending record in that step's input (null when the failure has none), and whether it halts sync. Implementations must agree on kind and position; internal variant names are not part of the contract.",
         "devices": devices,
         "cases": cases,
@@ -1220,6 +1341,17 @@ fn the_ed25519_acceptance_rule_rejects_every_weak_or_non_canonical_input() {
     let mut high_s = signature;
     add_group_order(&mut high_s);
     assert!(!ed25519_verify_strict(&dev.ed25519_pk, message, &high_s));
+    // A mixed-order point (valid, canonical, but outside the prime-order subgroup), as A and as R.
+    let mixed = add_torsion(&dev.ed25519_pk);
+    assert!(!ed25519_point_acceptable(&mixed), "mixed-order A accepted");
+    let mut mixed_r = signature;
+    mixed_r[..32].copy_from_slice(&add_torsion(&signature[..32].try_into().unwrap()));
+    assert!(
+        !ed25519_verify_strict(&dev.ed25519_pk, message, &mixed_r),
+        "mixed-order R accepted"
+    );
+    // An honest key is in the prime-order subgroup.
+    assert!(ed25519_point_acceptable(&dev.ed25519_pk));
     // Not a point at all.
     assert!(!ed25519_point_acceptable(&[0xff; 32]));
     // A different message, and a flipped bit anywhere in the signature.
@@ -1274,6 +1406,24 @@ fn every_invalid_case_fails_for_its_intended_reason() {
         ("invalid_signer_revoked", "SignerRevoked"),
         ("invalid_signature_by_another_key", "BadSignature"),
         ("invalid_add_signed_by_the_key_it_adds", "BadSignature"),
+        ("invalid_mixed_order_ed25519_key", "KeyUnacceptable"),
+        ("invalid_signature_mixed_order_r", "BadSignature"),
+        (
+            "invalid_unsigned_conflicting_record_is_not_a_fork",
+            "BadSignature",
+        ),
+        (
+            "invalid_conflicting_record_from_a_non_member_is_not_a_fork",
+            "SignerUnknown",
+        ),
+        (
+            "invalid_unsigned_conflicting_epoch_is_not_equivocation",
+            "EpochBadSignature",
+        ),
+        (
+            "invalid_conflicting_epoch_from_a_non_member_is_not_equivocation",
+            "SealerNotAuthorized",
+        ),
         ("invalid_wrong_prev_id", "WrongPrevId"),
         ("invalid_wrong_version", "WrongVersion"),
         ("invalid_fork", "Fork"),
@@ -1454,4 +1604,23 @@ fn the_epoch_codec_reproduces_the_spec_header_vector() {
         "an empty recipient list"
     );
     assert_eq!(EpochBody::decode(&encoded).unwrap(), genesis);
+}
+
+/// Bytes that are not an authenticated record can never put a device into the halt class: only a
+/// conflicting record that would itself have been valid at its position is a fork or an
+/// equivocation.
+#[test]
+fn unauthenticated_conflicts_never_halt_sync() {
+    let doc: Value = serde_json::from_str(VECTORS).unwrap();
+    let mut halting = Vec::new();
+    for case in doc["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        for step in case["steps"].as_array().unwrap() {
+            if step["expect"]["halts_sync"] == true {
+                halting.push(name.to_owned());
+            }
+        }
+    }
+    halting.sort();
+    assert_eq!(halting, ["invalid_epoch_equivocation", "invalid_fork"]);
 }

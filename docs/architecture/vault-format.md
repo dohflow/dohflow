@@ -259,7 +259,9 @@ synthetic no-app recovery test before any such public claim.
 - `spec-version = 8` pins the exact key and signature acceptance rules of C.6 (strict Ed25519
   checks stated as checks, a screen for low-order X25519 keys), adds chain rules 8 to 11 (a
   device id is never reused; a revoke never leaves zero authorized members; at most 1,024
-  authorized members; no two members share a public key), makes the recipient list canonical
+  authorized members; no two members share a public key), requires Ed25519 keys and signature
+  `R` to lie in the prime-order subgroup (closing mixed-order points), fixes the check order,
+  makes a conflicting record a fork only if it would itself have been valid, makes the recipient list canonical
   (ascending by fingerprint, with exact lengths), and requires every cutover and rotation to
   publish a key commitment never used before in the chain. C.14 gains the public membership-chain
   conformance vectors (`docs/architecture/vectors/membership-chain-v1.json`). No existing wire
@@ -1196,12 +1198,16 @@ rules, not the permissive ones some libraries offer by default, and a record tha
 implementation accepts and another rejects would split the views permanently.
 
 1. An `ed25519_pk` is accepted only if it decompresses to a curve point, re-compresses to the
-   same 32 bytes (a non-canonical encoding is rejected), and is not of small order. This is
-   checked when the key is added, so such a key never enters the chain.
+   same 32 bytes (a non-canonical encoding is rejected), and lies in the prime-order subgroup
+   (`[L]A` is the identity, which also excludes every small-order point and every mixed-order
+   point). This is checked when the key is added, so such a key never enters the chain.
 2. A signature `R || S` is accepted only if `R` decompresses, re-compresses to the same 32
-   bytes and is not of small order; `S`, read as a little-endian integer, is below the group
-   order `L`; and the cofactorless equation `[S]B = R + [k]A` holds (RFC 8032 section 5.1.7,
-   without cofactor multiplication) for `k = SHA-512(R || A || message)` reduced mod `L`.
+   bytes and lies in the prime-order subgroup; `S`, read as a little-endian integer, is below
+   the group order `L`; and the cofactorless equation holds: the 32-byte encoding of
+   `[S]B - [k]A` equals `R`, for `k = SHA-512(R || A || message)` reduced mod `L` (RFC 8032
+   section 5.1.7, without cofactor multiplication). With `A` and `R` in the prime-order subgroup
+   and `S` below `L`, the cofactored and cofactorless equations accept exactly the same signatures,
+   so an implementation's choice of equation cannot make it disagree.
 3. A suite-1 `kem_public_key` (X25519) is accepted only if, after clearing the unused top bit
    and reducing modulo `2^255 - 19`, it is none of the low-order values `0`, `1`, `2^255 - 20`,
    `325606250916557431795983626356110631294008115727848805560023387167927233504` and
@@ -1209,6 +1215,15 @@ implementation accepts and another rejects would split the views permanently.
 4. The signer's key for a record is always the key the **chain** holds for the signer's
    fingerprint; it is never taken from the record being verified (the genesis record, which
    has no earlier chain, is verified under the key it contains).
+
+**Check order.** A record with more than one defect is refused for the first of these, so every
+implementation reports the same C.11 failure: parse and protocol version; suite, KEM and vault;
+position and linkage (`version`, `prev_id`, and for the genesis its required shape); signer and
+signature (and, for the genesis, the key screen first, because its signature is verified under
+the key it contains); then the rule checks (key screens for an `add`, reuse, the revoke rules,
+the member cap). Epoch records: parse and protocol version; suite, KEM and vault; a conflict with
+an accepted record; the named head; the sealer's authorization at that head and the signature;
+then the sequence and reason table; then the recipients.
 
 ### Epoch record body
 
@@ -1352,7 +1367,11 @@ requires all of the following. The checks above are evaluated for each record
 4. **Equivocation is detected at every position.** Two different records with the
    same `prev_epoch_id`, including a second genesis record, are
    `EpochEquivocation`; two different membership records for one `version` are
-   `MembershipChainFork`. Both records are retained, nothing from either is
+   `MembershipChainFork`. A conflicting record counts only if it would itself have been valid at
+   that position: a membership record with the right `prev_id`, a signer authorized there and a
+   valid signature under the chain's key, or an epoch record whose sealer is authorized at its
+   named head with a valid signature. Anything else at that position is an ordinary invalid
+   record, because unauthenticated bytes must never put a device into the halt state below. Both records are retained, nothing from either is
    installed, and the device halts as below. An exact duplicate is idempotent.
 5. **Verified state is rollback-protected.** The newest verified membership head,
    the accepted epoch chain and the per-position record map are persisted under the

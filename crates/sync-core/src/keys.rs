@@ -7,11 +7,14 @@
 //! strict one, with every check named:
 //!
 //! 1. the public key `A` decompresses, re-compresses to the same 32 bytes (no non-canonical
-//!    encoding) and is not of small order;
-//! 2. the signature's `R` decompresses, re-compresses to the same 32 bytes and is not of small
-//!    order;
+//!    encoding) and lies in the prime-order subgroup (`[L]A` is the identity, which also excludes
+//!    every small-order point);
+//! 2. the signature's `R` decompresses, re-compresses to the same 32 bytes and lies in the
+//!    prime-order subgroup;
 //! 3. the signature's `S`, as a little-endian integer, is below the group order `L`;
-//! 4. the verification equation is the cofactorless one, as `verify_strict` computes it.
+//! 4. the verification equation is the cofactorless one, as `verify_strict` computes it. With a
+//!    torsion-free `A` and `R` and `S < L`, the cofactored and cofactorless equations accept exactly
+//!    the same signatures, so an implementation's choice of equation can no longer matter.
 //!
 //! A suite-1 KEM public key (X25519) is also screened when it enters the chain: the all-zero
 //! value and the small-order u-coordinates (with their non-canonical twins) are refused, because
@@ -26,7 +29,7 @@ const GROUP_ORDER_LE: [u8; 32] = [
 ];
 
 /// Whether the 32 bytes encode an Ed25519 point acceptably: a valid point, in its one canonical
-/// encoding, of full order or at least not small order.
+/// encoding, in the prime-order subgroup (so neither small order nor of mixed order).
 #[must_use]
 pub fn ed25519_point_acceptable(encoded: &[u8; 32]) -> bool {
     let Ok(key) = VerifyingKey::from_bytes(encoded) else {
@@ -34,7 +37,8 @@ pub fn ed25519_point_acceptable(encoded: &[u8; 32]) -> bool {
     };
     // Decompression accepts a y coordinate at or above the field prime; re-compressing yields the
     // canonical bytes, so a different result means the input was a non-canonical twin.
-    key.to_edwards().compress().to_bytes() == *encoded && !key.is_weak()
+    let point = key.to_edwards();
+    point.compress().to_bytes() == *encoded && !key.is_weak() && point.is_torsion_free()
 }
 
 /// Whether `s` (the second half of a signature, little-endian) is a canonical scalar, below `L`.
