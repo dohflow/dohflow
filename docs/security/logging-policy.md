@@ -116,6 +116,10 @@ diagnostic bundle must route through this redactor (`RedactingMakeWriter`, or
   corpus is emitted as deliberate slips. The test fails if any raw secret appears
   in the captured output, or if any known-negative value is altered (no
   over-redaction).
+  The same test also applies a command with a distinctive amount on a worker and fails if the
+  command payload (the amount, or the canonical-JSON field names), the write-set hash, or any
+  changed row's primary key appears in the output (`personal-cfo-t2s4b`, AC7). An envelope's
+  plaintext and metadata types print sizes only in `Debug`, pinned in `sync-core`'s tests.
 
 Both run in `cargo test --workspace` (the CI `Rust (workspace)` job), which
 blocks merge. There is no separately named "redaction" CI step. A redaction
