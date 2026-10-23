@@ -111,6 +111,10 @@ pub struct MockConnector {
     /// Raw provider account ids the mock reports retry-required
     /// (watermark-hold) on every sync.
     held_accounts: &'static [&'static str],
+    /// Banks the mock reports as needing re-authentication on an otherwise healthy sync
+    /// (`None` = the provider did not name the bank) — SimpleFIN's one-bank `con.auth`
+    /// (personal-cfo-pxi.22).
+    reauth_institutions: &'static [Option<&'static str>],
     /// When set, [`ConnectorAdapter::fetch_accounts`] returns an empty list —
     /// models a provider whose account list is not ready yet (the SimpleFIN
     /// Bridge right after an app connection is created, personal-cfo-k025).
@@ -154,6 +158,7 @@ impl MockConnector {
             id_token: "mock",
             include_unnamed_account: false,
             held_accounts: &[],
+            reauth_institutions: &[],
             empty_discovery: false,
             account_currency: Some("USD"),
             include_foreign_account: false,
@@ -201,6 +206,15 @@ impl MockConnector {
     #[must_use]
     pub fn with_held_accounts(mut self, held: &'static [&'static str]) -> Self {
         self.held_accounts = held;
+        self
+    }
+
+    /// Same fixture, but every sync also reports these banks as needing the user to sign in
+    /// again at the provider: the rest of the sync is healthy and ingested (the one-bank
+    /// `con.auth` case). `None` entries are banks the provider did not name.
+    #[must_use]
+    pub fn with_reauth_required(mut self, institutions: &'static [Option<&'static str>]) -> Self {
+        self.reauth_institutions = institutions;
         self
     }
 
@@ -507,6 +521,13 @@ impl ConnectorAdapter for MockConnector {
             since,
             held_account_ids: self.held_accounts.iter().map(|s| (*s).to_owned()).collect(),
             hold_all_watermarks: false,
+            reauth_required: self
+                .reauth_institutions
+                .iter()
+                .map(|name| crate::ReauthRequired {
+                    institution: name.map(str::to_owned),
+                })
+                .collect(),
             batch: importer_core::ParsedBatch {
                 source_format: self.id().to_owned(),
                 accounts,

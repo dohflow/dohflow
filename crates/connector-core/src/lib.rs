@@ -339,6 +339,21 @@ pub struct SyncBatch {
     /// watermark for this sync.
     #[serde(default)]
     pub hold_all_watermarks: bool,
+    /// Banks the provider says need the user to sign in again at the provider (SimpleFIN
+    /// `con.auth`) while the REST of this sync is healthy and was ingested
+    /// (personal-cfo-pxi.22). One entry per affected bank. Structured on purpose, like
+    /// `held_account_ids`: the app must never recover this from warning prose.
+    #[serde(default)]
+    pub reauth_required: Vec<ReauthRequired>,
+}
+
+/// One bank that needs the user to sign in again at the provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReauthRequired {
+    /// The bank's own name as the provider reports it, ALREADY SANITIZED by the adapter
+    /// (printable text, bounded length: it is shown to the user and kept in the vault).
+    /// `None` when the provider did not name the bank. Never a provider id or a URL.
+    pub institution: Option<String>,
 }
 
 /// Wrap a staged balance observation into the [`ParsedRecord`] shape the
@@ -511,6 +526,7 @@ pub trait ConnectorAdapter: Sync {
             since,
             held_account_ids: Vec::new(),
             hold_all_watermarks: false,
+            reauth_required: Vec::new(),
             batch: ParsedBatch {
                 source_format: self.id().to_owned(),
                 accounts,

@@ -198,6 +198,18 @@ impl<T: Transport> SimpleFinAdapter<T> {
 /// stripped and the result is truncated. Display-side sanitization still
 /// applies (spec: "you must sanitize the strings"); this is the wire-side
 /// floor.
+/// The bank's own name for connection `conn_id` in this response (the Connection's `name`, else its
+/// `org_name`), sanitized and trimmed; `None` when the response lists no such connection or it
+/// carries no usable name. Never an id or a URL: it is shown to the user and kept in the vault.
+fn institution_name(set: &AccountSet, conn_id: &str) -> Option<String> {
+    let connection = set.connections.iter().find(|c| c.conn_id == conn_id)?;
+    [connection.name.as_deref(), connection.org_name.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(|raw| sanitize(raw).trim().to_owned())
+        .find(|name| !name.is_empty())
+}
+
 fn sanitize(raw: &str) -> String {
     // Control chars (Cc) AND the format-char forgery set (Cf): bidi overrides
     // and isolates, zero-width characters, BOM — all usable to spoof what a
@@ -356,6 +368,10 @@ struct SplitOutcome {
     /// data is still good; sync continues and this surfaces as a warning +
     /// the health state.
     reauth: Option<ConnectorError>,
+    /// The `conn_id` of EVERY `con.auth` entry (`None` when the entry names none), in errlist
+    /// order, unlike `reauth` which keeps only the first. Structured input for the app's
+    /// re-authentication notice (personal-cfo-pxi.22): never recovered from warning prose.
+    reauth_conns: Vec<Option<String>>,
     warnings: Vec<ParseWarning>,
     /// Structured retry-required scopes (`act.failed`/`act.missingdata`):
     /// provider account ids whose windows are incomplete. `None` = unscoped.
@@ -372,6 +388,7 @@ fn split_errors(set: &AccountSet) -> SplitOutcome {
     let mut outcome = SplitOutcome {
         fatal: None,
         reauth: None,
+        reauth_conns: Vec::new(),
         warnings: Vec::new(),
         retry_required: Vec::new(),
     };
@@ -380,6 +397,9 @@ fn split_errors(set: &AccountSet) -> SplitOutcome {
         let msg = sanitize(&err.msg);
         let is_auth = err.code.ends_with(".auth");
         let prefix = err.code.split('.').next().unwrap_or("");
+        if prefix == "con" && is_auth {
+            outcome.reauth_conns.push(err.conn_id.clone());
+        }
         if prefix == "gen" && is_auth && outcome.fatal.is_none() {
             outcome.fatal = Some(ConnectorError::NeedsUserAction {
                 code,
@@ -891,11 +911,25 @@ impl<T: Transport> ConnectorAdapter for SimpleFinAdapter<T> {
 
         let mut held_account_ids: Vec<String> = Vec::new();
         let mut hold_all_watermarks = false;
+        // Banks that need the user to sign in again, deduplicated across date chunks (the
+        // provider repeats its errlist in every chunk): key = the connection id, or "" for an
+        // entry that names none; value = the bank's own name when the response gives one.
+        let mut reauth: std::collections::BTreeMap<String, Option<String>> =
+            std::collections::BTreeMap::new();
         for (start, end) in chunk_ranges(since, self.today()) {
             let set = self.get_accounts(conn, &date_range_query(start, end))?;
             let outcome = split_errors(&set);
             if let Some(fatal) = outcome.fatal {
                 return Err(fatal);
+            }
+            for conn_id in &outcome.reauth_conns {
+                let name = conn_id.as_deref().and_then(|id| institution_name(&set, id));
+                let slot = reauth
+                    .entry(conn_id.clone().unwrap_or_default())
+                    .or_insert(None);
+                if slot.is_none() {
+                    *slot = name;
+                }
             }
             for scope in &outcome.retry_required {
                 match scope {
@@ -958,6 +992,10 @@ impl<T: Transport> ConnectorAdapter for SimpleFinAdapter<T> {
             since,
             held_account_ids,
             hold_all_watermarks,
+            reauth_required: reauth
+                .into_values()
+                .map(|institution| connector_core::ReauthRequired { institution })
+                .collect(),
             batch: ParsedBatch {
                 source_format: self.id().to_owned(),
                 accounts,

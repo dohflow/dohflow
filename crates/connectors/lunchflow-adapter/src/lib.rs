@@ -1078,6 +1078,7 @@ impl<T: Transport> ConnectorAdapter for LunchFlowAdapter<T> {
             since,
             held_account_ids,
             hold_all_watermarks: false,
+            reauth_required: Vec::new(),
             batch: ParsedBatch {
                 source_format: self.id().to_owned(),
                 accounts,
