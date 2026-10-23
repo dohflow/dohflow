@@ -8559,3 +8559,105 @@ fn a_key_set_after_the_schema_was_used_is_silently_ignored_so_callers_must_key_f
         "a copy left under the old key must not verify under the new one"
     );
 }
+
+// -- Cold start (personal-cfo-g3m.20) -----------------------------------------------------------
+//
+// `sqlite3_initialize` sets SQLite's "initialized" flag BEFORE it runs SQLCipher's own start-up
+// (`SQLITE_EXTRA_INIT`, which sets `sqlcipher_init`), and runs that start-up outside its mutex. A
+// second thread that calls `sqlite3_initialize` in that window returns at once, opens a
+// connection and keys it while SQLCipher is not yet initialized: `sqlite3_key_v2` then returns the
+// stale `SQLITE_ERROR` (code 1, no message). It can only happen for the first keyed connections of
+// a process, so the test re-runs itself as fresh child processes, each keying connections from
+// many threads released together.
+
+const COLD_START_CHILD: &str = "DBWORKER_COLD_START_CHILD";
+const COLD_START_THREADS: usize = 32;
+const COLD_START_PROCESSES: usize = 600;
+
+fn cold_start_child() {
+    use std::sync::{Arc, Barrier};
+    let barrier = Arc::new(Barrier::new(COLD_START_THREADS));
+    let handles: Vec<_> = (0..COLD_START_THREADS)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let dek = vault_crypto::generate_dek().unwrap();
+                barrier.wait();
+                let conn = Connection::open_in_memory().unwrap();
+                key_raw(&conn, &dek).map_err(|error| format!("{error:?}"))
+            })
+        })
+        .collect();
+    let mut failed = false;
+    for handle in handles {
+        if let Err(message) = handle.join().unwrap() {
+            eprintln!("COLD-START-KEY-FAILED: {message}");
+            failed = true;
+        }
+    }
+    std::process::exit(i32::from(failed));
+}
+
+#[test]
+fn the_first_keyed_connections_of_a_process_can_be_keyed_at_the_same_moment() {
+    if std::env::var_os(COLD_START_CHILD).is_some() {
+        cold_start_child();
+    }
+    let exe = std::env::current_exe().unwrap();
+    let mut failures = Vec::new();
+    for run in 0..COLD_START_PROCESSES {
+        let output = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "tests::the_first_keyed_connections_of_a_process_can_be_keyed_at_the_same_moment",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(COLD_START_CHILD, "1")
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            failures.push(format!(
+                "run {run}: {}",
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .filter(|line| line.contains("COLD-START-KEY-FAILED"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {COLD_START_PROCESSES} fresh processes failed to key a connection:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn the_cipher_wait_returns_true_once_ready_and_false_when_it_never_is() {
+    // Ready on the fourth probe: true, and the probe ran four times.
+    let mut calls = 0;
+    assert!(wait_until_ready(
+        || {
+            calls += 1;
+            calls == 4
+        },
+        std::time::Duration::from_secs(5)
+    ));
+    assert_eq!(calls, 4);
+
+    // Never ready: gives up at the bound with false (the caller turns that into a typed error,
+    // never an unkeyed connection and never a panic).
+    let started = std::time::Instant::now();
+    assert!(!wait_until_ready(
+        || false,
+        std::time::Duration::from_millis(40)
+    ));
+    assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+    // And in this process, where SQLCipher is fine, the readiness answer is true.
+    assert!(ensure_cipher_ready());
+}

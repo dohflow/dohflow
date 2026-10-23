@@ -1186,6 +1186,10 @@ pub enum IntegrityOutcome {
 /// Errors from the db-worker.
 #[derive(Debug, Error)]
 pub enum DbError {
+    /// SQLCipher did not finish starting up within the wait in `ensure_cipher_ready`
+    /// (personal-cfo-g3m.20), so no connection was keyed.
+    #[error("the encryption library did not finish starting up")]
+    CipherUnavailable,
     /// The write-ahead log could not be fully truncated because a reader still holds the
     /// database open (`wal_checkpoint(TRUNCATE)` reported busy).
     #[error("the write-ahead log could not be fully checkpointed: a reader is still open")]
@@ -4276,6 +4280,70 @@ fn acquire_runner_lock(path: &Path) -> Result<File, DbError> {
 /// memory (`cipher_memory_security`) is never turned on: it cost 4x to 11x and could not be
 /// scoped, and the key itself no longer passes through anything that needs it.
 fn key_connection(conn: &Connection, schema: Option<&str>, key: &[u8]) -> Result<(), DbError> {
+    if !ensure_cipher_ready() {
+        return Err(DbError::CipherUnavailable);
+    }
+    let rc = key_rc(conn, schema, key)?;
+    if rc == rusqlite::ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(DbError::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rc),
+            None,
+        )))
+    }
+}
+
+/// Wait, once per process, until SQLCipher has finished its own start-up (personal-cfo-g3m.20).
+///
+/// `sqlite3_initialize` sets SQLite's "initialized" flag **before** it runs SQLCipher's start-up
+/// (`SQLITE_EXTRA_INIT`, which sets `sqlcipher_init`) and runs that start-up outside its mutex. A
+/// second thread that calls `sqlite3_initialize` in that window returns at once, opens a
+/// connection and keys it while SQLCipher is not yet initialized, and SQLCipher answers with its
+/// stale `SQLITE_ERROR` (code 1, no message). It only affects the first keyed connections of a
+/// process, and only when several threads open vaults at the same moment.
+///
+/// This probes rather than wrapping `sqlite3_initialize` in a lock, because the thread that
+/// starts initialization need not be ours: any code in the process that opens a connection (an
+/// unkeyed `rusqlite` open, a library) can win the race and leave SQLCipher half started while our
+/// thread's `sqlite3_initialize` returns early. Only asking SQLCipher itself ("will you accept a
+/// key?") tells us it is ready. Every keying goes through [`key_connection`], which runs this
+/// first and returns [`DbError::CipherUnavailable`] if SQLCipher never became ready, so a
+/// connection is never used unkeyed and nothing panics.
+fn ensure_cipher_ready() -> bool {
+    // 32 zero bytes as a raw-key literal: no KDF, so the probe is cheap, and it is never used for
+    // anything but this check.
+    const PROBE_KEY: &[u8] = b"x'0000000000000000000000000000000000000000000000000000000000000000'";
+    static READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *READY.get_or_init(|| {
+        wait_until_ready(
+            || match Connection::open_in_memory() {
+                Ok(conn) => key_rc(&conn, None, PROBE_KEY)
+                    .map_or(true, |rc| rc != rusqlite::ffi::SQLITE_ERROR),
+                // Not ours to report: the real open reports it with its own error.
+                Err(_) => true,
+            },
+            std::time::Duration::from_secs(10),
+        )
+    })
+}
+
+/// Call `probe` until it returns `true` (every millisecond) or `limit` passes. `true` means ready.
+fn wait_until_ready(mut probe: impl FnMut() -> bool, limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if probe() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// The one call into SQLCipher's keying C function; returns its result code.
+fn key_rc(conn: &Connection, schema: Option<&str>, key: &[u8]) -> Result<std::ffi::c_int, DbError> {
     let len = std::ffi::c_int::try_from(key.len())
         .map_err(|_| DbError::InvalidCommand("the key is too long".to_owned()))?;
     let schema = schema
@@ -4296,14 +4364,7 @@ fn key_connection(conn: &Connection, schema: Option<&str>, key: &[u8]) -> Result
             len,
         )
     };
-    if rc == rusqlite::ffi::SQLITE_OK {
-        Ok(())
-    } else {
-        Err(DbError::from(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rc),
-            None,
-        )))
-    }
+    Ok(rc)
 }
 
 /// Key a connection with a passphrase (SQLCipher runs its own KDF over it).
