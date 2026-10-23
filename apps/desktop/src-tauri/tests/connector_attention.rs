@@ -386,3 +386,104 @@ fn a_failure_to_open_is_reported_not_swallowed() {
         "{result:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Redaction (DoD §2.4): the notice paths put no bank name, address or credential in logs or spans.
+// ---------------------------------------------------------------------------
+
+fn capture<F: FnOnce()>(f: F) -> String {
+    use observability::RedactingMakeWriter;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+    let buffer = Buffer::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    observability::testing::install_global_test_subscriber();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), f);
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    logged
+}
+
+#[test]
+fn the_notice_paths_log_no_bank_name_address_or_credential() {
+    const BANK: &str = "Zeta Canary Credit Union";
+    let (_dir, state) = open_state();
+    let id = mapped_connection(&state, "simplefin");
+
+    let opened = RefCell::new(Vec::new());
+    let logged = capture(|| {
+        // A sync that writes a notice, then a failed refresh that rewrites it, then the link.
+        sync(
+            &state,
+            &healthy("simplefin").with_reauth_required(&[Some(BANK)]),
+            &id,
+        );
+        let expired = MockConnector::failing_with(FailureMode::Expired).with_id("simplefin");
+        sync(&state, &expired, &id);
+        open_provider_site_impl(
+            &state,
+            ConnectorProviderSiteInput {
+                connection_id: id.clone(),
+            },
+            &|url| {
+                opened.borrow_mut().push(url);
+                Ok(())
+            },
+        )
+        .unwrap();
+    });
+
+    // DoD §2.4: prove the capture saw the work before trusting a no-leak check.
+    assert!(
+        logged.contains("connector operation completed"),
+        "the capture saw nothing of the refreshes: {logged:?}"
+    );
+    assert_eq!(
+        opened.into_inner(),
+        ["https://bridge.simplefin.org"],
+        "the address was resolved (and, being a constant, never logged)"
+    );
+    for needle in [
+        BANK,
+        "bridge.simplefin.org",
+        "https://",
+        "mock-setup-token",
+        "mock-access-url",
+    ] {
+        assert!(
+            !logged.contains(needle),
+            "{needle:?} reached the logs: {logged}"
+        );
+    }
+    // And the listing the notice renders from carries the name only, no address or credential.
+    let wire = serde_json::to_string(&connector_connections_impl(&state).unwrap()).unwrap();
+    for needle in [
+        "bridge.simplefin.org",
+        "https://",
+        "mock-setup-token",
+        "mock-access-url",
+    ] {
+        assert!(!wire.contains(needle), "{needle:?} in the listing: {wire}");
+    }
+}

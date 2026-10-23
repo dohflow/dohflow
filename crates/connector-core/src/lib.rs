@@ -662,7 +662,10 @@ pub struct DisclosureText {
 /// How to connect one provider, as the picker walks the user through it (ADR
 /// 0015's 2026-09-27 link-guide addendum). Every field is written per
 /// provider. `provider_url` is rendered as selectable text wherever it
-/// appears in a step, never as a link.
+/// appears in a step, never as a link: the one exception is the
+/// re-authentication notice's "open" action, which the BACKEND performs from
+/// this constant (`open_provider_site`; ADR 0060 addendum 2026-10-23), so the
+/// webview still never holds a clickable address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectorLinkGuide {
     /// The disclosure panel's heading.

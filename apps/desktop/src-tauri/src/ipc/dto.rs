@@ -4017,7 +4017,9 @@ pub struct ConnectorAdapterDto {
 
 /// How to connect one provider (ADR 0015's link-guide addendum). Render
 /// `provider_url` as selectable text wherever a step contains it — never a
-/// link.
+/// link. (The re-authentication notice opens the provider's site through the
+/// backend's `open_provider_site`, which names only a connection, ADR 0060
+/// addendum 2026-10-23; the webview still never holds a clickable address.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct ConnectorLinkGuideDto {
     pub title: String,

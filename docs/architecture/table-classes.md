@@ -21,7 +21,11 @@ The manifest includes every table in the current migrated schema. The
 ADR 0023. `durable_jobs` is a class-3 table owned by `personal-cfo-ati`; its
 schedule, retry state, and unlock-window claims remain device-local. The
 `backup_history` table is also class 3 and records manual/scheduled backup
-receipts inside the vault. Its paths are local-only. Scheduled backup runs keep
+receipts inside the vault. Its paths are local-only. The `connector_attention`
+table (migration 58, `personal-cfo-pxi.22`) is class 3 too: this device's
+re-authentication notices for bank connections, written by its own refreshes
+and cleared by the next healthy one, never replicated and never a reason to
+block a rebase swap. Scheduled backup runs keep
 all files and never use history to delete from a destination folder; any future
 automatic retention requires the separate decision tracked by
 `personal-cfo-g3m.2`.
