@@ -53,7 +53,7 @@ fn assert_no_side_files(path: &Path) -> Result<(), DbError> {
 
 /// Open `path` keyed with `dek`, in rollback-journal mode, never creating it.
 fn open_copy(path: &Path, dek: &Dek, flags: OpenFlags) -> Result<Connection, DbError> {
-    let conn = Connection::open_with_flags(path, flags)?;
+    let conn = crate::open_vault_connection(path, flags)?;
     crate::key_raw(&conn, dek)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     Ok(conn)
