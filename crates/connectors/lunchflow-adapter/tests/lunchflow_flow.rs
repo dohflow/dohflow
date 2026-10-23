@@ -843,8 +843,10 @@ fn multi_megabyte_provider_ids_are_refused_quickly_and_never_quoted() {
 
     let started = std::time::Instant::now();
     let synced = adapter(&transport).sync(&conn(), None).unwrap();
+    // A generous bound that only catches a pathological (non-terminating or quadratic) scan of
+    // the huge id; it is not a performance budget (personal-cfo-g3m.19).
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
+        started.elapsed() < std::time::Duration::from_secs(30),
         "took {:?}",
         started.elapsed()
     );

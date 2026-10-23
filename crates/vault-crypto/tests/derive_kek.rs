@@ -27,23 +27,32 @@ fn median(mut samples: Vec<Duration>) -> Duration {
     samples[samples.len() / 2]
 }
 
-fn median_derive_latency(
-    password: &[u8],
+/// The median derive latency of each of two passwords, measured INTERLEAVED (one sample of each
+/// in turn) so a load spike or a frequency change hits both sides alike; measured one after the
+/// other, a burst of load during the second password would read as a timing difference.
+fn median_derive_latencies(
+    first: &[u8],
+    second: &[u8],
     salt: &vault_crypto::Salt,
     params: &Argon2Params,
-) -> Duration {
+) -> (Duration, Duration) {
     // A couple of warm-up iterations, then measure the median of many so a
     // single descheduling spike cannot skew the result.
     for _ in 0..2 {
-        let _ = derive_kek(password, salt, params).unwrap();
+        let _ = derive_kek(first, salt, params).unwrap();
+        let _ = derive_kek(second, salt, params).unwrap();
     }
-    let mut samples = Vec::with_capacity(15);
+    let mut a = Vec::with_capacity(15);
+    let mut b = Vec::with_capacity(15);
     for _ in 0..15 {
         let start = Instant::now();
-        let _ = derive_kek(password, salt, params).unwrap();
-        samples.push(start.elapsed());
+        let _ = derive_kek(first, salt, params).unwrap();
+        a.push(start.elapsed());
+        let start = Instant::now();
+        let _ = derive_kek(second, salt, params).unwrap();
+        b.push(start.elapsed());
     }
-    median(samples)
+    (median(a), median(b))
 }
 
 #[test]
@@ -56,8 +65,7 @@ fn wrong_password_latency_stays_within_constant_time_envelope() {
     let wrong = b"wrongggg-passwrd";
     assert_eq!(correct.len(), wrong.len());
 
-    let t_correct = median_derive_latency(correct, &salt, &params);
-    let t_wrong = median_derive_latency(wrong, &salt, &params);
+    let (t_correct, t_wrong) = median_derive_latencies(correct, wrong, &salt, &params);
 
     let lo = t_correct.min(t_wrong).as_secs_f64();
     let hi = t_correct.max(t_wrong).as_secs_f64();
