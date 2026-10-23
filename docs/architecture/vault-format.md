@@ -1198,12 +1198,14 @@ rules, not the permissive ones some libraries offer by default, and a record tha
 implementation accepts and another rejects would split the views permanently.
 
 1. An `ed25519_pk` is accepted only if it decompresses to a curve point, re-compresses to the
-   same 32 bytes (a non-canonical encoding is rejected), and lies in the prime-order subgroup
-   (`[L]A` is the identity, which also excludes every small-order point and every mixed-order
-   point). This is checked when the key is added, so such a key never enters the chain.
+   same 32 bytes (a non-canonical encoding is rejected), lies in the prime-order subgroup
+   (`[L]A` is the identity, which excludes every mixed-order point and every point of order 2,
+   4 or 8), and is not the identity itself (the identity is in the subgroup but has order 1, and
+   a key `A` = identity would let anyone forge). In short: `A` has order exactly `L`. This is
+   checked when the key is added, so such a key never enters the chain.
 2. A signature `R || S` is accepted only if `R` decompresses, re-compresses to the same 32
-   bytes and lies in the prime-order subgroup; `S`, read as a little-endian integer, is below
-   the group order `L`; and the cofactorless equation holds: the 32-byte encoding of
+   bytes, lies in the prime-order subgroup and is not the identity (`R` has order exactly `L`);
+   `S`, read as a little-endian integer, is below the group order `L`; and the cofactorless equation holds: the 32-byte encoding of
    `[S]B - [k]A` equals `R`, for `k = SHA-512(R || A || message)` reduced mod `L` (RFC 8032
    section 5.1.7, without cofactor multiplication). With `A` and `R` in the prime-order subgroup
    and `S` below `L`, the cofactored and cofactorless equations accept exactly the same signatures,

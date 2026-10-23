@@ -7,10 +7,11 @@
 //! strict one, with every check named:
 //!
 //! 1. the public key `A` decompresses, re-compresses to the same 32 bytes (no non-canonical
-//!    encoding) and lies in the prime-order subgroup (`[L]A` is the identity, which also excludes
-//!    every small-order point);
-//! 2. the signature's `R` decompresses, re-compresses to the same 32 bytes and lies in the
-//!    prime-order subgroup;
+//!    encoding), lies in the prime-order subgroup (`[L]A` is the identity, which excludes every
+//!    mixed-order point and every point of order 2, 4 or 8) and is not the identity itself
+//!    (order 1, in the subgroup trivially): `A` has order exactly `L`;
+//! 2. the signature's `R` decompresses, re-compresses to the same 32 bytes, lies in the
+//!    prime-order subgroup and is not the identity: `R` has order exactly `L`;
 //! 3. the signature's `S`, as a little-endian integer, is below the group order `L`;
 //! 4. the verification equation is the cofactorless one, as `verify_strict` computes it. With a
 //!    torsion-free `A` and `R` and `S < L`, the cofactored and cofactorless equations accept exactly
@@ -29,7 +30,8 @@ const GROUP_ORDER_LE: [u8; 32] = [
 ];
 
 /// Whether the 32 bytes encode an Ed25519 point acceptably: a valid point, in its one canonical
-/// encoding, in the prime-order subgroup (so neither small order nor of mixed order).
+/// encoding, of order exactly `L`: in the prime-order subgroup (so not of mixed order) and not the
+/// identity (`is_weak` rejects the identity and every small-order point).
 #[must_use]
 pub fn ed25519_point_acceptable(encoded: &[u8; 32]) -> bool {
     let Ok(key) = VerifyingKey::from_bytes(encoded) else {

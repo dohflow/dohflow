@@ -656,6 +656,33 @@ fn all_cases() -> Vec<Case> {
         &|sig| sig[..32].copy_from_slice(&noncanonical_valid_point()),
     ));
 
+    // Points of order 8 as the key and as R (the identity is covered above).
+    let order_8: [u8; 32] =
+        unhex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a")
+            .try_into()
+            .unwrap();
+    let mut order_8_key = Dev::new(0x8d);
+    order_8_key.ed25519_pk = order_8;
+    cases.push(one(
+        "invalid_order_8_ed25519_key",
+        "an add whose Ed25519 key is a point of order 8",
+        refs(&[&t.m1])
+            .into_iter()
+            .chain([membership(
+                a,
+                2,
+                Some(id_of(&t.m1)),
+                Action::Add,
+                &order_8_key,
+            )])
+            .collect(),
+        refs(&[&t.e1]),
+    ));
+    cases.push(sig_case(
+        "invalid_signature_order_8_r",
+        "R is a point of order 8",
+        &|sig| sig[..32].copy_from_slice(&order_8),
+    ));
     // A mixed-order key and a mixed-order R: valid points, canonical encodings, not torsion-free.
     let mut mixed_key = Dev::new(0x8c);
     mixed_key.ed25519_pk = add_torsion(&mixed_key.ed25519_pk);
@@ -1451,6 +1478,8 @@ fn every_invalid_case_fails_for_its_intended_reason() {
             "invalid_second_genesis_signed_by_the_founder_is_a_fork",
             "Fork",
         ),
+        ("invalid_order_8_ed25519_key", "KeyUnacceptable"),
+        ("invalid_signature_order_8_r", "BadSignature"),
         ("invalid_wrong_prev_id", "WrongPrevId"),
         ("invalid_wrong_version", "WrongVersion"),
         ("invalid_fork", "Fork"),
