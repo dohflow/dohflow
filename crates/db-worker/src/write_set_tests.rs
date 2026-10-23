@@ -826,3 +826,71 @@ fn a_replicated_text_key_that_is_not_valid_utf8_fails_the_command() {
         other => panic!("expected a typed refusal, got {other:?}"),
     }
 }
+
+// ---- class-2 rebuilds are not part of the write set (t2s4b AC5) ------------------------------
+//
+// A command that also refreshes a read model (class 2, rebuilt from canonical state on every
+// device) must have the SAME write set, rows and hash, as the same command without the refresh:
+// the read-model tables have no capture triggers, so the exclusion is structural. This pins it
+// for a direct write to a read-model table and for each rebuild routine.
+
+/// The class-1 change under test: one tag with fixed ids, so two fresh vaults agree.
+fn tag_insert(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO tags (id, name, color, created_at) VALUES (?1, 'trip', NULL, 't')",
+        params![Uuid::from_u128(0x77)],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_command_that_also_rebuilds_a_read_model_has_the_same_write_set_as_one_that_does_not() {
+    // Without any rebuild.
+    let (_dir, plain) = worker();
+    let plain_set = command(&plain, tag_insert).unwrap();
+    assert_eq!(tables(&plain_set), ["tags"]);
+
+    // With a direct class-2 write: proves the read-model write really happened, and was excluded.
+    let (_dir, direct) = worker();
+    let direct_set = command(&direct, |tx| {
+        tag_insert(tx)?;
+        tx.execute(
+            "INSERT INTO money_inbox_read_model
+                 (item_id, item_kind, target_table, target_id, surfaced_at, payload_json)
+             VALUES (?1, 'stale_balance', 'accounts', ?2, 't', '{}')",
+            params![Uuid::from_u128(1), Uuid::from_u128(2)],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let conn = direct.read_connection().unwrap();
+    let inbox_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM money_inbox_read_model", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(inbox_rows, 1, "the class-2 row was written");
+    assert_eq!(direct_set.rows, plain_set.rows);
+    assert_eq!(direct_set.hash, plain_set.hash);
+
+    // With every rebuild routine run inside the command.
+    let (_dir, rebuilt) = worker();
+    let rebuilt_set = command(&rebuilt, |tx| {
+        tag_insert(tx)?;
+        crate::money_inbox::rebuild_in(tx).map_err(to_sqlite)?;
+        crate::commitments::rebuild_in(tx).map_err(to_sqlite)?;
+        crate::recurring_instances::rebuild_in(
+            tx,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap(),
+        )
+        .map_err(to_sqlite)?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(rebuilt_set.rows, plain_set.rows);
+    assert_eq!(rebuilt_set.hash, plain_set.hash);
+}
+
+fn to_sqlite(error: DbError) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+}

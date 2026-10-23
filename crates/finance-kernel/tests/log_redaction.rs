@@ -100,6 +100,11 @@ const NEGATIVE: &[&str] = &[
     "module=db-worker",
 ];
 
+/// A distinctive amount in minor units (a payload value) and the account name's text. The
+/// command payload carries the amount as a decimal string in canonical JSON; neither the payload
+/// nor any digest of the write set may reach a log (t2s4b AC7; `docs/security/logging-policy.md`).
+const PAYLOAD_AMOUNT_MINOR: i64 = -987_654_321;
+
 /// The account number embedded in the seeded account's name — if any kernel span
 /// logs the name, the backstop must still redact the number.
 const NAME_EMBEDDED_NUMBER: &str = "4111111111111111";
@@ -136,6 +141,10 @@ fn meta() -> CommandMeta {
     }
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn at(rfc3339: &str) -> DateTime<Utc> {
     rfc3339.parse().unwrap()
 }
@@ -144,6 +153,7 @@ fn at(rfc3339: &str) -> DateTime<Utc> {
 fn no_sensitive_value_survives_into_logs() {
     use tracing_subscriber::prelude::*;
 
+    let write_set_values: Arc<Mutex<Vec<String>>> = Arc::default();
     let buf = Capture::default();
     let layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
@@ -203,6 +213,50 @@ fn no_sensitive_value_survives_into_logs() {
             ))
             .unwrap();
 
+        // Payloads, write sets and their digests (t2s4b AC7): apply a command with a distinctive
+        // amount straight on a worker, read back its write set, and keep the values to check
+        // below. The payload is canonical JSON of the command and the write set is a hash plus
+        // the (table, primary key) of each changed row; none of it is log material.
+        let worker_dir = tempfile::tempdir().unwrap();
+        let worker = db_worker::DbWorker::open_with_raw_key(
+            worker_dir.path().join("payload.db"),
+            vault_crypto::generate_dek().unwrap(),
+        )
+        .unwrap();
+        let payload_account = Account::new(
+            AccountId::new(),
+            LedgerAccountId::new(),
+            "Payload account",
+            CashflowRole::LiquidCash,
+            Currency::Usd,
+            AccountFlags::default(),
+        );
+        let payload_account_id = payload_account.id();
+        worker
+            .dispatch(
+                meta(),
+                db_worker::WriteCommand::CreateAccount {
+                    account: Box::new(payload_account),
+                    opening_balance: None,
+                },
+            )
+            .unwrap();
+        worker
+            .dispatch(
+                meta(),
+                db_worker::WriteCommand::RecordTransaction {
+                    transaction_id: TransactionId::new(),
+                    account_id: payload_account_id,
+                    amount: Money::new(PAYLOAD_AMOUNT_MINOR, Currency::Usd),
+                    occurred_at: at("2026-06-06T00:00:00Z"),
+                },
+            )
+            .unwrap();
+        let write_set = worker.last_write_set().expect("a write set was recorded");
+        let mut write_set_secrets = vec![hex(&write_set.hash)];
+        write_set_secrets.extend(write_set.rows.iter().map(|(_, key)| hex(key)));
+        *write_set_values.lock().unwrap() = write_set_secrets;
+
         // Emit the corpus as deliberate slips (use `{}` so the line is data, not a
         // format string). The layer must redact each positive before the sink.
         for (line, _) in POSITIVE {
@@ -235,6 +289,30 @@ fn no_sensitive_value_survives_into_logs() {
         !logged.contains("redaction gate pw"),
         "the password used for unattended export leaked into the log:\n{logged}"
     );
+
+    // The command payload (canonical JSON, amounts as decimal strings) never reaches a log: not
+    // the amount, not the field names, not the JSON shape of a command.
+    for needle in [
+        PAYLOAD_AMOUNT_MINOR.to_string(),
+        PAYLOAD_AMOUNT_MINOR.unsigned_abs().to_string(),
+        "amount_minor".to_owned(),
+        "\"amount\"".to_owned(),
+        "\"kind\"".to_owned(),
+    ] {
+        assert!(
+            !logged.contains(&needle),
+            "payload text {needle:?} reached the log:\n{logged}"
+        );
+    }
+    // Neither the write-set hash nor any changed row's primary key does either.
+    let write_set_values = write_set_values.lock().unwrap();
+    assert!(write_set_values.len() >= 2, "the write set had rows");
+    for value in write_set_values.iter() {
+        assert!(
+            !logged.contains(value.as_str()),
+            "a write-set digest or key {value:?} reached the log:\n{logged}"
+        );
+    }
 
     // Every known-negative value passes through unchanged (no over-redaction).
     for line in NEGATIVE {
