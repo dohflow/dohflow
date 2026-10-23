@@ -11,6 +11,8 @@ const ALLOWED: &[&str] = &[
     "crates/sync-core/src/header.rs",
     // The metadata and manifest commitments (C.3), derived here from CBE1 bytes.
     "crates/sync-core/src/envelope.rs",
+    // Device fingerprints are recomputed from keys, and records carry fingerprints off the wire.
+    "crates/sync-core/src/membership.rs",
     // The accepted-record decoder wraps the tag and commitment it reads off the wire.
     "crates/sync-core/src/accepted.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain

@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=7 -->
+<!-- vault-format: spec-version=8 -->
 <!-- vault-format: schema-version=57 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -256,6 +256,14 @@ synthetic no-app recovery test before any such public claim.
 - `spec-version = 7` makes one more rule explicit, with no wire layout or vector change: a
   present `result_ref` in the accepted-envelope record (C.10) is 1 to 64 bytes, because an
   empty one would be a second encoding of an absent one.
+- `spec-version = 8` pins the exact key and signature acceptance rules of C.6 (strict Ed25519
+  checks stated as checks, a screen for low-order X25519 keys), adds chain rules 8 to 11 (a
+  device id is never reused; a revoke never leaves zero authorized members; at most 1,024
+  authorized members; no two members share a public key), makes the recipient list canonical
+  (ascending by fingerprint, with exact lengths), and requires every cutover and rotation to
+  publish a key commitment never used before in the chain. C.14 gains the public membership-chain
+  conformance vectors (`docs/architecture/vectors/membership-chain-v1.json`). No existing wire
+  layout or vector changes.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -1167,6 +1175,40 @@ Chain rules, all enforced by every client and by the service:
    currently authorized.
 7. A replacement after `NonceStateLost` is a `revoke` of the old fingerprint and
    an `add` of a new device with fresh keys, signed by an existing member.
+8. A `device_id` is never reused: an `add` of a `device_id` already in the chain,
+   including one that was revoked, is rejected (a re-added device is a fresh enrollment,
+   which has a new `device_id`).
+9. A `revoke` that would leave no authorized member is rejected: its cutover could never
+   be sealed, because the sealer must be authorized at the revoke's head. A device may
+   revoke itself only when another member remains to seal the cutover.
+10. An `add` that would leave more than 1,024 authorized members is rejected, because the
+    next cutover must list every one of them.
+11. An `add` whose `ed25519_pk` or `kem_public_key` equals one already in the chain, under
+    a new fingerprint, is rejected (it would create an alias identity).
+
+`issued_at` is informational: no chain rule depends on a clock (ADR 0017 decision 3).
+
+### Key and signature acceptance
+
+A signature, and every public key that enters the chain, is checked by these rules, stated
+as checks so that implementations in other languages reproduce them. They are the strict
+rules, not the permissive ones some libraries offer by default, and a record that one
+implementation accepts and another rejects would split the views permanently.
+
+1. An `ed25519_pk` is accepted only if it decompresses to a curve point, re-compresses to the
+   same 32 bytes (a non-canonical encoding is rejected), and is not of small order. This is
+   checked when the key is added, so such a key never enters the chain.
+2. A signature `R || S` is accepted only if `R` decompresses, re-compresses to the same 32
+   bytes and is not of small order; `S`, read as a little-endian integer, is below the group
+   order `L`; and the cofactorless equation `[S]B = R + [k]A` holds (RFC 8032 section 5.1.7,
+   without cofactor multiplication) for `k = SHA-512(R || A || message)` reduced mod `L`.
+3. A suite-1 `kem_public_key` (X25519) is accepted only if, after clearing the unused top bit
+   and reducing modulo `2^255 - 19`, it is none of the low-order values `0`, `1`, `2^255 - 20`,
+   `325606250916557431795983626356110631294008115727848805560023387167927233504` and
+   `39382357235489614581723060781553021112529911719440698176882885853963445705823`.
+4. The signer's key for a record is always the key the **chain** holds for the signer's
+   fingerprint; it is never taken from the record being verified (the genesis record, which
+   has no earlier chain, is verified under the key it contains).
 
 ### Epoch record body
 
@@ -1247,6 +1289,15 @@ recipient the sealer runs HPKE base mode `Seal` to the recipient's
 `S` is sealed together with `K_e` in the same per-recipient payload. It is not
 encrypted under `K_e`. The `reason` is inside the epoch header, so the header hash
 that the `info` and `aad` bind also binds it.
+
+A recipient list is in one canonical order, **strictly ascending by fingerprint** with no
+duplicate, so one set of recipients has one encoding. In suite 1 each recipient's `enc` is
+exactly 32 bytes and its `ciphertext` is exactly 109 bytes: the 93-byte sealed-keys plaintext
+plus the 16-byte AES-GCM tag. A recipient's `device_id`, fingerprint, `suite_id` and `kem_id`
+equal those of its `add` record. Reasons 2 and 4 must publish a `key_commitment_Ke` that no
+earlier epoch record of the chain carried (a cutover that re-seals an old key is invalid),
+reason 3 repeats both commitments of the previous record, and every record repeats the first
+record's `key_commitment_S`.
 
 A recipient accepts an epoch record only when it:
 
@@ -1641,6 +1692,19 @@ typed outcomes of Part B apply unchanged.
   value is `dohflow-engine-1`.)
 
 ## C.14 Conformance tests and vectors
+
+The membership chain and its epoch records have their own **public conformance vectors**,
+`docs/architecture/vectors/membership-chain-v1.json` (`vectors_version` 1): valid chains
+(genesis only, add with a grant, revoke with a cutover, forced rotation, incremental extension,
+idempotent duplicates) and invalid ones (unsigned and mis-signed records, signer not a member or
+revoked, wrong version or `prev_id`, forks, fingerprint, device-id and public-key reuse, revoke
+that does not repeat its add, revoke of the last member, small-order and non-canonical keys and
+signature parts, missing, mis-ordered or equivocating epoch records, wrong recipients, a reused
+key, a changed `S`, unsupported protocol and suite). Each case is a list of steps and each step
+states the outcome as the C.11 failure name and the position of the offending record, never an
+implementation's own error names. The file holds only public data; the seeds that produced it live
+only in the Rust generator (`crates/sync-core/tests/membership_vectors.rs`), which fails if the file
+drifts. A change to the file is a change to this part and follows C.13.
 
 The reference test recomputes every vector below and fails if the document and
 the code differ. Every input is synthetic and listed here, so a third

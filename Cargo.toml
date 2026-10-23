@@ -87,6 +87,10 @@ aes-gcm = "0.10"
 sha2 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
+# Strict Ed25519 verification for the Sync membership chain (personal-cfo-g3m.21). Pinned to the 2.x
+# line: 3.x is the next RustCrypto generation and would add a second sha2/digest major. Only
+# `verify_strict` is used to verify; signing (`SigningKey::from_bytes`) is for test vectors only.
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fast", "zeroize"] }
 subtle = "2"
 # Cross-platform advisory file locks for the single-owner unlocked-vault runner
 # (personal-cfo-ati, ADR 0070 addendum).
