@@ -115,6 +115,20 @@ describe("IncomeView", () => {
     expect(screen.getByText(/\$3,200\.00/)).toBeInTheDocument();
   });
 
+  it("shows the schema's messages when an empty income form is submitted, and makes no IPC call (zod resolver)", async () => {
+    mocks.accountList.mockResolvedValue(ok([]));
+    mocks.incomeSourceList.mockResolvedValue(ok([]));
+    renderWithClient(<IncomeView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /add income/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add income/i }));
+
+    expect(await screen.findByText("Enter a source name.")).toBeInTheDocument();
+    expect(screen.getByText("Enter an amount above zero.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/source name/i)).toHaveAttribute("aria-invalid", "true");
+    expect(mocks.createIncomeSource).not.toHaveBeenCalled();
+  });
+
   it("creates an income source with the entered fields and refreshes", async () => {
     mocks.accountList.mockResolvedValue(ok([])); // no deposit account available
     mocks.incomeSourceList

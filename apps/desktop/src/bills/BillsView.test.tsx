@@ -224,6 +224,20 @@ describe("BillsView", () => {
     expect(mocks.createRecurringBill).not.toHaveBeenCalled();
   });
 
+  it("shows the schema's messages when an empty bill form is submitted, and makes no IPC call (zod resolver)", async () => {
+    mocks.accountList.mockResolvedValue(ok([]));
+    mocks.recurringBillList.mockResolvedValue(ok([]));
+    renderWithClient(<BillsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /add bill/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add bill/i }));
+
+    expect(await screen.findByText("Enter a bill name.")).toBeInTheDocument();
+    expect(screen.getByText("Enter an amount above zero.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/bill name/i)).toHaveAttribute("aria-invalid", "true");
+    expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+  });
+
   it("creates a bill with the entered fields and refreshes", async () => {
     mocks.accountList.mockResolvedValue(ok([])); // no autopay account available
     mocks.recurringBillList
