@@ -5,9 +5,12 @@
 //!   nothing may be written to any keychain** (checked through the login keychain too). This both
 //!   proves the typed failure and guarantees an unentitled run can never read as a pass.
 //! * `#[ignore]`d manual tests: the entitled behavior (round trip, the stored attributes, the
-//!   biometric policy). They run only in a signed build that carries the keychain entitlement and an
-//!   access group, supplied as `DOHFLOW_KEYCHAIN_ACCESS_GROUP` (for example by the release gate of
-//!   `personal-cfo-md8h2.17`, or by the owner on a signed build). They never run in CI.
+//!   biometric policy). They need the keychain entitlement, and **a restricted entitlement is honored
+//!   only inside a signed app bundle that carries the provisioning profile**: a plain `cargo test`
+//!   binary cannot have it, even if signed. They therefore run only from a harness inside such a
+//!   bundle (a throwaway bundle with the real app id and profile, or the app itself in a smoke mode),
+//!   which is the follow-up of `personal-cfo-md8h2.17`; the access group is supplied as
+//!   `DOHFLOW_KEYCHAIN_ACCESS_GROUP`. They never run in CI.
 #![cfg(target_os = "macos")]
 
 use platform_macos::{MacBiometricAuth, MacSecretStore};
@@ -100,8 +103,8 @@ fn biometric_availability_is_a_bool_and_needs_no_user_interaction() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Manual: the entitled paths. `cargo test -p platform-macos --test keychain -- --ignored`
-// in a SIGNED build with the keychain entitlement and DOHFLOW_KEYCHAIN_ACCESS_GROUP set.
+// Manual: the entitled paths, from a harness inside a signed app bundle that carries the keychain
+// entitlement and its provisioning profile, with DOHFLOW_KEYCHAIN_ACCESS_GROUP set (see the header).
 // ---------------------------------------------------------------------------------------------
 
 fn entitled_store() -> MacSecretStore {
