@@ -5,6 +5,8 @@
 //! envelope alone. Every identity here is derived from container bytes, as the service and the
 //! client derive them.
 
+use sha2::{Digest, Sha256};
+use sync_core::accepted::IdentityError;
 use sync_core::accepted::{
     decide_push, match_pulled, AcceptedIndex, AcceptedRecord, DuplicateIdentity, InMemoryIndex,
     IndexInconsistent, OutboxEntry, PullMatch, PulledEnvelope, PushDecision, PushIdentity,
@@ -12,11 +14,12 @@ use sync_core::accepted::{
 };
 use sync_core::cbe::WireError;
 use sync_core::envelope::{
-    canonical_envelope_digest, ArtifactManifest, EnvelopePlaintext, IdempotencyKey, ImmutableMeta,
+    canonical_envelope_digest, check_envelope, ArtifactManifest, EnvelopePlaintext, IdempotencyKey,
+    ImmutableMeta,
 };
 use sync_core::header::{
-    encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag,
-    MetadataCommitment, NonceDomain, ObjectKind,
+    encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag, NonceDomain,
+    ObjectKind,
 };
 
 const VAULT: [u8; 16] = [0x11; 16];
@@ -39,27 +42,58 @@ const BASE: Spec = Spec {
     ciphertext: 0x5a,
 };
 
-/// A sealed container for `spec`: a real envelope header and 40 ciphertext bytes.
-fn container_bytes(spec: Spec) -> Vec<u8> {
+/// A stand-in for the vault-crypto HMAC: a hash of the key, so every key has its own tag.
+fn test_tag(key: &IdempotencyKey) -> IdempotencyKeyTag {
+    IdempotencyKeyTag::from_derived(Sha256::digest(key.as_bytes()).into())
+}
+
+/// The coherent header and plaintext for `spec`: the commitments, tag and nonce domain are the
+/// ones `check_envelope` recomputes, so the pair passes the receiver checks.
+fn parts(spec: Spec) -> (ClearHeader, EnvelopePlaintext) {
+    let mut key = [spec.tag; 16];
+    key[6] = 0x40 | (key[6] & 0x0f);
+    key[8] = 0x80 | (key[8] & 0x3f);
+    let meta = ImmutableMeta {
+        command_id: [spec.command; 16],
+        correlation_id: [0x22; 16],
+        causation_id: None,
+        actor_type: 1,
+        actor_id: "tester".to_owned(),
+        idempotency_key: IdempotencyKey::from_bytes(key).unwrap(),
+        issued_at: i64::from(spec.commitment),
+        device_id: [spec.device; 16],
+    };
+    let fingerprint = Fingerprint::from_derived([spec.device; 32]);
     let header = ClearHeader {
         vault_id: VAULT,
         key_epoch: 3,
         object: ObjectKind::Envelope {
-            idempotency_key_tag: IdempotencyKeyTag::from_derived([spec.tag; 32]),
-            immutable_metadata_commitment: MetadataCommitment::from_derived([spec.commitment; 32]),
+            idempotency_key_tag: test_tag(&meta.idempotency_key),
+            immutable_metadata_commitment: meta.commitment().unwrap(),
             artifact_manifest_commitment: None,
         },
         object_id: [spec.command; 16],
         device_id: [spec.device; 16],
-        device_key_fingerprint: Fingerprint::from_derived([spec.device; 32]),
-        nonce_domain: NonceDomain::from_derived([1, 2, 3, 4]),
+        device_key_fingerprint: fingerprint,
+        nonce_domain: NonceDomain::derive(&VAULT, 3, &fingerprint, 1),
         invocation_counter: 0,
         base_seq: 41,
         payload_schema_version: 1,
         engine_version: "dohflow-engine-1".to_owned(),
         schema_version: 55,
     };
-    encode_container(&header, &[spec.ciphertext; 40]).unwrap()
+    let plaintext = EnvelopePlaintext {
+        meta,
+        write_set_hash: [0x44; 32],
+        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        payload: b"{}".to_vec(),
+    };
+    (header, plaintext)
+}
+
+/// A sealed container for `spec`: its real envelope header and 40 ciphertext bytes.
+fn container_bytes(spec: Spec) -> Vec<u8> {
+    encode_container(&parts(spec).0, &[spec.ciphertext; 40]).unwrap()
 }
 
 fn push(spec: Spec) -> PushIdentity {
@@ -73,9 +107,16 @@ fn outbox(spec: Spec) -> OutboxEntry {
 }
 
 fn pulled(spec: Spec, seq: u64) -> PulledEnvelope {
+    let (header, plaintext) = parts(spec);
+    let checked = check_envelope(&header, &plaintext, test_tag).expect("the pair is coherent");
     let bytes = container_bytes(spec);
-    PulledEnvelope::from_container(&parse_container(&bytes).unwrap(), seq, Some(vec![9, 9]))
-        .unwrap()
+    PulledEnvelope::from_container(
+        &parse_container(&bytes).unwrap(),
+        &checked,
+        seq,
+        Some(vec![9, 9]),
+    )
+    .unwrap()
 }
 
 fn accepted(spec: Spec, seq: u64) -> AcceptedRecord {
@@ -568,4 +609,34 @@ fn a_restore_twin_binds_what_the_original_had_accepted_and_pushes_what_it_had_no
         decide_push(&index, &push(accepted_before_backup)).unwrap(),
         PushDecision::Replay(record) if record.seq == 41
     ));
+}
+
+#[test]
+fn a_checked_envelope_cannot_be_paired_with_another_container() {
+    let (header, plaintext) = parts(BASE);
+    let checked = check_envelope(&header, &plaintext, test_tag).unwrap();
+    // The container of a DIFFERENT envelope (another command id).
+    let other = container_bytes(Spec { command: 9, ..BASE });
+    assert_eq!(
+        PulledEnvelope::from_container(&parse_container(&other).unwrap(), &checked, 1, None),
+        Err(IdentityError::NotTheCheckedEnvelope)
+    );
+    // The right container is accepted.
+    let own = container_bytes(BASE);
+    assert!(
+        PulledEnvelope::from_container(&parse_container(&own).unwrap(), &checked, 1, None).is_ok()
+    );
+}
+
+#[test]
+fn an_envelope_that_fails_the_receiver_checks_yields_no_token_and_so_no_pulled_envelope() {
+    let (mut header, plaintext) = parts(BASE);
+    if let ObjectKind::Envelope {
+        idempotency_key_tag,
+        ..
+    } = &mut header.object
+    {
+        *idempotency_key_tag = IdempotencyKeyTag::from_derived([0; 32]);
+    }
+    assert!(check_envelope(&header, &plaintext, test_tag).is_err());
 }
