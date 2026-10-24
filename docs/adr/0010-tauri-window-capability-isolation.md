@@ -596,7 +596,7 @@ addendum to this ADR before the constant changes.
 - `personal-cfo-40t` (typed IPC command pattern)
 - `personal-cfo-1al` (ADR 0003: trust boundary)
 - `personal-cfo-v4l` (ADR 0022: parser/document isolation boundary)
-\n
+
 ## Addendum (2026-10-23, personal-cfo-pxi.22): `open_provider_site` adds no grant
 
 The re-authentication notice (ADR 0060, addendum of the same date) needs a link to the provider's own
