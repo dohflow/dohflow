@@ -118,7 +118,11 @@ export function UnlockedHome() {
         locking={locking}
         inboxCount={inboxItems?.length ?? 0}
       />
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      {/* `relative` makes this scroll pane the containing block for absolutely positioned
+          descendants. Without it, an `sr-only` label (position: absolute) has no positioned ancestor,
+          escapes this pane's clipping, and stretches the DOCUMENT's scroll area: Settings with linked
+          accounts then showed a second scrollbar and moved the sidebar (personal-cfo-twpo.1). */}
+      <main className="relative flex-1 overflow-y-auto px-6 py-8">
         <ConnectionAttentionNotice />
         <CapabilityUnlockNotice />
         {tab === "dashboard" ? (
