@@ -196,8 +196,9 @@ On macOS 27 (a scratch program with a throwaway service name; its items were del
    anti-rollback witness for nonce state for exactly that reason, and **this keychain is never that witness.** The
    trait's capability report therefore carries two separate facts, `roams_to_other_device` and
    `rollback_resistant` (always `false` for the keychain), and the capability matrix says so. Which component is the
-   macOS witness is not decided here; it is owned by the Sync client engine bead (`personal-cfo-elciw`, with
-   `personal-cfo-6kn` for the clock/identity side), and nobody should read "ThisDeviceOnly" as satisfying ADR 0017.
+   macOS witness is not decided here; the requirement is ADR 0017's (decision bead `personal-cfo-6kn`), the
+   implementation belongs to the Sync client engine bead (`personal-cfo-elciw`), and nobody should read
+   "ThisDeviceOnly" as satisfying ADR 0017.
 6. **A `BiometryChanged` signal is not promised.** After the enrolled biometrics change, a `.biometryCurrentSet` item
    becomes inaccessible, and the platform may report that as "not found" or as an authentication failure rather than a
    distinct code. Callers treat "not found" for such an item as "enroll again with the vault password". A distinct
