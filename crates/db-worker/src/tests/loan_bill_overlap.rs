@@ -114,7 +114,13 @@ fn the_loan_alone_projects_one_payment() {
 fn reproduction_a_subscription_typed_bill_for_the_loans_payment_double_counts_today() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
-    bill_on_the_15th(&worker, "ACME HOME LOANS", "subscription", 150_000, fixture.checking);
+    bill_on_the_15th(
+        &worker,
+        "ACME HOME LOANS",
+        "subscription",
+        150_000,
+        fixture.checking,
+    );
 
     assert_eq!(
         outflow_on_the_15th(&worker),
@@ -131,7 +137,13 @@ fn reproduction_a_subscription_typed_bill_for_the_loans_payment_double_counts_to
 fn reproduction_a_rent_mortgage_typed_bill_is_invisible_to_the_detector_too() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
-    bill_on_the_15th(&worker, "Test Mortgage", "rent_mortgage", 150_000, fixture.checking);
+    bill_on_the_15th(
+        &worker,
+        "Test Mortgage",
+        "rent_mortgage",
+        150_000,
+        fixture.checking,
+    );
     assert_eq!(outflow_on_the_15th(&worker), 300_000);
     assert!(worker.loan_double_count_warnings().unwrap().is_empty());
 }
@@ -142,10 +154,20 @@ fn reproduction_a_rent_mortgage_typed_bill_is_invisible_to_the_detector_too() {
 fn reproduction_a_loan_payment_typed_bill_is_flagged_but_still_double_counted() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
-    bill_on_the_15th(&worker, "ACME HOME LOANS", "loan_payment", 150_000, fixture.checking);
+    bill_on_the_15th(
+        &worker,
+        "ACME HOME LOANS",
+        "loan_payment",
+        150_000,
+        fixture.checking,
+    );
     let warnings = worker.loan_double_count_warnings().unwrap();
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].loan_account_id, fixture.loan.as_uuid());
     assert!(warnings[0].amount_match);
-    assert_eq!(outflow_on_the_15th(&worker), 300_000, "flagged, yet counted twice");
+    assert_eq!(
+        outflow_on_the_15th(&worker),
+        300_000,
+        "flagged, yet counted twice"
+    );
 }
