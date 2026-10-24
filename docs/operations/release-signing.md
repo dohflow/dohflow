@@ -305,9 +305,10 @@ item's access group change.
 
 **Not yet automated, and not yet verifiable.** Reading back a stored item's attributes (device-only
 class, not synchronizable) must run inside the signed app bundle, because a restricted entitlement is
-honored only there: either the app itself carries `platform-macos` and a smoke mode, or a throwaway
-bundle with the real app id and profile runs its `--ignored` tests. That harness is the follow-up of
-`personal-cfo-md8h2.17`; until it exists, `release-checklist.md` step 5 records the keychain check as
+honored only there. The harness is a **separate throwaway signed bundle** with the real app id and
+profile that runs `platform-macos`'s `--ignored` tests (`personal-cfo-md8h2.18`); it is deliberately
+not a smoke mode inside the shipped app, which would be an extra entry point in the release binary.
+Until it exists, `release-checklist.md` step 5 records the keychain check as
 open.
 
 ## Part B — Repo wiring (867.1 — APPLIED 2026-07-05, PR #264)

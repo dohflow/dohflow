@@ -231,9 +231,9 @@ confirmed above ADR 0065's 14.0 floor):
   launch gate; confirm by hand that the signed, notarized app launches. The keychain read-back
   (a stored item has the device-only class and `kSecAttrSynchronizable = false`; the Touch ID item
   needs a fresh match) **cannot be run by an ordinary `cargo test`**: a restricted entitlement is
-  only honored inside an app bundle that carries the profile. Until the follow-up harness exists
-  (a throwaway bundle with the real app id and profile that runs `platform-macos`'s `--ignored`
-  tests; tracked on `md8h2.17`), this item stays **open and must be recorded as not yet
+  only honored inside an app bundle that carries the profile. Until the harness exists
+  (`personal-cfo-md8h2.18`: a separate throwaway signed bundle with the real app id and profile that
+  runs `platform-macos`'s `--ignored` tests; never shipped, never notarized for distribution), this item stays **open and must be recorded as not yet
   verified** on the release bead, never ticked. Record what a user on an OLDER release sees once the
   profile expires (the launch-risk question, `md8h2.17` item 6) the first time it is observed.
 - [ ] Paste the `spctl` output, the `LSMinimumSystemVersion` value, and

@@ -356,7 +356,7 @@ echo "✓ the signed app launches and completes setup()"
 if [[ "$skip_profile" != "1" ]]; then
   echo "note: the data-protection keychain attribute smoke (device-only class, not synchronizable, read back)"
   echo "      is a manual step on the signed release candidate for now (release-checklist.md step 5);"
-  echo "      automating it needs the app to carry platform-macos (a follow-up of personal-cfo-md8h2.17)."
+  echo "      the harness for it is personal-cfo-md8h2.18 (a separate throwaway signed bundle, never shipped)."
 fi
 
 if [[ "$skip_notarize" == "1" ]]; then
