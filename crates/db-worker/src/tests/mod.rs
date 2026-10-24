@@ -3,6 +3,8 @@
 //! private `DbWorker` methods). Pub-API-only tests live in `tests/*.rs`;
 //! shared helpers for those live in `tests/common/mod.rs`.
 
+mod loan_bill_overlap;
+
 use super::*;
 use core_ledger::{AccountFlags, CashflowRole};
 use core_money::Currency;
