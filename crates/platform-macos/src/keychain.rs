@@ -3,8 +3,8 @@
 //! Every dictionary key is set explicitly here so it can be audited in one place; nothing is left to
 //! a wrapper's defaults. **This is the crate's only `unsafe`.** The entitled paths (a store that
 //! succeeds) cannot run in an unsigned build: they are exercised by the `#[ignore]`d tests in
-//! `tests/keychain.rs` on a signed build with the keychain entitlement, and by the release gate of
-//! `personal-cfo-md8h2.17`. The unentitled path (a typed failure) runs in every test.
+//! `tests/keychain.rs`, run from the signed throwaway harness bundle of `personal-cfo-md8h2.18` (the
+//! release signing change itself is `personal-cfo-md8h2.17`). The unentitled path (a typed failure) runs in every test.
 #![allow(unsafe_code)]
 
 use core_foundation::base::{CFType, TCFType};

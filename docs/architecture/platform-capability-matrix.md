@@ -75,4 +75,5 @@ Two rules that apply to every row, on every platform, now and in later implement
   `errSecMissingEntitlement` (-34018) without it.
 - Not yet verified: a provisioning-profile-bearing, notarized Developer ID build (including whether a missing or
   expired profile stops the app launching), and the Touch ID paths. Both are scheduled on a signed release
-  candidate on a Mac with Touch ID (`personal-cfo-md8h2.17`, then the Touch ID bead).
+  candidate on a Mac with Touch ID: the signing change is `personal-cfo-md8h2.17`, the entitled-test harness
+  (a separate throwaway signed bundle) is `personal-cfo-md8h2.18`, then the Touch ID bead.

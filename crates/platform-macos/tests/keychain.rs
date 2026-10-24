@@ -8,8 +8,9 @@
 //!   biometric policy). They need the keychain entitlement, and **a restricted entitlement is honored
 //!   only inside a signed app bundle that carries the provisioning profile**: a plain `cargo test`
 //!   binary cannot have it, even if signed. They therefore run only from a harness inside such a
-//!   bundle (a throwaway bundle with the real app id and profile, or the app itself in a smoke mode),
-//!   which is the follow-up of `personal-cfo-md8h2.17`; the access group is supplied as
+//!   bundle: a separate throwaway signed bundle with the real app id and profile (never shipped, never
+//!   notarized for distribution; there is deliberately no smoke mode in the shipped app). That harness
+//!   is `personal-cfo-md8h2.18`; the access group is supplied as
 //!   `DOHFLOW_KEYCHAIN_ACCESS_GROUP`. They never run in CI.
 #![cfg(target_os = "macos")]
 
