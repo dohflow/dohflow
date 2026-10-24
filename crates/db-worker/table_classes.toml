@@ -390,6 +390,15 @@ rebase_preservation = "preserve the local credential and refresh state; never ov
 reference_validation = "adapter identity and local secret material must remain paired with the local connection"
 
 [[table]]
+table = "connector_attention"
+class = "3"
+owner_bead = "personal-cfo-pxi.22"
+note = "Device-local re-authentication notices (which bank needs a sign-in at the provider); written by this device's refresh and cleared by its next healthy one. Never replicated; holds provider-supplied bank names inside the encrypted vault."
+rebase_phase = "stable"
+rebase_preservation = "preserve the local notice on a scratch rebase; the next healthy refresh clears it"
+reference_validation = "connection_id must resolve to a local connector_connections row; a stale one is dropped, never blocks the swap"
+
+[[table]]
 table = "connector_account_links"
 class = "3"
 owner_bead = "personal-cfo-07u"

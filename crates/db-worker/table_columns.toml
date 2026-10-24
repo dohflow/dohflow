@@ -109,6 +109,13 @@ primary_key = ["connection_id", "external_id"]
 columns = ["connection_id:uuid", "external_id:text", "external_name:text", "account_id:uuid", "last_synced_on:text", "created_at:text", "updated_at:text", "currency:text"]
 
 [[table]]
+name = "connector_attention"
+class = "3"
+write_set = "none"
+primary_key = ["connection_id"]
+columns = ["connection_id:uuid", "attention:text", "updated_at:text"]
+
+[[table]]
 name = "connector_connections"
 class = "3"
 write_set = "none"

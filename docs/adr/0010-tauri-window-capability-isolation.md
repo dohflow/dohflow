@@ -596,3 +596,23 @@ addendum to this ADR before the constant changes.
 - `personal-cfo-40t` (typed IPC command pattern)
 - `personal-cfo-1al` (ADR 0003: trust boundary)
 - `personal-cfo-v4l` (ADR 0022: parser/document isolation boundary)
+\n
+## Addendum (2026-10-23, personal-cfo-pxi.22): `open_provider_site` adds no grant
+
+The re-authentication notice (ADR 0060, addendum of the same date) needs a link to the provider's own
+site. The opener scope was **not** widened for it. The webview calls one app command,
+`open_provider_site`, passing only a connection id; the backend looks up that connection's adapter,
+takes its registered `provider_url` (a compile-time https constant), and opens it with the opener
+plugin's Rust API. In the opener plugin the scope is enforced only by the plugin's own commands
+(`commands.rs` builds the `Scope` from the window's grants); `Opener::open_url` opens directly, with no
+scope check (read in 2.5.5, the pin this change was made on, and unchanged in 2.7.1, whose
+documentation now says so). That is why the https-only check lives in our command and why the webview
+must never supply the address.
+
+- **Grant set unchanged.** `node scripts/tauri-acl-expansion.mjs` before and after: `allow-app-commands`
+  152 to 153 commands (`open_provider_site`), nothing else; the main window's scoped grant is still
+  `opener:allow-open-url` for exactly `https://dohflow.app/*`.
+- **No webview-supplied address.** The command's input is a connection id; an unknown id, a malformed id
+  or an adapter without a registered site opens nothing and names nothing in its error.
+- **Not part of the isolated-window posture.** The command is in the main window's set only; an isolated
+  window's empty capability (2026-09-27 addendum) still reaches no app command.

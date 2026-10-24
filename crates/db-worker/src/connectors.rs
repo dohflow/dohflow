@@ -49,6 +49,10 @@ pub struct ConnectorConnectionRow {
     pub display_hint: Option<String>,
     pub last_synced_at: Option<String>,
     pub last_error: Option<String>,
+    /// The connection's re-authentication notice as stored JSON (migration 58,
+    /// `connector_attention`; personal-cfo-pxi.22), `None` when there is none. The desktop layer
+    /// writes and parses it; nothing else interprets it.
+    pub attention: Option<String>,
     pub created_at: String,
 }
 
@@ -124,8 +128,11 @@ impl DbWorker {
     pub fn connector_connections(&self) -> Result<Vec<ConnectorConnectionRow>, DbError> {
         let conn = self.read_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, adapter_id, display_hint, last_synced_at, last_error, created_at
-               FROM connector_connections ORDER BY created_at, id",
+            "SELECT c.id, c.adapter_id, c.display_hint, c.last_synced_at, c.last_error,
+                    a.attention, c.created_at
+               FROM connector_connections c
+               LEFT JOIN connector_attention a ON a.connection_id = c.id
+              ORDER BY c.created_at, c.id",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -135,7 +142,8 @@ impl DbWorker {
                     display_hint: r.get(2)?,
                     last_synced_at: r.get(3)?,
                     last_error: r.get(4)?,
-                    created_at: r.get(5)?,
+                    attention: r.get(5)?,
+                    created_at: r.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -211,6 +219,10 @@ impl DbWorker {
         let tx = guard.conn.unchecked_transaction()?;
         tx.execute(
             "DELETE FROM connector_account_links WHERE connection_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM connector_attention WHERE connection_id = ?1",
             params![id],
         )?;
         tx.execute(
@@ -385,6 +397,53 @@ impl DbWorker {
                 SET last_synced_at = ?2, last_error = ?3, updated_at = ?2
               WHERE id = ?1",
             params![connection_id, now, error.map(sanitize_error)],
+        )?;
+        Ok(())
+    }
+
+    /// Record (or replace) the connection's re-authentication notice (migration 58,
+    /// `connector_attention`; personal-cfo-pxi.22). `attention_json` is the desktop layer's own
+    /// small JSON object; a connection that no longer exists is a no-op (a deletion raced the
+    /// refresh), never an error and never an orphan row.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a write failure (including a value that is not valid JSON).
+    pub fn set_connector_attention(
+        &self,
+        connection_id: Uuid,
+        attention_json: &str,
+    ) -> Result<(), DbError> {
+        let now = Utc::now().to_rfc3339();
+        let guard = self.lock();
+        let tx = guard.conn.unchecked_transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM connector_connections WHERE id = ?1)",
+            params![connection_id],
+            |r| r.get(0),
+        )?;
+        if exists {
+            tx.execute(
+                "INSERT INTO connector_attention (connection_id, attention, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (connection_id) DO UPDATE
+                    SET attention = excluded.attention, updated_at = excluded.updated_at",
+                params![connection_id, attention_json, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove the connection's re-authentication notice (the next refresh was healthy). Nothing
+    /// to remove is not an error.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a write failure.
+    pub fn clear_connector_attention(&self, connection_id: Uuid) -> Result<(), DbError> {
+        let guard = self.lock();
+        guard.conn.execute(
+            "DELETE FROM connector_attention WHERE connection_id = ?1",
+            params![connection_id],
         )?;
         Ok(())
     }

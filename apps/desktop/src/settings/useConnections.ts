@@ -92,12 +92,16 @@ export function invalidateAfterConnectorSync(
   }
 }
 
-export function useConnections(): UseConnections {
+export function useConnections(options?: { pollMs?: number }): UseConnections {
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: queryKeys.connections,
     queryFn: () =>
       ipcQuery(commands.connectorConnections(), "Could not load connections."),
+    // The shell's re-authentication notice (personal-cfo-pxi.22) polls: background refreshes
+    // write the state it shows while no command of this window is in flight, and window-focus
+    // refetch is off app-wide.
+    refetchInterval: options?.pollMs,
   });
 
   const invalidateConnections = () =>

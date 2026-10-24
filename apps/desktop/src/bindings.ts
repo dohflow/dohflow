@@ -289,6 +289,7 @@ export const commands = {
 	connectorCreateMappedAccount: (input: ConnectorCreateMappedAccountInput) => typedError<CreateAccountResult, IpcError>(__TAURI_INVOKE("connector_create_mapped_account", { input })),
 	connectorSync: (input: ConnectorSyncInput) => typedError<ConnectorSyncResultDto, IpcError>(__TAURI_INVOKE("connector_sync", { input })),
 	connectorAutoSync: () => typedError<ConnectorSyncResultDto[], IpcError>(__TAURI_INVOKE("connector_auto_sync")),
+	openProviderSite: (input: ConnectorProviderSiteInput) => typedError<null, IpcError>(__TAURI_INVOKE("open_provider_site", { input })),
 	connectorForget: (input: ConnectorForgetInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_forget", { input })),
 	/**
 	 *  Check whether a newer build is available in the app's own source checkout — a from-source,
@@ -1012,6 +1013,17 @@ export type ConnectorAdapterDto = {
 	enabled: boolean,
 };
 
+/**
+ *  One thing a connection needs. `kind` is `reauth_institution` (one bank must be signed in again
+ *  at the provider) or `relink_connection` (the whole connection must be set up again).
+ *  `institution` is the bank's own name from the provider, already cleaned: printable text only,
+ *  never an id, a URL or a credential.
+ */
+export type ConnectorAttentionDto = {
+	kind: string,
+	institution: string | null,
+};
+
 export type ConnectorBillingPeriodDto = "Monthly" | "Annual";
 
 /**  What the adapter's code can fetch (`connector_core::CapabilitySet`). */
@@ -1035,6 +1047,12 @@ export type ConnectorConnectionDto = {
 	 *  `weekly` or `manual`.
 	 */
 	refresh_cadence: string,
+	/**
+	 *  What this connection needs from the user at the provider, or empty (personal-cfo-pxi.22;
+	 *  ADR 0060 addendum 2026-10-23). Written by this device's own refreshes and cleared by the
+	 *  next healthy one; the re-authentication notice renders ONLY from it.
+	 */
+	attention: ConnectorAttentionDto[],
 	links: ConnectorAccountLinkDto[],
 };
 
@@ -1110,7 +1128,9 @@ export type ConnectorForgetInput = {
 /**
  *  How to connect one provider (ADR 0015's link-guide addendum). Render
  *  `provider_url` as selectable text wherever a step contains it — never a
- *  link.
+ *  link. (The re-authentication notice opens the provider's site through the
+ *  backend's `open_provider_site`, which names only a connection, ADR 0060
+ *  addendum 2026-10-23; the webview still never holds a clickable address.)
  */
 export type ConnectorLinkGuideDto = {
 	title: string,
@@ -1150,6 +1170,15 @@ export type ConnectorLinkResultDto = {
 
 /**  Who pays the provider. */
 export type ConnectorPayerDto = "UserDirect" | "DohflowBrokered" | "None";
+
+/**
+ *  Open a connection's provider site in the system browser (personal-cfo-pxi.22). The webview
+ *  names the CONNECTION, never an address: the backend looks the address up from the connection's
+ *  own adapter, so no URL ever comes from the webview.
+ */
+export type ConnectorProviderSiteInput = {
+	connection_id: string,
+};
 
 /**  A provider's referral URL and the disclosure that must sit next to it. */
 export type ConnectorReferralDto = {

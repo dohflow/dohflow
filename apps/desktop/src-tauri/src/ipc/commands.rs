@@ -5250,13 +5250,14 @@ use finance_kernel::connector_currency_guard::{
 use tauri::Manager as _;
 
 use crate::ipc::dto::{
-    ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto,
+    ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto, ConnectorAttentionDto,
     ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
     ConnectorCreateMappedAccountInput, ConnectorCredentialTierDto, ConnectorDisclosureDto,
     ConnectorEconomicsDto, ConnectorExternalAccountDto, ConnectorFeedDto, ConnectorForgetInput,
     ConnectorLinkGuideDto, ConnectorLinkInput, ConnectorLinkResultDto, ConnectorPayerDto,
-    ConnectorReferralDto, ConnectorSetAccountLinkInput, ConnectorSetAccountLinkResultDto,
-    ConnectorSetRefreshCadenceInput, ConnectorSyncInput, ConnectorSyncResultDto,
+    ConnectorProviderSiteInput, ConnectorReferralDto, ConnectorSetAccountLinkInput,
+    ConnectorSetAccountLinkResultDto, ConnectorSetRefreshCadenceInput, ConnectorSyncInput,
+    ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -5640,6 +5641,13 @@ pub fn connector_connections_impl(
                 last_synced_at: row.last_synced_at,
                 last_error: row.last_error,
                 refresh_cadence: refresh_cadence.token().to_owned(),
+                attention: crate::connector_attention::decode(row.attention.as_deref())
+                    .into_iter()
+                    .map(|entry| ConnectorAttentionDto {
+                        kind: entry.kind.token().to_owned(),
+                        institution: entry.institution,
+                    })
+                    .collect(),
                 links,
             });
         }
@@ -5817,6 +5825,15 @@ fn record_connector_failure(
                 kernel.record_connector_sync(connection_id, Some(&message))?;
             }
         }
+        // A failure that needs the user at the provider leaves a notice that outlives the next
+        // refresh toast and stays until a healthy refresh (personal-cfo-pxi.22). Every other
+        // failure leaves an existing notice exactly as it was.
+        if let Some(entries) = crate::connector_attention::from_failure(err) {
+            kernel.set_connector_attention(
+                connection_id,
+                &crate::connector_attention::encode(&entries),
+            )?;
+        }
         Ok(())
     })?;
     Ok((status, message))
@@ -5919,6 +5936,8 @@ fn connector_sync_inner(
                     // and the unlock auto-sync keeps re-discovering until an
                     // account is mapped.
                     kernel.clear_connector_error(connection_id)?;
+                    // A discovery that succeeded proves the connection works again.
+                    kernel.clear_connector_attention(connection_id)?;
                     Ok(count)
                 })?;
                 if discovered > 0 {
@@ -6052,6 +6071,18 @@ fn connector_sync_inner(
                     }
                 }
                 kernel.record_connector_sync(connection_id, None)?;
+                // The re-authentication notice mirrors THIS refresh: the banks the provider says
+                // still need a sign-in (the rest of the sync was healthy and is ingested above),
+                // or none, which clears it (personal-cfo-pxi.22).
+                let attention = crate::connector_attention::from_sync(&synced.reauth_required);
+                if attention.is_empty() {
+                    kernel.clear_connector_attention(connection_id)?;
+                } else {
+                    kernel.set_connector_attention(
+                        connection_id,
+                        &crate::connector_attention::encode(&attention),
+                    )?;
+                }
                 Ok((result, held_foreign))
             });
             let (result, held_foreign) = match ingested {
@@ -6186,6 +6217,62 @@ pub async fn connector_auto_sync(
     })
     .await
     .map_err(|_| IpcError::Unavailable("connector task failed".to_owned()))?
+}
+
+/// The provider's own site for an adapter: its registered `provider_url`, a compile-time constant
+/// that must be https. A failure names nothing (not the id, not the address).
+fn provider_site_url(adapter_id: &str) -> Result<&'static str, IpcError> {
+    let registration = connector_core::registration_by_id(adapter_id)
+        .ok_or_else(|| IpcError::Unavailable("this provider has no site to open".to_owned()))?;
+    require_https(registration.metadata.link_guide.provider_url)
+}
+
+fn require_https(url: &'static str) -> Result<&'static str, IpcError> {
+    if url.starts_with("https://") {
+        Ok(url)
+    } else {
+        Err(IpcError::Validation(
+            "the provider's site is not a secure address".to_owned(),
+        ))
+    }
+}
+
+/// Open a connection's provider site (the re-authentication notice's link). The webview supplies
+/// only the connection id: the address comes from that connection's adapter, is refused unless it
+/// is https, and is opened by `open` (the opener plugin's Rust API in the command, a recorder in
+/// tests). The opener's webview-reachable scope is NOT involved and stays `https://dohflow.app/*`
+/// (ADR 0010; ADR 0060 addendum 2026-10-23). Nothing is logged: the address is a constant and the
+/// connection id is not worth a line.
+pub fn open_provider_site_impl(
+    state: &AppState,
+    input: ConnectorProviderSiteInput,
+    open: &dyn Fn(&'static str) -> Result<(), IpcError>,
+) -> Result<(), IpcError> {
+    let connection_id = parse_connector_connection_id(&input.connection_id)?;
+    let adapter_id = with_kernel(state, |kernel| {
+        kernel
+            .connector_connections()?
+            .into_iter()
+            .find(|c| c.id == connection_id)
+            .map(|c| c.adapter_id)
+            .ok_or_else(|| IpcError::Validation("unknown connector connection".to_owned()))
+    })?;
+    open(provider_site_url(&adapter_id)?)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn open_provider_site(
+    app: tauri::AppHandle,
+    input: ConnectorProviderSiteInput,
+) -> Result<(), IpcError> {
+    use tauri_plugin_opener::OpenerExt;
+    let state = app.state::<AppState>();
+    open_provider_site_impl(&state, input, &|url| {
+        app.opener().open_url(url, None::<&str>).map_err(|_| {
+            IpcError::Unavailable("the provider's site could not be opened".to_owned())
+        })
+    })
 }
 
 pub fn connector_forget_impl(
@@ -6519,5 +6606,56 @@ mod release_update_failure_tests {
             !logged.contains(&path.display().to_string()),
             "backup destination path leaked into the log: {logged}"
         );
+    }
+}
+
+#[cfg(test)]
+mod provider_site_tests {
+    use super::{provider_site_url, require_https};
+    use crate::ipc::IpcError;
+
+    // personal-cfo-pxi.22: the address the notice opens is refused unless it is https.
+    #[test]
+    fn anything_that_is_not_https_is_refused_with_a_typed_error_that_names_nothing() {
+        for url in [
+            "http://bridge.simplefin.org",
+            "ftp://bridge.simplefin.org",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "HTTPS://bridge.simplefin.org",
+            "https:/bridge.simplefin.org",
+            "bridge.simplefin.org",
+            "",
+        ] {
+            match require_https(url) {
+                Err(IpcError::Validation(message)) => {
+                    assert!(!message.contains(url) || url.is_empty(), "{message}");
+                }
+                other => panic!("{url:?} was not refused: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_https_address_passes_unchanged() {
+        assert_eq!(
+            require_https("https://bridge.simplefin.org").unwrap(),
+            "https://bridge.simplefin.org"
+        );
+    }
+
+    #[test]
+    fn every_registered_provider_resolves_to_an_https_site_and_an_unknown_one_to_nothing() {
+        let mut seen = 0;
+        for registration in connector_core::all_registrations() {
+            let url = provider_site_url(registration.adapter.id()).unwrap();
+            assert!(url.starts_with("https://"), "{url}");
+            seen += 1;
+        }
+        assert!(seen >= 2, "the real providers are registered: {seen}");
+        assert!(matches!(
+            provider_site_url("no-such-provider"),
+            Err(IpcError::Unavailable(_))
+        ));
     }
 }

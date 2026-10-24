@@ -1873,6 +1873,31 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Re-authentication notices (personal-cfo-pxi.22, ADR 0060 addendum 2026-10-23). A bank that
+    // needs the user to sign in again at the provider (SimpleFIN `con.auth`, a refused token, an
+    // expired key) must stay visible until the NEXT healthy refresh, but `last_error` is free text
+    // that every healthy sync clears, and a one-bank `con.auth` is not even a failed sync. This
+    // is this device's own operational state (class 3: never replicated, ADR 0074/CLASS-0), kept in
+    // its own table rather than a column because `connector_connections` is about to be
+    // restructured (personal-cfo-07u). `attention` is a small JSON array the desktop layer writes
+    // and reads, never the UI: [{"kind": "reauth_institution" | "relink_connection",
+    // "institution": <sanitized provider-supplied bank name, optional>}, ...]. One row per
+    // connection, replaced on every refresh that has something to say and removed by the next
+    // healthy one.
+    Migration {
+        version: 58,
+        name: "connector_attention",
+        up: "CREATE TABLE IF NOT EXISTS connector_attention (
+                 connection_id BLOB PRIMARY KEY REFERENCES connector_connections(id),
+                 attention     TEXT NOT NULL CHECK (json_valid(attention)),
+                 updated_at    TEXT NOT NULL
+             );",
+        // Reverse: the table is only a visible reminder that the next refresh rebuilds, so the
+        // down drops it without a guard (nothing else references it, no ledger data is lost).
+        down: Some("DROP TABLE IF EXISTS connector_attention;"),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 const fn max_version() -> i64 {

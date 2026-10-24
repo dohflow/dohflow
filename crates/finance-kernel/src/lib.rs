@@ -3668,6 +3668,30 @@ impl Kernel {
         Ok(self.worker.clear_connector_error(connection_id)?)
     }
 
+    /// Record (or replace) a connection's re-authentication notice: the desktop layer's own small
+    /// JSON array (personal-cfo-pxi.22, `connector_attention`). A connection that no longer
+    /// exists is a no-op.
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a persistence failure.
+    pub fn set_connector_attention(
+        &self,
+        connection_id: uuid::Uuid,
+        attention_json: &str,
+    ) -> Result<(), KernelError> {
+        Ok(self
+            .worker
+            .set_connector_attention(connection_id, attention_json)?)
+    }
+
+    /// Remove a connection's re-authentication notice (its next refresh was healthy).
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a persistence failure.
+    pub fn clear_connector_attention(&self, connection_id: uuid::Uuid) -> Result<(), KernelError> {
+        Ok(self.worker.clear_connector_attention(connection_id)?)
+    }
+
     /// Record a sync failure without consuming the debounce window.
     ///
     /// # Errors

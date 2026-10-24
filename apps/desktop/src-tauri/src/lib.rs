@@ -6,6 +6,7 @@
 //! binding exporter ([`export_bindings`] / the `export_bindings` binary).
 
 mod backup_job;
+pub mod connector_attention;
 pub mod connector_refresh;
 pub mod data_dir;
 pub mod ipc;
@@ -205,6 +206,7 @@ macro_rules! app_commands {
             ipc::commands::connector_create_mapped_account,
             ipc::commands::connector_sync,
             ipc::commands::connector_auto_sync,
+            ipc::commands::open_provider_site,
             ipc::commands::connector_forget,
             $($desktop_only)*
         ]

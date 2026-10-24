@@ -199,3 +199,64 @@ the vault is locked. The manual refresh button is unchanged.
 - **No OS notification here.** A link that needs re-authentication is shown on the
   connection's health and in the Money Inbox. A system notification for it is
   `personal-cfo-c8cu`'s, built on whatever notification surface the app adopts.
+
+## Addendum (2026-10-23, personal-cfo-pxi.22): a bank that needs the user is a persisted notice, not a toast
+
+**Why.** Dogfooding (2026-10-18) found a SimpleFIN connection reporting `con.auth`: one bank inside the
+Bridge needed signing in again, and nothing in the app said so. The finding was exact: a
+SimpleFIN `con.auth` is **not a failed sync**. The other banks refresh normally, the sync records no
+error, and the only trace was a warning line in the refresh toast, after which the connection looked
+healthy. Stale bank data silently degrades Future Cash, so the app now keeps the state until the user
+fixes it or a refresh finds it fixed.
+
+**Decisions.**
+
+1. **A device-local attention table.** `connector_attention` (migration 58): one row per connection, a
+   small JSON array of entries `{kind, institution?}`, `kind` being `reauth_institution` (one bank must be
+   signed in again at the provider) or `relink_connection` (the whole connection must be set up again).
+   It is a separate table, not a column on `connector_connections`, because that table is about to be
+   restructured by the Sync identity/secret split (`personal-cfo-07u`), and because the state is this
+   device's own operational state: class 3 in the CLASS-0 manifest, never replicated, preserved across a
+   scratch rebase. Deleting a connection deletes its row.
+2. **Structured input, never prose.** The connector contract gains `SyncBatch.reauth_required`. The
+   SimpleFIN adapter fills it from the v2 `errlist` (every `con.auth`, not only the first) and
+   `connections[]`: the bank's own name from the connection's `name`, else its `org_name`, sanitized
+   (control, bidirectional and zero-width characters removed), trimmed and bounded. A `con.auth` for a
+   connection the response does not list, or with no `conn_id`, is reported **without** a name; the
+   message text is never parsed. Repeats across date chunks collapse. What the adapters detect is
+   unchanged.
+3. **When the state is written and cleared.** A refresh that fails with `Expired`, or with
+   `NeedsUserAction` `gen.auth`, records `relink_connection`; a fatal `con.*` on the link or discovery path
+   records `reauth_institution` (unnamed). A sync that ingested replaces the state with the banks the
+   provider still flags, or clears it when it flags none; a successful discovery clears it. Network
+   errors, rate limits (healthy pacing, but nothing was fetched) and ingest failures leave it exactly as
+   it was: only a fully healthy refresh proves the bank is fine. The healthy banks' data is ingested as
+   before: the notice never blocks or hides it.
+4. **The notice.** The connection listing carries the entries (`ConnectorConnectionDto.attention`) and the
+   UI renders only from them: one card per affected connection in the app shell, above whatever section
+   is open, with the owner-approved wording only (SimpleFIN per bank, with a no-name fallback;
+   SimpleFIN whole connection; LunchFlow needs a new API key). An adapter or kind without approved wording
+   shows no notice (Settings still shows the connection's last error). No dismiss control: it goes away
+   when the backend clears it. It re-reads the list once a minute, because background refreshes write the
+   state. Settings > Connections shows its existing "Needs attention" badge for it.
+5. **A link to the provider, without widening anything.** This supersedes the 2026-09-02 rule that the
+   Bridge address is "selectable plain text, not a link" **for this one surface**. The mechanism is a
+   backend command, `open_provider_site(connection_id)`: the webview names the connection, never an
+   address; the backend resolves the connection's adapter, takes its registered `provider_url` (a
+   compile-time constant), refuses anything that is not https with a typed error, and opens it with the
+   opener plugin's Rust API in the system browser. No webview-reachable opener scope changes: the main
+   window's grant stays `opener:allow-open-url` for exactly `https://dohflow.app/*` (ADR 0010, 2026-09-06),
+   and the command is one more entry in `allow-app-commands` (the expanded-grant diff shows +1 command
+   and no new grant). Nothing is logged for it. Everywhere else the provider address stays selectable
+   text, as in the link guide.
+
+**Verified.** Tests against the connector-core mock failure modes and a real temp-vault kernel (show, one
+bank named and the rest ingested, replaced, cleared, relink, rate limit leaving it alone, discovery
+clearing it, forget); SimpleFIN adapter tests on the structured field; the migration up/down round trip;
+component tests for the states and accessibility. Which surfaces fired for each case before this change is
+recorded on the bead: a `gen.auth` or `Expired` already set the connection's last error (Settings only);
+a `con.auth` left no trace beyond the refresh toast.
+
+**Not decided here.** An operating-system notification for the same state remains `personal-cfo-c8cu`'s. A
+LunchFlow per-account "needs attention" state is not mapped: its adapter reports only an expired key (401 or
+403) from a sync, which is `relink_connection`.

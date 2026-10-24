@@ -24,7 +24,7 @@ and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
 <!-- vault-format: spec-version=8 -->
-<!-- vault-format: schema-version=57 -->
+<!-- vault-format: schema-version=58 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -384,6 +384,7 @@ therefore requires reviewing this inventory.
 | `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
 | `connector_connections` | 3 | exclude | exclude | Holds provider credentials. Excluded whole until the identity/secret split in `personal-cfo-07u` yields a replicable identity table. |
 | `connector_account_links` | 3 | exclude | exclude | Holds local refresh watermarks. Excluded whole until the split in `personal-cfo-07u`. |
+| `connector_attention` | 3 | exclude | exclude | Device-local re-authentication notices (personal-cfo-pxi.22); rebuilt by the next refresh. |
 | `staged_accounts` | 3 | exclude | exclude | Device-local state. |
 | `staged_balances` | 3 | exclude | exclude | Device-local state. |
 | `staged_transactions` | 3 | exclude | exclude | Device-local state. |

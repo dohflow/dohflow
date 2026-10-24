@@ -339,6 +339,21 @@ pub struct SyncBatch {
     /// watermark for this sync.
     #[serde(default)]
     pub hold_all_watermarks: bool,
+    /// Banks the provider says need the user to sign in again at the provider (SimpleFIN
+    /// `con.auth`) while the REST of this sync is healthy and was ingested
+    /// (personal-cfo-pxi.22). One entry per affected bank. Structured on purpose, like
+    /// `held_account_ids`: the app must never recover this from warning prose.
+    #[serde(default)]
+    pub reauth_required: Vec<ReauthRequired>,
+}
+
+/// One bank that needs the user to sign in again at the provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReauthRequired {
+    /// The bank's own name as the provider reports it, ALREADY SANITIZED by the adapter
+    /// (printable text, bounded length: it is shown to the user and kept in the vault).
+    /// `None` when the provider did not name the bank. Never a provider id or a URL.
+    pub institution: Option<String>,
 }
 
 /// Wrap a staged balance observation into the [`ParsedRecord`] shape the
@@ -511,6 +526,7 @@ pub trait ConnectorAdapter: Sync {
             since,
             held_account_ids: Vec::new(),
             hold_all_watermarks: false,
+            reauth_required: Vec::new(),
             batch: ParsedBatch {
                 source_format: self.id().to_owned(),
                 accounts,
@@ -646,7 +662,10 @@ pub struct DisclosureText {
 /// How to connect one provider, as the picker walks the user through it (ADR
 /// 0015's 2026-09-27 link-guide addendum). Every field is written per
 /// provider. `provider_url` is rendered as selectable text wherever it
-/// appears in a step, never as a link.
+/// appears in a step, never as a link: the one exception is the
+/// re-authentication notice's "open" action, which the BACKEND performs from
+/// this constant (`open_provider_site`; ADR 0060 addendum 2026-10-23), so the
+/// webview still never holds a clickable address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectorLinkGuide {
     /// The disclosure panel's heading.

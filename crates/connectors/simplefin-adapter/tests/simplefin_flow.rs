@@ -607,3 +607,190 @@ fn retry_required_errors_populate_the_structured_hold_fields() {
         .iter()
         .any(|w| w.message.starts_with("retry required")));
 }
+
+// ===========================================================================
+// Re-authentication notice input (personal-cfo-pxi.22): `con.auth` is surfaced as STRUCTURED
+// data on the batch (`reauth_required`), never recovered from warning prose.
+// ===========================================================================
+
+fn reauth_sync(body: String) -> connector_core::SyncBatch {
+    let since = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+    let transport = FixtureTransport::queue(vec![(200, body)]);
+    mk_adapter(&transport).sync(&conn(), Some(since)).unwrap()
+}
+
+fn healthy_account() -> String {
+    account_json("ACT-2", &txn_json("TXN-9", 1_755_000_000, "-7.00"))
+}
+
+fn names(batch: &connector_core::SyncBatch) -> Vec<Option<String>> {
+    batch
+        .reauth_required
+        .iter()
+        .map(|r| r.institution.clone())
+        .collect()
+}
+
+#[test]
+fn a_con_auth_names_the_bank_from_the_connections_list_and_the_healthy_data_still_stages() {
+    let body = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"Reauthorize","conn_id":"C1"}}],
+            "connections":[{{"conn_id":"C1","name":"Demo Bank - Checking login"}},
+                           {{"conn_id":"C2","name":"Other Bank"}}],
+            "accounts":[{}]}}"#,
+        healthy_account()
+    );
+    let synced = reauth_sync(body);
+    assert_eq!(
+        names(&synced),
+        vec![Some("Demo Bank - Checking login".to_owned())]
+    );
+    // Only the bank that needs attention is named; the healthy one is not.
+    assert!(!names(&synced)
+        .iter()
+        .flatten()
+        .any(|n| n.contains("Other Bank")));
+    assert_eq!(
+        synced
+            .batch
+            .records
+            .iter()
+            .filter(|r| r.transaction.is_some())
+            .count(),
+        1,
+        "the healthy institution's data still stages"
+    );
+}
+
+#[test]
+fn a_con_auth_for_an_unlisted_connection_or_with_no_connection_has_no_name_and_never_a_guess() {
+    // The errlist names a connection the response does not list (as in the abort test above).
+    let unlisted = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"Reauthorize Demo Bank","conn_id":"C1"}}],
+            "connections":[{{"conn_id":"C2","name":"Other Bank"}}],"accounts":[{}]}}"#,
+        healthy_account()
+    );
+    // The prose msg names a bank, but prose is never parsed: the name stays absent.
+    assert_eq!(names(&reauth_sync(unlisted)), vec![None]);
+
+    let no_conn = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"Reauthorize"}}],"accounts":[{}]}}"#,
+        healthy_account()
+    );
+    assert_eq!(names(&reauth_sync(no_conn)), vec![None]);
+}
+
+#[test]
+fn two_banks_needing_a_sign_in_are_both_reported_once_each_in_a_stable_order() {
+    let body = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"x","conn_id":"C3"}},
+                        {{"code":"con.auth","msg":"x","conn_id":"C1"}},
+                        {{"code":"con.auth","msg":"x","conn_id":"C3"}}],
+            "connections":[{{"conn_id":"C1","name":"First Bank"}},{{"conn_id":"C3","name":"Third Bank"}}],
+            "accounts":[{}]}}"#,
+        healthy_account()
+    );
+    let synced = reauth_sync(body);
+    assert_eq!(
+        names(&synced),
+        vec![Some("First Bank".to_owned()), Some("Third Bank".to_owned())],
+        "one entry per connection, in connection-id order, repeats collapsed"
+    );
+}
+
+#[test]
+fn the_same_con_auth_repeated_in_every_date_chunk_is_reported_once() {
+    // ~5 months of history is several chunks; the provider repeats its errlist in each.
+    let since = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+    let chunk = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"x","conn_id":"C1"}}],
+            "connections":[{{"conn_id":"C1","name":"Demo Bank"}}],"accounts":[{}]}}"#,
+        healthy_account()
+    );
+    let transport = FixtureTransport::queue(vec![(200, chunk); 8]);
+    let synced = mk_adapter(&transport).sync(&conn(), Some(since)).unwrap();
+    assert!(
+        transport.recorded().len() >= 2,
+        "the walk really had several chunks"
+    );
+    assert_eq!(names(&synced), vec![Some("Demo Bank".to_owned())]);
+}
+
+#[test]
+fn the_org_name_is_used_when_the_connection_has_no_name_and_the_name_is_sanitized() {
+    let body = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"x","conn_id":"C1"}},
+                        {{"code":"con.auth","msg":"x","conn_id":"C2"}}],
+            "connections":[{{"conn_id":"C1","org_name":"Org Bank"}},
+                           {{"conn_id":"C2","name":"Evil\u202EBank\u0007\u200B Name"}}],
+            "accounts":[{}]}}"#,
+        healthy_account()
+    );
+    let synced = reauth_sync(body);
+    assert_eq!(
+        names(&synced),
+        vec![
+            Some("Org Bank".to_owned()),
+            Some("EvilBank Name".to_owned())
+        ],
+        "org_name is the fallback; bidi, zero-width and control characters are stripped"
+    );
+}
+
+#[test]
+fn an_overlong_bank_name_is_bounded() {
+    let long = "A".repeat(500);
+    let body = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"x","conn_id":"C1"}}],
+            "connections":[{{"conn_id":"C1","name":"{long}"}}],"accounts":[{}]}}"#,
+        healthy_account()
+    );
+    let name = reauth_sync(body).reauth_required[0]
+        .institution
+        .clone()
+        .unwrap();
+    assert!(
+        name.chars().count() <= 201,
+        "bounded (200 characters plus an ellipsis)"
+    );
+    assert!(name.ends_with('…'));
+}
+
+#[test]
+fn a_blank_bank_name_is_no_name() {
+    let body = format!(
+        r#"{{"errlist":[{{"code":"con.auth","msg":"x","conn_id":"C1"}}],
+            "connections":[{{"conn_id":"C1","name":"   ","org_name":"  "}}],"accounts":[{}]}}"#,
+        healthy_account()
+    );
+    assert_eq!(names(&reauth_sync(body)), vec![None]);
+}
+
+#[test]
+fn other_errors_and_v1_error_strings_never_produce_a_reauth_notice() {
+    let body = format!(
+        r#"{{"errors":["Reauthorize Demo Bank"],
+            "errlist":[{{"code":"act.failed","msg":"Try again later","account_id":"ACT-2"}},
+                       {{"code":"con.timeout","msg":"slow","conn_id":"C1"}}],
+            "accounts":[{}]}}"#,
+        healthy_account()
+    );
+    assert!(reauth_sync(body).reauth_required.is_empty());
+    assert!(reauth_sync(set_json(&[healthy_account()]))
+        .reauth_required
+        .is_empty());
+}
+
+#[test]
+fn a_gen_auth_still_aborts_and_carries_no_notice_input() {
+    let since = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+    let transport = FixtureTransport::queue(vec![(
+        200,
+        r#"{"errlist":[{"code":"gen.auth","msg":"Forbidden"},{"code":"con.auth","msg":"x","conn_id":"C1"}],"accounts":[]}"#
+            .to_owned(),
+    )]);
+    let err = mk_adapter(&transport)
+        .sync(&conn(), Some(since))
+        .unwrap_err();
+    assert!(matches!(&err, ConnectorError::NeedsUserAction { code, .. } if code == "gen.auth"));
+}

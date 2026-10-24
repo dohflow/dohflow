@@ -67,7 +67,11 @@ function isHeld(link: ConnectorAccountLinkDto): boolean {
 }
 
 function HealthBadge({ connection }: { connection: ConnectorConnectionDto }) {
-  if (connection.last_error || connection.links.some(isHeld)) {
+  if (
+    connection.last_error ||
+    connection.attention.length > 0 ||
+    connection.links.some(isHeld)
+  ) {
     return <Badge variant="warning">Needs attention</Badge>;
   }
   const stamp = formatDateTime(connection.last_synced_at);

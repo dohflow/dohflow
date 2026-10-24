@@ -4017,7 +4017,9 @@ pub struct ConnectorAdapterDto {
 
 /// How to connect one provider (ADR 0015's link-guide addendum). Render
 /// `provider_url` as selectable text wherever a step contains it — never a
-/// link.
+/// link. (The re-authentication notice opens the provider's site through the
+/// backend's `open_provider_site`, which names only a connection, ADR 0060
+/// addendum 2026-10-23; the webview still never holds a clickable address.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct ConnectorLinkGuideDto {
     pub title: String,
@@ -4119,7 +4121,21 @@ pub struct ConnectorConnectionDto {
     /// How often this connection refreshes (lqk): `every_open`, `daily`,
     /// `weekly` or `manual`.
     pub refresh_cadence: String,
+    /// What this connection needs from the user at the provider, or empty (personal-cfo-pxi.22;
+    /// ADR 0060 addendum 2026-10-23). Written by this device's own refreshes and cleared by the
+    /// next healthy one; the re-authentication notice renders ONLY from it.
+    pub attention: Vec<ConnectorAttentionDto>,
     pub links: Vec<ConnectorAccountLinkDto>,
+}
+
+/// One thing a connection needs. `kind` is `reauth_institution` (one bank must be signed in again
+/// at the provider) or `relink_connection` (the whole connection must be set up again).
+/// `institution` is the bank's own name from the provider, already cleaned: printable text only,
+/// never an id, a URL or a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct ConnectorAttentionDto {
+    pub kind: String,
+    pub institution: Option<String>,
 }
 
 /// Map (or unmap, with `None`) an external account onto a real account.
@@ -4205,6 +4221,14 @@ pub struct ConnectorSyncResultDto {
 /// Forget a stored connection (its past synced data stays in the ledger).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ConnectorForgetInput {
+    pub connection_id: String,
+}
+
+/// Open a connection's provider site in the system browser (personal-cfo-pxi.22). The webview
+/// names the CONNECTION, never an address: the backend looks the address up from the connection's
+/// own adapter, so no URL ever comes from the webview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ConnectorProviderSiteInput {
     pub connection_id: String,
 }
 

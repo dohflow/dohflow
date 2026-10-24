@@ -21,6 +21,7 @@ import { SettingsView } from "@/settings/SettingsView";
 import { UpdateAvailableNotice } from "@/settings/UpdateAvailableNotice";
 import { FirstForecastWizard } from "@/onboarding/FirstForecastWizard";
 import { CapabilityUnlockNotice } from "@/forecast-activation/CapabilityUnlockNotice";
+import { ConnectionAttentionNotice } from "@/settings/connections/ConnectionAttentionNotice";
 import { useAccounts } from "@/accounts/useAccounts";
 import { useVault } from "@/vault/useVault";
 import { GlobalSearch } from "@/search/GlobalSearch";
@@ -118,6 +119,7 @@ export function UnlockedHome() {
         inboxCount={inboxItems?.length ?? 0}
       />
       <main className="flex-1 overflow-y-auto px-6 py-8">
+        <ConnectionAttentionNotice />
         <CapabilityUnlockNotice />
         {tab === "dashboard" ? (
           <>
