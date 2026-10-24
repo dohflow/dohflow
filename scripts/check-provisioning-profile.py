@@ -18,7 +18,7 @@ otherwise exit 1 listing every problem (never just the first), so a fix is one r
 
 What is checked (the profile's own key names; the first real profile may show a difference, in which
 case fix this script and its tests together, never loosen a check to make a build pass):
-  * it is a macOS profile (`Platform` contains OSX or macOS), not a development or device profile
+  * it is a macOS profile (`Platform` is present and contains OSX or macOS), not a development or device profile
     (no `ProvisionedDevices`, no `get-task-allow`);
   * it belongs to the signing team (`TeamIdentifier`, `com.apple.developer.team-identifier`);
   * it authorizes this app: `com.apple.application-identifier` is `<TEAM>.<bundle id>` (or `<TEAM>.*`);
@@ -74,7 +74,9 @@ def check(profile: dict, bundle_id: str, team: str, min_days: int, now: datetime
     wildcard = f"{team}.*"
 
     platforms = [str(p) for p in (profile.get("Platform") or [])]
-    if platforms and not {"OSX", "macOS"} & set(platforms):
+    if not platforms:
+        problems.append("has no Platform key: cannot tell it is a macOS profile")
+    elif not {"OSX", "macOS"} & set(platforms):
         problems.append(f"not a macOS profile (Platform: {platforms})")
     if profile.get("ProvisionedDevices"):
         problems.append("lists provisioned devices: a development or ad-hoc profile, not Developer ID")

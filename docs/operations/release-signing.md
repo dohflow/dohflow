@@ -299,9 +299,9 @@ export APPLE_PROVISIONING_PROFILE="/absolute/path/to/DohFlow.provisionprofile"
 a password-only app that can never be published as a release.
 
 **Expiry and the Team ID.** The profile's expiry is on the launch-ops calendar and checked at step 0 of
-every release. The keychain group is prefixed with the Team ID, so the planned Individual to Organization
-conversion (`personal-cfo-qvm6b.1`) must keep the Team ID, or the group, the profile and every stored
-item's access group change.
+every release. The keychain group is prefixed with the Team ID, so **any change to the Apple developer account
+must keep the Team ID**: otherwise the group, the profile and every stored item's access group change.
+(Account-change specifics are in the internal runbook, not here.)
 
 **Not yet automated, and not yet verifiable.** Reading back a stored item's attributes (device-only
 class, not synchronizable) must run inside the signed app bundle, because a restricted entitlement is

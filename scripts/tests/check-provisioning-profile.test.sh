@@ -94,6 +94,8 @@ make_profile devprofile 'profile["Entitlements"]["get-task-allow"] = True'
 expect_bad devprofile "get-task-allow"
 make_profile ios 'profile["Platform"] = ["iOS"]'
 expect_bad ios "not a macOS profile"
+make_profile no_platform 'del profile["Platform"]'
+expect_bad no_platform "no Platform key"
 
 case_start "every problem is reported in one run, not just the first"
 make_profile many 'profile["ExpirationDate"] = datetime.datetime(2026, 10, 1); profile["TeamIdentifier"] = ["ZZZZZZ9999"]; profile["ProvisionedDevices"] = ["x"]'
