@@ -393,11 +393,11 @@ pub enum ReceiverError {
 /// # Errors
 /// The first failing check, as a [`ReceiverError`]. All of them are tampering or a producer bug;
 /// none is recoverable by retrying.
-pub fn check_envelope(
-    header: &ClearHeader,
-    plaintext: &EnvelopePlaintext,
+pub fn check_envelope<'a>(
+    header: &'a ClearHeader,
+    plaintext: &'a EnvelopePlaintext,
     tag_for: impl FnOnce(&IdempotencyKey) -> IdempotencyKeyTag,
-) -> Result<(), ReceiverError> {
+) -> Result<CheckedEnvelope<'a>, ReceiverError> {
     let ObjectKind::Envelope {
         idempotency_key_tag,
         immutable_metadata_commitment,
@@ -444,5 +444,41 @@ pub fn check_envelope(
     if !manifest_ok {
         return Err(ReceiverError::ManifestCommitmentMismatch);
     }
-    Ok(())
+    Ok(CheckedEnvelope { header, plaintext })
+}
+
+/// Proof that a header and its decrypted plaintext passed [`check_envelope`]. It can be built only
+/// by that function (the fields are private), and the accepted-envelope code takes it, so
+/// "authenticate and check before you match" is a compile-time rule rather than a convention:
+///
+/// ```compile_fail
+/// use sync_core::envelope::{CheckedEnvelope, EnvelopePlaintext};
+/// use sync_core::header::ClearHeader;
+/// fn forge<'a>(header: &'a ClearHeader, plaintext: &'a EnvelopePlaintext) {
+///     // The fields are private: there is no way to claim a check that did not run.
+///     let _ = CheckedEnvelope { header, plaintext };
+/// }
+/// ```
+///
+/// The membership check (the sealing device's key belongs to a member at the object's epoch) and
+/// the AEAD opening are the caller's, as for [`check_envelope`]; holding this token means this
+/// function's checks ran and passed on exactly this header and plaintext.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckedEnvelope<'a> {
+    header: &'a ClearHeader,
+    plaintext: &'a EnvelopePlaintext,
+}
+
+impl<'a> CheckedEnvelope<'a> {
+    /// The header that was checked.
+    #[must_use]
+    pub const fn header(&self) -> &'a ClearHeader {
+        self.header
+    }
+
+    /// The decrypted plaintext that was checked.
+    #[must_use]
+    pub const fn plaintext(&self) -> &'a EnvelopePlaintext {
+        self.plaintext
+    }
 }
