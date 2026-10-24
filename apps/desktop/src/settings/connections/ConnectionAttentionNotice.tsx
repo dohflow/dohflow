@@ -119,16 +119,13 @@ function AttentionCard({
             Refresh now
           </Button>
         </div>
+        {/* The card is this notice's ONE live region (role="alert"): the refresh outcome and an
+            open-site failure are added inside it, so they are announced without a nested live
+            region of their own (a nested status or alert would announce them twice). */}
         {outcome ? (
-          <p role="status" className="mt-2 text-sm text-muted-foreground">
-            {outcome}
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">{outcome}</p>
         ) : null}
-        {openError ? (
-          // No role of its own: the card is already an alert (a live region), so text added
-          // inside it is announced, and a nested alert would announce it twice.
-          <p className="mt-2 text-sm text-loss">{openError}</p>
-        ) : null}
+        {openError ? <p className="mt-2 text-sm text-loss">{openError}</p> : null}
       </div>
     </div>
   );
