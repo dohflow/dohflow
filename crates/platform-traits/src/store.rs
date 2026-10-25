@@ -31,6 +31,12 @@ pub struct StoreCapabilities {
 pub trait SecretStore: Send + Sync {
     /// Stores `value` under `key`, replacing any existing item.
     ///
+    /// A store that is **refused** (an unsupported policy, a protection that cannot be created) fails
+    /// before anything is replaced: the previous secret is untouched. A store that fails **after**
+    /// the replacement has begun (the platform rejects the final write) MAY leave no item at all, so a
+    /// caller that cannot tolerate losing the old secret keeps its own copy until the call returns
+    /// `Ok`.
+    ///
     /// # Errors
     /// [`SecretError::Unavailable`] when the requested protection cannot be provided (never a
     /// weaker store), [`SecretError::TooLarge`], or [`SecretError::Platform`].

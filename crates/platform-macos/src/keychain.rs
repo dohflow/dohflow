@@ -178,10 +178,10 @@ impl SecretStore for MacSecretStore {
         value: &SecretValue,
         policy: AccessPolicy,
     ) -> Result<(), SecretError> {
-        // Replace semantics: remove any existing item first (an access control cannot be changed by
-        // an update), then add. A missing item is fine.
-        self.delete_secret(key)?;
-
+        // Everything that can be refused is validated and built BEFORE the existing item is touched,
+        // so a refused store (an unknown policy, an access control the framework will not create)
+        // never destroys the previous secret (review F2 on the first version of this crate).
+        //
         // A policy this build does not know (the enum is non-exhaustive) is refused, never stored with
         // some other protection.
         let biometric = match policy {
@@ -215,7 +215,9 @@ impl SecretStore for MacSecretStore {
                     if !error.is_null() {
                         CFRelease(error as CFTypeRef);
                     }
-                    // The framework refuses this combination when no passcode is set.
+                    // [U] Mapped to NoPasscode on the documented reading that the framework refuses
+                    // this combination when no passcode is set; the error is not inspected, so other
+                    // causes would be reported the same way. Unverified until run on a signed build.
                     return Err(SecretError::Unavailable(
                         platform_traits::UnavailableReason::NoPasscode,
                     ));
@@ -234,6 +236,10 @@ impl SecretStore for MacSecretStore {
             }
         }
         let dict = CFDictionary::from_CFType_pairs(&attrs);
+        // Replace semantics: only now remove any existing item (an access control cannot be changed
+        // by an update), then add. A missing item is fine. If the add itself then fails, no item
+        // remains: a failed store MAY leave no item (documented on the trait).
+        self.delete_secret(key)?;
         // SAFETY: `dict` is valid for the call; a null result pointer means "return nothing".
         let status = unsafe { SecItemAdd(dict.as_concrete_TypeRef(), std::ptr::null_mut()) };
         if status == 0 {

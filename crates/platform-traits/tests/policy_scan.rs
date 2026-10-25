@@ -94,25 +94,25 @@ fn relative(file: &Path) -> String {
 }
 
 /// Source files that are consumers (everything except the platform crates themselves) and call
-/// both names. `extra` lets the self-test feed a synthetic file.
-fn offenders_in(files: &[PathBuf]) -> (usize, Vec<String>) {
+/// both names. Takes `(path relative to the repository root, text)` pairs, so the self-test below can
+/// feed synthetic ones: nothing is ever written into the repository, which would race the other scan
+/// that reads the tree in parallel.
+fn offenders_in(files: &[(String, String)]) -> (usize, Vec<String>) {
     let mut consumers = 0;
     let mut offenders = Vec::new();
-    for file in files {
-        let path = relative(file);
+    for (path, text) in files {
         // The trait definitions and their implementations/tests name both; they are the definition,
         // not a caller. Everything else is a consumer.
         if path.starts_with("crates/platform-") {
             continue;
         }
         consumers += 1;
-        let text = fs::read_to_string(file).unwrap();
         let calls = |name: &str| {
             text.lines()
                 .any(|l| l.split("//").next().unwrap_or("").contains(name))
         };
         if calls("preflight_prompt(") && calls("load_secret(") {
-            offenders.push(path);
+            offenders.push(path.clone());
         }
     }
     (consumers, offenders)
@@ -124,7 +124,11 @@ fn no_source_file_calls_both_preflight_and_load_secret() {
     for dir in ["crates", "apps/desktop/src-tauri/src"] {
         rust_files(&root().join(dir), &mut files);
     }
-    let (consumers, offenders) = offenders_in(&files);
+    let pairs: Vec<(String, String)> = files
+        .iter()
+        .map(|file| (relative(file), fs::read_to_string(file).unwrap()))
+        .collect();
+    let (consumers, offenders) = offenders_in(&pairs);
     // Not vacuous: the exclusion must leave the app and kernel sources in the scan.
     assert!(
         consumers > 50,
@@ -139,28 +143,30 @@ fn no_source_file_calls_both_preflight_and_load_secret() {
 
 #[test]
 fn the_scan_catches_an_offender_in_a_consumer_and_ignores_a_platform_crate() {
-    // Self-check on real files, so a refactor of the scan cannot make it vacuous: a throwaway file
-    // under a consumer path is flagged; the same text under a platform crate is not.
-    let dir = std::env::temp_dir().join(format!("dohflow-scan-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let probe = dir.join("probe.rs");
-    fs::write(
-        &probe,
-        "fn unlock() { auth.preflight_prompt(&p); store.load_secret(&k, &p); }",
-    )
-    .unwrap();
-    // `relative` needs a path under the repository; use the real tree for both cases.
-    let consumer = root().join("apps/desktop/src-tauri/src/zz_scan_probe.rs");
-    let platform = root().join("crates/platform-traits/src/zz_scan_probe.rs");
-    for path in [&consumer, &platform] {
-        fs::write(path, fs::read_to_string(&probe).unwrap()).unwrap();
-    }
-    let (_, flagged) = offenders_in(&[consumer.clone(), platform.clone()]);
-    for path in [&consumer, &platform] {
-        let _ = fs::remove_file(path);
-    }
-    let _ = fs::remove_file(&probe);
-    let _ = fs::remove_dir(&dir);
+    // Self-check on synthetic files (no writes into the tree): the same text is flagged under a
+    // consumer path and ignored under a platform crate, so a refactor of the scan cannot make it
+    // vacuous. Comments are not calls, and a file that calls only one of the two names is fine.
+    let both = "fn unlock() { auth.preflight_prompt(&p); store.load_secret(&k, &p); }";
+    let pairs = vec![
+        (
+            "apps/desktop/src-tauri/src/zz_scan_probe.rs".to_owned(),
+            both.to_owned(),
+        ),
+        (
+            "crates/platform-traits/src/zz_scan_probe.rs".to_owned(),
+            both.to_owned(),
+        ),
+        (
+            "crates/finance-kernel/src/only_loads.rs".to_owned(),
+            "fn a() { store.load_secret(&k, &p); }".to_owned(),
+        ),
+        (
+            "crates/finance-kernel/src/only_comment.rs".to_owned(),
+            "// preflight_prompt( is mentioned\nfn a() { store.load_secret(&k, &p); }".to_owned(),
+        ),
+    ];
+    let (consumers, flagged) = offenders_in(&pairs);
+    assert_eq!(consumers, 3, "the platform-crate copy is not a consumer");
     assert_eq!(
         flagged,
         vec!["apps/desktop/src-tauri/src/zz_scan_probe.rs".to_owned()]

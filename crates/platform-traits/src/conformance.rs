@@ -66,6 +66,31 @@ pub fn run(store: &dyn SecretStore, namespace: &str) {
         value(b"second, longer secret")
     );
 
+    // A REFUSED store leaves the previous secret intact: asking for a protection this store cannot
+    // provide must fail before anything is replaced (never a weaker store, never a lost secret).
+    // Only checkable where the policy is refused up front, i.e. a store without biometric access
+    // control.
+    if !caps.biometry_current_set {
+        let refused = store
+            .store_secret(
+                &k,
+                &value(b"never stored"),
+                AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            )
+            .expect_err("a store without biometric access control refuses that policy");
+        assert!(
+            matches!(refused, SecretError::Unavailable(_)),
+            "refused as Unavailable, got {refused:?}"
+        );
+        assert_eq!(
+            store
+                .load_secret(&k, &prompt)
+                .expect("previous secret survives a refused store"),
+            value(b"second, longer secret"),
+            "a refused store must not destroy the existing secret"
+        );
+    }
+
     // two keys do not interfere
     let other = key("other");
     store
