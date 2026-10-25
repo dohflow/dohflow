@@ -27,6 +27,15 @@
 #   RELEASE_NOTES            latest.json's "notes" field. Required for a real build
 #                            (no default guess at what changed) — set it or pass
 #                            --notes "…".
+#   APPLE_PROVISIONING_PROFILE  path to the macOS Developer ID provisioning profile (personal-cfo-md8h2.17).
+#                            REQUIRED for a real release: it authorizes the keychain entitlement the
+#                            data-protection keychain needs (Touch ID, Sync device keys). Never committed;
+#                            kept outside the repo on the build Mac (docs/operations/release-signing.md A7).
+#                            The build REFUSES when it is missing, belongs to another team or app, or
+#                            expires within 90 days (scripts/check-provisioning-profile.py).
+#   RELEASE_SKIP_PROFILE=1   build WITHOUT the profile and entitlements (no keychain, password-only app).
+#                            Allowed ONLY together with a smoke build (--smoke-version); a real release
+#                            cannot skip it.
 #   RELEASE_SMOKE_ENDPOINT   overrides plugins.updater.endpoints for THIS build only,
 #                            via the same --config deep-merge already used for the
 #                            signing identity — never set for a real release. This is
@@ -68,6 +77,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 skip_notarize="${RELEASE_SKIP_NOTARIZE:-0}"
+skip_profile=0
+app_bundle_id=""
+team_id=""
 
 fail() { echo "error: $*" >&2; exit 1; }
 
@@ -91,6 +103,29 @@ preflight() {
     echo "Valid codesigning identities on this machine:" >&2
     security find-identity -v -p codesigning >&2 || true
     fail "APPLE_SIGNING_IDENTITY ('$APPLE_SIGNING_IDENTITY') is not a valid identity. See release-signing.md A3."
+  fi
+
+  # ── Provisioning profile + keychain entitlement (personal-cfo-md8h2.17; ADR 0002 addendum 2026-10-24) ──
+  # The team id comes from the signing identity's trailing "(TEAMID)"; the profile must belong to that
+  # team and to this app, carry the signing certificate, and stay valid for 90 more days.
+  app_bundle_id="$(python3 -c "import json;print(json.load(open('$repo_root/apps/desktop/src-tauri/tauri.conf.json'))['identifier'])")"
+  [[ "$APPLE_SIGNING_IDENTITY" =~ \(([A-Z0-9]{10})\)$ ]] \
+    || fail "cannot read the 10-character team id from APPLE_SIGNING_IDENTITY ('$APPLE_SIGNING_IDENTITY'): it must end in (TEAMID)."
+  team_id="${BASH_REMATCH[1]}"
+  identity_line="$(grep -F -- "$APPLE_SIGNING_IDENTITY" <<<"$identities" || true)"
+  identity_sha1="$(awk 'NR==1 {print $2}' <<<"$identity_line")"
+  if [[ "${RELEASE_SKIP_PROFILE:-0}" == "1" ]]; then
+    [[ -n "$smoke_version" ]] \
+      || fail "RELEASE_SKIP_PROFILE=1 is only allowed for a smoke build (--smoke-version): a real release must carry the keychain entitlement."
+    skip_profile=1
+    echo "note: RELEASE_SKIP_PROFILE=1 — smoke build WITHOUT the provisioning profile: no data-protection keychain (password-only)."
+  else
+    : "${APPLE_PROVISIONING_PROFILE:?set it (source ~/.config/personal-cfo/release.env) — the macOS Developer ID provisioning profile, see docs/operations/release-signing.md A7}"
+    [[ -f "$APPLE_PROVISIONING_PROFILE" ]] || fail "APPLE_PROVISIONING_PROFILE does not point at a file: $APPLE_PROVISIONING_PROFILE"
+    python3 -I "$repo_root/scripts/check-provisioning-profile.py" \
+      --profile "$APPLE_PROVISIONING_PROFILE" --bundle-id "$app_bundle_id" --team-id "$team_id" \
+      --min-days 90 --cert-sha1 "$identity_sha1" \
+      || fail "the provisioning profile is not usable for this release (see above). Renew or replace it: docs/operations/release-signing.md A7."
   fi
 
   if [[ "$skip_notarize" == "1" ]]; then
@@ -177,10 +212,29 @@ pnpm install --frozen-lockfile
 cfg_dir="$(mktemp -d)"
 trap 'rm -rf "$cfg_dir"' EXIT
 cfg="$cfg_dir/signing.json"
+# The keychain entitlement (personal-cfo-md8h2.17): the template's @TEAM_ID@ / @BUNDLE_ID@ are filled in
+# here (nothing build-specific is committed) and the profile is embedded as
+# Contents/embedded.provisionprofile through the bundler's `files` map. A smoke build that skips the
+# profile gets neither.
+entitlements_file=""
+profile_file=""
+if [[ "$skip_profile" != "1" ]]; then
+  entitlements_file="$cfg_dir/entitlements.plist"
+  python3 -c "
+import sys
+template, team, bundle, out = sys.argv[1:5]
+open(out, 'w').write(open(template).read().replace('@TEAM_ID@', team).replace('@BUNDLE_ID@', bundle))
+" "$repo_root/apps/desktop/src-tauri/entitlements/macos-release.plist.in" "$team_id" "$app_bundle_id" "$entitlements_file"
+  plutil -lint "$entitlements_file" >/dev/null || fail "the generated entitlements plist is not valid: $entitlements_file"
+  profile_file="$APPLE_PROVISIONING_PROFILE"
+fi
 python3 -c "
 import json, sys
-identity, endpoint, smoke_version, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+identity, endpoint, smoke_version, out, entitlements, profile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 conf = {'bundle': {'macOS': {'signingIdentity': identity, 'hardenedRuntime': True}}}
+if entitlements:
+    conf['bundle']['macOS']['entitlements'] = entitlements
+    conf['bundle']['macOS']['files'] = {'embedded.provisionprofile': profile}
 if endpoint:
     conf['plugins'] = {'updater': {'endpoints': [endpoint]}}
 if smoke_version:
@@ -189,7 +243,7 @@ if smoke_version:
     # (release.sh refuses a dirty tree) and a 0.9.x can never be committed by accident.
     conf['version'] = smoke_version
 json.dump(conf, open(out, 'w'))
-" "$APPLE_SIGNING_IDENTITY" "$smoke_endpoint" "$smoke_version" "$cfg"
+" "$APPLE_SIGNING_IDENTITY" "$smoke_endpoint" "$smoke_version" "$cfg" "$entitlements_file" "$profile_file"
 
 # Notarization is automatic when the APPLE_API_* creds are in the environment. For a
 # sign-only build, hide them from the bundler so it signs and stops there. Unsetting
@@ -268,6 +322,41 @@ if [[ -n "$authority" ]]; then
   echo "$authority"
 else
   echo "note: signature verified, but 'codesign -dvv' printed no Authority line (unexpected — inspect manually)."
+fi
+
+# The keychain entitlement and its profile (personal-cfo-md8h2.17): prove the SIGNED app carries exactly
+# the three keychain/identity entitlements and the very profile that was checked, so a build that signed
+# without them (the app would then fail its keychain calls, or not launch) cannot look shippable.
+if [[ "$skip_profile" != "1" ]]; then
+  echo
+  echo "── Verifying the keychain entitlement + embedded provisioning profile ──"
+  embedded="$app/Contents/embedded.provisionprofile"
+  [[ -f "$embedded" ]] || fail "the app has no Contents/embedded.provisionprofile: the profile was not embedded (bundle.macOS.files)."
+  cmp -s "$embedded" "$APPLE_PROVISIONING_PROFILE" \
+    || fail "the embedded provisioning profile differs from APPLE_PROVISIONING_PROFILE."
+  codesign -d --entitlements :- "$app" 2>/dev/null \
+    | python3 -I "$repo_root/scripts/check-signed-entitlements.py" --bundle-id "$app_bundle_id" --team-id "$team_id" \
+    || fail "the signed app's entitlements are not exactly the keychain group (see above)."
+fi
+
+# LAUNCH GATE (personal-cfo-md8h2.17, 03a): a missing or unauthorized profile may stop the app launching,
+# not only the keychain. Launch the signed binary through the smoke hook (setup() runs, then exit 0).
+# HOME is pointed at a throwaway directory so the app's data directory is NOT the owner's real one
+# (a release build ignores PCFO_DATA_DIR, ADR 0070; the app derives its directory from $HOME, which was
+# confirmed by running a throwaway-identity bundle with HOME overridden).
+echo
+echo "── Launch gate: the signed app starts ──────────────────────────"
+launch_home="$cfg_dir/launch-home"
+mkdir -p "$launch_home"
+launch_out="$(HOME="$launch_home" PCFO_SMOKE_TEST_EXIT=1 "$binary" 2>&1)" \
+  || fail "the signed app did not launch cleanly (exit non-zero). Output: $launch_out"
+grep -qF -- "setup() completed successfully" <<<"$launch_out" \
+  || fail "the signed app ran but did not report a completed setup(). Output: $launch_out"
+echo "✓ the signed app launches and completes setup()"
+if [[ "$skip_profile" != "1" ]]; then
+  echo "note: the data-protection keychain attribute smoke (device-only class, not synchronizable, read back)"
+  echo "      is a manual step on the signed release candidate for now (release-checklist.md step 5);"
+  echo "      the harness for it is personal-cfo-md8h2.18 (a separate throwaway signed bundle, never shipped)."
 fi
 
 if [[ "$skip_notarize" == "1" ]]; then
