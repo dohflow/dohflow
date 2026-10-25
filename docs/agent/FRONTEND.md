@@ -120,7 +120,7 @@ a delete.
    inside it**. It closes on expiry, on a close button, when Undo succeeds, and on **Escape while
    focus is inside that notice** (Escape elsewhere is never taken). Notices **stack** (newest
    last, at most three at once), so removing a second thing does not take away the chance to undo
-   the first; **a fourth notice closes the oldest one early**, ahead of its timer. Leaving the
+   the first; **a fourth notice evicts the oldest Undo notice early**, ahead of its timer (see "When the stack is full"). Leaving the
    screen does not cancel a pending Undo: the notifications region lives with the shell.
 4. **What Undo does.** It calls the matching reinstate command
    (`reinstate_income_source`, `reinstate_recurring_bill`, `reinstate_recurring_transfer`) with a
@@ -141,12 +141,17 @@ a delete.
 **partly worked**: the thing the user asked for was done, but a step that follows it failed (for
 example a bill that was added but could not be linked to its loan, `personal-cfo-6wk.22`). Such a
 failure is never silent (section 6). It is a notice with **no Undo**, in the same Notifications
-region and stack (a fourth still closes the oldest), whose message is its own **`role="alert"`**
+region and stack (it is never evicted; see "When the stack is full"), whose message is its own **`role="alert"`**
 element, mounted empty and filled on the next frame like the status line. Unlike an Undo notice it
 **does not close on a timer**: it stays until the user closes it with its close button or with
 **Escape while focus is inside it**, so it cannot vanish before it is read. Hover and focus rules
 are moot (nothing is timed); a notice appearing still never moves focus. The copy says what was
 done, what was not, and what to do next.
+
+**When the stack is full.** At most three notices show at once. A further notice evicts the
+**oldest Undo notice** (its timer was running anyway). It **never evicts an error notice**: the user
+has not closed it, and it must not vanish before it is read. If all three are errors, the new notice
+**waits** and is shown as soon as one is closed, so nothing is lost; waiting notices keep their order.
 
 **The shared primitive.** The notice is one component in `components/ui` (a `Notice` and a small
 provider/hook that a screen calls with the message, the Undo handler and the name), added by the
