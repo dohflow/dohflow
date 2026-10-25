@@ -564,7 +564,7 @@ fn document() -> Value {
                 "multi_defect": case.multi_defect,
                 "header": hex(&case.header),
                 "plaintext": hex(&case.plaintext),
-                "tag_for_plaintext_key": hex(&case.tag),
+                "tagger_output": hex(&case.tag),
                 "expect": case.expect,
             })
         })
@@ -573,7 +573,7 @@ fn document() -> Value {
         "vectors_version": 1,
         "spec": "docs/architecture/vault-format.md C.4 \"Receiver checks\" and C.14",
         "synthetic": "Every case is built from the public C.14 sample envelope. No key, secret or real value is in this file.",
-        "how_to_read": "Each case gives a clear header and an envelope plaintext (hex of their canonical bytes), 'tag_for_plaintext_key' (the idempotency-key tag that the receiver's own tagger returns for the plaintext's key: an input, because the tag secret is not in this file), and 'expect'. An implementation decodes the header, then the plaintext; if either does not decode the outcome is 'MalformedHeader' or 'MalformedPlaintext'. Otherwise it runs the receiver checks in the order below and the outcome is 'ok' or the name of the first failing check. Implementations must agree on exactly this outcome; their internal error names are not part of the contract.",
+        "how_to_read": "Each case gives a clear header and an envelope plaintext (hex of their canonical bytes), 'tagger_output' (the idempotency-key tag that the receiver's own tagger returns for the plaintext's key: an input, because the tag secret is not in this file), and 'expect'. An implementation decodes the header, then the plaintext; if either does not decode the outcome is 'MalformedHeader' or 'MalformedPlaintext'. Otherwise it runs the receiver checks in the order below and the outcome is 'ok' or the name of the first failing check. Implementations must agree on exactly this outcome; their internal error names are not part of the contract.",
         "check_order": ["NotAnEnvelope", "ObjectIdMismatch", "DeviceMismatch", "TagMismatch", "MetadataCommitmentMismatch", "NonceDomainMismatch", "ManifestCommitmentMismatch"],
         "single_defect": "A case with 'multi_defect' false has exactly one defect. A case with 'multi_defect' true has several and pins the order of check_order.",
         "not_checked_here": "The checks that need the membership chain or the AEAD key (the sealing device belongs to a member of the object's epoch; the AEAD key was derived from the expected vault, epoch and chain fingerprint) are the caller's, as in C.4, and are not in this file.",
@@ -622,7 +622,7 @@ fn check_envelope_agrees_with_every_committed_case() {
             multi_defect: false,
             header: unhex(case["header"].as_str().unwrap()),
             plaintext: unhex(case["plaintext"].as_str().unwrap()),
-            tag: unhex(case["tag_for_plaintext_key"].as_str().unwrap())
+            tag: unhex(case["tagger_output"].as_str().unwrap())
                 .try_into()
                 .unwrap(),
             expect: "",
