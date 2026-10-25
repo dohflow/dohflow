@@ -193,7 +193,7 @@ ADR 0026 (extends §12 reconciliation + §14 transfers), ADR 0028 (the role/subt
 keys on), ADR 0018 (non-advice), ADR 0030 (categorization feeds the spend that drives the
 card-statement projection). Decision sibling: `915.1` (cash-band recommendation boundary).
 
-## Addendum (2026-10-25, personal-cfo-6wk.20): linking a recurring bill to the loan it pays
+## Addendum (2026-10-25, personal-cfo-6wk.20 / 6wk.22): linking a recurring bill to the loan it pays
 
 **Why.** The model above gives a loan two disjoint ways to drive the liquid forecast: the loan
 account's own due-date payment (§2, `collect_loan_payment_events`) and an ordinary recurring bill
@@ -201,41 +201,60 @@ account's own due-date payment (§2, `collect_loan_payment_events`) and an ordin
 ways counts its payment twice, and nothing in the model could say "this bill IS that loan's
 payment." The dogfooding report that prompted this (a mortgage tracked as a loan account and then
 added again from the suggested recurring payments) showed two outflows on the same day and a false
-overdraft. Detection alone (the heuristic overlap warning, 6wk.11 and 6wk.20) can only describe the
-problem (ADR 0018); it cannot make the forecast count one obligation once. This addendum adds the
-explicit, reversible link the forecast needs. It is a **model change**, so it is decided here
-before any schema or code (AGENTS.md §1A).
+overdraft. Detection alone (the heuristic overlap warning) can only describe the problem (ADR 0018);
+it cannot make the forecast count one obligation once. This addendum adds the explicit, reversible
+link the forecast needs. It is a **model change**, so it is decided here before any schema or code
+(AGENTS.md §1A). Two rules are this addendum's own, stated here rather than borrowed from another
+ADR: **nothing is auto-deleted, and nothing is auto-linked.**
 
 ### A1. The link: a bill may name the one loan it pays
 
 `recurring_events` gains a nullable `linked_loan_account_id`: the `loan_liability` account whose
-payment this bill is. The kernel validates it on write, mirroring §2: the target must exist and be
-a `loan_liability` account (not a card, not a liquid account). It lives on the bill, not on the
-loan, because the forecast's bill collector already reads `recurring_events` and the link is a
-fact about that schedule. Several bills may link to one loan (for example the regular payment and
-a separate extra-principal bill); each is a real outflow and each is counted. `NULL` means "not
-linked", which is every existing row, so the change is additive and leaves today's behavior
-untouched until a user links something.
+payment this bill is. It is set only by the kernel, which validates on write, mirroring §2: the
+target must exist, must be a `loan_liability` account (not a card, not a liquid account), and must
+be in the **same currency** as the bill. It lives on the bill, not on the loan, because the
+forecast's bill collector already reads `recurring_events` and the link is a fact about that
+schedule.
+
+**At most one bill is linked to a loan in v1.** Linking a second bill to a loan that already has
+one is refused with a typed error that names the existing linked bill. (The earlier draft allowed
+several; that breaks "cash never silently vanishes": with the regular payment and a small second
+bill both linked, archiving the regular one would leave the loan's payment suppressed by the small
+bill alone. Escrow is normally inside the one debit, so a split is not expected; it is revisited,
+as "suppress only while the linked bills together cover at least 95% of the scheduled payment", if
+a real split-escrow bill ever shows up.) `NULL` means "not linked", which is every existing row, so
+the change is additive and leaves today's behavior untouched until a user links something.
 
 ### A2. Forecast semantics: the bill carries the cash, the loan carries the balance
 
 While a link is **in force**, the loan's own naive due-date payment is **not** emitted into the
 liquid forecast; the linked bill's occurrences are the one outflow, at the **bill's amount** (the
 observed debit, escrow, fees and extra principal included, which the loan's principal-and-interest
-payment cannot know). A link is in force when the bill is active, included in the forecast and not
-deleted, and the loan projects a recurring payment. The loan's owed balance and amortization still
-follow its own terms and repayment philosophy exactly as §1, §4 and §5 define them: the debt views
-are unchanged. Where the bill is larger than the loan's scheduled payment, the explanation shows
-the split ("scheduled principal and interest" and "other, for example escrow"), descriptively.
+payment cannot know). A link is in force only while **all** of these hold:
+
+- the bill is active, included in the forecast and not deleted;
+- the loan projects a recurring payment (a pay-in-full loan projects a single payoff, so a monthly
+  bill is not that payment and the link is not offered for it);
+- the bill's **cadence equals the loan's (monthly)**.
+
+When any of them stops holding, the loan's own projection resumes in the same forecast with no
+user action, so **cash never silently vanishes**; for a cadence change the user is told "This bill
+no longer repeats like <loan>'s payment, so both now count." Restoring the cadence puts the link
+back in force (the link itself was never removed).
+
+The amount stays the user's truth: if the linked bill is **below 95% of the loan's scheduled
+payment**, the link stays in force **and** a warning is shown on Bills and Cash Flow ("This linked
+bill is less than <loan>'s scheduled payment."), because the forecast then counts less than the
+loan says it owes. A larger bill is simply the observed debit.
+
+The loan's owed balance and amortization still follow its own terms and repayment philosophy
+exactly as §1, §4 and §5 define them: the debt views are unchanged. Where the bill is larger than
+the loan's scheduled payment, the explanation shows the split ("scheduled principal and interest"
+and "other, for example escrow"), descriptively.
 
 This is the **reverse** of the card precedent (ADR 0039 §2 and its 6wk.10 addendum, where the
-card's cycle payment supersedes the charged bills): there the aggregate is the better number, here the observed debit
-is. Both keep the same safety property: **cash never silently vanishes.** If the link stops being
-in force (the bill is archived, deleted or excluded, or the loan stops emitting a payment), the
-loan's own projection resumes in the same forecast, with no user action.
-
-A loan on a pay-in-full philosophy projects a single payoff, not a recurring payment, so a
-monthly bill is not that payment and the link is not offered for it.
+card's cycle payment supersedes the charged bills): there the aggregate is the better number, here
+the observed debit is. Both keep the same safety property.
 
 Attribution: the paying account of the linked outflow is the bill's `autopay_account_id`; the
 loan's `paying_source_account_id` (§2) is not consulted for a linked payment.
@@ -243,43 +262,64 @@ loan's `paying_source_account_id` (§2) is not consulted for a linked payment.
 ### A3. Who creates the link, and what it never does
 
 Only the user, by an explicit action offered **on a STRONG overlap match only** (the evidence-based
-tier of the overlap detector, 6wk.20: the payee of the loan's paired payments, or a loan-typed bill
-from its funding account). Never on a POSSIBLE match, never automatic, never by the sync engine.
-Linking changes exactly one field; **nothing is deleted, merged or rewritten** (ADR 0018's rule
-that nothing is auto-deleted still holds), and unlinking restores the previous forecast exactly. A
-linked pair is no longer an overlap warning, because the double count it described is resolved.
+tier of the overlap detector: the payee of the loan's paired payments, or a loan-typed bill from its
+funding account). Never on a POSSIBLE match or a question-only (declared-terms) match, never
+automatic, never by the sync engine. Linking changes exactly one field; **nothing is deleted,
+merged or rewritten**, and unlinking restores the previous forecast exactly. A linked pair is no
+longer an overlap warning, because the double count it described is resolved.
 
-### A4. Storage, sync and migration impact (for the reviewers of the implementing bead)
+### A4. Storage, sync and migration impact (for the implementing bead, 6wk.22)
 
 - `recurring_events` is a synced content table (CLASS-0 manifest class 1, `write_set = "full"`), so
-  the new column is a **manifest, write-set and column-kind change** and a sync wire change, to be
-  made in the implementing bead together with its migration, with planning told before it lands.
+  the new column is a **manifest, write-set and column-kind change** and a sync wire change, made
+  in the implementing bead together with its migration.
 - The migration is additive and nullable, with no backfill. Reverting the feature means ignoring
   the column; the data stays valid.
-- ADR 0074 keeps the per-table reference-validation rules in the CLASS-0 manifest. The rule this
-  addendum sets for the new column: a link whose target loan is missing on the receiving device is
-  **dropped to `NULL`** rather than failing the batch (the bill stays, unlinked, and the overlap
-  warning describes it again).
+- **Commands.** The link is changed only by two new commands, `LinkBillToLoan` and
+  `UnlinkBillFromLoan`, each a class-1 write command with its own **new, additive v1 payload**,
+  fixtures, ADR 0073 row and re-pinned digest. Every existing recurring-event payload is left
+  **unchanged**: the link is never smuggled into a create or update payload, and never written raw.
+- **Dangling links under sync.** ADR 0074 keeps the per-table preservation and reference rules in
+  the CLASS-0 manifest; its quoted reference-validation step is the class-3 rebase step. This
+  addendum **adds the class-1 rule** for the new column: when a bill's `linked_loan_account_id`
+  names a loan that does not exist (or is not a `loan_liability`) on the applying device, the
+  column is set to `NULL` on apply. The rule is deterministic: it is applied identically on every
+  device, including on rebase, and is recorded as an apply rule with an ADR 0073 row. Both rows then
+  return to the forecast (the bill and the loan's payment), so cash never vanishes and the overlap
+  warning describes the pair again. A loan that is archived and later reinstated comes back
+  **unlinked**; the user relinks.
+- **Input snapshots.** The forecast input snapshot hashes the in-forecast recurring bills with a
+  fixed field list (`canonical_recurring_events`). The link must enter that hash, or a linked and an
+  unlinked forecast would be indistinguishable; it is emitted **only when set**, so every existing
+  snapshot hash is unchanged.
 
 ### A5. Alternatives considered
 
-- **The loan's projection wins; the bill is suppressed** (the card precedent, ADR 0039 §2). Rejected: the loan
-  knows only principal and interest, so a mortgage with escrow would undercount cash by exactly the
-  amount the user's bank actually debits.
-- **Auto-merge or auto-delete the duplicate.** Rejected: violates ADR 0018, and a wrong heuristic
-  would silently change the user's records.
-- **Store the link on the loan** (`debt_terms.linked_bill_id`). Rejected: it allows only one bill,
-  puts a forecast-bill fact in a table the bill collector does not read, and makes unlinking a
-  write to the debt terms.
+- **The loan's projection wins; the bill is suppressed** (the card precedent, ADR 0039 §2).
+  Rejected: the loan knows only principal and interest, so a mortgage with escrow would undercount
+  cash by exactly the amount the user's bank actually debits.
+- **Several bills linked to one loan.** Rejected for v1 (see A1): it breaks "cash never silently
+  vanishes".
+- **Auto-merge or auto-delete the duplicate.** Rejected by this addendum's own rule; a wrong
+  heuristic would silently change the user's records.
+- **Store the link on the loan** (`debt_terms.linked_bill_id`). Rejected: it puts a forecast-bill
+  fact in a table the bill collector does not read and makes unlinking a write to the debt terms.
 - **A general dedupe key on any pair of events.** Rejected as over-general: the one real case is a
   bill that is a loan's payment.
 
-### A6. Consequences
+### A6. Consequences and required tests
 
 - The forecast gains a tested rule ("a linked bill suppresses its loan's own payment while the link
-  is in force"); the aggregate and per-account reconciliation tests extend to the linked case, and
-  a test shows ONE outflow on the reproduction fixture (a loan with terms plus a linked bill).
+  is in force"); the aggregate and per-account reconciliation tests extend to the linked case, and a
+  test shows ONE outflow on the reproduction fixture (a loan with terms plus a linked bill).
+- Required tests for the implementing bead: linking a second bill to a loan is refused with the
+  existing bill named; **archiving or deleting the linked bill brings the loan's payment back**
+  (the counterexample that rules out several links); a cadence change brings it back with the
+  message and restoring the cadence puts the link back in force; an amount cut below 95% keeps the
+  link and shows the warning; a currency mismatch is refused; a pay-in-full loan cannot be linked;
+  the dangling-link rule on apply and on rebase; a reinstated loan is unlinked; the snapshot hash is
+  unchanged for unlinked bills and changes when a link is set.
 - The overlap warning stays the entry point: it offers the link on strong matches only, and the
-  creation-time check (Add bill, Make recurring, promoting a suggestion) offers it the same way.
+  creation-time check offers it the same way.
 - User-facing wording for the link action and the split explanation is separate approved copy, not
-  decided here.
+  decided here (the two messages quoted above are approved as written).
