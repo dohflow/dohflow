@@ -1156,15 +1156,22 @@ digest is a fork of the log (`ProtocolFork`).
 
 **When an envelope is *found invalid*.** The void rules (ADR 0074 Addendum D) depend on a
 replica's own verdict, so the verdict must be the same everywhere. A replica finds the envelope at
-position `N` invalid only when it holds the evidence for it: it has a **verified key** for the
-header's `key_epoch` (the key matched that epoch's verified `key_commitment_ke`), the chain it has
-verified places the header's device among the members of that epoch (C.7 gives the epoch in force
-at `N`), and then any of these holds: the container or header does not parse; the ciphertext does
-not open under the key derived for that epoch, vault and device (a flipped ciphertext or tag byte,
-a truncated ciphertext); the opened plaintext does not decode; or a receiver check of this section
-fails. Equally invalid, once the chain is verified through that epoch: a `key_epoch` that is not
-the epoch in force at `N`, and a device that is not a member of the epoch it claims. **Never
-invalid**: a replica without a verified key for that epoch, whose chain is behind (the epoch or
+position `N` invalid in exactly two ways.
+
+1. **The container or header does not parse.** This is invalid with no key or chain condition: it
+   is deterministic from the bytes alone, every replica at one `engine_version` parses
+   identically, and there is no `key_epoch` or device to gate on.
+2. **Everything after a successful header parse**, and only when the replica holds the evidence:
+   it has a **verified key** for the header's `key_epoch` (the key matched that epoch's verified
+   `key_commitment_ke`) and the chain it has verified places the header's device among the members
+   of that epoch (C.7 gives the epoch in force at `N`). Then any of these holds: the ciphertext
+   does not open under the key derived for that epoch, vault and device (a flipped ciphertext or
+   tag byte, a truncated ciphertext); the opened plaintext does not decode; or a receiver check of
+   this section fails. Equally invalid, once the chain is verified through that epoch: a
+   `key_epoch` that is not the epoch in force at `N`, and a device that is not a member of the
+   epoch it claims.
+
+**Never invalid** (for the second way): a replica without a verified key for that epoch, whose chain is behind (the epoch or
 membership record is not yet verified), or that cannot construct the key is in a local or
 retryable state and keeps waiting. If those states counted, a replica with a missing key would
 honor a void for a valid envelope that every other replica applied, and the vault would split.
