@@ -12,6 +12,7 @@ import { MoneyInboxView } from "@/money-inbox/MoneyInboxView";
 import { useMoneyInbox } from "@/money-inbox/useMoneyInbox";
 import { BillsView } from "@/bills/BillsView";
 import { LoanDoubleCountWarning } from "@/accounts/LoanDoubleCountWarning";
+import { LinkedBillNotices } from "@/bills/LinkedBillNotices";
 import { SuggestedRecurring } from "@/bills/SuggestedRecurring";
 import { useTransactionSelection } from "@/transactions/useTransactionSelection";
 import { TransactionBulkBar } from "@/transactions/TransactionBulkBar";
@@ -164,6 +165,7 @@ export function UnlockedHome() {
         ) : tab === "bills" ? (
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
             <LoanDoubleCountWarning />
+            <LinkedBillNotices />
             <SuggestedRecurring />
             <BillsView onOpenScenario={() => setTab("scenarios")} />
           </div>

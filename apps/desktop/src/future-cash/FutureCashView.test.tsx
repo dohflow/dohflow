@@ -410,6 +410,44 @@ test("Cash Flow shows a possible overlap as the soft note only", async () => {
   expect(screen.queryByRole("region", { name: "Loan payment counted twice" })).toBeNull();
 });
 
+test("Cash Flow warns about a linked bill that is below its loan's scheduled payment", async () => {
+  mocks.recurringBillList.mockResolvedValue(
+    ok([
+      {
+        id: "bill-1",
+        name: "ACME HOME LOANS",
+        bill_type: "subscription",
+        amount: money(100_000),
+        frequency: "monthly",
+        anchor_date: "2026-07-15",
+        autopay_account_id: null,
+        autopay_account_name: null,
+        autopay_enabled: false,
+        next_due_date: "2026-07-15",
+        description: null,
+        active: true,
+        created_at: "2026-06-01T00:00:00Z",
+        archived_at: null,
+        category_id: null,
+        tag_ids: [],
+        not_loan_payment: null,
+        loan_link: {
+          loan_account_id: "loan-1",
+          loan_name: "Test Mortgage",
+          in_force: true,
+          cadence_changed: false,
+          below_scheduled: true,
+          scheduled_payment: money(150_000),
+          other: null,
+        },
+      },
+    ]),
+  );
+  renderWithClient(<FutureCashView />);
+  const region = await screen.findByRole("region", { name: "Linked bills" });
+  expect(region).toHaveTextContent("This linked bill is less than Test Mortgage's scheduled payment.");
+});
+
 test("Cash Flow shows no overlap card when there is none", async () => {
   renderWithClient(<FutureCashView />);
   await screen.findByRole("heading", { name: "Cash Flow" });

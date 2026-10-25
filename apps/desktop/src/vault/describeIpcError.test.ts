@@ -9,7 +9,9 @@ test("a loan that already has a linked bill is described by naming that bill", (
     describeIpcError({
       LoanAlreadyLinked: { bill_id: "0190b000-0000-7000-8000-000000000001", bill_name: "ACME HOME LOANS" },
     }),
-  ).toBe("This loan already has a linked bill: ACME HOME LOANS.");
+  ).toBe(
+    "This loan already has a linked bill: ACME HOME LOANS. To link this one instead, unlink ACME HOME LOANS first.",
+  );
 });
 
 test("the other error shapes still describe themselves", () => {

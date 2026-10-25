@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   recurringBillList: vi.fn(),
   createRecurringBill: vi.fn(),
   checkLoanOverlap: vi.fn(),
+  setBillNotLoanPayment: vi.fn(),
   recurringBillHistory: vi.fn(),
   markReviewed: vi.fn(),
   dismissRecurringSuggestion: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("@/bindings", () => ({
     recurringBillList: mocks.recurringBillList,
     createRecurringBill: mocks.createRecurringBill,
     checkLoanOverlap: mocks.checkLoanOverlap,
+    setBillNotLoanPayment: mocks.setBillNotLoanPayment,
     recurringBillHistory: mocks.recurringBillHistory,
     markReviewed: mocks.markReviewed,
     dismissRecurringSuggestion: mocks.dismissRecurringSuggestion,
@@ -69,6 +71,7 @@ function candidate(over: Partial<RecurringCandidateDto> = {}): RecurringCandidat
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.checkLoanOverlap.mockResolvedValue(ok(null));
+  mocks.setBillNotLoanPayment.mockResolvedValue(mutationOk());
   mocks.accountList.mockResolvedValue(
     ok([
       {
@@ -474,6 +477,12 @@ test("\"Add as a separate bill\" answers the question, so creating does not ask 
 
   await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
   expect(screen.queryByText("Is this Test Mortgage's payment?")).toBeNull();
+  // "Add as a separate bill" IS the answer "no": it is remembered with the new bill.
+  await waitFor(() => expect(mocks.setBillNotLoanPayment).toHaveBeenCalledTimes(1));
+  expect(mocks.setBillNotLoanPayment.mock.calls[0]?.slice(0, 2)).toEqual([
+    "0190e000-0000-7000-8000-0000000000e1",
+    "loan-1",
+  ]);
 });
 
 test("an ordinary soft possible match (no declared terms) keeps the normal buttons", async () => {

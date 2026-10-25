@@ -24,6 +24,9 @@ vi.mock("@/forecast-activation/CapabilityUnlockNotice", () => ({
 }));
 vi.mock("@/bills/BillsView", () => ({ BillsView: () => <div>Bills list</div> }));
 vi.mock("@/bills/SuggestedRecurring", () => ({ SuggestedRecurring: () => null }));
+vi.mock("@/bills/LinkedBillNotices", () => ({
+  LinkedBillNotices: () => <div role="region" aria-label="Linked bills" />,
+}));
 vi.mock("@/accounts/LoanDoubleCountWarning", () => ({
   LoanDoubleCountWarning: () => <div role="region" aria-label="Loan payment counted twice" />,
 }));
@@ -35,6 +38,12 @@ describe("UnlockedHome Bills tab", () => {
 
     expect(await screen.findByText("Bills list")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Loan payment counted twice" })).toBeInTheDocument();
+  });
+
+  it("shows the linked-bill notices on the Bills tab as well", async () => {
+    renderWithClient(<UnlockedHome />);
+    fireEvent.click(await screen.findByRole("button", { name: "Bills" }));
+    expect(await screen.findByRole("region", { name: "Linked bills" })).toBeInTheDocument();
   });
 
   it("does not show it on the dashboard", async () => {

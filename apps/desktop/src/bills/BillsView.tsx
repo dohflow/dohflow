@@ -49,7 +49,7 @@ import { useTags } from "@/tags/useTags";
 import { cn } from "@/lib/utils";
 import { useBaseCurrency } from "@/settings/useBaseCurrency";
 import { BillDetailDrawer } from "./BillDetailDrawer";
-import { useBills } from "./useBills";
+import { useBills, type BillFollowUp } from "./useBills";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -236,12 +236,15 @@ export function BillsView({
               }}
               onCancel={() => setAdding(false)}
               checkLoanOverlap={{ sourceMerchantKey: null }}
-              onSubmit={async (draft) => {
-                const { error: failure } = await addBill({
-                  ...draft,
-                  source_merchant_key: null,
-                  idempotency_key: mintIdempotencyKey(),
-                });
+              onSubmit={async (draft, follow) => {
+                const { error: failure } = await addBill(
+                  {
+                    ...draft,
+                    source_merchant_key: null,
+                    idempotency_key: mintIdempotencyKey(),
+                  },
+                  follow,
+                );
                 if (!failure) setAdding(false);
                 return failure ? describeIpcError(failure) : null;
               }}
@@ -619,6 +622,30 @@ type BillFormValues = z.infer<typeof billFormSchema>;
 // linked (USD for a new bill, the bill's existing currency for an edit) so an edit
 // never silently changes the currency of an accountless bill.
 // Exported so the First Forecast Wizard (personal-cfo-uipt) reuses it verbatim.
+/// "Add and link to <loan>" (personal-cfo-6wk.22): creates the bill, then links it to the loan it
+/// is the payment of. Only offered while the loan has no linked bill (one per loan), which the bill
+/// list already says; the server still refuses a second link as a backstop.
+function AddAndLinkButton({
+  loanId,
+  loanName,
+  saving,
+  onClick,
+}: {
+  loanId: string;
+  loanName: string;
+  saving: boolean;
+  onClick: () => void;
+}) {
+  const { bills } = useBills();
+  const taken = (bills ?? []).some((b) => b.loan_link?.loan_account_id === loanId);
+  if (taken) return null;
+  return (
+    <Button type="button" disabled={saving} onClick={onClick}>
+      {saving ? "Saving…" : `Add and link to ${loanName}`}
+    </Button>
+  );
+}
+
 /// How a creation-time match is presented (personal-cfo-6wk.20): `strong` is the loan's payment,
 /// `ask` is a question (the user's declared loan terms), `soft` is a note.
 function overlapKind(match: LoanOverlapMatchDto): "strong" | "ask" | "soft" {
@@ -647,9 +674,13 @@ export function BillForm({
   submitLabel: string;
   fallbackCurrency: string;
   onCancel: () => void;
-  onSubmit: (draft: BillDraft) => Promise<string | null>;
+  /// `follow` carries what the user chose about a loan while adding (link the new bill, or remember
+  /// it is not that loan's payment); the edit form never gets one.
+  onSubmit: (draft: BillDraft, follow?: BillFollowUp) => Promise<string | null>;
   showCategory?: boolean;
-  checkLoanOverlap?: { sourceMerchantKey: string | null; loanQuestionAnswered?: boolean };
+  /// `notPaymentOfLoanId`: the suggestion row already answered "is this the loan's payment?" with
+  /// "Add as a separate bill", so the question is not asked again and the answer is remembered.
+  checkLoanOverlap?: { sourceMerchantKey: string | null; notPaymentOfLoanId?: string };
 }) {
   const {
     register,
@@ -735,7 +766,7 @@ export function BillForm({
           const asksAboutLoan =
             checked.data.strength === "possible" && checked.data.matched_by === "declared_terms";
           // "Add as a separate bill" on a suggestion already answered this exact question.
-          if (!(asksAboutLoan && checkLoanOverlap.loanQuestionAnswered)) {
+          if (!(asksAboutLoan && checkLoanOverlap.notPaymentOfLoanId)) {
             setOverlap({ match: checked.data, draft });
             return;
           }
@@ -744,15 +775,18 @@ export function BillForm({
         // fall through to creation
       }
     }
-    const failure = await onSubmit(draft);
+    // A suggestion's "Add as a separate bill" is the answer "this isn't that loan's payment":
+    // remember it with the new bill.
+    const answered = checkLoanOverlap?.notPaymentOfLoanId;
+    const failure = await onSubmit(draft, answered ? { notPaymentOfLoanAccountId: answered } : undefined);
     if (failure) setError(failure);
   });
 
   /// The user chose to create the bill after seeing the match.
-  async function createAnyway(draft: BillDraft) {
+  async function createAnyway(draft: BillDraft, follow?: BillFollowUp) {
     setSaving(true);
     setError(null);
-    const failure = await onSubmit(draft);
+    const failure = await onSubmit(draft, follow);
     setSaving(false);
     if (failure) {
       setError(failure);
@@ -959,6 +993,16 @@ export function BillForm({
                 >
                   {saving ? "Saving…" : "Add anyway"}
                 </Button>
+                <AddAndLinkButton
+                  loanId={overlap.match.loan_account_id}
+                  loanName={overlap.match.loan_name}
+                  saving={saving}
+                  onClick={() =>
+                    void createAnyway(overlap.draft, {
+                      linkLoanAccountId: overlap.match.loan_account_id,
+                    })
+                  }
+                />
               </div>
             </>
           )}
@@ -980,7 +1024,11 @@ export function BillForm({
                   type="button"
                   variant="outline"
                   disabled={saving}
-                  onClick={() => void createAnyway(overlap.draft)}
+                  onClick={() =>
+                    void createAnyway(overlap.draft, {
+                      notPaymentOfLoanAccountId: overlap.match.loan_account_id,
+                    })
+                  }
                 >
                   {saving ? "Saving…" : "No, it's a different bill"}
                 </Button>
@@ -1075,13 +1123,16 @@ export function MakeRecurringBillForm({
       }}
       onCancel={onCancel}
       checkLoanOverlap={{ sourceMerchantKey: null }}
-      onSubmit={async (draft) => {
+      onSubmit={async (draft, follow) => {
         // Promoted from a single transaction, not a detected merchant candidate.
-        const { error: failure } = await addBill({
-          ...draft,
-          source_merchant_key: null,
-          idempotency_key: mintIdempotencyKey(),
-        });
+        const { error: failure } = await addBill(
+          {
+            ...draft,
+            source_merchant_key: null,
+            idempotency_key: mintIdempotencyKey(),
+          },
+          follow,
+        );
         if (!failure) onCreated();
         return failure ? describeIpcError(failure) : null;
       }}
@@ -1098,14 +1149,15 @@ export function MakeRecurringBillForm({
 /// the caller can surface its retro-attached history (ADR 0047 §1).
 export function RecurringCandidateForm({
   candidate,
-  loanQuestionAnswered = false,
+  notPaymentOfLoanId,
   onCancel,
   onCreated,
 }: {
   candidate: RecurringCandidateDto;
   /// The suggestion row already asked "is this the loan's payment?" and the user chose "Add as a
-  /// separate bill", so the creation-time check does not ask the same question again.
-  loanQuestionAnswered?: boolean;
+  /// separate bill": the creation-time check does not ask again, and the answer is remembered with
+  /// the new bill (personal-cfo-6wk.22).
+  notPaymentOfLoanId?: string;
   onCancel: () => void;
   onCreated: (eventId: string | null) => void;
 }) {
@@ -1148,16 +1200,19 @@ export function RecurringCandidateForm({
       onCancel={onCancel}
       checkLoanOverlap={{
         sourceMerchantKey: candidate.merchant_key,
-        loanQuestionAnswered,
+        notPaymentOfLoanId,
       }}
-      onSubmit={async (draft) => {
+      onSubmit={async (draft, follow) => {
         // Persist the candidate's merchant key so the suggestion stays suppressed even
         // if the bill is later renamed (personal-cfo-5n4.8).
-        const { error: failure, eventId } = await addBill({
-          ...draft,
-          source_merchant_key: candidate.merchant_key,
-          idempotency_key: mintIdempotencyKey(),
-        });
+        const { error: failure, eventId } = await addBill(
+          {
+            ...draft,
+            source_merchant_key: candidate.merchant_key,
+            idempotency_key: mintIdempotencyKey(),
+          },
+          follow,
+        );
         if (!failure) onCreated(eventId);
         return failure ? describeIpcError(failure) : null;
       }}

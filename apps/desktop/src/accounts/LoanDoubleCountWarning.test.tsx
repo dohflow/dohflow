@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -7,11 +7,13 @@ import { LoanDoubleCountWarning } from "./LoanDoubleCountWarning";
 
 const mocks = vi.hoisted(() => ({
   loanDoubleCountWarnings: vi.fn(),
+  linkBillToLoan: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
   commands: {
     loanDoubleCountWarnings: mocks.loanDoubleCountWarnings,
+    linkBillToLoan: mocks.linkBillToLoan,
   },
 }));
 
@@ -157,5 +159,39 @@ test("for an EXISTING bill a declared-terms match is only the soft note, never a
     await screen.findByText("This bill might be the same as Car Loan's payment."),
   ).toBeInTheDocument();
   expect(container).not.toHaveTextContent(/is this|looks like|counted twice/i);
+});
+
+// ----- "Link it to <loan>" (personal-cfo-6wk.22) ---------------------------------------------------------
+
+test("a STRONG item offers 'Link it to <loan>', which links that bill to that loan", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(ok([warning()]));
+  mocks.linkBillToLoan.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
+  renderWithClient(<LoanDoubleCountWarning />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Link it to Car Loan" }));
+  await waitFor(() => expect(mocks.linkBillToLoan).toHaveBeenCalledTimes(1));
+  expect(mocks.linkBillToLoan.mock.calls[0]?.slice(0, 2)).toEqual(["bill-1", "loan-1"]);
+});
+
+test("a refused link says why, in place, and offers the button again", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(ok([warning()]));
+  mocks.linkBillToLoan.mockResolvedValue({
+    status: "error",
+    error: { LoanAlreadyLinked: { bill_id: "other", bill_name: "Other Bill" } },
+  });
+  renderWithClient(<LoanDoubleCountWarning />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Link it to Car Loan" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This loan already has a linked bill: Other Bill. To link this one instead, unlink Other Bill first.",
+  );
+  expect(screen.getByRole("button", { name: "Link it to Car Loan" })).toBeEnabled();
+});
+
+test("a POSSIBLE item never offers to link", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(ok([warning({ strength: "possible" })]));
+  renderWithClient(<LoanDoubleCountWarning />);
+  await screen.findByText("This bill might be the same as Car Loan's payment.");
+  expect(screen.queryByRole("button", { name: /link it/i })).toBeNull();
 });
 
