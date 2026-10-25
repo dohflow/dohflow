@@ -76,7 +76,7 @@ env:
 jobs:
   gate:
     name: iOS gate (visibility and changed paths)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       check: ${{ steps.decide.outputs.check }}
       simulator: ${{ steps.decide.outputs.simulator }}
@@ -187,7 +187,7 @@ jobs:
     name: iOS cross-compile (kernel crates)
     needs: [gate, ios-build]
     if: ${{ always() && github.event_name != 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 

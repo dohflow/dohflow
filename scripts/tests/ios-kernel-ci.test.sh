@@ -110,10 +110,10 @@ require_text "the verdict job passes the build result" "$WORKFLOW" 'BUILD_RESULT
 require_text "the verdict job runs the verdict script" "$WORKFLOW" 'run: scripts/ios-kernel-ci-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$BUILD_RESULT"'
 CASES=$((CASES + 1))
 ios_check_runner="$(awk '/^  ios-check:/{f=1} f&&/runs-on:/{print; exit}' "$WORKFLOW")"
-if grep -q "ubuntu-latest" <<<"$ios_check_runner"; then
+if grep -qE "ubuntu-(latest|24\.04)" <<<"$ios_check_runner"; then
   echo "    ok   — the verdict job runs on Linux (a failure costs no macOS minutes)"
 else
-  echo "    FAIL — the verdict job must run on ubuntu-latest" >&2
+  echo "    FAIL — the verdict job must run on ubuntu-latest or a pinned ubuntu image" >&2
   exit 1
 fi
 
