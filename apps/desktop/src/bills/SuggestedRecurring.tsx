@@ -188,11 +188,19 @@ export function SuggestedRecurring() {
         <ul className="flex flex-col gap-2">
           {(candidates ?? []).map((candidate) => {
             const id = `${candidate.merchant_key}:${candidate.currency}`;
+            const loanMatch = candidate.loan_match;
+            // Strong: it IS the loan's payment. Ask: the user's own loan terms say it might be, which
+            // is enough to ASK (never to assert). Anything else possible is a soft note.
+            const isLoanPayment = loanMatch?.strength === "strong";
+            const asksAboutLoan =
+              loanMatch?.strength === "possible" && loanMatch.matched_by === "declared_terms";
             return (
               <li key={id} className="rounded-md border px-3 py-2">
                 {promoting === id ? (
                   <RecurringCandidateForm
                     candidate={candidate}
+                    // "Add as a separate bill" already answered the loan question.
+                    loanQuestionAnswered={asksAboutLoan}
                     onCancel={() => setPromoting(null)}
                     onCreated={(eventId) => void showAttached(candidate.display, eventId)}
                   />
@@ -210,14 +218,19 @@ export function SuggestedRecurring() {
                       </div>
                       {/* A suggestion that is a loan's own payment (personal-cfo-6wk.20): strong
                           says so, possible is a soft note; neither claims anything is counted. */}
-                      {candidate.loan_match?.strength === "strong" && (
+                      {isLoanPayment && loanMatch && (
                         <div className="text-xs font-medium text-warning">
-                          {`This is ${candidate.loan_match.loan_name}'s payment.`}
+                          {`This is ${loanMatch.loan_name}'s payment.`}
                         </div>
                       )}
-                      {candidate.loan_match?.strength === "possible" && (
+                      {asksAboutLoan && loanMatch && (
+                        <div className="text-xs font-medium text-warning">
+                          {`Looks like ${loanMatch.loan_name}'s payment`}
+                        </div>
+                      )}
+                      {loanMatch?.strength === "possible" && !asksAboutLoan && (
                         <div className="text-xs text-muted-foreground">
-                          {`This bill might be the same as ${candidate.loan_match.loan_name}'s payment.`}
+                          {`This bill might be the same as ${loanMatch.loan_name}'s payment.`}
                         </div>
                       )}
                       {/* Source metadata surfaced before promotion (personal-cfo-4d8.24.5). */}
@@ -258,31 +271,36 @@ export function SuggestedRecurring() {
                     </div>
                     <div className="flex items-center gap-2">
                       <Button
-                        variant="ghost"
+                        variant={asksAboutLoan ? "outline" : "ghost"}
                         size="sm"
                         disabled={dismissing === id}
-                        aria-label={`Dismiss ${candidate.display}`}
+                        aria-label={
+                          asksAboutLoan && loanMatch
+                            ? `It's ${loanMatch.loan_name}'s payment`
+                            : `Dismiss ${candidate.display}`
+                        }
                         onClick={async () => {
                           setDismissing(id);
                           // Not a bill — record the dismissal so it stops being suggested
-                          // until the amount/cadence materially changes (ADR 0046).
+                          // until the amount/cadence materially changes (ADR 0046). "It's the
+                          // loan's payment" is the same remembered dismissal, with its reason.
                           await dismiss({
                             merchant_key: candidate.merchant_key,
                             currency: candidate.currency,
                             amount_minor: candidate.amount_minor,
                             frequency: candidate.frequency,
-                            reason: null,
+                            reason: asksAboutLoan ? "loan_payment" : null,
                             idempotency_key: mintIdempotencyKey(),
                           });
                           setDismissing(null);
                         }}
                       >
-                        Dismiss
+                        {asksAboutLoan && loanMatch ? `It's ${loanMatch.loan_name}'s payment` : "Dismiss"}
                       </Button>
                       {/* A loan's own payment is not offered as a new bill (6wk.20 AC3). */}
-                      {candidate.loan_match?.strength !== "strong" && (
+                      {!isLoanPayment && (
                         <Button variant="outline" size="sm" onClick={() => setPromoting(id)}>
-                          Add as recurring
+                          {asksAboutLoan ? "Add as a separate bill" : "Add as recurring"}
                         </Button>
                       )}
                     </div>

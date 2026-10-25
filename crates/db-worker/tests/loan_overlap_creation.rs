@@ -114,10 +114,11 @@ fn candidate<'a>(
 }
 
 /// The owner's scenario: imports only, so no payment was ever recorded INTO the loan. The suggested
-/// payee has no paired-payment evidence, so it can only be a soft note, never a "this is the loan's
-/// payment" cancel.
+/// payee has no paired-payment evidence, so it is never STRONG ("this is the loan's payment"); but it
+/// is paid from the loan's declared paying account, monthly, around its declared due day, at its
+/// amount, so the user's own terms are enough to ASK (declared terms): possible, never asserted.
 #[test]
-fn a_suggestion_that_fits_the_loans_payment_but_has_no_paired_payments_is_only_possible() {
+fn an_imports_only_suggestion_that_fits_the_declared_terms_gets_the_ask() {
     let (_dir, worker) = worker();
     let w = world(&worker);
     plant_the_series(&worker, w.checking, "ACME HOME LOANS", 15);
@@ -129,7 +130,7 @@ fn a_suggestion_that_fits_the_loans_payment_but_has_no_paired_payments_is_only_p
     assert_eq!(found.loan_account_id, w.loan.as_uuid());
     assert_eq!(found.loan_name, "Test Mortgage");
     assert_eq!(found.strength, MatchStrength::Possible);
-    assert_eq!(found.matched_by, None);
+    assert_eq!(found.matched_by, Some(MatchedBy::DeclaredTerms));
 }
 
 /// Once a payment into the loan has been recorded with the same payee, the suggestion IS the loan's
@@ -404,4 +405,139 @@ fn a_bill_in_another_currency_is_never_a_match() {
     // The same bill in the forecast's currency does match, so the guard is what made the difference.
     euro.amount = Money::new(150_000, Currency::Usd);
     assert!(worker.check_loan_overlap(&euro).unwrap().is_some());
+}
+
+// ----- the declared-terms ASK (planning's ruling) ---------------------------------------------------------
+
+/// The owner's import-only case at Add bill: a generic (default-typed) bill that fits the declared
+/// terms gets the ask, and it is possible, never strong.
+#[test]
+fn an_imports_only_bill_that_fits_the_declared_terms_gets_the_ask_when_added() {
+    let (_dir, worker) = worker();
+    let w = world(&worker);
+    let found = worker
+        .check_loan_overlap(&draft(
+            "ACME HOME LOANS",
+            "subscription",
+            150_000,
+            Frequency::Monthly,
+            15,
+            w.checking,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.strength, MatchStrength::Possible);
+    assert_eq!(found.matched_by, Some(MatchedBy::DeclaredTerms));
+}
+
+/// The ask needs ALL of: the declared paying account, monthly, within 7 days of the declared due day,
+/// and 95% to 150% of the payment. Each missing condition downgrades or removes it.
+#[test]
+fn the_declared_terms_ask_has_exact_boundaries() {
+    let (_dir, worker) = worker();
+    let w = world(&worker);
+    let other = AccountId::new();
+    create_role_account(&worker, other, "Savings", CashflowRole::LiquidCash);
+    let ask = |amount: i64, frequency: Frequency, day: u32, from: AccountId| {
+        worker
+            .check_loan_overlap(&draft(
+                "Home payment",
+                "subscription",
+                amount,
+                frequency,
+                day,
+                from,
+            ))
+            .unwrap()
+            .map(|m| (m.strength, m.matched_by))
+    };
+    let asked = Some((MatchStrength::Possible, Some(MatchedBy::DeclaredTerms)));
+    assert_eq!(
+        ask(142_500, Frequency::Monthly, 15, w.checking),
+        asked,
+        "exactly 95%"
+    );
+    assert_eq!(
+        ask(225_000, Frequency::Monthly, 15, w.checking),
+        asked,
+        "exactly 150%"
+    );
+    assert_eq!(
+        ask(150_000, Frequency::Monthly, 22, w.checking),
+        asked,
+        "7 days after"
+    );
+    assert_eq!(
+        ask(150_000, Frequency::Monthly, 8, w.checking),
+        asked,
+        "7 days before"
+    );
+    // 94% is within 10% of the payment, so still a soft possible, but not the declared-terms ask.
+    assert_eq!(
+        ask(141_000, Frequency::Monthly, 15, w.checking),
+        Some((MatchStrength::Possible, None)),
+        "below 95%"
+    );
+    assert_eq!(
+        ask(225_001, Frequency::Monthly, 15, w.checking),
+        None,
+        "above 150%"
+    );
+    assert_eq!(
+        ask(150_000, Frequency::Monthly, 23, w.checking),
+        None,
+        "8 days after"
+    );
+    assert_eq!(
+        ask(150_000, Frequency::Weekly, 15, w.checking),
+        None,
+        "not monthly"
+    );
+    // Not the declared paying account: possible at most, and never the ask.
+    assert_eq!(
+        ask(150_000, Frequency::Monthly, 15, other),
+        Some((MatchStrength::Possible, None)),
+        "another account"
+    );
+}
+
+/// "Childcare": a similar-size monthly bill near the due day from the same account IS asked about
+/// (one click), and is never called a duplicate: its strength stays possible.
+#[test]
+fn a_similar_unrelated_bill_is_only_ever_asked_about_never_called_a_duplicate() {
+    let (_dir, worker) = worker();
+    let w = world(&worker);
+    let found = worker
+        .check_loan_overlap(&draft(
+            "Childcare",
+            "childcare",
+            160_000,
+            Frequency::Monthly,
+            16,
+            w.checking,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.strength, MatchStrength::Possible);
+    assert_eq!(found.matched_by, Some(MatchedBy::DeclaredTerms));
+}
+
+/// A loan-typed bill from the declared account is STRONG (the stronger route wins over the ask).
+#[test]
+fn a_loan_typed_bill_from_the_declared_account_is_strong_not_just_asked() {
+    let (_dir, worker) = worker();
+    let w = world(&worker);
+    let found = worker
+        .check_loan_overlap(&draft(
+            "ACME HOME LOANS",
+            "loan_payment",
+            150_000,
+            Frequency::Monthly,
+            15,
+            w.checking,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.strength, MatchStrength::Strong);
+    assert_eq!(found.matched_by, Some(MatchedBy::LoanTyped));
 }

@@ -30,7 +30,10 @@
 //!   amount from 95% to 200% of the scheduled payment.
 //! - **Possible** ([`MatchStrength::Possible`]) is a soft "might be the same payment" note, never a
 //!   link offer: paid from the funding account with an amount from 95% to 150%, or an amount within
-//!   10% either way.
+//!   10% either way. When the funding account is the loan's DECLARED paying account the match
+//!   carries [`MatchedBy::DeclaredTerms`]: still possible (never "counted twice"), but at the two
+//!   interactive moments (a suggestion, a bill being created) it is enough to ASK the user whether
+//!   it is the loan's payment.
 //!
 //! Anything else is no match. A name resemblance alone is not evidence.
 //!
@@ -75,13 +78,20 @@ pub struct LoanDoubleCount {
     pub paid_from_account_name: Option<String>,
 }
 
-/// The evidence behind a STRONG match (planning's revised ruling on 6wk.20).
+/// The evidence behind a match (planning's rulings on 6wk.20).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchedBy {
     /// The bill carries the payee of the payments already paired into the loan.
     Payee,
     /// The bill is typed `loan_payment` or `rent_mortgage` and paid from the loan's funding account.
     LoanTyped,
+    /// A POSSIBLE match only: paid from the loan's DECLARED paying account, monthly, within the due-day
+    /// tolerance of its declared due day, at 95% to 150% of the payment. The user's own loan terms
+    /// are evidence enough to ASK ("Is this the loan's payment?") where the user is interacting (a
+    /// suggestion, a bill being created), never to ASSERT it is counted twice: a similar-size monthly
+    /// bill near the due day, such as childcare, would be falsely called a duplicate. For an
+    /// existing bill this stays the soft possible note.
+    DeclaredTerms,
 }
 
 /// How strongly a bill looks like a loan's payment (see the module docs).
@@ -198,6 +208,9 @@ fn classify(
     let funded_by_the_loans_account = bill.paying_account.is_some_and(|account| {
         loan.paying_source == Some(account) || paired.sources.contains(&account)
     });
+    let funded_by_the_declared_account = bill
+        .paying_account
+        .is_some_and(|account| loan.paying_source == Some(account));
     let payee_matches = paired_payee_matches(bill, paired);
 
     // The payee is checked first: it is the stronger evidence when both routes hold.
@@ -207,6 +220,8 @@ fn classify(
         (MatchStrength::Strong, Some(MatchedBy::Payee))
     } else if loan_shaped && funded_by_the_loans_account && up_to_200 {
         (MatchStrength::Strong, Some(MatchedBy::LoanTyped))
+    } else if funded_by_the_declared_account && up_to_150 {
+        (MatchStrength::Possible, Some(MatchedBy::DeclaredTerms))
     } else if (funded_by_the_loans_account && up_to_150) || within_10 {
         (MatchStrength::Possible, None)
     } else {

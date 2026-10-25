@@ -146,3 +146,16 @@ test("each strength has its own title, and the strong sentence never sits under 
   expect(soft).toHaveTextContent("Possible duplicate loan payment");
   expect(soft).not.toHaveTextContent(/counted twice/i);
 });
+
+test("for an EXISTING bill a declared-terms match is only the soft note, never a question", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(
+    ok([warning({ strength: "possible", matched_by: "declared_terms" })]),
+  );
+  const { container } = renderWithClient(<LoanDoubleCountWarning />);
+
+  expect(
+    await screen.findByText("This bill might be the same as Car Loan's payment."),
+  ).toBeInTheDocument();
+  expect(container).not.toHaveTextContent(/is this|looks like|counted twice/i);
+});
+

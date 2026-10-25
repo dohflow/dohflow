@@ -168,3 +168,44 @@ test("if the advisory check throws the bill is still created", async () => {
   await submit();
   await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
 });
+
+// ----- the declared-terms ASK: the user's own loan terms are enough to ask, never to assert ----------------
+
+const ASK = { strength: "possible", matched_by: "declared_terms" } as const;
+
+test("a declared-terms match ASKS whether it is the loan's payment, with the reason from its terms", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match(ASK)));
+  await submit();
+
+  expect(await screen.findByText("Is this Test Mortgage's payment?")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      "It's paid from Checking around Test Mortgage's due date, as set in its terms.",
+    ),
+  ).toBeInTheDocument();
+  // An ask never claims anything is counted twice.
+  expect(screen.queryByText(/counted twice/i)).toBeNull();
+  expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+});
+
+test("answering Yes cancels without creating a second bill", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match(ASK)));
+  const { onCancel, onCreated } = await submit();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Yes — don't add a second one" }));
+  expect(onCancel).toHaveBeenCalledTimes(1);
+  expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+  expect(onCreated).not.toHaveBeenCalled();
+});
+
+test("answering No adds the bill (an unrelated similar bill is not blocked)", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match(ASK)));
+  const { onCreated } = await submit();
+
+  fireEvent.click(await screen.findByRole("button", { name: "No, it's a different bill" }));
+  await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+  expect(onCreated).toHaveBeenCalled();
+  // One check, one question: the answer does not trigger another ask.
+  expect(mocks.checkLoanOverlap).toHaveBeenCalledTimes(1);
+});
+

@@ -2909,13 +2909,17 @@ pub enum MatchStrengthDto {
     Possible,
 }
 
-/// The evidence behind a strong match (personal-cfo-6wk.20): the payee of the loan's paired payments,
-/// or a loan-typed bill paid from its funding account.
+/// The evidence behind a match (personal-cfo-6wk.20): for a strong match, the payee of the loan's
+/// paired payments or a loan-typed bill paid from its funding account; `declared_terms` is a POSSIBLE
+/// match only: paid from the loan's declared paying account, monthly, around its declared due day, at
+/// 95% to 150% of the payment, enough to ASK whether it is the loan's payment, never to say it is
+/// counted twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchedByDto {
     Payee,
     LoanTyped,
+    DeclaredTerms,
 }
 
 impl From<MatchedBy> for MatchedByDto {
@@ -2923,6 +2927,7 @@ impl From<MatchedBy> for MatchedByDto {
         match v {
             MatchedBy::Payee => Self::Payee,
             MatchedBy::LoanTyped => Self::LoanTyped,
+            MatchedBy::DeclaredTerms => Self::DeclaredTerms,
         }
     }
 }
@@ -2944,7 +2949,8 @@ pub struct LoanOverlapMatchDto {
     pub loan_account_id: String,
     pub loan_name: String,
     pub strength: MatchStrengthDto,
-    /// Which evidence made a strong match; `null` for a possible one.
+    /// Which evidence made the match: `payee` / `loan_typed` for a strong one, `declared_terms` for the
+    /// possible one that is enough to ask, else `null`.
     pub matched_by: Option<MatchedByDto>,
 }
 
@@ -2977,7 +2983,8 @@ pub struct LoanDoubleCountWarningDto {
     pub amount_match: bool,
     /// How strongly the bill looks like the loan's payment: only `strong` says "counted twice".
     pub strength: MatchStrengthDto,
-    /// Which evidence made a strong match; `null` for a possible one.
+    /// Which evidence made the match: `payee` / `loan_typed` for a strong one, `declared_terms` for the
+    /// possible one that is enough to ask, else `null`.
     pub matched_by: Option<MatchedByDto>,
     /// The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has one.
     pub bill_type: Option<String>,

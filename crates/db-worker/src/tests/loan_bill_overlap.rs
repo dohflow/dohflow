@@ -1114,8 +1114,10 @@ fn the_payee_is_reported_when_both_routes_hold() {
     assert_eq!(warnings[0].matched_by, Some(MatchedBy::Payee));
 }
 
+/// For an EXISTING bill the declared-terms route is still only POSSIBLE (the soft note): the user's
+/// terms are enough to ask while a bill is being added, never to say it is counted twice.
 #[test]
-fn a_possible_match_carries_no_evidence_route() {
+fn a_declared_terms_match_is_only_possible_for_an_existing_bill() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
     bill_on_the_15th(
@@ -1127,5 +1129,35 @@ fn a_possible_match_carries_no_evidence_route() {
     );
     let warnings = worker.loan_double_count_warnings().unwrap();
     assert_eq!(warnings[0].strength, MatchStrength::Possible);
+    assert_eq!(warnings[0].matched_by, Some(MatchedBy::DeclaredTerms));
+}
+
+/// A possible match that is NOT from the declared paying account (here: another account, within 10%)
+/// carries no route at all, so nothing asks about it.
+#[test]
+fn a_possible_match_from_another_account_carries_no_evidence_route() {
+    let (_dir, worker) = worker();
+    mortgage(&worker);
+    let savings = other_account(&worker);
+    bill_on_the_15th(&worker, "Home payment", "subscription", 150_000, savings);
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings[0].strength, MatchStrength::Possible);
     assert_eq!(warnings[0].matched_by, None);
+}
+
+/// The ask needs the DECLARED paying account. A source that only appears because a payment was once
+/// recorded from it (a paired source) makes a generic bill possible, but does not make it ask.
+#[test]
+fn a_paired_source_that_is_not_the_declared_account_does_not_make_the_ask() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker); // declared paying account: checking
+    let savings = funded_account(&worker, "Savings", CashflowRole::LiquidCash, 2_000_000);
+    pay_the_loan_from(&worker, savings, fixture.loan).unwrap();
+    bill_on_the_15th(&worker, "Home payment", "subscription", 150_000, savings);
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings[0].strength, MatchStrength::Possible);
+    assert_eq!(
+        warnings[0].matched_by, None,
+        "savings is a paired source, not the declared account"
+    );
 }
