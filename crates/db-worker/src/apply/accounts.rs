@@ -112,6 +112,10 @@ pub(crate) fn apply_archive_account(tx: &Connection, id: &AccountId) -> Result<U
             "UPDATE accounts SET active = 0 WHERE id = ?1",
             [id.as_uuid()],
         )?;
+        // An archived loan counts as not existing for the bill-to-loan link (personal-cfo-6wk.22):
+        // clear every link to it in this same command so it is part of this command's write set and
+        // replicates, and a reinstated loan comes back unlinked with its own payment counting again.
+        crate::apply::recurring::clear_links_to_loan(tx, id)?;
         id.as_uuid()
     };
     Ok(entity_id)

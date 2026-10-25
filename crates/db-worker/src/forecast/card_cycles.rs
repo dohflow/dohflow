@@ -1087,17 +1087,7 @@ pub(crate) fn loans_emitting_payments(
         if loan.currency != currency {
             continue;
         }
-        let owed =
-            crate::assertion_anchored_balance(conn, loan.account_id, loan.ledger_account_id)?
-                .saturating_neg()
-                .max(0);
-        let Some((payment_minor, recurring)) = loan_payment(
-            &loan.philosophy,
-            owed,
-            loan.fixed_amount_minor,
-            loan.min_percent_bps,
-            loan.min_floor_minor,
-        ) else {
+        let Some((payment_minor, recurring)) = scheduled_payment(conn, &loan)? else {
             continue;
         };
         out.push(EmittingLoan {
@@ -1107,6 +1097,27 @@ pub(crate) fn loans_emitting_payments(
         });
     }
     Ok((currency, out))
+}
+
+/// The payment the forecast derives for a debt account from its terms and current owed balance:
+/// `(amount, recurring)`, or `None` when it projects nothing (paid off, never asserted, or no
+/// derivable amount). `recurring` is `false` for the pay-in-full philosophies (a single payoff).
+/// The one place that answer is computed, so the projection, the overlap detector and the
+/// bill-to-loan link status (personal-cfo-6wk.22) cannot disagree.
+pub(crate) fn scheduled_payment(
+    conn: &Connection,
+    terms: &LoanPaymentTerms,
+) -> Result<Option<(i64, bool)>, DbError> {
+    let owed = crate::assertion_anchored_balance(conn, terms.account_id, terms.ledger_account_id)?
+        .saturating_neg()
+        .max(0);
+    Ok(loan_payment(
+        &terms.philosophy,
+        owed,
+        terms.fixed_amount_minor,
+        terms.min_percent_bps,
+        terms.min_floor_minor,
+    ))
 }
 
 /// Project each loan account's payment as a liquid outflow on its `payment_due_day` (ADR 0035
@@ -1124,6 +1135,11 @@ pub(crate) fn loans_emitting_payments(
 /// (`collect_bill_events`) AND as a `loan_liability` account with `debt_terms` would be
 /// double-counted — the two collectors read disjoint tables with no link between them. Pick one
 /// (a warning on the overlap is personal-cfo-6wk.11).
+///
+/// **A loan whose payment is carried by a linked bill emits nothing here** (personal-cfo-6wk.22,
+/// ADR 0035 addendum 2026-10-25): while the user's link is in force the bill is the observed cash,
+/// escrow and fees included, and the loan only amortizes by its own terms elsewhere. The moment
+/// the link stops being in force (see [`super::loan_link`]) the loan's row returns on its own.
 pub(super) fn collect_loan_payment_events(
     conn: &Connection,
     start: NaiveDate,
@@ -1132,7 +1148,11 @@ pub(super) fn collect_loan_payment_events(
     events: &mut Vec<ForecastEvent>,
     names: &mut HashMap<Uuid, String>,
 ) -> Result<(), DbError> {
+    let carried_by_a_bill = super::loan_link::loans_with_link_in_force(conn)?;
     for loan in read_loans_with_payment(conn)? {
+        if carried_by_a_bill.contains(&loan.account_id) {
+            continue;
+        }
         emit_naive_debt_payments(conn, &loan, start, end, currency, events, names)?;
     }
     Ok(())
@@ -1157,16 +1177,7 @@ fn emit_naive_debt_payments(
     if terms.currency != currency {
         return Ok(());
     }
-    let owed = crate::assertion_anchored_balance(conn, terms.account_id, terms.ledger_account_id)?
-        .saturating_neg()
-        .max(0);
-    let Some((amount, recurring)) = loan_payment(
-        &terms.philosophy,
-        owed,
-        terms.fixed_amount_minor,
-        terms.min_percent_bps,
-        terms.min_floor_minor,
-    ) else {
+    let Some((amount, recurring)) = scheduled_payment(conn, terms)? else {
         return Ok(());
     };
     let outflow = Money::new(amount, terms.currency).checked_neg()?;

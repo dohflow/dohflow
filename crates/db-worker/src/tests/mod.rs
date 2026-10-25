@@ -4,6 +4,7 @@
 //! shared helpers for those live in `tests/common/mod.rs`.
 
 mod loan_bill_overlap;
+mod loan_link;
 
 use super::*;
 use core_ledger::{AccountFlags, CashflowRole};

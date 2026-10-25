@@ -19,6 +19,17 @@ pub enum IpcError {
     #[error("validation failed: {0}")]
     Validation(String),
 
+    /// The loan already has a linked bill (personal-cfo-6wk.22), so a second link is refused.
+    /// Names the existing bill so the interface can offer to unlink it. The Display text is
+    /// fixed: bill names are user data and stay out of logs.
+    #[error("this loan already has a linked bill")]
+    LoanAlreadyLinked {
+        /// The bill that already carries the link (plain UUID).
+        bill_id: String,
+        /// That bill's display name.
+        bill_name: String,
+    },
+
     /// No vault is open. The caller must open/unlock a vault first. This is the
     /// steady state of a locked app.
     #[error("no vault is open")]
@@ -69,6 +80,9 @@ impl From<KernelError> for IpcError {
     fn from(error: KernelError) -> Self {
         match error {
             KernelError::Validation(message) => IpcError::Validation(message),
+            KernelError::LoanAlreadyLinked { bill_id, bill_name } => {
+                IpcError::LoanAlreadyLinked { bill_id, bill_name }
+            }
             KernelError::MissingMetadata(field) => {
                 IpcError::Validation(format!("missing required field: {field}"))
             }

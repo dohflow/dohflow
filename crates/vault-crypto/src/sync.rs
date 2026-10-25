@@ -16,8 +16,10 @@
 //! deliberately omits `protocol_version` and `key_epoch`: the tag must be stable across protocol
 //! versions and key epochs (ADR 0074 decision 2, the dual-identity lookup after tail truncation),
 //! so do not add either. Labels are CBE1 labels
-//! (`u16` length, then ASCII), written here because this crate does not depend on `sync-core`;
-//! the C.14 vectors in `tests/sync_idempotency_tag.rs` pin the bytes.
+//! (`u16` length, then ASCII), written here as a small helper so the derivations in this crate
+//! stay independent of `sync-core`'s encoder; the C.14 vectors in `tests/sync_idempotency_tag.rs`
+//! pin the bytes. (This crate now depends on `sync-core` for the envelope opener in
+//! `sync_envelope`; `sync-core` never depends on this crate.)
 //!
 //! # Secret handling
 //!
@@ -39,7 +41,7 @@ pub const TAG_KEY_LABEL: &str = "dohflow/sync-idem-tag-key/v1";
 pub const TAG_LABEL: &str = "dohflow/sync-idem-tag/v1";
 
 /// A CBE1 label: `u16` big-endian length, then the ASCII bytes.
-fn label_bytes(label: &str) -> Vec<u8> {
+pub(crate) fn label_bytes(label: &str) -> Vec<u8> {
     debug_assert!(
         (1..=64).contains(&label.len())
             && label

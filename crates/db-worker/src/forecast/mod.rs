@@ -26,6 +26,7 @@ mod aggregate;
 mod availability;
 mod card_cycles;
 mod events;
+mod loan_link;
 mod payoff;
 mod readiness;
 
@@ -40,12 +41,15 @@ pub(crate) use availability::compute_cash_availability;
 pub use availability::{AccountAvailability, CashAvailability};
 pub(crate) use card_cycles::{
     card_statement_forecast, card_statement_history, card_statement_walk_forward_pairs,
-    loans_emitting_payments,
+    loans_emitting_payments, EmittingLoan,
 };
 pub use card_cycles::{
     CardCycleView, CardStatementForecastView, CardStatementHistoryView, StoredStatementView,
 };
 pub(crate) use events::{household_today, read_household_tz, reporting_currency};
+#[cfg(test)]
+pub(crate) use loan_link::loans_with_link_in_force;
+pub(crate) use loan_link::{link_status, LinkedBill};
 // Only exercised by tests today (`household_today` is the production entry point); gated so
 // a non-test build doesn't warn on it as unused.
 #[cfg(test)]

@@ -1687,3 +1687,49 @@ fn unauthenticated_conflicts_never_halt_sync() {
         ]
     );
 }
+
+#[test]
+fn a_device_revoked_at_a_cutover_is_still_a_member_of_the_epoch_it_sealed_in() {
+    let doc: Value = serde_json::from_str(VECTORS).unwrap();
+    let vault: [u8; 16] = unhex(doc["vault_id"].as_str().unwrap()).try_into().unwrap();
+    let case = doc["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "valid_revoke_with_cutover")
+        .expect("the vector case exists");
+    let step = &case["steps"][0];
+    let decode = |key: &str| -> Vec<Vec<u8>> {
+        step[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| unhex(h.as_str().unwrap()))
+            .collect()
+    };
+    let (memberships, epochs) = (decode("memberships"), decode("epochs"));
+    let state = extend(
+        &VerifiedState::empty(vault),
+        &slices(&memberships),
+        &slices(&epochs),
+    )
+    .expect("the case is valid");
+    // A is the founder, B the one A revokes at the cutover into epoch 2, C the third device.
+    let (a, b, c) = (
+        state.members()[0].device_id,
+        state.members()[1].device_id,
+        state.members()[2].device_id,
+    );
+    assert!(state.members()[1].revoked_at_version.is_some());
+    // Epoch 1: everyone who ever held its key, including B, who is revoked going into epoch 2.
+    for device in [&a, &b, &c] {
+        assert!(state.authorized_member_in_epoch(device, 1).is_some());
+    }
+    // Epoch 2: B is out; A and C remain.
+    assert!(state.authorized_member_in_epoch(&b, 2).is_none());
+    assert!(state.authorized_member_in_epoch(&a, 2).is_some());
+    assert!(state.authorized_member_in_epoch(&c, 2).is_some());
+    // An epoch the chain does not have, and a device it never had.
+    assert!(state.authorized_member_in_epoch(&a, 3).is_none());
+    assert!(state.authorized_member_in_epoch(&[9; 16], 1).is_none());
+}

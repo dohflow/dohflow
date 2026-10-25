@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=9 -->
-<!-- vault-format: schema-version=58 -->
+<!-- vault-format: spec-version=11 -->
+<!-- vault-format: schema-version=59 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -270,6 +270,13 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 11` adds the public `check_envelope` conformance vectors
+  (`docs/architecture/vectors/check-envelope-v1.json`, C.14), which pin the receiver checks of C.4
+  that ADR 0074 Addendum D makes consensus-critical. No wire layout or existing vector changes.
+- `spec-version = 10` adds the void record (C.10 "Void records"), the member-signed record by
+  which a vault recovers from a poisoned log position (ADR 0074 Addendum D), with its encoding,
+  who may sign it, when a replica honors it, and the index marking; and the vectors `void_body`
+  and `void_id` in C.14. No existing wire layout or vector changes.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -1147,6 +1154,31 @@ position, the command and the sealing device. It is neither a fork nor a retryab
 position is identified by `(seq, canonical_envelope_digest)`: the same position with a different
 digest is a fork of the log (`ProtocolFork`).
 
+**When an envelope is *found invalid*.** The void rules (ADR 0074 Addendum D) depend on a
+replica's own verdict, so the verdict must be the same everywhere. A replica finds the envelope at
+position `N` invalid in exactly two ways.
+
+1. **The container or header does not parse.** This is invalid with no key or chain condition: it
+   is deterministic from the bytes alone, every replica at one `engine_version` parses
+   identically, and there is no `key_epoch` or device to gate on.
+2. **Everything after a successful header parse**, and only when the replica holds the evidence:
+   it has a **verified key** for the header's `key_epoch` (the key matched that epoch's verified
+   `key_commitment_ke`) and the chain it has verified places the header's device among the members
+   of that epoch (C.7 gives the epoch in force at `N`). Then any of these holds: the ciphertext
+   does not open under the key derived for that epoch, vault and device (a flipped ciphertext or
+   tag byte, a truncated ciphertext); the opened plaintext does not decode; or a receiver check of
+   this section fails. Equally invalid, once the chain is verified through that epoch: a
+   `key_epoch` that is not the epoch in force at `N`, and a device that is not a member of the
+   epoch it claims.
+
+**Never invalid** (for the second way): a replica without a verified key for that epoch, whose chain is behind (the epoch or
+membership record is not yet verified), or that cannot construct the key is in a local or
+retryable state and keeps waiting. If those states counted, a replica with a missing key would
+honor a void for a valid envelope that every other replica applied, and the vault would split.
+Decode failures count as invalid: a plaintext that does not decode after a successful open is a
+producer fault, and a header that does not parse at an accepted position means the service let
+through what its own checks should have refused; both are deterministic from the bytes.
+
 ### Counter register and nonce state
 
 Each device owns a durable `next_counter` for every
@@ -1663,6 +1695,72 @@ outbox record to that `seq` and result and never replays or requeues it. A
 same-identifier, different-envelope response is `ProtocolFork`, and both
 envelopes are retained for diagnosis.
 
+### Void records
+
+A log position can be *poisoned*: an envelope that authenticates but fails the receiver checks
+(C.4), or that passes them and then fails to apply deterministically. The service cannot see
+this, so every replica stops there (`AuthenticatedEnvelopeInvalid`). A **void record** is how a
+vault moves on. It is a signed record in the style of C.6, not a sealed object: it carries no
+payload, only identifiers the service already holds, so the service can order it, verify its
+claims against its own index, and mark the index.
+
+Body: `label "dohflow/sync-void/v1" ‖ u16 protocol_version ‖ u16 suite_id ‖ uuid vault_id ‖
+u64 seq ‖ uuid command_id ‖ digest envelope_digest ‖ u8 reason ‖ fingerprint signer_fingerprint ‖
+i64 issued_at`. `seq` is the poisoned position `N`; `command_id` and `envelope_digest` are those
+of the envelope the signer saw there; `reason` is `1` (receiver-check failure) or `2`
+(deterministic apply failure). The record is `u32 body_len ‖ body ‖ 64-byte Ed25519 signature`,
+identified by `SHA-256(body)`, with the strict acceptance rules and the check order of C.6. The
+log position `V` the service assigns when it appends the void is not in the body, exactly as a
+`seq` is not in an envelope's header.
+
+- **Who may sign.** An authorized, unrevoked member of the chain at the epoch in force, verified
+  under the key the chain holds for `signer_fingerprint`. The signature is **not authority over
+  the outcome**: it makes the decision attributable, gives replicas a rollback trigger, and keeps
+  spam from non-members out. What makes a replica skip a position is its own rejection of it.
+- **What the service checks.** The signature and the signer (an authorized member at the
+  membership head in force at the position `V` it assigns); that the vault matches; and that `seq`
+  is an existing command-envelope position and that `command_id` and `envelope_digest` equal the
+  index's record for it. It dedupes only an identical void (the same body id) or a second void for
+  the exact same `seq`. It cannot check that the envelope is actually invalid (that needs the
+  plaintext) and does not try. **It never refuses a void because an earlier void's range would
+  cover it**: whether a void is honored, and so what a range covers, is decided only by replicas.
+  A malicious member can append a void for a *valid* envelope; replicas ignore it, and a later
+  genuine void for a poisoned position inside that range must still be accepted and honored.
+- **When a replica honors it.** Only if the replica has itself evaluated position `seq`, in log
+  order, found it invalid, and the void's `command_id` and `envelope_digest` equal what it saw
+  there. The `reason` byte is for audit and diagnosis: a replica that found `seq` invalid for any
+  deterministic reason honors the void, because it cannot apply `seq` either way. Otherwise the
+  void is inert (retained for diagnosis, nothing skipped). So a malicious member cannot void a
+  valid envelope, and spam does nothing. A replica stopped at `N` has evaluated `N` before it can
+  read a void positioned after it. The signer must be an authorized member at the membership head
+  in force at the void's position `V` (C.7 gives each position its epoch).
+- **Range.** An honored void at position `V` skips every command envelope at positions `seq`
+  through `V - 1`: later objects were built on a base that included `seq`. Membership and epoch
+  records are never skipped (C.6 verifies them independently); an epoch record inside the range
+  still takes effect for keys. A **snapshot** inside the range (including the snapshot coupled to
+  a key-changing epoch) was built on poisoned state: it is never a valid bootstrap root, and a
+  bootstrapping device uses one before `seq` or one at or after `V` that records the void. A void
+  whose `seq` an earlier **honored** void already covers is inert, so the range is exactly the
+  first honored void's; an earlier void that was itself inert (it named a valid envelope, or one
+  the replica had not yet evaluated) covers nothing. A void for a position at or after `V` is an
+  independent poisoning and is honored on its own.
+- **No snapshot and no cutover while halted.** A replica stopped at a poisoned position publishes
+  no snapshot, performs no key-epoch cutover and pushes nothing.
+- **The index.** The accepted-envelope index (above) keeps the record of every position a void
+  names and records **"void claimed by `<void id>`"** against that position only. The service
+  cannot know whether a void was honored, so it never says a position *is* voided: an exact replay
+  returns the original `seq` plus any void claims, and the client decides from its own verdict,
+  rolling back and re-issuing only if it honored that void (after an inert void on a valid
+  envelope, which every replica applied, the claim is just a claim). A replica never re-applies a
+  position it skipped. A claimed position's `command_id` and idempotency-key tag are never
+  reusable, either way.
+- **Re-issue.** The issuer of every voided command rolls it back through rebase (ADR 0074
+  Decision 2) and re-issues it as a **new command with a new `command_id` and a new idempotency
+  key** (reusing the key is a `ProtocolFork`), through the producer rule of C.4.
+- **Evidence.** The poisoned ciphertext and the void are retained, not garbage-collected before a
+  snapshot that supersedes the range, and a snapshot taken past a void records the voided ranges
+  and the void ids in its metadata.
+
 ## C.11 Typed Sync failures
 
 `NonceStateLost`, `ProtocolFork`, `InvalidIdempotencyKey`, `MalformedObject`
@@ -1785,6 +1883,27 @@ implementation's own error names. The file holds only public data; the seeds tha
 only in the Rust generator (`crates/sync-core/tests/membership_vectors.rs`), which fails if the file
 drifts. A change to the file is a change to this part and follows C.13.
 
+`docs/architecture/vectors/check-envelope-v1.json` (`vectors_version` 1) pins the receiver checks
+of C.4 for every implementation that decrypts: a header and a plaintext as bytes, the idempotency
+tag the receiver's own tagger returns for the plaintext's key (an input, because the tag secret is
+not in the file), and the expected outcome, which is `ok`, `MalformedHeader` or
+`MalformedPlaintext` (the bytes do not decode), or the name of the **first** failing check in the
+order `NotAnEnvelope`, `ObjectIdMismatch`, `DeviceMismatch`, `TagMismatch`,
+`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`. What is
+normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
+failures included); the specific error is normative for every single-defect case and informative
+(the reference order) for the multi-defect cases, where another implementation must agree the
+envelope is invalid but may report a different first error. The tagger answer in each case is
+`HMAC-SHA256` under the sample tag key over the label and the plaintext's canonical 16-byte
+idempotency key, so an implementation that tags the wrong input fails a vector. Valid cases
+(including empty and non-empty delta manifests), one or more single-defect cases for every check,
+decode failures (truncation, trailing bytes, unknown actor types, a non-v4 idempotency key) and
+multi-defect cases that pin the order are included. Because the void rules of ADR 0074
+Addendum D make these checks consensus-critical, two implementations that disagree on any case
+would split a vault, so the file is part of the protocol: adding a check without a vector fails the
+reference test, and a change to the file follows C.13. The checks that need the membership chain
+or the AEAD key are the caller's (C.4) and are not in this file.
+
 The reference test recomputes every vector below and fails if the document and
 the code differ. Every input is synthetic and listed here, so a third
 implementation can reproduce each vector from this part alone. A repeated byte is
@@ -1805,6 +1924,7 @@ written `N x 0xNN`.
 | Envelope plaintext | `write_set_hash` 32 x `0x44`; payload `{"amount_minor":"-1250","currency":"USD"}`; the delta manifest is the two sample artifact ids in ascending byte order |
 | Local storage ids | 32 x `0x5a` and 32 x `0x6b`; the manifest commitment covers the two epoch-1 artifact ids |
 | Sample artifact | `artifact_kind` 1; plaintext `synthetic document` (18 bytes); `logical_metadata` `{"mime_type":"text/plain"}`; the address and keys of the first storage id at epoch 1 |
+| Void | `seq` 42; `command_id` and `envelope_digest` those of the sample envelope; `reason` 1; signer device A; `issued_at` 1_790_000_003_000_000 |
 | Membership | record 1: `version` 1, `prev_id` absent, `action` 1 (add), signer and added device A, `issued_at` 1_790_000_001_000_000; record 2: `version` 2, `prev_id` the id of record 1, `action` 1, signer device A, added device B, `issued_at` 1_790_000_002_000_000 |
 | Epoch records | genesis sample (`epoch_header_genesis`): `reason` 1, `key_epoch` 1, `membership_head` the id of membership record 1, `prev_epoch_id` absent, sealer device A. Grant sample (`epoch_header`, `hpke_info_recipient_b`, `hpke_aad_recipient_b`): `reason` 3, `key_epoch` 1, `membership_head` the id of membership record 2, `prev_epoch_id` 32 x `0x99` (the id of a genesis record whose body no vector computes), sealer device A, recipient device B |
 | Write-set sample | rows `(ledger_transactions, 16 x 0x01, 32 x 0x51)`, `(accounts, 16 x 0x02, 32 x 0x52)`, `(accounts, 16 x 0x01, 32 x 0x53)` |
@@ -1900,6 +2020,8 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: envelope_ciphertext=269513d4bfcfeed5008ee354fe9fb09a4c87f5fb50f5ad2dfdf339b51f68d87fe7c4bc4b71e2df9aa4a90c49dd0235908081d9552773d5b820257dccca1abdf35763f16fbe8313bded923fe001c9b413b7ebbfcb39b2d7a97720992fca3b2f62c886f6854422267face5c2c68598cdafba37d9ec070967180e3c12baaa495002c9bb98c824c03a52fb8e3820f9d712cd1fa2633fbd38c02390cb80bac93f8192a0ada76eb353e300b5f9239c99c9987e8d369f0c3bc5351283db45172723d044efa9554ecf8ee6a3b519142aa991f2ac2b497786e22216f035e8763d699d4db37f57493990bbd86ce94c1fd1ca31a07f9b243c4072559eb112dcf5b03332e108da208543c1ab02ebc4f76fabd720246f597a557f04e71b3ef35ead78b5834efd -->
 <!-- sync-vector: envelope_digest=fb917cb47e6be62c9e6858395376a24807af5af3151b998fabc0c12db03e80a5 -->
 <!-- sync-vector: envelope_container=444653590001000001030016646f68666c6f772f73796e632d6865616465722f763100011111111111111111111111111111111100000000000000010101938f2e7c1a7b3d9a4e123456789abc0106fa9d92e5203243401aa8c29e960bb67d25c7f9b7d148279ce2ad2fea1a5e1b01885a1199f22775ad785e88bac193d96ef2c4ba0d84665d83c77ae72035b68053a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c60803f7cf2600000000000000000000000000000029000000010000000d646f68666c6f772d302e332e300000003701e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd886310000000000000120269513d4bfcfeed5008ee354fe9fb09a4c87f5fb50f5ad2dfdf339b51f68d87fe7c4bc4b71e2df9aa4a90c49dd0235908081d9552773d5b820257dccca1abdf35763f16fbe8313bded923fe001c9b413b7ebbfcb39b2d7a97720992fca3b2f62c886f6854422267face5c2c68598cdafba37d9ec070967180e3c12baaa495002c9bb98c824c03a52fb8e3820f9d712cd1fa2633fbd38c02390cb80bac93f8192a0ada76eb353e300b5f9239c99c9987e8d369f0c3bc5351283db45172723d044efa9554ecf8ee6a3b519142aa991f2ac2b497786e22216f035e8763d699d4db37f57493990bbd86ce94c1fd1ca31a07f9b243c4072559eb112dcf5b03332e108da208543c1ab02ebc4f76fabd720246f597a557f04e71b3ef35ead78b5834efd -->
+<!-- sync-vector: void_body=0014646f68666c6f772f73796e632d766f69642f76310001000111111111111111111111111111111111000000000000002a01938f2e7c1a7b3d9a4e123456789abcfb917cb47e6be62c9e6858395376a24807af5af3151b998fabc0c12db03e80a501d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c60800065bfeda53a6c0 -->
+<!-- sync-vector: void_id=15c06220b78a3158a8375eaaaa8f38d02a15af57bbc9a787359fa78546df1beb -->
 <!-- sync-vector: membership_body_1=001a646f68666c6f772f73796e632d6d656d626572736869702f76310001000100201111111111111111111111111111111100000000000000010001d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c608a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e100000020c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c100065bfeda352240 -->
 <!-- sync-vector: membership_id_1=453a0ac4429a0e0a7d7e8b425defb17fe6f56833361f1a07e9290725bf9e82a0 -->
 <!-- sync-vector: membership_body_2=001a646f68666c6f772f73796e632d6d656d626572736869702f763100010001002011111111111111111111111111111111000000000000000201453a0ac4429a0e0a7d7e8b425defb17fe6f56833361f1a07e9290725bf9e82a001d3804ba59759f53af251f158f18364a228fa5c5db0f31edd8fcb5d4fde71c608b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e200000020c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c200065bfeda446480 -->

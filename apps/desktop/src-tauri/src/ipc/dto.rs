@@ -18,12 +18,13 @@ use finance_kernel::{
     DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec, ForecastDayView,
     ForecastEventView, ForecastReadiness, ForecastView, Frequency, GroupSeriesView,
     ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId, LoanDoubleCount,
-    ManualEntry, MatchStrength, MatchedBy, Money, MoneyInboxItem, MultiSeriesForecast, Outcome,
-    PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView,
-    RecurringCandidateView, RecurringEventId, RecurringInstanceRow, RecurringTransferId,
-    RecurringTransferView, RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput,
-    SplitLineView, StagedTransactionId, TagId, TagView, TransactionId, TransactionPage,
-    TransactionPageQuery, TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
+    LoanPaymentMatch, ManualEntry, MatchStrength, MatchedBy, Money, MoneyInboxItem,
+    MultiSeriesForecast, Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor,
+    RecordTransaction, RecurringBillView, RecurringCandidateView, RecurringEventId,
+    RecurringInstanceRow, RecurringTransferId, RecurringTransferView, RepaymentPhilosophy,
+    ScenarioView, SourceBatchId, SplitLineInput, SplitLineView, StagedTransactionId, TagId,
+    TagView, TransactionId, TransactionPage, TransactionPageQuery, TransactionRow,
+    TransactionSortOrder, Transfer, VaultHealth, VaultState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -2381,6 +2382,41 @@ pub struct RecurringBillDto {
     pub category_id: Option<String>,
     /// The bill's tag ids (UUID strings); empty when untagged (personal-cfo-4d8.24.5.1).
     pub tag_ids: Vec<String>,
+    /// The loan this bill is linked to as its payment, and how the link stands
+    /// (personal-cfo-6wk.22); null when not linked.
+    pub loan_link: Option<BillLoanLinkDto>,
+    /// The loan the user said this bill is NOT the payment of (personal-cfo-6wk.22); null when
+    /// unanswered. Shown so it can be cleared from the bill's detail.
+    pub not_loan_payment: Option<BillNotLoanPaymentDto>,
+}
+
+/// A bill's link to the loan it pays (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25). While
+/// `in_force` the forecast counts the bill's cash once (the observed debit) and the loan's own
+/// due-date row is not emitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BillLoanLinkDto {
+    /// The loan account (plain UUID, matches `AccountViewDto.account_id`).
+    pub loan_account_id: String,
+    pub loan_name: String,
+    /// The loan's own payment is currently carried by this bill.
+    pub in_force: bool,
+    /// The bill no longer repeats like the loan's payment, so BOTH now count.
+    pub cadence_changed: bool,
+    /// The bill is below 95% of the loan's scheduled payment (the link stays; the user is warned).
+    pub below_scheduled: bool,
+    /// The payment the forecast derives for the loan, when it projects a recurring one.
+    pub scheduled_payment: Option<MoneyDto>,
+    /// The part of the bill beyond the scheduled payment (escrow, fees, extra principal), when the
+    /// link is in force and the bill is larger.
+    pub other: Option<MoneyDto>,
+}
+
+/// The loan the user said a bill is NOT the payment of (personal-cfo-6wk.22).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BillNotLoanPaymentDto {
+    /// The loan account (plain UUID).
+    pub loan_account_id: String,
+    pub loan_name: String,
 }
 
 impl From<RecurringBillView> for RecurringBillDto {
@@ -2402,6 +2438,19 @@ impl From<RecurringBillView> for RecurringBillDto {
             archived_at: view.archived_at,
             category_id: view.category_id.map(|c| c.to_string()),
             tag_ids: view.tag_ids.iter().map(ToString::to_string).collect(),
+            loan_link: view.loan_link.map(|link| BillLoanLinkDto {
+                loan_account_id: link.loan_account_id.to_string(),
+                loan_name: link.loan_name,
+                in_force: link.in_force,
+                cadence_changed: link.cadence_changed,
+                below_scheduled: link.below_scheduled,
+                scheduled_payment: link.scheduled_payment.map(MoneyDto::from),
+                other: link.other.map(MoneyDto::from),
+            }),
+            not_loan_payment: view.not_loan_payment.map(|answer| BillNotLoanPaymentDto {
+                loan_account_id: answer.loan_account_id.to_string(),
+                loan_name: answer.loan_name,
+            }),
         }
     }
 }
@@ -2908,13 +2957,17 @@ pub enum MatchStrengthDto {
     Possible,
 }
 
-/// The evidence behind a strong match (personal-cfo-6wk.20): the payee of the loan's paired payments,
-/// or a loan-typed bill paid from its funding account.
+/// The evidence behind a match (personal-cfo-6wk.20): for a strong match, the payee of the loan's
+/// paired payments or a loan-typed bill paid from its funding account; `declared_terms` is a POSSIBLE
+/// match only: paid from the loan's declared paying account, monthly, around its declared due day, at
+/// 95% to 150% of the payment, enough to ASK whether it is the loan's payment, never to say it is
+/// counted twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchedByDto {
     Payee,
     LoanTyped,
+    DeclaredTerms,
 }
 
 impl From<MatchedBy> for MatchedByDto {
@@ -2922,6 +2975,7 @@ impl From<MatchedBy> for MatchedByDto {
         match v {
             MatchedBy::Payee => Self::Payee,
             MatchedBy::LoanTyped => Self::LoanTyped,
+            MatchedBy::DeclaredTerms => Self::DeclaredTerms,
         }
     }
 }
@@ -2931,6 +2985,30 @@ impl From<MatchStrength> for MatchStrengthDto {
         match v {
             MatchStrength::Strong => Self::Strong,
             MatchStrength::Possible => Self::Possible,
+        }
+    }
+}
+
+/// The loan a suggested or about-to-be-created bill looks like the payment of (personal-cfo-6wk.20).
+/// `strong` is "this is the loan's payment"; `possible` is a soft note. Descriptive only (ADR 0018).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct LoanOverlapMatchDto {
+    /// The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`).
+    pub loan_account_id: String,
+    pub loan_name: String,
+    pub strength: MatchStrengthDto,
+    /// Which evidence made the match: `payee` / `loan_typed` for a strong one, `declared_terms` for the
+    /// possible one that is enough to ask, else `null`.
+    pub matched_by: Option<MatchedByDto>,
+}
+
+impl From<LoanPaymentMatch> for LoanOverlapMatchDto {
+    fn from(v: LoanPaymentMatch) -> Self {
+        Self {
+            loan_account_id: v.loan_account_id.to_string(),
+            loan_name: v.loan_name,
+            strength: v.strength.into(),
+            matched_by: v.matched_by.map(Into::into),
         }
     }
 }
@@ -2953,7 +3031,8 @@ pub struct LoanDoubleCountWarningDto {
     pub amount_match: bool,
     /// How strongly the bill looks like the loan's payment: only `strong` says "counted twice".
     pub strength: MatchStrengthDto,
-    /// Which evidence made a strong match; `null` for a possible one.
+    /// Which evidence made the match: `payee` / `loan_typed` for a strong one, `declared_terms` for the
+    /// possible one that is enough to ask, else `null`.
     pub matched_by: Option<MatchedByDto>,
     /// The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has one.
     pub bill_type: Option<String>,
@@ -3144,6 +3223,9 @@ pub struct RecurringCandidateDto {
     /// The observed charges behind the suggestion, most recent first (capped) — the
     /// proof expander's rows.
     pub observations: Vec<CandidateObservationDto>,
+    /// The loan whose payment this suggestion looks like, if any (personal-cfo-6wk.20): `strong`
+    /// means it is that loan's own payment (not offered as a new bill), `possible` a soft note.
+    pub loan_match: Option<LoanOverlapMatchDto>,
 }
 
 /// One observed charge behind a recurring candidate (personal-cfo-4d8.25.11).
@@ -3186,6 +3268,7 @@ impl From<RecurringCandidateView> for RecurringCandidateDto {
                     account_name: o.account_name,
                 })
                 .collect(),
+            loan_match: view.loan_match.map(Into::into),
         }
     }
 }
