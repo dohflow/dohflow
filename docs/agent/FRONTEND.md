@@ -137,6 +137,17 @@ a delete.
    **cannot be undone**, names what is lost, and has no Undo notice. Do not borrow the reversible
    pattern for it.
 
+**An error notice (no Undo).** The same region and primitive also carry the news that an action
+**partly worked**: the thing the user asked for was done, but a step that follows it failed (for
+example a bill that was added but could not be linked to its loan, `personal-cfo-6wk.22`). Such a
+failure is never silent (section 6). It is a notice with **no Undo**, in the same Notifications
+region and stack (a fourth still closes the oldest), whose message is its own **`role="alert"`**
+element, mounted empty and filled on the next frame like the status line. Unlike an Undo notice it
+**does not close on a timer**: it stays until the user closes it with its close button or with
+**Escape while focus is inside it**, so it cannot vanish before it is read. Hover and focus rules
+are moot (nothing is timed); a notice appearing still never moves focus. The copy says what was
+done, what was not, and what to do next.
+
 **The shared primitive.** The notice is one component in `components/ui` (a `Notice` and a small
 provider/hook that a screen calls with the message, the Undo handler and the name), added by the
 follow-up that applies this pattern (`personal-cfo-egn67`, AC5). New removals do not hand-roll
