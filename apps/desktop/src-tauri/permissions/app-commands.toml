@@ -124,6 +124,7 @@ commands.allow = [
   "link_bill_to_loan",
   "unlink_bill_from_loan",
   "set_bill_not_loan_payment",
+  "check_loan_overlap",
   "income_candidates",
   "recurring_bill_history",
   "build_info",

@@ -209,6 +209,17 @@ export const commands = {
 	linkBillToLoan: (billId: string, loanAccountId: string, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("link_bill_to_loan", { billId, loanAccountId, idempotencyKey })),
 	unlinkBillFromLoan: (billId: string, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("unlink_bill_from_loan", { billId, idempotencyKey })),
 	setBillNotLoanPayment: (billId: string, loanAccountId: string | null, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_bill_not_loan_payment", { billId, loanAccountId, idempotencyKey })),
+	checkLoanOverlap: (input: CreateRecurringBillInput) => typedError<{
+	/**  The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`). */
+	loan_account_id: string,
+	loan_name: string,
+	strength: MatchStrengthDto,
+	/**
+	 *  Which evidence made the match: `payee` / `loan_typed` for a strong one, `declared_terms` for the
+	 *  possible one that is enough to ask, else `null`.
+	 */
+	matched_by: MatchedByDto | null,
+} | null, IpcError>(__TAURI_INVOKE("check_loan_overlap", { input })),
 	incomeCandidates: () => typedError<RecurringCandidateDto[], IpcError>(__TAURI_INVOKE("income_candidates")),
 	recurringBillHistory: (eventId: string) => typedError<RecurringBillOccurrenceDto[], IpcError>(__TAURI_INVOKE("recurring_bill_history", { eventId })),
 	/**
@@ -1951,12 +1962,31 @@ export type LoanDoubleCountWarningDto = {
 	amount_match: boolean,
 	/**  How strongly the bill looks like the loan's payment: only `strong` says "counted twice". */
 	strength: MatchStrengthDto,
-	/**  Which evidence made a strong match; `null` for a possible one. */
+	/**
+	 *  Which evidence made the match: `payee` / `loan_typed` for a strong one, `declared_terms` for the
+	 *  possible one that is enough to ask, else `null`.
+	 */
 	matched_by: MatchedByDto | null,
 	/**  The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has one. */
 	bill_type: string | null,
 	/**  The name of the account the bill is paid from, when it has one. */
 	paid_from_account_name: string | null,
+};
+
+/**
+ *  The loan a suggested or about-to-be-created bill looks like the payment of (personal-cfo-6wk.20).
+ *  `strong` is "this is the loan's payment"; `possible` is a soft note. Descriptive only (ADR 0018).
+ */
+export type LoanOverlapMatchDto = {
+	/**  The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`). */
+	loan_account_id: string,
+	loan_name: string,
+	strength: MatchStrengthDto,
+	/**
+	 *  Which evidence made the match: `payee` / `loan_typed` for a strong one, `declared_terms` for the
+	 *  possible one that is enough to ask, else `null`.
+	 */
+	matched_by: MatchedByDto | null,
 };
 
 /**  A stored manual future entry (personal-cfo-q6gh). */
@@ -1984,10 +2014,13 @@ export type ManualFutureEntryDto = {
 export type MatchStrengthDto = "strong" | "possible";
 
 /**
- *  The evidence behind a strong match (personal-cfo-6wk.20): the payee of the loan's paired payments,
- *  or a loan-typed bill paid from its funding account.
+ *  The evidence behind a match (personal-cfo-6wk.20): for a strong match, the payee of the loan's
+ *  paired payments or a loan-typed bill paid from its funding account; `declared_terms` is a POSSIBLE
+ *  match only: paid from the loan's declared paying account, monthly, around its declared due day, at
+ *  95% to 150% of the payment, enough to ASK whether it is the loan's payment, never to say it is
+ *  counted twice.
  */
-export type MatchedByDto = "payee" | "loan_typed";
+export type MatchedByDto = "payee" | "loan_typed" | "declared_terms";
 
 /**
  *  A monetary amount on the wire: integer minor units + ISO currency code.
@@ -2261,6 +2294,11 @@ export type RecurringCandidateDto = {
 	 *  proof expander's rows.
 	 */
 	observations: CandidateObservationDto[],
+	/**
+	 *  The loan whose payment this suggestion looks like, if any (personal-cfo-6wk.20): `strong`
+	 *  means it is that loan's own payment (not offered as a new bill), `possible` a soft note.
+	 */
+	loan_match: LoanOverlapMatchDto | null,
 };
 
 /**  A recurring transfer for the list UI (ADR 0026 §14, personal-cfo-npoe). */

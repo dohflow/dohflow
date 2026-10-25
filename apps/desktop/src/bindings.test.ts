@@ -118,6 +118,7 @@ describe("generated IPC bindings", () => {
         "linkBillToLoan",
         "unlinkBillFromLoan",
         "setBillNotLoanPayment",
+        "checkLoanOverlap",
         "recurringBillHistory",
         "checkForUpdate",
         "applyUpdate",

@@ -243,6 +243,7 @@ describe("FirstForecastWizard", () => {
           source_account_names: ["Checking"],
           source_account_id: "acc-1",
           typical_day_of_month: 19,
+          loan_match: null,
           observations: [],
         } satisfies RecurringCandidateDto,
       ]),

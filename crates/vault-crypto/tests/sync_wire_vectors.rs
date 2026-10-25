@@ -528,6 +528,30 @@ fn container(header: &[u8], ct: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The body of a void record (C.10 "Void records"): the bytes an authorized member signs to
+/// declare log position `seq` void. `reason` 1 is a receiver-check failure, 2 a deterministic
+/// apply failure.
+fn void_body(
+    seq: u64,
+    command_id: &[u8; 16],
+    envelope_digest: &[u8; 32],
+    reason: u8,
+    signer_fpr: &[u8; 32],
+    issued_at: i64,
+) -> Vec<u8> {
+    Enc::new("dohflow/sync-void/v1")
+        .u16(PROTOCOL_VERSION)
+        .u16(SUITE_ID)
+        .fixed(&VAULT)
+        .u64(seq)
+        .fixed(command_id)
+        .fixed(envelope_digest)
+        .u8(reason)
+        .fixed(signer_fpr)
+        .i64(issued_at)
+        .done()
+}
+
 // Membership / epoch record bodies (the bytes Ed25519 signs; HPKE info).
 #[allow(clippy::too_many_arguments)]
 fn membership_body(
@@ -915,6 +939,17 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     );
     let ct0 = seal(&k0, &[0u8; 12], &aad0, manifest_json.as_bytes());
 
+    // A sample void: position 42 holds the sample envelope, declared void by device A.
+    let void = void_body(
+        42,
+        &meta.command_id,
+        &envelope_digest(&header_env, &ct_env),
+        1,
+        &fpr_a,
+        1_790_000_003_000_000,
+    );
+    let void_id = sha256(&void);
+
     vec![
         ("fingerprint_a", fpr_a.to_vec()),
         ("fingerprint_b", fpr_b.to_vec()),
@@ -960,6 +995,8 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
             envelope_digest(&header_env, &ct_env).to_vec(),
         ),
         ("envelope_container", container(&header_env, &ct_env)),
+        ("void_body", void),
+        ("void_id", void_id.to_vec()),
         ("membership_body_1", m1),
         ("membership_id_1", id_m1.to_vec()),
         ("membership_body_2", m2),

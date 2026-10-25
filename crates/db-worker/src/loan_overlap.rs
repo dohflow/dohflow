@@ -30,7 +30,10 @@
 //!   amount from 95% to 200% of the scheduled payment.
 //! - **Possible** ([`MatchStrength::Possible`]) is a soft "might be the same payment" note, never a
 //!   link offer: paid from the funding account with an amount from 95% to 150%, or an amount within
-//!   10% either way.
+//!   10% either way. When the funding account is the loan's DECLARED paying account the match
+//!   carries [`MatchedBy::DeclaredTerms`]: still possible (never "counted twice"), but at the two
+//!   interactive moments (a suggestion, a bill being created) it is enough to ASK the user whether
+//!   it is the loan's payment.
 //!
 //! Anything else is no match. A name resemblance alone is not evidence.
 //!
@@ -44,6 +47,7 @@ use categorization::normalize_merchant;
 use rusqlite::Connection;
 use uuid::Uuid;
 
+use crate::forecast::EmittingLoan;
 use crate::schedule_sources::active_obligation_schedules;
 use crate::DbError;
 
@@ -74,13 +78,20 @@ pub struct LoanDoubleCount {
     pub paid_from_account_name: Option<String>,
 }
 
-/// The evidence behind a STRONG match (planning's revised ruling on 6wk.20).
+/// The evidence behind a match (planning's rulings on 6wk.20).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchedBy {
     /// The bill carries the payee of the payments already paired into the loan.
     Payee,
     /// The bill is typed `loan_payment` or `rent_mortgage` and paid from the loan's funding account.
     LoanTyped,
+    /// A POSSIBLE match only: paid from the loan's DECLARED paying account, monthly, within the due-day
+    /// tolerance of its declared due day, at 95% to 150% of the payment. The user's own loan terms
+    /// are evidence enough to ASK ("Is this the loan's payment?") where the user is interacting (a
+    /// suggestion, a bill being created), never to ASSERT it is counted twice: a similar-size monthly
+    /// bill near the due day, such as childcare, would be falsely called a duplicate. For an
+    /// existing bill this stays the soft possible note.
+    DeclaredTerms,
 }
 
 /// How strongly a bill looks like a loan's payment (see the module docs).
@@ -124,6 +135,177 @@ fn names_similar(a: &str, b: &str) -> bool {
         && long.contains(short.as_str())
 }
 
+/// A bill-shaped thing to compare with the loans' payments: an existing bill, a suggested recurring
+/// candidate, or a bill the user is about to create (personal-cfo-6wk.20). One shape, one rule.
+pub(crate) struct BillLike {
+    pub name: String,
+    /// The normalized merchant key (a promoted bill's persisted key, or a candidate's), if any.
+    pub merchant_key: Option<String>,
+    pub bill_type: Option<String>,
+    pub amount_minor: i64,
+    pub currency_code: String,
+    pub freq_token: String,
+    /// The day of the month it falls on, when it has a monthly cadence anchor.
+    pub day_of_month: Option<u32>,
+    pub paying_account: Option<Uuid>,
+}
+
+/// How a bill-shaped thing relates to one loan's payment.
+struct Classified {
+    strength: MatchStrength,
+    matched_by: Option<MatchedBy>,
+    name_match: bool,
+    amount_match: bool,
+}
+
+/// The loans that emit a forecast payment, each with the payments already paired into it, loaded
+/// once so many bill-shaped things can be compared without re-reading the ledger.
+pub(crate) struct LoanContext {
+    currency_code: String,
+    loans: Vec<(EmittingLoan, PairedPayments)>,
+}
+
+pub(crate) fn load_loan_context(conn: &Connection) -> Result<LoanContext, DbError> {
+    // Only loans that actually emit a forecast payment (in the forecast's fold currency, owed > 0)
+    // can be double-counted — a paid-off or foreign-currency loan contributes nothing, so warning
+    // about it would be false. `currency` is that fold currency; align the bills to it too.
+    let (currency, loans) = crate::forecast::loans_emitting_payments(conn)?;
+    let mut with_paired = Vec::with_capacity(loans.len());
+    for loan in loans {
+        let paired = paired_payments(conn, loan.terms.ledger_account_id)?;
+        with_paired.push((loan, paired));
+    }
+    Ok(LoanContext {
+        currency_code: currency.code().to_owned(),
+        loans: with_paired,
+    })
+}
+
+/// THE rule (see the module docs): how strongly `bill` looks like `emitting`'s payment, or `None`.
+fn classify(
+    emitting: &EmittingLoan,
+    paired: &PairedPayments,
+    bill: &BillLike,
+) -> Option<Classified> {
+    let loan = &emitting.terms;
+    let payment = emitting.payment_minor;
+    let name_match = names_similar(&loan.name, &bill.name);
+    let loan_shaped = matches!(
+        bill.bill_type.as_deref(),
+        Some("loan_payment" | "rent_mortgage")
+    );
+    // A pay-in-full payoff is a single event: there is no monthly amount to compare.
+    let comparable = emitting.recurring && payment > 0;
+    let at_least_95 = comparable && at_least_percent(bill.amount_minor, payment, 95);
+    let up_to_150 = at_least_95 && at_most_percent(bill.amount_minor, payment, 150);
+    let up_to_200 = at_least_95 && at_most_percent(bill.amount_minor, payment, 200);
+    let within_10 = comparable && within_percent(bill.amount_minor, payment, 10);
+    let amount_match = at_least_95 || within_10;
+    let date_ok = bill.freq_token == "monthly"
+        && bill
+            .day_of_month
+            .is_some_and(|day| days_apart(day, loan.payment_due_day) <= DUE_DAY_TOLERANCE);
+    let funded_by_the_loans_account = bill.paying_account.is_some_and(|account| {
+        loan.paying_source == Some(account) || paired.sources.contains(&account)
+    });
+    let funded_by_the_declared_account = bill
+        .paying_account
+        .is_some_and(|account| loan.paying_source == Some(account));
+    let payee_matches = paired_payee_matches(bill, paired);
+
+    // The payee is checked first: it is the stronger evidence when both routes hold.
+    let (strength, matched_by) = if !date_ok {
+        return None;
+    } else if payee_matches && at_least_95 {
+        (MatchStrength::Strong, Some(MatchedBy::Payee))
+    } else if loan_shaped && funded_by_the_loans_account && up_to_200 {
+        (MatchStrength::Strong, Some(MatchedBy::LoanTyped))
+    } else if funded_by_the_declared_account && up_to_150 {
+        (MatchStrength::Possible, Some(MatchedBy::DeclaredTerms))
+    } else if (funded_by_the_loans_account && up_to_150) || within_10 {
+        (MatchStrength::Possible, None)
+    } else {
+        return None;
+    };
+    Some(Classified {
+        strength,
+        matched_by,
+        name_match,
+        amount_match,
+    })
+}
+
+/// The loan a bill-shaped thing most looks like the payment of: the strongest match, the first loan
+/// by name when tied. `None` when it matches no loan (or is in another currency than the forecast).
+pub(crate) fn best_loan_match(context: &LoanContext, bill: &BillLike) -> Option<LoanPaymentMatch> {
+    if bill.currency_code != context.currency_code {
+        return None;
+    }
+    let mut best: Option<LoanPaymentMatch> = None;
+    for (emitting, paired) in &context.loans {
+        let Some(found) = classify(emitting, paired, bill) else {
+            continue;
+        };
+        let better = best.as_ref().is_none_or(|b| {
+            b.strength == MatchStrength::Possible && found.strength == MatchStrength::Strong
+        });
+        if better {
+            best = Some(LoanPaymentMatch {
+                loan_account_id: emitting.terms.account_id,
+                loan_name: emitting.terms.name.clone(),
+                strength: found.strength,
+                matched_by: found.matched_by,
+            });
+        }
+    }
+    best
+}
+
+/// A loan a bill-shaped thing looks like the payment of, for the suggestion list and the
+/// creation-time check (personal-cfo-6wk.20).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoanPaymentMatch {
+    pub loan_account_id: Uuid,
+    pub loan_name: String,
+    pub strength: MatchStrength,
+    pub matched_by: Option<MatchedBy>,
+}
+
+/// A bill the user is about to create, for the creation-time check.
+pub struct LoanOverlapDraft {
+    pub name: String,
+    pub merchant_key: Option<String>,
+    pub bill_type: String,
+    pub amount: core_money::Money,
+    pub frequency: pay_schedule::Frequency,
+    pub anchor: chrono::NaiveDate,
+    pub autopay_account_id: Option<Uuid>,
+}
+
+/// Does the bill the user is about to create look like a loan's payment? Read-only: nothing is
+/// created, changed or linked (ADR 0018).
+///
+/// # Errors
+/// Returns [`DbError`] if a read fails.
+pub(crate) fn check_draft(
+    conn: &Connection,
+    draft: &LoanOverlapDraft,
+) -> Result<Option<LoanPaymentMatch>, DbError> {
+    use chrono::Datelike;
+    let context = load_loan_context(conn)?;
+    let bill = BillLike {
+        name: draft.name.clone(),
+        merchant_key: draft.merchant_key.clone(),
+        bill_type: Some(draft.bill_type.clone()),
+        amount_minor: draft.amount.minor_units(),
+        currency_code: draft.amount.currency().code().to_owned(),
+        freq_token: draft.frequency.token(),
+        day_of_month: Some(draft.anchor.day()),
+        paying_account: draft.autopay_account_id,
+    };
+    Ok(best_loan_match(&context, &bill))
+}
+
 /// Every suspected loan double-count (see the module docs). Deterministic order:
 /// loans by name, then bills by name (both readers already order that way).
 ///
@@ -132,24 +314,16 @@ fn names_similar(a: &str, b: &str) -> bool {
 pub(crate) fn detect_loan_double_counts(
     conn: &Connection,
 ) -> Result<Vec<LoanDoubleCount>, DbError> {
-    // Only loans that actually emit a forecast payment (in the forecast's fold currency, owed > 0)
-    // can be double-counted — a paid-off or foreign-currency loan contributes nothing, so warning
-    // about it would be false. `currency` is that fold currency; align the bills to it too.
-    let (currency, loans) = crate::forecast::loans_emitting_payments(conn)?;
-    if loans.is_empty() {
+    let context = load_loan_context(conn)?;
+    if context.loans.is_empty() {
         return Ok(Vec::new());
     }
-    let bills: Vec<_> = active_obligation_schedules(conn)?
-        .into_iter()
-        .filter(|s| s.currency_code.as_str() == currency.code())
-        .collect();
     let merchant_keys = bill_merchant_keys(conn)?;
+    let bills = active_obligation_schedules(conn)?;
 
     let mut out = Vec::new();
-    for emitting in &loans {
+    for (emitting, paired) in &context.loans {
         let loan = &emitting.terms;
-        let paired = paired_payments(conn, loan.ledger_account_id)?;
-        let payment = emitting.payment_minor;
         for bill in &bills {
             // Resolved or answered (personal-cfo-6wk.22): a bill that is LINKED to a loan is that
             // loan's payment and the forecast already counts it once, so it is no overlap with any
@@ -159,39 +333,20 @@ pub(crate) fn detect_loan_double_counts(
             {
                 continue;
             }
-            let name_match = names_similar(&loan.name, &bill.name);
-            let loan_shaped = matches!(
-                bill.bill_type.as_deref(),
-                Some("loan_payment" | "rent_mortgage")
-            );
-            // A pay-in-full payoff is a single event: there is no monthly amount to compare.
-            let comparable = emitting.recurring && payment > 0;
-            let at_least_95 = comparable && at_least_percent(bill.amount_minor, payment, 95);
-            let up_to_150 = at_least_95 && at_most_percent(bill.amount_minor, payment, 150);
-            let up_to_200 = at_least_95 && at_most_percent(bill.amount_minor, payment, 200);
-            let within_10 = comparable && within_percent(bill.amount_minor, payment, 10);
-            let amount_match = at_least_95 || within_10;
-            let date_ok = bill.freq_token == "monthly"
-                && bill
-                    .anchor
-                    .as_deref()
-                    .and_then(day_of_month)
-                    .is_some_and(|day| days_apart(day, loan.payment_due_day) <= DUE_DAY_TOLERANCE);
-            let funded_by_the_loans_account = bill.autopay_account_id.is_some_and(|account| {
-                loan.paying_source == Some(account) || paired.sources.contains(&account)
-            });
-            let payee_matches = paired_payee_matches(bill, &merchant_keys, &paired);
-
-            // The payee is checked first: it is the stronger evidence when both routes hold.
-            let (strength, matched_by) = if !date_ok {
+            let like = BillLike {
+                name: bill.name.clone(),
+                merchant_key: merchant_keys.get(&bill.id).cloned(),
+                bill_type: bill.bill_type.clone(),
+                amount_minor: bill.amount_minor,
+                currency_code: bill.currency_code.clone(),
+                freq_token: bill.freq_token.clone(),
+                day_of_month: bill.anchor.as_deref().and_then(day_of_month),
+                paying_account: bill.autopay_account_id,
+            };
+            if like.currency_code != context.currency_code {
                 continue;
-            } else if payee_matches && at_least_95 {
-                (MatchStrength::Strong, Some(MatchedBy::Payee))
-            } else if loan_shaped && funded_by_the_loans_account && up_to_200 {
-                (MatchStrength::Strong, Some(MatchedBy::LoanTyped))
-            } else if (funded_by_the_loans_account && up_to_150) || within_10 {
-                (MatchStrength::Possible, None)
-            } else {
+            }
+            let Some(found) = classify(emitting, paired, &like) else {
                 continue;
             };
             let paid_from_account_name = match bill.autopay_account_id {
@@ -203,10 +358,10 @@ pub(crate) fn detect_loan_double_counts(
                 loan_name: loan.name.clone(),
                 bill_event_id: bill.id,
                 bill_name: bill.name.clone(),
-                name_match,
-                amount_match,
-                strength,
-                matched_by,
+                name_match: found.name_match,
+                amount_match: found.amount_match,
+                strength: found.strength,
+                matched_by: found.matched_by,
                 bill_type: bill.bill_type.clone(),
                 paid_from_account_name,
             });
@@ -302,18 +457,15 @@ fn bill_merchant_keys(conn: &Connection) -> Result<HashMap<Uuid, String>, DbErro
     Ok(rows)
 }
 
-/// The bill carries the payee of the loan's paired payments: its persisted merchant key, or its
-/// own name, normalized the same way.
-fn paired_payee_matches(
-    bill: &crate::schedule_sources::ScheduleSource,
-    merchant_keys: &HashMap<Uuid, String>,
-    paired: &PairedPayments,
-) -> bool {
+/// The bill carries the payee of the loan's paired payments: its merchant key, or its own name,
+/// normalized the same way.
+fn paired_payee_matches(bill: &BillLike, paired: &PairedPayments) -> bool {
     if paired.payees.is_empty() {
         return false;
     }
-    let by_key = merchant_keys
-        .get(&bill.id)
+    let by_key = bill
+        .merchant_key
+        .as_ref()
         .is_some_and(|key| paired.payees.contains(key));
     by_key || paired.payees.contains(&normalize_merchant(&bill.name))
 }

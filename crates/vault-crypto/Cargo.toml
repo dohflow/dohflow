@@ -22,10 +22,18 @@ sha2 = { workspace = true }
 hkdf = { workspace = true }
 hmac = { workspace = true }
 zeroize = { workspace = true }
+# The envelope seal and the receiver-path opener (personal-cfo-g3m.22) implement sync-core's
+# EnvelopeOpener. sync-core is pure format code and never depends on this crate.
+sync-core = { path = "../sync-core" }
 getrandom = { workspace = true }
 thiserror = { workspace = true }
 
 # Best-effort page-locking of secret buffers (personal-cfo-1t0). Unix-only;
 # on other targets the lock is a documented no-op.
+[dev-dependencies]
+# Chain-building for the envelope tests (personal-cfo-g3m.22): real Ed25519 keys sign a real
+# membership chain. ed25519-dalek is already in the tree through sync-core.
+ed25519-dalek = { workspace = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

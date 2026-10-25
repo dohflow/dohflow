@@ -151,6 +151,7 @@ macro_rules! app_commands {
             ipc::commands::link_bill_to_loan,
             ipc::commands::unlink_bill_from_loan,
             ipc::commands::set_bill_not_loan_payment,
+            ipc::commands::check_loan_overlap,
             ipc::commands::income_candidates,
             ipc::commands::recurring_bill_history,
             ipc::commands::build_info,

@@ -17,17 +17,17 @@ use finance_kernel::{
     ConfirmObligationEarly, ConvertUnexplainedToTransaction, CreateAccount, CreateCategory,
     CreateIncomeSource, CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag,
     DeleteIncomeSource, DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem,
-    DismissRecurringSuggestion, Kernel, LinkBillToLoan, MarkReviewed, Money, MoveCategory,
-    NewScenario, ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, RecurringEventId,
-    RecurringTransferId, ReinstateAccount, ReinstateCategory, ReinstateIncomeSource,
-    ReinstateRecurringBill, ReinstateRecurringTransfer, RestoreIncomeSource, RestoreRecurringBill,
-    RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype,
-    SetBillAutopay, SetBillNotLoanPayment, SetCardStatementBalance, SetDebtTerms, SetNote,
-    SetSplits, SetTags, SkipStaged, SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters,
-    SystemClock, TagId, TransactionId, UnconfirmObligation, UnlinkBillFromLoan, UpdateAccount,
-    UpdateBatchState, UpdateCategory, UpdateIncomeSource, UpdateRecurringBill, VaultController,
-    VaultState, VoidTransaction, COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY,
-    REPORTING_CURRENCY_KEY,
+    DismissRecurringSuggestion, Kernel, LinkBillToLoan, LoanOverlapDraft, MarkReviewed, Money,
+    MoveCategory, NewScenario, ParserHints, ParserInput, ParserLimits, RecategorizeTransaction,
+    RecurringEventId, RecurringTransferId, ReinstateAccount, ReinstateCategory,
+    ReinstateIncomeSource, ReinstateRecurringBill, ReinstateRecurringTransfer, RestoreIncomeSource,
+    RestoreRecurringBill, RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote,
+    SetAccountSubtype, SetBillAutopay, SetBillNotLoanPayment, SetCardStatementBalance,
+    SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged, SnoozeInboxItem, SourceBatchId,
+    SourceRecordId, SpendFilters, SystemClock, TagId, TransactionId, UnconfirmObligation,
+    UnlinkBillFromLoan, UpdateAccount, UpdateBatchState, UpdateCategory, UpdateIncomeSource,
+    UpdateRecurringBill, VaultController, VaultState, VoidTransaction, COMFORT_BAND_UPPER_KEY,
+    MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 use uuid::Uuid;
@@ -51,17 +51,18 @@ use crate::ipc::dto::{
     CreateSourceBatchInput, CreateSourceBatchResult, CreateTagResult, DebtPayoffPlanDto,
     DebtTermsDto, DiagnosticsPreviewDto, DiagnosticsSaveResult, DismissRecurringSuggestionInput,
     ForecastReadinessDto, ForecastViewDto, ImportBatchInput, ImportedTransactionFieldsDto,
-    IncomeSourceDto, LoanDoubleCountWarningDto, ManualFutureEntryDto, MoneyDto, MoneyInboxItemDto,
-    MoveCategoryInput, MultiSeriesForecastDto, MutationResult, RecordTransactionInput,
-    RecordTransactionResult, RecordTransferInput, RecurringBillDto, RecurringBillOccurrenceDto,
-    RecurringCandidateDto, RecurringTransferDto, ReleaseUpdateFailureKind,
-    RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto, SetBillAutopayInput,
-    SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput, SourcePresetDto,
-    SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto, TagViewDto,
-    TransactionPageDto, TransactionPageInput, TransactionRowDto, UnconfirmObligationInput,
-    UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput, UpdateCategoryInput,
-    UpdateIncomeSourceInput, UpdateManualFutureEntryInput, UpdateRecurringBillInput,
-    UpdateScenarioInput, VaultHealthDto, VaultListDto, VaultStatusDto, VaultSummaryDto,
+    IncomeSourceDto, LoanDoubleCountWarningDto, LoanOverlapMatchDto, ManualFutureEntryDto,
+    MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto, MutationResult,
+    RecordTransactionInput, RecordTransactionResult, RecordTransferInput, RecurringBillDto,
+    RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
+    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto,
+    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
+    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
+    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
+    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
+    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
+    UpdateRecurringBillInput, UpdateScenarioInput, VaultHealthDto, VaultListDto, VaultStatusDto,
+    VaultSummaryDto,
 };
 #[cfg(desktop)]
 use crate::ipc::dto::{ApplyUpdateResultDto, UpdateStatusDto};
@@ -3180,6 +3181,40 @@ pub fn recurring_candidates(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<RecurringCandidateDto>, IpcError> {
     recurring_candidates_impl(state.inner())
+}
+
+// ---- check_loan_overlap (personal-cfo-6wk.20) ------------------------------
+
+/// Does the bill the user is about to create look like a loan's payment? Takes the same input as
+/// `create_recurring_bill`, so the check sees exactly what would be created. Read-only: nothing is
+/// created, changed or linked, and the answer is descriptive (ADR 0018).
+pub fn check_loan_overlap_impl(
+    state: &AppState,
+    input: CreateRecurringBillInput,
+) -> Result<Option<LoanOverlapMatchDto>, IpcError> {
+    let draft = LoanOverlapDraft {
+        name: input.name.clone(),
+        merchant_key: input.source_merchant_key.clone(),
+        bill_type: input.bill_type()?,
+        amount: input.amount()?,
+        frequency: input.frequency()?,
+        anchor: input.anchor()?,
+        autopay_account_id: input.autopay_account_id()?.map(|id| id.as_uuid()),
+    };
+    with_kernel(state, |kernel| {
+        Ok(kernel
+            .check_loan_overlap(&draft)?
+            .map(LoanOverlapMatchDto::from))
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn check_loan_overlap(
+    state: tauri::State<'_, AppState>,
+    input: CreateRecurringBillInput,
+) -> Result<Option<LoanOverlapMatchDto>, IpcError> {
+    check_loan_overlap_impl(state.inner(), input)
 }
 
 // ---- bill <-> loan link (personal-cfo-6wk.22) ------------------------------
