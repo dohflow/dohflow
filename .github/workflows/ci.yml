@@ -79,7 +79,7 @@ permissions:
 jobs:
   rust:
     name: Rust (workspace)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -406,7 +406,7 @@ jobs:
   # It is deliberately absent from the ruleset's required checks.
   perf-budget:
     name: Perf budget (absolute, not required)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -465,7 +465,7 @@ jobs:
 
   frontend:
     name: Frontend (apps/desktop)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -531,7 +531,7 @@ jobs:
   # `rust` job's `cargo --workspace`, so it gets its own gates here.
   ipc-codegen:
     name: IPC codegen (apps/desktop/src-tauri)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -695,7 +695,7 @@ jobs:
   # it under Xvfb, and uploads the screenshot/log/AppImage evidence.
   linux-appimage-spike:
     name: Linux AppImage spike (manual)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -1047,7 +1047,7 @@ jobs:
   # too (see docs/security/scanning.md).
   security-scan:
     name: Security scanning (secrets + dependencies)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # `schedule` is deliberately let PAST the job-level guard here (unlike
     # every other job, which excludes it outright) and re-checked for real by
     # this job's own first step below — see that step's comment for why the
@@ -1264,7 +1264,7 @@ jobs:
   # a separate question from "do the tests the repo already has actually run."
   shell-scripts:
     name: Shell scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -1286,6 +1286,42 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Runner-image canary (personal-cfo-md8h2.18). Every required Linux job is pinned to a specific
+  # Ubuntu image, because `ubuntu-latest` moved from 24.04 to 26.04 on 2026-10-24 and the new
+  # image's Rust coreutils broke a shell test, which ejected pull requests from the merge queue.
+  # This job runs the shell tests on `ubuntu-latest` (not pinned) so the NEXT image change shows
+  # up here, as a red job that blocks nothing, before anyone moves the pin. It is deliberately
+  # not a required check and not in `main-red-alert`'s needs.
+  runner-canary:
+    name: Runner image canary (ubuntu-latest, not required)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Which image, and does a symlink to sleep still work?
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          echo "image: ${PRETTY_NAME} (ImageVersion ${ImageVersion:-unknown})"
+          echo "sleep resolves to: $(readlink -f "$(command -v sleep)")"
+          dir="$(mktemp -d)"
+          ln -s "$(command -v sleep)" "$dir/hygtest-cargo"
+          if "$dir/hygtest-cargo" 0; then
+            echo "a symlink to sleep named hygtest-cargo works"
+          else
+            echo "a symlink to sleep named hygtest-cargo FAILS (exit $?): sleep is a multicall binary"
+          fi
+
+      - name: Run shell tests
+        run: |
+          set -euo pipefail
+          for f in scripts/tests/*.test.sh; do
+            echo "::group::$f"
+            bash "$f"
+            echo "::endgroup::"
+          done
+
   # NOTE: Building the macOS release binary (with capability/CSP hardening and a
   # launch smoke test) is owned by bead personal-cfo-rhci and will be added as a
   # macOS job there.
@@ -1297,7 +1333,7 @@ jobs:
   # commit message or a pull request title is interpolated into a shell.
   main-red-alert:
     name: Alert if main is red
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts]
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false && contains(needs.*.result, 'failure') }}
     permissions:
