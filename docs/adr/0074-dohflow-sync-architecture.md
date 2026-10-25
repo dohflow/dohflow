@@ -1010,6 +1010,117 @@ backup was taken or before the user chose, are not carried unless the user picks
 values. A merge is undone the way any commands are: by correcting or voiding the rows it
 created, not by rolling the merge back as a unit.
 
+## Addendum D — Recovering from a poisoned log position: the member-signed void (2026-10-25, `personal-cfo-g3m.24`, owner decision `personal-cfo-915.19`)
+
+Decisions 2, 3 and 8 make a replica fail closed on anything it cannot verify, and Decision 3
+sends a write-set mismatch to re-bootstrap. They leave one case open. The service stores
+ciphertext it cannot read, so it cannot tell a consistently sealed envelope from one a buggy or
+partly failed producer sealed inconsistently, and it cannot tell one that passes every receiver
+check but then fails to apply deterministically. Either kind is accepted at a log position `N`.
+Every honest replica then reaches `N`, rejects it the same way, and stops (`AuthenticatedEnvelopeInvalid`,
+`vault-format.md` C.4 and C.11). That state is not a fork (nobody equivocated) and not transient
+(retrying changes nothing).
+
+**Re-bootstrap alone cannot leave it.** A snapshot must equal the head (Decision 1), so a snapshot
+needs a replica that has applied everything up to the head, and nobody can apply past `N`. The
+newest snapshot is therefore at or before `N - 1`, and bootstrapping from it lands on `N` again.
+Recovery needs a way to declare `N` void. The owner chose the mechanism below on 2026-10-25
+(`personal-cfo-915.19`), after an adversarial read by `03a-escalation`.
+
+**Rejected: a recovery-root skip.** A key that can authorize skipping a position is an escrow
+key by another name; Decision 10 says Sync v1 has no escrow. **Rejected: producer self-repair.**
+Re-sealing the same `command_id` with a different body is a fork (Decision 2). This addendum
+rewrites none of the decisions above; it adds one record type and the rules for honoring it.
+
+The numbered rules below are normative. The record's byte encoding is `vault-format.md` C.10
+"Void records" (spec-version 10, with the vectors `void_body` and `void_id` in C.14).
+
+**1. The receiver-check rule set is bound to the engine version (R40).** What
+`check_envelope` accepts and rejects, and whether an envelope applies deterministically, are part
+of what `engine_version` names. Changing what is accepted or rejected **is** an `engine_version`
+change. Two replicas that both evaluate position `N` have the same `engine_version` (a replica
+with another one is in the update-required state and applies nothing), so they run the same checks
+and cannot disagree about whether `N` is valid within one version. A device registry that never
+decrypts is not part of that agreement.
+
+**2. The void record.** A void names a position `seq`, the `command_id` and
+`envelope_digest` of the envelope seen there, a `reason` (receiver-check failure, or
+deterministic apply failure), the signer's fingerprint and a time. It is signed by an authorized,
+unrevoked member of the membership chain and verified under **the key the chain holds** for that
+member (never a key carried in the record). The signature is **not authority over the outcome**:
+trust comes from rule 3. It makes the decision attributable (nothing is skipped silently), gives
+replicas a trigger to roll back, and keeps non-members from filling the log with voids.
+
+**3. A replica honors a void only after rejecting `N` itself.** It must have evaluated position
+`seq` in log order, found it invalid for the stated reason, and see the same `command_id` and
+`envelope_digest` in the void. Anything else is inert: kept for diagnosis, skipping nothing. A
+malicious member therefore cannot void a **valid** envelope (this is recovery, not censorship),
+and spam is inert. A replica stopped at `N` always evaluates `N` before it can read a void
+positioned after it.
+
+**4. The range is `N` through `V - 1`.** If the void is appended at position `V`, every command
+envelope at positions `N` through `V - 1` is skipped, because every object after `N` carries a
+`base_seq` at or past `N` and was built on a state that included it. Their issuers rebase and
+re-issue (rules 6 and 7). Membership and epoch records are never skipped: they are verified by
+their own chain rules. A void whose `seq` an earlier honored void already covers is inert, so the
+first honored void defines the range, and the objects after `V` are valid and apply.
+
+**5. No snapshot and no key-epoch cutover while halted.** A replica stopped at a poisoned
+position publishes no snapshot, performs no cutover and pushes nothing. (A snapshot needs the
+head, which such a replica cannot reach, and a cutover from a stopped replica would be built on a
+state that skips `N`.) After the void is honored the replica resumes after `V` and is no longer
+halted.
+
+**6. Re-issue uses a new `command_id` and a new idempotency key.** Reusing the key hits the tag in
+the accepted-envelope index and is a `ProtocolFork` (Decision 2). The index keeps the record of
+each voided position and **marks it voided** by the void's id; an exact replay of a voided
+envelope returns its original `seq` marked voided and is never re-applied or treated as fresh. A
+voided `command_id` and tag are never reusable.
+
+**7. The producer rolls back.** A device whose outbox entry was bound to a position in `N` through
+`V - 1` (it saw its own envelope accepted and bound it) must, on honoring the void, unbind and
+roll that command back through rollback-then-replay (Decision 2), then re-issue it as a new
+command through the producer rule (`vault-format.md` C.4). It never re-pushes the original
+envelope.
+
+**8. Evidence is retained.** The poisoned envelope's ciphertext and the void are kept, not
+garbage-collected before a snapshot that supersedes the range. Snapshots taken past a void record
+the **voided ranges and the void ids** in their metadata, so a device that bootstraps from one can
+show the history and verify that the skipped positions were voided. The index's voided marks are
+permanent (Decision 2).
+
+**9. The `check_envelope` conformance vectors are part of the protocol.** With rules 1 and 3 the
+receiver checks become consensus-critical: two implementations that disagree on one envelope would
+split the vault. So the vectors (`personal-cfo-g3m.23`: every receiver error, plus valid cases,
+public and versioned, a new error without a vector failing a test) are normative, and any second
+client implementation must reject exactly the same envelopes. The void rules have their own
+honor-and-refuse vectors in the same family (`personal-cfo-g3m.17` part C).
+
+**10. Deterministic apply failures are in scope.** An envelope that passes the checks but cannot
+be applied deterministically (Decision 3: apply is a function of payload, metadata and base state)
+poisons its position the same way. A void with `reason` 2 is honored only if the replica **itself**
+failed to apply the position, with a typed error from a closed set of *deterministic rejection*
+errors. A write-set mismatch is not in that set: it stays a fork (Decision 3), not voidable, so a
+replica that diverges for a local reason cannot be talked into skipping.
+
+**11. The normative encoding lives in `vault-format.md`.** The void record's body, signature,
+service checks and index marking are in C.10 "Void records" under C.13 change control
+(spec-version 10), with vectors. This addendum states the rules; that section states the bytes.
+
+**Consequences.** (a) A split is still possible if two replicas at one `engine_version` reach
+different verdicts on `N` because of a bug; rules 1, 3 and 9 make that a defect to be found by
+vectors rather than a protocol state, and the divergence is caught by the write-set hash (a fork,
+Decision 3). (b) A voided range costs the commands in it, which their issuers re-issue; the
+re-issued commands take new positions, so their order relative to unrelated commands can change.
+(c) The service gains a second signed-record type to order and a voided mark in the index; it
+still never reads a payload. (d) A void is a tool for a rare, serious state; the producer rule
+(`vault-format.md` C.4) and the service checks exist to make it unnecessary.
+
+**Implementation.** `personal-cfo-g3m.17` part C (the void record and the honor-or-refuse rule in
+`sync-core`), `personal-cfo-v98vd` (the service checks, ordering and index marking),
+`personal-cfo-elciw` (the client: honoring, rollback, re-issue, the status and its persistence),
+`personal-cfo-g3m.22` (the receiver-path opener) and `personal-cfo-g3m.23` (the vectors).
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` (this ADR)
@@ -1038,3 +1149,7 @@ created, not by rolling the merge back as a unit.
 - `personal-cfo-g3m.10` (SimpleFIN two-token id check)
 - `personal-cfo-g3m.11` (LunchFlow two-key id check, pending)
 - `personal-cfo-g3m.12` (Addendum B and the ADR 0013-A section 9 note)
+- `personal-cfo-g3m.17` (Sync liveness: the producer rule, the named state, and the void's sync-core part)
+- `personal-cfo-g3m.22` (the vault-crypto receiver-path opener)
+- `personal-cfo-g3m.23` (the `check_envelope` conformance vectors)
+- `personal-cfo-g3m.24` and `personal-cfo-915.19` (Addendum D and the owner decision behind it)
