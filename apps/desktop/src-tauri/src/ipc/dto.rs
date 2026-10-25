@@ -17,13 +17,13 @@ use finance_kernel::{
     CategoryFilter, CategoryId, CategoryView, ColumnMapping, ComfortBand, Currency, DayBalance,
     DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec, ForecastDayView,
     ForecastEventView, ForecastReadiness, ForecastView, Frequency, GroupSeriesView,
-    ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId, LoanDoubleCount, MatchStrength,
-    ManualEntry, Money, MoneyInboxItem, MultiSeriesForecast, Outcome, PayoffDebtSeries,
-    PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView, RecurringCandidateView,
-    RecurringEventId, RecurringInstanceRow, RecurringTransferId, RecurringTransferView,
-    RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput, SplitLineView,
-    StagedTransactionId, TagId, TagView, TransactionId, TransactionPage, TransactionPageQuery,
-    TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
+    ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId, LoanDoubleCount,
+    ManualEntry, MatchStrength, Money, MoneyInboxItem, MultiSeriesForecast, Outcome,
+    PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView,
+    RecurringCandidateView, RecurringEventId, RecurringInstanceRow, RecurringTransferId,
+    RecurringTransferView, RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput,
+    SplitLineView, StagedTransactionId, TagId, TagView, TransactionId, TransactionPage,
+    TransactionPageQuery, TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
