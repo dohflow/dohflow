@@ -5,7 +5,7 @@
 # main-red alert (ci-main-red).
 #
 #   scripts/alert-close.sh --label L --repo OWNER/REPO --run-url URL --what "the daily audit of main is clean"
-#                          [--needs-json JSON]
+#                          [--needs-json JSON] [--only-if-tip SHA]
 #
 # For every open issue labeled L it adds a comment linking the clean run and closes the issue as
 # completed, EXCEPT:
@@ -14,12 +14,17 @@
 # `--needs-json` is the job-results object of a GitHub Actions job (`toJSON(needs)`): unless every
 # result is "success" nothing is closed, so a skipped or cancelled gate never counts as green.
 #
+# `--only-if-tip SHA` closes nothing unless SHA is the current tip of `main`: a green run of an
+# OLDER commit must not close an alert opened by a red run of a newer one (the sequence A, B: B is
+# red and alerts first, then A's older green run finishes). If the tip has no run of its own (a
+# `[skip ci]` commit) the alert stays open; closing is the conservative-to-skip direction here.
+#
 # Closing is not silent: each close carries the comment with the run link. The script only reads
 # issues and, for an eligible issue, comments and closes it; it never reopens, edits or deletes.
 
 set -euo pipefail
 
-LABEL="" REPO="${GITHUB_REPOSITORY:-}" RUN_URL="" WHAT="" NEEDS=""
+LABEL="" REPO="${GITHUB_REPOSITORY:-}" RUN_URL="" WHAT="" NEEDS="" TIP_SHA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --label) LABEL="${2:-}"; shift ;;
@@ -27,6 +32,7 @@ while [ $# -gt 0 ]; do
     --run-url) RUN_URL="${2:-}"; shift ;;
     --what) WHAT="${2:-}"; shift ;;
     --needs-json) NEEDS="${2:-}"; shift ;;
+    --only-if-tip) TIP_SHA="${2:-}"; shift ;;
     *) echo "alert-close: unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -39,6 +45,14 @@ if [ -n "$NEEDS" ]; then
   not_green="$(jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")' <<<"$NEEDS")"
   if [ -n "$not_green" ]; then
     echo "Not green (${not_green}): closing nothing."
+    exit 0
+  fi
+fi
+
+if [ -n "$TIP_SHA" ]; then
+  tip="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+  if [ "$tip" != "$TIP_SHA" ]; then
+    echo "main has moved on from ${TIP_SHA:0:12} (tip is ${tip:0:12}): closing nothing; the tip's own run decides."
     exit 0
   fi
 fi

@@ -1351,10 +1351,15 @@ jobs:
           # Only alert for the commit that is still the tip of main: a run of an older commit can
           # finish after a newer, green one has closed the alert, and must not reopen the story
           # (personal-cfo-md8h2.21). The tip's own run decides whether main is red.
+          # If the tip has no run of its own (a `[skip ci]` commit) nothing else will decide, so
+          # this run alerts after all.
           tip="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
           if [ "$tip" != "$SHA" ]; then
-            echo "main has moved on from ${SHA:0:12} (tip is ${tip:0:12}): this run does not alert."
-            exit 0
+            tip_runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --commit "$tip" --json databaseId --jq length)"
+            if [ "${tip_runs:-0}" -gt 0 ]; then
+              echo "main has moved on from ${SHA:0:12} (tip is ${tip:0:12}, which has its own run): this run does not alert."
+              exit 0
+            fi
           fi
           gh label create ci-main-red --repo "$GITHUB_REPOSITORY" --color b60205 \
             --description "A gate failed on a push to main" 2>/dev/null || true
@@ -1393,4 +1398,4 @@ jobs:
           set -euo pipefail
           bash scripts/alert-close.sh --label ci-main-red --repo "$GITHUB_REPOSITORY" \
             --run-url "$RUN_URL" --what "main is green again (every gate passed on this push)" \
-            --needs-json "$NEEDS"
+            --needs-json "$NEEDS" --only-if-tip "$GITHUB_SHA"

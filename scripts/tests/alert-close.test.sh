@@ -29,6 +29,7 @@ cat > "$TMP/bin/gh" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$CALLS"
 if [ "\$1 \$2" = "issue list" ]; then printf '%s' "\${STUB_OPEN_LINES:-}"; fi
+if [ "\$1" = "api" ] && [ "\${2#*commits/main}" != "\$2" ]; then printf '%s\\n' "\${STUB_TIP:-}"; exit 0; fi
 if [ "\$1" = "api" ]; then
   n=\$(printf '%s' "\$2" | sed -E 's#.*/issues/([0-9]+)/events#\1#')
   for pair in \${STUB_REOPEN:-}; do [ "\${pair%%=*}" = "\$n" ] && { echo "\${pair#*=}"; exit 0; }; done
@@ -72,6 +73,15 @@ grep -q "^issue close" "$CALLS" && fail "a skipped gate counted as green" || pas
 grep -q "^issue close" "$CALLS" && fail "a cancelled gate counted as green" || pass "a cancelled gate is not green"
 : > "$CALLS"; STUB_OPEN_LINES="$(tab 42 ci-main-red)" run --needs-json '{"rust":{"result":"success"},"frontend":{"result":"success"}}' >/dev/null
 grep -q "^issue close 42 " "$CALLS" && pass "all green: closed" || fail "all green but not closed: $(cat "$CALLS")"
+
+case_start "only-if-tip: a run of an older commit closes nothing (the tip's own run decides)"
+: > "$CALLS"; STUB_TIP=bbbbbbbbbbbb STUB_OPEN_LINES="$(tab 42 ci-main-red)" run --only-if-tip aaaaaaaaaaaa >/dev/null
+grep -q "^issue close\|^issue comment" "$CALLS" && fail "an older commit's green run closed the alert: $(cat "$CALLS")" || pass "nothing closed when the run is not the tip"
+grep -q "^issue list" "$CALLS" && fail "it even listed issues" || pass "it did not look at the issues"
+: > "$CALLS"; STUB_TIP=aaaaaaaaaaaa STUB_OPEN_LINES="$(tab 42 ci-main-red)" run --only-if-tip aaaaaaaaaaaa >/dev/null
+grep -q "^issue close 42 " "$CALLS" && pass "the tip's own green run closes it" || fail "tip run did not close: $(cat "$CALLS")"
+: > "$CALLS"; STUB_TIP="" STUB_OPEN_LINES="$(tab 42 ci-main-red)" run --only-if-tip aaaaaaaaaaaa >/dev/null
+grep -q "^issue close" "$CALLS" && fail "closed although the tip could not be read" || pass "an unreadable tip closes nothing"
 
 case_start "no open alert: nothing to do"
 : > "$CALLS"; STUB_OPEN_LINES="" run >/dev/null
