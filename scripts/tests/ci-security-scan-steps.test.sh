@@ -38,6 +38,7 @@ GATED="steps.visibility.outputs.run == 'true' && steps.deps.outputs.advisory == 
 ALWAYS=(
   "Install gitleaks"
   "Secret scan (gitleaks)"
+  "Secret scan is scoped to the change (real gitleaks)"
   "Real-value scan (bank names, SSN/card shapes)"
   "ADR tier check (business phrases in docs/adr, docs/research)"
   "Dependency license scan — Rust (cargo deny)"
