@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=10 -->
+<!-- vault-format: spec-version=11 -->
 <!-- vault-format: schema-version=58 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,9 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 11` adds the public `check_envelope` conformance vectors
+  (`docs/architecture/vectors/check-envelope-v1.json`, C.14), which pin the receiver checks of C.4
+  that ADR 0074 Addendum D makes consensus-critical. No wire layout or existing vector changes.
 - `spec-version = 10` adds the void record (C.10 "Void records"), the member-signed record by
   which a vault recovers from a poisoned log position (ADR 0074 Addendum D), with its encoding,
   who may sign it, when a replica honors it, and the index marking; and the vectors `void_body`
@@ -1854,6 +1857,21 @@ states the outcome as the C.11 failure name and the position of the offending re
 implementation's own error names. The file holds only public data; the seeds that produced it live
 only in the Rust generator (`crates/sync-core/tests/membership_vectors.rs`), which fails if the file
 drifts. A change to the file is a change to this part and follows C.13.
+
+`docs/architecture/vectors/check-envelope-v1.json` (`vectors_version` 1) pins the receiver checks
+of C.4 for every implementation that decrypts: a header and a plaintext as bytes, the idempotency
+tag the receiver's own tagger returns for the plaintext's key (an input, because the tag secret is
+not in the file), and the expected outcome, which is `ok`, `MalformedHeader` or
+`MalformedPlaintext` (the bytes do not decode), or the name of the **first** failing check in the
+order `NotAnEnvelope`, `ObjectIdMismatch`, `DeviceMismatch`, `TagMismatch`,
+`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`. Valid cases
+(including empty and non-empty delta manifests), one or more single-defect cases for every check,
+decode failures (truncation, trailing bytes, unknown actor types, a non-v4 idempotency key) and
+multi-defect cases that pin the order are included. Because the void rules of ADR 0074
+Addendum D make these checks consensus-critical, two implementations that disagree on any case
+would split a vault, so the file is part of the protocol: adding a check without a vector fails the
+reference test, and a change to the file follows C.13. The checks that need the membership chain
+or the AEAD key are the caller's (C.4) and are not in this file.
 
 The reference test recomputes every vector below and fails if the document and
 the code differ. Every input is synthetic and listed here, so a third
