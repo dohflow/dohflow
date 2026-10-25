@@ -1718,10 +1718,14 @@ log position `V` the service assigns when it appends the void is not in the body
   independent poisoning and is honored on its own.
 - **No snapshot and no cutover while halted.** A replica stopped at a poisoned position publishes
   no snapshot, performs no key-epoch cutover and pushes nothing.
-- **The index.** The accepted-envelope index (above) keeps each voided position's record and marks
-  it voided by the void's id. An exact replay of a voided envelope returns its original `seq`
-  **marked voided** and is never re-applied. A voided `command_id` and idempotency-key tag are
-  never reusable.
+- **The index.** The accepted-envelope index (above) keeps the record of every position a void
+  names and records **"void claimed by `<void id>`"** against that position only. The service
+  cannot know whether a void was honored, so it never says a position *is* voided: an exact replay
+  returns the original `seq` plus any void claims, and the client decides from its own verdict,
+  rolling back and re-issuing only if it honored that void (after an inert void on a valid
+  envelope, which every replica applied, the claim is just a claim). A replica never re-applies a
+  position it skipped. A claimed position's `command_id` and idempotency-key tag are never
+  reusable, either way.
 - **Re-issue.** The issuer of every voided command rolls it back through rebase (ADR 0074
   Decision 2) and re-issues it as a **new command with a new `command_id` and a new idempotency
   key** (reusing the key is a `ProtocolFork`), through the producer rule of C.4.

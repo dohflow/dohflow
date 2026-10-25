@@ -1085,9 +1085,11 @@ revocation that cannot yet be made.
 
 **6. Re-issue uses a new `command_id` and a new idempotency key.** Reusing the key hits the tag in
 the accepted-envelope index and is a `ProtocolFork` (Decision 2). The index keeps the record of
-each voided position and **marks it voided** by the void's id; an exact replay of a voided
-envelope returns its original `seq` marked voided and is never re-applied or treated as fresh. A
-voided `command_id` and tag are never reusable.
+each position a void names and records **"void claimed by `<void id>`"** against it. The service
+cannot know whether a void was honored, so it never says a position *is* voided: an exact replay
+returns the original `seq` plus any void claims, and the client decides from its own verdict,
+rolling back and re-issuing only if it honored that void. A replica never re-applies a position
+it skipped. A claimed position's `command_id` and tag are never reusable, either way.
 
 **7. The producer rolls back.** A device whose outbox entry was bound to a position in `N` through
 `V - 1` (it saw its own envelope accepted and bound it) must, on honoring the void, unbind and
@@ -1098,7 +1100,7 @@ envelope.
 **8. Evidence is retained.** The poisoned envelope's ciphertext and the void are kept, not
 garbage-collected before a snapshot that supersedes the range. Snapshots taken past a void record
 the **voided ranges and the void ids** in their metadata, so a device that bootstraps from one can
-show the history and verify that the skipped positions were voided. The index's voided marks are
+show the history and verify that the skipped positions were voided. The index's void claims are
 permanent (Decision 2).
 
 **9. The `check_envelope` conformance vectors are part of the protocol.** With rules 1 and 3 the
@@ -1130,7 +1132,7 @@ different verdicts on `N` because of a bug; rules 1, 3 and 9 make that a defect 
 vectors rather than a protocol state, and the divergence is caught by the write-set hash (a fork,
 Decision 3). (b) A voided range costs the commands in it, which their issuers re-issue; the
 re-issued commands take new positions, so their order relative to unrelated commands can change.
-(c) The service gains a second signed-record type to order and a voided mark in the index; it
+(c) The service gains a second signed-record type to order and void claims in the index; it
 still never reads a payload. (d) A void is a tool for a rare, serious state; the producer rule
 (`vault-format.md` C.4) and the service checks exist to make it unnecessary.
 
