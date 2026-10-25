@@ -348,3 +348,108 @@ fn a_shared_word_in_the_name_alone_does_not_flag_a_generic_bill_on_another_sched
     );
     assert!(worker.loan_double_count_warnings().unwrap().is_empty());
 }
+
+// ----- the schedule corroboration, one signal at a time -------------------------------------------
+//
+// Every fixture above puts a bill on the due day AND on the paying account, so neither signal was
+// proven on its own (04b's mutation review of the first version of this change). Each test below
+// varies exactly one of them for a generic (`subscription`) bill whose amount equals the payment.
+
+/// A second liquid account that is NOT the loan's paying source.
+fn other_account(worker: &DbWorker) -> AccountId {
+    let id = AccountId::new();
+    create_role_account(worker, id, "Savings", CashflowRole::LiquidCash);
+    id
+}
+
+/// The mortgage fixture's loan is due on the 15th and paid from checking; flag state of a monthly
+/// $1,500 `subscription` bill anchored on `day` of July and paid from `from`.
+fn flagged_when_on_day(worker: &DbWorker, day: u32, from: AccountId) -> bool {
+    bill(
+        worker,
+        "Home payment",
+        "subscription",
+        150_000,
+        Frequency::Monthly,
+        NaiveDate::from_ymd_opt(2026, 7, day).unwrap(),
+        from,
+    );
+    !worker.loan_double_count_warnings().unwrap().is_empty()
+}
+
+#[test]
+fn near_the_due_day_alone_is_enough_even_from_another_account() {
+    let (_dir, worker) = worker();
+    mortgage(&worker);
+    let savings = other_account(&worker);
+    // Two days after the 15th, paid from an account that is not the loan's source.
+    assert!(flagged_when_on_day(&worker, 17, savings));
+}
+
+#[test]
+fn the_same_paying_account_alone_is_enough_on_a_distant_day() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    // The 2nd is 13 days from the 15th, but the bill is paid from the loan's own source.
+    assert!(flagged_when_on_day(&worker, 2, fixture.checking));
+}
+
+#[test]
+fn the_due_day_tolerance_is_three_days_either_side() {
+    for (day, expected) in [(12, true), (15, true), (18, true), (11, false), (19, false)] {
+        let (_dir, worker) = worker();
+        mortgage(&worker);
+        let savings = other_account(&worker);
+        assert_eq!(
+            flagged_when_on_day(&worker, day, savings),
+            expected,
+            "a bill on the {day}th from another account (loan due the 15th)"
+        );
+    }
+}
+
+#[test]
+fn the_due_day_comparison_wraps_across_the_month_end() {
+    // A loan due on the 1st; a bill on the 30th is two days away across the month end.
+    let (_dir, worker) = worker();
+    let checking_id = AccountId::new();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(checking(checking_id)),
+                opening_balance: Some(Money::new(500_000, Currency::Usd)),
+            },
+        )
+        .unwrap();
+    let savings = other_account(&worker);
+    let loan = AccountId::new();
+    create_role_account(&worker, loan, "Test Mortgage", CashflowRole::LoanLiability);
+    let mut terms = loan_terms(
+        RepaymentPhilosophy::PayFixedAmount,
+        Some(150_000),
+        checking_id,
+    );
+    terms.payment_due_day = Some(1);
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SetDebtTerms {
+                account_id: loan,
+                terms,
+            },
+        )
+        .unwrap();
+    worker
+        .record_balance_assertion(
+            Uuid::now_v7(),
+            loan,
+            Money::new(-20_000_000, Currency::Usd),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        )
+        .unwrap();
+    assert!(
+        flagged_when_on_day(&worker, 30, savings),
+        "the 30th is within 3 days of the 1st"
+    );
+}

@@ -34,19 +34,19 @@ use crate::schedule_sources::active_obligation_schedules;
 use crate::DbError;
 
 /// A suspected double-count: a loan tracked as both a `loan_liability` account with
-/// payment terms and an active recurring `loan_payment` bill that looks like the same
+/// payment terms and an active recurring bill (of any type, 6wk.20) that looks like the same
 /// loan. Heuristic — `name_match` and/or `amount_match` say *why* it was flagged so
 /// the UI can explain it; at least one is always true.
 pub struct LoanDoubleCount {
     /// The `loan_liability` account.
     pub loan_account_id: Uuid,
     pub loan_name: String,
-    /// The `recurring_events` row for the `loan_payment` bill.
+    /// The `recurring_events` row for the bill.
     pub bill_event_id: Uuid,
     pub bill_name: String,
     /// The normalized names look like the same loan.
     pub name_match: bool,
-    /// The loan's fixed monthly payment equals the bill amount (same currency).
+    /// The monthly payment the forecast derives for the loan equals the bill amount (same currency).
     pub amount_match: bool,
 }
 
