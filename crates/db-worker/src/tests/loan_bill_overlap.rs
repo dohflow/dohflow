@@ -743,3 +743,190 @@ fn a_bill_carrying_the_paired_payments_payee_is_strong_even_from_another_account
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].strength, MatchStrength::Strong);
 }
+
+// ----- what must NOT count as a funding account (04b's F1 on the paired-payments query) -------------------
+
+/// A loan with no declared funding account and a $200,000 balance, plus the accounts a test pays it from.
+fn loan_with_no_declared_source(worker: &DbWorker) -> AccountId {
+    let loan = AccountId::new();
+    create_role_account(worker, loan, "Test Mortgage", CashflowRole::LoanLiability);
+    let mut terms = loan_terms(
+        RepaymentPhilosophy::PayFixedAmount,
+        Some(150_000),
+        AccountId::new(),
+    );
+    terms.paying_source_account_id = None;
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SetDebtTerms {
+                account_id: loan,
+                terms,
+            },
+        )
+        .unwrap();
+    worker
+        .record_balance_assertion(
+            Uuid::now_v7(),
+            loan,
+            Money::new(-20_000_000, Currency::Usd),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        )
+        .unwrap();
+    loan
+}
+
+fn funded_account(
+    worker: &DbWorker,
+    name: &str,
+    role: CashflowRole,
+    opening_minor: i64,
+) -> AccountId {
+    let id = AccountId::new();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(Account::new(
+                    id,
+                    LedgerAccountId::new(),
+                    name,
+                    role,
+                    Currency::Usd,
+                    AccountFlags::default(),
+                )),
+                opening_balance: Some(Money::new(opening_minor, Currency::Usd)),
+            },
+        )
+        .unwrap();
+    id
+}
+
+fn pay_the_loan_from(
+    worker: &DbWorker,
+    source: AccountId,
+    loan: AccountId,
+) -> Result<(), crate::DbError> {
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::Transfer {
+                source_account_id: source,
+                dest_account_id: loan,
+                amount: Money::new(150_000, Currency::Usd),
+                occurred_at: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 12, 0, 0).unwrap(),
+            },
+        )
+        .map(|_| ())
+}
+
+fn strength_for_a_bill_paid_from(worker: &DbWorker, from: AccountId) -> Option<MatchStrength> {
+    bill_on_the_15th(worker, "Home payment", "subscription", 150_000, from);
+    worker
+        .loan_double_count_warnings()
+        .unwrap()
+        .first()
+        .map(|w| w.strength)
+}
+
+/// CONTROL: a live payment from savings makes savings a funding account (the query does count it).
+#[test]
+fn a_live_payment_from_another_liquid_account_makes_it_a_funding_account() {
+    let (_dir, worker) = worker();
+    let savings = funded_account(&worker, "Savings", CashflowRole::LiquidCash, 2_000_000);
+    let loan = loan_with_no_declared_source(&worker);
+    pay_the_loan_from(&worker, savings, loan).unwrap();
+    assert_eq!(
+        strength_for_a_bill_paid_from(&worker, savings),
+        Some(MatchStrength::Strong)
+    );
+}
+
+/// A VOIDED payment never happened: its source must not count as the loan's funding account.
+#[test]
+fn a_voided_payment_does_not_make_its_source_a_funding_account() {
+    let (_dir, worker) = worker();
+    let savings = funded_account(&worker, "Savings", CashflowRole::LiquidCash, 2_000_000);
+    let loan = loan_with_no_declared_source(&worker);
+    pay_the_loan_from(&worker, savings, loan).unwrap();
+    let transaction_id: Uuid = worker
+        .read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT lp.transaction_id
+               FROM ledger_postings lp
+               JOIN accounts a ON a.ledger_account_id = lp.ledger_account_id
+              WHERE a.id = ?1 AND lp.minor_units > 0",
+            [loan.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::VoidTransaction {
+                transaction_id: TransactionId::from_uuid(transaction_id),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        strength_for_a_bill_paid_from(&worker, savings),
+        Some(MatchStrength::Possible),
+        "the equal amount on the due day is still a possible match, but savings is not a funding account"
+    );
+}
+
+/// Only a LIQUID account can be the funding account. The ledger refuses a transfer into a loan from an
+/// investment, card or loan account, so a payment with such a source leg is planted directly (a balanced
+/// pair of postings): the query's liquid-only guard is what keeps it from counting.
+#[test]
+fn a_payment_from_a_non_liquid_account_does_not_make_it_a_funding_account() {
+    let (_dir, worker) = worker();
+    let brokerage = funded_account(
+        &worker,
+        "Brokerage",
+        CashflowRole::InvestmentAsset,
+        2_000_000,
+    );
+    let loan = loan_with_no_declared_source(&worker);
+    let ledger_of = |account: AccountId| -> Uuid {
+        worker
+            .read_connection()
+            .unwrap()
+            .query_row(
+                "SELECT ledger_account_id FROM accounts WHERE id = ?1",
+                [account.as_uuid()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let (loan_ledger, brokerage_ledger) = (ledger_of(loan), ledger_of(brokerage));
+    {
+        let guard = worker.lock();
+        let transaction_id = Uuid::now_v7();
+        for (ledger_account, minor) in [(loan_ledger, 150_000_i64), (brokerage_ledger, -150_000)] {
+            guard
+                .conn
+                .execute(
+                    "INSERT INTO ledger_postings
+                        (transaction_id, ledger_account_id, minor_units, currency, currency_exponent, posting_date)
+                     VALUES (?1, ?2, ?3, 'USD', 2, '2026-06-15')",
+                    rusqlite::params![transaction_id, ledger_account, minor],
+                )
+                .unwrap();
+        }
+        guard
+            .conn
+            .execute(
+                "INSERT INTO ledger_transactions (id, operation_id, occurred_at, currency)
+                 VALUES (?1, ?2, '2026-06-15T12:00:00+00:00', 'USD')",
+                rusqlite::params![transaction_id, Uuid::now_v7()],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        strength_for_a_bill_paid_from(&worker, brokerage),
+        Some(MatchStrength::Possible),
+        "the equal amount on the due day is possible, but the brokerage is not a funding account"
+    );
+}
