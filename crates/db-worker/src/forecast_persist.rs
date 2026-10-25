@@ -325,7 +325,7 @@ fn insert_row(
 fn canonical_recurring_events(conn: &Connection) -> Result<String, DbError> {
     let mut stmt = conn.prepare(
         "SELECT e.id, e.name, e.amount_expected_minor, e.currency, e.frequency,
-                e.next_expected_date, b.type
+                e.next_expected_date, b.type, e.linked_loan_account_id
          FROM recurring_events e
          LEFT JOIN bill_contracts b ON b.recurring_event_id = e.id
          WHERE e.include_in_forecast = 1 AND e.is_active = 1 AND e.deleted_at IS NULL
@@ -341,8 +341,18 @@ fn canonical_recurring_events(conn: &Connection) -> Result<String, DbError> {
         let frequency = json_str(&r.get::<_, String>(4)?);
         let anchor = json_opt(r.get::<_, Option<String>>(5)?.as_deref());
         let bill_type = json_opt(r.get::<_, Option<String>>(6)?.as_deref());
+        // The bill-to-loan link (personal-cfo-6wk.22) changes the forecast, so a snapshot must
+        // carry it. It is written ONLY when set: every unlinked bill serializes exactly as before,
+        // so no existing snapshot content (or hash) changes.
+        let link = match r.get::<_, Option<Uuid>>(7)? {
+            Some(loan) => format!(
+                ",\"linked_loan_account_id\":{}",
+                json_str(&loan.to_string())
+            ),
+            None => String::new(),
+        };
         items.push(format!(
-            "{{\"id\":{id},\"name\":{name},\"amount_expected_minor\":{amount},\"currency\":{currency},\"frequency\":{frequency},\"next_expected_date\":{anchor},\"bill_type\":{bill_type}}}"
+            "{{\"id\":{id},\"name\":{name},\"amount_expected_minor\":{amount},\"currency\":{currency},\"frequency\":{frequency},\"next_expected_date\":{anchor},\"bill_type\":{bill_type}{link}}}"
         ));
     }
     Ok(format!("[{}]", items.join(",")))

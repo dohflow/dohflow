@@ -107,6 +107,8 @@ function bill(over: Partial<RecurringBillDto> = {}): RecurringBillDto {
     archived_at: null,
     category_id: null,
     tag_ids: [],
+    loan_link: null,
+    not_loan_payment: null,
     ...over,
   };
 }

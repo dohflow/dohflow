@@ -1898,6 +1898,47 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // A recurring bill may be LINKED to the loan it pays, and the user may say a bill is NOT a
+    // given loan's payment (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25). Both are user
+    // data on `recurring_events` (a class-1 synced table), set only through the Link /
+    // Unlink / SetBillNotLoanPayment commands, never by a raw write.
+    //   * `linked_loan_account_id`: the `loan_liability` account whose payment this bill is. While
+    //     the link is in force the forecast counts this bill's cash and suppresses that loan's own
+    //     due-date row. Cleared in the same command when the bill is archived or deleted, or when the
+    //     loan is archived, so a link only ever sits on an active bill and a live loan.
+    //   * `not_payment_of_loan_account_id`: the loan the user said this bill is NOT the payment of ("No, it's a
+    //     different bill"); the overlap detector skips that pair.
+    // Like `autopay_account_id`, both are plain BLOBs with no foreign key (an account is archived,
+    // never removed, and a dangling reference is resolved by a deterministic rule, not rejected).
+    // NULL is "not linked / no answer", so every existing row is unaffected.
+    Migration {
+        version: 59,
+        name: "bill_loan_link",
+        up: "ALTER TABLE recurring_events ADD COLUMN linked_loan_account_id BLOB;
+             ALTER TABLE recurring_events ADD COLUMN not_payment_of_loan_account_id BLOB;",
+        // Reverse: dropping the columns would quietly forget the user's links and answers, so the
+        // down REFUSES while any is set, on a live bill or a deleted one (a deleted bill keeps its
+        // "not this loan's payment" answer): the guard insert violates its CHECK and the migration's
+        // transaction rolls back, temp table included, as 57's down does for tombstones. Unlink
+        // and clear them, then roll back.
+        down: Some(
+            "CREATE TEMP TABLE bill_loan_link_down_guard (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO bill_loan_link_down_guard
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM recurring_events
+                                           WHERE deleted_at IS NULL
+                                             AND (linked_loan_account_id IS NOT NULL
+                                                  OR not_payment_of_loan_account_id IS NOT NULL))
+                               OR EXISTS (SELECT 1 FROM recurring_events
+                                           WHERE deleted_at IS NOT NULL
+                                             AND not_payment_of_loan_account_id IS NOT NULL)
+                        THEN 0 ELSE 1 END;
+             DROP TABLE bill_loan_link_down_guard;
+             ALTER TABLE recurring_events DROP COLUMN not_payment_of_loan_account_id;
+             ALTER TABLE recurring_events DROP COLUMN linked_loan_account_id;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 const fn max_version() -> i64 {
