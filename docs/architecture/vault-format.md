@@ -1154,6 +1154,24 @@ position, the command and the sealing device. It is neither a fork nor a retryab
 position is identified by `(seq, canonical_envelope_digest)`: the same position with a different
 digest is a fork of the log (`ProtocolFork`).
 
+**When an envelope is *found invalid*.** The void rules (ADR 0074 Addendum D) depend on a
+replica's own verdict, so the verdict must be the same everywhere. A replica finds the envelope at
+position `N` invalid only when it holds the evidence for it: it has a **verified key** for the
+header's `key_epoch` (the key matched that epoch's verified `key_commitment_ke`), the chain it has
+verified places the header's device among the members of that epoch (C.7 gives the epoch in force
+at `N`), and then any of these holds: the container or header does not parse; the ciphertext does
+not open under the key derived for that epoch, vault and device (a flipped ciphertext or tag byte,
+a truncated ciphertext); the opened plaintext does not decode; or a receiver check of this section
+fails. Equally invalid, once the chain is verified through that epoch: a `key_epoch` that is not
+the epoch in force at `N`, and a device that is not a member of the epoch it claims. **Never
+invalid**: a replica without a verified key for that epoch, whose chain is behind (the epoch or
+membership record is not yet verified), or that cannot construct the key is in a local or
+retryable state and keeps waiting. If those states counted, a replica with a missing key would
+honor a void for a valid envelope that every other replica applied, and the vault would split.
+Decode failures count as invalid: a plaintext that does not decode after a successful open is a
+producer fault, and a header that does not parse at an accepted position means the service let
+through what its own checks should have refused; both are deterministic from the bytes.
+
 ### Counter register and nonce state
 
 Each device owns a durable `next_counter` for every
@@ -1864,7 +1882,13 @@ tag the receiver's own tagger returns for the plaintext's key (an input, because
 not in the file), and the expected outcome, which is `ok`, `MalformedHeader` or
 `MalformedPlaintext` (the bytes do not decode), or the name of the **first** failing check in the
 order `NotAnEnvelope`, `ObjectIdMismatch`, `DeviceMismatch`, `TagMismatch`,
-`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`. Valid cases
+`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`. What is
+normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
+failures included); the specific error is normative for every single-defect case and informative
+(the reference order) for the multi-defect cases, where another implementation must agree the
+envelope is invalid but may report a different first error. The tagger answer in each case is
+`HMAC-SHA256` under the sample tag key over the label and the plaintext's canonical 16-byte
+idempotency key, so an implementation that tags the wrong input fails a vector. Valid cases
 (including empty and non-empty delta manifests), one or more single-defect cases for every check,
 decode failures (truncation, trailing bytes, unknown actor types, a non-v4 idempotency key) and
 multi-defect cases that pin the order are included. Because the void rules of ADR 0074

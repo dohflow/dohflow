@@ -49,17 +49,35 @@ fn spec_vector(name: &str) -> Vec<u8> {
     unhex(SPEC[start..].split(" -->").next().unwrap())
 }
 
-/// The tag oracle of the vectors. It stands in for the receiver's HMAC under the vault's tag
-/// secret: the spec's tag for the spec's key, and a fixed other value for any other key. Each case
-/// carries the oracle's answer for its own plaintext's key, so no implementation needs the secret.
-fn oracle(key: &IdempotencyKey, spec_key: &IdempotencyKey, spec_tag: [u8; 32]) -> [u8; 32] {
-    if key == spec_key {
-        spec_tag
-    } else {
-        let mut input = b"dohflow/test-vector-tag/v1".to_vec();
-        input.extend_from_slice(key.as_bytes());
-        Sha256::digest(&input).into()
+/// HMAC-SHA256 (RFC 2104), written out so these tests need no further dependency.
+fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> [u8; 32] {
+    let mut inner_pad = [0x36_u8; 64];
+    let mut outer_pad = [0x5c_u8; 64];
+    for (i, byte) in key.iter().enumerate() {
+        inner_pad[i] ^= byte;
+        outer_pad[i] ^= byte;
     }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(message);
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
+/// What the receiver's tagger returns for a key: `HMAC-SHA256(tag_key, label ‖ canonical 16-byte
+/// idempotency key)` with the C.14 sample tag key (C.3). The file carries the answer for each
+/// case's own plaintext key, so no implementation needs the tag secret, and an implementation that
+/// tags the wrong input (the key's text form, the command id) fails a vector instead of passing
+/// with a correct HMAC wired up wrongly.
+fn oracle(key: &IdempotencyKey) -> [u8; 32] {
+    let tag_key: [u8; 32] = spec_vector("idempotency_tag_key").try_into().unwrap();
+    let label = b"dohflow/sync-idem-tag/v1";
+    let mut message = (label.len() as u16).to_be_bytes().to_vec();
+    message.extend_from_slice(label);
+    message.extend_from_slice(key.as_bytes());
+    hmac_sha256(&tag_key, &message)
 }
 
 struct Base {
@@ -138,8 +156,8 @@ fn case(
     expect: &'static str,
     parts: (ClearHeader, EnvelopePlaintext),
 ) -> Case {
-    let spec_key = b.plaintext.meta.idempotency_key;
-    let tag = oracle(&parts.1.meta.idempotency_key, &spec_key, b.spec_tag);
+    let _ = b;
+    let tag = oracle(&parts.1.meta.idempotency_key);
     Case {
         name,
         description,
@@ -562,6 +580,7 @@ fn document() -> Value {
                 "name": case.name,
                 "description": case.description,
                 "multi_defect": case.multi_defect,
+                "error_normative": !case.multi_defect,
                 "header": hex(&case.header),
                 "plaintext": hex(&case.plaintext),
                 "tagger_output": hex(&case.tag),
@@ -573,9 +592,9 @@ fn document() -> Value {
         "vectors_version": 1,
         "spec": "docs/architecture/vault-format.md C.4 \"Receiver checks\" and C.14",
         "synthetic": "Every case is built from the public C.14 sample envelope. No key, secret or real value is in this file.",
-        "how_to_read": "Each case gives a clear header and an envelope plaintext (hex of their canonical bytes), 'tagger_output' (the idempotency-key tag that the receiver's own tagger returns for the plaintext's key: an input, because the tag secret is not in this file), and 'expect'. An implementation decodes the header, then the plaintext; if either does not decode the outcome is 'MalformedHeader' or 'MalformedPlaintext'. Otherwise it runs the receiver checks in the order below and the outcome is 'ok' or the name of the first failing check. Implementations must agree on exactly this outcome; their internal error names are not part of the contract.",
+        "how_to_read": "Each case gives a clear header and an envelope plaintext (hex of their canonical bytes), 'tagger_output' (the idempotency-key tag that the receiver's own tagger returns for the plaintext's key: an input, because the tag secret is not in this file), and 'expect'. An implementation decodes the header, then the plaintext; if either does not decode the outcome is 'MalformedHeader' or 'MalformedPlaintext'. Otherwise it runs the receiver checks in the order below and the outcome is 'ok' or the name of the first failing check. Every outcome other than 'ok' means the envelope is INVALID, and that class is the contract: a decode failure counts (a MalformedPlaintext after a successful open is a producer fault; a MalformedHeader at an accepted position means the service let through what its own checks should have refused; both are deterministic from the bytes and voidable). For a case with 'error_normative' true the specific outcome is also normative; for a multi-defect case it is informative (the reference order): a second implementation must agree the envelope is invalid but may report a different first error. Internal error names are never part of the contract. 'tagger_output' is HMAC-SHA256 under the C.14 sample tag key over the CBE1 label 'dohflow/sync-idem-tag/v1' and the plaintext's canonical 16-byte idempotency key.",
         "check_order": ["NotAnEnvelope", "ObjectIdMismatch", "DeviceMismatch", "TagMismatch", "MetadataCommitmentMismatch", "NonceDomainMismatch", "ManifestCommitmentMismatch"],
-        "single_defect": "A case with 'multi_defect' false has exactly one defect. A case with 'multi_defect' true has several and pins the order of check_order.",
+        "single_defect": "A case with 'multi_defect' false has exactly one defect and its error is normative. A case with 'multi_defect' true has several: it documents the reference order of check_order, and its error is informative.",
         "not_checked_here": "The checks that need the membership chain or the AEAD key (the sealing device belongs to a member of the object's epoch; the AEAD key was derived from the expected vault, epoch and chain fingerprint) are the caller's, as in C.4, and are not in this file.",
         "unreachable_from_bytes": [
             {
@@ -606,6 +625,22 @@ fn the_committed_vectors_are_what_the_generator_produces() {
         "the vectors file drifted from the generator; regenerate with DOHFLOW_UPDATE_VECTORS=1 \
          (a spec change under C.13)"
     );
+}
+
+#[test]
+fn the_tagger_output_is_the_hmac_of_the_plaintexts_canonical_key() {
+    // The oracle reproduces the C.14 idempotency_tag for the sample key, so the file's answers are
+    // real HMAC outputs and a second implementation tagging the wrong input fails a vector.
+    let b = base();
+    assert_eq!(oracle(&b.plaintext.meta.idempotency_key), b.spec_tag);
+    let doc: Value = serde_json::from_str(VECTORS).unwrap();
+    let sample = doc["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "valid_spec_envelope")
+        .unwrap();
+    assert_eq!(sample["tagger_output"].as_str().unwrap(), hex(&b.spec_tag));
 }
 
 #[test]
