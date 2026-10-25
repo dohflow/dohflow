@@ -13,9 +13,9 @@ import {
 import { Loader2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { addNotice, EMPTY_STACK, removeNotice, type NoticeStack } from "@/components/ui/notice-stack";
 import { cn } from "@/lib/utils";
 import {
-  MAX_NOTICES,
   NOTICE_DURATION_MS,
   NoticeContext,
   NoticeStateContext,
@@ -29,25 +29,26 @@ import {
 /// Owns the transient notices (docs/agent/FRONTEND.md section 6.2). Mounted once, by the shell, so
 /// a pending Undo survives leaving the screen the removal happened on.
 export function NoticeProvider({ children }: { children: ReactNode }) {
-  const [notices, setNotices] = useState<ActiveNotice[]>([]);
+  const [stack, setStack] = useState<NoticeStack>(EMPTY_STACK);
   const nextKey = useRef(0);
 
   const notify = useCallback((input: NoticeInput) => {
     nextKey.current += 1;
     const key = nextKey.current;
-    // Newest last; a fourth closes the oldest early.
-    setNotices((previous) => [...previous, { ...input, key }].slice(-MAX_NOTICES));
+    // Newest last; when full, the oldest Undo notice makes room and an error is never evicted.
+    setStack((previous) => addNotice(previous, { ...input, key }));
   }, []);
   const notifyError = useCallback((message: string) => {
     nextKey.current += 1;
     const key = nextKey.current;
-    setNotices((previous) => [...previous, { message, key }].slice(-MAX_NOTICES));
+    setStack((previous) => addNotice(previous, { message, key }));
   }, []);
   const dismiss = useCallback((key: number) => {
-    setNotices((previous) => previous.filter((notice) => notice.key !== key));
+    setStack((previous) => removeNotice(previous, key));
   }, []);
 
   const api = useMemo<NoticeApi>(() => ({ notify, notifyError }), [notify, notifyError]);
+  const notices = stack.shown;
   const state = useMemo<NoticeState>(() => ({ notices, dismiss }), [notices, dismiss]);
 
   return (

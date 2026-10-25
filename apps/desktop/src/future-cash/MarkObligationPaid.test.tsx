@@ -1,10 +1,11 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { AccountViewDto, ForecastEventDto } from "@/bindings";
 import { MarkObligationPaid } from "./MarkObligationPaid";
-import { MarkObligationUndoProvider } from "./markObligationUndo";
 
 const mocks = vi.hoisted(() => ({
   accountList: vi.fn(),
@@ -71,38 +72,110 @@ test("marks a bill occurrence paid with the event amount + a liquid account", as
   expect(input.actual_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 });
 
-test("publishes the confirmed occurrence so the view can offer Undo", async () => {
-  const publish = vi.fn();
-  renderWithClient(
-    <MarkObligationUndoProvider value={publish}>
-      <MarkObligationPaid event={event()} scheduledDate="2026-07-20" />
-    </MarkObligationUndoProvider>,
-  );
+// The Undo of a mark-paid lives in a shell notice (docs/agent/FRONTEND.md section 6.2,
+// personal-cfo-4d8.32), because the row leaves the forecast on success.
+async function markPaid() {
   fireEvent.click(await screen.findByRole("button", { name: /mark paid/i }));
   fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
-  await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
-  expect(publish).toHaveBeenCalledWith({
-    eventId: "evt-rent",
-    scheduledDate: "2026-07-20",
-    name: "Rent",
+}
+const notifications = () => screen.findByRole("region", { name: "Notifications" });
+
+test("marking paid shows a notice, and Undo reverses exactly that occurrence", async () => {
+  mocks.unconfirmObligation.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+  renderWithClient(<MarkObligationPaid event={event()} scheduledDate="2026-07-20" />);
+  await markPaid();
+
+  const region = await notifications();
+  expect(await within(region).findByText("Marked Rent paid.")).toBeInTheDocument();
+  fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(mocks.unconfirmObligation).toHaveBeenCalledTimes(1));
+  expect(mocks.unconfirmObligation.mock.calls[0]?.[0]).toMatchObject({
+    recurring_event_id: "evt-rent",
+    scheduled_date: "2026-07-20",
+    idempotency_key: expect.stringMatching(/.+/),
   });
+  // A successful Undo closes the notice.
+  await waitFor(() =>
+    expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull(),
+  );
 });
 
-test("does not publish (no Undo) when the confirm fails", async () => {
+test("a failed Undo keeps the notice and its Undo, with its own alert, not inside the status", async () => {
+  mocks.unconfirmObligation.mockResolvedValue({
+    status: "error",
+    error: { Validation: "nothing to undo" },
+  });
+  renderWithClient(<MarkObligationPaid event={event()} scheduledDate="2026-07-20" />);
+  await markPaid();
+
+  const region = await notifications();
+  await within(region).findByText("Marked Rent paid.");
+  fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
+  const alert = await within(region).findByRole("alert");
+  expect(alert).toHaveTextContent("Couldn't undo — try again.");
+  // The error is not inside the live status region (the a11y issue this migration removes).
+  expect(within(region).getByRole("status")).not.toContainElement(alert);
+  expect(within(region).getByRole("button", { name: "Undo" })).toBeEnabled();
+});
+
+test("the Undo still works after the row that marked it has gone", async () => {
+  mocks.unconfirmObligation.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+  function Host() {
+    const [shown, setShown] = useState(true);
+    return (
+      <>
+        {shown && <MarkObligationPaid event={event()} scheduledDate="2026-07-20" />}
+        <button onClick={() => setShown(false)}>forecast refreshed</button>
+      </>
+    );
+  }
+  renderWithClient(<Host />);
+  await markPaid();
+  const region = await notifications();
+  await within(region).findByText("Marked Rent paid.");
+
+  // The occurrence leaves the forecast, so its row unmounts; the notice belongs to the shell.
+  fireEvent.click(screen.getByRole("button", { name: "forecast refreshed" }));
+  expect(screen.queryByRole("button", { name: /mark paid/i })).toBeNull();
+  fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(mocks.unconfirmObligation).toHaveBeenCalledTimes(1));
+});
+
+test("a successful Undo refreshes the forecast, so the occurrence comes back", async () => {
+  mocks.unconfirmObligation.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+  const fetches = vi.fn(async () => "forecast");
+  function Forecast() {
+    useQuery({ queryKey: ["forecast", "test"], queryFn: fetches });
+    return <MarkObligationPaid event={event()} scheduledDate="2026-07-20" />;
+  }
+  renderWithClient(<Forecast />);
+  await markPaid();
+  const region = await notifications();
+  await within(region).findByText("Marked Rent paid.");
+  // Marking paid refreshed it; wait for that to settle, then count.
+  await waitFor(() => expect(fetches.mock.calls.length).toBeGreaterThanOrEqual(2));
+  const before = fetches.mock.calls.length;
+  fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(fetches.mock.calls.length).toBeGreaterThan(before));
+});
+
+test("no notice (and no Undo) when the confirm fails", async () => {
   mocks.confirmObligationEarly.mockResolvedValue({
     status: "error",
     error: { kind: "validation", message: "this bill is paid via its card's payment" },
   });
-  const publish = vi.fn();
-  renderWithClient(
-    <MarkObligationUndoProvider value={publish}>
-      <MarkObligationPaid event={event()} scheduledDate="2026-07-20" />
-    </MarkObligationUndoProvider>,
-  );
-  fireEvent.click(await screen.findByRole("button", { name: /mark paid/i }));
-  fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+  renderWithClient(<MarkObligationPaid event={event()} scheduledDate="2026-07-20" />);
+  await markPaid();
   await waitFor(() => expect(mocks.confirmObligationEarly).toHaveBeenCalledTimes(1));
-  expect(publish).not.toHaveBeenCalled();
+  expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
+});
+
+test("a bill with no name reads 'Marked bill paid.'", async () => {
+  renderWithClient(
+    <MarkObligationPaid event={{ ...event(), name: "" }} scheduledDate="2026-07-20" />,
+  );
+  await markPaid();
+  expect(await screen.findByText("Marked bill paid.")).toBeInTheDocument();
 });
 
 test("allows a $0 amount — nothing due this cycle", async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import type { ForecastDayDto } from "@/bindings";
@@ -15,7 +15,6 @@ import {
   formatSignedMoney,
   signedAmountClass,
 } from "@/lib/format";
-import { mintIdempotencyKey } from "@/lib/idempotency";
 import { cn } from "@/lib/utils";
 import { classifyCashFlow } from "./cashFlowState";
 import { MultiSeriesChart } from "./MultiSeriesChart";
@@ -26,12 +25,6 @@ import { CoverItNotice } from "./CoverItNotice";
 import { NeedsConfirmation } from "./NeedsConfirmation";
 import { ProjectedActivityTable } from "./ProjectedActivityTable";
 import { FutureCashEntries } from "./FutureCashEntries";
-import { MarkedPaidUndoBar } from "./MarkedPaidUndoBar";
-import {
-  MarkObligationUndoProvider,
-  type ConfirmedObligation,
-} from "./markObligationUndo";
-import { useMarkObligation } from "./useMarkObligation";
 import { useCashFlowHistory } from "@/accounts/useCashFlowHistory";
 import { useComfortBand } from "@/dashboard/useComfortBand";
 import { LoanDoubleCountWarning } from "@/accounts/LoanDoubleCountWarning";
@@ -107,37 +100,6 @@ export function FutureCashView({
       ? { lower: band.lower.minor_units, upper: band.upper?.minor_units ?? null }
       : null;
 
-  // A just-marked-paid occurrence leaves the forecast, so its Undo surfaces here as a
-  // view-level bar (personal-cfo-5ie.9). Auto-clears after a short window.
-  const { unconfirm } = useMarkObligation();
-  const [justPaid, setJustPaid] = useState<ConfirmedObligation | null>(null);
-  const [undoError, setUndoError] = useState<string | null>(null);
-  const publishConfirmed = useCallback((info: ConfirmedObligation) => {
-    setUndoError(null);
-    setJustPaid(info);
-  }, []);
-  // Auto-clear a successful confirm after a short window — but NOT while an undo is in flight or
-  // an undo error is showing, so a slow/failed undo can't have the bar (and its error/retry)
-  // vanish out from under it (5ie.9 review).
-  useEffect(() => {
-    if (!justPaid || undoError || unconfirm.isPending) return undefined;
-    const timer = setTimeout(() => setJustPaid(null), 12_000);
-    return () => clearTimeout(timer);
-  }, [justPaid, undoError, unconfirm.isPending]);
-  async function undoJustPaid() {
-    if (!justPaid) return;
-    const result = await unconfirm.mutateAsync({
-      recurring_event_id: justPaid.eventId,
-      scheduled_date: justPaid.scheduledDate,
-      idempotency_key: mintIdempotencyKey(),
-    });
-    if (result.status === "ok") {
-      setJustPaid(null);
-    } else {
-      setUndoError("Couldn't undo — try again.");
-    }
-  }
-
   if (error) {
     return (
       <div className="mx-auto w-full max-w-5xl">
@@ -203,22 +165,12 @@ export function FutureCashView({
       : null;
 
   return (
-    <MarkObligationUndoProvider value={publishConfirmed}>
+    <>
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
         <div className="flex items-center justify-between gap-4">
           <h2 className="text-xl font-semibold tracking-tight">Cash Flow</h2>
           <HorizonPicker value={horizon} onChange={setHorizon} />
         </div>
-
-        {justPaid && (
-          <MarkedPaidUndoBar
-            name={justPaid.name}
-            onUndo={() => void undoJustPaid()}
-            onDismiss={() => setJustPaid(null)}
-            pending={unconfirm.isPending}
-            error={undoError}
-          />
-        )}
 
         {/* A loan whose payment is also a recurring bill is counted twice here (6wk.20). */}
         <LoanDoubleCountWarning />
@@ -365,7 +317,7 @@ export function FutureCashView({
           </CardContent>
         </Card>
       </div>
-    </MarkObligationUndoProvider>
+    </>
   );
 }
 
