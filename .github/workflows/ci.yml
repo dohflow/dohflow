@@ -1388,6 +1388,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      actions: read # `gh run list` (is there a run for the tip?) is an Actions API read
     steps:
       - name: Open or update the ci-main-red issue
         env:
@@ -1404,7 +1405,8 @@ jobs:
           # this run alerts after all.
           tip="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
           if [ "$tip" != "$SHA" ]; then
-            tip_runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --commit "$tip" --json databaseId --jq length)"
+            # A failed lookup counts as "no run": alerting twice is better than not at all.
+            tip_runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --commit "$tip" --json databaseId --jq length 2>/dev/null || echo 0)"
             if [ "${tip_runs:-0}" -gt 0 ]; then
               echo "main has moved on from ${SHA:0:12} (tip is ${tip:0:12}, which has its own run): this run does not alert."
               exit 0
@@ -1430,7 +1432,7 @@ jobs:
   main-red-resolve:
     name: Close the main-red alert when main is green
     runs-on: ubuntu-24.04
-    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts]
+    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts, desktop-nondesktop-check]
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     permissions:
       contents: read
