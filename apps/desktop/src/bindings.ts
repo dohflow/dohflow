@@ -206,6 +206,9 @@ export const commands = {
 	unconfirmedPastDue: () => typedError<UnconfirmedOccurrenceDto[], IpcError>(__TAURI_INVOKE("unconfirmed_past_due")),
 	loanDoubleCountWarnings: () => typedError<LoanDoubleCountWarningDto[], IpcError>(__TAURI_INVOKE("loan_double_count_warnings")),
 	recurringCandidates: () => typedError<RecurringCandidateDto[], IpcError>(__TAURI_INVOKE("recurring_candidates")),
+	linkBillToLoan: (billId: string, loanAccountId: string, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("link_bill_to_loan", { billId, loanAccountId, idempotencyKey })),
+	unlinkBillFromLoan: (billId: string, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("unlink_bill_from_loan", { billId, idempotencyKey })),
+	setBillNotLoanPayment: (billId: string, loanAccountId: string | null, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_bill_not_loan_payment", { billId, loanAccountId, idempotencyKey })),
 	checkLoanOverlap: (input: CreateRecurringBillInput) => typedError<{
 	/**  The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`). */
 	loan_account_id: string,
@@ -626,6 +629,37 @@ export type BatchResultDto = {
 	 *  account (personal-cfo-tulv `account_map`). Not part of `skipped_rows`.
 	 */
 	skipped_unmapped: number,
+};
+
+/**
+ *  A bill's link to the loan it pays (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25). While
+ *  `in_force` the forecast counts the bill's cash once (the observed debit) and the loan's own
+ *  due-date row is not emitted.
+ */
+export type BillLoanLinkDto = {
+	/**  The loan account (plain UUID, matches `AccountViewDto.account_id`). */
+	loan_account_id: string,
+	loan_name: string,
+	/**  The loan's own payment is currently carried by this bill. */
+	in_force: boolean,
+	/**  The bill no longer repeats like the loan's payment, so BOTH now count. */
+	cadence_changed: boolean,
+	/**  The bill is below 95% of the loan's scheduled payment (the link stays; the user is warned). */
+	below_scheduled: boolean,
+	/**  The payment the forecast derives for the loan, when it projects a recurring one. */
+	scheduled_payment: MoneyDto | null,
+	/**
+	 *  The part of the bill beyond the scheduled payment (escrow, fees, extra principal), when the
+	 *  link is in force and the bill is larger.
+	 */
+	other: MoneyDto | null,
+};
+
+/**  The loan the user said a bill is NOT the payment of (personal-cfo-6wk.22). */
+export type BillNotLoanPaymentDto = {
+	/**  The loan account (plain UUID). */
+	loan_account_id: string,
+	loan_name: string,
 };
 
 /**
@@ -1857,7 +1891,18 @@ export type IpcError =
  *  The request failed domain or input validation (bad UUID, unknown
  *  currency, empty name, …). Safe to show the message to the user.
  */
-({ Validation: string }) & { Persistence?: never; Unavailable?: never } |
+({ Validation: string }) & { LoanAlreadyLinked?: never; Persistence?: never; Unavailable?: never } |
+/**
+ *  The loan already has a linked bill (personal-cfo-6wk.22), so a second link is refused.
+ *  Names the existing bill so the interface can offer to unlink it. The Display text is
+ *  fixed: bill names are user data and stay out of logs.
+ */
+({ LoanAlreadyLinked: {
+	/**  The bill that already carries the link (plain UUID). */
+	bill_id: string,
+	/**  That bill's display name. */
+	bill_name: string,
+} }) & { Persistence?: never; Unavailable?: never; Validation?: never } |
 /**
  *  No vault is open. The caller must open/unlock a vault first. This is the
  *  steady state of a locked app.
@@ -1884,7 +1929,7 @@ export type IpcError =
  *  The vault is open but not accepting writes (e.g. restoring a backup or
  *  awaiting recovery). Carries the worker state as a non-sensitive label.
  */
-({ Unavailable: string }) & { Persistence?: never; Validation?: never } |
+({ Unavailable: string }) & { LoanAlreadyLinked?: never; Persistence?: never; Validation?: never } |
 /**
  *  A key rotation needs more free disk space than is available (ADR 0083
  *  §5). Nothing was written; freeing space and retrying is safe.
@@ -1896,7 +1941,7 @@ export type IpcError =
  *  Any other persistence failure, flattened to a message so no database
  *  type is exposed.
  */
-({ Persistence: string }) & { Unavailable?: never; Validation?: never };
+({ Persistence: string }) & { LoanAlreadyLinked?: never; Unavailable?: never; Validation?: never };
 
 /**
  *  A suspected loan double-count (personal-cfo-6wk.11, widened by 6wk.20): a loan tracked as both a
@@ -2164,6 +2209,16 @@ export type RecurringBillDto = {
 	category_id: string | null,
 	/**  The bill's tag ids (UUID strings); empty when untagged (personal-cfo-4d8.24.5.1). */
 	tag_ids: string[],
+	/**
+	 *  The loan this bill is linked to as its payment, and how the link stands
+	 *  (personal-cfo-6wk.22); null when not linked.
+	 */
+	loan_link: BillLoanLinkDto | null,
+	/**
+	 *  The loan the user said this bill is NOT the payment of (personal-cfo-6wk.22); null when
+	 *  unanswered. Shown so it can be cleared from the bill's detail.
+	 */
+	not_loan_payment: BillNotLoanPaymentDto | null,
 };
 
 /**

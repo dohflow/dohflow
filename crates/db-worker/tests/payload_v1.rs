@@ -312,6 +312,26 @@ fn samples() -> Vec<(&'static str, WriteCommand)> {
             WriteCommand::RestoreRecurringBill(event(14)),
         ),
         (
+            "link_bill_to_loan",
+            WriteCommand::LinkBillToLoan {
+                event_id: event(14),
+                loan_account_id: account(1),
+            },
+        ),
+        (
+            "unlink_bill_from_loan",
+            WriteCommand::UnlinkBillFromLoan {
+                event_id: event(14),
+            },
+        ),
+        (
+            "set_bill_not_loan_payment",
+            WriteCommand::SetBillNotLoanPayment {
+                event_id: event(14),
+                loan_account_id: Some(account(1)),
+            },
+        ),
+        (
             "create_source_batch",
             WriteCommand::CreateSourceBatch {
                 id: SourceBatchId::from_uuid(u(19)),
@@ -549,7 +569,7 @@ fn every_write_command_variant_has_exactly_one_sample() {
     expected.sort();
     let mut actual: Vec<String> = samples().iter().map(|(n, _)| (*n).to_owned()).collect();
     actual.sort();
-    assert_eq!(expected.len(), 53, "the enum has 53 variants");
+    assert_eq!(expected.len(), 56, "the enum has 56 variants");
     assert_eq!(
         actual, expected,
         "a variant without a sample, or a sample without a variant"
@@ -800,8 +820,11 @@ fn fixture_digest(files: &[(String, Vec<u8>)]) -> String {
 /// existing payload's shape, so while no released app writes version 2 payloads it re-pins
 /// this digest without a version bump (planning's call, 2026-10-19). The three `Reinstate*`
 /// variants of personal-cfo-egn67 did that: the 50 existing fixtures are byte-identical and
-/// three files were added.
-const PAYLOAD_V1_DIGEST: &str = "e5c78dbea7f84b378c48628607fa1cd459e8ac80b1b1b1068a3802da6d9cd87c";
+/// three files were added. So did `LinkBillToLoan`, `UnlinkBillFromLoan` and
+/// `SetBillNotLoanPayment` of personal-cfo-6wk.22: the 53 existing fixtures are byte-identical
+/// and three files were added (planning's rule: new additive v1 payloads, no field added to any
+/// existing payload).
+const PAYLOAD_V1_DIGEST: &str = "3a8f00be27e2936616a18fc4db854cc2bf3c542b4c85d506308f832120e7525f";
 
 #[test]
 fn the_frozen_version_1_fixtures_match_the_samples_and_the_pinned_digest() {
@@ -872,7 +895,7 @@ fn every_frozen_fixture_decodes_under_its_version() {
             count += 1;
         }
         assert_eq!(
-            count, 53,
+            count, 56,
             "version {version} has a fixture for every variant"
         );
     }
@@ -929,4 +952,22 @@ fn scan(dir: &Path, hits: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// The "clear" form of `SetBillNotLoanPayment` (`None`) cannot be a second sample (the suite wants
+/// exactly one per variant), so it round-trips here: it must encode to a payload that decodes back
+/// to the same command and is not the "remember" payload.
+#[test]
+fn the_clear_form_of_set_bill_not_loan_payment_round_trips() {
+    let clear = WriteCommand::SetBillNotLoanPayment {
+        event_id: event(14),
+        loan_account_id: None,
+    };
+    let bytes = encode_payload(&clear).unwrap();
+    assert!(same_value(&decode_payload(1, &bytes).unwrap(), &clear));
+    let remember = WriteCommand::SetBillNotLoanPayment {
+        event_id: event(14),
+        loan_account_id: Some(account(1)),
+    };
+    assert_ne!(bytes, encode_payload(&remember).unwrap());
 }

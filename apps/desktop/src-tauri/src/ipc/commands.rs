@@ -17,16 +17,17 @@ use finance_kernel::{
     ConfirmObligationEarly, ConvertUnexplainedToTransaction, CreateAccount, CreateCategory,
     CreateIncomeSource, CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag,
     DeleteIncomeSource, DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem,
-    DismissRecurringSuggestion, Kernel, LoanOverlapDraft, MarkReviewed, Money, MoveCategory,
-    NewScenario, ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, RecurringEventId,
-    RecurringTransferId, ReinstateAccount, ReinstateCategory, ReinstateIncomeSource,
-    ReinstateRecurringBill, ReinstateRecurringTransfer, RestoreIncomeSource, RestoreRecurringBill,
-    RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype,
-    SetBillAutopay, SetCardStatementBalance, SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged,
-    SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters, SystemClock, TagId,
-    TransactionId, UnconfirmObligation, UpdateAccount, UpdateBatchState, UpdateCategory,
-    UpdateIncomeSource, UpdateRecurringBill, VaultController, VaultState, VoidTransaction,
-    COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
+    DismissRecurringSuggestion, Kernel, LinkBillToLoan, LoanOverlapDraft, MarkReviewed, Money,
+    MoveCategory, NewScenario, ParserHints, ParserInput, ParserLimits, RecategorizeTransaction,
+    RecurringEventId, RecurringTransferId, ReinstateAccount, ReinstateCategory,
+    ReinstateIncomeSource, ReinstateRecurringBill, ReinstateRecurringTransfer, RestoreIncomeSource,
+    RestoreRecurringBill, RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote,
+    SetAccountSubtype, SetBillAutopay, SetBillNotLoanPayment, SetCardStatementBalance,
+    SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged, SnoozeInboxItem, SourceBatchId,
+    SourceRecordId, SpendFilters, SystemClock, TagId, TransactionId, UnconfirmObligation,
+    UnlinkBillFromLoan, UpdateAccount, UpdateBatchState, UpdateCategory, UpdateIncomeSource,
+    UpdateRecurringBill, VaultController, VaultState, VoidTransaction, COMFORT_BAND_UPPER_KEY,
+    MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 use uuid::Uuid;
@@ -123,6 +124,7 @@ pub(crate) fn with_kernel<T>(
 fn ipc_error_code(error: &IpcError) -> &'static str {
     match error {
         IpcError::Validation(_) => "validation",
+        IpcError::LoanAlreadyLinked { .. } => "loan_already_linked",
         IpcError::VaultLocked => "vault_locked",
         IpcError::VaultUnlockFailed => "vault_unlock_failed",
         IpcError::NewerVaultSchema => "newer_vault_schema",
@@ -3213,6 +3215,98 @@ pub fn check_loan_overlap(
     input: CreateRecurringBillInput,
 ) -> Result<Option<LoanOverlapMatchDto>, IpcError> {
     check_loan_overlap_impl(state.inner(), input)
+}
+
+// ---- bill <-> loan link (personal-cfo-6wk.22) ------------------------------
+
+/// Link a recurring bill to the loan it pays, so the forecast counts the obligation once
+/// (ADR 0035 addendum 2026-10-25). The user's explicit action; refused if the loan already has a
+/// linked bill, is archived, is paid in full once, or is in another currency.
+pub fn link_bill_to_loan_impl(
+    state: &AppState,
+    bill_id: String,
+    loan_account_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    with_kernel(state, |kernel| {
+        let bill = parse_recurring_event_id(&bill_id)?;
+        let loan = parse_account_id(&loan_account_id)?;
+        let outcome = kernel.dispatch(CommandEnvelope::new(
+            user_meta(&idempotency_key),
+            LinkBillToLoan::new(bill, loan),
+        ))?;
+        Ok(outcome.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn link_bill_to_loan(
+    state: tauri::State<'_, AppState>,
+    bill_id: String,
+    loan_account_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    link_bill_to_loan_impl(state.inner(), bill_id, loan_account_id, idempotency_key)
+}
+
+/// Remove a bill's link to its loan: the loan's own due-date row returns to the forecast.
+pub fn unlink_bill_from_loan_impl(
+    state: &AppState,
+    bill_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    with_kernel(state, |kernel| {
+        let bill = parse_recurring_event_id(&bill_id)?;
+        let outcome = kernel.dispatch(CommandEnvelope::new(
+            user_meta(&idempotency_key),
+            UnlinkBillFromLoan::new(bill),
+        ))?;
+        Ok(outcome.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn unlink_bill_from_loan(
+    state: tauri::State<'_, AppState>,
+    bill_id: String,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    unlink_bill_from_loan_impl(state.inner(), bill_id, idempotency_key)
+}
+
+/// Remember that a bill is NOT a given loan's payment ("No, it's a different bill"), or forget it
+/// (`loan_account_id` null). The overlap warning then skips that bill for that loan.
+pub fn set_bill_not_loan_payment_impl(
+    state: &AppState,
+    bill_id: String,
+    loan_account_id: Option<String>,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    with_kernel(state, |kernel| {
+        let bill = parse_recurring_event_id(&bill_id)?;
+        let loan = loan_account_id
+            .as_deref()
+            .map(parse_account_id)
+            .transpose()?;
+        let outcome = kernel.dispatch(CommandEnvelope::new(
+            user_meta(&idempotency_key),
+            SetBillNotLoanPayment::new(bill, loan),
+        ))?;
+        Ok(outcome.into())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_bill_not_loan_payment(
+    state: tauri::State<'_, AppState>,
+    bill_id: String,
+    loan_account_id: Option<String>,
+    idempotency_key: String,
+) -> Result<MutationResult, IpcError> {
+    set_bill_not_loan_payment_impl(state.inner(), bill_id, loan_account_id, idempotency_key)
 }
 
 // ---- recurring_bill_history (personal-cfo-4d8.25.8) ------------------------

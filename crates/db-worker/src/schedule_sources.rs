@@ -47,6 +47,12 @@ pub(crate) struct ScheduleSource {
     /// The obligation's pay-from account (`recurring_events.autopay_account_id`), when
     /// set — the instance-linking account gate (ADR 0047 §1). Always `None` for income.
     pub autopay_account_id: Option<Uuid>,
+    /// The loan this obligation is linked to as its payment (`recurring_events.
+    /// linked_loan_account_id`, personal-cfo-6wk.22). Always `None` for income.
+    pub linked_loan_account_id: Option<Uuid>,
+    /// The loan the user said this obligation is NOT the payment of
+    /// (`recurring_events.not_payment_of_loan_account_id`). Always `None` for income.
+    pub not_payment_of_loan_account_id: Option<Uuid>,
 }
 
 /// Every active income source (inflows). Mirrors the forecast's income query so the
@@ -73,6 +79,8 @@ pub(crate) fn active_income_schedules(conn: &Connection) -> Result<Vec<ScheduleS
                 bill_type: None,
                 kind: ScheduleKind::Income,
                 autopay_account_id: None,
+                linked_loan_account_id: None,
+                not_payment_of_loan_account_id: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -89,7 +97,8 @@ pub(crate) fn active_obligation_schedules(
 ) -> Result<Vec<ScheduleSource>, DbError> {
     let mut stmt = conn.prepare(
         "SELECT e.id, e.name, e.amount_expected_minor, e.currency, e.frequency,
-                e.next_expected_date, b.type, e.autopay_account_id
+                e.next_expected_date, b.type, e.autopay_account_id,
+                e.linked_loan_account_id, e.not_payment_of_loan_account_id
          FROM recurring_events e
          LEFT JOIN bill_contracts b ON b.recurring_event_id = e.id
          WHERE e.include_in_forecast = 1 AND e.is_active = 1 AND e.deleted_at IS NULL
@@ -107,6 +116,8 @@ pub(crate) fn active_obligation_schedules(
                 bill_type: r.get::<_, Option<String>>(6)?,
                 kind: ScheduleKind::Obligation,
                 autopay_account_id: r.get::<_, Option<Uuid>>(7)?,
+                linked_loan_account_id: r.get::<_, Option<Uuid>>(8)?,
+                not_payment_of_loan_account_id: r.get::<_, Option<Uuid>>(9)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

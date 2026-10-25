@@ -325,6 +325,14 @@ pub(crate) fn detect_loan_double_counts(
     for (emitting, paired) in &context.loans {
         let loan = &emitting.terms;
         for bill in &bills {
+            // Resolved or answered (personal-cfo-6wk.22): a bill that is LINKED to a loan is that
+            // loan's payment and the forecast already counts it once, so it is no overlap with any
+            // loan; and a bill the user said is NOT this loan's payment is skipped for this loan.
+            if bill.linked_loan_account_id.is_some()
+                || bill.not_payment_of_loan_account_id == Some(loan.account_id)
+            {
+                continue;
+            }
             let like = BillLike {
                 name: bill.name.clone(),
                 merchant_key: merchant_keys.get(&bill.id).cloned(),

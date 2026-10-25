@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   createIncomeSource: vi.fn(),
   updateIncomeSource: vi.fn(),
   deleteIncomeSource: vi.fn(),
+  reinstateIncomeSource: vi.fn(),
   archiveIncomeSource: vi.fn(),
   restoreIncomeSource: vi.fn(),
   baseCurrency: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock("@/bindings", () => ({
     createIncomeSource: mocks.createIncomeSource,
     updateIncomeSource: mocks.updateIncomeSource,
     deleteIncomeSource: mocks.deleteIncomeSource,
+    reinstateIncomeSource: mocks.reinstateIncomeSource,
     archiveIncomeSource: mocks.archiveIncomeSource,
     restoreIncomeSource: mocks.restoreIncomeSource,
     baseCurrency: mocks.baseCurrency,
@@ -84,6 +86,7 @@ beforeEach(() => {
   mocks.createIncomeSource.mockReset();
   mocks.updateIncomeSource.mockReset();
   mocks.deleteIncomeSource.mockReset();
+  mocks.reinstateIncomeSource.mockReset();
   mocks.archiveIncomeSource.mockReset();
   mocks.restoreIncomeSource.mockReset();
   mocks.baseCurrency.mockReset();
@@ -222,20 +225,82 @@ describe("IncomeView", () => {
     );
   });
 
-  it("deletes a source behind a two-click confirm (tch0)", async () => {
+  // Remove with undo (docs/agent/FRONTEND.md section 6.2, personal-cfo-egn67).
+  it("removes a source behind a confirm that says it can be brought back (tch0)", async () => {
     mocks.incomeSourceList.mockResolvedValue(ok([source({ name: "Acme Corp" })]));
+    mocks.deleteIncomeSource.mockResolvedValue(mutationOk());
     renderWithClient(<IncomeView />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /delete acme corp/i }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: /confirm delete acme corp/i }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: /^remove acme corp$/i }));
+    expect(mocks.deleteIncomeSource).not.toHaveBeenCalled();
+    const confirm = screen.getByRole("group", { name: "Remove Acme Corp?" });
+    expect(within(confirm).getByText("You can bring it back.")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: /confirm remove acme corp/i }));
     await waitFor(() =>
       expect(mocks.deleteIncomeSource).toHaveBeenCalledWith(
         source().id,
         expect.stringMatching(/.+/),
       ),
     );
+  });
+
+  it("after a removal a notice says so, and Undo reinstates that source", async () => {
+    mocks.incomeSourceList.mockResolvedValue(ok([source({ name: "Acme Corp" })]));
+    mocks.deleteIncomeSource.mockResolvedValue(mutationOk());
+    mocks.reinstateIncomeSource.mockResolvedValue(mutationOk());
+    renderWithClient(<IncomeView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove acme corp$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove acme corp/i }));
+
+    const region = await screen.findByRole("region", { name: "Notifications" });
+    expect(await within(region).findByText("Removed Acme Corp.")).toBeInTheDocument();
+    fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(mocks.reinstateIncomeSource).toHaveBeenCalledWith(
+        source().id,
+        expect.stringMatching(/.+/),
+      ),
+    );
+  });
+
+  it("after a removal focus moves to the nearest surviving row, not the page body", async () => {
+    const other = source({ id: "0190c000-0000-7000-8000-000000000002", name: "Side Gig" });
+    mocks.incomeSourceList.mockResolvedValue(ok([source({ name: "Acme Corp" }), other]));
+    mocks.deleteIncomeSource.mockImplementation(async () => {
+      mocks.incomeSourceList.mockResolvedValue(ok([source({ name: "Acme Corp" })]));
+      return mutationOk();
+    });
+    renderWithClient(<IncomeView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove side gig$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove side gig/i }));
+
+    await screen.findByRole("region", { name: "Notifications" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^edit acme corp$/i })).toHaveFocus(),
+    );
+  });
+
+  it("a failed removal shows its error and no notice", async () => {
+    mocks.incomeSourceList.mockResolvedValue(ok([source({ name: "Acme Corp" })]));
+    mocks.deleteIncomeSource.mockResolvedValue({
+      status: "error",
+      error: { Validation: "income source does not exist" },
+    });
+    renderWithClient(<IncomeView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove acme corp$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove acme corp/i }));
+    expect(await screen.findByText("income source does not exist")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
+  });
+
+  it("cancelling the confirm removes nothing", async () => {
+    mocks.incomeSourceList.mockResolvedValue(ok([source({ name: "Acme Corp" })]));
+    renderWithClient(<IncomeView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove acme corp$/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.deleteIncomeSource).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
   });
 
   it("lists archived sources under their own heading and restores them (tch0)", async () => {

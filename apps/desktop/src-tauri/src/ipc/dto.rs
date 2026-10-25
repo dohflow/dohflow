@@ -2382,6 +2382,41 @@ pub struct RecurringBillDto {
     pub category_id: Option<String>,
     /// The bill's tag ids (UUID strings); empty when untagged (personal-cfo-4d8.24.5.1).
     pub tag_ids: Vec<String>,
+    /// The loan this bill is linked to as its payment, and how the link stands
+    /// (personal-cfo-6wk.22); null when not linked.
+    pub loan_link: Option<BillLoanLinkDto>,
+    /// The loan the user said this bill is NOT the payment of (personal-cfo-6wk.22); null when
+    /// unanswered. Shown so it can be cleared from the bill's detail.
+    pub not_loan_payment: Option<BillNotLoanPaymentDto>,
+}
+
+/// A bill's link to the loan it pays (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25). While
+/// `in_force` the forecast counts the bill's cash once (the observed debit) and the loan's own
+/// due-date row is not emitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BillLoanLinkDto {
+    /// The loan account (plain UUID, matches `AccountViewDto.account_id`).
+    pub loan_account_id: String,
+    pub loan_name: String,
+    /// The loan's own payment is currently carried by this bill.
+    pub in_force: bool,
+    /// The bill no longer repeats like the loan's payment, so BOTH now count.
+    pub cadence_changed: bool,
+    /// The bill is below 95% of the loan's scheduled payment (the link stays; the user is warned).
+    pub below_scheduled: bool,
+    /// The payment the forecast derives for the loan, when it projects a recurring one.
+    pub scheduled_payment: Option<MoneyDto>,
+    /// The part of the bill beyond the scheduled payment (escrow, fees, extra principal), when the
+    /// link is in force and the bill is larger.
+    pub other: Option<MoneyDto>,
+}
+
+/// The loan the user said a bill is NOT the payment of (personal-cfo-6wk.22).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct BillNotLoanPaymentDto {
+    /// The loan account (plain UUID).
+    pub loan_account_id: String,
+    pub loan_name: String,
 }
 
 impl From<RecurringBillView> for RecurringBillDto {
@@ -2403,6 +2438,19 @@ impl From<RecurringBillView> for RecurringBillDto {
             archived_at: view.archived_at,
             category_id: view.category_id.map(|c| c.to_string()),
             tag_ids: view.tag_ids.iter().map(ToString::to_string).collect(),
+            loan_link: view.loan_link.map(|link| BillLoanLinkDto {
+                loan_account_id: link.loan_account_id.to_string(),
+                loan_name: link.loan_name,
+                in_force: link.in_force,
+                cadence_changed: link.cadence_changed,
+                below_scheduled: link.below_scheduled,
+                scheduled_payment: link.scheduled_payment.map(MoneyDto::from),
+                other: link.other.map(MoneyDto::from),
+            }),
+            not_loan_payment: view.not_loan_payment.map(|answer| BillNotLoanPaymentDto {
+                loan_account_id: answer.loan_account_id.to_string(),
+                loan_name: answer.loan_name,
+            }),
         }
     }
 }
