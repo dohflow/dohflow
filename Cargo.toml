@@ -79,7 +79,15 @@ getrandom = "0.2"
 libc = "0.2"
 # AEAD for the DEK envelope — wrap/unwrap the data key with the KEK
 # (personal-cfo-vhv, ADR 0002). AES-256-GCM, random 96-bit nonce per wrap.
-aes-gcm = "0.10"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+# aes-gcm's own zeroize feature only scrubs the GHASH key it derives while constructing a cipher.
+# The AES round keys, the CTR-mode state and the GHASH key schedule live in the crates below, whose
+# zeroize features aes-gcm does not enable. They are named here (and used by vault-crypto) so
+# cargo's feature unification turns them on for every Aes256Gcm in the workspace
+# (personal-cfo-7ie.19).
+aes = { version = "0.8", features = ["zeroize"] }
+ctr = { version = "0.9", features = ["zeroize"] }
+ghash = { version = "0.5", default-features = false, features = ["zeroize"] }
 # Attachment store (personal-cfo-bcj, ADR 0023): HKDF-SHA256 derives a content-
 # addressing subkey from the DEK; HMAC-SHA256 produces keyed storage IDs over
 # attachment plaintext (dedup without a plaintext-guessable on-disk name). Pure
