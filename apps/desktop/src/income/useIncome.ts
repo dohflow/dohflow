@@ -86,6 +86,17 @@ export function useIncome() {
     },
     [deleteMutation],
   );
+  /// Bring back a removed income source (the Undo of a remove; personal-cfo-egn67). Calls the
+  /// command directly, not through a mutation owned by this component, because the notice that
+  /// holds the Undo outlives the screen the removal happened on.
+  const reinstateIncomeSource = useCallback(
+    async (id: string): Promise<IpcError | null> => {
+      const result = await commands.reinstateIncomeSource(id, mintIdempotencyKey());
+      if (result.status === "ok") invalidate();
+      return result.status === "ok" ? null : result.error;
+    },
+    [invalidate],
+  );
   const archiveIncomeSource = useCallback(
     async (id: string): Promise<IpcError | null> => {
       const result = await archiveMutation.mutateAsync(id);
@@ -107,6 +118,7 @@ export function useIncome() {
     addIncomeSource,
     updateIncomeSource,
     deleteIncomeSource,
+    reinstateIncomeSource,
     archiveIncomeSource,
     restoreIncomeSource,
   };
