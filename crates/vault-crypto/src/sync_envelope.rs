@@ -95,9 +95,12 @@ impl EpochKey {
         key: SecretBytes<32>,
         commitment: &[u8; 32],
     ) -> Result<Self, KeyError> {
-        let mut input = label_bytes(EPOCH_KEY_COMMITMENT_LABEL);
-        input.extend_from_slice(key.expose());
-        let computed: [u8; 32] = Sha256::digest(&input).into();
+        // Hash incrementally: building `label ‖ K_e` in a Vec would leave an unscrubbed copy of the
+        // epoch root on the heap (and a second one if it reallocated).
+        let mut hash = Sha256::new();
+        hash.update(label_bytes(EPOCH_KEY_COMMITMENT_LABEL));
+        hash.update(key.expose());
+        let computed: [u8; 32] = hash.finalize().into();
         if &computed != commitment {
             return Err(KeyError::CommitmentMismatch);
         }
