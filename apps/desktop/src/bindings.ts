@@ -1906,6 +1906,12 @@ export type LoanDoubleCountWarningDto = {
 	amount_match: boolean,
 	/**  How strongly the bill looks like the loan's payment: only `strong` says "counted twice". */
 	strength: MatchStrengthDto,
+	/**  Which evidence made a strong match; `null` for a possible one. */
+	matched_by: MatchedByDto | null,
+	/**  The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has one. */
+	bill_type: string | null,
+	/**  The name of the account the bill is paid from, when it has one. */
+	paid_from_account_name: string | null,
 };
 
 /**  A stored manual future entry (personal-cfo-q6gh). */
@@ -1931,6 +1937,12 @@ export type ManualFutureEntryDto = {
  *  payment is "counted twice" or offer a link; `Possible` is a soft "might be the same payment" note.
  */
 export type MatchStrengthDto = "strong" | "possible";
+
+/**
+ *  The evidence behind a strong match (personal-cfo-6wk.20): the payee of the loan's paired payments,
+ *  or a loan-typed bill paid from its funding account.
+ */
+export type MatchedByDto = "payee" | "loan_typed";
 
 /**
  *  A monetary amount on the wire: integer minor units + ISO currency code.

@@ -65,6 +65,22 @@ pub struct LoanDoubleCount {
     pub amount_match: bool,
     /// How strongly the bill looks like the loan's payment.
     pub strength: MatchStrength,
+    /// Which evidence made a STRONG match (`None` for a possible one), so the UI can say why.
+    pub matched_by: Option<MatchedBy>,
+    /// The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has a contract.
+    pub bill_type: Option<String>,
+    /// The name of the account the bill is paid from (the loan's funding account on the loan-typed
+    /// route), when it has one.
+    pub paid_from_account_name: Option<String>,
+}
+
+/// The evidence behind a STRONG match (planning's revised ruling on 6wk.20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchedBy {
+    /// The bill carries the payee of the payments already paired into the loan.
+    Payee,
+    /// The bill is typed `loan_payment` or `rent_mortgage` and paid from the loan's funding account.
+    LoanTyped,
 }
 
 /// How strongly a bill looks like a loan's payment (see the module docs).
@@ -158,16 +174,21 @@ pub(crate) fn detect_loan_double_counts(
             });
             let payee_matches = paired_payee_matches(bill, &merchant_keys, &paired);
 
-            let strength = if !date_ok {
+            // The payee is checked first: it is the stronger evidence when both routes hold.
+            let (strength, matched_by) = if !date_ok {
                 continue;
-            } else if (payee_matches && at_least_95)
-                || (loan_shaped && funded_by_the_loans_account && up_to_200)
-            {
-                MatchStrength::Strong
+            } else if payee_matches && at_least_95 {
+                (MatchStrength::Strong, Some(MatchedBy::Payee))
+            } else if loan_shaped && funded_by_the_loans_account && up_to_200 {
+                (MatchStrength::Strong, Some(MatchedBy::LoanTyped))
             } else if (funded_by_the_loans_account && up_to_150) || within_10 {
-                MatchStrength::Possible
+                (MatchStrength::Possible, None)
             } else {
                 continue;
+            };
+            let paid_from_account_name = match bill.autopay_account_id {
+                Some(account) => account_name(conn, account)?,
+                None => None,
             };
             out.push(LoanDoubleCount {
                 loan_account_id: loan.account_id,
@@ -177,10 +198,23 @@ pub(crate) fn detect_loan_double_counts(
                 name_match,
                 amount_match,
                 strength,
+                matched_by,
+                bill_type: bill.bill_type.clone(),
+                paid_from_account_name,
             });
         }
     }
     Ok(out)
+}
+
+/// The display name of an account, if it exists.
+fn account_name(conn: &Connection, account: Uuid) -> Result<Option<String>, DbError> {
+    let mut stmt = conn.prepare("SELECT name FROM accounts WHERE id = ?1")?;
+    let mut rows = stmt.query([account])?;
+    Ok(match rows.next()? {
+        Some(row) => Some(row.get(0)?),
+        None => None,
+    })
 }
 
 /// `amount` is at least `percent`% of `of`, with no upper bound.

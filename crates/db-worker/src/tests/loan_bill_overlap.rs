@@ -2,7 +2,7 @@
 //! recurring bill for the same payment. Reproduction first, on fake data only.
 
 use super::*;
-use crate::MatchStrength;
+use crate::{MatchStrength, MatchedBy};
 use chrono::TimeZone;
 
 struct Fixture {
@@ -1051,4 +1051,81 @@ fn a_payment_from_a_non_liquid_account_does_not_make_it_a_funding_account() {
         Some(MatchStrength::Possible),
         "the equal amount on the due day is possible, but the brokerage is not a funding account"
     );
+}
+
+// ----- which evidence made a strong match, for the explanation ------------------------------------------
+
+#[test]
+fn a_loan_typed_strong_match_says_so_and_names_the_account_it_is_paid_from() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    bill_on_the_15th(
+        &worker,
+        "ACME HOME LOANS",
+        "loan_payment",
+        150_000,
+        fixture.checking,
+    );
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].strength, MatchStrength::Strong);
+    assert_eq!(warnings[0].matched_by, Some(MatchedBy::LoanTyped));
+    assert_eq!(warnings[0].bill_type.as_deref(), Some("loan_payment"));
+    assert_eq!(
+        warnings[0].paid_from_account_name.as_deref(),
+        Some("Checking")
+    );
+}
+
+#[test]
+fn a_payee_strong_match_says_so() {
+    let (_dir, worker) = worker();
+    let savings = mortgage_with_a_paired_payee(&worker);
+    acme_bill(&worker, 150_000, Frequency::Monthly, 15, savings);
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings[0].matched_by, Some(MatchedBy::Payee));
+    assert_eq!(
+        warnings[0].paid_from_account_name.as_deref(),
+        Some("Savings")
+    );
+}
+
+/// When both routes hold (a loan-typed bill from the funding account that also carries the payee), the
+/// payee is reported: it is the stronger evidence.
+#[test]
+fn the_payee_is_reported_when_both_routes_hold() {
+    let (_dir, worker) = worker();
+    let _savings = mortgage_with_a_paired_payee(&worker);
+    let checking_id: Uuid = worker
+        .read_connection()
+        .unwrap()
+        .query_row("SELECT id FROM accounts WHERE name = 'Checking'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    bill_on_the_15th(
+        &worker,
+        "Acme Home Loans",
+        "loan_payment",
+        150_000,
+        AccountId::from_uuid(checking_id),
+    );
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings[0].matched_by, Some(MatchedBy::Payee));
+}
+
+#[test]
+fn a_possible_match_carries_no_evidence_route() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    bill_on_the_15th(
+        &worker,
+        "Home payment",
+        "subscription",
+        150_000,
+        fixture.checking,
+    );
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings[0].strength, MatchStrength::Possible);
+    assert_eq!(warnings[0].matched_by, None);
 }

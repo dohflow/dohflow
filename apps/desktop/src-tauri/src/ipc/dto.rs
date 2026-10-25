@@ -18,7 +18,7 @@ use finance_kernel::{
     DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec, ForecastDayView,
     ForecastEventView, ForecastReadiness, ForecastView, Frequency, GroupSeriesView,
     ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId, LoanDoubleCount,
-    ManualEntry, MatchStrength, Money, MoneyInboxItem, MultiSeriesForecast, Outcome,
+    ManualEntry, MatchStrength, MatchedBy, Money, MoneyInboxItem, MultiSeriesForecast, Outcome,
     PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView,
     RecurringCandidateView, RecurringEventId, RecurringInstanceRow, RecurringTransferId,
     RecurringTransferView, RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput,
@@ -2908,6 +2908,24 @@ pub enum MatchStrengthDto {
     Possible,
 }
 
+/// The evidence behind a strong match (personal-cfo-6wk.20): the payee of the loan's paired payments,
+/// or a loan-typed bill paid from its funding account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchedByDto {
+    Payee,
+    LoanTyped,
+}
+
+impl From<MatchedBy> for MatchedByDto {
+    fn from(v: MatchedBy) -> Self {
+        match v {
+            MatchedBy::Payee => Self::Payee,
+            MatchedBy::LoanTyped => Self::LoanTyped,
+        }
+    }
+}
+
 impl From<MatchStrength> for MatchStrengthDto {
     fn from(v: MatchStrength) -> Self {
         match v {
@@ -2935,6 +2953,12 @@ pub struct LoanDoubleCountWarningDto {
     pub amount_match: bool,
     /// How strongly the bill looks like the loan's payment: only `strong` says "counted twice".
     pub strength: MatchStrengthDto,
+    /// Which evidence made a strong match; `null` for a possible one.
+    pub matched_by: Option<MatchedByDto>,
+    /// The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has one.
+    pub bill_type: Option<String>,
+    /// The name of the account the bill is paid from, when it has one.
+    pub paid_from_account_name: Option<String>,
 }
 
 impl From<LoanDoubleCount> for LoanDoubleCountWarningDto {
@@ -2947,6 +2971,9 @@ impl From<LoanDoubleCount> for LoanDoubleCountWarningDto {
             name_match: v.name_match,
             amount_match: v.amount_match,
             strength: v.strength.into(),
+            matched_by: v.matched_by.map(Into::into),
+            bill_type: v.bill_type,
+            paid_from_account_name: v.paid_from_account_name,
         }
     }
 }

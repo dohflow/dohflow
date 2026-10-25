@@ -2,13 +2,28 @@ import { AlertTriangle } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+import type { LoanDoubleCountWarningDto } from "@/bindings";
+
 import { useLoanDoubleCountWarnings } from "./useLoanDoubleCountWarnings";
 
-/// How a suspected pair was matched — plain description, not advice (ADR 0018).
-function matchReason(nameMatch: boolean, amountMatch: boolean): string {
-  if (nameMatch && amountMatch) return "Matched by name and payment amount.";
-  if (amountMatch) return "Matched by payment amount.";
-  return "Matched by name.";
+/// The type labels a loan-typed strong match can carry (planning-approved wording, 6wk.20).
+const LOAN_TYPED_LABELS: Record<string, string> = {
+  loan_payment: "Loan payment",
+  rent_mortgage: "Rent or mortgage",
+};
+
+/// Why a STRONG match is one: the evidence route, in plain description, not advice (ADR 0018).
+/// Planning-approved sentences (personal-cfo-6wk.20). Null when the evidence cannot be named.
+function strongReason(w: LoanDoubleCountWarningDto): string | null {
+  if (w.matched_by === "payee") {
+    return `Same payee as the payments already made to ${w.loan_name}, around its due date.`;
+  }
+  if (w.matched_by === "loan_typed") {
+    const label = w.bill_type ? LOAN_TYPED_LABELS[w.bill_type] : undefined;
+    if (!label || !w.paid_from_account_name) return null;
+    return `A ${label} bill paid from ${w.paid_from_account_name} around ${w.loan_name}'s due date.`;
+  }
+  return null;
 }
 
 /// A descriptive warning (personal-cfo-6wk.11, ADR 0018) when a loan is tracked BOTH as a loan
@@ -40,9 +55,8 @@ export function LoanDoubleCountWarning() {
           </CardHeader>
           <CardContent className="flex flex-col gap-3 text-sm">
             <p className="text-muted-foreground">
-              A loan tracked as both a loan account and a recurring loan-payment bill has its
-              payment counted twice in your Cash Flow forecast. These look like the same loan
-              tracked both ways.
+              This loan&apos;s payment is also set up as a recurring bill, so it&apos;s counted twice
+              in Cash Flow and your forecast.
             </p>
             <ul className="flex flex-col gap-2">
               {strong.map((w) => (
@@ -55,9 +69,9 @@ export function LoanDoubleCountWarning() {
                     &amp; {w.bill_name}{" "}
                     <span className="text-muted-foreground">(recurring bill)</span>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    {matchReason(w.name_match, w.amount_match)}
-                  </div>
+                  {strongReason(w) && (
+                    <div className="text-xs text-muted-foreground">{strongReason(w)}</div>
+                  )}
                 </li>
               ))}
             </ul>
@@ -70,8 +84,8 @@ export function LoanDoubleCountWarning() {
             <ul className="flex flex-col gap-1">
               {possible.map((w) => (
                 <li key={`${w.loan_account_id}:${w.bill_event_id}`}>
-                  <span className="font-medium text-foreground">{w.bill_name}</span> might be the
-                  same as {w.loan_name}&apos;s payment.
+                  <span className="font-medium text-foreground">{w.bill_name}</span>
+                  <div>This bill might be the same as {w.loan_name}&apos;s payment.</div>
                 </li>
               ))}
             </ul>
