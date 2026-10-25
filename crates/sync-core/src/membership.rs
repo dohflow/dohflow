@@ -857,6 +857,30 @@ impl VerifiedState {
             .filter(move |m| m.authorized_at(version))
     }
 
+    /// The member `device_id` as authorized **during key epoch `key_epoch`**: authorized at the
+    /// last membership head any epoch record of that epoch names. Revocation always starts a new
+    /// epoch (a cutover) and inside one epoch membership only grows (grants), so this set is
+    /// everyone who ever held that epoch's key and nobody revoked before it. It is the window a
+    /// receiver uses for an envelope sealed in that epoch: a device revoked at the cutover into
+    /// `key_epoch + 1` still sealed validly in `key_epoch`, and a replica catching up must open
+    /// those envelopes. `None` for an unknown epoch or a device not in that window.
+    #[must_use]
+    pub fn authorized_member_in_epoch(
+        &self,
+        device_id: &[u8; 16],
+        key_epoch: u64,
+    ) -> Option<&Member> {
+        let last = self
+            .epochs
+            .iter()
+            .rev()
+            .find(|e| e.key_epoch == key_epoch)?;
+        let version = (last.head_index + 1) as u64;
+        self.members
+            .iter()
+            .find(|m| &m.device_id == device_id && m.authorized_at(version))
+    }
+
     fn authorized_member(&self, fingerprint: &Fingerprint, version: u64) -> Option<&Member> {
         self.members
             .iter()

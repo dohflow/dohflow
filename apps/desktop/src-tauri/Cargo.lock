@@ -5378,6 +5378,7 @@ dependencies = [
  "hmac",
  "libc",
  "sha2",
+ "sync-core",
  "thiserror 2.0.18",
  "zeroize",
 ]
