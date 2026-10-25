@@ -5,14 +5,14 @@ use super::*;
 use crate::{MatchStrength, MatchedBy};
 use chrono::TimeZone;
 
-struct Fixture {
-    checking: AccountId,
-    loan: AccountId,
+pub(super) struct Fixture {
+    pub(super) checking: AccountId,
+    pub(super) loan: AccountId,
 }
 
 /// The owner's scenario, on fake data: checking, and a mortgage tracked as a loan account with payment
 /// terms (due day 15, fixed $1,500 a month, paid from checking), owing $200,000.
-fn mortgage(worker: &DbWorker) -> Fixture {
+pub(super) fn mortgage(worker: &DbWorker) -> Fixture {
     let checking_id = AccountId::new();
     let loan = AccountId::new();
     worker
@@ -54,7 +54,7 @@ fn mortgage(worker: &DbWorker) -> Fixture {
 
 /// A bill as Add bill / Make recurring / promoting a suggested recurring candidate create it (the
 /// default type is `subscription`).
-fn bill(
+pub(super) fn bill(
     worker: &DbWorker,
     name: &str,
     bill_type: &str,
@@ -86,12 +86,12 @@ fn bill(
     event_id
 }
 
-fn the_15th() -> NaiveDate {
+pub(super) fn the_15th() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 7, 15).unwrap()
 }
 
 /// A monthly bill on the loan's due day (the 15th), paid from `checking`.
-fn bill_on_the_15th(
+pub(super) fn bill_on_the_15th(
     worker: &DbWorker,
     name: &str,
     bill_type: &str,
@@ -110,7 +110,7 @@ fn bill_on_the_15th(
 }
 
 /// How much leaves the liquid balance on the due date 2026-07-15, in the aggregate forecast.
-fn outflow_on_the_15th(worker: &DbWorker) -> i64 {
+pub(super) fn outflow_on_the_15th(worker: &DbWorker) -> i64 {
     let as_of = chrono::Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap();
     let conn = worker.read_connection().unwrap();
     let view = crate::forecast::compute(&conn, as_of, 45, &[]).unwrap();

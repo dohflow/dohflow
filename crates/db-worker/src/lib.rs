@@ -588,6 +588,35 @@ pub enum WriteCommand {
     /// Restore a previously archived recurring bill (personal-cfo-4d8.2): set
     /// `is_active = 1` + clear `archived_at`, returning it to the forecast.
     RestoreRecurringBill(RecurringEventId),
+    /// Link a recurring bill to the loan it pays (personal-cfo-6wk.22; ADR 0035 addendum
+    /// 2026-10-25). While the link is in force the forecast counts the bill's cash (the observed
+    /// debit, escrow included) once and suppresses the loan's own due-date row; the loan still
+    /// amortizes by its own terms. Refused unless the bill is active and the loan is an active
+    /// `loan_liability` in the bill's currency with a recurring payment (never a pay-in-full
+    /// loan), and refused if another active bill is already linked to that loan. Only the user
+    /// links; nothing is deleted or merged.
+    LinkBillToLoan {
+        /// The recurring event id identifying the bill.
+        event_id: RecurringEventId,
+        /// The `loan_liability` account whose payment the bill is.
+        loan_account_id: AccountId,
+    },
+    /// Remove a bill's link to its loan (personal-cfo-6wk.22): the loan's own due-date row
+    /// returns to the forecast. A bill that is not linked is an accepted, logged no-op.
+    UnlinkBillFromLoan {
+        /// The recurring event id identifying the bill.
+        event_id: RecurringEventId,
+    },
+    /// Remember that a bill is NOT a given loan's payment, or forget it (personal-cfo-6wk.22):
+    /// `Some(loan)` records the user's "No, it's a different bill" (the overlap detector then
+    /// skips that bill for that loan), `None` clears it. Recording it for the loan the bill is
+    /// linked to also unlinks it (the two answers contradict).
+    SetBillNotLoanPayment {
+        /// The recurring event id identifying the bill.
+        event_id: RecurringEventId,
+        /// The loan the bill is not the payment of, or `None` to clear the answer.
+        loan_account_id: Option<AccountId>,
+    },
     /// Open an ingestion source batch (ADR 0008, personal-cfo-3bb). Status starts
     /// at `parsing`; importers stage records under it, then advance its state.
     CreateSourceBatch {
@@ -853,6 +882,9 @@ impl WriteCommand {
             WriteCommand::DeleteRecurringBill { .. } => "delete_recurring_bill",
             WriteCommand::ReinstateRecurringBill { .. } => "reinstate_recurring_bill",
             WriteCommand::ArchiveRecurringBill(_) => "archive_recurring_bill",
+            WriteCommand::LinkBillToLoan { .. } => "link_bill_to_loan",
+            WriteCommand::UnlinkBillFromLoan { .. } => "unlink_bill_from_loan",
+            WriteCommand::SetBillNotLoanPayment { .. } => "set_bill_not_loan_payment",
             WriteCommand::RestoreRecurringBill(_) => "restore_recurring_bill",
             WriteCommand::CreateSourceBatch { .. } => "create_source_batch",
             WriteCommand::AttachSourceRecord { .. } => "attach_source_record",
@@ -1103,6 +1135,42 @@ pub struct RecurringBillView {
     pub category_id: Option<CategoryId>,
     /// The bill's tags (personal-cfo-4d8.24.5.1); empty when untagged.
     pub tag_ids: Vec<TagId>,
+    /// The loan this bill is linked to as its payment, with how the link stands
+    /// (personal-cfo-6wk.22); `None` when not linked.
+    pub loan_link: Option<BillLoanLinkView>,
+    /// The loan the user said this bill is NOT the payment of (personal-cfo-6wk.22), so the
+    /// answer can be shown and cleared from the bill's detail; `None` when unanswered.
+    pub not_loan_payment: Option<BillNotLoanPaymentView>,
+}
+
+/// A bill's link to the loan it pays, and whether the forecast is counting the obligation once
+/// (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BillLoanLinkView {
+    /// The loan account the bill is linked to.
+    pub loan_account_id: AccountId,
+    /// That loan's name.
+    pub loan_name: String,
+    /// The loan's own payment is currently carried by this bill (one outflow, the observed debit).
+    pub in_force: bool,
+    /// The bill no longer repeats like the loan's payment, so BOTH now count.
+    pub cadence_changed: bool,
+    /// The bill is below 95% of the loan's scheduled payment (the link stays; the user is warned).
+    pub below_scheduled: bool,
+    /// The payment the forecast derives for the loan, when it projects a recurring one.
+    pub scheduled_payment: Option<Money>,
+    /// The part of the bill beyond the loan's scheduled payment (escrow, fees, extra principal),
+    /// when the link is in force and the bill is larger.
+    pub other: Option<Money>,
+}
+
+/// The loan the user said a bill is NOT the payment of (personal-cfo-6wk.22).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BillNotLoanPaymentView {
+    /// The loan account.
+    pub loan_account_id: AccountId,
+    /// That loan's name.
+    pub loan_name: String,
 }
 
 /// A recurring account-to-account transfer (ADR 0026 §14, personal-cfo-npoe), with
@@ -6551,10 +6619,12 @@ pub(crate) fn read_recurring_bill_views(
         "SELECT e.id, e.name, b.type, e.amount_expected_minor, e.currency, e.frequency,
                 e.next_expected_date, e.autopay_account_id, a.name, b.description,
                 e.is_active, e.created_at, e.archived_at, COALESCE(e.autopay_enabled, 0),
-                e.category_id, rt.tag_concat
+                e.category_id, rt.tag_concat, e.linked_loan_account_id, e.include_in_forecast,
+                e.not_payment_of_loan_account_id, na.name
          FROM recurring_events e
          JOIN bill_contracts b ON b.recurring_event_id = e.id
          LEFT JOIN accounts a ON a.id = e.autopay_account_id
+         LEFT JOIN accounts na ON na.id = e.not_payment_of_loan_account_id
          LEFT JOIN (SELECT recurring_event_id, group_concat(lower(hex(tag_id))) AS tag_concat
                       FROM recurring_event_tags GROUP BY recurring_event_id) rt
                 ON rt.recurring_event_id = e.id
@@ -6579,6 +6649,10 @@ pub(crate) fn read_recurring_bill_views(
             r.get::<_, i64>(13)?,
             r.get::<_, Option<Uuid>>(14)?,
             r.get::<_, Option<String>>(15)?,
+            r.get::<_, Option<Uuid>>(16)?,
+            r.get::<_, i64>(17)?,
+            r.get::<_, Option<Uuid>>(18)?,
+            r.get::<_, Option<String>>(19)?,
         ))
     })?;
     let mut out = Vec::new();
@@ -6600,7 +6674,43 @@ pub(crate) fn read_recurring_bill_views(
             autopay_enabled,
             category_id,
             tag_concat,
+            linked_loan,
+            include_in_forecast,
+            not_payment_of,
+            not_payment_of_name,
         ) = row?;
+        let bill_currency = currency_from_code(&currency_code)?;
+        let loan_link = match linked_loan {
+            Some(loan) => {
+                let status = forecast::link_status(
+                    conn,
+                    &forecast::LinkedBill {
+                        amount_minor: minor_units,
+                        currency: currency_code.clone(),
+                        frequency: freq_token.clone(),
+                        include_in_forecast: include_in_forecast != 0,
+                        loan_account_id: loan,
+                    },
+                )?;
+                Some(BillLoanLinkView {
+                    loan_account_id: AccountId::from_uuid(status.loan_account_id),
+                    loan_name: status.loan_name,
+                    in_force: status.in_force,
+                    cadence_changed: status.cadence_changed,
+                    below_scheduled: status.below_scheduled,
+                    scheduled_payment: status
+                        .scheduled_payment_minor
+                        .map(|m| Money::new(m, bill_currency)),
+                    other: (status.other_minor > 0)
+                        .then(|| Money::new(status.other_minor, bill_currency)),
+                })
+            }
+            None => None,
+        };
+        let not_loan_payment = not_payment_of.map(|loan| BillNotLoanPaymentView {
+            loan_account_id: AccountId::from_uuid(loan),
+            loan_name: not_payment_of_name.unwrap_or_default(),
+        });
         let frequency = Frequency::from_token(&freq_token).ok_or_else(|| {
             DbError::InvalidCommand(format!("unknown bill frequency token: {freq_token}"))
         })?;
@@ -6627,6 +6737,8 @@ pub(crate) fn read_recurring_bill_views(
             archived_at,
             category_id: category_id.map(CategoryId::from_uuid),
             tag_ids: parse_tag_ids(tag_concat.as_deref()),
+            loan_link,
+            not_loan_payment,
         });
     }
     Ok(out)
@@ -6982,6 +7094,17 @@ fn apply_command(
         WriteCommand::RestoreRecurringBill(event_id) => {
             apply::recurring::apply_restore_recurring_bill(&tx, event_id)?
         }
+        WriteCommand::LinkBillToLoan {
+            event_id,
+            loan_account_id,
+        } => apply::recurring::apply_link_bill_to_loan(&tx, event_id, loan_account_id)?,
+        WriteCommand::UnlinkBillFromLoan { event_id } => {
+            apply::recurring::apply_unlink_bill_from_loan(&tx, event_id)?
+        }
+        WriteCommand::SetBillNotLoanPayment {
+            event_id,
+            loan_account_id,
+        } => apply::recurring::apply_set_bill_not_loan_payment(&tx, event_id, loan_account_id)?,
         WriteCommand::CreateSourceBatch {
             id,
             source_type,
@@ -7159,7 +7282,10 @@ fn apply_command(
         | WriteCommand::DeleteRecurringBill { .. }
         | WriteCommand::ReinstateRecurringBill { .. }
         | WriteCommand::ArchiveRecurringBill(_)
-        | WriteCommand::RestoreRecurringBill(_) => "recurring_events",
+        | WriteCommand::RestoreRecurringBill(_)
+        | WriteCommand::LinkBillToLoan { .. }
+        | WriteCommand::UnlinkBillFromLoan { .. }
+        | WriteCommand::SetBillNotLoanPayment { .. } => "recurring_events",
         WriteCommand::CreateSourceBatch { .. } | WriteCommand::UpdateBatchState { .. } => {
             "source_batches"
         }

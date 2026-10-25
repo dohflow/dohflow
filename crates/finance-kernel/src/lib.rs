@@ -36,19 +36,20 @@ pub use db_worker::{new_idempotency_key, validate_idempotency_key};
 pub use db_worker::{
     sqlite_version, AccountAvailability, AccountHistoryView, AccountSeriesView, AccountView,
     ActorType, AssumptionBasis, AssumptionEventView, AssumptionParams, AttachmentMeta,
-    BackupHistoryEntry, BackupHistoryKind, Band, BandDriftView, CandidateObservation,
-    CapabilityUnlock, CardCycleView, CardStatementForecastView, CardStatementHistoryView,
-    CashAvailability, CashFlowHistory, CashTiers, CategoryFilter, CategorySource, CategorySpend,
-    CategoryView, ComfortBand, CommandMeta, CommitmentView, ConnectorConnectionRow,
-    ConnectorLinkRow, DayBalance, DebtTermsInput, DebtTermsView, DriftFactorView, DurableJobView,
-    ForecastAssumptionSpec, ForecastDayView, ForecastEventView, ForecastReadiness, ForecastView,
-    GroupSeriesView, HistoryDay, ImportedTransactionFields, IncomeSourceView, LoanDoubleCount,
-    ManualEntry, MatchStrength, MatchedBy, MoneyInboxItem, MultiSeriesForecast, NewScenario,
-    Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecurringBillView,
-    RecurringCandidateView, RecurringInstanceRow, RecurringTransferView, RepaymentPhilosophy,
-    ReviewStatus, ScenarioStatus, ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput,
-    SplitLineView, TagView, TransactionDisplayRow, TransactionPage, TransactionPageQuery,
-    TransactionRow, TransactionSortOrder, UnconfirmedOccurrence, VaultMetadata, WorkerState,
+    BackupHistoryEntry, BackupHistoryKind, Band, BandDriftView, BillLoanLinkView,
+    BillNotLoanPaymentView, CandidateObservation, CapabilityUnlock, CardCycleView,
+    CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
+    CashTiers, CategoryFilter, CategorySource, CategorySpend, CategoryView, ComfortBand,
+    CommandMeta, CommitmentView, ConnectorConnectionRow, ConnectorLinkRow, DayBalance,
+    DebtTermsInput, DebtTermsView, DriftFactorView, DurableJobView, ForecastAssumptionSpec,
+    ForecastDayView, ForecastEventView, ForecastReadiness, ForecastView, GroupSeriesView,
+    HistoryDay, ImportedTransactionFields, IncomeSourceView, LoanDoubleCount, ManualEntry,
+    MatchStrength, MatchedBy, MoneyInboxItem, MultiSeriesForecast, NewScenario, Outcome,
+    PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecurringBillView, RecurringCandidateView,
+    RecurringInstanceRow, RecurringTransferView, RepaymentPhilosophy, ReviewStatus, ScenarioStatus,
+    ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput, SplitLineView, TagView,
+    TransactionDisplayRow, TransactionPage, TransactionPageQuery, TransactionRow,
+    TransactionSortOrder, UnconfirmedOccurrence, VaultMetadata, WorkerState,
     AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
     FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
@@ -1201,6 +1202,118 @@ impl KernelCommand for ReinstateRecurringBill {
     fn lower(self) -> WriteCommand {
         WriteCommand::ReinstateRecurringBill {
             event_id: self.event_id,
+        }
+    }
+}
+
+/// Link a recurring bill to the loan it pays (personal-cfo-6wk.22; ADR 0035 addendum
+/// 2026-10-25): while the link is in force the forecast counts the bill's cash once and
+/// suppresses the loan's own due-date row. The user's explicit action only; nothing is deleted
+/// or merged.
+#[derive(Debug, Clone)]
+pub struct LinkBillToLoan {
+    event_id: RecurringEventId,
+    loan_account_id: AccountId,
+}
+
+impl LinkBillToLoan {
+    /// Build a `LinkBillToLoan` from the bill's recurring-event id and the loan account.
+    #[must_use]
+    pub fn new(event_id: RecurringEventId, loan_account_id: AccountId) -> Self {
+        Self {
+            event_id,
+            loan_account_id,
+        }
+    }
+}
+
+impl sealed::Sealed for LinkBillToLoan {}
+
+impl KernelCommand for LinkBillToLoan {
+    fn kind(&self) -> &'static str {
+        "link_bill_to_loan"
+    }
+
+    fn validate(&self) -> Result<(), KernelError> {
+        Ok(())
+    }
+
+    fn lower(self) -> WriteCommand {
+        WriteCommand::LinkBillToLoan {
+            event_id: self.event_id,
+            loan_account_id: self.loan_account_id,
+        }
+    }
+}
+
+/// Remove a bill's link to its loan (personal-cfo-6wk.22): the loan's own due-date row returns
+/// to the forecast. A bill that is not linked is an accepted, logged no-op.
+#[derive(Debug, Clone)]
+pub struct UnlinkBillFromLoan {
+    event_id: RecurringEventId,
+}
+
+impl UnlinkBillFromLoan {
+    /// Build an `UnlinkBillFromLoan` from the bill's recurring-event id.
+    #[must_use]
+    pub fn new(event_id: RecurringEventId) -> Self {
+        Self { event_id }
+    }
+}
+
+impl sealed::Sealed for UnlinkBillFromLoan {}
+
+impl KernelCommand for UnlinkBillFromLoan {
+    fn kind(&self) -> &'static str {
+        "unlink_bill_from_loan"
+    }
+
+    fn validate(&self) -> Result<(), KernelError> {
+        Ok(())
+    }
+
+    fn lower(self) -> WriteCommand {
+        WriteCommand::UnlinkBillFromLoan {
+            event_id: self.event_id,
+        }
+    }
+}
+
+/// Remember that a bill is NOT a given loan's payment ("No, it's a different bill"), or forget it
+/// (personal-cfo-6wk.22). `Some(loan)` records the answer so the overlap warning skips that pair;
+/// `None` clears it.
+#[derive(Debug, Clone)]
+pub struct SetBillNotLoanPayment {
+    event_id: RecurringEventId,
+    loan_account_id: Option<AccountId>,
+}
+
+impl SetBillNotLoanPayment {
+    /// Build a `SetBillNotLoanPayment`; `loan_account_id` is `None` to clear the answer.
+    #[must_use]
+    pub fn new(event_id: RecurringEventId, loan_account_id: Option<AccountId>) -> Self {
+        Self {
+            event_id,
+            loan_account_id,
+        }
+    }
+}
+
+impl sealed::Sealed for SetBillNotLoanPayment {}
+
+impl KernelCommand for SetBillNotLoanPayment {
+    fn kind(&self) -> &'static str {
+        "set_bill_not_loan_payment"
+    }
+
+    fn validate(&self) -> Result<(), KernelError> {
+        Ok(())
+    }
+
+    fn lower(self) -> WriteCommand {
+        WriteCommand::SetBillNotLoanPayment {
+            event_id: self.event_id,
+            loan_account_id: self.loan_account_id,
         }
     }
 }

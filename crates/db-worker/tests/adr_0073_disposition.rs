@@ -2,7 +2,7 @@
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
 //! silently going stale as `WriteCommand` grows. It deliberately parses the
-//! enum declaration rather than constructing all 53 payloads, so a new variant
+//! enum declaration rather than constructing all 56 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
 //! can ship a command with no rebase rule. It also compares every checked-in
 //! ADR cell against this table and proves that a one-cell outcome drift fails.
@@ -214,6 +214,23 @@ const DISPOSITIONS: &[Disposition] = &[
         Shape::Toggle,
         "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
+    // The bill-to-loan link (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25; ADR 0073
+    // Addendum B). Three more Sets, each with its own additive version 1 payload.
+    d(
+        "LinkBillToLoan",
+        Shape::Set,
+        "auto iff strict predicate; a loan that is archived or no longer a loan on the new base applies as no link; a second bill for the same loan queue-choose",
+    ),
+    d(
+        "UnlinkBillFromLoan",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto)",
+    ),
+    d(
+        "SetBillNotLoanPayment",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto)",
+    ),
     d(
         "SnoozeInboxItem",
         Shape::Toggle,
@@ -423,7 +440,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        53,
+        56,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -452,7 +469,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
 
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
     assert_eq!(shape_count(Shape::Create), 8);
-    assert_eq!(shape_count(Shape::Set), 18);
+    assert_eq!(shape_count(Shape::Set), 21);
     assert_eq!(shape_count(Shape::Toggle), 18);
     assert_eq!(shape_count(Shape::BaseDependent), 4);
     assert_eq!(shape_count(Shape::TombstoneFirst), 0);

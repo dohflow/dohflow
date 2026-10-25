@@ -752,7 +752,11 @@ pub(crate) fn apply_delete_recurring_bill(
     meta: &CommandMeta,
     event_id: &RecurringEventId,
 ) -> Result<Uuid, DbError> {
-    set_bill_tombstone(tx, event_id, Some(issued_at_rfc3339(meta)?))
+    let id = set_bill_tombstone(tx, event_id, Some(issued_at_rfc3339(meta)?))?;
+    // A link only ever sits on an active bill (personal-cfo-6wk.22): deleting the bill returns
+    // the loan's own payment to the forecast, and a reinstated bill comes back unlinked.
+    clear_bill_link(tx, event_id)?;
+    Ok(id)
 }
 
 /// Applies [`WriteCommand::ReinstateRecurringBill`]: clears the tombstone on the schedule and
@@ -785,6 +789,9 @@ pub(crate) fn apply_archive_recurring_bill(
         }
         // Archiving drops it from the commitments projection (is_active = 0).
         commitments::rebuild_in(tx)?;
+        // A link only ever sits on an active bill (personal-cfo-6wk.22): archiving the bill
+        // returns the loan's own payment to the forecast, and a restored bill comes back unlinked.
+        clear_bill_link(tx, event_id)?;
         event_id.as_uuid()
     };
     Ok(entity_id)
@@ -813,4 +820,262 @@ pub(crate) fn apply_restore_recurring_bill(
         event_id.as_uuid()
     };
     Ok(entity_id)
+}
+
+// ---- bill <-> loan link (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25) --------------------
+//
+// Deliberately free of the wall clock and of `updated_at`: these commands write only the two
+// link columns, so replaying one on another device produces the same row.
+
+/// Pay-in-full philosophies project a single payoff, not a monthly payment, so a monthly bill is
+/// not that payment and the link is never offered (ADR 0035 addendum A2).
+const PAY_IN_FULL_PHILOSOPHIES: &[&str] = &[
+    "pay_in_full",
+    "pay_statement_balance",
+    "pay_current_balance",
+];
+
+/// What the one-linked-bill-per-loan refusal says; kept in one place so a typed error can replace
+/// the message without touching the rule.
+fn loan_already_linked(bill_name: &str) -> DbError {
+    DbError::InvalidCommand(format!(
+        "this loan already has a linked bill: {bill_name}. Unlink it first."
+    ))
+}
+
+/// The loan's name, after checking it is a loan this bill may be linked to: an active
+/// `loan_liability` account in the bill's currency with a recurring payment.
+fn require_linkable_loan(
+    tx: &Connection,
+    loan: &AccountId,
+    bill_currency: &str,
+) -> Result<String, DbError> {
+    /// What linking needs to know about the target account.
+    struct Target {
+        name: String,
+        role: String,
+        active: i64,
+        currency: String,
+        due_day: Option<i64>,
+        philosophy: Option<String>,
+    }
+    let target: Option<Target> = tx
+        .query_row(
+            "SELECT a.name, a.cashflow_role, a.active, a.currency,
+                    dt.payment_due_day, dt.repayment_philosophy
+               FROM accounts a
+               LEFT JOIN debt_terms dt ON dt.account_id = a.id
+              WHERE a.id = ?1",
+            [loan.as_uuid()],
+            |r| {
+                Ok(Target {
+                    name: r.get(0)?,
+                    role: r.get(1)?,
+                    active: r.get(2)?,
+                    currency: r.get(3)?,
+                    due_day: r.get(4)?,
+                    philosophy: r.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(Target {
+        name,
+        role,
+        active,
+        currency,
+        due_day,
+        philosophy,
+    }) = target
+    else {
+        return Err(DbError::InvalidCommand(
+            "loan account does not exist".to_owned(),
+        ));
+    };
+    if role != "loan_liability" {
+        return Err(DbError::InvalidCommand(
+            "a bill can only be linked to a loan account".to_owned(),
+        ));
+    }
+    if active == 0 {
+        return Err(DbError::InvalidCommand(
+            "that loan account is archived".to_owned(),
+        ));
+    }
+    if currency != bill_currency {
+        return Err(DbError::InvalidCommand(
+            "the bill and the loan are in different currencies".to_owned(),
+        ));
+    }
+    if due_day.is_none() {
+        return Err(DbError::InvalidCommand(
+            "that loan has no payment due day set, so it has no payment to link".to_owned(),
+        ));
+    }
+    if philosophy
+        .as_deref()
+        .is_some_and(|p| PAY_IN_FULL_PHILOSOPHIES.contains(&p))
+    {
+        return Err(DbError::InvalidCommand(
+            "that loan is paid in full once, not monthly, so a bill cannot be its payment"
+                .to_owned(),
+        ));
+    }
+    Ok(name)
+}
+
+/// Applies [`WriteCommand::LinkBillToLoan`]. Linking a bill to the loan it is already linked to is
+/// an accepted no-op; linking it to another loan replaces the link. Recording the link also drops a
+/// "not this loan's payment" answer for the same loan (the user changed their mind).
+pub(crate) fn apply_link_bill_to_loan(
+    tx: &Connection,
+    event_id: &RecurringEventId,
+    loan: &AccountId,
+) -> Result<Uuid, DbError> {
+    let id = event_id.as_uuid();
+    let bill: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT currency, is_active FROM recurring_events
+              WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((currency, is_active)) = bill else {
+        return Err(DbError::InvalidCommand(
+            "recurring bill does not exist".to_owned(),
+        ));
+    };
+    if is_active == 0 {
+        return Err(DbError::InvalidCommand(
+            "an archived bill cannot be linked to a loan".to_owned(),
+        ));
+    }
+    require_linkable_loan(tx, loan, &currency)?;
+    let other: Option<String> = tx
+        .query_row(
+            "SELECT name FROM recurring_events
+              WHERE linked_loan_account_id = ?1 AND id <> ?2
+                AND is_active = 1 AND deleted_at IS NULL
+              ORDER BY id LIMIT 1",
+            params![loan.as_uuid(), id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(name) = other {
+        return Err(loan_already_linked(&name));
+    }
+    tx.execute(
+        "UPDATE recurring_events
+            SET linked_loan_account_id = ?2,
+                not_payment_of_loan_account_id =
+                    CASE WHEN not_payment_of_loan_account_id = ?2
+                         THEN NULL ELSE not_payment_of_loan_account_id END
+          WHERE id = ?1",
+        params![id, loan.as_uuid()],
+    )?;
+    Ok(id)
+}
+
+/// Clears a bill's link, if any. Writes nothing when there is none, so the command leaves an
+/// empty write set.
+pub(crate) fn clear_bill_link(tx: &Connection, event_id: &RecurringEventId) -> Result<(), DbError> {
+    tx.execute(
+        "UPDATE recurring_events SET linked_loan_account_id = NULL
+          WHERE id = ?1 AND linked_loan_account_id IS NOT NULL",
+        [event_id.as_uuid()],
+    )?;
+    Ok(())
+}
+
+/// Clears every link to `loan` (personal-cfo-6wk.22): called by the command that archives the
+/// loan, in the SAME transaction, so it is part of that command's write set and replicates. A
+/// reinstated loan therefore comes back unlinked and its own payment counts again. Deterministic
+/// and idempotent; the same statement is the rule a replica applies to a dangling link.
+pub(crate) fn clear_links_to_loan(tx: &Connection, loan: &AccountId) -> Result<(), DbError> {
+    tx.execute(
+        "UPDATE recurring_events SET linked_loan_account_id = NULL
+          WHERE linked_loan_account_id = ?1",
+        [loan.as_uuid()],
+    )?;
+    Ok(())
+}
+
+/// Applies [`WriteCommand::UnlinkBillFromLoan`]. A bill that is not linked is an accepted, logged
+/// no-op.
+pub(crate) fn apply_unlink_bill_from_loan(
+    tx: &Connection,
+    event_id: &RecurringEventId,
+) -> Result<Uuid, DbError> {
+    let id = event_id.as_uuid();
+    let exists: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM recurring_events WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Err(DbError::InvalidCommand(
+            "recurring bill does not exist".to_owned(),
+        ));
+    }
+    clear_bill_link(tx, event_id)?;
+    Ok(id)
+}
+
+/// Applies [`WriteCommand::SetBillNotLoanPayment`]. `Some(loan)` must name an existing loan
+/// account (an archived one is fine: the answer is about the pair); if the bill is linked to that
+/// loan the link is dropped (the two answers contradict). `None` clears the answer.
+pub(crate) fn apply_set_bill_not_loan_payment(
+    tx: &Connection,
+    event_id: &RecurringEventId,
+    loan: &Option<AccountId>,
+) -> Result<Uuid, DbError> {
+    let id = event_id.as_uuid();
+    let exists: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM recurring_events WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Err(DbError::InvalidCommand(
+            "recurring bill does not exist".to_owned(),
+        ));
+    }
+    match loan {
+        Some(loan) => {
+            let role: Option<String> = tx
+                .query_row(
+                    "SELECT cashflow_role FROM accounts WHERE id = ?1",
+                    [loan.as_uuid()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if role.as_deref() != Some("loan_liability") {
+                return Err(DbError::InvalidCommand(
+                    "that is not a loan account".to_owned(),
+                ));
+            }
+            tx.execute(
+                "UPDATE recurring_events
+                    SET not_payment_of_loan_account_id = ?2,
+                        linked_loan_account_id =
+                            CASE WHEN linked_loan_account_id = ?2
+                                 THEN NULL ELSE linked_loan_account_id END
+                  WHERE id = ?1",
+                params![id, loan.as_uuid()],
+            )?;
+        }
+        None => {
+            tx.execute(
+                "UPDATE recurring_events SET not_payment_of_loan_account_id = NULL
+                  WHERE id = ?1 AND not_payment_of_loan_account_id IS NOT NULL",
+                [id],
+            )?;
+        }
+    }
+    Ok(id)
 }

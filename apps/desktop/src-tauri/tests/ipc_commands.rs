@@ -3483,3 +3483,109 @@ fn recurring_deposits_surface_as_income_candidates() {
         Some(account_id.as_str())
     );
 }
+
+/// personal-cfo-6wk.22: link a bill to the loan it pays, over IPC. The bill list carries how the
+/// link stands (in force, the scheduled payment, the part beyond it); a second bill for the same
+/// loan is refused; unlinking restores it; and the "not this loan's payment" answer round-trips.
+#[test]
+fn a_bill_is_linked_to_its_loan_and_unlinked_through_ipc() {
+    use app_lib::ipc::commands::{
+        link_bill_to_loan_impl, set_bill_not_loan_payment_impl, set_debt_terms_impl,
+        unlink_bill_from_loan_impl,
+    };
+    use app_lib::ipc::dto::{RepaymentPhilosophyDto, SetDebtTermsInput};
+
+    let (_dir, state) = open_state();
+    let checking = create_account_impl(&state, create_input("Checking"))
+        .unwrap()
+        .account_id;
+    let mut loan_input = create_input("Test Mortgage");
+    loan_input.cashflow_role = CashflowRoleDto::LoanLiability;
+    let loan = create_account_impl(&state, loan_input).unwrap().account_id;
+    assert_balance_impl(
+        &state,
+        AssertBalanceInput {
+            account_id: loan.clone(),
+            amount: MoneyDto {
+                minor_units: -20_000_000,
+                currency: "USD".to_owned(),
+            },
+            as_of_date: "2026-01-01".to_owned(),
+        },
+    )
+    .unwrap();
+    set_debt_terms_impl(
+        &state,
+        SetDebtTermsInput {
+            account_id: loan.clone(),
+            apr_bps: None,
+            original_principal_minor: None,
+            statement_close_day: None,
+            payment_due_day: Some(15),
+            grace_period_days: None,
+            credit_limit_minor: None,
+            repayment_philosophy: RepaymentPhilosophyDto::PayFixedAmount,
+            fixed_amount_minor: Some(150_000),
+            min_payment_percent_bps: None,
+            min_payment_floor_minor: None,
+            paying_source_account_id: Some(checking.clone()),
+            idempotency_key: String::new(),
+        },
+    )
+    .unwrap();
+    let mut input = bill_input("monthly", "subscription");
+    input.name = "ACME HOME LOANS".to_owned();
+    input.amount.minor_units = 270_000; // the loan's $1,500 plus $1,200 of escrow
+    input.anchor_date = "2026-07-15".to_owned();
+    input.autopay_account_id = Some(checking.clone());
+    let bill = create_recurring_bill_impl(&state, input).unwrap().event_id;
+
+    let read = |state: &AppState| {
+        recurring_bill_list_impl(state)
+            .unwrap()
+            .into_iter()
+            .find(|b| b.id == bill)
+            .unwrap()
+    };
+    assert!(read(&state).loan_link.is_none());
+
+    link_bill_to_loan_impl(&state, bill.clone(), loan.clone(), String::new()).unwrap();
+    let linked = read(&state).loan_link.expect("linked");
+    assert_eq!(linked.loan_account_id, loan);
+    assert_eq!(linked.loan_name, "Test Mortgage");
+    assert!(linked.in_force && !linked.cadence_changed && !linked.below_scheduled);
+    assert_eq!(linked.scheduled_payment.unwrap().minor_units, 150_000);
+    assert_eq!(
+        linked.other.unwrap().minor_units,
+        120_000,
+        "the split: the part beyond the scheduled payment"
+    );
+
+    // A second bill for the same loan is refused, naming the first.
+    let mut second = bill_input("monthly", "subscription");
+    second.name = "Extra principal".to_owned();
+    second.anchor_date = "2026-07-15".to_owned();
+    second.autopay_account_id = Some(checking);
+    let second_id = create_recurring_bill_impl(&state, second).unwrap().event_id;
+    let refused = link_bill_to_loan_impl(&state, second_id, loan.clone(), String::new());
+    assert!(
+        format!("{refused:?}").contains("ACME HOME LOANS"),
+        "names the existing bill: {refused:?}"
+    );
+
+    unlink_bill_from_loan_impl(&state, bill.clone(), String::new()).unwrap();
+    assert!(read(&state).loan_link.is_none());
+
+    // "No, it's a different bill" round-trips, and clears.
+    set_bill_not_loan_payment_impl(&state, bill.clone(), Some(loan.clone()), String::new())
+        .unwrap();
+    let answered = read(&state).not_loan_payment.expect("answer remembered");
+    assert_eq!(answered.loan_account_id, loan);
+    assert_eq!(answered.loan_name, "Test Mortgage");
+    set_bill_not_loan_payment_impl(&state, bill.clone(), None, String::new()).unwrap();
+    assert!(read(&state).not_loan_payment.is_none());
+
+    // Bad input is a validation error, not a panic.
+    assert!(link_bill_to_loan_impl(&state, "nope".to_owned(), loan, String::new()).is_err());
+    assert!(unlink_bill_from_loan_impl(&state, "nope".to_owned(), String::new()).is_err());
+}

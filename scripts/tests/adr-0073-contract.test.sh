@@ -87,6 +87,12 @@ require_text "tombstone is distinct from archive" "$ADR" "Tombstoning is distinc
 require_text "no purge path" "$ADR" "No purge or compaction path exists."
 require_text "toggle count after tombstones" "$ADR" "**Toggle 18**"
 require_text "tombstone-first is empty after tombstones" "$ADR" "**Tombstone first 0**"
+require_text "link addendum is present" "$ADR" "## Addendum B — The bill-to-loan link (2026-10-25, \`personal-cfo-6wk.22\`)"
+require_text "link commands are Sets" "$ADR" "That makes **Set 21** and 56 appendix rows"
+require_text "dangling link applies as no link" "$ADR" "the command **applies as no link**"
+require_text "loan archive clears links in the same command" "$ADR" "\`ArchiveAccount\` clears every link to the archived loan"
+require_text "bill archive and delete clear the link" "$ADR" "\`ArchiveRecurringBill\` and \`DeleteRecurringBill\` clear the bill's own link"
+require_text "one bill per loan is queue-choose" "$ADR" "is a **queue-choose** (the user picks which bill carries the link)"
 require_text "never-ships exception is counted" "$ADR" "**Never ships (1).**"
 require_text "staging bypass is forbidden" "$ADR" "a replica never looks up an origin"
 require_text "rough tally is strict" "$ADR" "23 strict-auto candidate rows (only when the predicate holds)"
@@ -128,6 +134,7 @@ variants=(
   UpdateCategory MoveCategory ArchiveCategory ReinstateCategory RecategorizeTransaction
   VoidTransaction MarkReviewed ApplyScenario RevertScenarioApply CreateTag SetTags SetNote
   SetSplits ReinstateRecurringTransfer ReinstateIncomeSource ReinstateRecurringBill
+  LinkBillToLoan UnlinkBillFromLoan SetBillNotLoanPayment
 )
 for variant in "${variants[@]}"; do
   require_text "appendix maps $variant" "$ADR" "| \`$variant\` |"
@@ -138,7 +145,7 @@ require_text "test parses the ADR table" "$TEST" "fn parse_adr_appendix"
 require_text "test compares every ADR cell" "$TEST" "fn compare_adr_appendix"
 require_text "test proves one-cell drift fails" "$TEST" "adr_appendix_comparison_rejects_one_cell_outcome_drift"
 require_text "test asserts live enum count" "$TEST" "variants.len(),"
-require_text "test pins the current enum count" "$TEST" "        53,"
+require_text "test pins the current enum count" "$TEST" "        56,"
 require_text "test asserts shape counts" "$TEST" "assert_eq!(shape_count(Shape::Create), 8"
 require_text "test rejects unmapped variants" "$TEST" "exactly one disposition row"
 require_text "two-vault toggle strict test" "$TEST" "two_vault_strict_rebase_queues_equal_end_state_toggle_when_touched"

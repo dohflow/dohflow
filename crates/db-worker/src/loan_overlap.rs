@@ -151,6 +151,14 @@ pub(crate) fn detect_loan_double_counts(
         let paired = paired_payments(conn, loan.ledger_account_id)?;
         let payment = emitting.payment_minor;
         for bill in &bills {
+            // Resolved or answered (personal-cfo-6wk.22): a bill that is LINKED to a loan is that
+            // loan's payment and the forecast already counts it once, so it is no overlap with any
+            // loan; and a bill the user said is NOT this loan's payment is skipped for this loan.
+            if bill.linked_loan_account_id.is_some()
+                || bill.not_payment_of_loan_account_id == Some(loan.account_id)
+            {
+                continue;
+            }
             let name_match = names_similar(&loan.name, &bill.name);
             let loan_shaped = matches!(
                 bill.bill_type.as_deref(),

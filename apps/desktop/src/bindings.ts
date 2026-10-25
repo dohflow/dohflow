@@ -206,6 +206,9 @@ export const commands = {
 	unconfirmedPastDue: () => typedError<UnconfirmedOccurrenceDto[], IpcError>(__TAURI_INVOKE("unconfirmed_past_due")),
 	loanDoubleCountWarnings: () => typedError<LoanDoubleCountWarningDto[], IpcError>(__TAURI_INVOKE("loan_double_count_warnings")),
 	recurringCandidates: () => typedError<RecurringCandidateDto[], IpcError>(__TAURI_INVOKE("recurring_candidates")),
+	linkBillToLoan: (billId: string, loanAccountId: string, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("link_bill_to_loan", { billId, loanAccountId, idempotencyKey })),
+	unlinkBillFromLoan: (billId: string, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("unlink_bill_from_loan", { billId, idempotencyKey })),
+	setBillNotLoanPayment: (billId: string, loanAccountId: string | null, idempotencyKey: string) => typedError<MutationResult, IpcError>(__TAURI_INVOKE("set_bill_not_loan_payment", { billId, loanAccountId, idempotencyKey })),
 	incomeCandidates: () => typedError<RecurringCandidateDto[], IpcError>(__TAURI_INVOKE("income_candidates")),
 	recurringBillHistory: (eventId: string) => typedError<RecurringBillOccurrenceDto[], IpcError>(__TAURI_INVOKE("recurring_bill_history", { eventId })),
 	/**
@@ -615,6 +618,37 @@ export type BatchResultDto = {
 	 *  account (personal-cfo-tulv `account_map`). Not part of `skipped_rows`.
 	 */
 	skipped_unmapped: number,
+};
+
+/**
+ *  A bill's link to the loan it pays (personal-cfo-6wk.22; ADR 0035 addendum 2026-10-25). While
+ *  `in_force` the forecast counts the bill's cash once (the observed debit) and the loan's own
+ *  due-date row is not emitted.
+ */
+export type BillLoanLinkDto = {
+	/**  The loan account (plain UUID, matches `AccountViewDto.account_id`). */
+	loan_account_id: string,
+	loan_name: string,
+	/**  The loan's own payment is currently carried by this bill. */
+	in_force: boolean,
+	/**  The bill no longer repeats like the loan's payment, so BOTH now count. */
+	cadence_changed: boolean,
+	/**  The bill is below 95% of the loan's scheduled payment (the link stays; the user is warned). */
+	below_scheduled: boolean,
+	/**  The payment the forecast derives for the loan, when it projects a recurring one. */
+	scheduled_payment: MoneyDto | null,
+	/**
+	 *  The part of the bill beyond the scheduled payment (escrow, fees, extra principal), when the
+	 *  link is in force and the bill is larger.
+	 */
+	other: MoneyDto | null,
+};
+
+/**  The loan the user said a bill is NOT the payment of (personal-cfo-6wk.22). */
+export type BillNotLoanPaymentDto = {
+	/**  The loan account (plain UUID). */
+	loan_account_id: string,
+	loan_name: string,
 };
 
 /**
@@ -2131,6 +2165,16 @@ export type RecurringBillDto = {
 	category_id: string | null,
 	/**  The bill's tag ids (UUID strings); empty when untagged (personal-cfo-4d8.24.5.1). */
 	tag_ids: string[],
+	/**
+	 *  The loan this bill is linked to as its payment, and how the link stands
+	 *  (personal-cfo-6wk.22); null when not linked.
+	 */
+	loan_link: BillLoanLinkDto | null,
+	/**
+	 *  The loan the user said this bill is NOT the payment of (personal-cfo-6wk.22); null when
+	 *  unanswered. Shown so it can be cleared from the bill's detail.
+	 */
+	not_loan_payment: BillNotLoanPaymentDto | null,
 };
 
 /**

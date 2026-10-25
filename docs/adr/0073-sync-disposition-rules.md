@@ -255,6 +255,9 @@ receives semantic auto-merge treatment.
 | `RestoreIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveRecurringBill` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `RestoreRecurringBill` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `LinkBillToLoan` | Set | auto iff strict predicate; a loan that is archived or no longer a loan on the new base applies as no link; a second bill for the same loan queue-choose |
+| `UnlinkBillFromLoan` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `SetBillNotLoanPayment` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -340,6 +343,35 @@ candidate rows, 16 scalar/Scenario queue-choose rows, 3 structural queue-edit ro
 the generic invalid-reference Create path, 0 tombstone-first rows, 4 reshape-first rows
 and 1 never-ships row. The generated appendix and the `#[test]` that checks it carry the
 new rows; the three `Reinstate*` payloads are additive version 1 payloads.
+
+## Addendum B — The bill-to-loan link (2026-10-25, `personal-cfo-6wk.22`)
+
+The ADR 0035 addendum of the same date lets a recurring bill be **linked** to the loan it pays, so
+the forecast counts that obligation once. The link is user data on `recurring_events` (a class-1
+table, schema version 59: `linked_loan_account_id`, and `not_payment_of_loan_account_id` for the
+user's "No, it's a different bill"). It is changed only by three new commands, each a **Set** with
+its own additive version 1 payload (the existing payloads are unchanged, and no field was added to
+any of them): `LinkBillToLoan`, `UnlinkBillFromLoan` and `SetBillNotLoanPayment` (a loan to remember
+the answer, or none to clear it). That makes **Set 21** and 56 appendix rows; the generated
+appendix and its test carry the three rows.
+
+**The dangling-link rule (a deterministic apply rule).** A link must name an active
+`loan_liability` account. When a replica applies `LinkBillToLoan` on a base where the loan has been
+archived, or is no longer a loan, the command **applies as no link**: the column stays `NULL`, it
+never errors and never queues on that ground. Both rows then return to the forecast (the bill and
+the loan's own payment), so cash never vanishes and the overlap warning describes the pair again.
+The rule is the same on every device, including on rebase, and it is idempotent. It is complete
+only because the commands that remove the loan or the bill clear the link **in the same command**:
+
+- `ArchiveAccount` clears every link to the archived loan, so a reinstated loan comes back
+  unlinked;
+- `ArchiveRecurringBill` and `DeleteRecurringBill` clear the bill's own link, so a link only ever
+  sits on an active bill and a restored or reinstated bill comes back unlinked.
+
+These clears are part of those commands' write sets (the write set is a state difference), so they
+replicate. **One bill per loan:** applying `LinkBillToLoan` for a loan that another bill is already
+linked to is a **queue-choose** (the user picks which bill carries the link); locally it is refused
+with an error naming the bill.
 
 ## Linked beads
 
