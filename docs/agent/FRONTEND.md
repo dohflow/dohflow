@@ -108,24 +108,30 @@ a delete.
    confirming. Do not use "Delete" here: it promises something the app does not do.
 2. **The notice.** After the removal succeeds, a transient notice reads **"Removed `<name>`. Undo"**,
    where **Undo** is a button. It is announced to screen readers (`role="status"`, a polite live
-   region, never `alert`) and **keyboard-reachable**: the Undo button is in the tab order right
-   after the list the removed row belonged to. Focus is never lost to the page body: when the
-   row disappears, focus moves to the nearest surviving row, or to the section heading if there
-   is none.
+   region, never `alert`). **Where it lives:** in ONE **notifications region owned by the shell**
+   (`role="region"`, `aria-label="Notifications"`), not in the screen, so a pending Undo survives
+   leaving the screen (item 3). The region is rendered **first inside `main`**, so the tab order
+   reaches its Undo button before the page content, and landmark navigation finds it by name.
+   **A notice appearing never moves focus** (that would take the user out of what they were
+   doing). Focus is never lost to the page body either: when the removed row disappears, focus
+   moves to the nearest surviving row, or to the section heading if there is none.
 3. **Duration and dismissal.** The notice stays for **10 seconds**, long enough to reach with the
    keyboard or a screen reader. The timer **pauses while the pointer is over the notice or focus is
-   inside it**. It closes on expiry, on **Escape**, on a close button, and when Undo succeeds.
-   Notices **stack** (newest last, at most three at once; the oldest expire first), so removing a
-   second thing does not take away the chance to undo the first. Leaving the surface does not
-   cancel a pending Undo; the notice region lives with the shell, not the screen.
+   inside it**. It closes on expiry, on a close button, when Undo succeeds, and on **Escape while
+   focus is inside that notice** (Escape elsewhere is never taken). Notices **stack** (newest
+   last, at most three at once), so removing a second thing does not take away the chance to undo
+   the first; **a fourth notice closes the oldest one early**, ahead of its timer. Leaving the
+   screen does not cancel a pending Undo: the notifications region lives with the shell.
 4. **What Undo does.** It calls the matching reinstate command
    (`reinstate_income_source`, `reinstate_recurring_bill`, `reinstate_recurring_transfer`) with a
    fresh idempotency key, then refreshes **the same queries the removal refreshed** (and the
    forecast ones), so the item reappears where it was. Reinstating something that is not removed is
    an accepted no-op, so a double click is harmless.
-5. **When Undo fails** it is an error state (section 6): the notice does not vanish. It switches to
-   **"Couldn't undo — try again."** as `role="alert"`, keeps its **Undo** button (the removal still
-   stands, so the user can retry) and stops its timer until the user retries or dismisses it.
+5. **When Undo fails** it is an error state (section 6): the notice does not vanish. It keeps its
+   **Undo** button (the removal still stands, so the user can retry), stops its timer until the user
+   retries or dismisses it, and shows **"Couldn't undo — try again."** as its **own `role="alert"`
+   element** inside the notice. The notice's own `role="status"` is not changed, so the live regions
+   announce the failure once rather than re-announcing the whole notice.
 6. **Irreversible deletes keep explicit destructive wording.** A remove with **no** reinstate
    command (a real, permanent deletion) never uses the wording above. Its confirm says that it
    **cannot be undone**, names what is lost, and has no Undo notice. Do not borrow the reversible
@@ -133,8 +139,11 @@ a delete.
 
 **The shared primitive.** The notice is one component in `components/ui` (a `Notice` and a small
 provider/hook that a screen calls with the message, the Undo handler and the name), added by the
-follow-up that applies this pattern (`personal-cfo-egn67`, AC5). Screens do not hand-roll toasts,
-timers or live regions. Its tests assert the live-region text and role, that Undo calls the reinstate
+follow-up that applies this pattern (`personal-cfo-egn67`, AC5). New removals do not hand-roll
+toasts, timers or live regions. **Out of scope here:** the Cash Flow `MarkedPaidUndoBar` (a 12 s
+bar that undoes *marking an occurrence paid*, a confirmation and not a remove, with its error inside
+its status region). It predates this section and keeps working as it is; whether it migrates onto the
+primitive is a separate decision for planning, not made by this convention. Its tests assert the live-region text and role, that Undo calls the reinstate
 command, the failure state, the paused timer under fake timers, stacking and the three dismissals.
 
 ## 7. Components + styling
