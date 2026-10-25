@@ -373,6 +373,14 @@ replicate. **One bill per loan:** applying `LinkBillToLoan` for a loan that anot
 linked to is a **queue-choose** (the user picks which bill carries the link); locally it is refused
 with an error naming the bill.
 
+**Two consequences for the replica side.** The "applies as no link" rule above is a **contract
+for the Sync receiver** (the S3-1 apply step), not something this change can enforce, because no
+replica applier exists yet; it must use the same clearing statement the commands use. And
+`ArchiveAccount` now **also writes `recurring_events`** (it clears the bills linked to the loan), so
+its write set includes those rows and the Toggle rule's "touched write set" predicate applies to
+them: a concurrent edit of a linked bill on another device queues the archive rather than letting it
+silently undo that edit.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` — ADR 0074, the CAS/rebase premise

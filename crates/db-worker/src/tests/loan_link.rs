@@ -1030,3 +1030,62 @@ fn a_credit_card_with_payment_terms_cannot_be_linked() {
     );
     assert_eq!(stored_link(&worker, bill_id), None);
 }
+
+/// `UpdateRecurringBill` rewrites a bill's currency. A linked dollar bill edited into euros is no
+/// longer the dollar loan's payment, so the link must stop being in force and must stop suppressing the
+/// loan's row (04b's F2: removing the same-currency condition passed every test). Checked on the link
+/// status and on the suppression set itself: a euro bill in a dollar household already makes the whole
+/// forecast refuse to build (an existing rule, independent of links), so the forecast total cannot
+/// show this.
+#[test]
+fn editing_the_linked_bills_currency_stops_it_carrying_the_loan() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    let bill_id = the_bill(&worker, &fixture, 150_000);
+    link(&worker, bill_id, fixture.loan).unwrap();
+    let carried = |w: &DbWorker| {
+        crate::forecast::loans_with_link_in_force(&w.read_connection().unwrap()).unwrap()
+    };
+    assert!(carried(&worker).contains(&fixture.loan.as_uuid()));
+
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::UpdateRecurringBill {
+                event_id: bill_id,
+                name: "ACME HOME LOANS".to_owned(),
+                amount: Money::new(150_000, Currency::Eur),
+                bill_type: "subscription".to_owned(),
+                frequency: Frequency::Monthly,
+                anchor: the_15th(),
+                autopay_account_id: None,
+                description: None,
+            },
+        )
+        .unwrap();
+    // The link is still stored, but the euro bill is not the dollar loan's payment.
+    assert_eq!(stored_link(&worker, bill_id), Some(fixture.loan.as_uuid()));
+    assert!(!status_of(&worker, bill_id).unwrap().in_force);
+    assert!(
+        carried(&worker).is_empty(),
+        "the loan's own row is no longer suppressed by a bill in another currency"
+    );
+
+    // Restoring the currency restores the link.
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::UpdateRecurringBill {
+                event_id: bill_id,
+                name: "ACME HOME LOANS".to_owned(),
+                amount: Money::new(150_000, Currency::Usd),
+                bill_type: "subscription".to_owned(),
+                frequency: Frequency::Monthly,
+                anchor: the_15th(),
+                autopay_account_id: None,
+                description: None,
+            },
+        )
+        .unwrap();
+    assert!(status_of(&worker, bill_id).unwrap().in_force);
+}

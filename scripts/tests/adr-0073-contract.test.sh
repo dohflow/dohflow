@@ -92,6 +92,9 @@ require_text "link commands are Sets" "$ADR" "That makes **Set 21** and 56 appen
 require_text "dangling link applies as no link" "$ADR" "the command **applies as no link**"
 require_text "loan archive clears links in the same command" "$ADR" "\`ArchiveAccount\` clears every link to the archived loan"
 require_text "bill archive and delete clear the link" "$ADR" "\`ArchiveRecurringBill\` and \`DeleteRecurringBill\` clear the bill's own link"
+require_text "replica apply rule is a contract for the receiver" "$ADR" "is a **contract
+for the Sync receiver**"
+require_text "archive account now writes bills" "$ADR" "\`ArchiveAccount\` now **also writes \`recurring_events\`**"
 require_text "one bill per loan is queue-choose" "$ADR" "is a **queue-choose** (the user picks which bill carries the link)"
 require_text "never-ships exception is counted" "$ADR" "**Never ships (1).**"
 require_text "staging bypass is forbidden" "$ADR" "a replica never looks up an origin"

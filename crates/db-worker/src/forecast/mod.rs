@@ -47,6 +47,8 @@ pub use card_cycles::{
     CardCycleView, CardStatementForecastView, CardStatementHistoryView, StoredStatementView,
 };
 pub(crate) use events::{household_today, read_household_tz, reporting_currency};
+#[cfg(test)]
+pub(crate) use loan_link::loans_with_link_in_force;
 pub(crate) use loan_link::{link_status, LinkedBill};
 // Only exercised by tests today (`household_today` is the production entry point); gated so
 // a non-test build doesn't warn on it as unused.
