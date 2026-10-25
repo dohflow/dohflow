@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=8 -->
+<!-- vault-format: spec-version=9 -->
 <!-- vault-format: schema-version=58 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -266,6 +266,10 @@ synthetic no-app recovery test before any such public claim.
   publish a key commitment never used before in the chain. C.14 gains the public membership-chain
   conformance vectors (`docs/architecture/vectors/membership-chain-v1.json`). No existing wire
   layout or vector changes.
+- `spec-version = 9` adds the push and producer rules of C.4 (what the service MUST check at the
+  door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
+  receiver-check rule set to `engine_version`, and adds the typed failure
+  `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
 - Envelope v1 is read/written today; a future layout must use a new envelope
   version and retain an explicit reader/migration policy.
 - Backup v2 is written; backup v1 and v2 are read. The restore path refuses a
@@ -1094,6 +1098,55 @@ The set of rows is the C.1.5 state difference: the class-1 rows whose final stat
 from their state before the command. Class-2 rebuilds are excluded, and so is the command's
 own `operation_log` row.
 
+### Push and producer rules
+
+The service stores sealed objects it cannot read, so it can refuse a push for what the header
+and the chain show, but not for anything that needs the plaintext. An envelope sealed
+inconsistently by a buggy or partly failed producer would otherwise be accepted at a sequence
+number and fail the receiver checks on every replica at that position, stopping the whole
+vault. The two sides therefore share the work, and between them leave no class of inconsistency
+unchecked.
+
+The service MUST work in this order: **parse, then the replay lookup of C.10, then the rest**.
+First it parses the container and header strictly (grammar, the dual-identity shape, the counter
+cap, the `engine_version` grammar, a ciphertext of at least a GCM tag), refuses an object over the
+envelope size cap and a snapshot pushed as a command envelope, requires `vault_id` to be the
+routed vault, and computes `canonical_envelope_digest` itself from the received bytes. It then
+does the replay lookup of C.10; an exact retry of an accepted envelope returns its original `seq`
+even if its device has since been revoked or replaced (after `NonceStateLost`, or a restore) and
+even with an old `key_epoch`. Only for an identity the index does **not** know does it go on to
+require `device_id` and `device_key_fingerprint` to be one currently authorized member of the
+chain, `nonce_domain` to be the one derived (C.3) for the epoch, fingerprint and object type,
+`key_epoch` to be the epoch in force, and the nonce-reuse backstop above to hold.
+
+The producer MUST, in this order: (1) apply the command locally and commit the op-log row
+together with the counter advance, before encrypting; (2) seal; (3) before it uploads, open the
+sealed object it is about to send through the
+**receiver path** (the AEAD key derived from the expected vault id, key epoch and its own
+fingerprint from the chain, the nonce built from the header's nonce domain and counter; never the
+sealing code's key object and never the plaintext it still holds), decode the plaintext, and run
+the receiver checks above on that header and plaintext. It MUST NOT upload on any failure; the
+command stays in its outbox with a typed error and is not retried in a loop, because the failure
+is a producer bug; the change is committed on this device only and cannot sync, and the user is
+told exactly that. (4) It persists the verified object with its outbox entry, and (5) uploads by
+that object only. The bytes verified are the bytes uploaded: the upload is by the verified object,
+never by raw bytes plus an approval. A crash between (2) and (4) re-seals with a fresh counter and
+never reuses the old one; after an application update the command is re-sealed with a new counter
+and verified again.
+
+**The check set is versioned with `engine_version`.** Every replica that applies an envelope has
+the same `engine_version` (C.13), and the receiver checks are part of what that string names: a
+change to what the checks accept is an `engine_version` change. Two replicas that both evaluate
+a log position therefore run the same checks, which keeps "this envelope is invalid" a fact the
+whole vault agrees on. (A device registry that never decrypts is not part of that agreement.)
+
+A replica that finds an authenticated envelope at position `N` failing the receiver checks is in
+the typed state `AuthenticatedEnvelopeInvalid` (C.11): it applies nothing at or past `N`, it does
+not push (any push would need a base at or past `N`), it keeps its outbox, and it surfaces the
+position, the command and the sealing device. It is neither a fork nor a retryable error. The
+position is identified by `(seq, canonical_envelope_digest)`: the same position with a different
+digest is a fork of the log (`ProtocolFork`).
+
 ### Counter register and nonce state
 
 Each device owns a durable `next_counter` for every
@@ -1619,7 +1672,9 @@ envelopes are retained for diagnosis.
 `StaleMembershipHead`, `BadEpochSequence`, `CutoverHeadNotRevoke`,
 `GrantHeadNotAdd`, `EpochRecordMissing`, `EpochEquivocation`,
 `MembershipChainFork`, `SyncHalted`, `StateRolledBack`, `ArtifactDescriptorChanged`,
-`ArtifactMaterializationFailed`, `ArtifactRebootstrapRequired` and
+`ArtifactMaterializationFailed`, `ArtifactRebootstrapRequired`,
+`AuthenticatedEnvelopeInvalid` (an envelope that authenticates but fails the receiver checks at a
+log position, C.4 "Push and producer rules"; neither a fork nor retryable) and
 `ArtifactMissing` (a closure that names an absent object). Each fails closed,
 mutates nothing, and retains diagnostic evidence.
 
