@@ -27,6 +27,26 @@ vi.mock("@/settings/BuildBadge", () => ({ BuildBadge: () => null }));
 vi.mock("@/settings/UpdateAvailableNotice", () => ({ UpdateAvailableNotice: () => null }));
 vi.mock("@/forecast-activation/CapabilityUnlockNotice", () => ({ CapabilityUnlockNotice: () => null }));
 
+describe("UnlockedHome scroll container", () => {
+  // personal-cfo-twpo.1. jsdom has no layout engine, so this guards the structural cause: the shell
+  // is exactly viewport height with `main` as its only scroller, and `main` must be a POSITIONED
+  // element so that `position: absolute` descendants (every `sr-only` label) are contained and
+  // scrolled by it. Measured before the fix with linked accounts loaded: the document scrolled
+  // 1817px past an 800px window (six sr-only labels); after: 0px, with `main` unchanged.
+  it("keeps the main pane positioned so absolutely positioned labels cannot stretch the document", async () => {
+    const { container } = renderWithClient(<UnlockedHome />);
+    await screen.findByRole("button", { name: "Open Backups in Settings" });
+    const main = container.querySelector("main");
+    expect(main).not.toBeNull();
+    expect(main!.classList.contains("relative")).toBe(true);
+    expect(main!.classList.contains("overflow-y-auto")).toBe(true);
+    // The shell itself must not scroll the document: exactly viewport height, overflow hidden.
+    const shell = main!.parentElement!;
+    expect(shell.classList.contains("h-screen")).toBe(true);
+    expect(shell.classList.contains("overflow-hidden")).toBe(true);
+  });
+});
+
 describe("UnlockedHome backup navigation", () => {
   it("opens Settings and focuses Backups from the reminder without a Backup tab", async () => {
     renderWithClient(<UnlockedHome />);
