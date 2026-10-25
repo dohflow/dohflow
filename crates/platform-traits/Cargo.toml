@@ -1,0 +1,13 @@
+[package]
+name = "platform-traits"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Platform service traits for DohFlow (plan 3.3.1): SecretStore and BiometricAuth, their typed errors, the redacting secret value type, the platform capability matrix and a conformance suite every implementation runs. No platform code and no unsafe."
+
+[dependencies]
+zeroize = { workspace = true }
+thiserror = { workspace = true }
