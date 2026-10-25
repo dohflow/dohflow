@@ -16,6 +16,11 @@ description = "Vault cryptography for DohFlow: Argon2id key derivation (calibrat
 [dependencies]
 argon2 = { workspace = true }
 aes-gcm = { workspace = true }
+# Named only so their zeroize features are enabled for the key schedule inside Aes256Gcm
+# (personal-cfo-7ie.19); the code uses them through aes-gcm.
+aes = { workspace = true }
+ctr = { workspace = true }
+ghash = { workspace = true }
 # Attachment store (personal-cfo-bcj, ADR 0023): HKDF content-addressing subkey +
 # HMAC-SHA256 keyed storage IDs. Pure RustCrypto — no DB/async.
 sha2 = { workspace = true }
