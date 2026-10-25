@@ -1348,10 +1348,18 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # Only alert for the commit that is still the tip of main: a run of an older commit can
+          # finish after a newer, green one has closed the alert, and must not reopen the story
+          # (personal-cfo-md8h2.21). The tip's own run decides whether main is red.
+          tip="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [ "$tip" != "$SHA" ]; then
+            echo "main has moved on from ${SHA:0:12} (tip is ${tip:0:12}): this run does not alert."
+            exit 0
+          fi
           gh label create ci-main-red --repo "$GITHUB_REPOSITORY" --color b60205 \
             --description "A gate failed on a push to main" 2>/dev/null || true
           failed=$(printf '%s' "$NEEDS" | jq -r 'to_entries[] | select(.value.result == "failure") | "- " + .key')
-          body=$(printf 'A gate failed on main at commit %s.\n\nFailed jobs:\n%s\n\nRun: %s\n\nFix forward or revert, then close this issue.' "$SHA" "$failed" "$RUN_URL")
+          body=$(printf 'A gate failed on main at commit %s.\n\nFailed jobs:\n%s\n\nRun: %s\n\nFix forward or revert; this issue closes itself on the next green run of main.' "$SHA" "$failed" "$RUN_URL")
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci-main-red --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
@@ -1359,3 +1367,30 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --label ci-main-red \
               --title "main is red at ${SHA:0:12}" --body "$body"
           fi
+
+  # Closes the ci-main-red issue when main is green again (personal-cfo-md8h2.21): the next push
+  # run of main in which every gate above succeeded closes it with a comment linking the run.
+  # A skipped or cancelled gate does not count as green (alert-close.sh checks every result),
+  # and an issue labeled keep-open, or reopened by a person in the last 24 hours, is left open.
+  # Not a required check.
+  main-red-resolve:
+    name: Close the main-red alert when main is green
+    runs-on: ubuntu-24.04
+    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Close any open ci-main-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          bash scripts/alert-close.sh --label ci-main-red --repo "$GITHUB_REPOSITORY" \
+            --run-url "$RUN_URL" --what "main is green again (every gate passed on this push)" \
+            --needs-json "$NEEDS"
