@@ -347,7 +347,7 @@ name = "recurring_events"
 class = "1"
 write_set = "full"
 primary_key = ["id"]
-columns = ["id:uuid", "name:text", "source:text", "account_id:uuid", "amount_expected_minor:int", "amount_variance_minor:int", "currency:text", "frequency:text", "custom_schedule_json:text", "next_expected_date:text", "category_id:uuid", "detection_confidence_bps:int", "include_in_forecast:int", "autopay_account_id:uuid", "is_active:int", "notes:text", "created_at:text", "updated_at:text", "archived_at:text", "autopay_enabled:int", "source_merchant_key:text", "deleted_at:text"]
+columns = ["id:uuid", "name:text", "source:text", "account_id:uuid", "amount_expected_minor:int", "amount_variance_minor:int", "currency:text", "frequency:text", "custom_schedule_json:text", "next_expected_date:text", "category_id:uuid", "detection_confidence_bps:int", "include_in_forecast:int", "autopay_account_id:uuid", "is_active:int", "notes:text", "created_at:text", "updated_at:text", "archived_at:text", "autopay_enabled:int", "source_merchant_key:text", "deleted_at:text", "linked_loan_account_id:uuid", "not_payment_of_loan_account_id:uuid"]
 
 [[table]]
 name = "recurring_suggestion_suppressions"

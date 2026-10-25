@@ -1,12 +1,14 @@
-import { useState, useId } from "react";
+import { useId, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Loader2, Plus, Receipt, Search } from "lucide-react";
 
+import { commands } from "@/bindings";
 import type {
   AccountViewDto,
   IpcError,
+  LoanOverlapMatchDto,
   MoneyDto,
   RecurringBillDto,
   RecurringCandidateDto,
@@ -47,7 +49,10 @@ import { useTags } from "@/tags/useTags";
 import { cn } from "@/lib/utils";
 import { useBaseCurrency } from "@/settings/useBaseCurrency";
 import { BillDetailDrawer } from "./BillDetailDrawer";
-import { useBills } from "./useBills";
+import { useBills, type BillFollowUp } from "./useBills";
+import { useNotices } from "@/components/ui/notice-context";
+import { RemoveConfirm } from "@/components/ui/remove-confirm";
+import { rememberFocusTarget } from "@/lib/removalFocus";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -177,8 +182,16 @@ export function BillsView({
   // assumption events into base rather than editing the bill, so the stored amount and
   // the forecast's amount legitimately differ — the row has to say so.
   const { overrideFor } = useAppliedOverrides();
-  const { bills, error, addBill, updateBill, deleteBill, archiveBill, restoreBill } =
-    useBills();
+  const {
+    bills,
+    error,
+    addBill,
+    updateBill,
+    deleteBill,
+    reinstateBill,
+    archiveBill,
+    restoreBill,
+  } = useBills();
   const { accounts } = useAccounts();
   const { baseCurrency } = useBaseCurrency();
   const [adding, setAdding] = useState(false);
@@ -196,12 +209,26 @@ export function BillsView({
   const visibleArchived = sortBills(filterBills(archivedBills, query), sort);
 
   return (
-    <div className={embedded ? "flex flex-col gap-4" : "mx-auto flex w-full max-w-2xl flex-col gap-4"}>
+    <div
+      data-removal-scope
+      tabIndex={-1}
+      className={
+        embedded
+          ? "flex flex-col gap-4 outline-none"
+          : "mx-auto flex w-full max-w-2xl flex-col gap-4 outline-none"
+      }
+    >
       <div className="flex items-center justify-between">
         {embedded ? (
           <span />
         ) : (
-          <h2 className="text-lg font-semibold tracking-tight">Bills</h2>
+          <h2
+            data-removal-heading
+            tabIndex={-1}
+            className="text-lg font-semibold tracking-tight outline-none"
+          >
+            Bills
+          </h2>
         )}
         {!adding && (
           <Button size="sm" onClick={() => setAdding(true)}>
@@ -233,12 +260,16 @@ export function BillsView({
                 tag_ids: [],
               }}
               onCancel={() => setAdding(false)}
-              onSubmit={async (draft) => {
-                const { error: failure } = await addBill({
-                  ...draft,
-                  source_merchant_key: null,
-                  idempotency_key: mintIdempotencyKey(),
-                });
+              checkLoanOverlap={{ sourceMerchantKey: null }}
+              onSubmit={async (draft, follow) => {
+                const { error: failure } = await addBill(
+                  {
+                    ...draft,
+                    source_merchant_key: null,
+                    idempotency_key: mintIdempotencyKey(),
+                  },
+                  follow,
+                );
                 if (!failure) setAdding(false);
                 return failure ? describeIpcError(failure) : null;
               }}
@@ -316,6 +347,7 @@ export function BillsView({
                       override={overrideFor(bill.id)}
                       onOpenScenario={onOpenScenario}
                       onDelete={deleteBill}
+                      onReinstate={reinstateBill}
                       onArchive={archiveBill}
                       onRestore={restoreBill}
                     />
@@ -356,6 +388,7 @@ export function BillsView({
                       override={overrideFor(bill.id)}
                       onOpenScenario={onOpenScenario}
                         onDelete={deleteBill}
+                        onReinstate={reinstateBill}
                         onArchive={archiveBill}
                         onRestore={restoreBill}
                       />
@@ -380,13 +413,14 @@ export function BillsView({
   );
 }
 
-// A single bill row. Active bills show Edit / Archive / Delete (Delete behind a
-// two-click confirm). Archived bills (personal-cfo-4d8.2) are dimmed, show their
+// A single bill row. Active bills show Edit / Archive / Remove (Remove behind a
+// confirm, then a notice with Undo: docs/agent/FRONTEND.md section 6.2). Archived bills (personal-cfo-4d8.2) are dimmed, show their
 // created + archived dates, and offer Restore.
 function BillRow({
   bill,
   onOpenDrawer,
   onDelete,
+  onReinstate,
   onArchive,
   onRestore,
   override,
@@ -398,9 +432,13 @@ function BillRow({
   override?: AppliedOverride;
   onOpenScenario?: (scenarioId: string) => void;
   onDelete: (billId: string) => Promise<IpcError | null>;
+  /// The Undo of a remove.
+  onReinstate: (billId: string) => Promise<IpcError | null>;
   onArchive: (billId: string) => Promise<IpcError | null>;
   onRestore: (billId: string) => Promise<IpcError | null>;
 }) {
+  const { notify } = useNotices();
+  const rowRef = useRef<HTMLLIElement>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -461,7 +499,11 @@ function BillRow({
     );
   }
 
+  // Remove with undo (docs/agent/FRONTEND.md section 6.2): the remove is a tombstone, so it can be
+  // reversed. On success the row vanishes (the bills query is invalidated), focus moves to the
+  // nearest surviving row, and a notice offers Undo.
   async function runDelete() {
+    const restoreFocus = rememberFocusTarget(rowRef.current);
     setBusy(true);
     setError(null);
     const failure = await onDelete(bill.id);
@@ -469,12 +511,20 @@ function BillRow({
     if (failure) {
       setError(describeIpcError(failure));
       setConfirmingDelete(false);
+      return;
     }
-    // On success the row vanishes (the bills query is invalidated).
+    restoreFocus();
+    notify({
+      message: `Removed ${bill.name}.`,
+      undo: async () => (await onReinstate(bill.id)) === null,
+    });
   }
 
   return (
-    <li className="flex flex-col gap-1 border-b px-5 py-3 last:border-0">
+    <li
+      ref={rowRef}
+      className="flex flex-col gap-1 border-b px-5 py-3 last:border-0"
+    >
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"
@@ -508,25 +558,12 @@ function BillRow({
           </span>
           <div className="flex gap-1">
             {confirmingDelete ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={runDelete}
-                  aria-label={`Confirm delete ${bill.name}`}
-                >
-                  Confirm
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  type="button"
-                  onClick={() => setConfirmingDelete(false)}
-                >
-                  Cancel
-                </Button>
-              </>
+              <RemoveConfirm
+                name={bill.name}
+                busy={busy}
+                onConfirm={runDelete}
+                onCancel={() => setConfirmingDelete(false)}
+              />
             ) : (
               <>
                 <Button
@@ -543,9 +580,9 @@ function BillRow({
                   variant="ghost"
                   disabled={busy}
                   onClick={() => setConfirmingDelete(true)}
-                  aria-label={`Delete ${bill.name}`}
+                  aria-label={`Remove ${bill.name}`}
                 >
-                  Delete
+                  Remove
                 </Button>
               </>
             )}
@@ -616,6 +653,37 @@ type BillFormValues = z.infer<typeof billFormSchema>;
 // linked (USD for a new bill, the bill's existing currency for an edit) so an edit
 // never silently changes the currency of an accountless bill.
 // Exported so the First Forecast Wizard (personal-cfo-uipt) reuses it verbatim.
+/// "Add and link to <loan>" (personal-cfo-6wk.22): creates the bill, then links it to the loan it
+/// is the payment of. Only offered while the loan has no linked bill (one per loan), which the bill
+/// list already says; the server still refuses a second link as a backstop.
+function AddAndLinkButton({
+  loanId,
+  loanName,
+  saving,
+  onClick,
+}: {
+  loanId: string;
+  loanName: string;
+  saving: boolean;
+  onClick: () => void;
+}) {
+  const { bills } = useBills();
+  const taken = (bills ?? []).some((b) => b.loan_link?.loan_account_id === loanId);
+  if (taken) return null;
+  return (
+    <Button type="button" disabled={saving} onClick={onClick}>
+      {saving ? "Saving…" : `Add and link to ${loanName}`}
+    </Button>
+  );
+}
+
+/// How a creation-time match is presented (personal-cfo-6wk.20): `strong` is the loan's payment,
+/// `ask` is a question (the user's declared loan terms), `soft` is a note.
+function overlapKind(match: LoanOverlapMatchDto): "strong" | "ask" | "soft" {
+  if (match.strength === "strong") return "strong";
+  return match.matched_by === "declared_terms" ? "ask" : "soft";
+}
+
 export function BillForm({
   accounts,
   defaultValues,
@@ -627,14 +695,23 @@ export function BillForm({
   // hides it (editing a bill's category is a follow-up), but a hidden field keeps the
   // pre-filled value so it round-trips unchanged.
   showCategory = true,
+  // Creation paths opt in (personal-cfo-6wk.20): before the bill is created, check whether it looks
+  // like a loan's payment. `sourceMerchantKey` is the promoted candidate's key, else null. The edit
+  // form never passes it.
+  checkLoanOverlap,
 }: {
   accounts: AccountViewDto[];
   defaultValues: BillFormValues;
   submitLabel: string;
   fallbackCurrency: string;
   onCancel: () => void;
-  onSubmit: (draft: BillDraft) => Promise<string | null>;
+  /// `follow` carries what the user chose about a loan while adding (link the new bill, or remember
+  /// it is not that loan's payment); the edit form never gets one.
+  onSubmit: (draft: BillDraft, follow?: BillFollowUp) => Promise<string | null>;
   showCategory?: boolean;
+  /// `notPaymentOfLoanId`: the suggestion row already answered "is this the loan's payment?" with
+  /// "Add as a separate bill", so the question is not asked again and the answer is remembered.
+  checkLoanOverlap?: { sourceMerchantKey: string | null; notPaymentOfLoanId?: string };
 }) {
   const {
     register,
@@ -650,6 +727,13 @@ export function BillForm({
   // form can be mounted together (nhmsg review; mirrors IncomeForm).
   const uid = useId();
   const [error, setError] = useState<string | null>(null);
+  // A match found just before creating (personal-cfo-6wk.20): the confirm panel replaces the form's
+  // buttons until the user decides. Descriptive and advisory only (ADR 0018).
+  const [overlap, setOverlap] = useState<{
+    match: LoanOverlapMatchDto;
+    draft: BillDraft;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
   // Categorize + tag the bill up front so its forecasted occurrences + confirmed
   // payments inherit them (personal-cfo-4d8.24.5 / .5.1).
   const { categories } = useCategories();
@@ -700,9 +784,46 @@ export function BillForm({
       category_id: values.category_id === "" ? null : values.category_id,
       tag_ids: values.tag_ids,
     };
-    const failure = await onSubmit(draft);
+    if (checkLoanOverlap) {
+      // Fail open: the check is advisory, so if it cannot run (an error result, or a throw) the
+      // bill is still created.
+      try {
+        const checked = await commands.checkLoanOverlap({
+          ...draft,
+          source_merchant_key: checkLoanOverlap.sourceMerchantKey,
+          idempotency_key: mintIdempotencyKey(),
+        });
+        if (checked.status === "ok" && checked.data) {
+          const asksAboutLoan =
+            checked.data.strength === "possible" && checked.data.matched_by === "declared_terms";
+          // "Add as a separate bill" on a suggestion already answered this exact question.
+          if (!(asksAboutLoan && checkLoanOverlap.notPaymentOfLoanId)) {
+            setOverlap({ match: checked.data, draft });
+            return;
+          }
+        }
+      } catch {
+        // fall through to creation
+      }
+    }
+    // A suggestion's "Add as a separate bill" is the answer "this isn't that loan's payment":
+    // remember it with the new bill.
+    const answered = checkLoanOverlap?.notPaymentOfLoanId;
+    const failure = await onSubmit(draft, answered ? { notPaymentOfLoanAccountId: answered } : undefined);
     if (failure) setError(failure);
   });
+
+  /// The user chose to create the bill after seeing the match.
+  async function createAnyway(draft: BillDraft, follow?: BillFollowUp) {
+    setSaving(true);
+    setError(null);
+    const failure = await onSubmit(draft, follow);
+    setSaving(false);
+    if (failure) {
+      setError(failure);
+      setOverlap(null);
+    }
+  }
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
@@ -883,14 +1004,96 @@ export function BillForm({
         </p>
       )}
 
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Saving…" : submitLabel}
-        </Button>
-      </div>
+      {overlap ? (
+        <div
+          role="alert"
+          className="flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm"
+        >
+          {overlapKind(overlap.match) === "strong" && (
+            <>
+              <p>{`This is ${overlap.match.loan_name}'s payment — don't add a second one.`}</p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={saving} onClick={onCancel}>
+                  Don&apos;t add
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => void createAnyway(overlap.draft)}
+                >
+                  {saving ? "Saving…" : "Add anyway"}
+                </Button>
+                <AddAndLinkButton
+                  loanId={overlap.match.loan_account_id}
+                  loanName={overlap.match.loan_name}
+                  saving={saving}
+                  onClick={() =>
+                    void createAnyway(overlap.draft, {
+                      linkLoanAccountId: overlap.match.loan_account_id,
+                    })
+                  }
+                />
+              </div>
+            </>
+          )}
+          {overlapKind(overlap.match) === "ask" && (
+            <>
+              {/* The user's own loan terms are enough to ASK, never to assert it is counted twice. */}
+              <p className="font-medium">{`Is this ${overlap.match.loan_name}'s payment?`}</p>
+              <p className="text-muted-foreground">
+                {`It's paid from ${
+                  accounts.find((account) => account.id === overlap.draft.autopay_account_id)
+                    ?.name ?? "the loan's paying account"
+                } around ${overlap.match.loan_name}'s due date, as set in its terms.`}
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={saving} onClick={onCancel}>
+                  Yes — don&apos;t add a second one
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() =>
+                    void createAnyway(overlap.draft, {
+                      notPaymentOfLoanAccountId: overlap.match.loan_account_id,
+                    })
+                  }
+                >
+                  {saving ? "Saving…" : "No, it's a different bill"}
+                </Button>
+              </div>
+            </>
+          )}
+          {overlapKind(overlap.match) === "soft" && (
+            <>
+              <p>{`This bill might be the same as ${overlap.match.loan_name}'s payment.`}</p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={saving} onClick={onCancel}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void createAnyway(overlap.draft)}
+                >
+                  {saving ? "Saving…" : submitLabel}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Saving…" : submitLabel}
+          </Button>
+        </div>
+      )}
     </form>
   );
 }
@@ -950,13 +1153,17 @@ export function MakeRecurringBillForm({
         tag_ids: transaction.tag_ids,
       }}
       onCancel={onCancel}
-      onSubmit={async (draft) => {
+      checkLoanOverlap={{ sourceMerchantKey: null }}
+      onSubmit={async (draft, follow) => {
         // Promoted from a single transaction, not a detected merchant candidate.
-        const { error: failure } = await addBill({
-          ...draft,
-          source_merchant_key: null,
-          idempotency_key: mintIdempotencyKey(),
-        });
+        const { error: failure } = await addBill(
+          {
+            ...draft,
+            source_merchant_key: null,
+            idempotency_key: mintIdempotencyKey(),
+          },
+          follow,
+        );
         if (!failure) onCreated();
         return failure ? describeIpcError(failure) : null;
       }}
@@ -973,10 +1180,15 @@ export function MakeRecurringBillForm({
 /// the caller can surface its retro-attached history (ADR 0047 §1).
 export function RecurringCandidateForm({
   candidate,
+  notPaymentOfLoanId,
   onCancel,
   onCreated,
 }: {
   candidate: RecurringCandidateDto;
+  /// The suggestion row already asked "is this the loan's payment?" and the user chose "Add as a
+  /// separate bill": the creation-time check does not ask again, and the answer is remembered with
+  /// the new bill (personal-cfo-6wk.22).
+  notPaymentOfLoanId?: string;
   onCancel: () => void;
   onCreated: (eventId: string | null) => void;
 }) {
@@ -1017,14 +1229,21 @@ export function RecurringCandidateForm({
         tag_ids: [],
       }}
       onCancel={onCancel}
-      onSubmit={async (draft) => {
+      checkLoanOverlap={{
+        sourceMerchantKey: candidate.merchant_key,
+        notPaymentOfLoanId,
+      }}
+      onSubmit={async (draft, follow) => {
         // Persist the candidate's merchant key so the suggestion stays suppressed even
         // if the bill is later renamed (personal-cfo-5n4.8).
-        const { error: failure, eventId } = await addBill({
-          ...draft,
-          source_merchant_key: candidate.merchant_key,
-          idempotency_key: mintIdempotencyKey(),
-        });
+        const { error: failure, eventId } = await addBill(
+          {
+            ...draft,
+            source_merchant_key: candidate.merchant_key,
+            idempotency_key: mintIdempotencyKey(),
+          },
+          follow,
+        );
         if (!failure) onCreated(eventId);
         return failure ? describeIpcError(failure) : null;
       }}

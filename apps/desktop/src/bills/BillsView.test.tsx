@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   recurringBillHistory: vi.fn(),
   updateRecurringBill: vi.fn(),
   deleteRecurringBill: vi.fn(),
+  reinstateRecurringBill: vi.fn(),
   archiveRecurringBill: vi.fn(),
   restoreRecurringBill: vi.fn(),
   baseCurrency: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@/bindings", () => ({
     recurringBillHistory: mocks.recurringBillHistory,
     updateRecurringBill: mocks.updateRecurringBill,
     deleteRecurringBill: mocks.deleteRecurringBill,
+    reinstateRecurringBill: mocks.reinstateRecurringBill,
     archiveRecurringBill: mocks.archiveRecurringBill,
     restoreRecurringBill: mocks.restoreRecurringBill,
     baseCurrency: mocks.baseCurrency,
@@ -107,6 +109,8 @@ function bill(over: Partial<RecurringBillDto> = {}): RecurringBillDto {
     archived_at: null,
     category_id: null,
     tag_ids: [],
+    loan_link: null,
+    not_loan_payment: null,
     ...over,
   };
 }
@@ -117,6 +121,7 @@ beforeEach(() => {
   mocks.createRecurringBill.mockReset();
   mocks.updateRecurringBill.mockReset();
   mocks.deleteRecurringBill.mockReset();
+  mocks.reinstateRecurringBill.mockReset();
   mocks.archiveRecurringBill.mockReset();
   mocks.restoreRecurringBill.mockReset();
   mocks.baseCurrency.mockReset();
@@ -376,26 +381,102 @@ describe("BillsView", () => {
     expect(input.description).toBe("4K family plan");
   });
 
-  it("deletes a bill only after the inline confirm", async () => {
+  // Remove with undo (docs/agent/FRONTEND.md section 6.2, personal-cfo-egn67).
+  it("removes a bill only after the inline confirm, which says it can be brought back", async () => {
     mocks.recurringBillList.mockResolvedValue(ok([bill()]));
     mocks.deleteRecurringBill.mockResolvedValue(mutationOk());
     renderWithClient(<BillsView />);
 
-    // The first Delete click only reveals the confirm — nothing is deleted yet.
-    fireEvent.click(
-      await screen.findByRole("button", { name: /^delete netflix$/i }),
-    );
+    // The first click only reveals the confirm — nothing is removed yet.
+    fireEvent.click(await screen.findByRole("button", { name: /^remove netflix$/i }));
     expect(mocks.deleteRecurringBill).not.toHaveBeenCalled();
+    const confirm = screen.getByRole("group", { name: "Remove Netflix?" });
+    expect(within(confirm).getByText("You can bring it back.")).toBeInTheDocument();
+    // Cancel takes focus (the safe choice is the default) and removes nothing.
+    expect(within(confirm).getByRole("button", { name: "Cancel" })).toHaveFocus();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /confirm delete netflix/i }),
-    );
-    await waitFor(() =>
-      expect(mocks.deleteRecurringBill).toHaveBeenCalledTimes(1),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove netflix/i }));
+    await waitFor(() => expect(mocks.deleteRecurringBill).toHaveBeenCalledTimes(1));
     expect(mocks.deleteRecurringBill).toHaveBeenCalledWith(
       bill().id,
       expect.stringMatching(/.+/),
+    );
+  });
+
+  it("cancelling the confirm removes nothing and shows no notice", async () => {
+    mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove netflix$/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.deleteRecurringBill).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^remove netflix$/i })).toBeInTheDocument();
+  });
+
+  it("after a removal a notice says so, and Undo reinstates that bill", async () => {
+    mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+    mocks.deleteRecurringBill.mockResolvedValue(mutationOk());
+    mocks.reinstateRecurringBill.mockResolvedValue(mutationOk());
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove netflix$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove netflix/i }));
+
+    const region = await screen.findByRole("region", { name: "Notifications" });
+    expect(await within(region).findByText("Removed Netflix.")).toBeInTheDocument();
+    fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(mocks.reinstateRecurringBill).toHaveBeenCalledTimes(1));
+    expect(mocks.reinstateRecurringBill).toHaveBeenCalledWith(
+      bill().id,
+      expect.stringMatching(/.+/),
+    );
+    // A successful Undo closes the notice.
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull(),
+    );
+  });
+
+  it("a failed removal shows its error and no notice", async () => {
+    mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+    mocks.deleteRecurringBill.mockResolvedValue({
+      status: "error",
+      error: { Validation: "recurring bill does not exist" },
+    });
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove netflix$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove netflix/i }));
+    expect(await screen.findByText("recurring bill does not exist")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
+  });
+
+  it("removing the last bill moves focus to the section heading, not the page body", async () => {
+    mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+    mocks.deleteRecurringBill.mockImplementation(async () => {
+      mocks.recurringBillList.mockResolvedValue(ok([]));
+      return mutationOk();
+    });
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove netflix$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove netflix/i }));
+
+    await screen.findByRole("region", { name: "Notifications" });
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Bills" })).toHaveFocus());
+  });
+
+  it("after a removal focus moves to the nearest surviving row, not the page body", async () => {
+    const other = bill({ id: "0190d000-0000-7000-8000-000000000002", name: "Hulu" });
+    mocks.recurringBillList.mockResolvedValue(ok([bill(), other]));
+    mocks.deleteRecurringBill.mockImplementation(async () => {
+      mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+      return mutationOk();
+    });
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^remove hulu$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove hulu/i }));
+
+    await screen.findByRole("region", { name: "Notifications" });
+    // The surviving row's first control now has focus.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /open netflix detail/i })).toHaveFocus(),
     );
   });
 
@@ -515,6 +596,37 @@ describe("BillsView", () => {
     expect(
       within(drawer).getByLabelText<HTMLInputElement>(/amount/i).value,
     ).toBe("15.99");
+  });
+
+  it("shows a linked bill's link in its drawer, and none for an unlinked bill", async () => {
+    mocks.recurringBillList.mockResolvedValue(
+      ok([
+        bill({
+          loan_link: {
+            loan_account_id: "loan-1",
+            loan_name: "Test Mortgage",
+            in_force: true,
+            cadence_changed: false,
+            below_scheduled: false,
+            scheduled_payment: { minor_units: 150_000, currency: "USD" },
+            other: null,
+          },
+        }),
+      ]),
+    );
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /open netflix detail/i }));
+    const drawer = await screen.findByRole("dialog", { name: /bill detail/i });
+    expect(within(drawer).getByText("Linked to Test Mortgage's payment.")).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "Unlink" })).toBeInTheDocument();
+  });
+
+  it("shows no link section in the drawer of an unlinked bill", async () => {
+    mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /open netflix detail/i }));
+    const drawer = await screen.findByRole("dialog", { name: /bill detail/i });
+    expect(within(drawer).queryByRole("region", { name: "Loan link" })).toBeNull();
   });
 
   it("shows the bill's confirmed payments in the drawer, scoped by recurring_event_id", async () => {

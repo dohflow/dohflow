@@ -1286,7 +1286,7 @@ jobs:
             echo "::endgroup::"
           done
 
-  # Runner-image canary (personal-cfo-md8h2.18). Every required Linux job is pinned to a specific
+  # Runner-image canary (personal-cfo-md8h2.19). Every required Linux job is pinned to a specific
   # Ubuntu image, because `ubuntu-latest` moved from 24.04 to 26.04 on 2026-10-24 and the new
   # image's Rust coreutils broke a shell test, which ejected pull requests from the merge queue.
   # This job runs the shell tests on `ubuntu-latest` (not pinned) so the NEXT image change shows
@@ -1322,6 +1322,55 @@ jobs:
             echo "::endgroup::"
           done
 
+  # The desktop crate still builds for a NON-desktop Apple target (personal-cfo-md8h2.12). The
+  # self-update commands, plugins and capability grants are gated to desktop builds
+  # (personal-cfo-i93n3.11), but nothing else compiles the crate for a non-desktop target, so a
+  # change that registers one of them outside `cfg(desktop)` would break such a build unseen.
+  # `cargo check` of the crate with its default features for aarch64-apple-ios-sim fails on it
+  # (shown with a throwaway change: "cannot find `__cmd__apply_update`"). A generic portability
+  # check of public code: it names no product. It needs the Apple SDK (SQLCipher and OpenSSL
+  # compile from vendored C), so it runs on a macOS runner. Not a required check yet: whether it
+  # becomes one is the owner's call via 00-overseer.
+  desktop-nondesktop-check:
+    name: Desktop crate (non-desktop target check)
+    runs-on: macos-15
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      # The desktop crate depends on crates/** by path, so a change there runs the check too.
+      - name: Detect changed files
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          base: main
+          filters: |
+            code:
+              - 'apps/desktop/src-tauri/**'
+              - 'crates/**'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+
+      - name: Add the non-desktop target
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: rustup target add aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        with:
+          workspaces: apps/desktop/src-tauri
+          key: nondesktop-check
+
+      - name: cargo check, desktop crate, aarch64-apple-ios-sim (default features)
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: cargo check --locked --target aarch64-apple-ios-sim --manifest-path apps/desktop/src-tauri/Cargo.toml
+
   # NOTE: Building the macOS release binary (with capability/CSP hardening and a
   # launch smoke test) is owned by bead personal-cfo-rhci and will be added as a
   # macOS job there.
@@ -1334,7 +1383,7 @@ jobs:
   main-red-alert:
     name: Alert if main is red
     runs-on: ubuntu-24.04
-    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts]
+    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts, desktop-nondesktop-check]
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false && contains(needs.*.result, 'failure') }}
     permissions:
       contents: read

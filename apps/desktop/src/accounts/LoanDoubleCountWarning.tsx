@@ -1,15 +1,25 @@
+import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useBillLoanActions } from "@/bills/useBills";
+import { describeIpcError } from "@/vault/useVault";
 
 import type { LoanDoubleCountWarningDto } from "@/bindings";
 
 import { useLoanDoubleCountWarnings } from "./useLoanDoubleCountWarnings";
 
-/// The type labels a loan-typed strong match can carry (planning-approved wording, 6wk.20).
+/// The card title follows the strength (planning-approved, 6wk.20): never "Possible…" above a
+/// "counted twice" sentence.
+const STRONG_TITLE = "Loan payment counted twice";
+const POSSIBLE_TITLE = "Possible duplicate loan payment";
+
+/// The type labels a loan-typed strong match can carry, lowercase because they sit inside a
+/// sentence (planning-approved wording, 6wk.20).
 const LOAN_TYPED_LABELS: Record<string, string> = {
-  loan_payment: "Loan payment",
-  rent_mortgage: "Rent or mortgage",
+  loan_payment: "loan payment",
+  rent_mortgage: "rent or mortgage",
 };
 
 /// Why a STRONG match is one: the evidence route, in plain description, not advice (ADR 0018).
@@ -24,6 +34,40 @@ function strongReason(w: LoanDoubleCountWarningDto): string | null {
     return `A ${label} bill paid from ${w.paid_from_account_name} around ${w.loan_name}'s due date.`;
   }
   return null;
+}
+
+/// "Link it to <loan>" (personal-cfo-6wk.22): the user's explicit action that makes the forecast
+/// count this payment once. Offered on a STRONG match only; a refusal (for example the loan already
+/// has a linked bill) is shown in place and nothing changes.
+function LinkItButton({ warning }: { warning: LoanDoubleCountWarningDto }) {
+  const { linkBill } = useBillLoanActions();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      <div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          onClick={async () => {
+            setPending(true);
+            setError(null);
+            const failure = await linkBill(warning.bill_event_id, warning.loan_account_id);
+            setPending(false);
+            if (failure) setError(describeIpcError(failure));
+          }}
+        >
+          {`Link it to ${warning.loan_name}`}
+        </Button>
+      </div>
+      {error && (
+        <p role="alert" className="text-xs text-loss">
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /// A descriptive warning (personal-cfo-6wk.11, ADR 0018) when a loan is tracked BOTH as a loan
@@ -44,13 +88,13 @@ export function LoanDoubleCountWarning() {
       {strong.length > 0 && (
         <Card
           role="region"
-          aria-label="Possible duplicated loans"
+          aria-label={STRONG_TITLE}
           className="border-warning/40 bg-warning/5"
         >
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-base text-warning">
               <AlertTriangle className="size-4 shrink-0" aria-hidden />
-              Possible duplicated {strong.length > 1 ? "loans" : "loan"}
+              {STRONG_TITLE}
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 text-sm">
@@ -72,6 +116,7 @@ export function LoanDoubleCountWarning() {
                   {strongReason(w) && (
                     <div className="text-xs text-muted-foreground">{strongReason(w)}</div>
                   )}
+                  <LinkItButton warning={w} />
                 </li>
               ))}
             </ul>
@@ -79,8 +124,11 @@ export function LoanDoubleCountWarning() {
         </Card>
       )}
       {possible.length > 0 && (
-        <Card role="region" aria-label="Possible matches" className="border-border bg-muted/30">
-          <CardContent className="flex flex-col gap-2 pt-4 text-sm text-muted-foreground">
+        <Card role="region" aria-label={POSSIBLE_TITLE} className="border-border bg-muted/30">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">{POSSIBLE_TITLE}</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
             <ul className="flex flex-col gap-1">
               {possible.map((w) => (
                 <li key={`${w.loan_account_id}:${w.bill_event_id}`}>
