@@ -1888,21 +1888,30 @@ export type IpcError =
 ({ Persistence: string }) & { Unavailable?: never; Validation?: never };
 
 /**
- *  A suspected loan double-count (personal-cfo-6wk.11): a loan tracked as both a
- *  `loan_liability` account with payment terms and an active recurring `loan_payment` bill,
- *  which double-counts its payment in the liquid forecast. Descriptive only (ADR 0018).
+ *  A suspected loan double-count (personal-cfo-6wk.11, widened by 6wk.20): a loan tracked as both a
+ *  `loan_liability` account with payment terms and an active recurring bill (of any type) that looks
+ *  like its payment, which would double-count that payment in the liquid forecast. Descriptive only
+ *  (ADR 0018).
  */
 export type LoanDoubleCountWarningDto = {
 	/**  The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`). */
 	loan_account_id: string,
 	loan_name: string,
-	/**  The `loan_payment` recurring bill (plain UUID, matches the recurring-bill view id). */
+	/**  The recurring bill (plain UUID, matches the recurring-bill view id). */
 	bill_event_id: string,
 	bill_name: string,
-	/**  The normalized names look like the same loan. */
+	/**  The normalized names look like the same loan (an explanation only, never evidence). */
 	name_match: boolean,
-	/**  The loan's fixed monthly payment equals the bill amount (same currency). */
+	/**  The bill amount fits the loan's derived monthly payment (same currency). */
 	amount_match: boolean,
+	/**  How strongly the bill looks like the loan's payment: only `strong` says "counted twice". */
+	strength: MatchStrengthDto,
+	/**  Which evidence made a strong match; `null` for a possible one. */
+	matched_by: MatchedByDto | null,
+	/**  The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has one. */
+	bill_type: string | null,
+	/**  The name of the account the bill is paid from, when it has one. */
+	paid_from_account_name: string | null,
 };
 
 /**  A stored manual future entry (personal-cfo-q6gh). */
@@ -1922,6 +1931,18 @@ export type ManualFutureEntryDto = {
 	 */
 	matched_transaction_id: string | null,
 };
+
+/**
+ *  How strongly a bill looks like a loan's payment (personal-cfo-6wk.20). Only `Strong` may say the
+ *  payment is "counted twice" or offer a link; `Possible` is a soft "might be the same payment" note.
+ */
+export type MatchStrengthDto = "strong" | "possible";
+
+/**
+ *  The evidence behind a strong match (personal-cfo-6wk.20): the payee of the loan's paired payments,
+ *  or a loan-typed bill paid from its funding account.
+ */
+export type MatchedByDto = "payee" | "loan_typed";
 
 /**
  *  A monetary amount on the wire: integer minor units + ISO currency code.

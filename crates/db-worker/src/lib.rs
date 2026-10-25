@@ -161,7 +161,7 @@ pub use forecast_events::{AssumptionParams, ForecastAssumptionSpec};
 pub use forecast_persist::{
     ForecastDiffView, InputSnapshotView, ModelRegistryView, NewForecastDiff,
 };
-pub use loan_overlap::LoanDoubleCount;
+pub use loan_overlap::{LoanDoubleCount, MatchStrength, MatchedBy};
 pub use manual_entry::ManualEntry;
 pub use merchant_identity::{MerchantIdentity, MAX_ALIAS_KEY_BYTES};
 pub use projection::{
