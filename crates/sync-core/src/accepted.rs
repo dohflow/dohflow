@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::cbe::{Reader, WireError, Writer};
-use crate::envelope::canonical_envelope_digest;
+use crate::envelope::{canonical_envelope_digest, CheckedEnvelope};
 use crate::header::{
     Fingerprint, IdempotencyKeyTag, MetadataCommitment, ObjectKind, ParsedContainer,
 };
@@ -156,6 +156,10 @@ pub enum IdentityError {
     /// The digest could not be computed (a length does not fit its field).
     #[error("the envelope digest could not be computed")]
     Digest,
+    /// The container's header is not the header that passed [`check_envelope`]: a checked
+    /// envelope was paired with some other container.
+    #[error("the container is not the one that was checked")]
+    NotTheCheckedEnvelope,
 }
 
 /// The identity fields of a command envelope, read from its parsed container with the digest
@@ -420,15 +424,31 @@ pub struct PulledEnvelope {
 }
 
 impl PulledEnvelope {
-    /// From the pulled container and the service's response for it.
+    /// From the pulled container, the proof that it was checked, and the service's response for
+    /// it. Requiring a [`CheckedEnvelope`] makes "authenticated, decrypted and checked first" a
+    /// compile-time rule, and the container's header must be the very header that was checked:
+    ///
+    /// ```compile_fail
+    /// use sync_core::accepted::PulledEnvelope;
+    /// use sync_core::header::ParsedContainer;
+    /// fn unchecked(container: &ParsedContainer<'_>) {
+    ///     // There is no way to build one from a container alone any more.
+    ///     let _ = PulledEnvelope::from_container(container, 1, None);
+    /// }
+    /// ```
     ///
     /// # Errors
-    /// [`IdentityError`].
+    /// [`IdentityError`], including [`IdentityError::NotTheCheckedEnvelope`] if the container's
+    /// header is not the checked header.
     pub fn from_container(
         container: &ParsedContainer<'_>,
+        checked: &CheckedEnvelope<'_>,
         seq: u64,
         result_ref: Option<Vec<u8>>,
     ) -> Result<Self, IdentityError> {
+        if checked.header() != &container.header {
+            return Err(IdentityError::NotTheCheckedEnvelope);
+        }
         Ok(Self {
             identity: Identity::from_container(container)?,
             seq,
