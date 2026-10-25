@@ -1107,24 +1107,32 @@ number and fail the receiver checks on every replica at that position, stopping 
 vault. The two sides therefore share the work, and between them leave no class of inconsistency
 unchecked.
 
-The service MUST, before it appends an envelope (after the replay lookup of C.10, which comes
-first): parse the container and header strictly (grammar, the dual-identity shape, the counter
-cap, the `engine_version` grammar, a ciphertext of at least a GCM tag) and refuse an object over
-the envelope size cap; require `vault_id` to be the routed vault; require `device_id` and
-`device_key_fingerprint` to be one currently authorized member of the chain; require
-`nonce_domain` to be the one derived (C.3) for the epoch, fingerprint and object type; require
-`key_epoch` to be the epoch in force (only for an identity the index does not know); and apply
-the nonce-reuse backstop above. It computes `canonical_envelope_digest` itself from the received
-bytes.
+The service MUST work in this order: **parse, then the replay lookup of C.10, then the rest**.
+First it parses the container and header strictly (grammar, the dual-identity shape, the counter
+cap, the `engine_version` grammar, a ciphertext of at least a GCM tag), refuses an object over the
+envelope size cap and a snapshot pushed as a command envelope, requires `vault_id` to be the
+routed vault, and computes `canonical_envelope_digest` itself from the received bytes. It then
+does the replay lookup of C.10; an exact retry of an accepted envelope returns its original `seq`
+even if its device has since been revoked or replaced (after `NonceStateLost`, or a restore) and
+even with an old `key_epoch`. Only for an identity the index does **not** know does it go on to
+require `device_id` and `device_key_fingerprint` to be one currently authorized member of the
+chain, `nonce_domain` to be the one derived (C.3) for the epoch, fingerprint and object type,
+`key_epoch` to be the epoch in force, and the nonce-reuse backstop above to hold.
 
-The producer MUST, before it uploads: open the sealed object it is about to send through the
+The producer MUST, in this order: (1) apply the command locally and commit the op-log row
+together with the counter advance, before encrypting; (2) seal; (3) before it uploads, open the
+sealed object it is about to send through the
 **receiver path** (the AEAD key derived from the expected vault id, key epoch and its own
 fingerprint from the chain, the nonce built from the header's nonce domain and counter; never the
 sealing code's key object and never the plaintext it still holds), decode the plaintext, and run
 the receiver checks above on that header and plaintext. It MUST NOT upload on any failure; the
 command stays in its outbox with a typed error and is not retried in a loop, because the failure
-is a producer bug. The bytes verified are the bytes uploaded: the upload is by the verified
-object, never by raw bytes plus an approval.
+is a producer bug; the change is committed on this device only and cannot sync, and the user is
+told exactly that. (4) It persists the verified object with its outbox entry, and (5) uploads by
+that object only. The bytes verified are the bytes uploaded: the upload is by the verified object,
+never by raw bytes plus an approval. A crash between (2) and (4) re-seals with a fresh counter and
+never reuses the old one; after an application update the command is re-sealed with a new counter
+and verified again.
 
 **The check set is versioned with `engine_version`.** Every replica that applies an envelope has
 the same `engine_version` (C.13), and the receiver checks are part of what that string names: a

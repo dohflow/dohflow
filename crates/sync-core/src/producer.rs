@@ -65,11 +65,28 @@ pub trait EnvelopeOpener {
 /// transport's push takes an `UploadApproved`, never raw bytes plus an approval, so "upload exactly
 /// what was verified" holds by type; an exact-byte retry reuses the same value, which is persisted
 /// with the outbox entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **Who commits what, in order** (C.4): (1) apply the command locally and commit the op-log row
+/// together with the counter advance, before encrypting; (2) seal; (3) [`verify_before_upload`];
+/// (4) persist the `UploadApproved` with the outbox entry; (5) upload by that value only. A crash
+/// between (2) and (4) re-seals with a fresh counter and never reuses the old one; a failure at (3)
+/// leaves a change committed on this device only that cannot sync, so the stuck state must say
+/// exactly that; after an app update the command is re-sealed with a new counter and re-verified.
+#[derive(Clone, PartialEq, Eq)]
 pub struct UploadApproved {
     bytes: Vec<u8>,
     outbox: OutboxEntry,
     push: PushIdentity,
+}
+
+impl core::fmt::Debug for UploadApproved {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Up to 16 MiB of ciphertext: show the size and the digest, not the bytes.
+        f.debug_struct("UploadApproved")
+            .field("len", &self.bytes.len())
+            .field("digest", self.push.envelope_digest())
+            .finish_non_exhaustive()
+    }
 }
 
 impl UploadApproved {

@@ -14,8 +14,17 @@
 //! * Retryable conditions (a coupled epoch record not yet delivered, a transient network error)
 //!   are not in this machine at all: they change nothing about what may be applied.
 //!
-//! The outbox is not part of this state, so it is preserved by construction. The engine persists
-//! this state under the same anti-rollback witness as the rest of the verified state.
+//! The outbox is not part of this state, so it is preserved by construction.
+//!
+//! **Persistence.** `EnvelopeInvalid` can be recomputed: a restored device re-pulls the position,
+//! recomputes the same digest and runs the same deterministic checks. `Halted` evidence cannot:
+//! the service may stop showing the conflicting record, so `Halted` MUST be persisted under the
+//! same anti-rollback witness as the rest of the verified state.
+//!
+//! **What this machine cannot see.** It keeps no digest for positions that applied cleanly, so a
+//! different digest at an already-applied position (the service showing two histories) is not
+//! visible here. The engine's applied-log check owns that and should feed the same
+//! [`HaltEvidence::SeqConflict`], so the halt class stays complete.
 
 use crate::envelope::ReceiverError;
 use crate::header::{ClearHeader, Fingerprint};
@@ -119,8 +128,11 @@ impl SyncStatus {
 
     /// Record a membership or epoch verification failure. Only the halt class changes the status;
     /// anything else (including a retryable missing epoch record) is not this machine's concern.
+    /// The halt class **takes precedence** over a stop at an invalid envelope (a fork found while
+    /// stopped must still quarantine keys, flag exposure and start re-enrollment); only a status
+    /// that is already `Halted` absorbs it.
     pub fn observe_chain_error(&mut self, error: &ChainError) -> Option<SyncEvent> {
-        if !matches!(self, Self::Healthy) {
+        if matches!(self, Self::Halted(_)) {
             return None;
         }
         let evidence = match *error {

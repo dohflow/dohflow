@@ -6,6 +6,7 @@
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 use sync_core::accepted::PushIdentity;
+use sync_core::accepted::{decide_push, InMemoryIndex, PushDecision};
 use sync_core::cbe::WireError;
 use sync_core::envelope::{
     canonical_envelope_digest, check_envelope, ArtifactManifest, EnvelopePlaintext, IdempotencyKey,
@@ -20,7 +21,7 @@ use sync_core::membership::{
     SignedRecord, VerifiedState, KEM_ID, SEALED_KEYS_CIPHERTEXT_LEN, SUITE_ID,
 };
 use sync_core::producer::{verify_before_upload, EnvelopeOpener, ProducerError};
-use sync_core::service::{check_epoch_in_force, check_push_structure, PushRefusal, PushView};
+use sync_core::service::{check_new_push, parse_push, PushRefusal, PushView};
 use sync_core::status::{HaltEvidence, SyncEvent, SyncStatus};
 
 const VAULT: [u8; 16] = [0, 0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0xf0];
@@ -344,82 +345,119 @@ fn an_approved_envelope_passes_the_receiver_checks_a_replica_would_run() {
     assert!(check_envelope(&header, &plaintext, test_tag).is_ok());
 }
 
-// ---- the service's structural checks ---------------------------------------------------
+// ---- the service's checks, in C.10's order: parse, replay lookup, the rest -------------------
+
+fn push_bytes(header: &ClearHeader) -> Vec<u8> {
+    encode_container(header, &[0x5a; 40]).unwrap()
+}
 
 #[test]
-fn the_service_accepts_a_member_s_well_formed_push_and_refuses_each_structural_defect() {
+fn the_service_parses_first_and_refuses_what_the_lookup_cannot_use() {
     let dev = Dev::new(0x11);
-    let chain = chain_of(&dev);
-    let view = PushView {
-        routed_vault: VAULT,
-        chain: &chain,
-    };
-    let push_of = |header: &ClearHeader| {
-        check_push_structure(&encode_container(header, &[0x5a; 40]).unwrap(), &view)
-    };
-
     let (header, _) = parts(&dev, 1, 1);
-    let identity = push_of(&header).expect("a member's push passes");
-    assert_eq!(identity.command_id(), &[1; 16]);
+    let parsed = parse_push(&push_bytes(&header), &VAULT).expect("a well-formed push parses");
+    assert_eq!(parsed.identity.command_id(), &[1; 16]);
+    assert_eq!(parsed.header, header);
 
-    // Another vault.
     let mut wrong_vault = header.clone();
     wrong_vault.vault_id[0] ^= 1;
-    assert_eq!(push_of(&wrong_vault), Err(PushRefusal::WrongVault));
-    // A device that is not a member (right id, wrong fingerprint; wrong id, right fingerprint).
-    let mut wrong_fingerprint = header.clone();
-    wrong_fingerprint.device_key_fingerprint = Fingerprint::from_derived([9; 32]);
-    wrong_fingerprint.nonce_domain =
-        NonceDomain::derive(&VAULT, 1, &wrong_fingerprint.device_key_fingerprint, 1);
-    assert_eq!(push_of(&wrong_fingerprint), Err(PushRefusal::UnknownDevice));
-    let mut wrong_id = header.clone();
-    wrong_id.device_id[15] ^= 1;
-    assert_eq!(push_of(&wrong_id), Err(PushRefusal::UnknownDevice));
-    // A nonce domain that is not the derived one.
-    let mut wrong_domain = header.clone();
-    wrong_domain.nonce_domain = NonceDomain::from_derived([0; 4]);
     assert_eq!(
-        push_of(&wrong_domain),
-        Err(PushRefusal::NonceDomainMismatch)
+        parse_push(&push_bytes(&wrong_vault), &VAULT),
+        Err(PushRefusal::WrongVault)
     );
-    // A snapshot header is not a command envelope.
     let mut snapshot = header.clone();
     snapshot.object = ObjectKind::Snapshot {
         artifact_manifest_commitment: ManifestCommitment::from_derived([1; 32]),
     };
-    assert_eq!(push_of(&snapshot), Err(PushRefusal::NotAnEnvelope));
-    // Malformed: truncated, and over the size cap.
-    let bytes = encode_container(&header, &[0x5a; 40]).unwrap();
+    assert_eq!(
+        parse_push(&push_bytes(&snapshot), &VAULT),
+        Err(PushRefusal::NotAnEnvelope)
+    );
+    let bytes = push_bytes(&header);
     assert!(matches!(
-        check_push_structure(&bytes[..bytes.len() - 1], &view),
+        parse_push(&bytes[..bytes.len() - 1], &VAULT),
         Err(PushRefusal::Malformed(_))
     ));
     assert_eq!(
-        check_push_structure(&vec![0; MAX_ENVELOPE_CONTAINER_LEN + 1], &view),
+        parse_push(&vec![0; MAX_ENVELOPE_CONTAINER_LEN + 1], &VAULT),
         Err(PushRefusal::Malformed(WireError::ObjectTooLarge))
     );
 }
 
 #[test]
-fn the_epoch_rule_is_separate_so_an_old_epoch_retry_is_decided_by_the_index_first() {
+fn for_an_unknown_identity_the_service_then_checks_member_nonce_domain_and_epoch() {
     let dev = Dev::new(0x11);
     let chain = chain_of(&dev);
     let view = PushView {
         routed_vault: VAULT,
         chain: &chain,
+        epoch_in_force: 1,
     };
-    let (old_epoch_header, _) = parts(&dev, 1, 7);
-    // The structural check does not look at the epoch, so the replay lookup can run first.
-    assert!(check_push_structure(
-        &encode_container(&old_epoch_header, &[0x5a; 40]).unwrap(),
-        &view
-    )
-    .is_ok());
+    let (header, _) = parts(&dev, 1, 1);
+    assert_eq!(check_new_push(&header, &view), Ok(()));
+
+    // Right id, wrong fingerprint; wrong id, right fingerprint: not one authorized member.
+    let mut wrong_fingerprint = header.clone();
+    wrong_fingerprint.device_key_fingerprint = Fingerprint::from_derived([9; 32]);
+    wrong_fingerprint.nonce_domain =
+        NonceDomain::derive(&VAULT, 1, &wrong_fingerprint.device_key_fingerprint, 1);
     assert_eq!(
-        check_epoch_in_force(&old_epoch_header, 8),
+        check_new_push(&wrong_fingerprint, &view),
+        Err(PushRefusal::UnknownDevice)
+    );
+    let mut wrong_id = header.clone();
+    wrong_id.device_id[15] ^= 1;
+    assert_eq!(
+        check_new_push(&wrong_id, &view),
+        Err(PushRefusal::UnknownDevice)
+    );
+    // A nonce domain that is not the derived one.
+    let mut wrong_domain = header.clone();
+    wrong_domain.nonce_domain = NonceDomain::from_derived([0; 4]);
+    assert_eq!(
+        check_new_push(&wrong_domain, &view),
+        Err(PushRefusal::NonceDomainMismatch)
+    );
+    // An epoch that is not in force.
+    let (old_epoch, _) = parts(&dev, 1, 7);
+    assert_eq!(
+        check_new_push(&old_epoch, &view),
         Err(PushRefusal::EpochRejected)
     );
-    assert_eq!(check_epoch_in_force(&old_epoch_header, 7), Ok(()));
+}
+
+#[test]
+fn an_exact_retry_from_a_device_that_is_no_longer_a_member_is_still_a_replay() {
+    // C.10: an accepted envelope returns its original seq even when its device has since been
+    // revoked or replaced, and even with an old epoch. The chain here holds only device 0x11; the
+    // envelope was sealed by device 0x22, which is not (or no longer) a member.
+    let current = Dev::new(0x11);
+    let former = Dev::new(0x22);
+    let chain = chain_of(&current);
+    let view = PushView {
+        routed_vault: VAULT,
+        chain: &chain,
+        epoch_in_force: 5,
+    };
+    let (header, _) = parts(&former, 3, 1); // an old epoch too
+    let bytes = push_bytes(&header);
+
+    let parsed = parse_push(&bytes, &VAULT).unwrap();
+    let mut index = InMemoryIndex::new();
+    index
+        .insert(parsed.identity.accepted(1, 41, Some(vec![9])))
+        .unwrap();
+
+    // The replay lookup happens right after the parse, so the retry is answered with its seq.
+    match decide_push(&index, &parse_push(&bytes, &VAULT).unwrap().identity).unwrap() {
+        PushDecision::Replay(record) => assert_eq!(record.seq, 41),
+        other => panic!("expected a replay, got {other:?}"),
+    }
+    // The member, nonce-domain and epoch checks are for NEW identities only, and would refuse it.
+    assert_eq!(
+        check_new_push(&header, &view),
+        Err(PushRefusal::UnknownDevice)
+    );
 }
 
 // ---- the replica's sync status ----------------------------------------------------------
@@ -531,4 +569,47 @@ fn only_the_halt_class_of_chain_errors_changes_the_status() {
         }))
     );
     assert!(!status.can_apply(0) && !status.can_push());
+}
+
+#[test]
+fn a_fork_found_while_stopped_at_an_invalid_envelope_halts() {
+    let dev = Dev::new(0x11);
+    let (header, _) = parts(&dev, 1, 1);
+    let mut status = SyncStatus::Healthy;
+    status.observe_envelope(7, [7; 32], &header, Err(ReceiverError::TagMismatch));
+    assert!(matches!(status, SyncStatus::EnvelopeInvalid(_)));
+    // The halt class takes precedence: keys must be quarantined and exposure flagged.
+    let event = status.observe_chain_error(&sync_core::membership::ChainError::EpochEquivocation {
+        accepted: [1; 32],
+        conflicting: [2; 32],
+    });
+    assert_eq!(
+        event,
+        Some(SyncEvent::Halted(HaltEvidence::Equivocation {
+            accepted: [1; 32],
+            conflicting: [2; 32]
+        }))
+    );
+    assert!(matches!(status, SyncStatus::Halted(_)));
+    // Already halted: a second one is absorbed.
+    assert_eq!(
+        status.observe_chain_error(&sync_core::membership::ChainError::Fork {
+            version: 2,
+            accepted: [3; 32],
+            conflicting: [4; 32]
+        }),
+        None
+    );
+}
+
+#[test]
+fn an_approved_envelope_prints_its_size_and_digest_not_its_bytes() {
+    let dev = Dev::new(0x11);
+    let (header, plaintext) = parts(&dev, 1, 1);
+    let sealed = seal(&header, &plaintext);
+    let approved =
+        verify_before_upload(&sealed.bytes, &TestOpener(Some(sealed.plaintext)), test_tag).unwrap();
+    let shown = format!("{approved:?}");
+    assert!(shown.contains("len") && shown.contains("digest"));
+    assert!(shown.len() < 400, "{} bytes of Debug output", shown.len());
 }

@@ -9,9 +9,18 @@
 //! ([`crate::producer`]), which together with these checks leaves no class of inconsistency that
 //! both sides miss.
 //!
-//! The order the service applies them is C.10's: the replay lookup comes **before** the epoch
-//! check, because an old `key_epoch` must not turn an exact retry into a rejection. So the epoch
-//! rule is a separate function, [`check_epoch_in_force`], called only for an unknown identity.
+//! The order the service applies them is C.10's, and it matters: **parse, then the replay lookup,
+//! then the rest**. [`parse_push`] does the minimum the lookup needs (the strict parse, the size
+//! cap, the envelope type, the routed vault, and the digest computed from the received bytes) and
+//! returns the identity for [`crate::accepted::decide_push`]. Only for an identity the index does
+//! not know does [`check_new_push`] run the checks that depend on the chain and the epoch in force:
+//! an authorized member, the derived nonce domain, and the epoch. An exact retry of an accepted
+//! envelope must return its original `seq` even if its device has since been revoked or replaced
+//! (after `NonceStateLost`, or a restore), and even with an old `key_epoch`.
+//!
+//! The nonce-reuse backstop of C.4 (the first `(key_epoch, fingerprint, object_type, nonce)`
+//! the service sees) is service state, not a property of one push; it belongs with the index, in
+//! the Sync server (`personal-cfo-v98vd`), and runs in the same "new identities only" step.
 
 use thiserror::Error;
 
@@ -60,27 +69,52 @@ pub struct PushView<'a> {
     pub routed_vault: [u8; 16],
     /// The verified membership chain and epoch records the service holds for that vault.
     pub chain: &'a VerifiedState,
+    /// The key epoch in force.
+    pub epoch_in_force: u64,
 }
 
-/// The structural checks of C.4 on a pushed command envelope, **excluding the epoch rule** (see
-/// the module docs for why it comes later). On success returns the push identity, with the digest
-/// computed from the received bytes, ready for [`crate::accepted::decide_push`].
+/// A pushed envelope after the minimum parse: its identity (digest computed from the received
+/// bytes) and its header, for [`check_new_push`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedPush {
+    /// The identity for the replay lookup.
+    pub identity: PushIdentity,
+    /// The decoded header.
+    pub header: ClearHeader,
+}
+
+/// The first step of a push: the strict parse and size cap, the envelope type, the routed vault,
+/// and the identity with its digest computed from the received bytes. Everything the replay
+/// lookup needs and nothing that depends on the chain or the epoch.
 ///
 /// # Errors
 /// A [`PushRefusal`].
-pub fn check_push_structure(
+pub fn parse_push(
     container_bytes: &[u8],
-    view: &PushView<'_>,
-) -> Result<PushIdentity, PushRefusal> {
+    routed_vault: &[u8; 16],
+) -> Result<ParsedPush, PushRefusal> {
     let container = parse_container_with_limit(container_bytes, MAX_ENVELOPE_CONTAINER_LEN)
         .map_err(PushRefusal::Malformed)?;
-    let header = &container.header;
-    if header.object_type() != OBJECT_ENVELOPE {
+    if container.header.object_type() != OBJECT_ENVELOPE {
         return Err(PushRefusal::NotAnEnvelope);
     }
-    if header.vault_id != view.routed_vault {
+    if container.header.vault_id != *routed_vault {
         return Err(PushRefusal::WrongVault);
     }
+    let identity = PushIdentity::from_container(&container).map_err(PushRefusal::Identity)?;
+    Ok(ParsedPush {
+        identity,
+        header: container.header,
+    })
+}
+
+/// The checks for an identity the index does **not** know ([`crate::accepted::PushDecision::
+/// Unknown`]): the sealing device and key are one currently authorized member, the nonce domain is
+/// the derived one, and the epoch is the epoch in force (`EpochRejected`).
+///
+/// # Errors
+/// A [`PushRefusal`].
+pub fn check_new_push(header: &ClearHeader, view: &PushView<'_>) -> Result<(), PushRefusal> {
     let member = view
         .chain
         .authorized()
@@ -97,18 +131,8 @@ pub fn check_push_structure(
     if header.nonce_domain != domain {
         return Err(PushRefusal::NonceDomainMismatch);
     }
-    PushIdentity::from_container(&container).map_err(PushRefusal::Identity)
-}
-
-/// The epoch rule (C.10 step 4): reject a `key_epoch` that is not the epoch in force. Call it only
-/// for an identity [`crate::accepted::decide_push`] reported as unknown.
-///
-/// # Errors
-/// [`PushRefusal::EpochRejected`].
-pub fn check_epoch_in_force(header: &ClearHeader, epoch_in_force: u64) -> Result<(), PushRefusal> {
-    if header.key_epoch == epoch_in_force {
-        Ok(())
-    } else {
-        Err(PushRefusal::EpochRejected)
+    if header.key_epoch != view.epoch_in_force {
+        return Err(PushRefusal::EpochRejected);
     }
+    Ok(())
 }
