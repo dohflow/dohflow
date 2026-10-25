@@ -967,7 +967,7 @@ fn effective_min_terms(
 /// A loan account whose `debt_terms` can produce a payment (both a due day + a payment amount).
 pub(crate) struct LoanPaymentTerms {
     pub account_id: Uuid,
-    ledger_account_id: Uuid,
+    pub(crate) ledger_account_id: Uuid,
     pub name: String,
     pub currency: Currency,
     pub(crate) payment_due_day: u32,

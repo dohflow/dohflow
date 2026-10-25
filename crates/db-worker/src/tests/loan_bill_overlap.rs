@@ -2,6 +2,7 @@
 //! recurring bill for the same payment. Reproduction first, on fake data only.
 
 use super::*;
+use crate::MatchStrength;
 use chrono::TimeZone;
 
 struct Fixture {
@@ -180,24 +181,35 @@ fn a_rent_mortgage_typed_bill_is_flagged() {
     assert!(warnings[0].name_match && warnings[0].amount_match);
 }
 
-/// A `loan_payment` bill is suspected on the name or the amount alone, as before 6wk.20 (its own type
-/// says it is loan-shaped), even when its schedule differs.
+/// CHANGED by planning's ruling (6wk.20): an amount alone never flags a bill any more (no exact amount
+/// equality anywhere), whatever its type: the schedule has to line up. A `loan_payment` bill on
+/// another cadence with an unrelated name is therefore NOT flagged; one whose name looks like the loan's
+/// still is (the 6wk.11 name signal, a warning only).
 #[test]
-fn a_loan_payment_typed_bill_is_flagged_whatever_its_schedule() {
+fn a_loan_payment_typed_bill_on_another_cadence_is_flagged_only_by_its_name() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
-    bill(
-        &worker,
-        "ACME HOME LOANS",
-        "loan_payment",
-        150_000,
-        Frequency::Weekly,
-        NaiveDate::from_ymd_opt(2026, 7, 3).unwrap(),
-        fixture.checking,
+    let weekly = |worker: &DbWorker, name: &str| {
+        bill(
+            worker,
+            name,
+            "loan_payment",
+            150_000,
+            Frequency::Weekly,
+            NaiveDate::from_ymd_opt(2026, 7, 3).unwrap(),
+            fixture.checking,
+        )
+    };
+    weekly(&worker, "ACME HOME LOANS");
+    assert!(
+        worker.loan_double_count_warnings().unwrap().is_empty(),
+        "the same amount alone is not enough"
     );
+    weekly(&worker, "Test Mortgage payment");
     let warnings = worker.loan_double_count_warnings().unwrap();
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].amount_match);
+    assert!(warnings[0].name_match);
+    assert_eq!(warnings[0].strength, MatchStrength::Possible);
 }
 
 /// A minimum-payment loan has no fixed amount, but the forecast derives one (1% of the balance, or the
@@ -382,21 +394,26 @@ fn near_the_due_day_alone_is_enough_even_from_another_account() {
     let (_dir, worker) = worker();
     mortgage(&worker);
     let savings = other_account(&worker);
-    // Two days after the 15th, paid from an account that is not the loan's source.
+    // Two days after the 15th, paid from an account that is not the loan's source: only POSSIBLE.
     assert!(flagged_when_on_day(&worker, 17, savings));
+    assert_eq!(
+        worker.loan_double_count_warnings().unwrap()[0].strength,
+        MatchStrength::Possible
+    );
 }
 
+/// Ruling: the funding account counts only together with the date. A bill from the loan's own account
+/// but 13 days from the due day is some other obligation.
 #[test]
-fn the_same_paying_account_alone_is_enough_on_a_distant_day() {
+fn the_same_paying_account_without_the_date_is_not_enough() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
-    // The 2nd is 13 days from the 15th, but the bill is paid from the loan's own source.
-    assert!(flagged_when_on_day(&worker, 2, fixture.checking));
+    assert!(!flagged_when_on_day(&worker, 2, fixture.checking));
 }
 
 #[test]
-fn the_due_day_tolerance_is_three_days_either_side() {
-    for (day, expected) in [(12, true), (15, true), (18, true), (11, false), (19, false)] {
+fn the_due_day_tolerance_is_seven_days_either_side() {
+    for (day, expected) in [(8, true), (15, true), (22, true), (7, false), (23, false)] {
         let (_dir, worker) = worker();
         mortgage(&worker);
         let savings = other_account(&worker);
@@ -452,4 +469,277 @@ fn the_due_day_comparison_wraps_across_the_month_end() {
         flagged_when_on_day(&worker, 30, savings),
         "the 30th is within 3 days of the 1st"
     );
+}
+
+// ----- planning's ruling: strong vs possible, with a 95% floor, no ceiling, and no flicker --------------
+
+/// Strength of the single warning for a monthly `subscription` bill of `amount_minor` on `day`,
+/// paid from `from`; `None` when nothing is flagged.
+fn strength_of(
+    worker: &DbWorker,
+    amount_minor: i64,
+    day: u32,
+    from: AccountId,
+) -> Option<MatchStrength> {
+    bill(
+        worker,
+        "Home payment",
+        "subscription",
+        amount_minor,
+        Frequency::Monthly,
+        NaiveDate::from_ymd_opt(2026, 7, day).unwrap(),
+        from,
+    );
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert!(warnings.len() <= 1);
+    warnings.first().map(|w| w.strength)
+}
+
+#[test]
+fn the_amount_is_a_95_percent_floor_with_no_ceiling_from_the_funding_account() {
+    // Payment $1,500. From the loan's own account on its due day:
+    for (amount, expected) in [
+        (150_000, Some(MatchStrength::Strong)),
+        (142_500, Some(MatchStrength::Strong)), // exactly 95%
+        (142_499, Some(MatchStrength::Possible)), // just under: still within 10%
+        (135_000, Some(MatchStrength::Possible)), // exactly -10%
+        (134_999, None),                        // just outside
+        (180_000, Some(MatchStrength::Strong)), // escrow added: no upper bound
+        (900_000, Some(MatchStrength::Strong)), // no upper bound at all
+    ] {
+        let (_dir, worker) = worker();
+        let fixture = mortgage(&worker);
+        assert_eq!(
+            strength_of(&worker, amount, 15, fixture.checking),
+            expected,
+            "a ${:.2} bill against a $1,500 payment",
+            amount as f64 / 100.0
+        );
+    }
+}
+
+#[test]
+fn from_another_account_the_ceiling_is_ten_percent_and_it_is_only_possible() {
+    for (amount, expected) in [
+        (150_000, Some(MatchStrength::Possible)),
+        (165_000, Some(MatchStrength::Possible)), // exactly +10%
+        (165_001, None),
+    ] {
+        let (_dir, worker) = worker();
+        mortgage(&worker);
+        let savings = other_account(&worker);
+        assert_eq!(
+            strength_of(&worker, amount, 15, savings),
+            expected,
+            "{amount}"
+        );
+    }
+}
+
+/// A minimum-payment loan's payment moves with its balance. A bill set to last month's minimum must
+/// keep matching as the balance, and so the minimum, drifts: the flicker exact equality caused.
+#[test]
+fn a_changing_minimum_payment_does_not_flicker() {
+    let (_dir, worker) = worker();
+    let checking_id = AccountId::new();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(checking(checking_id)),
+                opening_balance: Some(Money::new(500_000, Currency::Usd)),
+            },
+        )
+        .unwrap();
+    let loan = AccountId::new();
+    create_role_account(&worker, loan, "Student Debt", CashflowRole::LoanLiability);
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SetDebtTerms {
+                account_id: loan,
+                terms: loan_terms(RepaymentPhilosophy::PayMinimum, None, checking_id),
+            },
+        )
+        .unwrap();
+    // The bill is last month's minimum: $480.
+    bill_on_the_15th(&worker, "NELNET", "subscription", 48_000, checking_id);
+
+    for (owed_minor, label) in [
+        (-5_000_000, "owes $50,000: the minimum is $500"),
+        (
+            -4_800_000,
+            "owes $48,000: the minimum is $480, an exact match",
+        ),
+        (
+            -4_000_000,
+            "owes $40,000: the minimum is $400, the bill is 120% of it",
+        ),
+        (
+            -5_200_000,
+            "owes $52,000: the minimum is $520, the bill is 92% of it",
+        ),
+    ] {
+        worker
+            .record_balance_assertion(
+                Uuid::now_v7(),
+                loan,
+                Money::new(owed_minor, Currency::Usd),
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            )
+            .unwrap();
+        let warnings = worker.loan_double_count_warnings().unwrap();
+        assert_eq!(warnings.len(), 1, "{label}: still flagged, no flicker");
+    }
+}
+
+/// The loan's funding account can come from payments already paired INTO the loan, not only from its
+/// terms: a loan with no paying source, but paid in the past from checking, still recognizes a bill
+/// paid from checking as strong, and only possible when it is paid from elsewhere.
+#[test]
+fn the_source_of_payments_already_paired_into_the_loan_counts_as_its_funding_account() {
+    let (_dir, worker) = worker();
+    let checking_id = AccountId::new();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(checking(checking_id)),
+                opening_balance: Some(Money::new(2_000_000, Currency::Usd)),
+            },
+        )
+        .unwrap();
+    let savings = other_account(&worker);
+    let loan = AccountId::new();
+    create_role_account(&worker, loan, "Test Mortgage", CashflowRole::LoanLiability);
+    let mut terms = loan_terms(
+        RepaymentPhilosophy::PayFixedAmount,
+        Some(150_000),
+        checking_id,
+    );
+    terms.paying_source_account_id = None; // no declared funding account
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SetDebtTerms {
+                account_id: loan,
+                terms,
+            },
+        )
+        .unwrap();
+    worker
+        .record_balance_assertion(
+            Uuid::now_v7(),
+            loan,
+            Money::new(-20_000_000, Currency::Usd),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        )
+        .unwrap();
+
+    // Before any paired payment: a bill from checking is only a possible match.
+    bill_on_the_15th(
+        &worker,
+        "Home payment",
+        "subscription",
+        150_000,
+        checking_id,
+    );
+    assert_eq!(
+        worker.loan_double_count_warnings().unwrap()[0].strength,
+        MatchStrength::Possible
+    );
+
+    // A payment from checking into the loan is recorded: checking is now its funding account.
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::Transfer {
+                source_account_id: checking_id,
+                dest_account_id: loan,
+                amount: Money::new(150_000, Currency::Usd),
+                occurred_at: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 12, 0, 0).unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        worker.loan_double_count_warnings().unwrap()[0].strength,
+        MatchStrength::Strong
+    );
+    // The same payment tracked from savings (not a funding account of the loan) stays only possible.
+    bill(
+        &worker,
+        "Other payment",
+        "subscription",
+        150_000,
+        Frequency::Monthly,
+        NaiveDate::from_ymd_opt(2026, 7, 16).unwrap(),
+        savings,
+    );
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    let strength = |name: &str| {
+        warnings
+            .iter()
+            .find(|w| w.bill_name == name)
+            .map(|w| w.strength)
+    };
+    assert_eq!(strength("Home payment"), Some(MatchStrength::Strong));
+    assert_eq!(strength("Other payment"), Some(MatchStrength::Possible));
+}
+
+/// The payee of the paired payments is an equally strong signal: a bill whose name is that payee
+/// (here promoted from the same bank payee) is strong even when it is paid from another account.
+#[test]
+fn a_bill_carrying_the_paired_payments_payee_is_strong_even_from_another_account() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    let savings = other_account(&worker);
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::Transfer {
+                source_account_id: fixture.checking,
+                dest_account_id: fixture.loan,
+                amount: Money::new(150_000, Currency::Usd),
+                occurred_at: chrono::Utc.with_ymd_and_hms(2026, 6, 15, 12, 0, 0).unwrap(),
+            },
+        )
+        .unwrap();
+    // The imported payee on that payment.
+    // The transfer's transaction: the one with a positive posting on the loan account.
+    let transaction_id: Uuid = worker
+        .read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT lp.transaction_id
+               FROM ledger_postings lp
+               JOIN accounts a ON a.ledger_account_id = lp.ledger_account_id
+              WHERE a.id = ?1 AND lp.minor_units > 0",
+            [fixture.loan.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    {
+        let guard = worker.lock();
+        record_transaction_detail(
+            &guard.conn,
+            transaction_id,
+            None,
+            Some("ACME HOME LOANS"),
+            None,
+        )
+        .unwrap();
+    }
+    // Paid from savings (not the loan's source) but named like the payee: strong.
+    bill(
+        &worker,
+        "Acme Home Loans",
+        "subscription",
+        150_000,
+        Frequency::Monthly,
+        the_15th(),
+        savings,
+    );
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].strength, MatchStrength::Strong);
 }

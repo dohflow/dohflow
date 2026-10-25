@@ -632,10 +632,11 @@ fn loan_double_count_flags_a_same_named_loan_and_bill() {
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].loan_account_id, loan.as_uuid());
     assert!(warnings[0].name_match, "same-named loan and bill");
-    assert!(
-        !warnings[0].amount_match,
-        "loan has no fixed amount to match"
-    );
+    // CHANGED by 6wk.20 (planning's ruling): a minimum-payment loan DOES have an amount to compare
+    // (the payment the forecast derives, here 1% of $5,000 = $50), and the $450 bill, on the due
+    // day from the loan's paying account, clears the 95% floor with no ceiling: a strong match.
+    assert!(warnings[0].amount_match);
+    assert_eq!(warnings[0].strength, db_worker::MatchStrength::Strong);
 }
 
 /// 6wk.11: a differently-named loan and bill are still flagged when the loan's fixed monthly
@@ -680,8 +681,28 @@ fn loan_double_count_flags_a_same_named_bill_of_any_type_and_ignores_unrelated_o
         None,
         checking_id,
     );
-    // A loan_payment bill for a different loan (no name/amount overlap) → not the same loan.
-    create_loan_payment_bill(&worker, "Mortgage", 120_000, checking_id);
+    // A loan_payment bill for a different loan: another name, and on the 1st rather than the loan's
+    // due day (the 15th), so its schedule does not line up → not the same loan. (Planning's ruling on
+    // 6wk.20: the date is part of every match, and a larger bill ON the due day would count.)
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateRecurringBill {
+                event_id: RecurringEventId::new(),
+                contract_id: BillContractId::new(),
+                name: "Mortgage".to_owned(),
+                amount: Money::new(120_000, Currency::Usd),
+                bill_type: "loan_payment".to_owned(),
+                frequency: Frequency::Monthly,
+                anchor: NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+                autopay_account_id: Some(checking_id),
+                description: None,
+                source_merchant_key: None,
+                category_id: None,
+                tag_ids: Vec::new(),
+            },
+        )
+        .unwrap();
     // A same-named bill of another type (a subscription) on the loan's due day and paying account:
     // the same payment, tracked twice (6wk.20).
     worker

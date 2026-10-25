@@ -14,19 +14,28 @@
 //! **heuristic, descriptive** warning (ADR 0018) so the user removes one. It never auto-removes
 //! either side.
 //!
-//! **Which bills are suspected.** Every active bill, not only `loan_payment`-typed ones: every
-//! creation path (Add bill, Make recurring, promoting a suggestion) defaults the type to
-//! `subscription`, so a type test alone hid the double count it was meant to catch (6wk.20).
-//! A `loan_payment` or `rent_mortgage` bill is suspected on the name or the amount alone, as
-//! before. Any other bill needs corroboration from its SCHEDULE as well: it must be monthly and
-//! either fall within a few days of the loan's due day or be paid from the loan's paying source,
-//! and match the loan by name or by the loan's derived payment amount. That keeps an unrelated
-//! subscription that happens to share a word with a loan's name from being flagged.
+//! **Which bills are suspected** (planning's ruling on 6wk.20, replacing exact amount equality, which
+//! flickered for a minimum-payment loan whose payment moves with its balance and missed a mortgage
+//! payment that includes escrow). Every active bill is considered, whatever its type: every creation
+//! path defaults the type to `subscription`, so a type test alone hid the double count. Names are
+//! never required. Two strengths:
 //!
-//! **Which amount.** The loan's payment is the one the forecast projects for it, for ANY
-//! repayment philosophy (a minimum-payment loan's derived minimum is comparable to a bill too);
-//! a pay-in-full loan projects a single payoff, not a monthly amount, so it has no amount match.
+//! - **Strong** ([`MatchStrength::Strong`]): the bill is monthly, falls within
+//!   [`DUE_DAY_TOLERANCE`] days of the loan's due day, is paid FROM the loan's funding account (the
+//!   terms' paying source, or the source of transactions already paired as payments into the loan) or
+//!   carries the payee of those paired payments, and its amount is at least 95% of the loan's
+//!   current scheduled payment with NO upper bound, so escrow, extra principal and fees fit.
+//! - **Possible** ([`MatchStrength::Possible`]): only the amount within 10% either way and the date
+//!   within the tolerance agree (a warning only), or a `loan_payment` / `rent_mortgage` bill whose
+//!   name looks like the loan's (the 6wk.11 name signal).
+//!
+//! **Which amount.** The loan's payment is the one the forecast projects for it, for ANY repayment
+//! philosophy; a pay-in-full loan projects a single payoff, not a monthly amount, so it has no
+//! amount match.
 
+use std::collections::{HashMap, HashSet};
+
+use categorization::normalize_merchant;
 use rusqlite::Connection;
 use uuid::Uuid;
 
@@ -46,8 +55,20 @@ pub struct LoanDoubleCount {
     pub bill_name: String,
     /// The normalized names look like the same loan.
     pub name_match: bool,
-    /// The monthly payment the forecast derives for the loan equals the bill amount (same currency).
+    /// The bill amount fits the loan's derived monthly payment (same currency): at least 95% of it
+    /// (no upper bound) or within 10% either way.
     pub amount_match: bool,
+    /// How strongly the bill looks like the loan's payment.
+    pub strength: MatchStrength,
+}
+
+/// How strongly a bill looks like a loan's payment (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchStrength {
+    /// Date, funding account (or payee) and amount all fit: the bill IS the loan's payment.
+    Strong,
+    /// Only some signals fit: worth a warning, never to be linked automatically.
+    Possible,
 }
 
 /// Generic loan/bill words that are *not* distinctive enough to call two entities the same
@@ -99,61 +120,148 @@ pub(crate) fn detect_loan_double_counts(
         .into_iter()
         .filter(|s| s.currency_code.as_str() == currency.code())
         .collect();
+    let merchant_keys = bill_merchant_keys(conn)?;
 
     let mut out = Vec::new();
     for emitting in &loans {
         let loan = &emitting.terms;
+        let paired = paired_payments(conn, loan.ledger_account_id)?;
+        let payment = emitting.payment_minor;
         for bill in &bills {
             let name_match = names_similar(&loan.name, &bill.name);
-            // The forecast's own payment for this loan, compared to the bill (same currency,
-            // guaranteed above). A recurring monthly amount is the one loan amount that is
-            // comparable to a bill; a pay-in-full payoff is a single event.
-            let amount_match = emitting.recurring && emitting.payment_minor == bill.amount_minor;
-            if !(name_match || amount_match) {
-                continue;
-            }
-            // `loan_payment` and `rent_mortgage` bills are loan-shaped by their own type, so the
-            // name or amount alone suffices. Any other type needs its schedule to line up too.
             let loan_shaped = matches!(
                 bill.bill_type.as_deref(),
                 Some("loan_payment" | "rent_mortgage")
             );
-            if loan_shaped || schedule_matches(loan, bill) {
-                out.push(LoanDoubleCount {
-                    loan_account_id: loan.account_id,
-                    loan_name: loan.name.clone(),
-                    bill_event_id: bill.id,
-                    bill_name: bill.name.clone(),
-                    name_match,
-                    amount_match,
-                });
-            }
+            // A pay-in-full payoff is a single event: there is no monthly amount to compare.
+            let comparable = emitting.recurring && payment > 0;
+            let at_least_95 = comparable && at_least_percent(bill.amount_minor, payment, 95);
+            let within_10 = comparable && within_percent(bill.amount_minor, payment, 10);
+            let amount_match = at_least_95 || within_10;
+            let date_ok = bill.freq_token == "monthly"
+                && bill
+                    .anchor
+                    .as_deref()
+                    .and_then(day_of_month)
+                    .is_some_and(|day| days_apart(day, loan.payment_due_day) <= DUE_DAY_TOLERANCE);
+            let funded_by_the_loans_account = bill.autopay_account_id.is_some_and(|account| {
+                loan.paying_source == Some(account) || paired.sources.contains(&account)
+            });
+            let payee_matches = paired_payee_matches(bill, &merchant_keys, &paired);
+
+            let strength =
+                if date_ok && at_least_95 && (funded_by_the_loans_account || payee_matches) {
+                    MatchStrength::Strong
+                } else if (date_ok && within_10) || (loan_shaped && name_match) {
+                    MatchStrength::Possible
+                } else {
+                    continue;
+                };
+            out.push(LoanDoubleCount {
+                loan_account_id: loan.account_id,
+                loan_name: loan.name.clone(),
+                bill_event_id: bill.id,
+                bill_name: bill.name.clone(),
+                name_match,
+                amount_match,
+                strength,
+            });
         }
     }
     Ok(out)
 }
 
-/// How many days either side of the loan's due day a bill's day-of-month may fall and still count as
-/// "the same payment".
-const DUE_DAY_TOLERANCE: u32 = 3;
+/// `amount` is at least `percent`% of `of`, with no upper bound.
+fn at_least_percent(amount: i64, of: i64, percent: i128) -> bool {
+    i128::from(amount) * 100 >= i128::from(of) * percent
+}
 
-/// The bill pays on the loan's schedule: monthly, and either on (about) the loan's due day or from
-/// the account the loan is paid from.
-fn schedule_matches(
-    loan: &crate::forecast::LoanPaymentTerms,
+/// `amount` is within `percent`% of `of`, either way.
+fn within_percent(amount: i64, of: i64, percent: i128) -> bool {
+    (i128::from(amount) - i128::from(of)).abs() * 100 <= i128::from(of) * percent
+}
+
+/// The funding accounts and payees of the transactions already paired as payments INTO a loan
+/// (the most recent few), read from the ledger: a payment is a positive posting on the loan's ledger
+/// account whose other leg debits a liquid account.
+#[derive(Default)]
+struct PairedPayments {
+    /// `accounts.id` of the liquid accounts the payments came from.
+    sources: HashSet<Uuid>,
+    /// Normalized payees of those payments (the merchant key form the recurring detector uses).
+    payees: HashSet<String>,
+}
+
+/// How many recent payments into a loan are read to learn where it is paid from and to whom.
+const PAIRED_PAYMENTS_READ: usize = 24;
+
+fn paired_payments(
+    conn: &Connection,
+    loan_ledger_account: Uuid,
+) -> Result<PairedPayments, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, td.counterparty
+           FROM ledger_postings loan_leg
+           JOIN ledger_transactions lt ON lt.id = loan_leg.transaction_id AND lt.voided_at IS NULL
+           JOIN ledger_postings payer_leg ON payer_leg.transaction_id = lt.id
+                AND payer_leg.ledger_account_id <> loan_leg.ledger_account_id
+                AND payer_leg.minor_units < 0
+           JOIN accounts a ON a.ledger_account_id = payer_leg.ledger_account_id
+                AND a.cashflow_role = 'liquid_cash'
+           LEFT JOIN transaction_details td ON td.transaction_id = lt.id
+          WHERE loan_leg.ledger_account_id = ?1 AND loan_leg.minor_units > 0
+          ORDER BY lt.occurred_at DESC
+          LIMIT ?2",
+    )?;
+    let mut paired = PairedPayments::default();
+    let rows = stmt.query_map(
+        rusqlite::params![loan_ledger_account, PAIRED_PAYMENTS_READ as i64],
+        |r| Ok((r.get::<_, Uuid>(0)?, r.get::<_, Option<String>>(1)?)),
+    )?;
+    for row in rows {
+        let (account, payee) = row?;
+        paired.sources.insert(account);
+        if let Some(key) = payee
+            .map(|p| normalize_merchant(&p))
+            .filter(|k| !k.is_empty())
+        {
+            paired.payees.insert(key);
+        }
+    }
+    Ok(paired)
+}
+
+/// Each bill's persisted merchant key (set when it was promoted from a detected candidate).
+fn bill_merchant_keys(conn: &Connection) -> Result<HashMap<Uuid, String>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source_merchant_key FROM recurring_events
+          WHERE source_merchant_key IS NOT NULL AND is_active = 1 AND deleted_at IS NULL",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, Uuid>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    Ok(rows)
+}
+
+/// The bill carries the payee of the loan's paired payments: its persisted merchant key, or its
+/// own name, normalized the same way.
+fn paired_payee_matches(
     bill: &crate::schedule_sources::ScheduleSource,
+    merchant_keys: &HashMap<Uuid, String>,
+    paired: &PairedPayments,
 ) -> bool {
-    if bill.freq_token != "monthly" {
+    if paired.payees.is_empty() {
         return false;
     }
-    let near_due_day = bill
-        .anchor
-        .as_deref()
-        .and_then(day_of_month)
-        .is_some_and(|day| days_apart(day, loan.payment_due_day) <= DUE_DAY_TOLERANCE);
-    let same_source = loan.paying_source.is_some() && loan.paying_source == bill.autopay_account_id;
-    near_due_day || same_source
+    let by_key = merchant_keys
+        .get(&bill.id)
+        .is_some_and(|key| paired.payees.contains(key));
+    by_key || paired.payees.contains(&normalize_merchant(&bill.name))
 }
+
+/// How many days either side of the loan's due day a bill's day-of-month may fall and still count as
+/// "the same payment".
+const DUE_DAY_TOLERANCE: u32 = 7;
 
 /// The day of the month in a `YYYY-MM-DD` date.
 fn day_of_month(date: &str) -> Option<u32> {
