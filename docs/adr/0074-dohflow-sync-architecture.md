@@ -1052,8 +1052,13 @@ trust comes from rule 3. It makes the decision attributable (nothing is skipped 
 replicas a trigger to roll back, and keeps non-members from filling the log with voids.
 
 **3. A replica honors a void only after rejecting `N` itself.** It must have evaluated position
-`seq` in log order, found it invalid for the stated reason, and see the same `command_id` and
-`envelope_digest` in the void. Anything else is inert: kept for diagnosis, skipping nothing. A
+`seq` in log order, found it invalid (for any deterministic reason; the void's `reason` byte is
+for audit), and see the same `command_id` and `envelope_digest` in the void. Anything else is
+inert: kept for diagnosis, skipping nothing. The service cannot make this decision (it cannot read
+the plaintext), so it never refuses a void because an earlier void's range would cover it; it
+dedupes only an identical void or a second void for the exact same position. Otherwise a member
+could append a void for a *valid* envelope and block every later genuine void inside its range.
+The signer must be an authorized member at the membership head in force at the void's position. A
 malicious member therefore cannot void a **valid** envelope (this is recovery, not censorship),
 and spam is inert. A replica stopped at `N` always evaluates `N` before it can read a void
 positioned after it.
@@ -1063,13 +1068,20 @@ envelope at positions `N` through `V - 1` is skipped, because every object after
 `base_seq` at or past `N` and was built on a state that included it. Their issuers rebase and
 re-issue (rules 6 and 7). Membership and epoch records are never skipped: they are verified by
 their own chain rules. A void whose `seq` an earlier honored void already covers is inert, so the
-first honored void defines the range, and the objects after `V` are valid and apply.
+first honored void defines the range, and the objects after `V` are valid and apply. An earlier
+void that was itself inert covers nothing, and a void for a position at or after `V` is an
+independent poisoning honored on its own. A snapshot inside the range, including the snapshot
+coupled to a key-changing epoch, was built on poisoned state and is never a valid bootstrap root;
+a bootstrapping device uses one before `N`, or one at or after `V` that records the void. An epoch
+record inside the range still takes effect for keys.
 
 **5. No snapshot and no key-epoch cutover while halted.** A replica stopped at a poisoned
 position publishes no snapshot, performs no cutover and pushes nothing. (A snapshot needs the
 head, which such a replica cannot reach, and a cutover from a stopped replica would be built on a
 state that skips `N`.) After the void is honored the replica resumes after `V` and is no longer
-halted.
+halted. **Operator order:** if the device that poisoned the log should be revoked, the void comes
+first and the cutover after it; no cutover can happen while halted, so nobody should wait on a
+revocation that cannot yet be made.
 
 **6. Re-issue uses a new `command_id` and a new idempotency key.** Reusing the key hits the tag in
 the accepted-envelope index and is a `ProtocolFork` (Decision 2). The index keeps the record of
@@ -1098,10 +1110,16 @@ honor-and-refuse vectors in the same family (`personal-cfo-g3m.17` part C).
 
 **10. Deterministic apply failures are in scope.** An envelope that passes the checks but cannot
 be applied deterministically (Decision 3: apply is a function of payload, metadata and base state)
-poisons its position the same way. A void with `reason` 2 is honored only if the replica **itself**
-failed to apply the position, with a typed error from a closed set of *deterministic rejection*
-errors. A write-set mismatch is not in that set: it stays a fork (Decision 3), not voidable, so a
-replica that diverges for a local reason cannot be talked into skipping.
+poisons its position the same way. A void is honored only if the replica **itself** failed to
+apply the position with a *deterministic rejection*. An error is one only if **all** of these
+hold: it is a pure function of the payload, the metadata, the base state and `engine_version`; it
+is raised before any write commits, so the transaction rolls back; and it depends on no class-3 or
+device-local state. Excluded by name: I/O errors, `SQLITE_BUSY` and disk-full conditions,
+`CipherUnavailable`, `NonceStateLost`, resource exhaustion, and a write-set mismatch. A write-set
+mismatch stays a fork (Decision 3), not voidable, so a replica that diverges for a local reason
+cannot be talked into skipping, and a replica that misclassifies a transient local failure cannot
+honor a void the others reject. The closed list of members is fixed with the apply code
+(`personal-cfo-g3m.17` part C, `personal-cfo-elciw`) against these criteria.
 
 **11. The normative encoding lives in `vault-format.md`.** The void record's body, signature,
 service checks and index marking are in C.10 "Void records" under C.13 change control

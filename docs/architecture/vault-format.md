@@ -1689,19 +1689,33 @@ log position `V` the service assigns when it appends the void is not in the body
   under the key the chain holds for `signer_fingerprint`. The signature is **not authority over
   the outcome**: it makes the decision attributable, gives replicas a rollback trigger, and keeps
   spam from non-members out. What makes a replica skip a position is its own rejection of it.
-- **What the service checks.** The signature and the signer; that the vault matches; that `seq`
+- **What the service checks.** The signature and the signer (an authorized member at the
+  membership head in force at the position `V` it assigns); that the vault matches; and that `seq`
   is an existing command-envelope position and that `command_id` and `envelope_digest` equal the
-  index's record for it; and that `seq` is not already covered by an earlier void. It cannot check
-  that the envelope is actually invalid (that needs the plaintext) and does not try.
+  index's record for it. It dedupes only an identical void (the same body id) or a second void for
+  the exact same `seq`. It cannot check that the envelope is actually invalid (that needs the
+  plaintext) and does not try. **It never refuses a void because an earlier void's range would
+  cover it**: whether a void is honored, and so what a range covers, is decided only by replicas.
+  A malicious member can append a void for a *valid* envelope; replicas ignore it, and a later
+  genuine void for a poisoned position inside that range must still be accepted and honored.
 - **When a replica honors it.** Only if the replica has itself evaluated position `seq`, in log
-  order, found it invalid for the stated reason, and the void's `command_id` and
-  `envelope_digest` equal what it saw there. Otherwise the void is inert (retained for diagnosis,
-  nothing skipped). So a malicious member cannot void a valid envelope, and spam does nothing.
-  A replica stopped at `N` has evaluated `N` before it can read a void positioned after it.
+  order, found it invalid, and the void's `command_id` and `envelope_digest` equal what it saw
+  there. The `reason` byte is for audit and diagnosis: a replica that found `seq` invalid for any
+  deterministic reason honors the void, because it cannot apply `seq` either way. Otherwise the
+  void is inert (retained for diagnosis, nothing skipped). So a malicious member cannot void a
+  valid envelope, and spam does nothing. A replica stopped at `N` has evaluated `N` before it can
+  read a void positioned after it. The signer must be an authorized member at the membership head
+  in force at the void's position `V` (C.7 gives each position its epoch).
 - **Range.** An honored void at position `V` skips every command envelope at positions `seq`
   through `V - 1`: later objects were built on a base that included `seq`. Membership and epoch
-  records are never skipped (C.6 verifies them independently). A void whose `seq` an earlier
-  honored void already covers is inert, so the range is exactly the first honored void's.
+  records are never skipped (C.6 verifies them independently); an epoch record inside the range
+  still takes effect for keys. A **snapshot** inside the range (including the snapshot coupled to
+  a key-changing epoch) was built on poisoned state: it is never a valid bootstrap root, and a
+  bootstrapping device uses one before `seq` or one at or after `V` that records the void. A void
+  whose `seq` an earlier **honored** void already covers is inert, so the range is exactly the
+  first honored void's; an earlier void that was itself inert (it named a valid envelope, or one
+  the replica had not yet evaluated) covers nothing. A void for a position at or after `V` is an
+  independent poisoning and is honored on its own.
 - **No snapshot and no cutover while halted.** A replica stopped at a poisoned position publishes
   no snapshot, performs no key-epoch cutover and pushes nothing.
 - **The index.** The accepted-envelope index (above) keeps each voided position's record and marks
