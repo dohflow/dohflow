@@ -137,7 +137,7 @@ fn the_loan_alone_projects_one_payment() {
 /// default type, `subscription`. Before 6wk.20 the detector only looked at `loan_payment` bills and was
 /// silent; it now flags a bill of ANY type whose schedule and amount line up with the loan's payment.
 #[test]
-fn a_subscription_typed_bill_for_the_loans_payment_is_flagged() {
+fn a_subscription_typed_bill_for_the_loans_payment_is_flagged_as_possible() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
     bill_on_the_15th(
@@ -160,13 +160,16 @@ fn a_subscription_typed_bill_for_the_loans_payment_is_flagged() {
         !warnings[0].name_match,
         "the payee name has nothing in common with the loan's"
     );
+    // A generic bill has no real evidence it is the loan's payment (no payee in common with the
+    // loan's paired payments, not loan-typed): a soft note, never "counted twice" or a link offer.
+    assert_eq!(warnings[0].strength, MatchStrength::Possible);
     // KNOWN GAP until the forecast-level link (the second phase of 6wk.20): the warning is
     // descriptive (ADR 0018), so the forecast still counts both until the user removes one.
     assert_eq!(outflow_on_the_15th(&worker), 300_000);
 }
 
 #[test]
-fn a_rent_mortgage_typed_bill_is_flagged() {
+fn a_rent_mortgage_typed_bill_from_the_funding_account_is_strong() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
     bill_on_the_15th(
@@ -179,37 +182,47 @@ fn a_rent_mortgage_typed_bill_is_flagged() {
     let warnings = worker.loan_double_count_warnings().unwrap();
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].name_match && warnings[0].amount_match);
+    assert_eq!(
+        warnings[0].strength,
+        MatchStrength::Strong,
+        "loan-typed, from the funding account, on the due day, at 100%"
+    );
 }
 
-/// CHANGED by planning's ruling (6wk.20): an amount alone never flags a bill any more (no exact amount
-/// equality anywhere), whatever its type: the schedule has to line up. A `loan_payment` bill on
-/// another cadence with an unrelated name is therefore NOT flagged; one whose name looks like the loan's
-/// still is (the 6wk.11 name signal, a warning only).
+/// A bill must be MONTHLY to be the loan's payment: a weekly `loan_payment` bill is not flagged, whatever
+/// its amount or name (names are no evidence at all).
 #[test]
-fn a_loan_payment_typed_bill_on_another_cadence_is_flagged_only_by_its_name() {
+fn a_loan_payment_typed_bill_on_another_cadence_is_not_flagged() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
-    let weekly = |worker: &DbWorker, name: &str| {
+    for name in ["ACME HOME LOANS", "Test Mortgage payment"] {
         bill(
-            worker,
+            &worker,
             name,
             "loan_payment",
             150_000,
             Frequency::Weekly,
             NaiveDate::from_ymd_opt(2026, 7, 3).unwrap(),
             fixture.checking,
-        )
-    };
-    weekly(&worker, "ACME HOME LOANS");
-    assert!(
-        worker.loan_double_count_warnings().unwrap().is_empty(),
-        "the same amount alone is not enough"
+        );
+    }
+    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
+}
+
+/// A name that resembles the loan's, on its own, is not evidence: a monthly bill on the due day with a
+/// much larger amount is no match even if it is called "Test Mortgage".
+#[test]
+fn a_matching_name_alone_is_no_evidence() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    bill_on_the_15th(
+        &worker,
+        "Test Mortgage",
+        "loan_payment",
+        900_000,
+        fixture.checking,
     );
-    weekly(&worker, "Test Mortgage payment");
-    let warnings = worker.loan_double_count_warnings().unwrap();
-    assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].name_match);
-    assert_eq!(warnings[0].strength, MatchStrength::Possible);
+    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
 }
 
 /// A minimum-payment loan has no fixed amount, but the forecast derives one (1% of the balance, or the
@@ -471,12 +484,13 @@ fn the_due_day_comparison_wraps_across_the_month_end() {
     );
 }
 
-// ----- planning's ruling: strong vs possible, with a 95% floor, no ceiling, and no flicker --------------
+// ----- planning's revised ruling: strong needs real evidence; possible is a soft note ---------------------
 
-/// Strength of the single warning for a monthly `subscription` bill of `amount_minor` on `day`,
-/// paid from `from`; `None` when nothing is flagged.
+/// Strength of the single warning for a monthly bill of `bill_type` and `amount_minor` on `day`, paid
+/// from `from`; `None` when nothing is flagged.
 fn strength_of(
     worker: &DbWorker,
+    bill_type: &str,
     amount_minor: i64,
     day: u32,
     from: AccountId,
@@ -484,7 +498,7 @@ fn strength_of(
     bill(
         worker,
         "Home payment",
-        "subscription",
+        bill_type,
         amount_minor,
         Frequency::Monthly,
         NaiveDate::from_ymd_opt(2026, 7, day).unwrap(),
@@ -495,25 +509,67 @@ fn strength_of(
     warnings.first().map(|w| w.strength)
 }
 
+/// A loan-typed bill from the funding account on the due day: STRONG from 95% to 200% of the scheduled
+/// payment ($1,500), and not beyond.
 #[test]
-fn the_amount_is_a_95_percent_floor_with_no_ceiling_from_the_funding_account() {
-    // Payment $1,500. From the loan's own account on its due day:
+fn a_loan_typed_bill_is_strong_from_95_to_200_percent_of_the_payment() {
     for (amount, expected) in [
         (150_000, Some(MatchStrength::Strong)),
         (142_500, Some(MatchStrength::Strong)), // exactly 95%
-        (142_499, Some(MatchStrength::Possible)), // just under: still within 10%
+        (142_499, Some(MatchStrength::Possible)), // just under 95%, still within 10%
         (135_000, Some(MatchStrength::Possible)), // exactly -10%
         (134_999, None),                        // just outside
-        (180_000, Some(MatchStrength::Strong)), // escrow added: no upper bound
-        (900_000, Some(MatchStrength::Strong)), // no upper bound at all
+        (270_000, Some(MatchStrength::Strong)), // 1.8x: escrow, extra principal
+        (300_000, Some(MatchStrength::Strong)), // exactly 200%
+        (300_001, None),                        // beyond 200% and beyond the possible band
+        (375_000, None),                        // 2.5x
     ] {
         let (_dir, worker) = worker();
         let fixture = mortgage(&worker);
         assert_eq!(
-            strength_of(&worker, amount, 15, fixture.checking),
+            strength_of(&worker, "loan_payment", amount, 15, fixture.checking),
             expected,
-            "a ${:.2} bill against a $1,500 payment",
+            "a loan_payment bill of ${:.2} against a $1,500 payment",
             amount as f64 / 100.0
+        );
+    }
+}
+
+/// A GENERIC (subscription) bill from the funding account is never strong: possible from 95% to 150%
+/// (and within 10%), no match beyond.
+#[test]
+fn a_generic_bill_from_the_funding_account_is_never_strong() {
+    for (amount, expected) in [
+        (150_000, Some(MatchStrength::Possible)),
+        (142_500, Some(MatchStrength::Possible)),
+        (134_999, None),
+        (225_000, Some(MatchStrength::Possible)), // exactly 150%
+        (225_001, None),
+        (900_000, None), // a large unrelated bill near the due day is no match at all
+    ] {
+        let (_dir, worker) = worker();
+        let fixture = mortgage(&worker);
+        assert_eq!(
+            strength_of(&worker, "subscription", amount, 15, fixture.checking),
+            expected,
+            "a subscription of ${:.2} against a $1,500 payment",
+            amount as f64 / 100.0
+        );
+    }
+}
+
+/// A large unrelated loan-typed bill on the due day from the funding account (2.5x or more) must never
+/// be STRONG: that was the over-flagging the first draft of the rule had.
+#[test]
+fn a_large_unrelated_bill_near_the_due_day_is_never_strong() {
+    for bill_type in ["subscription", "loan_payment", "rent_mortgage", "utility"] {
+        let (_dir, worker) = worker();
+        let fixture = mortgage(&worker);
+        let strength = strength_of(&worker, bill_type, 900_000, 15, fixture.checking);
+        assert_ne!(strength, Some(MatchStrength::Strong), "{bill_type}");
+        assert_eq!(
+            strength, None,
+            "{bill_type}: 6x the payment is no match at all"
         );
     }
 }
@@ -529,7 +585,7 @@ fn from_another_account_the_ceiling_is_ten_percent_and_it_is_only_possible() {
         mortgage(&worker);
         let savings = other_account(&worker);
         assert_eq!(
-            strength_of(&worker, amount, 15, savings),
+            strength_of(&worker, "subscription", amount, 15, savings),
             expected,
             "{amount}"
         );
@@ -636,11 +692,11 @@ fn the_source_of_payments_already_paired_into_the_loan_counts_as_its_funding_acc
         )
         .unwrap();
 
-    // Before any paired payment: a bill from checking is only a possible match.
+    // Before any paired payment: a loan-typed bill from checking is only a possible match.
     bill_on_the_15th(
         &worker,
         "Home payment",
-        "subscription",
+        "loan_payment",
         150_000,
         checking_id,
     );
@@ -669,7 +725,7 @@ fn the_source_of_payments_already_paired_into_the_loan_counts_as_its_funding_acc
     bill(
         &worker,
         "Other payment",
-        "subscription",
+        "loan_payment",
         150_000,
         Frequency::Monthly,
         NaiveDate::from_ymd_opt(2026, 7, 16).unwrap(),
@@ -686,13 +742,11 @@ fn the_source_of_payments_already_paired_into_the_loan_counts_as_its_funding_acc
     assert_eq!(strength("Other payment"), Some(MatchStrength::Possible));
 }
 
-/// The payee of the paired payments is an equally strong signal: a bill whose name is that payee
-/// (here promoted from the same bank payee) is strong even when it is paid from another account.
-#[test]
-fn a_bill_carrying_the_paired_payments_payee_is_strong_even_from_another_account() {
-    let (_dir, worker) = worker();
-    let fixture = mortgage(&worker);
-    let savings = other_account(&worker);
+/// The mortgage fixture plus a payment already paired into the loan from checking whose imported payee
+/// is "ACME HOME LOANS"; returns a second account the loan is NOT paid from.
+fn mortgage_with_a_paired_payee(worker: &DbWorker) -> AccountId {
+    let fixture = mortgage(worker);
+    let savings = other_account(worker);
     worker
         .dispatch(
             meta(),
@@ -704,7 +758,6 @@ fn a_bill_carrying_the_paired_payments_payee_is_strong_even_from_another_account
             },
         )
         .unwrap();
-    // The imported payee on that payment.
     // The transfer's transaction: the one with a positive posting on the loan account.
     let transaction_id: Uuid = worker
         .read_connection()
@@ -718,30 +771,99 @@ fn a_bill_carrying_the_paired_payments_payee_is_strong_even_from_another_account
             |r| r.get(0),
         )
         .unwrap();
-    {
-        let guard = worker.lock();
-        record_transaction_detail(
-            &guard.conn,
-            transaction_id,
-            None,
-            Some("ACME HOME LOANS"),
-            None,
-        )
-        .unwrap();
-    }
-    // Paid from savings (not the loan's source) but named like the payee: strong.
+    let guard = worker.lock();
+    record_transaction_detail(
+        &guard.conn,
+        transaction_id,
+        None,
+        Some("ACME HOME LOANS"),
+        None,
+    )
+    .unwrap();
+    savings
+}
+
+/// Strength of the one warning for a bill named like the paired payments' payee.
+fn acme_bill(
+    worker: &DbWorker,
+    amount_minor: i64,
+    frequency: Frequency,
+    day: u32,
+    from: AccountId,
+) -> Option<MatchStrength> {
     bill(
-        &worker,
+        worker,
         "Acme Home Loans",
         "subscription",
-        150_000,
-        Frequency::Monthly,
-        the_15th(),
-        savings,
+        amount_minor,
+        frequency,
+        NaiveDate::from_ymd_opt(2026, 7, day).unwrap(),
+        from,
     );
-    let warnings = worker.loan_double_count_warnings().unwrap();
-    assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].strength, MatchStrength::Strong);
+    worker
+        .loan_double_count_warnings()
+        .unwrap()
+        .first()
+        .map(|w| w.strength)
+}
+
+/// The payee of the loan's paired payments is real evidence, whatever the bill's type and whichever
+/// account pays it: a generic bill carrying that payee, monthly, on the due day, is STRONG.
+#[test]
+fn a_bill_carrying_the_paired_payments_payee_is_strong_even_from_another_account() {
+    let (_dir, worker) = worker();
+    let savings = mortgage_with_a_paired_payee(&worker);
+    assert_eq!(
+        acme_bill(&worker, 150_000, Frequency::Monthly, 15, savings),
+        Some(MatchStrength::Strong)
+    );
+}
+
+/// An escrow mortgage: the payee route waives the amount ceiling (only the 95% floor applies).
+#[test]
+fn a_payee_matched_escrow_mortgage_is_strong_with_no_amount_ceiling() {
+    for amount in [180_000, 300_000, 900_000] {
+        let (_dir, worker) = worker();
+        let savings = mortgage_with_a_paired_payee(&worker);
+        assert_eq!(
+            acme_bill(&worker, amount, Frequency::Monthly, 15, savings),
+            Some(MatchStrength::Strong),
+            "{amount}"
+        );
+    }
+}
+
+/// The payee route still needs the 95% floor: a payee-matched bill far BELOW the payment is not strong.
+#[test]
+fn a_payee_matched_bill_below_the_floor_is_not_strong() {
+    let (_dir, worker) = worker();
+    let savings = mortgage_with_a_paired_payee(&worker);
+    assert_ne!(
+        acme_bill(&worker, 50_000, Frequency::Monthly, 15, savings),
+        Some(MatchStrength::Strong)
+    );
+}
+
+/// One payee can carry two loans, so the payee route still needs the loan's cadence (monthly) and a
+/// date within 7 days of the due day (planning's clarification); only the amount ceiling is waived.
+#[test]
+fn the_payee_route_still_needs_the_loans_cadence_and_date() {
+    // (frequency, day of July, expected)
+    for (frequency, day, expected) in [
+        (Frequency::Weekly, 15, None),
+        (Frequency::Monthly, 22, Some(MatchStrength::Strong)), // 7 days: the edge
+        (Frequency::Monthly, 23, None),                        // 8 days
+        (Frequency::Monthly, 8, Some(MatchStrength::Strong)),
+        (Frequency::Monthly, 7, None),
+    ] {
+        let (_dir, worker) = worker();
+        let savings = mortgage_with_a_paired_payee(&worker);
+        assert_eq!(
+            acme_bill(&worker, 900_000, frequency, day, savings),
+            expected,
+            "{frequency:?} on the {day}th"
+        );
+    }
 }
 
 // ----- what must NOT count as a funding account (04b's F1 on the paired-payments query) -------------------
@@ -821,7 +943,7 @@ fn pay_the_loan_from(
 }
 
 fn strength_for_a_bill_paid_from(worker: &DbWorker, from: AccountId) -> Option<MatchStrength> {
-    bill_on_the_15th(worker, "Home payment", "subscription", 150_000, from);
+    bill_on_the_15th(worker, "Home payment", "loan_payment", 150_000, from);
     worker
         .loan_double_count_warnings()
         .unwrap()

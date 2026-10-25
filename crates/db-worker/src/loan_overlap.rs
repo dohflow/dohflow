@@ -14,20 +14,25 @@
 //! **heuristic, descriptive** warning (ADR 0018) so the user removes one. It never auto-removes
 //! either side.
 //!
-//! **Which bills are suspected** (planning's ruling on 6wk.20, replacing exact amount equality, which
-//! flickered for a minimum-payment loan whose payment moves with its balance and missed a mortgage
-//! payment that includes escrow). Every active bill is considered, whatever its type: every creation
-//! path defaults the type to `subscription`, so a type test alone hid the double count. Names are
-//! never required. Two strengths:
+//! **Which bills are suspected** (planning's revised ruling on 6wk.20; the first draft, which let a
+//! large unrelated bill near the due day count as "the same payment", was too loose, and exact amount
+//! equality before it flickered for a minimum-payment loan and missed escrow). Every active bill is
+//! considered, whatever its type: every creation path defaults the type to `subscription`, so a type
+//! test alone hid the double count. A bill is a candidate only if it is MONTHLY and falls within
+//! [`DUE_DAY_TOLERANCE`] days of the loan's due day. Two strengths, and only the first claims the bill
+//! is "counted twice" or offers to link it:
 //!
-//! - **Strong** ([`MatchStrength::Strong`]): the bill is monthly, falls within
-//!   [`DUE_DAY_TOLERANCE`] days of the loan's due day, is paid FROM the loan's funding account (the
-//!   terms' paying source, or the source of transactions already paired as payments into the loan) or
-//!   carries the payee of those paired payments, and its amount is at least 95% of the loan's
-//!   current scheduled payment with NO upper bound, so escrow, extra principal and fees fit.
-//! - **Possible** ([`MatchStrength::Possible`]): only the amount within 10% either way and the date
-//!   within the tolerance agree (a warning only), or a `loan_payment` / `rent_mortgage` bill whose
-//!   name looks like the loan's (the 6wk.11 name signal).
+//! - **Strong** ([`MatchStrength::Strong`]) needs real evidence, either
+//!   (i) the bill's payee is the payee of the loan's already-paired payments, with an amount of at
+//!   least 95% of the scheduled payment and NO ceiling (escrow, extra principal), or
+//!   (ii) the bill is typed `loan_payment` or `rent_mortgage`, paid from the loan's funding account
+//!   (its terms' paying source, or the source of the payments already paired into the loan), with an
+//!   amount from 95% to 200% of the scheduled payment.
+//! - **Possible** ([`MatchStrength::Possible`]) is a soft "might be the same payment" note, never a
+//!   link offer: paid from the funding account with an amount from 95% to 150%, or an amount within
+//!   10% either way.
+//!
+//! Anything else is no match. A name resemblance alone is not evidence.
 //!
 //! **Which amount.** The loan's payment is the one the forecast projects for it, for ANY repayment
 //! philosophy; a pay-in-full loan projects a single payoff, not a monthly amount, so it has no
@@ -65,9 +70,11 @@ pub struct LoanDoubleCount {
 /// How strongly a bill looks like a loan's payment (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchStrength {
-    /// Date, funding account (or payee) and amount all fit: the bill IS the loan's payment.
+    /// Real evidence (the payee of the loan's paired payments, or a loan-typed bill from its funding
+    /// account) on the loan's cadence: the bill IS the loan's payment. The only tier that may say
+    /// "counted twice" or offer a link.
     Strong,
-    /// Only some signals fit: worth a warning, never to be linked automatically.
+    /// Some signals fit: a soft "might be the same payment" note, never a link offer.
     Possible,
 }
 
@@ -136,6 +143,8 @@ pub(crate) fn detect_loan_double_counts(
             // A pay-in-full payoff is a single event: there is no monthly amount to compare.
             let comparable = emitting.recurring && payment > 0;
             let at_least_95 = comparable && at_least_percent(bill.amount_minor, payment, 95);
+            let up_to_150 = at_least_95 && at_most_percent(bill.amount_minor, payment, 150);
+            let up_to_200 = at_least_95 && at_most_percent(bill.amount_minor, payment, 200);
             let within_10 = comparable && within_percent(bill.amount_minor, payment, 10);
             let amount_match = at_least_95 || within_10;
             let date_ok = bill.freq_token == "monthly"
@@ -149,14 +158,17 @@ pub(crate) fn detect_loan_double_counts(
             });
             let payee_matches = paired_payee_matches(bill, &merchant_keys, &paired);
 
-            let strength =
-                if date_ok && at_least_95 && (funded_by_the_loans_account || payee_matches) {
-                    MatchStrength::Strong
-                } else if (date_ok && within_10) || (loan_shaped && name_match) {
-                    MatchStrength::Possible
-                } else {
-                    continue;
-                };
+            let strength = if !date_ok {
+                continue;
+            } else if (payee_matches && at_least_95)
+                || (loan_shaped && funded_by_the_loans_account && up_to_200)
+            {
+                MatchStrength::Strong
+            } else if (funded_by_the_loans_account && up_to_150) || within_10 {
+                MatchStrength::Possible
+            } else {
+                continue;
+            };
             out.push(LoanDoubleCount {
                 loan_account_id: loan.account_id,
                 loan_name: loan.name.clone(),
@@ -174,6 +186,11 @@ pub(crate) fn detect_loan_double_counts(
 /// `amount` is at least `percent`% of `of`, with no upper bound.
 fn at_least_percent(amount: i64, of: i64, percent: i128) -> bool {
     i128::from(amount) * 100 >= i128::from(of) * percent
+}
+
+/// `amount` is at most `percent`% of `of`.
+fn at_most_percent(amount: i64, of: i64, percent: i128) -> bool {
+    i128::from(amount) * 100 <= i128::from(of) * percent
 }
 
 /// `amount` is within `percent`% of `of`, either way.
