@@ -156,11 +156,11 @@ has not closed it, and it must not vanish before it is read. If all three are er
 **The shared primitive.** The notice is one component in `components/ui` (a `Notice` and a small
 provider/hook that a screen calls with the message, the Undo handler and the name), added by the
 follow-up that applies this pattern (`personal-cfo-egn67`, AC5). New removals do not hand-roll
-toasts, timers or live regions. **Out of scope here:** the Cash Flow `MarkedPaidUndoBar` (a 12 s
-bar that undoes *marking an occurrence paid*, a confirmation and not a remove, with its error inside
-its status region). It predates this section and keeps working as it is; whether it migrates onto the
-primitive is a separate decision for planning, not made by this convention. Its tests assert the live-region text and role, that Undo calls the reinstate
-command, the failure state, the paused timer under fake timers, stacking and the three dismissals.
+toasts, timers or live regions. The same primitive carries the Undo of **marking an occurrence paid**
+in Cash Flow (`personal-cfo-4d8.32`; a confirmation rather than a remove, but the same notice rules:
+one stack, one Escape, one focus rule, and a failure as its own alert). Its tests assert the
+live-region text and role, that Undo calls the reinstate command, the failure state, the paused
+timer under fake timers, stacking, eviction and the three dismissals.
 
 ## 7. Components + styling
 
