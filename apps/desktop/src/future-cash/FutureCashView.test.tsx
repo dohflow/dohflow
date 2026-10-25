@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   recurringBillList: vi.fn(),
   incomeSourceList: vi.fn(),
   cashFlowHistory: vi.fn(),
+  loanDoubleCountWarnings: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -41,6 +42,7 @@ vi.mock("@/bindings", () => ({
     deleteForecastAssumption: mocks.deleteForecastAssumption,
     recurringBillList: mocks.recurringBillList,
     incomeSourceList: mocks.incomeSourceList,
+    loanDoubleCountWarnings: mocks.loanDoubleCountWarnings,
   },
 }));
 
@@ -127,6 +129,8 @@ function multiSeries(
 }
 
 beforeEach(() => {
+  mocks.loanDoubleCountWarnings.mockReset();
+  mocks.loanDoubleCountWarnings.mockResolvedValue(ok([]));
   mocks.futureCashForecast.mockReset();
   mocks.futureCashForecast.mockResolvedValue(ok(forecast()));
   mocks.futureCashByAccount.mockReset();
@@ -371,3 +375,44 @@ describe("the three states are deliberate (personal-cfo-4fbl)", () => {
     expect(screen.queryByText(/nothing scheduled to project/i)).not.toBeInTheDocument();
   });
 });
+
+// ----- a loan's payment counted twice is shown on Cash Flow too (personal-cfo-6wk.20, AC5) -----------
+
+const overlap = (over: Record<string, unknown> = {}) => ({
+  loan_account_id: "loan-1",
+  loan_name: "Test Mortgage",
+  bill_event_id: "bill-1",
+  bill_name: "ACME HOME LOANS",
+  name_match: false,
+  amount_match: true,
+  strength: "strong",
+  matched_by: "loan_typed",
+  bill_type: "loan_payment",
+  paid_from_account_name: "Checking",
+  ...over,
+});
+
+test("Cash Flow shows the strong overlap, so the double count is visible where it distorts", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(ok([overlap()]));
+  renderWithClient(<FutureCashView />);
+  const region = await screen.findByRole("region", { name: "Loan payment counted twice" });
+  expect(region).toHaveTextContent("Test Mortgage");
+  expect(region).toHaveTextContent("ACME HOME LOANS");
+});
+
+test("Cash Flow shows a possible overlap as the soft note only", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(
+    ok([overlap({ strength: "possible", matched_by: null })]),
+  );
+  renderWithClient(<FutureCashView />);
+  const region = await screen.findByRole("region", { name: "Possible duplicate loan payment" });
+  expect(region).not.toHaveTextContent(/counted twice/i);
+  expect(screen.queryByRole("region", { name: "Loan payment counted twice" })).toBeNull();
+});
+
+test("Cash Flow shows no overlap card when there is none", async () => {
+  renderWithClient(<FutureCashView />);
+  await screen.findByRole("heading", { name: "Cash Flow" });
+  expect(screen.queryByRole("region", { name: /loan payment/i })).toBeNull();
+});
+

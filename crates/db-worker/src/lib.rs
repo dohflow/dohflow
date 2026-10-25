@@ -161,7 +161,9 @@ pub use forecast_events::{AssumptionParams, ForecastAssumptionSpec};
 pub use forecast_persist::{
     ForecastDiffView, InputSnapshotView, ModelRegistryView, NewForecastDiff,
 };
-pub use loan_overlap::{LoanDoubleCount, MatchStrength, MatchedBy};
+pub use loan_overlap::{
+    LoanDoubleCount, LoanOverlapDraft, LoanPaymentMatch, MatchStrength, MatchedBy,
+};
 pub use manual_entry::ManualEntry;
 pub use merchant_identity::{MerchantIdentity, MAX_ALIAS_KEY_BYTES};
 pub use projection::{
@@ -2453,6 +2455,18 @@ impl DbWorker {
     /// Returns [`DbError`] if a read fails.
     pub fn loan_double_count_warnings(&self) -> Result<Vec<LoanDoubleCount>, DbError> {
         loan_overlap::detect_loan_double_counts(&self.read_connection()?)
+    }
+
+    /// Does a bill the user is about to create look like a loan's payment (personal-cfo-6wk.20)?
+    /// Read-only: nothing is created, changed or linked, and the answer is descriptive (ADR 0018).
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if a read fails.
+    pub fn check_loan_overlap(
+        &self,
+        draft: &LoanOverlapDraft,
+    ) -> Result<Option<LoanPaymentMatch>, DbError> {
+        loan_overlap::check_draft(&self.read_connection()?, draft)
     }
 
     /// Candidate recurring bills detected from realized outflows (personal-cfo-98ql):

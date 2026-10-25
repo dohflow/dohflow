@@ -148,6 +148,7 @@ macro_rules! app_commands {
             ipc::commands::unconfirmed_past_due,
             ipc::commands::loan_double_count_warnings,
             ipc::commands::recurring_candidates,
+            ipc::commands::check_loan_overlap,
             ipc::commands::income_candidates,
             ipc::commands::recurring_bill_history,
             ipc::commands::build_info,
