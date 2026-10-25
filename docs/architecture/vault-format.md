@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=10 -->
+<!-- vault-format: spec-version=11 -->
 <!-- vault-format: schema-version=59 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,9 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 11` adds the public `check_envelope` conformance vectors
+  (`docs/architecture/vectors/check-envelope-v1.json`, C.14), which pin the receiver checks of C.4
+  that ADR 0074 Addendum D makes consensus-critical. No wire layout or existing vector changes.
 - `spec-version = 10` adds the void record (C.10 "Void records"), the member-signed record by
   which a vault recovers from a poisoned log position (ADR 0074 Addendum D), with its encoding,
   who may sign it, when a replica honors it, and the index marking; and the vectors `void_body`
@@ -1151,6 +1154,31 @@ position, the command and the sealing device. It is neither a fork nor a retryab
 position is identified by `(seq, canonical_envelope_digest)`: the same position with a different
 digest is a fork of the log (`ProtocolFork`).
 
+**When an envelope is *found invalid*.** The void rules (ADR 0074 Addendum D) depend on a
+replica's own verdict, so the verdict must be the same everywhere. A replica finds the envelope at
+position `N` invalid in exactly two ways.
+
+1. **The container or header does not parse.** This is invalid with no key or chain condition: it
+   is deterministic from the bytes alone, every replica at one `engine_version` parses
+   identically, and there is no `key_epoch` or device to gate on.
+2. **Everything after a successful header parse**, and only when the replica holds the evidence:
+   it has a **verified key** for the header's `key_epoch` (the key matched that epoch's verified
+   `key_commitment_ke`) and the chain it has verified places the header's device among the members
+   of that epoch (C.7 gives the epoch in force at `N`). Then any of these holds: the ciphertext
+   does not open under the key derived for that epoch, vault and device (a flipped ciphertext or
+   tag byte, a truncated ciphertext); the opened plaintext does not decode; or a receiver check of
+   this section fails. Equally invalid, once the chain is verified through that epoch: a
+   `key_epoch` that is not the epoch in force at `N`, and a device that is not a member of the
+   epoch it claims.
+
+**Never invalid** (for the second way): a replica without a verified key for that epoch, whose chain is behind (the epoch or
+membership record is not yet verified), or that cannot construct the key is in a local or
+retryable state and keeps waiting. If those states counted, a replica with a missing key would
+honor a void for a valid envelope that every other replica applied, and the vault would split.
+Decode failures count as invalid: a plaintext that does not decode after a successful open is a
+producer fault, and a header that does not parse at an accepted position means the service let
+through what its own checks should have refused; both are deterministic from the bytes.
+
 ### Counter register and nonce state
 
 Each device owns a durable `next_counter` for every
@@ -1854,6 +1882,27 @@ states the outcome as the C.11 failure name and the position of the offending re
 implementation's own error names. The file holds only public data; the seeds that produced it live
 only in the Rust generator (`crates/sync-core/tests/membership_vectors.rs`), which fails if the file
 drifts. A change to the file is a change to this part and follows C.13.
+
+`docs/architecture/vectors/check-envelope-v1.json` (`vectors_version` 1) pins the receiver checks
+of C.4 for every implementation that decrypts: a header and a plaintext as bytes, the idempotency
+tag the receiver's own tagger returns for the plaintext's key (an input, because the tag secret is
+not in the file), and the expected outcome, which is `ok`, `MalformedHeader` or
+`MalformedPlaintext` (the bytes do not decode), or the name of the **first** failing check in the
+order `NotAnEnvelope`, `ObjectIdMismatch`, `DeviceMismatch`, `TagMismatch`,
+`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`. What is
+normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
+failures included); the specific error is normative for every single-defect case and informative
+(the reference order) for the multi-defect cases, where another implementation must agree the
+envelope is invalid but may report a different first error. The tagger answer in each case is
+`HMAC-SHA256` under the sample tag key over the label and the plaintext's canonical 16-byte
+idempotency key, so an implementation that tags the wrong input fails a vector. Valid cases
+(including empty and non-empty delta manifests), one or more single-defect cases for every check,
+decode failures (truncation, trailing bytes, unknown actor types, a non-v4 idempotency key) and
+multi-defect cases that pin the order are included. Because the void rules of ADR 0074
+Addendum D make these checks consensus-critical, two implementations that disagree on any case
+would split a vault, so the file is part of the protocol: adding a check without a vector fails the
+reference test, and a change to the file follows C.13. The checks that need the membership chain
+or the AEAD key are the caller's (C.4) and are not in this file.
 
 The reference test recomputes every vector below and fails if the document and
 the code differ. Every input is synthetic and listed here, so a third
