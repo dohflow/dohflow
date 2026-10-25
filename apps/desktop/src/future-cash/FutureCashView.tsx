@@ -34,6 +34,7 @@ import {
 import { useMarkObligation } from "./useMarkObligation";
 import { useCashFlowHistory } from "@/accounts/useCashFlowHistory";
 import { useComfortBand } from "@/dashboard/useComfortBand";
+import { LoanDoubleCountWarning } from "@/accounts/LoanDoubleCountWarning";
 import { ScenarioBar } from "./ScenarioBar";
 import { ScenarioLayers } from "./ScenarioLayers";
 import { ScenarioStack } from "./ScenarioStack";
@@ -217,6 +218,9 @@ export function FutureCashView({
             error={undoError}
           />
         )}
+
+        {/* A loan whose payment is also a recurring bill is counted twice here (6wk.20). */}
+        <LoanDoubleCountWarning />
 
         <ScenarioBar
           selectedId={scenarioId}

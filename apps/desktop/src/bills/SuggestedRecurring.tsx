@@ -208,6 +208,18 @@ export function SuggestedRecurring() {
                           <> · {accountProvenance(candidate)}</>
                         )}
                       </div>
+                      {/* A suggestion that is a loan's own payment (personal-cfo-6wk.20): strong
+                          says so, possible is a soft note; neither claims anything is counted. */}
+                      {candidate.loan_match?.strength === "strong" && (
+                        <div className="text-xs font-medium text-warning">
+                          {`This is ${candidate.loan_match.loan_name}'s payment.`}
+                        </div>
+                      )}
+                      {candidate.loan_match?.strength === "possible" && (
+                        <div className="text-xs text-muted-foreground">
+                          {`This bill might be the same as ${candidate.loan_match.loan_name}'s payment.`}
+                        </div>
+                      )}
                       {/* Source metadata surfaced before promotion (personal-cfo-4d8.24.5). */}
                       <div className="text-xs text-muted-foreground">
                         Last seen {formatIsoDate(candidate.last_seen)}
@@ -267,9 +279,12 @@ export function SuggestedRecurring() {
                       >
                         Dismiss
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => setPromoting(id)}>
-                        Add as recurring
-                      </Button>
+                      {/* A loan's own payment is not offered as a new bill (6wk.20 AC3). */}
+                      {candidate.loan_match?.strength !== "strong" && (
+                        <Button variant="outline" size="sm" onClick={() => setPromoting(id)}>
+                          Add as recurring
+                        </Button>
+                      )}
                     </div>
                   </div>
                 )}

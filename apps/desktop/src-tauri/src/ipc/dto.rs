@@ -18,12 +18,13 @@ use finance_kernel::{
     DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec, ForecastDayView,
     ForecastEventView, ForecastReadiness, ForecastView, Frequency, GroupSeriesView,
     ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId, LoanDoubleCount,
-    ManualEntry, MatchStrength, MatchedBy, Money, MoneyInboxItem, MultiSeriesForecast, Outcome,
-    PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView,
-    RecurringCandidateView, RecurringEventId, RecurringInstanceRow, RecurringTransferId,
-    RecurringTransferView, RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput,
-    SplitLineView, StagedTransactionId, TagId, TagView, TransactionId, TransactionPage,
-    TransactionPageQuery, TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
+    LoanPaymentMatch, ManualEntry, MatchStrength, MatchedBy, Money, MoneyInboxItem,
+    MultiSeriesForecast, Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor,
+    RecordTransaction, RecurringBillView, RecurringCandidateView, RecurringEventId,
+    RecurringInstanceRow, RecurringTransferId, RecurringTransferView, RepaymentPhilosophy,
+    ScenarioView, SourceBatchId, SplitLineInput, SplitLineView, StagedTransactionId, TagId,
+    TagView, TransactionId, TransactionPage, TransactionPageQuery, TransactionRow,
+    TransactionSortOrder, Transfer, VaultHealth, VaultState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -2935,6 +2936,29 @@ impl From<MatchStrength> for MatchStrengthDto {
     }
 }
 
+/// The loan a suggested or about-to-be-created bill looks like the payment of (personal-cfo-6wk.20).
+/// `strong` is "this is the loan's payment"; `possible` is a soft note. Descriptive only (ADR 0018).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct LoanOverlapMatchDto {
+    /// The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`).
+    pub loan_account_id: String,
+    pub loan_name: String,
+    pub strength: MatchStrengthDto,
+    /// Which evidence made a strong match; `null` for a possible one.
+    pub matched_by: Option<MatchedByDto>,
+}
+
+impl From<LoanPaymentMatch> for LoanOverlapMatchDto {
+    fn from(v: LoanPaymentMatch) -> Self {
+        Self {
+            loan_account_id: v.loan_account_id.to_string(),
+            loan_name: v.loan_name,
+            strength: v.strength.into(),
+            matched_by: v.matched_by.map(Into::into),
+        }
+    }
+}
+
 /// A suspected loan double-count (personal-cfo-6wk.11, widened by 6wk.20): a loan tracked as both a
 /// `loan_liability` account with payment terms and an active recurring bill (of any type) that looks
 /// like its payment, which would double-count that payment in the liquid forecast. Descriptive only
@@ -3144,6 +3168,9 @@ pub struct RecurringCandidateDto {
     /// The observed charges behind the suggestion, most recent first (capped) — the
     /// proof expander's rows.
     pub observations: Vec<CandidateObservationDto>,
+    /// The loan whose payment this suggestion looks like, if any (personal-cfo-6wk.20): `strong`
+    /// means it is that loan's own payment (not offered as a new bill), `possible` a soft note.
+    pub loan_match: Option<LoanOverlapMatchDto>,
 }
 
 /// One observed charge behind a recurring candidate (personal-cfo-4d8.25.11).
@@ -3186,6 +3213,7 @@ impl From<RecurringCandidateView> for RecurringCandidateDto {
                     account_name: o.account_name,
                 })
                 .collect(),
+            loan_match: view.loan_match.map(Into::into),
         }
     }
 }

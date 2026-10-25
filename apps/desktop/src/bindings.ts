@@ -206,6 +206,14 @@ export const commands = {
 	unconfirmedPastDue: () => typedError<UnconfirmedOccurrenceDto[], IpcError>(__TAURI_INVOKE("unconfirmed_past_due")),
 	loanDoubleCountWarnings: () => typedError<LoanDoubleCountWarningDto[], IpcError>(__TAURI_INVOKE("loan_double_count_warnings")),
 	recurringCandidates: () => typedError<RecurringCandidateDto[], IpcError>(__TAURI_INVOKE("recurring_candidates")),
+	checkLoanOverlap: (input: CreateRecurringBillInput) => typedError<{
+	/**  The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`). */
+	loan_account_id: string,
+	loan_name: string,
+	strength: MatchStrengthDto,
+	/**  Which evidence made a strong match; `null` for a possible one. */
+	matched_by: MatchedByDto | null,
+} | null, IpcError>(__TAURI_INVOKE("check_loan_overlap", { input })),
 	incomeCandidates: () => typedError<RecurringCandidateDto[], IpcError>(__TAURI_INVOKE("income_candidates")),
 	recurringBillHistory: (eventId: string) => typedError<RecurringBillOccurrenceDto[], IpcError>(__TAURI_INVOKE("recurring_bill_history", { eventId })),
 	/**
@@ -1914,6 +1922,19 @@ export type LoanDoubleCountWarningDto = {
 	paid_from_account_name: string | null,
 };
 
+/**
+ *  The loan a suggested or about-to-be-created bill looks like the payment of (personal-cfo-6wk.20).
+ *  `strong` is "this is the loan's payment"; `possible` is a soft note. Descriptive only (ADR 0018).
+ */
+export type LoanOverlapMatchDto = {
+	/**  The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`). */
+	loan_account_id: string,
+	loan_name: string,
+	strength: MatchStrengthDto,
+	/**  Which evidence made a strong match; `null` for a possible one. */
+	matched_by: MatchedByDto | null,
+};
+
 /**  A stored manual future entry (personal-cfo-q6gh). */
 export type ManualFutureEntryDto = {
 	/**  The assumption-event id (UUID string) — pass to update/delete. */
@@ -2206,6 +2227,11 @@ export type RecurringCandidateDto = {
 	 *  proof expander's rows.
 	 */
 	observations: CandidateObservationDto[],
+	/**
+	 *  The loan whose payment this suggestion looks like, if any (personal-cfo-6wk.20): `strong`
+	 *  means it is that loan's own payment (not offered as a new bill), `possible` a soft note.
+	 */
+	loan_match: LoanOverlapMatchDto | null,
 };
 
 /**  A recurring transfer for the list UI (ADR 0026 §14, personal-cfo-npoe). */

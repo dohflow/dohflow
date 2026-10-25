@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   accountList: vi.fn(),
   recurringBillList: vi.fn(),
   createRecurringBill: vi.fn(),
+  checkLoanOverlap: vi.fn(),
   recurringBillHistory: vi.fn(),
   markReviewed: vi.fn(),
   dismissRecurringSuggestion: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("@/bindings", () => ({
     accountList: mocks.accountList,
     recurringBillList: mocks.recurringBillList,
     createRecurringBill: mocks.createRecurringBill,
+    checkLoanOverlap: mocks.checkLoanOverlap,
     recurringBillHistory: mocks.recurringBillHistory,
     markReviewed: mocks.markReviewed,
     dismissRecurringSuggestion: mocks.dismissRecurringSuggestion,
@@ -55,6 +57,7 @@ function candidate(over: Partial<RecurringCandidateDto> = {}): RecurringCandidat
     source_account_names: ["Venture X"],
     source_account_id: CHECKING,
     typical_day_of_month: 5,
+    loan_match: null,
     observations: [
       { date: "2026-07-05", amount_minor: 1_099, account_name: "Venture X" },
       { date: "2026-06-05", amount_minor: 1_099, account_name: "Venture X" },
@@ -65,6 +68,7 @@ function candidate(over: Partial<RecurringCandidateDto> = {}): RecurringCandidat
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.checkLoanOverlap.mockResolvedValue(ok(null));
   mocks.accountList.mockResolvedValue(
     ok([
       {
@@ -195,6 +199,66 @@ test("Add as recurring opens a pre-filled form and creates the bill", async () =
     category_id: GROCERIES_ID,
     tag_ids: [VACATION_ID],
   });
+  // The creation-time loan check saw the same bill and the candidate's merchant key (6wk.20).
+  expect(mocks.checkLoanOverlap.mock.calls[0]?.[0]).toMatchObject({
+    name: "SPOTIFY",
+    source_merchant_key: "SPOTIFY",
+  });
+});
+
+// ----- a loan's own payment is not offered as a new recurring bill (personal-cfo-6wk.20) -------------
+
+test("a STRONG loan match says it is the loan's payment and offers no way to add it as a bill", async () => {
+  mocks.recurringCandidates.mockResolvedValue(
+    ok([
+      candidate({
+        merchant_key: "ACME HOME LOANS",
+        display: "ACME HOME LOANS",
+        loan_match: {
+          loan_account_id: "loan-1",
+          loan_name: "Test Mortgage",
+          strength: "strong",
+          matched_by: "payee",
+        },
+      }),
+    ]),
+  );
+  renderWithClient(<SuggestedRecurring />);
+
+  expect(await screen.findByText("This is Test Mortgage's payment.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /add as recurring/i })).toBeNull();
+  // It can still be dismissed.
+  expect(screen.getByRole("button", { name: /dismiss acme home loans/i })).toBeInTheDocument();
+});
+
+test("a POSSIBLE loan match is a soft note and the suggestion can still be added", async () => {
+  mocks.recurringCandidates.mockResolvedValue(
+    ok([
+      candidate({
+        loan_match: {
+          loan_account_id: "loan-1",
+          loan_name: "Test Mortgage",
+          strength: "possible",
+          matched_by: null,
+        },
+      }),
+    ]),
+  );
+  renderWithClient(<SuggestedRecurring />);
+
+  expect(
+    await screen.findByText("This bill might be the same as Test Mortgage's payment."),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/this is test mortgage/i)).toBeNull();
+  expect(screen.getByRole("button", { name: /add as recurring/i })).toBeInTheDocument();
+});
+
+test("a suggestion with no loan match shows no loan text at all", async () => {
+  mocks.recurringCandidates.mockResolvedValue(ok([candidate()]));
+  renderWithClient(<SuggestedRecurring />);
+  await screen.findByText("SPOTIFY");
+  expect(screen.queryByText(/payment\./i)).toBeNull();
+  expect(screen.queryByText(/might be the same/i)).toBeNull();
 });
 
 test("Dismiss records a suppression with the row's identity + pattern (4d8.24.6)", async () => {
