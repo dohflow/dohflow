@@ -1,0 +1,12 @@
+[package]
+name = "platform-mock"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "In-memory implementations of the platform traits for tests: a SecretStore with scriptable biometric access control and an 'unavailable' mode, and a scriptable BiometricAuth. Test support only; never linked into the app."
+
+[dependencies]
+platform-traits = { path = "../platform-traits" }

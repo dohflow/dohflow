@@ -25,6 +25,13 @@ Two scripts, two different jobs — don't confuse them:
 
 ## 0. Preconditions
 
+- [ ] **The macOS provisioning profile is valid for at least 90 more days**
+  (`personal-cfo-md8h2.17`). `./scripts/release.sh --check` runs
+  `scripts/check-provisioning-profile.py` and refuses an expired, mismatched or
+  soon-to-expire profile; if it does, renew the profile (`release-signing.md` A7)
+  **before** anything else, because a build without it is password-only and may not
+  launch. Check the expiry date recorded in the internal runbook against the calendar
+  too.
 - [ ] **Tag signing is configured on THIS machine.** It is a **per-machine**
   setting: it lives in this Mac's global git config and an SSH key on this Mac's
   disk, so the 2026-09-07 setup on the old build machine covers nothing on a
@@ -220,6 +227,15 @@ confirmed above ADR 0065's 14.0 floor):
   version.
 - [ ] Full cycle: create/unlock a vault, import a CSV, relaunch, unlock
   again, backup, restore.
+- [ ] **Keychain (`personal-cfo-md8h2.17`, on a Mac with Touch ID).** The build already ran the
+  launch gate; confirm by hand that the signed, notarized app launches. The keychain read-back
+  (a stored item has the device-only class and `kSecAttrSynchronizable = false`; the Touch ID item
+  needs a fresh match) **cannot be run by an ordinary `cargo test`**: a restricted entitlement is
+  only honored inside an app bundle that carries the profile. Until the harness exists
+  (`personal-cfo-md8h2.18`: a separate throwaway signed bundle with the real app id and profile that
+  runs `platform-macos`'s `--ignored` tests; never shipped, never notarized for distribution), this item stays **open and must be recorded as not yet
+  verified** on the release bead, never ticked. Record what a user on an OLDER release sees once the
+  profile expires (the launch-risk question, `md8h2.17` item 6) the first time it is observed.
 - [ ] Paste the `spctl` output, the `LSMinimumSystemVersion` value, and
   screenshots into this bead's notes for **macOS 14, macOS 15 (this run),
   and the stated minimum** — and separately for **macOS 26** when that

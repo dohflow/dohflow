@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The release app's entitlements (personal-cfo-md8h2.17; ADR 0002 addendum 2026-10-24). A TEMPLATE:
+  scripts/release.sh replaces @TEAM_ID@ with the signing team (read from the signing identity and checked
+  against the embedded provisioning profile) and @BUNDLE_ID@ with the app identifier from tauri.conf.json,
+  and passes the result to the bundler. Nothing is committed that is specific to one build.
+
+  Exactly three keys, "nothing broader": the app's identity and the ONE keychain access group the
+  data-protection keychain needs. scripts/check-signed-entitlements.py proves the SIGNED app carries
+  exactly these and no others. The hardened runtime needs no further entitlement (B1 in
+  docs/operations/release-signing.md).
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.application-identifier</key>
+  <string>@TEAM_ID@.@BUNDLE_ID@</string>
+  <key>com.apple.developer.team-identifier</key>
+  <string>@TEAM_ID@</string>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>@TEAM_ID@.@BUNDLE_ID@</string>
+  </array>
+</dict>
+</plist>

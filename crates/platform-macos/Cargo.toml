@@ -1,0 +1,26 @@
+[package]
+name = "platform-macos"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "macOS implementations of the platform traits: SecretStore on the data-protection keychain only (typed failure when unentitled, never the login keychain) and BiometricAuth on LocalAuthentication. All unsafe is confined to two small modules. Empty on other operating systems."
+
+[dependencies]
+platform-traits = { path = "../platform-traits" }
+
+# Apple frameworks. Gated so the workspace still builds everywhere (the crate is empty off macOS).
+# security-framework-sys / core-foundation are the versions the desktop app's lockfile already
+# resolves for its TLS stack; the objc2 family is the narrow, MIT/Apache/Zlib-licensed binding for
+# LocalAuthentication (no Swift, no Objective-C source).
+[target.'cfg(target_os = "macos")'.dependencies]
+zeroize = { workspace = true }
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+security-framework-sys = { version = "2.17", features = ["OSX_10_15"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError", "NSObject"] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "LAContext", "LAError", "block2"] }
+block2 = "0.6"

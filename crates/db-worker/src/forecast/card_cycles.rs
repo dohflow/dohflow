@@ -967,15 +967,24 @@ fn effective_min_terms(
 /// A loan account whose `debt_terms` can produce a payment (both a due day + a payment amount).
 pub(crate) struct LoanPaymentTerms {
     pub account_id: Uuid,
-    ledger_account_id: Uuid,
+    pub(crate) ledger_account_id: Uuid,
     pub name: String,
     pub currency: Currency,
-    payment_due_day: u32,
+    pub(crate) payment_due_day: u32,
     pub philosophy: String,
     pub fixed_amount_minor: i64,
     min_percent_bps: i64,
     min_floor_minor: i64,
-    pub(super) paying_source: Option<Uuid>,
+    pub(crate) paying_source: Option<Uuid>,
+}
+
+/// A loan that actually emits a forecast payment, with the payment the forecast projects for it
+/// (personal-cfo-6wk.20). `recurring` is `false` for the pay-in-full philosophies (a single payoff),
+/// which has no monthly amount to compare a bill against.
+pub(crate) struct EmittingLoan {
+    pub terms: LoanPaymentTerms,
+    pub payment_minor: i64,
+    pub recurring: bool,
 }
 
 /// Every active `loan_liability` account whose `debt_terms` carry a `payment_due_day`.
@@ -1066,10 +1075,12 @@ pub(super) const DEFAULT_MIN_FLOOR_MINOR: i64 = 2_500;
 /// forecast's fold currency: in that currency, owed `> 0`, with a derivable payment — exactly the
 /// set [`collect_loan_payment_events`] projects. A paid-off / never-asserted / foreign-currency
 /// loan is excluded because it emits nothing. Used by the double-count detection
-/// (personal-cfo-6wk.11) so it only warns about loans that are genuinely counted twice.
+/// (personal-cfo-6wk.11) so it only warns about loans that are genuinely counted twice. Each loan
+/// carries the payment amount the forecast derives for it, for any philosophy
+/// (personal-cfo-6wk.20): a minimum-payment loan's derived minimum is comparable to a bill too.
 pub(crate) fn loans_emitting_payments(
     conn: &Connection,
-) -> Result<(Currency, Vec<LoanPaymentTerms>), DbError> {
+) -> Result<(Currency, Vec<EmittingLoan>), DbError> {
     let (currency, _) = liquid_starting_balance(conn)?;
     let mut out = Vec::new();
     for loan in read_loans_with_payment(conn)? {
@@ -1080,18 +1091,20 @@ pub(crate) fn loans_emitting_payments(
             crate::assertion_anchored_balance(conn, loan.account_id, loan.ledger_account_id)?
                 .saturating_neg()
                 .max(0);
-        if loan_payment(
+        let Some((payment_minor, recurring)) = loan_payment(
             &loan.philosophy,
             owed,
             loan.fixed_amount_minor,
             loan.min_percent_bps,
             loan.min_floor_minor,
-        )
-        .is_none()
-        {
+        ) else {
             continue;
-        }
-        out.push(loan);
+        };
+        out.push(EmittingLoan {
+            terms: loan,
+            payment_minor,
+            recurring,
+        });
     }
     Ok((currency, out))
 }

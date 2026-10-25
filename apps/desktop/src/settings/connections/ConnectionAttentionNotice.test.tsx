@@ -213,7 +213,7 @@ describe("ConnectionAttentionNotice", () => {
     );
     let finish: (value: unknown) => void = () => {};
     mocks.connectorSync.mockReturnValue(new Promise((resolve) => (finish = resolve)));
-    const { findByRole, getByRole } = renderWithClient(<ConnectionAttentionNotice />);
+    const { findByRole, getByRole, queryByRole } = renderWithClient(<ConnectionAttentionNotice />);
     await findByRole("alert");
 
     fireEvent.click(getByRole("button", { name: "Refresh now" }));
@@ -236,7 +236,9 @@ describe("ConnectionAttentionNotice", () => {
     await waitFor(() => expect(getByRole("button", { name: "Refresh now" })).toBeEnabled());
     // The notice stays: only the backend clearing it removes it.
     expect(getByRole("alert")).toHaveTextContent("Sign in to First Bank again");
-    expect(getByRole("status")).toHaveTextContent("Refreshed.");
+    // The outcome is announced as part of the card's one live region, not a nested one.
+    expect(getByRole("alert")).toHaveTextContent("Refreshed.");
+    expect(queryByRole("status")).toBeNull();
   });
 
   it("reports a failed refresh (for example offline) instead of going quiet", async () => {
@@ -247,10 +249,12 @@ describe("ConnectionAttentionNotice", () => {
       status: "error",
       error: "offline",
     });
-    const { findByRole, getByRole } = renderWithClient(<ConnectionAttentionNotice />);
-    await findByRole("alert");
+    const { findByRole, getByRole, findByText } = renderWithClient(<ConnectionAttentionNotice />);
+    const alert = await findByRole("alert");
     fireEvent.click(getByRole("button", { name: "Refresh now" }));
-    await waitFor(() => expect(getByRole("status")).toBeInTheDocument());
+    // The failure text appears inside the card's live region.
+    const message = await findByText("offline");
+    expect(alert).toContainElement(message);
   });
 
   it("opens the provider's site by naming only the connection", async () => {

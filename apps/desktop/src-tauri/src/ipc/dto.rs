@@ -18,12 +18,12 @@ use finance_kernel::{
     DebtTermsInput, DebtTermsView, DriftFactorView, ForecastAssumptionSpec, ForecastDayView,
     ForecastEventView, ForecastReadiness, ForecastView, Frequency, GroupSeriesView,
     ImportedTransactionFields, IncomeSourceId, IncomeSourceView, LedgerAccountId, LoanDoubleCount,
-    ManualEntry, Money, MoneyInboxItem, MultiSeriesForecast, Outcome, PayoffDebtSeries,
-    PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView, RecurringCandidateView,
-    RecurringEventId, RecurringInstanceRow, RecurringTransferId, RecurringTransferView,
-    RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput, SplitLineView,
-    StagedTransactionId, TagId, TagView, TransactionId, TransactionPage, TransactionPageQuery,
-    TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
+    ManualEntry, MatchStrength, MatchedBy, Money, MoneyInboxItem, MultiSeriesForecast, Outcome,
+    PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecordTransaction, RecurringBillView,
+    RecurringCandidateView, RecurringEventId, RecurringInstanceRow, RecurringTransferId,
+    RecurringTransferView, RepaymentPhilosophy, ScenarioView, SourceBatchId, SplitLineInput,
+    SplitLineView, StagedTransactionId, TagId, TagView, TransactionId, TransactionPage,
+    TransactionPageQuery, TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -2899,21 +2899,66 @@ impl From<PayoffPlanView> for DebtPayoffPlanDto {
     }
 }
 
-/// A suspected loan double-count (personal-cfo-6wk.11): a loan tracked as both a
-/// `loan_liability` account with payment terms and an active recurring `loan_payment` bill,
-/// which double-counts its payment in the liquid forecast. Descriptive only (ADR 0018).
+/// How strongly a bill looks like a loan's payment (personal-cfo-6wk.20). Only `Strong` may say the
+/// payment is "counted twice" or offer a link; `Possible` is a soft "might be the same payment" note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchStrengthDto {
+    Strong,
+    Possible,
+}
+
+/// The evidence behind a strong match (personal-cfo-6wk.20): the payee of the loan's paired payments,
+/// or a loan-typed bill paid from its funding account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchedByDto {
+    Payee,
+    LoanTyped,
+}
+
+impl From<MatchedBy> for MatchedByDto {
+    fn from(v: MatchedBy) -> Self {
+        match v {
+            MatchedBy::Payee => Self::Payee,
+            MatchedBy::LoanTyped => Self::LoanTyped,
+        }
+    }
+}
+
+impl From<MatchStrength> for MatchStrengthDto {
+    fn from(v: MatchStrength) -> Self {
+        match v {
+            MatchStrength::Strong => Self::Strong,
+            MatchStrength::Possible => Self::Possible,
+        }
+    }
+}
+
+/// A suspected loan double-count (personal-cfo-6wk.11, widened by 6wk.20): a loan tracked as both a
+/// `loan_liability` account with payment terms and an active recurring bill (of any type) that looks
+/// like its payment, which would double-count that payment in the liquid forecast. Descriptive only
+/// (ADR 0018).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct LoanDoubleCountWarningDto {
     /// The `loan_liability` account (plain UUID, matches `AccountViewDto.account_id`).
     pub loan_account_id: String,
     pub loan_name: String,
-    /// The `loan_payment` recurring bill (plain UUID, matches the recurring-bill view id).
+    /// The recurring bill (plain UUID, matches the recurring-bill view id).
     pub bill_event_id: String,
     pub bill_name: String,
-    /// The normalized names look like the same loan.
+    /// The normalized names look like the same loan (an explanation only, never evidence).
     pub name_match: bool,
-    /// The loan's fixed monthly payment equals the bill amount (same currency).
+    /// The bill amount fits the loan's derived monthly payment (same currency).
     pub amount_match: bool,
+    /// How strongly the bill looks like the loan's payment: only `strong` says "counted twice".
+    pub strength: MatchStrengthDto,
+    /// Which evidence made a strong match; `null` for a possible one.
+    pub matched_by: Option<MatchedByDto>,
+    /// The bill's type token (`loan_payment`, `rent_mortgage`, ...), when it has one.
+    pub bill_type: Option<String>,
+    /// The name of the account the bill is paid from, when it has one.
+    pub paid_from_account_name: Option<String>,
 }
 
 impl From<LoanDoubleCount> for LoanDoubleCountWarningDto {
@@ -2925,6 +2970,10 @@ impl From<LoanDoubleCount> for LoanDoubleCountWarningDto {
             bill_name: v.bill_name,
             name_match: v.name_match,
             amount_match: v.amount_match,
+            strength: v.strength.into(),
+            matched_by: v.matched_by.map(Into::into),
+            bill_type: v.bill_type,
+            paid_from_account_name: v.paid_from_account_name,
         }
     }
 }

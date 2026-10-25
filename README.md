@@ -126,6 +126,7 @@ Manual entry is always sufficient: a connected account is an enhancement,
 The workspace: `core-money`, `core-ids`, `core-ledger`, `vault-crypto`,
 `db-worker`, `job-runtime`, `finance-kernel`, `forecast-engine`, `pay-schedule`,
 `categorization`, `observability`, `synthetic-data`,
+`platform-traits` / `platform-macos` / `platform-mock` (secret store and biometric traits),
 `importers/{importer-core,csv-importer,ofx-importer}`,
 `connector-core`, `connectors/simplefin-adapter` (Rust), and `apps/desktop`
 (Tauri + React). 55 Architecture Decision Records under `docs/adr/` document

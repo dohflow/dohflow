@@ -18,6 +18,9 @@
 
 # macOS
 .DS_Store
+# Apple provisioning profiles (personal-cfo-md8h2.17): custody is the Mac Mini, never the repository
+*.provisionprofile
+*.mobileprovision
 
 # Local agent runtime state
 .claude/scheduled_tasks.lock

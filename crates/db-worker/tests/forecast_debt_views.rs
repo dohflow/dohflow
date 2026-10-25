@@ -612,8 +612,10 @@ fn debt_payoff_comparison_is_empty_without_debts() {
         .is_empty());
 }
 
-/// 6wk.11: a loan tracked as both a loan account with terms AND a same-named `loan_payment`
-/// bill is flagged (name match) so the user can remove one and avoid the double-count.
+/// 6wk.11, CHANGED by 6wk.20 (planning's revised ruling): a loan tracked as both a loan account with
+/// terms AND a same-named `loan_payment` bill is a STRONG match when the bill is the loan's payment
+/// (here the minimum the forecast derives, $50, from the loan's paying account on its due day). The
+/// name is carried for the explanation but is no evidence by itself: see the next test.
 #[test]
 fn loan_double_count_flags_a_same_named_loan_and_bill() {
     let (_dir, worker) = worker();
@@ -626,16 +628,17 @@ fn loan_double_count_flags_a_same_named_loan_and_bill() {
         None,
         checking_id,
     );
-    create_loan_payment_bill(&worker, "Car-Loan Payment", 45_000, checking_id);
+    create_loan_payment_bill(&worker, "Car-Loan Payment", 5_000, checking_id);
 
     let warnings = worker.loan_double_count_warnings().unwrap();
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].loan_account_id, loan.as_uuid());
     assert!(warnings[0].name_match, "same-named loan and bill");
     assert!(
-        !warnings[0].amount_match,
-        "loan has no fixed amount to match"
+        warnings[0].amount_match,
+        "a minimum-payment loan has a derived payment to compare"
     );
+    assert_eq!(warnings[0].strength, db_worker::MatchStrength::Strong);
 }
 
 /// 6wk.11: a differently-named loan and bill are still flagged when the loan's fixed monthly
@@ -663,10 +666,15 @@ fn loan_double_count_flags_a_matching_fixed_amount() {
     );
 }
 
-/// 6wk.11: unrelated loans/bills do not warn, and a same-named non-`loan_payment` bill
-/// (e.g. a subscription) is never flagged — only the double-count case is.
+/// 6wk.11, CHANGED DELIBERATELY by 6wk.20: nothing here is the loan's payment, so nothing is flagged.
+/// A bill that merely shares the loan's name is no evidence (planning's revised ruling): a $450
+/// `subscription` called "Car Loan Payment" is 9x the $50 minimum, and an unrelated "Mortgage"
+/// `loan_payment` bill sits on the 1st rather than the loan's due day (the 15th). The earlier version
+/// of this test asserted that a same-named bill of ANY type was never flagged, which was the gap behind
+/// the owner's double-counted mortgage; the rule that closes it is evidence (payee, loan type, funding
+/// account, cadence, date, amount), not the name.
 #[test]
-fn loan_double_count_ignores_unrelated_and_non_loan_bills() {
+fn loan_double_count_ignores_a_name_alone_and_unrelated_bills() {
     let (_dir, worker) = worker();
     let checking_id = AccountId::new();
     create_role_account(&worker, checking_id, "Checking", CashflowRole::LiquidCash);
@@ -677,9 +685,29 @@ fn loan_double_count_ignores_unrelated_and_non_loan_bills() {
         None,
         checking_id,
     );
-    // A loan_payment bill for a different loan (no name/amount overlap) → not the same loan.
-    create_loan_payment_bill(&worker, "Mortgage", 120_000, checking_id);
-    // A same-named bill that is NOT a loan_payment (a subscription) → not a double-count.
+    // A loan_payment bill for a different loan: another name, and on the 1st rather than the loan's
+    // due day (the 15th), and 24x the loan's payment → not the same loan. (Planning's ruling on
+    // 6wk.20: the date and the amount are part of every match.)
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateRecurringBill {
+                event_id: RecurringEventId::new(),
+                contract_id: BillContractId::new(),
+                name: "Mortgage".to_owned(),
+                amount: Money::new(120_000, Currency::Usd),
+                bill_type: "loan_payment".to_owned(),
+                frequency: Frequency::Monthly,
+                anchor: NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+                autopay_account_id: Some(checking_id),
+                description: None,
+                source_merchant_key: None,
+                category_id: None,
+                tag_ids: Vec::new(),
+            },
+        )
+        .unwrap();
+    // Same name, another type, far larger than the loan's payment: a name is not evidence.
     worker
         .dispatch(
             meta(),
