@@ -25,6 +25,7 @@ function warning(over: Partial<LoanDoubleCountWarningDto> = {}): LoanDoubleCount
     bill_name: "Car-Loan Payment",
     name_match: true,
     amount_match: false,
+    strength: "strong",
     ...over,
   };
 }
@@ -46,4 +47,36 @@ test("renders nothing when there is no overlap", () => {
   mocks.loanDoubleCountWarnings.mockResolvedValue(ok([]));
   const { container } = renderWithClient(<LoanDoubleCountWarning />);
   expect(container).toBeEmptyDOMElement();
+});
+
+test("a POSSIBLE match is a soft note that never says the payment is counted twice", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(
+    ok([warning({ strength: "possible", amount_match: true, bill_name: "ACME HOME LOANS" })]),
+  );
+  const { container } = renderWithClient(<LoanDoubleCountWarning />);
+
+  expect(await screen.findByText(/might be the same as Car Loan's payment/i)).toBeInTheDocument();
+  // No claim, no strong-match card, no link-style wording anywhere on the surface.
+  expect(container).not.toHaveTextContent(/counted twice/i);
+  expect(container).not.toHaveTextContent(/twice/i);
+  expect(container).not.toHaveTextContent(/duplicated/i);
+  expect(screen.queryByRole("region", { name: /possible duplicated loans/i })).toBeNull();
+});
+
+test("a STRONG match says it, and a possible one beside it stays soft", async () => {
+  mocks.loanDoubleCountWarnings.mockResolvedValue(
+    ok([
+      warning({ strength: "strong", bill_event_id: "bill-1", bill_name: "Car-Loan Payment" }),
+      warning({ strength: "possible", bill_event_id: "bill-2", bill_name: "Maybe Bill" }),
+    ]),
+  );
+  renderWithClient(<LoanDoubleCountWarning />);
+
+  const strong = await screen.findByRole("region", { name: /possible duplicated loans/i });
+  expect(strong).toHaveTextContent(/counted twice/i);
+  expect(strong).toHaveTextContent("Car-Loan Payment");
+  expect(strong).not.toHaveTextContent("Maybe Bill");
+  const soft = screen.getByRole("region", { name: /possible matches/i });
+  expect(soft).toHaveTextContent("Maybe Bill");
+  expect(soft).not.toHaveTextContent(/twice/i);
 });
