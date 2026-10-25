@@ -151,3 +151,96 @@ string — verbatim, including punctuation:
 ```
 DohFlow has no cloud password reset. If you forget your password, your data is unrecoverable. Save your password somewhere safe.
 ```
+
+## Addendum (2026-10-24, `personal-cfo-1zb`): how secrets are kept on the device (Keychain, Touch ID, the platform traits)
+
+Decision 6 above says Touch ID is "a Keychain-stored wrapped form of unlock material, with appropriate access
+controls." This addendum makes "appropriate" concrete before any code depends on it. It governs the two platform
+traits (`SecretStore`, `BiometricAuth`; plan §3.3.1), their macOS implementation, and every later consumer (Touch ID
+unlock, `personal-cfo-xuu`; Sync's device-only state, ADR 0017 and ADR 0074 Decision 8).
+
+### What was measured, not assumed
+
+On macOS 27 (a scratch program with a throwaway service name; its items were deleted):
+
+- The **file-based (login) keychain** accepts an item written with the accessibility class
+  `WhenPasscodeSetThisDeviceOnly` and `kSecAttrSynchronizable = false`, **but silently stores neither**: reading the
+  item back shows no accessibility class and no synchronizable flag. A test that asserts those attributes cannot pass
+  there, and nothing there stops the item travelling with the login keychain (Time Machine, Migration Assistant).
+- The **data-protection keychain** is the one that stores them, and the only one that offers biometric access control.
+  For a binary with no matching entitlement (unsigned or ad-hoc signed, which is every `cargo test` and development
+  run) it answers `errSecMissingEntitlement` (-34018), including for biometric access control.
+
+### Decisions
+
+1. **Data-protection keychain only, on macOS.** `platform-macos` writes every item with
+   `kSecUseDataProtectionKeychain`. The login keychain is never used, for any secret, as a fallback.
+2. **No silent fallback.** When the entitlement is missing, every operation returns the typed
+   `SecretError::Unavailable(MissingEntitlement)`. The app stays password-only (ADR 0002 decision 6: the password is
+   the system of record) and says so on the Settings vault card. A development build without the entitlement therefore
+   cannot use Touch ID or store Sync device state, by design, and a test run in that state **asserts exactly that
+   error** so an unentitled run can never read as a pass.
+3. **Custody class.** Every item is device-only: `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` and
+   `kSecAttrSynchronizable = false`, with an explicit team-prefixed `kSecAttrAccessGroup` (item placement is a decision,
+   not "the first group in the entitlement list"). A test asserts both attributes on a stored item where the
+   entitlement is present.
+4. **Biometrics release secrets only through the keychain's own access control.** A secret that needs Touch ID is
+   stored with `SecAccessControl` `.biometryCurrentSet` and **no passcode fallback** (the vault password is the only
+   fallback, and it is the unlock path itself, not a keychain path); the `LAContext` is handed to the keychain call
+   (`kSecUseAuthenticationContext`). `BiometricAuth` is **availability and user experience only** (`is_available`, and
+   an optional pre-flight prompt): a standalone biometric match is a screen gate, not cryptography, so **no code path
+   may load a secret because an `authenticate` call returned a match.** The trait names its prompt method accordingly
+   and a test or lint checks that no `SecretStore` call is conditioned on it.
+5. **Custody, not anti-rollback.** `ThisDeviceOnly` stops an item moving to another device; it does **not** stop the
+   same device being rolled back to an older state (a restore from its own backup). ADR 0017 requires an independent
+   anti-rollback witness for nonce state for exactly that reason, and **this keychain is never that witness.** The
+   trait's capability report therefore carries two separate facts, `roams_to_other_device` and
+   `rollback_resistant` (always `false` for the keychain), and the capability matrix says so. Which component is the
+   macOS witness is not decided here; the requirement is ADR 0017's (decision bead `personal-cfo-6kn`), the
+   implementation belongs to the Sync client engine bead (`personal-cfo-elciw`), and nobody should read
+   "ThisDeviceOnly" as satisfying ADR 0017.
+6. **A `BiometryChanged` signal is not promised.** After the enrolled biometrics change, a `.biometryCurrentSet` item
+   becomes inaccessible, and the platform may report that as "not found" or as an authentication failure rather than a
+   distinct code. Callers treat "not found" for such an item as "enroll again with the vault password". A distinct
+   `BiometryChanged` error exists only if it is observed on a Touch ID Mac.
+7. **Residue we cannot wipe.** The Security framework copies bytes into memory it manages and frees without wiping.
+   Secrets are copied into an exactly sized zeroizing buffer immediately and the surrounding calls are kept short; the
+   platform copies are best effort, the same posture as `vault-crypto`. The redaction rules are unchanged: no secret
+   value, and no error text that could echo one, enters a span, a log line or an error message (typed errors carry
+   fixed strings and an `OSStatus` only).
+
+### The dependency this creates (and its risk)
+
+The data-protection keychain needs the restricted entitlements `com.apple.application-identifier` and
+`keychain-access-groups`. A Developer ID app can carry them only if they are authorized by a **provisioning profile
+embedded in the app bundle** (an Apple Developer account action by the Account Holder: an App ID with Keychain
+Sharing, and a Developer ID profile). Today's release is Developer ID signed with the hardened runtime and has neither
+an entitlements file nor a profile. That work is a separate release-engineering bead that blocks the Touch ID bead,
+not the trait crates. Its risks, recorded here so they are not discovered late: an entitlement that a profile does not
+authorize (including an expired profile) may make macOS **refuse to launch the app**, not merely disable the Keychain
+[unverified; to be tested on a signed, notarized release candidate], so the release process needs (a) a gate that
+launches the signed, notarized artifact and runs the entitled round trip and the attribute assertion before anything
+is published, and (b) an expiry watch with lead time.
+
+### Structure and scope
+
+- `platform-traits` (traits, typed errors, the redacting value type, the capability matrix and a conformance suite
+  every implementation runs), `platform-macos` (the only crate with `unsafe`, confined to one module),
+  `platform-mock` (tests). The capability matrix lists macOS, Linux, Windows, iOS and Android per capability, with the
+  rule for later implementations (Windows: non-roaming storage only; Android: a restored wrapped blob yields
+  `NonceStateLost`).
+- Nothing consumes these traits in the same change that introduces them.
+- The Linux Secret Service implementation is split into its own bead; it needs a daemon on a Linux runner, a separate
+  ADR for the crate choice, and nothing on the macOS path waits for it. The same rules apply there: a typed failure
+  when no Secret Service is reachable, never a plaintext fallback.
+- Touch ID itself cannot be exercised on a Mac without biometric hardware; its manual checks run on a Touch ID Mac and
+  are an explicit checklist item on the consuming bead.
+
+### Consequences and what stays open
+
+- Touch ID unlock and Sync device state on macOS are blocked until the entitlement and profile bead lands. Password
+  unlock is unaffected.
+- The iOS shell already uses the data-protection keychain (an iOS app gets it by default) and is not blocked.
+- Rotating the vault key (ADR 0083) must refresh or invalidate Touch ID material; that stays with the Touch ID bead.
+- Open: the macOS anti-rollback witness design (decision 5), and the real behavior of a profile-bearing, notarized
+  build (the dependency above).

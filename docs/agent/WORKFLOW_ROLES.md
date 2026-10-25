@@ -120,34 +120,41 @@ transition, not a failure.
 - Remaining context or plan allowance is insufficient for a responsible
   completion **and** review handoff.
 
-## Interim cross-check of concurrent PASSes (retires with the merge queue)
+## Concurrent PASSes: the merge queue, and the cross-check where there is none
 
 Two pull requests can each pass review against their own base and still break
 `main` together: on 2026-10-19 the PRs #100 and #109 did, and `cargo test -p
 db-worker --test column_kinds` failed on `main` once both had merged
-(`personal-cfo-md8h2.11`, decision `personal-cfo-915.13`). The merge queue (CI
-runs the full gates on the temporary merge commit) is the fix. **Until it is live
-in the `main` ruleset**, this rule applies:
+(`personal-cfo-md8h2.11`, decision `personal-cfo-915.13`).
 
-- When two or more **Rust** pull requests have each PASSed and are waiting for the
-  owner's merge at the same time, the reviewer **re-checks them against each
-  other** before saying they are merge-ready together: merge them onto current
-  `main` in a scratch worktree (in the order the owner is likely to merge them,
-  and the reverse order if both are plausible) and run the gates (`cargo fmt
-  --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
-  --workspace`, and the desktop crate's tests). Report the combined result in the
-  verdict comments of both pull requests, and **state the safe merge order in
-  both verdicts, or "either order"**.
+**`dohflow/dohflow`: the merge queue is live** (`personal-cfo-md8h2.11`; ruleset
+`23361528`; squash merges, the queue waits for all required checks, groups of 1 to
+5). The queue builds and tests each pull request on the temporary merge commit with
+the pull requests ahead of it, so the combination is gated by CI before it reaches
+`main`. The reviewer's two-PR cross-check described below is **retired for `dohflow/dohflow`**.
+Every push to `main` still runs the full gates, never cancelled and never
+path-filtered, and a failure opens an issue labeled `ci-main-red`.
+
+**The private repositories (`dohflow/iOS`, `dohflow/internal`, `dohflow/platform`)
+have no merge queue, so the cross-check still applies there:**
+
+- When two or more pull requests in such a repository have each PASSed and are
+  waiting for the owner's merge at the same time, the reviewer **re-checks them
+  against each other** before saying they are merge-ready together: merge them onto
+  current `main` in a scratch worktree (in the order the owner is likely to merge
+  them, and the reverse order if both are plausible) and run that repository's
+  gates (for a Rust repository: `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo test --workspace`; for `dohflow/platform`:
+  `pnpm check`). Report the combined result in the verdict comments of both pull
+  requests, and **state the safe merge order in both verdicts, or "either order"**.
 - If the combination fails, neither is "merge-ready together": say which one must
   rebase on the other, and remove the `merge-ready` label from the one that must
   change.
 - This is the reviewer's job, not the implementer's, and it costs one extra build
   per concurrent pair, so it counts toward the two-cargo-heavy-jobs limit.
 
-**This rule retires when the merge queue is enabled in the `main` ruleset**
-(`personal-cfo-md8h2.11` records the ruleset id); delete this section then. Until
-then every push to `main` also runs the full gates, never cancelled and never
-path-filtered, and a failure opens an issue labeled `ci-main-red`.
+This rule ends for a repository when a merge queue is enabled in its `main` ruleset;
+delete the repository from the list above then.
 
 ## Review and merge policy
 
@@ -208,6 +215,12 @@ standing rule:
   (bead `<id>`)"**, **may be admin-merged by the owner without a fresh decision**.
   The Admin bypass of the `main` ruleset (ADR 0071) is the mechanism, and the
   `PASS` comment is the artifact the merge cites.
+  On `dohflow/dohflow`, where the merge queue is live, "admin-merged" means the owner
+  **admin-bypasses the queue** (merges the pull request directly with the Admin role,
+  ADR 0071) instead of queueing it, since a queued run would fail on `main`'s red
+  check; the verdict line, the three things the reviewer establishes below, and the
+  exclusions are unchanged. In a repository without a queue it is an ordinary admin
+  merge.
 - `05-decisions` still lists such a pull request at the top of the ledger as
   merge-ready, with the named check and bead beside it.
 - The reviewer names the check **and the bead** every time, and establishes

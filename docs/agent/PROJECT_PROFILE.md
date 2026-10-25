@@ -234,6 +234,9 @@ crates/
   importers/
   vault-crypto/
   sync-core/              # pure Sync format code: canonical JSON, later the envelope; no database
+  platform-traits/        # SecretStore + BiometricAuth traits, typed errors, capability matrix, conformance suite; no platform code, no unsafe
+  platform-macos/         # macOS impls: data-protection keychain only (typed failure when unentitled), LocalAuthentication; the only unsafe
+  platform-mock/          # in-memory impls for tests; never linked into the app
   agent-runtime/
   connector-core/
 services/

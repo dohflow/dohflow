@@ -110,22 +110,50 @@ age_wt "$TMP/wt-dirty" 202001010000
 age_wt "$TMP/wt-unpushed" 202001010000
 # fresh: target dir touched now (recent activity)
 touch "$TMP/wt-fresh/target/debug/deps/lib.rlib" "$TMP/wt-fresh/target/debug/deps"
-# busy: a process named cargo whose cwd is inside the worktree
-# (a symlink to sleep with a unique name; the script is told to treat that name
-# as "a build is running". A copied binary would be killed by macOS signing.)
+# busy: a process named cargo whose cwd is inside the worktree. The script is told to treat the
+# name "hygtest-cargo" as "a build is running". Two ways to make a process with that name:
+#  1. a symlink to sleep with a unique name (a copied binary would be killed by macOS signing).
+#     This fails where `sleep` is a multicall binary that dispatches on argv[0] (the Rust
+#     uutils coreutils of Ubuntu 26.04): `hygtest-cargo` is then an unknown applet and exits.
+#  2. a tiny shell script of that name that runs sleep as a child. On Linux a script's process
+#     name is the script's file name, so `pgrep -x hygtest-cargo` finds it.
+# The test tries 1, checks that the process really appears under that name, and falls back to 2.
+# HYGTEST_FORCE_SCRIPT=1 forces 2 (Linux only: macOS names a script's process after its
+# interpreter, so the fallback is never needed or usable there).
 mkdir -p "$TMP/busybin"
-ln -s "$(command -v sleep)" "$TMP/busybin/hygtest-cargo"
 export DEV_HYGIENE_PROCESS_NAMES="hygtest-cargo"
-( cd "$TMP/wt-busy" && exec "$TMP/busybin/hygtest-cargo" 120 ) >/dev/null 2>&1 </dev/null &
-BUSY_PID=$!
-sleep 1
+start_busy() {
+  ( cd "$TMP/wt-busy" && exec "$TMP/busybin/hygtest-cargo" 120 ) >/dev/null 2>&1 </dev/null &
+  BUSY_PID=$!
+  sleep 1
+}
+stop_busy() { pkill -P "$BUSY_PID" 2>/dev/null; kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null; }
+BUSY_PID=""
+if [ "${HYGTEST_FORCE_SCRIPT:-0}" != 1 ]; then
+  ln -s "$(command -v sleep)" "$TMP/busybin/hygtest-cargo"
+  start_busy
+  if ! pgrep -x hygtest-cargo >/dev/null 2>&1; then
+    stop_busy
+    unlink "$TMP/busybin/hygtest-cargo"
+  fi
+fi
+if [ ! -e "$TMP/busybin/hygtest-cargo" ]; then
+  # shellcheck disable=SC2016  # the script's own $1, not ours
+  printf '#!/bin/sh\nsleep "$1"\n' > "$TMP/busybin/hygtest-cargo"
+  chmod +x "$TMP/busybin/hygtest-cargo"
+  start_busy
+fi
+if ! pgrep -x hygtest-cargo >/dev/null 2>&1; then
+  echo "    FAIL — test setup: no process named hygtest-cargo is running (the busy-worktree cases cannot be tested here)" >&2
+  exit 1
+fi
 # gone: registered, directory removed behind git's back
 GONE_DIR="$TMP/wt-gone"
 find "$GONE_DIR" -depth \( -type f -o -type l \) -exec unlink {} \; 2>/dev/null
 find "$GONE_DIR" -depth -type d -exec rmdir {} \; 2>/dev/null
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap below
-cleanup_busy() { kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null; }
+cleanup_busy() { stop_busy; }
 trap 'cleanup_busy; cd /; chmod -R u+w "$TMP" 2>/dev/null; find "$TMP" -depth -mindepth 1 \( -type f -o -type l \) -exec unlink {} \; 2>/dev/null; find "$TMP" -depth -type d -exec rmdir {} \; 2>/dev/null' EXIT
 
 run() { ( cd "$TMP" && "$SCRIPT" --repo "$MAIN" --scratch-dir "$TMP/no-scratch" "$@" ); }

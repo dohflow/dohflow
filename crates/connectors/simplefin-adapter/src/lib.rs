@@ -193,11 +193,6 @@ impl<T: Transport> SimpleFinAdapter<T> {
 // Provider-string hygiene
 // ===========================================================================
 
-/// Sanitize a provider-controlled string before it enters any warning or
-/// error message: control characters (newline forgery, ANSI escapes) are
-/// stripped and the result is truncated. Display-side sanitization still
-/// applies (spec: "you must sanitize the strings"); this is the wire-side
-/// floor.
 /// The bank's own name for connection `conn_id` in this response (the Connection's `name`, else its
 /// `org_name`), sanitized and trimmed; `None` when the response lists no such connection or it
 /// carries no usable name. Never an id or a URL: it is shown to the user and kept in the vault.
@@ -210,6 +205,11 @@ fn institution_name(set: &AccountSet, conn_id: &str) -> Option<String> {
         .find(|name| !name.is_empty())
 }
 
+/// Sanitize a provider-controlled string before it enters any warning or
+/// error message: control characters (newline forgery, ANSI escapes) are
+/// stripped and the result is truncated. Display-side sanitization still
+/// applies (spec: "you must sanitize the strings"); this is the wire-side
+/// floor.
 fn sanitize(raw: &str) -> String {
     // Control chars (Cc) AND the format-char forgery set (Cf): bidi overrides
     // and isolates, zero-width characters, BOM — all usable to spoof what a

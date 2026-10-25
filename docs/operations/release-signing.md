@@ -171,6 +171,7 @@ in the shell that runs the release script** — never committed, never in
 | `APPLE_API_ISSUER` | Issuer ID (UUID) | A4 |
 | `APPLE_API_KEY` | Key ID (e.g. `2X9R4HXF34`) | A4 |
 | `APPLE_API_KEY_PATH` | absolute path to the `AuthKey_<KEYID>.p8` | A4 |
+| `APPLE_PROVISIONING_PROFILE` | absolute path to the macOS Developer ID `.provisionprofile` | A7 |
 
 Practical pattern: keep them in `~/.config/personal-cfo/release.env` (outside the
 repo, `chmod 600`), and `source` it in the shell before running the release script.
@@ -194,6 +195,7 @@ live and when they die** — no secrets, only locations and dates.
 | Apple Developer Program membership | Annual, USD 99, **auto-renew ON** | Apple ID account |
 | App Store Connect API key (`.p8`) | No expiry; **one-time download only** | `~/.appstoreconnect/private_keys/` + password manager (base64) |
 | `release.env` values | n/a | `~/.config/personal-cfo/release.env` + password manager |
+| macOS Developer ID provisioning profile (A7) | **recorded in `dohflow/internal`'s runbook when the profile is created**; `release.sh` refuses a profile with under 90 days left | Build Mac, path in `release.env`; never in the repository (`*.provisionprofile` is gitignored) |
 
 Identity: `Developer ID Application: Christopher Bustos (SKU2HZ2U6L)`,
 SHA-1 `9B56817B41438C25E21322DED79953A2F1B93411`.
@@ -257,6 +259,58 @@ pnpm tauri signer generate -w ~/.tauri/dohflow.key
 
 ---
 
+### A7. The macOS provisioning profile and the keychain entitlement (`personal-cfo-md8h2.17`)
+
+**Why.** The data-protection keychain is the only macOS keychain that honors the device-only
+class, the not-synchronizable flag and biometric access control (ADR 0002 addendum 2026-10-24).
+For a Developer ID app it works only when the app carries the `keychain-access-groups`
+entitlement **and** an embedded provisioning profile authorizes it. Without them the app is
+password-only (Touch ID and Sync device keys unavailable), and a missing or unauthorized profile may
+also stop the app from launching [unverified until the first signed release candidate].
+
+**Owner (Account Holder) one-time steps.** Create, in the Apple Developer account, an **App ID for the
+app's bundle identifier (`ai.personalcfo.desktop`) with the Keychain Sharing capability**, and a
+**Developer ID provisioning profile** for it; download the `.provisionprofile` to the build Mac. The
+exact portal clicks are in the internal runbook (`dohflow/internal`), which is also where the profile's
+location and expiry are recorded. Then add to `~/.config/personal-cfo/release.env`:
+
+```sh
+export APPLE_PROVISIONING_PROFILE="/absolute/path/to/DohFlow.provisionprofile"
+```
+
+**What `release.sh` does with it** (nothing is committed; the entitlements come from a template):
+
+1. Preflight (also under `--check`): `scripts/check-provisioning-profile.py` decodes the profile and
+   **refuses the build** unless it is a macOS Developer ID profile for the signing team and this app,
+   allows the keychain group, carries the signing certificate, and **expires more than 90 days from
+   now**. A profile at 89 days is refused: renew it first.
+2. Fills `apps/desktop/src-tauri/entitlements/macos-release.plist.in` (`@TEAM_ID@` from the signing
+   identity, `@BUNDLE_ID@` from `tauri.conf.json`) into the bundler's `entitlements`, and embeds the
+   profile as `Contents/embedded.provisionprofile` through the bundler's `files` map.
+3. After the build, `scripts/check-signed-entitlements.py` requires the signed app to carry **exactly**
+   `com.apple.application-identifier`, `com.apple.developer.team-identifier` and
+   `keychain-access-groups = [<TEAM>.<bundle id>]`, no wildcard and no other entitlement, and the
+   embedded profile to be byte-identical to the one that was checked.
+4. **Launch gate:** the signed binary is started through the smoke hook (`PCFO_SMOKE_TEST_EXIT=1`) with
+   `HOME` pointed at a throwaway directory (so the owner's real data directory is never touched), and the
+   build fails unless `setup()` completes.
+
+`RELEASE_SKIP_PROFILE=1` skips all of this **only for a smoke build** (`--smoke-version 0.9.x`), producing
+a password-only app that can never be published as a release.
+
+**Expiry and the Team ID.** The profile's expiry is on the launch-ops calendar and checked at step 0 of
+every release. The keychain group is prefixed with the Team ID, so **any change to the Apple developer account
+must keep the Team ID**: otherwise the group, the profile and every stored item's access group change.
+(Account-change specifics are in the internal runbook, not here.)
+
+**Not yet automated, and not yet verifiable.** Reading back a stored item's attributes (device-only
+class, not synchronizable) must run inside the signed app bundle, because a restricted entitlement is
+honored only there. The harness is a **separate throwaway signed bundle** with the real app id and
+profile that runs `platform-macos`'s `--ignored` tests (`personal-cfo-md8h2.18`); it is deliberately
+not a smoke mode inside the shipped app, which would be an extra entry point in the release binary.
+Until it exists, `release-checklist.md` step 5 records the keychain check as
+open.
+
 ## Part B — Repo wiring (867.1 — APPLIED 2026-07-05, PR #264)
 
 Shipped. The VERIFY-ON-BUILD markers below were resolved against the vendored
@@ -280,7 +334,11 @@ Resolved decisions:
   also re-asserts `hardenedRuntime: true` (defense-in-depth: `--config` deep-merges, but
   re-asserting means a signed build can never silently lose hardened runtime even if
   merge semantics changed).
-- **No entitlements file** — verified correct for a Tauri app: it is not App-Sandboxed
+- **Entitlements: exactly the keychain group, nothing else** (changed by `personal-cfo-md8h2.17`; see A7).
+  The original decision below was zero entitlements; the keychain entitlement is the only addition,
+  and `scripts/check-signed-entitlements.py` fails the build if the signed app carries anything else.
+  The JIT reasoning stays valid: no JIT entitlement is added.
+- **(Original) No entitlements file** — verified correct for a Tauri app: it is not App-Sandboxed
   (Developer ID), and — unlike Electron, which bundles Chromium and JITs *in* the app
   process (needing `allow-jit` + `allow-unsigned-executable-memory`) — Tauri uses the
   **system WKWebView**, whose JS/JIT runs in Apple's separately-signed `WebContent`

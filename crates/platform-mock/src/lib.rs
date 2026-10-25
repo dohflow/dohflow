@@ -1,0 +1,218 @@
+//! In-memory platform implementations for tests (`personal-cfo-1zb`). Never linked into the app:
+//! it keeps secrets in ordinary memory.
+//!
+//! The mock store's biometric behavior ([`BiometryScript`]) stands for the platform's OWN access
+//! control, and is deliberately separate from [`MockBiometricAuth`] (the pre-flight prompt): a test
+//! can show that a matched pre-flight prompt changes nothing about what the store releases.
+
+#![forbid(unsafe_code)]
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use platform_traits::{
+    AccessPolicy, AuthPrompt, BiometricAuth, PreflightResult, Roaming, SecretError, SecretKey,
+    SecretStore, SecretValue, StoreCapabilities, UnavailableReason,
+};
+
+/// What the (simulated) platform access control does when a biometric-gated item is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiometryScript {
+    /// The user matches.
+    Match,
+    /// The user cancels the prompt.
+    Cancel,
+    /// The match fails.
+    Fail,
+    /// No biometric is enrolled.
+    NotEnrolled,
+    /// The enrolled set changed since the item was stored: the item is invalidated and reads as
+    /// not found (the platform need not give a distinct code; ADR 0002 addendum, decision 6).
+    EnrollmentChanged,
+}
+
+struct Item {
+    value: SecretValue,
+    policy: AccessPolicy,
+}
+
+/// An in-memory [`SecretStore`].
+pub struct MockSecretStore {
+    items: Mutex<HashMap<SecretKey, Item>>,
+    script: Mutex<BiometryScript>,
+    biometry_supported: bool,
+    unavailable: Option<UnavailableReason>,
+}
+
+impl MockSecretStore {
+    /// A store that supports both policies; biometric reads `Match` until scripted otherwise.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            items: Mutex::new(HashMap::new()),
+            script: Mutex::new(BiometryScript::Match),
+            biometry_supported: true,
+            unavailable: None,
+        }
+    }
+
+    /// A store with no biometric access control (storing that policy is refused as `Unsupported`).
+    #[must_use]
+    pub fn without_biometry() -> Self {
+        Self {
+            biometry_supported: false,
+            ..Self::new()
+        }
+    }
+
+    /// A store that fails every call with `reason`, as an unentitled macOS build or a Linux machine
+    /// with no Secret Service does: for testing that callers keep the app password-only.
+    #[must_use]
+    pub fn unavailable(reason: UnavailableReason) -> Self {
+        Self {
+            unavailable: Some(reason),
+            ..Self::new()
+        }
+    }
+
+    pub fn script_biometry(&self, script: BiometryScript) {
+        *self.script.lock().unwrap() = script;
+    }
+
+    /// How many items are stored (for assertions that nothing was written).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.items.lock().unwrap().len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn check_available(&self) -> Result<(), SecretError> {
+        match self.unavailable {
+            Some(reason) => Err(SecretError::Unavailable(reason)),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Default for MockSecretStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SecretStore for MockSecretStore {
+    fn store_secret(
+        &self,
+        key: &SecretKey,
+        value: &SecretValue,
+        policy: AccessPolicy,
+    ) -> Result<(), SecretError> {
+        self.check_available()?;
+        if policy == AccessPolicy::DeviceOnlyBiometryCurrentSet && !self.biometry_supported {
+            return Err(SecretError::Unavailable(UnavailableReason::Unsupported));
+        }
+        self.items.lock().unwrap().insert(
+            key.clone(),
+            Item {
+                value: value.duplicate(),
+                policy,
+            },
+        );
+        Ok(())
+    }
+
+    fn load_secret(
+        &self,
+        key: &SecretKey,
+        _prompt: &AuthPrompt,
+    ) -> Result<SecretValue, SecretError> {
+        self.check_available()?;
+        let mut items = self.items.lock().unwrap();
+        let Some(item) = items.get(key) else {
+            return Err(SecretError::NotFound);
+        };
+        if item.policy == AccessPolicy::DeviceOnlyBiometryCurrentSet {
+            // The platform's own access control decides: independent of any pre-flight prompt.
+            match *self.script.lock().unwrap() {
+                BiometryScript::Match => {}
+                BiometryScript::Cancel => return Err(SecretError::AuthCancelled),
+                BiometryScript::Fail => return Err(SecretError::AuthFailed),
+                BiometryScript::NotEnrolled => return Err(SecretError::BiometryNotEnrolled),
+                BiometryScript::EnrollmentChanged => {
+                    items.remove(key);
+                    return Err(SecretError::NotFound);
+                }
+            }
+        }
+        Ok(items[key].value.duplicate())
+    }
+
+    fn delete_secret(&self, key: &SecretKey) -> Result<(), SecretError> {
+        self.check_available()?;
+        self.items.lock().unwrap().remove(key);
+        Ok(())
+    }
+
+    fn capabilities(&self) -> StoreCapabilities {
+        StoreCapabilities {
+            device_only_class: true,
+            biometry_current_set: self.biometry_supported,
+            roams_to_other_device: Roaming::Never,
+            rollback_resistant: false,
+        }
+    }
+}
+
+/// A scriptable pre-flight prompt. Its answer never reaches [`MockSecretStore`].
+pub struct MockBiometricAuth {
+    available: bool,
+    outcome: Mutex<Result<PreflightResult, SecretError>>,
+    prompts: Mutex<u32>,
+}
+
+impl MockBiometricAuth {
+    #[must_use]
+    pub fn matching() -> Self {
+        Self {
+            available: true,
+            outcome: Mutex::new(Ok(PreflightResult::Matched)),
+            prompts: Mutex::new(0),
+        }
+    }
+
+    #[must_use]
+    pub fn unavailable() -> Self {
+        Self {
+            available: false,
+            outcome: Mutex::new(Err(SecretError::Unavailable(
+                UnavailableReason::Unsupported,
+            ))),
+            prompts: Mutex::new(0),
+        }
+    }
+
+    pub fn script(&self, outcome: Result<PreflightResult, SecretError>) {
+        *self.outcome.lock().unwrap() = outcome;
+    }
+
+    /// How many times the prompt was shown.
+    #[must_use]
+    pub fn prompts_shown(&self) -> u32 {
+        *self.prompts.lock().unwrap()
+    }
+}
+
+impl BiometricAuth for MockBiometricAuth {
+    fn is_available(&self) -> bool {
+        self.available
+    }
+
+    fn preflight_prompt(&self, _prompt: &AuthPrompt) -> Result<PreflightResult, SecretError> {
+        *self.prompts.lock().unwrap() += 1;
+        self.outcome.lock().unwrap().clone()
+    }
+}
