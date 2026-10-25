@@ -377,10 +377,19 @@ fn a_second_bill_for_the_same_loan_is_refused_naming_the_first() {
         20_000,
         fixture.checking,
     );
-    let refused = link(&worker, second, fixture.loan).unwrap_err().to_string();
-    assert!(
-        refused.contains("ACME HOME LOANS"),
-        "names the existing bill: {refused}"
+    // A TYPED error that names the existing bill (its Display text stays fixed: bill names are user
+    // data and stay out of logs).
+    match link(&worker, second, fixture.loan).unwrap_err() {
+        crate::DbError::LoanAlreadyLinked { bill_id, bill_name } => {
+            assert_eq!(bill_id, first.as_uuid());
+            assert_eq!(bill_name, "ACME HOME LOANS");
+        }
+        other => panic!("expected LoanAlreadyLinked, got {other:?}"),
+    }
+    assert_eq!(
+        link(&worker, second, fixture.loan).unwrap_err().to_string(),
+        "this loan already has a linked bill",
+        "the Display text carries no bill name"
     );
     assert_eq!(stored_link(&worker, second), None, "nothing was written");
     assert_eq!(stored_link(&worker, first), Some(fixture.loan.as_uuid()));

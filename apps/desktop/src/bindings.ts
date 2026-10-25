@@ -1880,7 +1880,18 @@ export type IpcError =
  *  The request failed domain or input validation (bad UUID, unknown
  *  currency, empty name, …). Safe to show the message to the user.
  */
-({ Validation: string }) & { Persistence?: never; Unavailable?: never } |
+({ Validation: string }) & { LoanAlreadyLinked?: never; Persistence?: never; Unavailable?: never } |
+/**
+ *  The loan already has a linked bill (personal-cfo-6wk.22), so a second link is refused.
+ *  Names the existing bill so the interface can offer to unlink it. The Display text is
+ *  fixed: bill names are user data and stay out of logs.
+ */
+({ LoanAlreadyLinked: {
+	/**  The bill that already carries the link (plain UUID). */
+	bill_id: string,
+	/**  That bill's display name. */
+	bill_name: string,
+} }) & { Persistence?: never; Unavailable?: never; Validation?: never } |
 /**
  *  No vault is open. The caller must open/unlock a vault first. This is the
  *  steady state of a locked app.
@@ -1907,7 +1918,7 @@ export type IpcError =
  *  The vault is open but not accepting writes (e.g. restoring a backup or
  *  awaiting recovery). Carries the worker state as a non-sensitive label.
  */
-({ Unavailable: string }) & { Persistence?: never; Validation?: never } |
+({ Unavailable: string }) & { LoanAlreadyLinked?: never; Persistence?: never; Validation?: never } |
 /**
  *  A key rotation needs more free disk space than is available (ADR 0083
  *  §5). Nothing was written; freeing space and retrying is safe.
@@ -1919,7 +1930,7 @@ export type IpcError =
  *  Any other persistence failure, flattened to a message so no database
  *  type is exposed.
  */
-({ Persistence: string }) & { Unavailable?: never; Validation?: never };
+({ Persistence: string }) & { LoanAlreadyLinked?: never; Unavailable?: never; Validation?: never };
 
 /**
  *  A suspected loan double-count (personal-cfo-6wk.11, widened by 6wk.20): a loan tracked as both a

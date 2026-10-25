@@ -3567,11 +3567,13 @@ fn a_bill_is_linked_to_its_loan_and_unlinked_through_ipc() {
     second.anchor_date = "2026-07-15".to_owned();
     second.autopay_account_id = Some(checking);
     let second_id = create_recurring_bill_impl(&state, second).unwrap().event_id;
-    let refused = link_bill_to_loan_impl(&state, second_id, loan.clone(), String::new());
-    assert!(
-        format!("{refused:?}").contains("ACME HOME LOANS"),
-        "names the existing bill: {refused:?}"
-    );
+    match link_bill_to_loan_impl(&state, second_id, loan.clone(), String::new()).unwrap_err() {
+        IpcError::LoanAlreadyLinked { bill_id, bill_name } => {
+            assert_eq!(bill_id, bill);
+            assert_eq!(bill_name, "ACME HOME LOANS");
+        }
+        other => panic!("expected LoanAlreadyLinked, got {other:?}"),
+    }
 
     unlink_bill_from_loan_impl(&state, bill.clone(), String::new()).unwrap();
     assert!(read(&state).loan_link.is_none());

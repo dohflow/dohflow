@@ -835,14 +835,6 @@ const PAY_IN_FULL_PHILOSOPHIES: &[&str] = &[
     "pay_current_balance",
 ];
 
-/// What the one-linked-bill-per-loan refusal says; kept in one place so a typed error can replace
-/// the message without touching the rule.
-fn loan_already_linked(bill_name: &str) -> DbError {
-    DbError::InvalidCommand(format!(
-        "this loan already has a linked bill: {bill_name}. Unlink it first."
-    ))
-}
-
 /// The loan's name, after checking it is a loan this bill may be linked to: an active
 /// `loan_liability` account in the bill's currency with a recurring payment.
 fn require_linkable_loan(
@@ -952,18 +944,18 @@ pub(crate) fn apply_link_bill_to_loan(
         ));
     }
     require_linkable_loan(tx, loan, &currency)?;
-    let other: Option<String> = tx
+    let other: Option<(Uuid, String)> = tx
         .query_row(
-            "SELECT name FROM recurring_events
+            "SELECT id, name FROM recurring_events
               WHERE linked_loan_account_id = ?1 AND id <> ?2
                 AND is_active = 1 AND deleted_at IS NULL
               ORDER BY id LIMIT 1",
             params![loan.as_uuid(), id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    if let Some(name) = other {
-        return Err(loan_already_linked(&name));
+    if let Some((bill_id, bill_name)) = other {
+        return Err(DbError::LoanAlreadyLinked { bill_id, bill_name });
     }
     tx.execute(
         "UPDATE recurring_events

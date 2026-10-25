@@ -2914,6 +2914,15 @@ pub enum KernelError {
     /// A command failed domain validation.
     #[error("command validation failed: {0}")]
     Validation(String),
+    /// The loan already has a linked bill (personal-cfo-6wk.22). The text is fixed; the fields
+    /// carry the existing bill for the interface.
+    #[error("this loan already has a linked bill")]
+    LoanAlreadyLinked {
+        /// The bill that already carries the link (plain UUID).
+        bill_id: String,
+        /// That bill's display name.
+        bill_name: String,
+    },
     /// A required metadata field was empty.
     #[error("missing required command metadata: {0}")]
     MissingMetadata(&'static str),
@@ -3020,6 +3029,10 @@ impl From<DbError> for KernelError {
             DbError::WorkerUnavailable(state) => KernelError::Unavailable(state),
             DbError::WriterPanicked => KernelError::WriterPanicked,
             DbError::InvalidCommand(message) => KernelError::Validation(message),
+            DbError::LoanAlreadyLinked { bill_id, bill_name } => KernelError::LoanAlreadyLinked {
+                bill_id: bill_id.to_string(),
+                bill_name,
+            },
             DbError::SelfTestFailed(message) => KernelError::Persistence(message),
             // Generic text; no path or key crosses the boundary.
             DbError::CipherUnavailable => KernelError::Persistence(

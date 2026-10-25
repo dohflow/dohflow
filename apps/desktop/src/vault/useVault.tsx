@@ -321,6 +321,10 @@ export function describeIpcError(error: IpcError): string {
         return error;
     }
   }
+  if (error.LoanAlreadyLinked) {
+    // A second bill cannot be linked to a loan that already has one (personal-cfo-6wk.22); name it.
+    return `This loan already has a linked bill: ${error.LoanAlreadyLinked.bill_name}.`;
+  }
   const [, message] = Object.entries(error)[0] ?? ["", "Something went wrong."];
   return typeof message === "string" ? message : "Something went wrong.";
 }

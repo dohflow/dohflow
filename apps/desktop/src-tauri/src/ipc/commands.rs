@@ -123,6 +123,7 @@ pub(crate) fn with_kernel<T>(
 fn ipc_error_code(error: &IpcError) -> &'static str {
     match error {
         IpcError::Validation(_) => "validation",
+        IpcError::LoanAlreadyLinked { .. } => "loan_already_linked",
         IpcError::VaultLocked => "vault_locked",
         IpcError::VaultUnlockFailed => "vault_unlock_failed",
         IpcError::NewerVaultSchema => "newer_vault_schema",

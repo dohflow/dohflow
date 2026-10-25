@@ -1297,6 +1297,16 @@ pub enum DbError {
     /// unknown currency, missing system account).
     #[error("invalid command: {0}")]
     InvalidCommand(String),
+    /// At most one bill is linked to a loan (personal-cfo-6wk.22): linking a second is refused
+    /// and names the first so the user can unlink it. The Display text is fixed (bill names are
+    /// user data and stay out of logs); the fields carry the name for the interface.
+    #[error("this loan already has a linked bill")]
+    LoanAlreadyLinked {
+        /// The bill that already carries the link.
+        bill_id: Uuid,
+        /// That bill's display name.
+        bill_name: String,
+    },
     /// An underlying SQLite/SQLCipher error.
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
