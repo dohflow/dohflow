@@ -598,6 +598,37 @@ describe("BillsView", () => {
     ).toBe("15.99");
   });
 
+  it("shows a linked bill's link in its drawer, and none for an unlinked bill", async () => {
+    mocks.recurringBillList.mockResolvedValue(
+      ok([
+        bill({
+          loan_link: {
+            loan_account_id: "loan-1",
+            loan_name: "Test Mortgage",
+            in_force: true,
+            cadence_changed: false,
+            below_scheduled: false,
+            scheduled_payment: { minor_units: 150_000, currency: "USD" },
+            other: null,
+          },
+        }),
+      ]),
+    );
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /open netflix detail/i }));
+    const drawer = await screen.findByRole("dialog", { name: /bill detail/i });
+    expect(within(drawer).getByText("Linked to Test Mortgage's payment.")).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "Unlink" })).toBeInTheDocument();
+  });
+
+  it("shows no link section in the drawer of an unlinked bill", async () => {
+    mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+    renderWithClient(<BillsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /open netflix detail/i }));
+    const drawer = await screen.findByRole("dialog", { name: /bill detail/i });
+    expect(within(drawer).queryByRole("region", { name: "Loan link" })).toBeNull();
+  });
+
   it("shows the bill's confirmed payments in the drawer, scoped by recurring_event_id", async () => {
     mocks.recurringBillList.mockResolvedValue(ok([bill()]));
     mocks.transactionPage.mockResolvedValue(

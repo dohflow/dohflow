@@ -200,7 +200,7 @@ export function SuggestedRecurring() {
                   <RecurringCandidateForm
                     candidate={candidate}
                     // "Add as a separate bill" already answered the loan question.
-                    loanQuestionAnswered={asksAboutLoan}
+                    notPaymentOfLoanId={asksAboutLoan ? loanMatch?.loan_account_id : undefined}
                     onCancel={() => setPromoting(null)}
                     onCreated={(eventId) => void showAttached(candidate.display, eventId)}
                   />

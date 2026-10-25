@@ -24,6 +24,7 @@ import { describeIpcError } from "@/vault/useVault";
 import { EMPTY_FILTERS } from "@/transactions/filters";
 import { usePagedTransactions } from "@/transactions/usePagedTransactions";
 import { frequencyLabel } from "@/lib/frequency";
+import { BillLoanLinkSection } from "./BillLoanLinkSection";
 import {
   BILL_TYPE_LABELS,
   BillForm,
@@ -92,6 +93,8 @@ export function BillDetailDrawer({
             </button>
           </div>
         </div>
+
+        <BillLoanLinkSection bill={bill} />
 
         <section className="flex flex-col gap-2" aria-label="Edit bill">
           <h3 className="text-sm font-semibold">Edit</h3>

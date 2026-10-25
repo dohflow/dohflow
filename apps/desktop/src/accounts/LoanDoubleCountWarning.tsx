@@ -1,6 +1,10 @@
+import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useBillLoanActions } from "@/bills/useBills";
+import { describeIpcError } from "@/vault/useVault";
 
 import type { LoanDoubleCountWarningDto } from "@/bindings";
 
@@ -30,6 +34,40 @@ function strongReason(w: LoanDoubleCountWarningDto): string | null {
     return `A ${label} bill paid from ${w.paid_from_account_name} around ${w.loan_name}'s due date.`;
   }
   return null;
+}
+
+/// "Link it to <loan>" (personal-cfo-6wk.22): the user's explicit action that makes the forecast
+/// count this payment once. Offered on a STRONG match only; a refusal (for example the loan already
+/// has a linked bill) is shown in place and nothing changes.
+function LinkItButton({ warning }: { warning: LoanDoubleCountWarningDto }) {
+  const { linkBill } = useBillLoanActions();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      <div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          onClick={async () => {
+            setPending(true);
+            setError(null);
+            const failure = await linkBill(warning.bill_event_id, warning.loan_account_id);
+            setPending(false);
+            if (failure) setError(describeIpcError(failure));
+          }}
+        >
+          {`Link it to ${warning.loan_name}`}
+        </Button>
+      </div>
+      {error && (
+        <p role="alert" className="text-xs text-loss">
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /// A descriptive warning (personal-cfo-6wk.11, ADR 0018) when a loan is tracked BOTH as a loan
@@ -78,6 +116,7 @@ export function LoanDoubleCountWarning() {
                   {strongReason(w) && (
                     <div className="text-xs text-muted-foreground">{strongReason(w)}</div>
                   )}
+                  <LinkItButton warning={w} />
                 </li>
               ))}
             </ul>

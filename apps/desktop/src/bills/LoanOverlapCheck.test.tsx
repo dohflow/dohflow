@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   recurringBillList: vi.fn(),
   createRecurringBill: vi.fn(),
   checkLoanOverlap: vi.fn(),
+  linkBillToLoan: vi.fn(),
+  setBillNotLoanPayment: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -24,11 +26,14 @@ vi.mock("@/bindings", () => ({
     recurringBillList: mocks.recurringBillList,
     createRecurringBill: mocks.createRecurringBill,
     checkLoanOverlap: mocks.checkLoanOverlap,
+    linkBillToLoan: mocks.linkBillToLoan,
+    setBillNotLoanPayment: mocks.setBillNotLoanPayment,
   },
 }));
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 const mutationOk = () => ok({ op_seq: 1, replayed: false });
+const createdOk = () => ok({ op_seq: 1, replayed: false, event_id: "bill-new" });
 const CHECKING = "0190a000-0000-7000-8000-000000000001";
 
 function account(): AccountViewDto {
@@ -83,8 +88,10 @@ beforeEach(() => {
   mocks.accountList.mockResolvedValue(ok([account()]));
   mocks.baseCurrency.mockResolvedValue(ok("USD"));
   mocks.recurringBillList.mockResolvedValue(ok([]));
-  mocks.createRecurringBill.mockResolvedValue(mutationOk());
+  mocks.createRecurringBill.mockResolvedValue(createdOk());
   mocks.checkLoanOverlap.mockResolvedValue(ok(null));
+  mocks.linkBillToLoan.mockResolvedValue(mutationOk());
+  mocks.setBillNotLoanPayment.mockResolvedValue(mutationOk());
 });
 
 async function submit(onCancel = vi.fn(), onCreated = vi.fn()) {
@@ -207,5 +214,80 @@ test("answering No adds the bill (an unrelated similar bill is not blocked)", as
   expect(onCreated).toHaveBeenCalled();
   // One check, one question: the answer does not trigger another ask.
   expect(mocks.checkLoanOverlap).toHaveBeenCalledTimes(1);
+});
+
+// ----- "Add and link to <loan>" and the remembered No (personal-cfo-6wk.22) -------------------------------
+
+test("a STRONG match offers 'Add and link to <loan>', which creates the bill and then links it", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match()));
+  const { onCreated } = await submit();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Add and link to Test Mortgage" }));
+  await waitFor(() => expect(mocks.linkBillToLoan).toHaveBeenCalledTimes(1));
+  expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+  expect(mocks.linkBillToLoan.mock.calls[0]?.slice(0, 2)).toEqual(["bill-new", "loan-1"]);
+  expect(mocks.setBillNotLoanPayment).not.toHaveBeenCalled();
+  expect(onCreated).toHaveBeenCalled();
+  // Created BEFORE linked: the link needs the new bill's id.
+  expect(mocks.createRecurringBill.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.linkBillToLoan.mock.invocationCallOrder[0] ?? 0,
+  );
+});
+
+test("the link is not offered when the loan already has a linked bill", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match()));
+  mocks.recurringBillList.mockResolvedValue(
+    ok([
+      {
+        id: "bill-existing",
+        name: "Existing",
+        loan_link: { loan_account_id: "loan-1", loan_name: "Test Mortgage", in_force: true },
+      },
+    ]),
+  );
+  await submit();
+
+  expect(await screen.findByRole("button", { name: /add anyway/i })).toBeInTheDocument();
+  await waitFor(() => expect(mocks.recurringBillList).toHaveBeenCalled());
+  expect(screen.queryByRole("button", { name: /add and link/i })).toBeNull();
+});
+
+test("'Add anyway' and 'Don't add' neither link nor record an answer", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match()));
+  await submit();
+  fireEvent.click(await screen.findByRole("button", { name: /add anyway/i }));
+  await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+  expect(mocks.linkBillToLoan).not.toHaveBeenCalled();
+  expect(mocks.setBillNotLoanPayment).not.toHaveBeenCalled();
+});
+
+test("answering No remembers that the new bill is not the loan's payment", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match(ASK)));
+  await submit();
+
+  fireEvent.click(await screen.findByRole("button", { name: "No, it's a different bill" }));
+  await waitFor(() => expect(mocks.setBillNotLoanPayment).toHaveBeenCalledTimes(1));
+  expect(mocks.setBillNotLoanPayment.mock.calls[0]?.slice(0, 2)).toEqual(["bill-new", "loan-1"]);
+  expect(mocks.linkBillToLoan).not.toHaveBeenCalled();
+});
+
+test("answering Yes (don't add) records nothing", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match(ASK)));
+  await submit();
+  fireEvent.click(await screen.findByRole("button", { name: "Yes — don't add a second one" }));
+  expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+  expect(mocks.setBillNotLoanPayment).not.toHaveBeenCalled();
+});
+
+test("if linking fails after the bill was created, the bill stays and creation still completes", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match()));
+  mocks.linkBillToLoan.mockResolvedValue({
+    status: "error",
+    error: { LoanAlreadyLinked: { bill_id: "other", bill_name: "Other" } },
+  });
+  const { onCreated } = await submit();
+  fireEvent.click(await screen.findByRole("button", { name: "Add and link to Test Mortgage" }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
 });
 
