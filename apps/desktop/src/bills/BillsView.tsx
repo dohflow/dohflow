@@ -4,9 +4,11 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Loader2, Plus, Receipt, Search } from "lucide-react";
 
+import { commands } from "@/bindings";
 import type {
   AccountViewDto,
   IpcError,
+  LoanOverlapMatchDto,
   MoneyDto,
   RecurringBillDto,
   RecurringCandidateDto,
@@ -233,6 +235,7 @@ export function BillsView({
                 tag_ids: [],
               }}
               onCancel={() => setAdding(false)}
+              checkLoanOverlap={{ sourceMerchantKey: null }}
               onSubmit={async (draft) => {
                 const { error: failure } = await addBill({
                   ...draft,
@@ -616,6 +619,13 @@ type BillFormValues = z.infer<typeof billFormSchema>;
 // linked (USD for a new bill, the bill's existing currency for an edit) so an edit
 // never silently changes the currency of an accountless bill.
 // Exported so the First Forecast Wizard (personal-cfo-uipt) reuses it verbatim.
+/// How a creation-time match is presented (personal-cfo-6wk.20): `strong` is the loan's payment,
+/// `ask` is a question (the user's declared loan terms), `soft` is a note.
+function overlapKind(match: LoanOverlapMatchDto): "strong" | "ask" | "soft" {
+  if (match.strength === "strong") return "strong";
+  return match.matched_by === "declared_terms" ? "ask" : "soft";
+}
+
 export function BillForm({
   accounts,
   defaultValues,
@@ -627,6 +637,10 @@ export function BillForm({
   // hides it (editing a bill's category is a follow-up), but a hidden field keeps the
   // pre-filled value so it round-trips unchanged.
   showCategory = true,
+  // Creation paths opt in (personal-cfo-6wk.20): before the bill is created, check whether it looks
+  // like a loan's payment. `sourceMerchantKey` is the promoted candidate's key, else null. The edit
+  // form never passes it.
+  checkLoanOverlap,
 }: {
   accounts: AccountViewDto[];
   defaultValues: BillFormValues;
@@ -635,6 +649,7 @@ export function BillForm({
   onCancel: () => void;
   onSubmit: (draft: BillDraft) => Promise<string | null>;
   showCategory?: boolean;
+  checkLoanOverlap?: { sourceMerchantKey: string | null; loanQuestionAnswered?: boolean };
 }) {
   const {
     register,
@@ -650,6 +665,13 @@ export function BillForm({
   // form can be mounted together (nhmsg review; mirrors IncomeForm).
   const uid = useId();
   const [error, setError] = useState<string | null>(null);
+  // A match found just before creating (personal-cfo-6wk.20): the confirm panel replaces the form's
+  // buttons until the user decides. Descriptive and advisory only (ADR 0018).
+  const [overlap, setOverlap] = useState<{
+    match: LoanOverlapMatchDto;
+    draft: BillDraft;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
   // Categorize + tag the bill up front so its forecasted occurrences + confirmed
   // payments inherit them (personal-cfo-4d8.24.5 / .5.1).
   const { categories } = useCategories();
@@ -700,9 +722,43 @@ export function BillForm({
       category_id: values.category_id === "" ? null : values.category_id,
       tag_ids: values.tag_ids,
     };
+    if (checkLoanOverlap) {
+      // Fail open: the check is advisory, so if it cannot run (an error result, or a throw) the
+      // bill is still created.
+      try {
+        const checked = await commands.checkLoanOverlap({
+          ...draft,
+          source_merchant_key: checkLoanOverlap.sourceMerchantKey,
+          idempotency_key: mintIdempotencyKey(),
+        });
+        if (checked.status === "ok" && checked.data) {
+          const asksAboutLoan =
+            checked.data.strength === "possible" && checked.data.matched_by === "declared_terms";
+          // "Add as a separate bill" on a suggestion already answered this exact question.
+          if (!(asksAboutLoan && checkLoanOverlap.loanQuestionAnswered)) {
+            setOverlap({ match: checked.data, draft });
+            return;
+          }
+        }
+      } catch {
+        // fall through to creation
+      }
+    }
     const failure = await onSubmit(draft);
     if (failure) setError(failure);
   });
+
+  /// The user chose to create the bill after seeing the match.
+  async function createAnyway(draft: BillDraft) {
+    setSaving(true);
+    setError(null);
+    const failure = await onSubmit(draft);
+    setSaving(false);
+    if (failure) {
+      setError(failure);
+      setOverlap(null);
+    }
+  }
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
@@ -883,14 +939,82 @@ export function BillForm({
         </p>
       )}
 
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Saving…" : submitLabel}
-        </Button>
-      </div>
+      {overlap ? (
+        <div
+          role="alert"
+          className="flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm"
+        >
+          {overlapKind(overlap.match) === "strong" && (
+            <>
+              <p>{`This is ${overlap.match.loan_name}'s payment — don't add a second one.`}</p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={saving} onClick={onCancel}>
+                  Don&apos;t add
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => void createAnyway(overlap.draft)}
+                >
+                  {saving ? "Saving…" : "Add anyway"}
+                </Button>
+              </div>
+            </>
+          )}
+          {overlapKind(overlap.match) === "ask" && (
+            <>
+              {/* The user's own loan terms are enough to ASK, never to assert it is counted twice. */}
+              <p className="font-medium">{`Is this ${overlap.match.loan_name}'s payment?`}</p>
+              <p className="text-muted-foreground">
+                {`It's paid from ${
+                  accounts.find((account) => account.id === overlap.draft.autopay_account_id)
+                    ?.name ?? "the loan's paying account"
+                } around ${overlap.match.loan_name}'s due date, as set in its terms.`}
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={saving} onClick={onCancel}>
+                  Yes — don&apos;t add a second one
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => void createAnyway(overlap.draft)}
+                >
+                  {saving ? "Saving…" : "No, it's a different bill"}
+                </Button>
+              </div>
+            </>
+          )}
+          {overlapKind(overlap.match) === "soft" && (
+            <>
+              <p>{`This bill might be the same as ${overlap.match.loan_name}'s payment.`}</p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={saving} onClick={onCancel}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void createAnyway(overlap.draft)}
+                >
+                  {saving ? "Saving…" : submitLabel}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Saving…" : submitLabel}
+          </Button>
+        </div>
+      )}
     </form>
   );
 }
@@ -950,6 +1074,7 @@ export function MakeRecurringBillForm({
         tag_ids: transaction.tag_ids,
       }}
       onCancel={onCancel}
+      checkLoanOverlap={{ sourceMerchantKey: null }}
       onSubmit={async (draft) => {
         // Promoted from a single transaction, not a detected merchant candidate.
         const { error: failure } = await addBill({
@@ -973,10 +1098,14 @@ export function MakeRecurringBillForm({
 /// the caller can surface its retro-attached history (ADR 0047 §1).
 export function RecurringCandidateForm({
   candidate,
+  loanQuestionAnswered = false,
   onCancel,
   onCreated,
 }: {
   candidate: RecurringCandidateDto;
+  /// The suggestion row already asked "is this the loan's payment?" and the user chose "Add as a
+  /// separate bill", so the creation-time check does not ask the same question again.
+  loanQuestionAnswered?: boolean;
   onCancel: () => void;
   onCreated: (eventId: string | null) => void;
 }) {
@@ -1017,6 +1146,10 @@ export function RecurringCandidateForm({
         tag_ids: [],
       }}
       onCancel={onCancel}
+      checkLoanOverlap={{
+        sourceMerchantKey: candidate.merchant_key,
+        loanQuestionAnswered,
+      }}
       onSubmit={async (draft) => {
         // Persist the candidate's merchant key so the suggestion stays suppressed even
         // if the bill is later renamed (personal-cfo-5n4.8).

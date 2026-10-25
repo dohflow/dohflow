@@ -121,6 +121,7 @@ commands.allow = [
   "unconfirmed_past_due",
   "loan_double_count_warnings",
   "recurring_candidates",
+  "check_loan_overlap",
   "income_candidates",
   "recurring_bill_history",
   "build_info",

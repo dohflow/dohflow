@@ -40,7 +40,7 @@ pub(crate) use availability::compute_cash_availability;
 pub use availability::{AccountAvailability, CashAvailability};
 pub(crate) use card_cycles::{
     card_statement_forecast, card_statement_history, card_statement_walk_forward_pairs,
-    loans_emitting_payments,
+    loans_emitting_payments, EmittingLoan,
 };
 pub use card_cycles::{
     CardCycleView, CardStatementForecastView, CardStatementHistoryView, StoredStatementView,

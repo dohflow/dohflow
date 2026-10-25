@@ -115,6 +115,7 @@ describe("generated IPC bindings", () => {
         "debtPayoffComparison",
         "loanDoubleCountWarnings",
         "recurringCandidates",
+        "checkLoanOverlap",
         "recurringBillHistory",
         "checkForUpdate",
         "applyUpdate",

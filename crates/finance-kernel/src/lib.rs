@@ -43,14 +43,14 @@ pub use db_worker::{
     ConnectorLinkRow, DayBalance, DebtTermsInput, DebtTermsView, DriftFactorView, DurableJobView,
     ForecastAssumptionSpec, ForecastDayView, ForecastEventView, ForecastReadiness, ForecastView,
     GroupSeriesView, HistoryDay, ImportedTransactionFields, IncomeSourceView, LoanDoubleCount,
-    ManualEntry, MatchStrength, MatchedBy, MoneyInboxItem, MultiSeriesForecast, NewScenario,
-    Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecurringBillView,
-    RecurringCandidateView, RecurringInstanceRow, RecurringTransferView, RepaymentPhilosophy,
-    ReviewStatus, ScenarioStatus, ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput,
-    SplitLineView, TagView, TransactionDisplayRow, TransactionPage, TransactionPageQuery,
-    TransactionRow, TransactionSortOrder, UnconfirmedOccurrence, VaultMetadata, WorkerState,
-    AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
-    FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
+    LoanOverlapDraft, LoanPaymentMatch, ManualEntry, MatchStrength, MatchedBy, MoneyInboxItem,
+    MultiSeriesForecast, NewScenario, Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor,
+    RecurringBillView, RecurringCandidateView, RecurringInstanceRow, RecurringTransferView,
+    RepaymentPhilosophy, ReviewStatus, ScenarioStatus, ScenarioView, SpendBreakdown, SpendFilters,
+    SplitLineInput, SplitLineView, TagView, TransactionDisplayRow, TransactionPage,
+    TransactionPageQuery, TransactionRow, TransactionSortOrder, UnconfirmedOccurrence,
+    VaultMetadata, WorkerState, AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY,
+    CURRENT_SCHEMA_VERSION, FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 pub use db_worker::{CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS};
 pub use importer_core::{
@@ -4276,6 +4276,18 @@ impl Kernel {
     /// Returns [`KernelError`] on a read failure.
     pub fn loan_double_count_warnings(&self) -> Result<Vec<LoanDoubleCount>, KernelError> {
         Ok(self.worker.loan_double_count_warnings()?)
+    }
+
+    /// Does a bill the user is about to create look like a loan's payment (personal-cfo-6wk.20)?
+    /// Read-only and descriptive (ADR 0018): nothing is created, changed or linked.
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a read failure.
+    pub fn check_loan_overlap(
+        &self,
+        draft: &LoanOverlapDraft,
+    ) -> Result<Option<LoanPaymentMatch>, KernelError> {
+        Ok(self.worker.check_loan_overlap(draft)?)
     }
 
     /// Candidate recurring bills detected from realized outflows (personal-cfo-98ql) — a merchant

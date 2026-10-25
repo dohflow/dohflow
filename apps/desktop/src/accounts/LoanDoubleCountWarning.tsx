@@ -6,10 +6,16 @@ import type { LoanDoubleCountWarningDto } from "@/bindings";
 
 import { useLoanDoubleCountWarnings } from "./useLoanDoubleCountWarnings";
 
-/// The type labels a loan-typed strong match can carry (planning-approved wording, 6wk.20).
+/// The card title follows the strength (planning-approved, 6wk.20): never "Possible…" above a
+/// "counted twice" sentence.
+const STRONG_TITLE = "Loan payment counted twice";
+const POSSIBLE_TITLE = "Possible duplicate loan payment";
+
+/// The type labels a loan-typed strong match can carry, lowercase because they sit inside a
+/// sentence (planning-approved wording, 6wk.20).
 const LOAN_TYPED_LABELS: Record<string, string> = {
-  loan_payment: "Loan payment",
-  rent_mortgage: "Rent or mortgage",
+  loan_payment: "loan payment",
+  rent_mortgage: "rent or mortgage",
 };
 
 /// Why a STRONG match is one: the evidence route, in plain description, not advice (ADR 0018).
@@ -44,13 +50,13 @@ export function LoanDoubleCountWarning() {
       {strong.length > 0 && (
         <Card
           role="region"
-          aria-label="Possible duplicated loans"
+          aria-label={STRONG_TITLE}
           className="border-warning/40 bg-warning/5"
         >
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-base text-warning">
               <AlertTriangle className="size-4 shrink-0" aria-hidden />
-              Possible duplicated {strong.length > 1 ? "loans" : "loan"}
+              {STRONG_TITLE}
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 text-sm">
@@ -79,8 +85,11 @@ export function LoanDoubleCountWarning() {
         </Card>
       )}
       {possible.length > 0 && (
-        <Card role="region" aria-label="Possible matches" className="border-border bg-muted/30">
-          <CardContent className="flex flex-col gap-2 pt-4 text-sm text-muted-foreground">
+        <Card role="region" aria-label={POSSIBLE_TITLE} className="border-border bg-muted/30">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">{POSSIBLE_TITLE}</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
             <ul className="flex flex-col gap-1">
               {possible.map((w) => (
                 <li key={`${w.loan_account_id}:${w.bill_event_id}`}>

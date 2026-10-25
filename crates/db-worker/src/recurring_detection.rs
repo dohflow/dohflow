@@ -35,6 +35,10 @@ pub struct RecurringCandidateView {
     /// The observations behind the suggestion, most recent first (capped) — the proof
     /// the user can expand before promoting.
     pub observations: Vec<CandidateObservation>,
+    /// The loan whose payment this suggestion looks like, if any (personal-cfo-6wk.20): a STRONG
+    /// match is a loan's own payment, not a new bill; a POSSIBLE one is a soft note. Always `None`
+    /// for income candidates.
+    pub loan_match: Option<crate::loan_overlap::LoanPaymentMatch>,
 }
 
 /// One observed charge behind a candidate (the proof expander's row).
@@ -342,6 +346,12 @@ fn candidates_for(
         true
     });
 
+    // The loans a suggestion could be the payment of (outflows only), loaded once.
+    let loan_context = match flow {
+        Flow::Outflow => Some(crate::loan_overlap::load_loan_context(conn)?),
+        Flow::Inflow => None,
+    };
+
     // Attach the db-worker-computed provenance to each surviving candidate. The pure
     // detector never sees categories or accounts (DB concerns), so this join lives here
     // (personal-cfo-4d8.24.5 category; personal-cfo-4d8.25.11 proof + prefill).
@@ -381,6 +391,21 @@ fn candidates_for(
                 } else {
                     None
                 };
+            let loan_match = loan_context.as_ref().and_then(|context| {
+                crate::loan_overlap::best_loan_match(
+                    context,
+                    &crate::loan_overlap::BillLike {
+                        name: candidate.display.clone(),
+                        merchant_key: Some(candidate.merchant_key.clone()),
+                        bill_type: None,
+                        amount_minor: candidate.amount_minor,
+                        currency_code: candidate.currency.clone(),
+                        freq_token: candidate.frequency.to_owned(),
+                        day_of_month: typical_day_of_month,
+                        paying_account: source_account_id,
+                    },
+                )
+            });
             RecurringCandidateView {
                 candidate,
                 dominant_category_id,
@@ -388,6 +413,7 @@ fn candidates_for(
                 source_account_id,
                 typical_day_of_month,
                 observations,
+                loan_match,
             }
         })
         .collect())
