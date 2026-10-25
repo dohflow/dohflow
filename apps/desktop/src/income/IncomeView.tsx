@@ -1,8 +1,12 @@
-import { useState, useId } from "react";
+import { useId, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Banknote, Loader2, Plus } from "lucide-react";
+
+import { useNotices } from "@/components/ui/notice-context";
+import { RemoveConfirm } from "@/components/ui/remove-confirm";
+import { rememberFocusTarget } from "@/lib/removalFocus";
 
 import type {
   AccountViewDto,
@@ -78,6 +82,7 @@ export function IncomeView({
     addIncomeSource,
     updateIncomeSource,
     deleteIncomeSource,
+    reinstateIncomeSource,
     archiveIncomeSource,
     restoreIncomeSource,
   } = useIncome();
@@ -89,9 +94,19 @@ export function IncomeView({
   const archivedSources = sources?.filter((source) => !source.active) ?? [];
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
+    <div
+      data-removal-scope
+      tabIndex={-1}
+      className="mx-auto flex w-full max-w-2xl flex-col gap-4 outline-none"
+    >
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold tracking-tight">Income</h2>
+        <h2
+          data-removal-heading
+          tabIndex={-1}
+          className="text-lg font-semibold tracking-tight outline-none"
+        >
+          Income
+        </h2>
         {!adding && (
           <Button size="sm" onClick={() => setAdding(true)}>
             <Plus aria-hidden />
@@ -168,6 +183,7 @@ export function IncomeView({
                       accounts={accounts ?? []}
                       onUpdate={updateIncomeSource}
                       onDelete={deleteIncomeSource}
+                      onReinstate={reinstateIncomeSource}
                       onArchive={archiveIncomeSource}
                       onRestore={restoreIncomeSource}
                     />
@@ -202,6 +218,7 @@ export function IncomeView({
                         accounts={accounts ?? []}
                         onUpdate={updateIncomeSource}
                         onDelete={deleteIncomeSource}
+                      onReinstate={reinstateIncomeSource}
                         onArchive={archiveIncomeSource}
                         onRestore={restoreIncomeSource}
                       />
@@ -225,6 +242,7 @@ function IncomeRow({
   accounts,
   onUpdate,
   onDelete,
+  onReinstate,
   onArchive,
   onRestore,
   override,
@@ -237,9 +255,13 @@ function IncomeRow({
   accounts: AccountViewDto[];
   onUpdate: (input: UpdateIncomeSourceInput) => Promise<IpcError | null>;
   onDelete: (id: string) => Promise<IpcError | null>;
+  /// The Undo of a remove.
+  onReinstate: (id: string) => Promise<IpcError | null>;
   onArchive: (id: string) => Promise<IpcError | null>;
   onRestore: (id: string) => Promise<IpcError | null>;
 }) {
+  const { notify } = useNotices();
+  const rowRef = useRef<HTMLLIElement>(null);
   const [editing, setEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -320,7 +342,11 @@ function IncomeRow({
     );
   }
 
+  // Remove with undo (docs/agent/FRONTEND.md section 6.2): the remove is a tombstone, so it can be
+  // reversed. On success the row vanishes (the income query is invalidated), focus moves to the
+  // nearest surviving row, and a notice offers Undo.
   async function runDelete() {
+    const restoreFocus = rememberFocusTarget(rowRef.current);
     setBusy(true);
     setError(null);
     const failure = await onDelete(source.id);
@@ -328,12 +354,20 @@ function IncomeRow({
     if (failure) {
       setError(describeIpcError(failure));
       setConfirmingDelete(false);
+      return;
     }
-    // On success the row vanishes (the income query is invalidated).
+    restoreFocus();
+    notify({
+      message: `Removed ${source.name}.`,
+      undo: async () => (await onReinstate(source.id)) === null,
+    });
   }
 
   return (
-    <li className="flex flex-col gap-1 border-b px-5 py-3 last:border-0">
+    <li
+      ref={rowRef}
+      className="flex flex-col gap-1 border-b px-5 py-3 last:border-0"
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="font-medium">{source.name}</div>
@@ -349,25 +383,12 @@ function IncomeRow({
           </span>
           <div className="flex gap-1">
             {confirmingDelete ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={runDelete}
-                  aria-label={`Confirm delete ${source.name}`}
-                >
-                  Confirm
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  type="button"
-                  onClick={() => setConfirmingDelete(false)}
-                >
-                  Cancel
-                </Button>
-              </>
+              <RemoveConfirm
+                name={source.name}
+                busy={busy}
+                onConfirm={runDelete}
+                onCancel={() => setConfirmingDelete(false)}
+              />
             ) : (
               <>
                 <Button
@@ -392,9 +413,9 @@ function IncomeRow({
                   variant="ghost"
                   disabled={busy}
                   onClick={() => setConfirmingDelete(true)}
-                  aria-label={`Delete ${source.name}`}
+                  aria-label={`Remove ${source.name}`}
                 >
-                  Delete
+                  Remove
                 </Button>
               </>
             )}

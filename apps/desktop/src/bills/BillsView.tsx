@@ -1,4 +1,4 @@
-import { useState, useId } from "react";
+import { useId, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -50,6 +50,9 @@ import { cn } from "@/lib/utils";
 import { useBaseCurrency } from "@/settings/useBaseCurrency";
 import { BillDetailDrawer } from "./BillDetailDrawer";
 import { useBills } from "./useBills";
+import { useNotices } from "@/components/ui/notice-context";
+import { RemoveConfirm } from "@/components/ui/remove-confirm";
+import { rememberFocusTarget } from "@/lib/removalFocus";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -179,8 +182,16 @@ export function BillsView({
   // assumption events into base rather than editing the bill, so the stored amount and
   // the forecast's amount legitimately differ — the row has to say so.
   const { overrideFor } = useAppliedOverrides();
-  const { bills, error, addBill, updateBill, deleteBill, archiveBill, restoreBill } =
-    useBills();
+  const {
+    bills,
+    error,
+    addBill,
+    updateBill,
+    deleteBill,
+    reinstateBill,
+    archiveBill,
+    restoreBill,
+  } = useBills();
   const { accounts } = useAccounts();
   const { baseCurrency } = useBaseCurrency();
   const [adding, setAdding] = useState(false);
@@ -198,12 +209,26 @@ export function BillsView({
   const visibleArchived = sortBills(filterBills(archivedBills, query), sort);
 
   return (
-    <div className={embedded ? "flex flex-col gap-4" : "mx-auto flex w-full max-w-2xl flex-col gap-4"}>
+    <div
+      data-removal-scope
+      tabIndex={-1}
+      className={
+        embedded
+          ? "flex flex-col gap-4 outline-none"
+          : "mx-auto flex w-full max-w-2xl flex-col gap-4 outline-none"
+      }
+    >
       <div className="flex items-center justify-between">
         {embedded ? (
           <span />
         ) : (
-          <h2 className="text-lg font-semibold tracking-tight">Bills</h2>
+          <h2
+            data-removal-heading
+            tabIndex={-1}
+            className="text-lg font-semibold tracking-tight outline-none"
+          >
+            Bills
+          </h2>
         )}
         {!adding && (
           <Button size="sm" onClick={() => setAdding(true)}>
@@ -319,6 +344,7 @@ export function BillsView({
                       override={overrideFor(bill.id)}
                       onOpenScenario={onOpenScenario}
                       onDelete={deleteBill}
+                      onReinstate={reinstateBill}
                       onArchive={archiveBill}
                       onRestore={restoreBill}
                     />
@@ -359,6 +385,7 @@ export function BillsView({
                       override={overrideFor(bill.id)}
                       onOpenScenario={onOpenScenario}
                         onDelete={deleteBill}
+                        onReinstate={reinstateBill}
                         onArchive={archiveBill}
                         onRestore={restoreBill}
                       />
@@ -383,13 +410,14 @@ export function BillsView({
   );
 }
 
-// A single bill row. Active bills show Edit / Archive / Delete (Delete behind a
-// two-click confirm). Archived bills (personal-cfo-4d8.2) are dimmed, show their
+// A single bill row. Active bills show Edit / Archive / Remove (Remove behind a
+// confirm, then a notice with Undo: docs/agent/FRONTEND.md section 6.2). Archived bills (personal-cfo-4d8.2) are dimmed, show their
 // created + archived dates, and offer Restore.
 function BillRow({
   bill,
   onOpenDrawer,
   onDelete,
+  onReinstate,
   onArchive,
   onRestore,
   override,
@@ -401,9 +429,13 @@ function BillRow({
   override?: AppliedOverride;
   onOpenScenario?: (scenarioId: string) => void;
   onDelete: (billId: string) => Promise<IpcError | null>;
+  /// The Undo of a remove.
+  onReinstate: (billId: string) => Promise<IpcError | null>;
   onArchive: (billId: string) => Promise<IpcError | null>;
   onRestore: (billId: string) => Promise<IpcError | null>;
 }) {
+  const { notify } = useNotices();
+  const rowRef = useRef<HTMLLIElement>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -464,7 +496,11 @@ function BillRow({
     );
   }
 
+  // Remove with undo (docs/agent/FRONTEND.md section 6.2): the remove is a tombstone, so it can be
+  // reversed. On success the row vanishes (the bills query is invalidated), focus moves to the
+  // nearest surviving row, and a notice offers Undo.
   async function runDelete() {
+    const restoreFocus = rememberFocusTarget(rowRef.current);
     setBusy(true);
     setError(null);
     const failure = await onDelete(bill.id);
@@ -472,12 +508,20 @@ function BillRow({
     if (failure) {
       setError(describeIpcError(failure));
       setConfirmingDelete(false);
+      return;
     }
-    // On success the row vanishes (the bills query is invalidated).
+    restoreFocus();
+    notify({
+      message: `Removed ${bill.name}.`,
+      undo: async () => (await onReinstate(bill.id)) === null,
+    });
   }
 
   return (
-    <li className="flex flex-col gap-1 border-b px-5 py-3 last:border-0">
+    <li
+      ref={rowRef}
+      className="flex flex-col gap-1 border-b px-5 py-3 last:border-0"
+    >
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"
@@ -511,25 +555,12 @@ function BillRow({
           </span>
           <div className="flex gap-1">
             {confirmingDelete ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={runDelete}
-                  aria-label={`Confirm delete ${bill.name}`}
-                >
-                  Confirm
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  type="button"
-                  onClick={() => setConfirmingDelete(false)}
-                >
-                  Cancel
-                </Button>
-              </>
+              <RemoveConfirm
+                name={bill.name}
+                busy={busy}
+                onConfirm={runDelete}
+                onCancel={() => setConfirmingDelete(false)}
+              />
             ) : (
               <>
                 <Button
@@ -546,9 +577,9 @@ function BillRow({
                   variant="ghost"
                   disabled={busy}
                   onClick={() => setConfirmingDelete(true)}
-                  aria-label={`Delete ${bill.name}`}
+                  aria-label={`Remove ${bill.name}`}
                 >
-                  Delete
+                  Remove
                 </Button>
               </>
             )}

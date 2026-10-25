@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ArrowLeftRight, Loader2, Plus } from "lucide-react";
 
 import type { IpcError, RecurringTransferDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { useNotices } from "@/components/ui/notice-context";
+import { RemoveConfirm } from "@/components/ui/remove-confirm";
+import { rememberFocusTarget } from "@/lib/removalFocus";
 import { describeIpcError } from "@/vault/useVault";
 import { formatIsoDate, formatMoney } from "@/lib/format";
 import { frequencyLabel } from "@/lib/frequency";
@@ -17,15 +20,24 @@ import { useRecurringTransfers } from "./useRecurringTransfers";
 /// [`AddTransferForm`] locked to recurring mode) or from Activity → Add transfer;
 /// each row can be deleted (which stops future projection).
 export function RecurringTransfersView() {
-  const { recurringTransfers, error, deleteRecurringTransfer, addRecurringTransfer } =
-    useRecurringTransfers();
+  const {
+    recurringTransfers,
+    error,
+    deleteRecurringTransfer,
+    reinstateRecurringTransfer,
+    addRecurringTransfer,
+  } = useRecurringTransfers();
   const { accounts } = useAccounts();
   const [adding, setAdding] = useState(false);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div data-removal-scope tabIndex={-1} className="flex flex-col gap-2 outline-none">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold tracking-tight">
+        <h3
+          data-removal-heading
+          tabIndex={-1}
+          className="text-sm font-semibold tracking-tight outline-none"
+        >
           Recurring transfers
         </h3>
         {!adding && (
@@ -94,6 +106,7 @@ export function RecurringTransfersView() {
                   key={transfer.id}
                   transfer={transfer}
                   onDelete={deleteRecurringTransfer}
+                  onReinstate={reinstateRecurringTransfer}
                 />
               ))}
             </ul>
@@ -107,23 +120,44 @@ export function RecurringTransfersView() {
 function RecurringTransferRow({
   transfer,
   onDelete,
+  onReinstate,
 }: {
   transfer: RecurringTransferDto;
   onDelete: (id: string) => Promise<IpcError | null>;
+  /// The Undo of a remove.
+  onReinstate: (id: string) => Promise<IpcError | null>;
 }) {
+  const { notify } = useNotices();
+  const rowRef = useRef<HTMLLIElement>(null);
+  const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  // A transfer has no name of its own; it reads as what it is.
+  const label = `transfer from ${transfer.source_account_name} to ${transfer.dest_account_name}`;
 
+  // Remove with undo (docs/agent/FRONTEND.md section 6.2): the remove is a tombstone, so it can be
+  // reversed. On success the row vanishes, focus moves to the nearest surviving row, and a notice
+  // offers Undo.
   async function remove() {
+    const restoreFocus = rememberFocusTarget(rowRef.current);
     setBusy(true);
     setRowError(null);
     const failure = await onDelete(transfer.id);
     setBusy(false);
-    if (failure) setRowError(describeIpcError(failure));
+    if (failure) {
+      setRowError(describeIpcError(failure));
+      setConfirming(false);
+      return;
+    }
+    restoreFocus();
+    notify({
+      message: `Removed ${label}.`,
+      undo: async () => (await onReinstate(transfer.id)) === null,
+    });
   }
 
   return (
-    <li className="flex flex-col gap-1 border-b px-5 py-3 last:border-0">
+    <li ref={rowRef} className="flex flex-col gap-1 border-b px-5 py-3 last:border-0">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex items-center gap-1.5 font-medium">
@@ -143,15 +177,24 @@ function RecurringTransferRow({
           <span className="font-medium tabular-nums">
             {formatMoney(transfer.amount)}
           </span>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            onClick={remove}
-            aria-label={`Delete transfer from ${transfer.source_account_name} to ${transfer.dest_account_name}`}
-          >
-            Delete
-          </Button>
+          {confirming ? (
+            <RemoveConfirm
+              name={label}
+              busy={busy}
+              onConfirm={remove}
+              onCancel={() => setConfirming(false)}
+            />
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => setConfirming(true)}
+              aria-label={`Remove ${label}`}
+            >
+              Remove
+            </Button>
+          )}
         </div>
       </div>
       {rowError && (

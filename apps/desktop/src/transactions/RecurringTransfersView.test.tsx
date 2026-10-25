@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   recurringTransferList: vi.fn(),
   createRecurringTransfer: vi.fn(),
   deleteRecurringTransfer: vi.fn(),
+  reinstateRecurringTransfer: vi.fn(),
   accountList: vi.fn(),
 }));
 
@@ -17,6 +18,7 @@ vi.mock("@/bindings", () => ({
     recurringTransferList: mocks.recurringTransferList,
     createRecurringTransfer: mocks.createRecurringTransfer,
     deleteRecurringTransfer: mocks.deleteRecurringTransfer,
+    reinstateRecurringTransfer: mocks.reinstateRecurringTransfer,
     accountList: mocks.accountList,
   },
 }));
@@ -40,6 +42,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.recurringTransferList.mockResolvedValue(ok([TRANSFER]));
   mocks.deleteRecurringTransfer.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
+  mocks.reinstateRecurringTransfer.mockResolvedValue(ok({ op_seq: 3, replayed: false }));
   mocks.createRecurringTransfer.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
   mocks.accountList.mockResolvedValue(
     ok([
@@ -114,13 +117,18 @@ describe("RecurringTransfersView", () => {
     );
   });
 
-  it("deletes a scheduled transfer", async () => {
+  // Remove with undo (docs/agent/FRONTEND.md section 6.2, personal-cfo-egn67).
+  it("removes a scheduled transfer behind a confirm that says it can be brought back", async () => {
     renderWithClient(<RecurringTransfersView />);
     fireEvent.click(
-      await screen.findByRole("button", {
-        name: /delete transfer from checking to savings/i,
-      }),
+      await screen.findByRole("button", { name: /^remove transfer from checking to savings$/i }),
     );
+    // A transfer used to be removed on the first click; now it is confirmed first.
+    expect(mocks.deleteRecurringTransfer).not.toHaveBeenCalled();
+    const confirm = screen.getByRole("group", { name: "Remove transfer from Checking to Savings?" });
+    expect(within(confirm).getByText("You can bring it back.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove transfer/i }));
     await waitFor(() =>
       // The key is minted per action (personal-cfo-3fdd.5) — non-empty, not "".
       expect(mocks.deleteRecurringTransfer).toHaveBeenCalledWith(
@@ -128,5 +136,74 @@ describe("RecurringTransfersView", () => {
         expect.stringMatching(/.+/),
       ),
     );
+  });
+
+  it("after a removal a notice says so, and Undo reinstates that transfer", async () => {
+    renderWithClient(<RecurringTransfersView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^remove transfer from checking to savings$/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove transfer/i }));
+
+    const region = await screen.findByRole("region", { name: "Notifications" });
+    expect(
+      within(region).getByText("Removed transfer from Checking to Savings."),
+    ).toBeInTheDocument();
+    fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(mocks.reinstateRecurringTransfer).toHaveBeenCalledWith(
+        "rt-1",
+        expect.stringMatching(/.+/),
+      ),
+    );
+  });
+
+  it("after a removal focus moves to the nearest surviving row, not the page body", async () => {
+    const second = {
+      ...TRANSFER,
+      id: "rt-2",
+      source_account_name: "Savings",
+      dest_account_name: "Brokerage",
+    };
+    mocks.recurringTransferList.mockResolvedValue(ok([TRANSFER, second]));
+    mocks.deleteRecurringTransfer.mockImplementation(async () => {
+      mocks.recurringTransferList.mockResolvedValue(ok([TRANSFER]));
+      return ok({ op_seq: 1, replayed: false });
+    });
+    renderWithClient(<RecurringTransfersView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^remove transfer from savings to brokerage$/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove transfer/i }));
+
+    await screen.findByRole("region", { name: "Notifications" });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^remove transfer from checking to savings$/i }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("a failed removal shows its error and no notice", async () => {
+    mocks.deleteRecurringTransfer.mockResolvedValue({
+      status: "error",
+      error: { Validation: "recurring transfer does not exist" },
+    });
+    renderWithClient(<RecurringTransfersView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^remove transfer from checking to savings$/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /confirm remove transfer/i }));
+    expect(await screen.findByText("recurring transfer does not exist")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
+  });
+
+  it("cancelling the confirm removes nothing", async () => {
+    renderWithClient(<RecurringTransfersView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^remove transfer from checking to savings$/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.deleteRecurringTransfer).not.toHaveBeenCalled();
   });
 });
