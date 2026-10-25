@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -483,6 +483,34 @@ test("\"Add as a separate bill\" answers the question, so creating does not ask 
     "0190e000-0000-7000-8000-0000000000e1",
     "loan-1",
   ]);
+});
+
+test("if the remembered answer cannot be saved after a suggestion is added, an error notice says so", async () => {
+  mocks.recurringCandidates.mockResolvedValue(ok([askingCandidate()]));
+  mocks.checkLoanOverlap.mockResolvedValue(
+    ok({
+      loan_account_id: "loan-1",
+      loan_name: "Test Mortgage",
+      strength: "possible",
+      matched_by: "declared_terms",
+    }),
+  );
+  mocks.setBillNotLoanPayment.mockResolvedValue({
+    status: "error",
+    error: { Validation: "recurring bill does not exist" },
+  });
+  renderWithClient(<SuggestedRecurring />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Add as a separate bill" }));
+  fireEvent.click(await screen.findByRole("button", { name: /create recurring bill/i }));
+
+  const region = await screen.findByRole("region", { name: "Notifications" });
+  const alert = await within(region).findByRole("alert");
+  await waitFor(() =>
+    expect(alert).toHaveTextContent(
+      "The bill was added, but your answer wasn't saved, so DohFlow may ask again.",
+    ),
+  );
 });
 
 test("an ordinary soft possible match (no declared terms) keeps the normal buttons", async () => {

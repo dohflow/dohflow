@@ -15,9 +15,16 @@ export type NoticeInput = {
   undo: () => Promise<boolean>;
 };
 
-export type ActiveNotice = NoticeInput & { key: number };
+/// A notice on screen. One WITHOUT `undo` is an error notice (FRONTEND.md section 6.2): an action
+/// partly worked and a step after it failed.
+export type ActiveNotice = { key: number; message: string; undo?: NoticeInput["undo"] };
 
-export type NoticeApi = { notify: (input: NoticeInput) => void };
+export type NoticeApi = {
+  notify: (input: NoticeInput) => void;
+  /// Tell the user a step failed after the thing they asked for was done. No Undo; it does not close
+  /// on a timer, only when the user closes it (its button, or Escape while focus is inside).
+  notifyError: (message: string) => void;
+};
 export type NoticeState = {
   notices: ActiveNotice[];
   dismiss: (key: number) => void;
