@@ -86,6 +86,14 @@ function NoticeItem({
   const [focusedWithin, setFocusedWithin] = useState(false);
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
+  // A live region that mounts together with its text is not reliably announced. The status element
+  // mounts EMPTY with the notice and gets its message on the next frame, so assistive technology
+  // sees the region first and the text arrive after (personal-cfo-egn67 review F1).
+  const [announced, setAnnounced] = useState(false);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setAnnounced(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
 
   const { key } = notice;
   const close = useCallback(() => {
@@ -149,7 +157,6 @@ function NoticeItem({
   return (
     <div
       ref={ref}
-      role="status"
       className="rounded-lg border border-primary/30 bg-background px-4 py-3 shadow-sm"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -158,8 +165,8 @@ function NoticeItem({
       onKeyDown={onKeyDown}
     >
       <div className="flex items-center gap-3">
-        <p id={messageId} className="flex-1 text-sm">
-          {notice.message}
+        <p id={messageId} role="status" className="min-h-5 flex-1 text-sm">
+          {announced ? notice.message : null}
         </p>
         <Button
           variant="outline"

@@ -420,7 +420,7 @@ describe("BillsView", () => {
     fireEvent.click(screen.getByRole("button", { name: /confirm remove netflix/i }));
 
     const region = await screen.findByRole("region", { name: "Notifications" });
-    expect(within(region).getByText("Removed Netflix.")).toBeInTheDocument();
+    expect(await within(region).findByText("Removed Netflix.")).toBeInTheDocument();
     fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
     await waitFor(() => expect(mocks.reinstateRecurringBill).toHaveBeenCalledTimes(1));
     expect(mocks.reinstateRecurringBill).toHaveBeenCalledWith(

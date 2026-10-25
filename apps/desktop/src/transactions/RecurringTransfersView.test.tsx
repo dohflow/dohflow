@@ -147,7 +147,7 @@ describe("RecurringTransfersView", () => {
 
     const region = await screen.findByRole("region", { name: "Notifications" });
     expect(
-      within(region).getByText("Removed transfer from Checking to Savings."),
+      await within(region).findByText("Removed transfer from Checking to Savings."),
     ).toBeInTheDocument();
     fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
     await waitFor(() =>

@@ -62,7 +62,7 @@ describe("UnlockedHome notifications", () => {
     for (const later of [screen.getByText("capability notice"), screen.getByRole("button", { name: "remove rent" })]) {
       expect(region.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    expect(within(region).getByText("Removed Rent.")).toBeInTheDocument();
+    expect(await within(region).findByText("Removed Rent.")).toBeInTheDocument();
   });
 
   it("keeps a pending Undo when the user moves to another tab", async () => {

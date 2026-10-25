@@ -254,7 +254,7 @@ describe("IncomeView", () => {
     fireEvent.click(screen.getByRole("button", { name: /confirm remove acme corp/i }));
 
     const region = await screen.findByRole("region", { name: "Notifications" });
-    expect(within(region).getByText("Removed Acme Corp.")).toBeInTheDocument();
+    expect(await within(region).findByText("Removed Acme Corp.")).toBeInTheDocument();
     fireEvent.click(within(region).getByRole("button", { name: "Undo" }));
     await waitFor(() =>
       expect(mocks.reinstateIncomeSource).toHaveBeenCalledWith(

@@ -26,6 +26,10 @@ function renderShell() {
 }
 const undoOk = () => vi.fn(async () => true);
 const region = () => screen.queryByRole("region", { name: "Notifications" });
+/// The notice's card (the region's child), which holds the status line and the buttons.
+const card = (index = 0) => region()!.children[index] as HTMLElement;
+/// One animation frame: the status element gets its message on the frame after the notice mounts.
+const frame = () => act(() => vi.advanceTimersByTime(16));
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -42,10 +46,24 @@ test("there is no landmark until there is a notice", () => {
 test("a notice is a polite status inside the Notifications region, with an Undo button", () => {
   renderShell();
   act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
+  frame();
   const inRegion = within(screen.getByRole("region", { name: "Notifications" }));
-  const status = inRegion.getByRole("status");
+  expect(inRegion.getByRole("status")).toHaveTextContent("Removed Rent.");
+  expect(inRegion.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+});
+
+// A live region that mounts together with its text is not reliably announced (review F1): the status
+// element is in the page EMPTY first, and the message arrives on the next frame.
+test("the status element mounts empty and receives its message on the next frame", () => {
+  renderShell();
+  act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
+  const status = screen.getByRole("status");
+  expect(status).toBeEmptyDOMElement();
+  expect(status).not.toHaveTextContent("Removed Rent.");
+  frame();
+  // The SAME element: the live region was already registered when the text arrived.
+  expect(screen.getByRole("status")).toBe(status);
   expect(status).toHaveTextContent("Removed Rent.");
-  expect(within(status).getByRole("button", { name: "Undo" })).toBeInTheDocument();
 });
 
 test("a notice appearing never moves focus", () => {
@@ -76,7 +94,7 @@ test("it closes itself after ten seconds", () => {
 test("hovering pauses the timer and keeps the time that was left", () => {
   renderShell();
   act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
-  const status = screen.getByRole("status");
+  const status = card();
   act(() => vi.advanceTimersByTime(6_000));
   fireEvent.mouseEnter(status);
   act(() => vi.advanceTimersByTime(60_000));
@@ -153,10 +171,10 @@ test("a failed Undo keeps the notice and its button, and says so in its own aler
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
   });
-  const status = screen.getByRole("status");
-  // Its own alert element, inside the notice; the notice's own role is unchanged.
-  expect(within(status).getByRole("alert")).toHaveTextContent(UNDO_FAILED_MESSAGE);
-  expect(within(status).getByRole("button", { name: "Undo" })).toBeEnabled();
+  // Its own alert element inside the notice, a sibling of the status line (never nested in it).
+  expect(within(card()).getByRole("alert")).toHaveTextContent(UNDO_FAILED_MESSAGE);
+  expect(screen.getByRole("status")).not.toContainElement(screen.getByRole("alert"));
+  expect(within(card()).getByRole("button", { name: "Undo" })).toBeEnabled();
   expect(UNDO_FAILED_MESSAGE).toBe("Couldn't undo — try again.");
 });
 
@@ -205,6 +223,7 @@ test("notices stack, newest last, so a second removal keeps the first one's Undo
   renderShell();
   act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
   act(() => notify({ message: "Removed Gym.", undo: undoOk() }));
+  frame();
   const messages = screen.getAllByRole("status").map((node) => node.textContent);
   expect(messages[0]).toContain("Removed Rent.");
   expect(messages[1]).toContain("Removed Gym.");
@@ -215,6 +234,7 @@ test("a fourth notice closes the oldest early", () => {
   for (const name of ["One", "Two", "Three", "Four"]) {
     act(() => notify({ message: `Removed ${name}.`, undo: undoOk() }));
   }
+  frame();
   const shown = screen.getAllByRole("status").map((node) => node.textContent ?? "");
   expect(shown).toHaveLength(3);
   expect(shown.join(" ")).not.toContain("Removed One.");
