@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
+import { NoticeProvider, NotificationsRegion } from "@/components/ui/notice";
 import { DashboardView } from "@/dashboard/DashboardView";
 import { FutureCashView } from "@/future-cash/FutureCashView";
 import { ScenariosView } from "@/scenarios/ScenariosView";
@@ -109,6 +110,7 @@ export function UnlockedHome() {
     // The shell is exactly viewport height with the main pane scrolling internally
     // (h-screen + overflow-hidden), so the sidebar stays full-height and its
     // bottom-pinned items never get pushed below a tall content pane (personal-cfo-4d8.9).
+    <NoticeProvider>
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar
         tab={tab}
@@ -125,6 +127,8 @@ export function UnlockedHome() {
           escapes this pane's clipping, and stretches the DOCUMENT's scroll area: Settings with linked
           accounts then showed a second scrollbar and moved the sidebar (personal-cfo-twpo.1). */}
       <main className="relative flex-1 overflow-y-auto px-6 py-8">
+        {/* First in main: the tab order reaches an Undo before the page content (FRONTEND.md 6.2). */}
+        <NotificationsRegion />
         <ConnectionAttentionNotice />
         <CapabilityUnlockNotice />
         {tab === "dashboard" ? (
@@ -182,6 +186,7 @@ export function UnlockedHome() {
       <UpdateAvailableNotice onGoToSettings={() => setTab("settings")} />
       {searching && <GlobalSearch onClose={() => setSearching(false)} />}
     </div>
+    </NoticeProvider>
   );
 }
 
