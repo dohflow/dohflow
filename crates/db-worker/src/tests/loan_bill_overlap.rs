@@ -51,14 +51,16 @@ fn mortgage(worker: &DbWorker) -> Fixture {
     }
 }
 
-/// A monthly bill on the 15th paid from `checking`, as Add bill / Make recurring / promoting a suggested
-/// recurring candidate create it (the default type is `subscription`).
-fn bill_on_the_15th(
+/// A bill as Add bill / Make recurring / promoting a suggested recurring candidate create it (the
+/// default type is `subscription`).
+fn bill(
     worker: &DbWorker,
     name: &str,
     bill_type: &str,
     amount_minor: i64,
-    checking: AccountId,
+    frequency: Frequency,
+    anchor: NaiveDate,
+    autopay: AccountId,
 ) -> RecurringEventId {
     let event_id = RecurringEventId::new();
     worker
@@ -70,9 +72,9 @@ fn bill_on_the_15th(
                 name: name.to_owned(),
                 amount: Money::new(amount_minor, Currency::Usd),
                 bill_type: bill_type.to_owned(),
-                frequency: Frequency::Monthly,
-                anchor: NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
-                autopay_account_id: Some(checking),
+                frequency,
+                anchor,
+                autopay_account_id: Some(autopay),
                 description: None,
                 source_merchant_key: None,
                 category_id: None,
@@ -81,6 +83,29 @@ fn bill_on_the_15th(
         )
         .unwrap();
     event_id
+}
+
+fn the_15th() -> NaiveDate {
+    NaiveDate::from_ymd_opt(2026, 7, 15).unwrap()
+}
+
+/// A monthly bill on the loan's due day (the 15th), paid from `checking`.
+fn bill_on_the_15th(
+    worker: &DbWorker,
+    name: &str,
+    bill_type: &str,
+    amount_minor: i64,
+    checking: AccountId,
+) -> RecurringEventId {
+    bill(
+        worker,
+        name,
+        bill_type,
+        amount_minor,
+        Frequency::Monthly,
+        the_15th(),
+        checking,
+    )
 }
 
 /// How much leaves the liquid balance on the due date 2026-07-15, in the aggregate forecast.
@@ -107,11 +132,11 @@ fn the_loan_alone_projects_one_payment() {
     assert_eq!(outflow_on_the_15th(&worker), 150_000);
 }
 
-/// REPRODUCTION of the owner's report (06-dogfood #7): the bill suggested for the mortgage's payment is
-/// added with its default type, `subscription`. Cash Flow now shows $3,000 leaving on the 15th, and the
-/// existing detector (6wk.11, which only looks at `loan_payment` bills) finds nothing.
+/// The owner's report (06-dogfood #7): the bill suggested for the mortgage's payment is added with its
+/// default type, `subscription`. Before 6wk.20 the detector only looked at `loan_payment` bills and was
+/// silent; it now flags a bill of ANY type whose schedule and amount line up with the loan's payment.
 #[test]
-fn reproduction_a_subscription_typed_bill_for_the_loans_payment_double_counts_today() {
+fn a_subscription_typed_bill_for_the_loans_payment_is_flagged() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
     bill_on_the_15th(
@@ -122,19 +147,25 @@ fn reproduction_a_subscription_typed_bill_for_the_loans_payment_double_counts_to
         fixture.checking,
     );
 
-    assert_eq!(
-        outflow_on_the_15th(&worker),
-        300_000,
-        "the loan's $1,500 and the bill's $1,500 both leave on the 15th: the double count"
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].loan_account_id, fixture.loan.as_uuid());
+    assert_eq!(warnings[0].bill_name, "ACME HOME LOANS");
+    assert!(
+        warnings[0].amount_match,
+        "the $1,500 payment matches the bill"
     );
     assert!(
-        worker.loan_double_count_warnings().unwrap().is_empty(),
-        "the 6wk.11 detector only considers bill_type == loan_payment, so it is silent here"
+        !warnings[0].name_match,
+        "the payee name has nothing in common with the loan's"
     );
+    // KNOWN GAP until the forecast-level link (the second phase of 6wk.20): the warning is
+    // descriptive (ADR 0018), so the forecast still counts both until the user removes one.
+    assert_eq!(outflow_on_the_15th(&worker), 300_000);
 }
 
 #[test]
-fn reproduction_a_rent_mortgage_typed_bill_is_invisible_to_the_detector_too() {
+fn a_rent_mortgage_typed_bill_is_flagged() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
     bill_on_the_15th(
@@ -144,30 +175,176 @@ fn reproduction_a_rent_mortgage_typed_bill_is_invisible_to_the_detector_too() {
         150_000,
         fixture.checking,
     );
-    assert_eq!(outflow_on_the_15th(&worker), 300_000);
-    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].name_match && warnings[0].amount_match);
 }
 
-/// The variant in the report: with the bill typed Loan payment the detector DOES warn, but the forecast
-/// still counts both (the warning is descriptive only, ADR 0018).
+/// A `loan_payment` bill is suspected on the name or the amount alone, as before 6wk.20 (its own type
+/// says it is loan-shaped), even when its schedule differs.
 #[test]
-fn reproduction_a_loan_payment_typed_bill_is_flagged_but_still_double_counted() {
+fn a_loan_payment_typed_bill_is_flagged_whatever_its_schedule() {
     let (_dir, worker) = worker();
     let fixture = mortgage(&worker);
-    bill_on_the_15th(
+    bill(
         &worker,
         "ACME HOME LOANS",
         "loan_payment",
         150_000,
+        Frequency::Weekly,
+        NaiveDate::from_ymd_opt(2026, 7, 3).unwrap(),
         fixture.checking,
     );
     let warnings = worker.loan_double_count_warnings().unwrap();
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].loan_account_id, fixture.loan.as_uuid());
+    assert!(warnings[0].amount_match);
+}
+
+/// A minimum-payment loan has no fixed amount, but the forecast derives one (1% of the balance, or the
+/// $25 floor); a bill equal to that derived payment is the same payment.
+#[test]
+fn a_minimum_payment_loan_is_matched_on_its_derived_payment() {
+    let (_dir, worker) = worker();
+    let checking_id = AccountId::new();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(checking(checking_id)),
+                opening_balance: Some(Money::new(500_000, Currency::Usd)),
+            },
+        )
+        .unwrap();
+    let loan = AccountId::new();
+    create_role_account(&worker, loan, "Student Debt", CashflowRole::LoanLiability);
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SetDebtTerms {
+                account_id: loan,
+                terms: loan_terms(RepaymentPhilosophy::PayMinimum, None, checking_id),
+            },
+        )
+        .unwrap();
+    worker
+        .record_balance_assertion(
+            Uuid::now_v7(),
+            loan,
+            Money::new(-5_000_000, Currency::Usd), // owes $50,000: the default minimum is 1% = $500
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        )
+        .unwrap();
+    bill_on_the_15th(&worker, "NELNET", "subscription", 50_000, checking_id);
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(warnings.len(), 1);
     assert!(warnings[0].amount_match);
     assert_eq!(
         outflow_on_the_15th(&worker),
-        300_000,
-        "flagged, yet counted twice"
+        100_000,
+        "the loan's $500 and the bill's $500"
     );
+}
+
+// ----- what must NOT be flagged -----------------------------------------------------------------
+
+#[test]
+fn an_unrelated_subscription_is_not_flagged() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    bill_on_the_15th(
+        &worker,
+        "Streaming service",
+        "subscription",
+        1_599,
+        fixture.checking,
+    );
+    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
+}
+
+#[test]
+fn an_equal_amount_on_a_different_cadence_is_not_flagged_for_a_generic_bill() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    // $1,500 every week is not the monthly payment, even from the same account.
+    bill(
+        &worker,
+        "Contractor",
+        "subscription",
+        150_000,
+        Frequency::Weekly,
+        the_15th(),
+        fixture.checking,
+    );
+    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
+}
+
+#[test]
+fn a_coincidentally_equal_amount_on_another_day_from_another_account_is_not_flagged() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    let savings = AccountId::new();
+    create_role_account(&worker, savings, "Savings", CashflowRole::LiquidCash);
+    bill(
+        &worker,
+        "Tuition",
+        "subscription",
+        150_000,
+        Frequency::Monthly,
+        NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+        savings,
+    );
+    let _ = fixture;
+    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
+}
+
+#[test]
+fn a_shared_word_in_the_name_alone_does_not_flag_a_generic_bill_on_another_schedule() {
+    let (_dir, worker) = worker();
+    let checking_id = AccountId::new();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(checking(checking_id)),
+                opening_balance: Some(Money::new(500_000, Currency::Usd)),
+            },
+        )
+        .unwrap();
+    let savings = AccountId::new();
+    create_role_account(&worker, savings, "Savings", CashflowRole::LiquidCash);
+    let loan = AccountId::new();
+    create_role_account(&worker, loan, "Toyota Corolla", CashflowRole::LoanLiability);
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SetDebtTerms {
+                account_id: loan,
+                terms: loan_terms(
+                    RepaymentPhilosophy::PayFixedAmount,
+                    Some(45_000),
+                    checking_id,
+                ),
+            },
+        )
+        .unwrap();
+    worker
+        .record_balance_assertion(
+            Uuid::now_v7(),
+            loan,
+            Money::new(-1_500_000, Currency::Usd),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        )
+        .unwrap();
+    // "Toyota Corolla insurance" shares the loan's whole name, but it is monthly on the 3rd from
+    // another account at another amount: not the loan's payment.
+    bill(
+        &worker,
+        "Toyota Corolla insurance",
+        "subscription",
+        12_000,
+        Frequency::Monthly,
+        NaiveDate::from_ymd_opt(2026, 7, 3).unwrap(),
+        savings,
+    );
+    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
 }

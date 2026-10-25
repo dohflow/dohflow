@@ -663,10 +663,13 @@ fn loan_double_count_flags_a_matching_fixed_amount() {
     );
 }
 
-/// 6wk.11: unrelated loans/bills do not warn, and a same-named non-`loan_payment` bill
-/// (e.g. a subscription) is never flagged — only the double-count case is.
+/// 6wk.11, CHANGED DELIBERATELY by 6wk.20: an unrelated loan_payment bill (a different name and
+/// amount) still does not warn, but a same-named bill of ANY type, here a `subscription` on the
+/// loan's own due day and paying account, IS flagged. The original assertion (that it was "never
+/// flagged") encoded the gap behind the owner's double-counted mortgage: every creation path
+/// defaults the type to `subscription`, so a type test alone hid the double count.
 #[test]
-fn loan_double_count_ignores_unrelated_and_non_loan_bills() {
+fn loan_double_count_flags_a_same_named_bill_of_any_type_and_ignores_unrelated_ones() {
     let (_dir, worker) = worker();
     let checking_id = AccountId::new();
     create_role_account(&worker, checking_id, "Checking", CashflowRole::LiquidCash);
@@ -679,7 +682,8 @@ fn loan_double_count_ignores_unrelated_and_non_loan_bills() {
     );
     // A loan_payment bill for a different loan (no name/amount overlap) → not the same loan.
     create_loan_payment_bill(&worker, "Mortgage", 120_000, checking_id);
-    // A same-named bill that is NOT a loan_payment (a subscription) → not a double-count.
+    // A same-named bill of another type (a subscription) on the loan's due day and paying account:
+    // the same payment, tracked twice (6wk.20).
     worker
         .dispatch(
             meta(),
@@ -700,7 +704,14 @@ fn loan_double_count_ignores_unrelated_and_non_loan_bills() {
         )
         .unwrap();
 
-    assert!(worker.loan_double_count_warnings().unwrap().is_empty());
+    let warnings = worker.loan_double_count_warnings().unwrap();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "only the same-named subscription: the unrelated Mortgage bill is not the Car Loan"
+    );
+    assert_eq!(warnings[0].bill_name, "Car Loan Payment");
+    assert!(warnings[0].name_match);
 }
 
 /// 6wk.11 (review): a paid-off loan (owed = 0) emits no forecast payment, so pairing it with a
