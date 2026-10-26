@@ -1089,3 +1089,167 @@ fn editing_the_linked_bills_currency_stops_it_carrying_the_loan() {
         .unwrap();
     assert!(status_of(&worker, bill_id).unwrap().in_force);
 }
+
+// ----- a minimum-payment loan whose minimum moves month to month (6wk.22 AC4) ---------------------------
+
+/// One forecast event: `(date, kind, name, amount in minor units)`.
+type HorizonEvent = (NaiveDate, String, String, i64);
+
+/// Every event in the 90-day aggregate forecast from 2026-07-01 (three due dates: Jul, Aug and Sep
+/// 15), plus the closing p50 of every day.
+fn horizon(worker: &DbWorker) -> (Vec<HorizonEvent>, Vec<(NaiveDate, i64)>) {
+    let as_of = chrono::Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap();
+    let conn = worker.read_connection().unwrap();
+    let view = crate::forecast::compute(&conn, as_of, 90, &[]).unwrap();
+    let events = view
+        .days
+        .iter()
+        .flat_map(|d| {
+            d.events.iter().map(|e| {
+                (
+                    d.date,
+                    e.kind.clone(),
+                    e.name.clone(),
+                    e.amount.minor_units(),
+                )
+            })
+        })
+        .collect();
+    let closing = view
+        .days
+        .iter()
+        .map(|d| (d.date, d.closing.p50.minor_units()))
+        .collect();
+    (events, closing)
+}
+
+/// A loan that pays the MINIMUM (1% of the balance, never less than $300), linked to a $1,500 bill
+/// that includes escrow. Each "month" the statement balance moves, so the minimum the forecast
+/// derives for the loan moves with it; the bill, the user's observed debit, does not. At every step:
+/// ONE outflow on each due date (the bill, never the loan's own row), the split only while the bill
+/// exceeds the minimum, the below-95% warning exactly when the minimum rises past the bill's 95%
+/// line and gone when it falls back, no false overdraft, and the link itself never flickering.
+#[test]
+fn a_linked_minimum_payment_loan_counts_once_as_its_minimum_moves_month_to_month() {
+    let (_dir, worker) = worker();
+    let fixture = mortgage(&worker);
+    let mut terms = loan_terms(RepaymentPhilosophy::PayMinimum, None, fixture.checking);
+    terms.min_payment_percent_bps = Some(100);
+    terms.min_payment_floor_minor = Some(30_000);
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SetDebtTerms {
+                account_id: fixture.loan,
+                terms,
+            },
+        )
+        .unwrap();
+    let bill_id = the_bill(&worker, &fixture, 150_000);
+    link(&worker, bill_id, fixture.loan).unwrap();
+
+    // (balance owed, the minimum it derives, below the bill's 95% line?, the part beyond the minimum)
+    //
+    // The 95% line: the bill ($1,500.00) is "less than the scheduled payment" when
+    // bill × 100 < minimum × 95, i.e. from a minimum of $1,578.95.
+    let months: [(i64, i64, bool, Option<i64>); 8] = [
+        (12_000_000, 120_000, false, Some(30_000)), // 1% = $1,200: the bill exceeds it, the split shows
+        (15_000_000, 150_000, false, None),         // equal: no split
+        (15_789_400, 157_894, false, None),         // $1,578.94: just under the line, no warning
+        (15_789_500, 157_895, true, None),          // $1,578.95: just over it, the warning appears
+        (20_000_000, 200_000, true, None),          // the minimum rose a lot: still warned
+        (14_000_000, 140_000, false, Some(10_000)), // it fell back: the warning clears, the split returns
+        (1_000_000, 30_000, false, Some(120_000)),  // 1% = $100 < the $300 floor: the floor binds
+        (12_000_000, 120_000, false, Some(30_000)), // and back up, as in month one
+    ];
+    for (step, (owed, minimum, below, other)) in months.into_iter().enumerate() {
+        // This month's statement: a later assertion replaces the owed balance the minimum derives from.
+        worker
+            .record_balance_assertion(
+                Uuid::now_v7(),
+                fixture.loan,
+                Money::new(-owed, Currency::Usd),
+                NaiveDate::from_ymd_opt(2026, 6, 1 + u32::try_from(step).unwrap()).unwrap(),
+            )
+            .unwrap();
+        let label = format!("month {} (owed {owed})", step + 1);
+
+        // The link never flickers: stored, in force, and the same loan, at every step.
+        assert_eq!(
+            stored_link(&worker, bill_id),
+            Some(fixture.loan.as_uuid()),
+            "{label}"
+        );
+        let status = status_of(&worker, bill_id).unwrap_or_else(|| panic!("{label}: no link"));
+        assert!(status.in_force, "{label}: the link stays in force");
+        assert!(!status.cadence_changed, "{label}");
+        assert_eq!(
+            status.scheduled_payment,
+            Some(Money::new(minimum, Currency::Usd)),
+            "{label}: the minimum the forecast derives"
+        );
+        assert_eq!(
+            status.below_scheduled, below,
+            "{label}: the below-95% warning"
+        );
+        assert_eq!(
+            status.other,
+            other.map(|o| Money::new(o, Currency::Usd)),
+            "{label}: the split appears only while the bill exceeds the minimum"
+        );
+
+        // ONE outflow on each of the three due dates: the bill, never the loan's own row.
+        let (events, closing) = horizon(&worker);
+        let due: Vec<_> = events
+            .iter()
+            .filter(|(_, kind, _, _)| kind != "income")
+            .collect();
+        assert_eq!(
+            due.len(),
+            3,
+            "{label}: one outflow per month, not two: {due:?}"
+        );
+        for (date, kind, name, amount) in &due {
+            assert_ne!(
+                kind, "loan_payment",
+                "{label}: the loan's own row is suppressed"
+            );
+            assert_eq!(
+                name, "ACME HOME LOANS",
+                "{label}: the bill carries the cash on {date}"
+            );
+            assert_eq!(
+                *amount, -150_000,
+                "{label}: the observed debit, whatever the minimum is"
+            );
+        }
+        assert_eq!(
+            due.iter()
+                .map(|(d, ..)| d.format("%m-%d").to_string())
+                .collect::<Vec<_>>(),
+            ["07-15", "08-15", "09-15"],
+            "{label}"
+        );
+
+        // No false overdraft: checking falls by the bill alone, $5,000 -> $3,500 -> $2,000 -> $500.
+        // (Counting the loan's minimum as well would take it below zero by September.)
+        let at = |m: u32, d: u32| {
+            closing
+                .iter()
+                .find(|(date, _)| *date == NaiveDate::from_ymd_opt(2026, m, d).unwrap())
+                .map(|(_, c)| *c)
+                .unwrap()
+        };
+        assert_eq!(at(7, 14), 500_000, "{label}");
+        assert_eq!(at(7, 15), 350_000, "{label}");
+        assert_eq!(at(8, 15), 200_000, "{label}");
+        assert_eq!(at(9, 15), 50_000, "{label}");
+        assert!(
+            closing.iter().all(|(_, c)| *c >= 0),
+            "{label}: no overdraft anywhere in the horizon"
+        );
+    }
+
+    // And the link was never touched by any of it.
+    assert_eq!(stored_link(&worker, bill_id), Some(fixture.loan.as_uuid()));
+}
