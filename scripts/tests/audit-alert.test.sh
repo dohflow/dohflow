@@ -74,6 +74,13 @@ printf 'before\n~~~~\ninjected ~~~~~~~~ text\n```\nafter\n' > "$TMP/fence.txt"
 fence="$(grep -E '^~{9,}$' "$CALLS" | head -1)"
 { [ -n "$fence" ] && [ "$(grep -cxF "$fence" "$CALLS")" = 2 ]; } && pass "the body is fenced by a longer run of tildes (${#fence}), used exactly twice" || fail "fence not longer than the longest run in the report: $(grep -E '^~+$' "$CALLS" | tr '\n' ' ')"
 
+case_start "another audit can reuse it with its own label, title and intro (the secrets audit, md8h2.22)"
+: > "$CALLS"; STUB_EXISTING="" run --status failed --report "$TMP/found.txt" --label secret-scan --title "Secrets scan finding in the repository" --intro "The daily secrets scan of all branches found something." >/dev/null
+grep -q "^label create secret-scan" "$CALLS" && pass "creates the custom label" || fail "label: $(grep '^label' "$CALLS")"
+grep -q -- "--label secret-scan --title Secrets scan finding in the repository" "$CALLS" && pass "uses the fixed title and label" || fail "create call: $(grep 'issue create' "$CALLS")"
+grep -q "The daily secrets scan of all branches found something." "$CALLS" && pass "uses the intro" || fail "intro missing"
+grep -q "The daily dependency audit" "$CALLS" && fail "the dependency wording leaked into another audit's issue" || pass "no dependency wording"
+
 case_start "bad usage is an error"
 run --status bogus --report "$TMP/ok.txt" >/dev/null 2>&1 && fail "accepted a bogus status" || pass "rejects a bogus status"
 run --status failed --report "$TMP/nope.txt" >/dev/null 2>&1 && fail "accepted a missing report" || pass "rejects a missing report file"
