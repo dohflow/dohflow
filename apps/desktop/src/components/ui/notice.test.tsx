@@ -302,7 +302,24 @@ test("an error notice appearing never moves focus", () => {
   expect(page).toHaveFocus();
 });
 
-test("error notices share the stack: a fourth closes the oldest, and an Undo notice still times out", () => {
+// ----- when the stack is full (FRONTEND.md 6.2, personal-cfo-4d8.32 item 4) -----
+
+test("a fourth notice evicts the oldest UNDO notice, never an error", () => {
+  renderShell();
+  act(() => notifyError("First failure."));
+  act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
+  act(() => notify({ message: "Removed Gym.", undo: undoOk() }));
+  act(() => notify({ message: "Removed Spa.", undo: undoOk() }));
+  frame();
+  const text = region()!.textContent ?? "";
+  // The error is oldest of all but stays; the oldest UNDO notice made room.
+  expect(text).toContain("First failure.");
+  expect(text).not.toContain("Removed Rent.");
+  expect(text).toContain("Removed Gym.");
+  expect(text).toContain("Removed Spa.");
+});
+
+test("a new error also evicts the oldest Undo notice, not an older error", () => {
   renderShell();
   act(() => notifyError("First failure."));
   act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
@@ -310,15 +327,48 @@ test("error notices share the stack: a fourth closes the oldest, and an Undo not
   act(() => notifyError("Third failure."));
   frame();
   const text = region()!.textContent ?? "";
-  expect(text).not.toContain("First failure.");
-  expect(text).toContain("Removed Rent.");
+  expect(text).toContain("First failure.");
+  expect(text).toContain("Second failure.");
   expect(text).toContain("Third failure.");
-  // The Undo notice closes on its timer; the two error notices stay.
+  expect(text).not.toContain("Removed Rent.");
+});
+
+test("with the stack full of errors a new notice waits, and shows when one is closed", () => {
+  renderShell();
+  for (const name of ["One", "Two", "Three"]) act(() => notifyError(`${name} failure.`));
+  act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
+  frame();
+  expect(region()!.textContent).not.toContain("Removed Rent.");
+  expect(region()!.textContent).toContain("One failure.");
+  // Nothing was lost: closing the first error lets the waiting notice in.
+  fireEvent.click(within(card(0)).getByRole("button", { name: "Dismiss" }));
+  frame();
+  const text = region()!.textContent ?? "";
+  expect(text).not.toContain("One failure.");
+  expect(text).toContain("Removed Rent.");
+  expect(text).toContain("Three failure.");
+});
+
+test("waiting notices come in oldest first", () => {
+  renderShell();
+  for (const name of ["One", "Two", "Three"]) act(() => notifyError(`${name} failure.`));
+  act(() => notify({ message: "Removed A.", undo: undoOk() }));
+  act(() => notify({ message: "Removed B.", undo: undoOk() }));
+  fireEvent.click(within(card(0)).getByRole("button", { name: "Dismiss" }));
+  frame();
+  expect(region()!.textContent).toContain("Removed A.");
+  expect(region()!.textContent).not.toContain("Removed B.");
+});
+
+test("an Undo notice still times out, and an error beside it does not", () => {
+  renderShell();
+  act(() => notifyError("Only failure."));
+  act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
+  frame();
   act(() => vi.advanceTimersByTime(NOTICE_DURATION_MS));
   const after = region()!.textContent ?? "";
   expect(after).not.toContain("Removed Rent.");
-  expect(after).toContain("Second failure.");
-  expect(after).toContain("Third failure.");
+  expect(after).toContain("Only failure.");
 });
 
 test("useNotices outside a provider throws, so an Undo is never silently lost", () => {

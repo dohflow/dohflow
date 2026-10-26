@@ -5,6 +5,7 @@ import type { ForecastEventDto } from "@/bindings";
 import { useAccounts } from "@/accounts/useAccounts";
 import { useBills } from "@/bills/useBills";
 import { Button } from "@/components/ui/button";
+import { useNotices } from "@/components/ui/notice-context";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { dollarsToMinorUnits, todayInTimezone } from "@/lib/format";
@@ -13,7 +14,6 @@ import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
 
 import { useMarkObligation } from "./useMarkObligation";
-import { useMarkObligationUndoPublish } from "./markObligationUndo";
 
 const SELECT_CLASS =
   "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -36,8 +36,8 @@ export function MarkObligationPaid({
 }) {
   const { accounts } = useAccounts();
   const { bills } = useBills();
-  const { confirm } = useMarkObligation();
-  const publishConfirmed = useMarkObligationUndoPublish();
+  const { confirm, unconfirm } = useMarkObligation();
+  const { notify } = useNotices();
   // The default/max pay date (ADR 0021 §1, personal-cfo-ku2hn): the household-local
   // calendar date, matching the backend's future-date guard on ConfirmObligationEarly —
   // not the browser's own local date, which `toISOString()` (UTC) used to fall back to
@@ -101,12 +101,16 @@ export function MarkObligationPaid({
       setError(describeIpcError(result.error));
       return;
     }
-    // On success the forecast invalidates and this row disappears — surface an Undo at the
-    // view level (the row is gone, so it can't live here).
-    publishConfirmed?.({
-      eventId: event.source_event_id,
-      scheduledDate,
-      name: event.name,
+    // On success the forecast invalidates and this row disappears, so the Undo lives in a shell
+    // notice (docs/agent/FRONTEND.md section 6.2), not here.
+    notify({
+      message: `Marked ${event.name || "bill"} paid.`,
+      undo: () =>
+        unconfirm({
+          recurring_event_id: event.source_event_id,
+          scheduled_date: scheduledDate,
+          idempotency_key: mintIdempotencyKey(),
+        }),
     });
   }
 
