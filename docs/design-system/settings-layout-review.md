@@ -1,12 +1,12 @@
 # Settings design review candidate
 
-Status: **RC1 proposal; independent screen review and owner decisions pending.**
+Status: **RC2 proposal; independent screen review and owner decisions pending.**
 This record describes a design artifact, not an accepted frontend convention or
 an implementation handoff.
 
 - Task: `personal-cfo-twpo.3`.
 - [Paper candidate](https://app.paper.design/file/01M5TNGF0SVKWW6WQCTF8Z41H0/p-1-0).
-- Frozen: **October 25, 2026, 5:07:29 PM Pacific** (2026-10-26 00:07:29 UTC).
+- Frozen: **October 25, 2026, 6:36:05 PM Pacific** (2026-10-26 01:36:05 UTC).
 - Source: `e8e6ed00389278bb14af8b88d92097b5f61cda4d`.
 - Design-system audit baseline: v0.2, frozen October 25, 2026,
   4:18:31 PM Pacific (23:18:31 UTC).
@@ -93,7 +93,18 @@ blocking-rotation behavior and requires modal focus containment, background
 inertness and focus return. It does not claim the current implementation has
 passed those checks.
 
-The dark-theme review corrected SVG paint bindings and diagnostics preview text.
+RC1 received CHANGES_REQUIRED for dark wordmark paint and omitted busy indicators.
+RC2 corrects 98 wordmark-path bindings; an export audit across all 31 dark frames
+finds no light-foreground SVG references. All 15 logo instances retain matching
+path geometry and seven dark-foreground wordmark paths. The fixed mark colors
+were not changed.
+
+RC2 also adds verified 16px decorative Loader2 icons alongside retained button
+names in S04/saving, S07/saving, S02/refresh-busy and S10/loading in both themes.
+Captions specify runtime animation, a static reduced-motion cue and polite busy
+announcements without per-tick repetition. Paper itself is static. This repair
+does not approve the pending C08 adaptation or other owner decisions.
+Diagnostics preview text uses the theme foreground token.
 Token calculations give text/card contrast of 17.63:1 light and 15.34:1 dark;
 muted text/card is 5.97:1 and 6.69:1. Primary and destructive button text also
 clear 4.5:1 in both themes. These calculations are **not a blanket accessibility
@@ -114,69 +125,69 @@ artifact review does not authorize implementation.
 
 | Page | Frame |
 | --- | --- |
-| Page 1 | ST-00 · RC1 review manifest and specifications |
-| Page 1 | ST-01 · Settings full content · Wide Light · RC1 |
-| Page 1 | ST-02 · Settings full content · Wide Dark · RC1 |
-| Page 1 | ST-03 · Settings full content · C528 Light · RC1 |
-| Page 1 | ST-04 · Settings full content · C528 Dark · RC1 |
-| Page 1 | ST-05 · Settings full content · C368 Light · stress · RC1 |
-| Page 1 | ST-06 · Settings full content · C368 Dark · stress · RC1 |
-| 02 · States and accessibility | S01 · Backups state deltas · Light · RC1 |
-| 02 · States and accessibility | S02 · Connections state deltas · Light · RC1 |
-| 02 · States and accessibility | S03 · Vault health state deltas · Light · RC1 |
-| 02 · States and accessibility | S04 · Household state deltas · Light · RC1 |
-| 02 · States and accessibility | S05 · General state deltas · Light · RC1 |
-| 02 · States and accessibility | S06 · Appearance state deltas · Light · RC1 |
-| 02 · States and accessibility | S07 · Comfort band state deltas · Light · RC1 |
-| 02 · States and accessibility | S08 · Auto-categorize imported transactions state deltas · Light · RC1 |
-| 02 · States and accessibility | S09 · Software update state deltas · Light · RC1 |
-| 02 · States and accessibility | S10 · Diagnostics state deltas · Light · RC1 |
-| 02 · States and accessibility | S11 · Vaults state deltas · Light · RC1 |
-| 02 · States and accessibility | S12 · Setup guide state deltas · Light · RC1 |
-| 02 · States and accessibility | S13 · About state deltas · Light · RC1 |
-| 02 · States and accessibility | S14 · Change master password state deltas · Light · RC1 |
-| 02 · States and accessibility | S15 · Rotate encryption key state deltas · Light · RC1 |
-| 02 · States and accessibility | S16 · Delete this vault state deltas · Light · RC1 |
-| 01 · Responsive windows | R01 · 1280×800 · Sidebar 224 · Light · RC1 |
-| 01 · Responsive windows | R02 · 1280×800 · Sidebar 56 · Light · RC1 |
-| 01 · Responsive windows | R03 · 800×600 · Sidebar 224 · Light · RC1 |
-| 01 · Responsive windows | R11 · 800×600 · Existing persistent attention · Light · RC1 |
-| 01 · Responsive windows | R12 · 800×600 · Existing persistent attention · Dark · RC1 |
-| 01 · Responsive windows | R04 · 800×600 · Sidebar 56 · Light · RC1 |
-| 01 · Responsive windows | R05 · 1280×800 · Sidebar 224 · Dark · RC1 |
-| 01 · Responsive windows | R06 · 1280×800 · Sidebar 56 · Dark · RC1 |
-| 01 · Responsive windows | R07 · 800×600 · Sidebar 224 · Dark · RC1 |
-| 01 · Responsive windows | R09 · 640×600 · Sidebar 224 · Light · stress, not supported minimum · RC1 |
-| 01 · Responsive windows | R10 · 640×600 · Sidebar 224 · Dark · stress, not supported minimum · RC1 |
-| 01 · Responsive windows | R08 · 800×600 · Sidebar 56 · Dark · RC1 |
-| 03 · Dark state counterparts | S01 · Backups state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S02 · Connections state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S03 · Vault health state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S04 · Household state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S05 · General state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S06 · Appearance state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S07 · Comfort band state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S08 · Auto-categorize imported transactions state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S09 · Software update state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S10 · Diagnostics state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S11 · Vaults state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S12 · Setup guide state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S13 · About state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S14 · Change master password state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S15 · Rotate encryption key state deltas · Dark · RC1 |
-| 03 · Dark state counterparts | S16 · Delete this vault state deltas · Dark · RC1 |
-| 04 · Connection and blocking flows | F01 · Provider disclosure · Light · RC1 |
-| 04 · Connection and blocking flows | F05 · Credential step after disclosure · Light · RC1 |
-| 04 · Connection and blocking flows | F02 · Create and map dialog · Light · RC1 |
-| 04 · Connection and blocking flows | F03 · Shared-feed confirmation · Light · RC1 |
-| 04 · Connection and blocking flows | F04 · Blocking rotation · Light · RC1 |
-| 04 · Connection and blocking flows | F01 · Provider disclosure · Dark · RC1 |
-| 04 · Connection and blocking flows | F05 · Credential step after disclosure · Dark · RC1 |
-| 04 · Connection and blocking flows | F02 · Create and map dialog · Dark · RC1 |
-| 04 · Connection and blocking flows | F03 · Shared-feed confirmation · Dark · RC1 |
-| 04 · Connection and blocking flows | F04 · Blocking rotation · Dark · RC1 |
-| 04 · Connection and blocking flows | F00 · Provider picker · source registry fixture · Light · RC1 |
-| 04 · Connection and blocking flows | F00 · Provider picker · source registry fixture · Dark · RC1 |
+| Page 1 | ST-00 · RC2 review manifest and specifications |
+| Page 1 | ST-01 · Settings full content · Wide Light · RC2 |
+| Page 1 | ST-02 · Settings full content · Wide Dark · RC2 |
+| Page 1 | ST-03 · Settings full content · C528 Light · RC2 |
+| Page 1 | ST-04 · Settings full content · C528 Dark · RC2 |
+| Page 1 | ST-05 · Settings full content · C368 Light · stress · RC2 |
+| Page 1 | ST-06 · Settings full content · C368 Dark · stress · RC2 |
+| 02 · States and accessibility | S01 · Backups state deltas · Light · RC2 |
+| 02 · States and accessibility | S02 · Connections state deltas · Light · RC2 |
+| 02 · States and accessibility | S03 · Vault health state deltas · Light · RC2 |
+| 02 · States and accessibility | S04 · Household state deltas · Light · RC2 |
+| 02 · States and accessibility | S05 · General state deltas · Light · RC2 |
+| 02 · States and accessibility | S06 · Appearance state deltas · Light · RC2 |
+| 02 · States and accessibility | S07 · Comfort band state deltas · Light · RC2 |
+| 02 · States and accessibility | S08 · Auto-categorize imported transactions state deltas · Light · RC2 |
+| 02 · States and accessibility | S09 · Software update state deltas · Light · RC2 |
+| 02 · States and accessibility | S10 · Diagnostics state deltas · Light · RC2 |
+| 02 · States and accessibility | S11 · Vaults state deltas · Light · RC2 |
+| 02 · States and accessibility | S12 · Setup guide state deltas · Light · RC2 |
+| 02 · States and accessibility | S13 · About state deltas · Light · RC2 |
+| 02 · States and accessibility | S14 · Change master password state deltas · Light · RC2 |
+| 02 · States and accessibility | S15 · Rotate encryption key state deltas · Light · RC2 |
+| 02 · States and accessibility | S16 · Delete this vault state deltas · Light · RC2 |
+| 01 · Responsive windows | R01 · 1280×800 · Sidebar 224 · Light · RC2 |
+| 01 · Responsive windows | R02 · 1280×800 · Sidebar 56 · Light · RC2 |
+| 01 · Responsive windows | R03 · 800×600 · Sidebar 224 · Light · RC2 |
+| 01 · Responsive windows | R11 · 800×600 · Existing persistent attention · Light · RC2 |
+| 01 · Responsive windows | R12 · 800×600 · Existing persistent attention · Dark · RC2 |
+| 01 · Responsive windows | R04 · 800×600 · Sidebar 56 · Light · RC2 |
+| 01 · Responsive windows | R05 · 1280×800 · Sidebar 224 · Dark · RC2 |
+| 01 · Responsive windows | R06 · 1280×800 · Sidebar 56 · Dark · RC2 |
+| 01 · Responsive windows | R07 · 800×600 · Sidebar 224 · Dark · RC2 |
+| 01 · Responsive windows | R09 · 640×600 · Sidebar 224 · Light · stress, not supported minimum · RC2 |
+| 01 · Responsive windows | R10 · 640×600 · Sidebar 224 · Dark · stress, not supported minimum · RC2 |
+| 01 · Responsive windows | R08 · 800×600 · Sidebar 56 · Dark · RC2 |
+| 03 · Dark state counterparts | S01 · Backups state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S02 · Connections state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S03 · Vault health state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S04 · Household state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S05 · General state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S06 · Appearance state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S07 · Comfort band state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S08 · Auto-categorize imported transactions state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S09 · Software update state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S10 · Diagnostics state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S11 · Vaults state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S12 · Setup guide state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S13 · About state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S14 · Change master password state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S15 · Rotate encryption key state deltas · Dark · RC2 |
+| 03 · Dark state counterparts | S16 · Delete this vault state deltas · Dark · RC2 |
+| 04 · Connection and blocking flows | F01 · Provider disclosure · Light · RC2 |
+| 04 · Connection and blocking flows | F05 · Credential step after disclosure · Light · RC2 |
+| 04 · Connection and blocking flows | F02 · Create and map dialog · Light · RC2 |
+| 04 · Connection and blocking flows | F03 · Shared-feed confirmation · Light · RC2 |
+| 04 · Connection and blocking flows | F04 · Blocking rotation · Light · RC2 |
+| 04 · Connection and blocking flows | F01 · Provider disclosure · Dark · RC2 |
+| 04 · Connection and blocking flows | F05 · Credential step after disclosure · Dark · RC2 |
+| 04 · Connection and blocking flows | F02 · Create and map dialog · Dark · RC2 |
+| 04 · Connection and blocking flows | F03 · Shared-feed confirmation · Dark · RC2 |
+| 04 · Connection and blocking flows | F04 · Blocking rotation · Dark · RC2 |
+| 04 · Connection and blocking flows | F00 · Provider picker · source registry fixture · Light · RC2 |
+| 04 · Connection and blocking flows | F00 · Provider picker · source registry fixture · Dark · RC2 |
 
 ## Verification
 
