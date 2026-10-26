@@ -186,4 +186,3 @@ artifact review does not authorize implementation.
 - Text-color and SVG-theme binding audits covered the candidate roots.
 - The application was not launched. No application code, package or dependency
   changed, so application test/build suites were not run.
-
