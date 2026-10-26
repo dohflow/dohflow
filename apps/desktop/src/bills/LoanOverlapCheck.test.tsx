@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -279,7 +279,7 @@ test("answering Yes (don't add) records nothing", async () => {
   expect(mocks.setBillNotLoanPayment).not.toHaveBeenCalled();
 });
 
-test("if linking fails after the bill was created, the bill stays and creation still completes", async () => {
+test("if linking fails after the bill was created, the bill stays, creation completes, and an error notice says what to do", async () => {
   mocks.checkLoanOverlap.mockResolvedValue(ok(match()));
   mocks.linkBillToLoan.mockResolvedValue({
     status: "error",
@@ -289,5 +289,42 @@ test("if linking fails after the bill was created, the bill stays and creation s
   fireEvent.click(await screen.findByRole("button", { name: "Add and link to Test Mortgage" }));
   await waitFor(() => expect(onCreated).toHaveBeenCalled());
   expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+
+  // Never silent (FRONTEND.md section 6): the approved sentence, as an alert in the shell region.
+  const region = await screen.findByRole("region", { name: "Notifications" });
+  const alert = await within(region).findByRole("alert");
+  await waitFor(() => expect(alert).toHaveTextContent('The bill was added, but linking it to Test Mortgage didn\'t work. Use "Link it" on the warning to try again.'));
+});
+
+test("if saving the answer fails after the bill was created, an error notice says it may be asked again", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match(ASK)));
+  mocks.setBillNotLoanPayment.mockResolvedValue({
+    status: "error",
+    error: { Validation: "recurring bill does not exist" },
+  });
+  const { onCreated } = await submit();
+  fireEvent.click(await screen.findByRole("button", { name: "No, it's a different bill" }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+
+  const region = await screen.findByRole("region", { name: "Notifications" });
+  const alert = await within(region).findByRole("alert");
+  await waitFor(() => expect(alert).toHaveTextContent("The bill was added, but your answer wasn't saved, so DohFlow may ask again."));
+});
+
+test("when the follow-up works, there is no notice", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match()));
+  const { onCreated } = await submit();
+  fireEvent.click(await screen.findByRole("button", { name: "Add and link to Test Mortgage" }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
+});
+
+test("a bill added with no follow-up shows no notice even if it is an ordinary add", async () => {
+  mocks.checkLoanOverlap.mockResolvedValue(ok(match()));
+  const { onCreated } = await submit();
+  fireEvent.click(await screen.findByRole("button", { name: /add anyway/i }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
 });
 

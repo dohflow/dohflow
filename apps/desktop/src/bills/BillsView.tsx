@@ -49,6 +49,7 @@ import { useTags } from "@/tags/useTags";
 import { cn } from "@/lib/utils";
 import { useBaseCurrency } from "@/settings/useBaseCurrency";
 import { BillDetailDrawer } from "./BillDetailDrawer";
+import { useAddBill } from "./useAddBill";
 import { useBills, type BillFollowUp } from "./useBills";
 import { useNotices } from "@/components/ui/notice-context";
 import { RemoveConfirm } from "@/components/ui/remove-confirm";
@@ -182,10 +183,10 @@ export function BillsView({
   // assumption events into base rather than editing the bill, so the stored amount and
   // the forecast's amount legitimately differ — the row has to say so.
   const { overrideFor } = useAppliedOverrides();
+  const addBill = useAddBill();
   const {
     bills,
     error,
-    addBill,
     updateBill,
     deleteBill,
     reinstateBill,
@@ -1031,6 +1032,7 @@ export function BillForm({
                   onClick={() =>
                     void createAnyway(overlap.draft, {
                       linkLoanAccountId: overlap.match.loan_account_id,
+                      linkLoanName: overlap.match.loan_name,
                     })
                   }
                 />
@@ -1114,7 +1116,7 @@ export function MakeRecurringBillForm({
   onCreated: () => void;
 }) {
   const { accounts } = useAccounts();
-  const { addBill } = useBills();
+  const addBill = useAddBill();
 
   // Wait for accounts so BillForm mounts with the pay-from option already present —
   // its autopay <select> is uncontrolled, so a late-arriving option would leave the
@@ -1193,7 +1195,7 @@ export function RecurringCandidateForm({
   onCreated: (eventId: string | null) => void;
 }) {
   const { accounts } = useAccounts();
-  const { addBill } = useBills();
+  const addBill = useAddBill();
 
   if (accounts === null) {
     return (

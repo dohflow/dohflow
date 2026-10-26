@@ -12,10 +12,18 @@ import { ipcQuery, queryKeys } from "@/lib/query";
 
 /// What the user chose about a loan while adding a bill (personal-cfo-6wk.22): link the new bill to
 /// it, or remember that it is NOT that loan's payment.
-export type BillFollowUp = {
-  linkLoanAccountId?: string;
-  notPaymentOfLoanAccountId?: string;
-};
+export type BillFollowUp =
+  | {
+      linkLoanAccountId: string;
+      /// The loan's name, for the message if the link fails.
+      linkLoanName: string;
+      notPaymentOfLoanAccountId?: never;
+    }
+  | {
+      notPaymentOfLoanAccountId: string;
+      linkLoanAccountId?: never;
+      linkLoanName?: never;
+    };
 
 /// The bill-to-loan actions (personal-cfo-6wk.22) without the bill list query, so a surface that only
 /// links (the overlap warning) does not start a list load. Each refreshes the bills, the forecast

@@ -13,6 +13,7 @@ import {
 import { Loader2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   MAX_NOTICES,
   NOTICE_DURATION_MS,
@@ -37,11 +38,16 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
     // Newest last; a fourth closes the oldest early.
     setNotices((previous) => [...previous, { ...input, key }].slice(-MAX_NOTICES));
   }, []);
+  const notifyError = useCallback((message: string) => {
+    nextKey.current += 1;
+    const key = nextKey.current;
+    setNotices((previous) => [...previous, { message, key }].slice(-MAX_NOTICES));
+  }, []);
   const dismiss = useCallback((key: number) => {
     setNotices((previous) => previous.filter((notice) => notice.key !== key));
   }, []);
 
-  const api = useMemo<NoticeApi>(() => ({ notify }), [notify]);
+  const api = useMemo<NoticeApi>(() => ({ notify, notifyError }), [notify, notifyError]);
   const state = useMemo<NoticeState>(() => ({ notices, dismiss }), [notices, dismiss]);
 
   return (
@@ -106,7 +112,10 @@ function NoticeItem({
 
   // The timer runs only while nothing holds the notice open: hover, focus inside, an Undo in
   // flight, and a failed Undo (which waits for the user) all pause it, keeping the time left.
-  const paused = hovered || focusedWithin || pending || failed;
+  // An error notice has no timer at all: it stays until the user closes it, so it cannot vanish
+  // before it is read.
+  const isError = !notice.undo;
+  const paused = isError || hovered || focusedWithin || pending || failed;
   useEffect(() => {
     if (paused) return;
     const startedAt = Date.now();
@@ -122,7 +131,7 @@ function NoticeItem({
     setFailed(false);
     let worked = false;
     try {
-      worked = await notice.undo();
+      worked = (await notice.undo?.()) ?? false;
     } catch {
       worked = false;
     }
@@ -157,7 +166,10 @@ function NoticeItem({
   return (
     <div
       ref={ref}
-      className="rounded-lg border border-primary/30 bg-background px-4 py-3 shadow-sm"
+      className={cn(
+        "rounded-lg border bg-background px-4 py-3 shadow-sm",
+        isError ? "border-loss/40" : "border-primary/30",
+      )}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onFocus={onFocus}
@@ -165,19 +177,25 @@ function NoticeItem({
       onKeyDown={onKeyDown}
     >
       <div className="flex items-center gap-3">
-        <p id={messageId} role="status" className="min-h-5 flex-1 text-sm">
+        <p
+          id={messageId}
+          role={isError ? "alert" : "status"}
+          className={cn("min-h-5 flex-1 text-sm", isError && "text-loss")}
+        >
           {announced ? notice.message : null}
         </p>
-        <Button
-          variant="outline"
-          size="sm"
-          aria-describedby={messageId}
-          disabled={pending}
-          onClick={() => void undo()}
-        >
-          {pending ? <Loader2 className="animate-spin" aria-hidden /> : null}
-          Undo
-        </Button>
+        {!isError && (
+          <Button
+            variant="outline"
+            size="sm"
+            aria-describedby={messageId}
+            disabled={pending}
+            onClick={() => void undo()}
+          >
+            {pending ? <Loader2 className="animate-spin" aria-hidden /> : null}
+            Undo
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"

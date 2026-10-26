@@ -12,8 +12,9 @@ import {
 // the rules every Undo notice follows.
 
 let notify: (input: NoticeInput) => void = () => {};
+let notifyError: (message: string) => void = () => {};
 function Harness() {
-  notify = useNotices().notify;
+  ({ notify, notifyError } = useNotices());
   return <button>page content</button>;
 }
 function renderShell() {
@@ -252,6 +253,72 @@ test("closing a notice that held focus gives focus back to where it came from", 
   fireEvent.keyDown(screen.getByRole("button", { name: "Undo" }), { key: "Escape" });
   expect(region()).toBeNull();
   expect(page).toHaveFocus();
+});
+
+// ----- the error notice: an action partly worked (FRONTEND.md 6.2, personal-cfo-6wk.22 item 9) -----
+
+test("an error notice is an alert with no Undo, filled on the frame after it mounts", () => {
+  renderShell();
+  act(() => notifyError("The bill was added, but linking it didn't work."));
+  const alert = screen.getByRole("alert");
+  expect(alert).toBeEmptyDOMElement();
+  frame();
+  expect(screen.getByRole("alert")).toBe(alert);
+  expect(alert).toHaveTextContent("The bill was added, but linking it didn't work.");
+  expect(within(region()!).queryByRole("button", { name: "Undo" })).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("an error notice never closes on a timer", () => {
+  renderShell();
+  act(() => notifyError("The bill was added, but linking it didn't work."));
+  act(() => vi.advanceTimersByTime(NOTICE_DURATION_MS * 100));
+  expect(region()).not.toBeNull();
+});
+
+test("an error notice closes with its close button", () => {
+  renderShell();
+  act(() => notifyError("The bill was added, but linking it didn't work."));
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(region()).toBeNull();
+});
+
+test("an error notice closes with Escape while focus is inside it, and not otherwise", () => {
+  renderShell();
+  act(() => notifyError("The bill was added, but linking it didn't work."));
+  fireEvent.keyDown(screen.getByRole("button", { name: "page content" }), { key: "Escape" });
+  expect(region()).not.toBeNull();
+  const dismiss = screen.getByRole("button", { name: "Dismiss" });
+  act(() => dismiss.focus());
+  fireEvent.keyDown(dismiss, { key: "Escape" });
+  expect(region()).toBeNull();
+});
+
+test("an error notice appearing never moves focus", () => {
+  renderShell();
+  const page = screen.getByRole("button", { name: "page content" });
+  page.focus();
+  act(() => notifyError("The bill was added, but linking it didn't work."));
+  expect(page).toHaveFocus();
+});
+
+test("error notices share the stack: a fourth closes the oldest, and an Undo notice still times out", () => {
+  renderShell();
+  act(() => notifyError("First failure."));
+  act(() => notify({ message: "Removed Rent.", undo: undoOk() }));
+  act(() => notifyError("Second failure."));
+  act(() => notifyError("Third failure."));
+  frame();
+  const text = region()!.textContent ?? "";
+  expect(text).not.toContain("First failure.");
+  expect(text).toContain("Removed Rent.");
+  expect(text).toContain("Third failure.");
+  // The Undo notice closes on its timer; the two error notices stay.
+  act(() => vi.advanceTimersByTime(NOTICE_DURATION_MS));
+  const after = region()!.textContent ?? "";
+  expect(after).not.toContain("Removed Rent.");
+  expect(after).toContain("Second failure.");
+  expect(after).toContain("Third failure.");
 });
 
 test("useNotices outside a provider throws, so an Undo is never silently lost", () => {
