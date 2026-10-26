@@ -1,13 +1,13 @@
 # Settings design review
 
-Status: **Three alternatives v1 frozen; fresh independent review pending.**
+Status: **Three alternatives v2 frozen; fresh independent review pending.**
 This is a design review package, not an implementation handoff or accepted
 frontend convention. The earlier RC2 artifact remains unchanged.
 
 - Task: `personal-cfo-twpo.3`.
 - [Paper narrative and specification](https://app.paper.design/file/01M5VA9BZKEQPM8F7S5DHHWC84/p-1-0).
-- Freeze: **October 25, 2026, 11:18:19 PM Pacific**
-  (**2026-10-26 06:18:19 UTC**).
+- Freeze: **October 25, 2026, 11:41:58 PM Pacific**
+  (**2026-10-26 06:41:58 UTC**).
 - Source baseline: `e8e6ed00389278bb14af8b88d92097b5f61cda4d`.
 - Shared system: v0.2, token hash `0afec932`; copied local hash
   `a378c7e0`. All 129 token names and values match.
@@ -20,6 +20,34 @@ frontend convention. The earlier RC2 artifact remains unchanged.
 - The owner has approved D3–D6 within their recorded terms. D1/D2 require these
   three new alternatives. New headings and summary compositions below remain
   **PROPOSED**. Unchanged approvals are not being re-asked.
+
+## v1 review and v2 repairs
+
+The independent v1 verdict was **CHANGES_REQUIRED**, bound to freeze
+2026-10-26 06:18:19 UTC and commit
+`80712dd715a0ab0c38ec2b00c1d25f63564c434e`:
+[review findings](https://github.com/dohflow/dohflow/pull/187#issuecomment-6409727965).
+That commit preserves the v1 manifest.
+
+- **F-V1-1:** eight failed compact connection02 rows now expose one separate
+  Refresh now control outside the hidden details. Its accessible name remains
+  “Refresh now, Demo connection 02” and it uses the same source refresh callback.
+  Four closed timezone-error layouts now retain the Los Angeles draft and expose
+  the source Save in a Timezone group, associated with the draft and error.
+- **F-V1-2:** combined-preference partial success is now distinguished from
+  Comfort band's persisted-lower/failed-upper result. All twelve open-editor
+  layouts show the complete source Comfort alert, both retained drafts and one
+  40px source Save in CardFooter, outside the collapsible body. The former body
+  Save is suppressed. Twelve closed-parent counterparts cover both themes at
+  C1008/C368 without hiding that alert or retry.
+
+Comfort's retry group uses the existing “Comfort band” text and describes Save
+with the full partial-save alert. The source Save name, validation, disabled and
+pending rules remain; pending uses the approved 16px Loader2 at this same outside
+location. Expanding details must not introduce a second active retry control.
+Collapse never submits, resets or rolls back either partial result. These repairs
+reuse approved source words and existing CardFooter; no new copy or primitive is
+introduced. Fresh independent review of v2 is still required.
 
 ## Decision narrative
 
@@ -110,13 +138,24 @@ Cancel. The new parent behavior is illustrated in X02/X03 and their counterparts
 
 ## Coverage, copy and component index
 
-A/B/C01–06 and 14–15 cover default/theme/container fit. A/B/C10–13 retain the full
-layout order with simultaneous open editors, long amounts, partial save,
-persistent health remedies, named busy operations and expanded About.
+A/B/C01–06 and 14–15 cover default/theme/container fit. A/B/C10–13 retain the
+full layout order and distinguish two partial results: combined preferences show
+timezone failure with base-currency success; Comfort band shows the complete
+“Saved the lower edge, but couldn't update the upper edge: Something went wrong.”
+alert with retained lower `123456789012.34` and upper `987654321098.76` drafts.
+Its single Save remains outside the hidden editor body.
+
+A/B/C16–19 show that Comfort failure with its enclosing editor/group closed,
+paired Light/Dark at C1008/C368. The hidden fields preserve the same drafts as
+10–13; reopening restores them. The full alert and one Save remain reachable.
+This is source partial persistence, not a whole-form rollback or just combined
+preference success.
+
 X01–16 cover 24 synthetic connections, long provider/account labels, compact and
 expanded mapping, Forget, loading, empty, closed errors/busy, and destructive
 open/armed/attempted-collapse/Cancel/busy states in both themes at C1008/C368.
-All data, paths and names are synthetic.
+X01/X02/X05–X10 now include the outside failed-refresh retry. All data, paths and
+names are synthetic.
 
 The shared X specimens apply identically to all three options. Unchanged source
 controls and state deltas reference the exact historical RC2 freeze
@@ -127,7 +166,7 @@ Blocking rotation is **F04**; F05 is the credential step. References retain sour
 content and behavior, not the rejected RC2 layout.
 
 The S01–S16 source mapping in the historical table below still applies. Local
-Card, Button, Input, Label, NativeSelect, Combobox, Skeleton, EmptyState, Badge and
+Card, CardFooter, Button, Input, Label, NativeSelect, Combobox, Skeleton, EmptyState, Badge and
 Notice patterns supply the compositions. Appearance radios and native checkbox
 remain feature controls. EmptyState uses its existing Cable icon; manual export
 retains its Download icon. Icon geometry was checked against the official
@@ -163,8 +202,11 @@ modal containment, inertness and focus-return states use RC2 references.
 
 - Screenshot checkpoints covered spacing, type, source control geometry,
   alignment, long values, wrapping, theme and clipping, with targeted repairs.
-- Export audit covered all **54** candidate roots: no oversized fixed-width
+- Export audit covered all **66** candidate roots: no oversized fixed-width
   descendants and no light-theme color references in dark frames.
+- All **40** targeted static action/draft checks pass: one visible retry per
+  checked connection, timezone or Comfort scope; the full Comfort alert and both
+  retained values remain present, including hidden-body counterparts.
 - All **129** copied token names/values match the pinned system baseline.
 - Baseline text/card contrast is 17.63:1 light and 15.34:1 dark; muted text/card
   is 5.97:1 and 6.69:1. A2 focus ring/card is 3.76:1 and 5.17:1, with a 2px ring
@@ -181,12 +223,12 @@ commit. Any edit requires a new freeze/review. Owner selection and new-copy
 approval remain with the Decisions desk. Only the owner merges; merge closes
 the bead. The workbench page is excluded from this freeze.
 
-## Exact alternatives v1 manifest
+## Exact alternatives v2 manifest
 
 | Page | Frame |
 | --- | --- |
-| Read first · narrative and spec | OPTIONS-00 · Three alternatives · narrative and recommendation · v1 |
-| Read first · narrative and spec | OPTIONS-SPEC · Behavior copy components and coverage · v1 |
+| Read first · narrative and spec | OPTIONS-00 · Three alternatives · narrative and recommendation · v2 |
+| Read first · narrative and spec | OPTIONS-SPEC · Behavior copy components and coverage · v2 |
 | A · Landscape grid | A-01 · Default · Light · C1008 · 1280 expanded-sidebar |
 | A · Landscape grid | A-02 · Default · Dark · C1008 · 1280 expanded-sidebar |
 | A · Landscape grid | A-03 · Default · Light · C368 · 472 collapsed-sidebar · stress |
@@ -199,6 +241,10 @@ the bead. The workbench page is excluded from this freeze.
 | A · Landscape grid | A-13 · Full layout · long values and problems · Dark C1008 |
 | A · Landscape grid | A-14 · Default · Light C528 · 800 expanded-sidebar |
 | A · Landscape grid | A-15 · Default · Dark C528 · 800 expanded-sidebar |
+| A · Landscape grid | A-16 · Closed Comfort partial failure · Light C1008 |
+| A · Landscape grid | A-17 · Closed Comfort partial failure · Dark C368 · stress |
+| A · Landscape grid | A-18 · Closed Comfort partial failure · Light C368 · stress |
+| A · Landscape grid | A-19 · Closed Comfort partial failure · Dark C1008 |
 | B · Task groups | B-01 · Default · Light · C1008 · 1280 expanded-sidebar |
 | B · Task groups | B-02 · Default · Dark · C1008 · 1280 expanded-sidebar |
 | B · Task groups | B-03 · Default · Light · C368 · 472 collapsed-sidebar · stress |
@@ -211,6 +257,10 @@ the bead. The workbench page is excluded from this freeze.
 | B · Task groups | B-13 · Full layout · long values and problems · Dark C1008 |
 | B · Task groups | B-14 · Default · Light C528 · 800 expanded-sidebar |
 | B · Task groups | B-15 · Default · Dark C528 · 800 expanded-sidebar |
+| B · Task groups | B-16 · Closed Comfort partial failure · Light C1008 |
+| B · Task groups | B-17 · Closed Comfort partial failure · Dark C368 · stress |
+| B · Task groups | B-18 · Closed Comfort partial failure · Light C368 · stress |
+| B · Task groups | B-19 · Closed Comfort partial failure · Dark C1008 |
 | C · Compact overview | C-01 · Default · Light · C1008 · 1280 expanded-sidebar |
 | C · Compact overview | C-02 · Default · Dark · C1008 · 1280 expanded-sidebar |
 | C · Compact overview | C-03 · Default · Light · C368 · 472 collapsed-sidebar · stress |
@@ -223,6 +273,10 @@ the bead. The workbench page is excluded from this freeze.
 | C · Compact overview | C-13 · Full layout · long values and problems · Dark C1008 |
 | C · Compact overview | C-14 · Default · Light C528 · 800 expanded-sidebar |
 | C · Compact overview | C-15 · Default · Dark C528 · 800 expanded-sidebar |
+| C · Compact overview | C-16 · Closed Comfort partial failure · Light C1008 |
+| C · Compact overview | C-17 · Closed Comfort partial failure · Dark C368 · stress |
+| C · Compact overview | C-18 · Closed Comfort partial failure · Light C368 · stress |
+| C · Compact overview | C-19 · Closed Comfort partial failure · Dark C1008 |
 | Shared states · Connections and safety | X-01 · Connections · 24 compact rows · Light C1008 |
 | Shared states · Connections and safety | X-02 · Connections · mapping and open Forget · Light C1008 |
 | Shared states · Connections and safety | X-03 · Destructive guard · armed attempted-collapse Cancel busy · Light C1008 |
