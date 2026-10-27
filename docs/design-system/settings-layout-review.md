@@ -81,7 +81,7 @@ Engineering must reconcile current main at its own exact SHA before building.
 | Backups, initially closed when healthy | `backup/BackupScheduleCard.tsx`, `backup/BackupView.tsx` | Schedule/destination, long fake path, manual export, busy/disabled, success/error/retry, last verified backup |
 | Comfort band, initially closed when healthy | `settings/ComfortBandCard.tsx` | Long amounts, validation, pending, full error; lower persisted/upper failed, both drafts and one outside Save in open/closed states |
 | Auto-categorization, initially closed | `settings/AutoCategorizeOnImportCard.tsx` | Existing checkbox, load/disabled/error/success; approved enabled summary only when true |
-| Connections, full width | `settings/ConnectionsCard.tsx`, `connections/*`, existing `NewMappedAccountDialog` | Loading, empty/link, 24 demo connections/long names, compact/open mapping, failed refresh with one outside retry, Forget confirmation/Cancel/busy |
+| Connections, full width | `settings/ConnectionsCard.tsx`, `settings/connections/*`, `settings/NewMappedAccountDialog.tsx` | Loading, empty/link, 24 demo connections/long names, compact/open mapping, failed refresh with one outside retry, Forget confirmation/Cancel/busy |
 | Health | `settings/VaultHealthCard.tsx` | Compact healthy summary; full current failure, safe remedy and conditional Rebuild data views outside hidden body |
 | Update / diagnostics | `settings/SoftwareUpdateCard.tsx`, `settings/DiagnosticsCard.tsx` | Existing loading/update/error/retry; diagnostics preview/export and source disabled/status behavior |
 | Vaults / conditional setup | `settings/VaultsCard.tsx`, setup branch in `settings/SettingsView.tsx` | Long names, active/rename/switch/new; setup appears only when callback exists |
