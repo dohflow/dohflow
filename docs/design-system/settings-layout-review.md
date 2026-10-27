@@ -1,6 +1,228 @@
 # Settings design review
 
-Status: **Three alternatives v2 frozen; fresh independent review pending.**
+Status: **Alternatives v3 frozen; independent review pending.**
+
+Freeze: **October 27, 2026, 8:36:39 AM Pacific**
+(**2026-10-27 15:36:39 UTC**).
+[V3 narrative/specification](https://app.paper.design/file/01M5VA9BZKEQPM8F7S5DHHWC84/p-7-0),
+[A](https://app.paper.design/file/01M5VA9BZKEQPM8F7S5DHHWC84/p-8-0),
+[B](https://app.paper.design/file/01M5VA9BZKEQPM8F7S5DHHWC84/p-9-0),
+[C](https://app.paper.design/file/01M5VA9BZKEQPM8F7S5DHHWC84/p-A-0).
+
+The owner’s layout corrections apply to A, B and C. The owner reviewed A only;
+this does not select A or approve the proposed headings and summaries. The v2
+Paper pages, their independent review and the RC2 record below are preserved.
+
+## v3 layout craft contract
+
+Reuse the independently reviewed Paper-only **LCR-1 v1**, frozen
+**2026-10-27 15:21:48 UTC**, exact frames
+`DS-LCR-1 · Layout craft · light · candidate` and
+`DS-LCR-1 · Layout craft · dark · candidate` on
+[the shared system page](https://app.paper.design/file/01M5TMWNYW8618DTPFRYTQ0CGN/p-8-0).
+Its PASS covers that Paper contract; it does not approve these alternatives or
+claim that the frontend convention has shipped. The Lead validated the wording
+below before the candidate freeze.
+
+- Collapsed siblings in each actual row stretch to the tallest natural content.
+  Keep full titles and summaries. Do not use fixed short heights, clipping or
+  equal heights across unrelated rows. Expanded editors retain natural height.
+  An exposed error grows naturally; a healthy collapsed sibling may grow with
+  it, but must never constrain its message or retry.
+- Align control top edges in a shared track while retaining each source
+  control’s specified size. Labels, help and the containing row grow naturally
+  without clipping; stack when lanes cannot fit. Help follows the controls.
+  Do not put independent descriptions above parallel controls or insert
+  arbitrary spacers. Each feature retains its DOM and focus grouping.
+- At two columns, healthy three-item groups use two half-width siblings then
+  the named full-row last item. Expanded and mixed states use the explicit
+  spans below. Do not strand a half-width final tile or use dense packing,
+  masonry, CSS order or visual/focus-order divergence.
+
+`C` is usable content width after sidebar and 24px insets. Minimum closed-tile
+width is 320px with 16px gaps: three columns at C992, two at C656, one below.
+Preferences use three lanes when their card is at least 866px, two at 586px,
+otherwise one; at two lanes Appearance spans the next row. The label/control
+tracks retain source 36px and 40px controls, with the row growing for full help.
+
+| Group/state | Three-column fit | Two-column fit | One column |
+| --- | --- | --- | --- |
+| A Backups / Comfort / Auto, healthy | 1 / 1 / 1 | half / half / full | all full |
+| A Comfort open | 1 / 2 / full | all full | all full |
+| A Comfort closed with partial error | half / half / full | half / half / full | all full |
+| B recovery / preferences | 2 / 1 | full / full | full / full |
+| B Forecast/imports / Troubleshooting / Setup, healthy | 1 / 1 / 1 | half / half / full | all full |
+| B groups with open editors or problems | all full | all full | all full |
+| C preferences / Backups / Comfort, healthy | 1 / 1 / 1 | half / half / full | all full |
+| C preferences open | full / half / half | full / half / half | all full |
+| C Comfort open or partial error | half / half / full | half / half / full | all full |
+| C Auto / Vaults / Setup, healthy | 1 / 1 / 1 | half / half / full | all full |
+| C Auto open | full / half / half | full / half / half | all full |
+| A/C Health / Update / Diagnostics, healthy | 1 / 1 / 1 | half / half / full | all full |
+| A/C Health problem | full / half / half | full / half / half | all full |
+| A Vaults / Setup | half / half | half / half | all full |
+
+Connections, About and the destructive parent remain full width. Spans retain
+source order. All v2 outside retries, retained drafts, complete partial-save
+alerts, busy states and A2 destructive/focus guards continue to apply. No new
+product copy, token or component is introduced by these corrections.
+
+## v3 evidence and verification
+
+| Named frames | Evidence |
+| --- | --- |
+| A/B/C01–06,14–15 · v3 | Default Light/Dark, C1008/C1176 wide and C696/C528 sidebar fit, C368 stress |
+| A/B/C10–13 · v3 | Open/mixed editors, full errors/remedies, long amounts, busy and two distinct partial-save results |
+| A/B/C16–19 · v3 | Closed Comfort partial failure, natural row growth, persistent alert and outside retry, both themes/wide/narrow |
+| A/B/C30–37 · v3 | Light/Dark at C992, C991, C656, C655; exact three/two/one-column boundaries; wrapped title and missing summary |
+| A/B/C40–41 · v3 | Light/Dark C696 mixed error/partial layouts with explicit spans |
+| C20–23 · v3 | Open preferences, Light/Dark C1008, Light C696, Dark C368 |
+| B42–43 · v3 | Light/Dark C368, long synthetic destination and last-backup paths wrap in full |
+| X01–16, unchanged v2 | Empty/loading, 24 connections and long names, closed failures/retries/busy, mapping/Forget and destructive guards |
+
+The original 66 v2 root exports remain byte-identical. All 48 copied A/B/C
+layouts retain the same full text-node inventory as v2; only layout and the
+specification annotations changed. The two added long-path fixtures are fake.
+
+All 102 candidate root exports were checked for oversized fixed-width
+descendants and Light token references in Dark frames; none were found.
+All 30 open/closed/mixed Comfort partial-save specimens retain the complete
+visible alert, both draft values and exactly one visible Save in its scope.
+All 129 token names/values still match the shared baseline.
+
+Screenshots cover the corrected wide/narrow defaults, closed failures,
+preferences, all new transition/mixed specimens and the long-path pair.
+Exported CSS demonstrates row stretching and label/control tracks; inactive-page
+Paper node geometry is unavailable, so no fabricated measured-height table is
+claimed. These are static design checks, not runtime resize or accessibility
+tests. Source input-boundary contrast remains the recorded production gate.
+No application code or dependency changed; application test/build suites were
+not run. Documentation passes `git diff --check`.
+
+Independent review must bind the new freeze, exact manifest below and the new
+PR commit. The historical v2 verdict does not apply to v3. Any Paper or tracked
+specification edit requires a new review. Owner option selection and proposed
+copy approval remain pending; no owner comment is resolved merely by intake.
+
+## Exact alternatives v3 manifest
+
+This freeze includes 86 new v3 roots and 16 unchanged shared v2 roots.
+Original v2 narrative/A/B/C pages and the workbench are excluded from the v3
+candidate; their historical manifest is preserved below.
+
+| Page | Frame |
+| --- | --- |
+| Shared states · Connections and safety | X-01 · Connections · 24 compact rows · Light C1008 |
+| Shared states · Connections and safety | X-02 · Connections · mapping and open Forget · Light C1008 |
+| Shared states · Connections and safety | X-03 · Destructive guard · armed attempted-collapse Cancel busy · Light C1008 |
+| Shared states · Connections and safety | X-04 · Connections · loading empty error and closed alerts · Light C1008 |
+| Shared states · Connections and safety | X-05 · Connections · 24 compact rows · Dark C1008 |
+| Shared states · Connections and safety | X-06 · Connections · 24 compact rows · Light C368 · stress |
+| Shared states · Connections and safety | X-07 · Connections · 24 compact rows · Dark C368 · stress |
+| Shared states · Connections and safety | X-08 · Connections · mapping and open Forget · Dark C1008 |
+| Shared states · Connections and safety | X-09 · Connections · mapping and open Forget · Light C368 · stress |
+| Shared states · Connections and safety | X-10 · Connections · mapping and open Forget · Dark C368 · stress |
+| Shared states · Connections and safety | X-11 · Destructive guard · armed attempted-collapse Cancel busy · Dark C1008 |
+| Shared states · Connections and safety | X-12 · Destructive guard · armed attempted-collapse Cancel busy · Light C368 · stress |
+| Shared states · Connections and safety | X-13 · Destructive guard · armed attempted-collapse Cancel busy · Dark C368 · stress |
+| Shared states · Connections and safety | X-14 · Connections · loading empty error and closed alerts · Dark C1008 |
+| Shared states · Connections and safety | X-15 · Connections · loading empty error and closed alerts · Light C368 · stress |
+| Shared states · Connections and safety | X-16 · Connections · loading empty error and closed alerts · Dark C368 · stress |
+| v3 · A · Landscape grid | A-01 · Default · Light · C1008 · 1280 expanded-sidebar · v3 |
+| v3 · A · Landscape grid | A-02 · Default · Dark · C1008 · 1280 expanded-sidebar · v3 |
+| v3 · A · Landscape grid | A-03 · Default · Light · C368 · 472 collapsed-sidebar · stress · v3 |
+| v3 · A · Landscape grid | A-04 · Default · Dark · C368 · 472 collapsed-sidebar · stress · v3 |
+| v3 · A · Landscape grid | A-05 · Default · Light · C696 · 800 collapsed-sidebar · v3 |
+| v3 · A · Landscape grid | A-06 · Default · Light · C1176 · 1280 collapsed-sidebar · v3 |
+| v3 · A · Landscape grid | A-10 · Full layout · independent open · partial save · problems · Light C1008 · v3 |
+| v3 · A · Landscape grid | A-11 · Full layout · long values and problems · Dark C368 · stress · v3 |
+| v3 · A · Landscape grid | A-12 · Full layout · long values and problems · Light C368 · stress · v3 |
+| v3 · A · Landscape grid | A-13 · Full layout · long values and problems · Dark C1008 · v3 |
+| v3 · A · Landscape grid | A-14 · Default · Light C528 · 800 expanded-sidebar · v3 |
+| v3 · A · Landscape grid | A-15 · Default · Dark C528 · 800 expanded-sidebar · v3 |
+| v3 · A · Landscape grid | A-16 · Closed Comfort partial failure · Light C1008 · v3 |
+| v3 · A · Landscape grid | A-17 · Closed Comfort partial failure · Dark C368 · stress · v3 |
+| v3 · A · Landscape grid | A-18 · Closed Comfort partial failure · Light C368 · stress · v3 |
+| v3 · A · Landscape grid | A-19 · Closed Comfort partial failure · Dark C1008 · v3 |
+| v3 · A · Landscape grid | A-30 · LCR-1 transition · Light C992 · v3 |
+| v3 · A · Landscape grid | A-31 · LCR-1 transition · Dark C992 · v3 |
+| v3 · A · Landscape grid | A-32 · LCR-1 transition · Light C991 · v3 |
+| v3 · A · Landscape grid | A-33 · LCR-1 transition · Dark C991 · v3 |
+| v3 · A · Landscape grid | A-34 · LCR-1 transition · Light C656 · v3 |
+| v3 · A · Landscape grid | A-35 · LCR-1 transition · Dark C656 · v3 |
+| v3 · A · Landscape grid | A-36 · LCR-1 transition · Light C655 · v3 |
+| v3 · A · Landscape grid | A-37 · LCR-1 transition · Dark C655 · v3 |
+| v3 · A · Landscape grid | A-40 · LCR-1 mixed error partial · Light C696 · v3 |
+| v3 · A · Landscape grid | A-41 · LCR-1 mixed error partial · Dark C696 · v3 |
+| v3 · B · Task groups | B-01 · Default · Light · C1008 · 1280 expanded-sidebar · v3 |
+| v3 · B · Task groups | B-02 · Default · Dark · C1008 · 1280 expanded-sidebar · v3 |
+| v3 · B · Task groups | B-03 · Default · Light · C368 · 472 collapsed-sidebar · stress · v3 |
+| v3 · B · Task groups | B-04 · Default · Dark · C368 · 472 collapsed-sidebar · stress · v3 |
+| v3 · B · Task groups | B-05 · Default · Light · C696 · 800 collapsed-sidebar · v3 |
+| v3 · B · Task groups | B-06 · Default · Light · C1176 · 1280 collapsed-sidebar · v3 |
+| v3 · B · Task groups | B-10 · Full layout · independent open · partial save · problems · Light C1008 · v3 |
+| v3 · B · Task groups | B-11 · Full layout · long values and problems · Dark C368 · stress · v3 |
+| v3 · B · Task groups | B-12 · Full layout · long values and problems · Light C368 · stress · v3 |
+| v3 · B · Task groups | B-13 · Full layout · long values and problems · Dark C1008 · v3 |
+| v3 · B · Task groups | B-14 · Default · Light C528 · 800 expanded-sidebar · v3 |
+| v3 · B · Task groups | B-15 · Default · Dark C528 · 800 expanded-sidebar · v3 |
+| v3 · B · Task groups | B-16 · Closed Comfort partial failure · Light C1008 · v3 |
+| v3 · B · Task groups | B-17 · Closed Comfort partial failure · Dark C368 · stress · v3 |
+| v3 · B · Task groups | B-18 · Closed Comfort partial failure · Light C368 · stress · v3 |
+| v3 · B · Task groups | B-19 · Closed Comfort partial failure · Dark C1008 · v3 |
+| v3 · B · Task groups | B-30 · LCR-1 transition · Light C992 · v3 |
+| v3 · B · Task groups | B-31 · LCR-1 transition · Dark C992 · v3 |
+| v3 · B · Task groups | B-32 · LCR-1 transition · Light C991 · v3 |
+| v3 · B · Task groups | B-33 · LCR-1 transition · Dark C991 · v3 |
+| v3 · B · Task groups | B-34 · LCR-1 transition · Light C656 · v3 |
+| v3 · B · Task groups | B-35 · LCR-1 transition · Dark C656 · v3 |
+| v3 · B · Task groups | B-36 · LCR-1 transition · Light C655 · v3 |
+| v3 · B · Task groups | B-37 · LCR-1 transition · Dark C655 · v3 |
+| v3 · B · Task groups | B-40 · LCR-1 mixed error partial · Light C696 · v3 |
+| v3 · B · Task groups | B-41 · LCR-1 mixed error partial · Dark C696 · v3 |
+| v3 · B · Task groups | B-42 · Long demo backup path · Light C368 · v3 |
+| v3 · B · Task groups | B-43 · Long demo backup path · Dark C368 · v3 |
+| v3 · C · Compact overview | C-01 · Default · Light · C1008 · 1280 expanded-sidebar · v3 |
+| v3 · C · Compact overview | C-02 · Default · Dark · C1008 · 1280 expanded-sidebar · v3 |
+| v3 · C · Compact overview | C-03 · Default · Light · C368 · 472 collapsed-sidebar · stress · v3 |
+| v3 · C · Compact overview | C-04 · Default · Dark · C368 · 472 collapsed-sidebar · stress · v3 |
+| v3 · C · Compact overview | C-05 · Default · Light · C696 · 800 collapsed-sidebar · v3 |
+| v3 · C · Compact overview | C-06 · Default · Light · C1176 · 1280 collapsed-sidebar · v3 |
+| v3 · C · Compact overview | C-10 · Full layout · independent open · partial save · problems · Light C1008 · v3 |
+| v3 · C · Compact overview | C-11 · Full layout · long values and problems · Dark C368 · stress · v3 |
+| v3 · C · Compact overview | C-12 · Full layout · long values and problems · Light C368 · stress · v3 |
+| v3 · C · Compact overview | C-13 · Full layout · long values and problems · Dark C1008 · v3 |
+| v3 · C · Compact overview | C-14 · Default · Light C528 · 800 expanded-sidebar · v3 |
+| v3 · C · Compact overview | C-15 · Default · Dark C528 · 800 expanded-sidebar · v3 |
+| v3 · C · Compact overview | C-16 · Closed Comfort partial failure · Light C1008 · v3 |
+| v3 · C · Compact overview | C-17 · Closed Comfort partial failure · Dark C368 · stress · v3 |
+| v3 · C · Compact overview | C-18 · Closed Comfort partial failure · Light C368 · stress · v3 |
+| v3 · C · Compact overview | C-19 · Closed Comfort partial failure · Dark C1008 · v3 |
+| v3 · C · Compact overview | C-20 · Preferences open · Light C1008 · v3 |
+| v3 · C · Compact overview | C-21 · Preferences open · Dark C1008 · v3 |
+| v3 · C · Compact overview | C-22 · Preferences open · Light C696 · v3 |
+| v3 · C · Compact overview | C-23 · Preferences open · Dark C368 · v3 |
+| v3 · C · Compact overview | C-30 · LCR-1 transition · Light C992 · v3 |
+| v3 · C · Compact overview | C-31 · LCR-1 transition · Dark C992 · v3 |
+| v3 · C · Compact overview | C-32 · LCR-1 transition · Light C991 · v3 |
+| v3 · C · Compact overview | C-33 · LCR-1 transition · Dark C991 · v3 |
+| v3 · C · Compact overview | C-34 · LCR-1 transition · Light C656 · v3 |
+| v3 · C · Compact overview | C-35 · LCR-1 transition · Dark C656 · v3 |
+| v3 · C · Compact overview | C-36 · LCR-1 transition · Light C655 · v3 |
+| v3 · C · Compact overview | C-37 · LCR-1 transition · Dark C655 · v3 |
+| v3 · C · Compact overview | C-40 · LCR-1 mixed error partial · Light C696 · v3 |
+| v3 · C · Compact overview | C-41 · LCR-1 mixed error partial · Dark C696 · v3 |
+| v3 · Read first and craft evidence | OPTIONS-00 · Three alternatives · narrative and recommendation · v3 |
+| v3 · Read first and craft evidence | OPTIONS-SPEC · Behavior copy components and coverage · v3 |
+
+## Historical alternatives v2 — preserved record
+
+Status: **v2 independently reviewed: HUMAN_DECISION_REQUIRED.**
+The verdict binds to commit `234493133be8f3f53ae4e8ded7a84364aa900ac5`
+and the freeze below:
+[independent v2 review](https://github.com/dohflow/dohflow/pull/187#issuecomment-6410000147).
+Both v1 findings were resolved. The subsequent owner corrections are addressed
+in v3; this historical verdict does not approve later edits.
 This is a design review package, not an implementation handoff or accepted
 frontend convention. The earlier RC2 artifact remains unchanged.
 
@@ -47,7 +269,7 @@ pending rules remain; pending uses the approved 16px Loader2 at this same outsid
 location. Expanding details must not introduce a second active retry control.
 Collapse never submits, resets or rolls back either partial result. These repairs
 reuse approved source words and existing CardFooter; no new copy or primitive is
-introduced. Fresh independent review of v2 is still required.
+introduced. The independent v2 verdict above reviewed these repairs.
 
 ## Decision narrative
 
