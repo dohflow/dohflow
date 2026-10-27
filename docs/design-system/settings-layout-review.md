@@ -1,6 +1,7 @@
 # Settings design review
 
-Status: **Alternatives v3 frozen; independent review pending.**
+Status: **Owner selected A and approved its applicable copy; documentation
+checkpoint awaiting independent review. Planning handoff only.**
 
 Freeze: **October 27, 2026, 8:36:39 AM Pacific**
 (**2026-10-27 15:36:39 UTC**).
@@ -9,9 +10,155 @@ Freeze: **October 27, 2026, 8:36:39 AM Pacific**
 [B](https://app.paper.design/file/01M5VA9BZKEQPM8F7S5DHHWC84/p-9-0),
 [C](https://app.paper.design/file/01M5VA9BZKEQPM8F7S5DHHWC84/p-A-0).
 
-The owner’s layout corrections apply to A, B and C. The owner reviewed A only;
-this does not select A or approve the proposed headings and summaries. The v2
-Paper pages, their independent review and the RC2 record below are preserved.
+The owner’s layout corrections apply to A, B and C. The independent v3 review
+found them technically satisfied, with no new repair finding:
+[HUMAN_DECISION_REQUIRED at ed461075](https://github.com/dohflow/dohflow/pull/187#issuecomment-6446419201).
+That verdict remains bound to its historical commit. The owner subsequently
+resolved the layout and copy choices in `personal-cfo-twpo.3.1` on October 27:
+
+- D1, exact words: **“Let's go with A.”**
+- D2, exact words: **“I'm good with the wording you put in.”**
+
+These decisions bind to the unchanged Paper v3 freeze above and its presented
+A Landscape grid/copy, at commit `ed461075c6d32abaece8babf4c6934c04decf063`.
+D3–D6 carry forward unchanged. B/C remain comparison history, not selected build
+targets. The Paper narrative/specification retain their pre-decision annotations
+to preserve the freeze; this dated record supplies the subsequent disposition.
+No Paper geometry, text, tokens or comment status changed for this checkpoint.
+The new documentation commit requires independent review. This does not grant
+merge permission, close a bead or establish implementation/production readiness.
+
+## Selected A — planning handoff
+
+The build target is `A-01 · Default · Light · C1008 · 1280 expanded-sidebar · v3`
+and its A state/responsive counterparts on the linked A page. Use shared X01–16
+for unchanged connection and destructive states; OPTIONS-SPEC v3 and the source
+state index below supply the cross-feature invariants. B/C geometry and labels
+must not enter A. The complete 102-frame manifest remains evidence/history;
+only A plus its shared contracts are selected for implementation.
+
+### Approved copy for A
+
+Use these presented words/templates verbatim where applicable; replace bracketed
+values with actual formatted data, never fixture values in production:
+
+| Use | Approved presented wording |
+| --- | --- |
+| Combined preference heading | Household · General · Appearance |
+| Destructive parent heading | Password, encryption and deletion |
+| Healthy backup summary | Weekly · last backup verified |
+| Comfort summary | [lower]–[upper], using the existing currency formatter |
+| Enabled categorization summary | On |
+| Active vault summary | [vault name] · active |
+| Connection count summary | [count] connections |
+| About summary | DohFlow · version [version] |
+| Backup progress composition | Back up now · Backing up… |
+| Refresh progress composition | Refresh now · Refreshing… |
+
+Conditional summaries must represent the actual feature state: do not claim
+Weekly, verified, healthy or enabled while loading, failed or inapplicable.
+Retain source state-specific wording and full alerts rather than inventing
+fallback copy. Any unpresented new wording returns to Studio/owner review.
+The summary templates `[timezone] · [currency] · [appearance]` and
+`Comfort band · auto-categorization`, and the B-only headings “Backups and
+vaults”, “Forecast and imports” and “Troubleshooting”, are not part of A.
+Existing D6 source copy remains approved; D3 contextual names are
+“Refresh now, [connection name]” and “Rename [vault name]”. D4 source control
+sizes/wrapping and Save plus spinner remain; D5 readable neutral status text
+with semantic marks remains conditional on contrast verification.
+
+### A component and state map
+
+All paths below are relative to `apps/desktop/src/`. They identify existing
+feature logic to retain, not permission to duplicate business state or callbacks.
+The design audit baseline is `e8e6ed00389278bb14af8b88d92097b5f61cda4d`;
+Engineering must reconcile current main at its own exact SHA before building.
+
+| A area | Existing source components | Required state coverage |
+| --- | --- | --- |
+| Page heading / shell | `components/PageHeader.tsx`, `settings/SettingsView.tsx` | Existing notifications/attention before heading; sidebar expanded/collapsed; Settings destination retained |
+| Combined preferences, initially open | `settings/HouseholdCard.tsx`, General/base-currency logic in `settings/SettingsView.tsx`, `settings/AppearanceCard.tsx`, `components/ui/combobox.tsx` | Load, draft, disabled/pending, save/error/success, timezone failure with currency success; System/Light/Dark |
+| Backups, initially closed when healthy | `backup/BackupScheduleCard.tsx`, `backup/BackupView.tsx` | Schedule/destination, long fake path, manual export, busy/disabled, success/error/retry, last verified backup |
+| Comfort band, initially closed when healthy | `settings/ComfortBandCard.tsx` | Long amounts, validation, pending, full error; lower persisted/upper failed, both drafts and one outside Save in open/closed states |
+| Auto-categorization, initially closed | `settings/AutoCategorizeOnImportCard.tsx` | Existing checkbox, load/disabled/error/success; approved enabled summary only when true |
+| Connections, full width | `settings/ConnectionsCard.tsx`, `connections/*`, existing `NewMappedAccountDialog` | Loading, empty/link, 24 demo connections/long names, compact/open mapping, failed refresh with one outside retry, Forget confirmation/Cancel/busy |
+| Health | `settings/VaultHealthCard.tsx` | Compact healthy summary; full current failure, safe remedy and conditional Rebuild data views outside hidden body |
+| Update / diagnostics | `settings/SoftwareUpdateCard.tsx`, `settings/DiagnosticsCard.tsx` | Existing loading/update/error/retry; diagnostics preview/export and source disabled/status behavior |
+| Vaults / conditional setup | `settings/VaultsCard.tsx`, setup branch in `settings/SettingsView.tsx` | Long names, active/rename/switch/new; setup appears only when callback exists |
+| Security parent | `settings/ChangePasswordCard.tsx`, `vault/PasswordStrengthMeter.tsx`, `settings/RotateKeyCard.tsx`, `settings/DeleteVaultCard.tsx` | All source strength/validation/errors; open/armed confirmation, attempted ancestor collapse, explicit Cancel, irreversible busy and blocking rotation |
+| About, full width | `settings/AboutCard.tsx` | Existing build/version, links and quiet support row; initially closed |
+| Composition primitives | `components/ui/card.tsx` including CardFooter, Button/Input/Label/NativeSelect/Combobox/Skeleton/EmptyState/Badge/Notice patterns | Existing controls/icons and source callbacks; persistent action/error slots outside hidden content |
+
+No `ui/Accordion` exists at the pinned source. The reviewed A2 contract is an
+Engineering foundation obligation, not a claimed shipped component or a chosen
+library. Reuse its exact Light/Dark A2 frames and freeze
+**2026-10-26 05:24:16 UTC** on
+[the shared pattern page](https://app.paper.design/file/01M5TMWNYW8618DTPFRYTQ0CGN/p-7-0).
+LCR-1 v1 is linked/versioned below. Do not hand-roll a Settings-only substitute.
+
+### A responsive, token and accessibility contract
+
+Apply the A rows in the span table below at usable content width, including
+sidebar state and insets. A01–06/14–15 cover defaults; A30–37 cover paired-theme
+C992/991 and C656/655 transitions; A10–13 and A40–41 cover open/mixed problems;
+A16–19 cover closed partial failures. C368 is stress evidence, not a supported
+minimum window declaration. Preserve source reading/Tab order when spans change.
+
+Use the shared v0.2 token names/values (129 pairs; shared hash `0afec932`, local
+copy hash `a378c7e0`). Bind Light/Dark surface, foreground, muted text, border,
+focus and semantic marks to their theme tokens; do not hard-code specimen colors.
+Keep 8px card radius, 16px gutters, 24px default bodies and 16px Delete body.
+A2 headers are at least 44px, with a fixed 16px chevron lane, 12px gap and
+16px/24px semibold titles. Retain source 40/36/32px controls. These values do
+not cap natural title/help/error height. Required boundary-token treatment is
+still gated by `personal-cfo-4d8.35`, not authorized by this baseline copy.
+
+Use native heading buttons with stable names, `aria-expanded` and `aria-controls`;
+label open regions selectively. Enter/Space toggles, Tab/Shift+Tab follows DOM
+order; retain existing global Search shortcuts, with no extra arrow-key model.
+Before hiding focused content, return focus to its trigger. Hidden bodies leave
+the Tab/accessibility tree but retain ordinary drafts. Collapse never submits,
+resets, cancels, rolls back partial persistence or duplicates a retry.
+
+Keep full errors/remedies/actions visible outside collapsed bodies. Persistent
+errors use alerts; named busy/result transitions announce politely once, with
+decorative 16px Loader2 and reduced-motion static equivalents. Save retains its
+name. All ancestor disclosures remain open while a destructive confirmation is
+open/armed or irreversibly busy; focusable aria-disabled triggers ignore collapse.
+Explicit source Cancel resets the applicable confirmation/password/error,
+returns action focus and leaves the section open. Blocking rotation makes the
+whole app inert and remains non-dismissible, with no Escape/Cancel.
+
+### Proposed Engineering work packages — Lead reconciliation required
+
+These are concrete planning proposals, not newly created or implementation-ready
+beads. Lead/Engineering planning must reconcile existing work before filing,
+assign proper epic/priority/team labels and structured acceptance criteria, and
+record the actual dependency IDs. No silent dependency on this worktree:
+reference the reviewed exact documentation commit or its merged successor.
+
+| Proposed package | Scope and verifiable acceptance criteria | Dependency / disposition |
+| --- | --- | --- |
+| Convention/source reconciliation | Extend the existing `personal-cfo-4d8.34` work: current-main source SHA and Accepted ADR 0031/0063 authority recorded; Paper authority and shipped implementation mapped; FRONTEND/kit typography, warning values and actual component inventory reconciled; LCR-1/A2 implementation conventions recorded without claiming unshipped behavior. Independent SHA-bound documentation review. | Existing .34; coordinate Lead-owned .37 rather than duplicate it. Any new architectural choice needs an Accepted ADR before feature code. |
+| Contrast treatment | Complete existing `personal-cfo-4d8.35`: rendered/composited semantic badge text and required input/select/combobox boundaries tested on actual Light/Dark surfaces; 4.5:1 small text and 3:1 required non-text boundaries/focus where applicable, meaningful existing-suite regressions, exact-SHA review; agreed fix returns to Lead for Paper baseline update. | Existing .35 remains open; do not silently recolor frozen Paper or waive the 1.27:1/1.46:1 boundary gap. Blocks production accessibility disposition. |
+| Shared independent disclosure foundation | Engineering chooses/documents shared implementation, preserves A2 heading/button/keyboard/draft semantics and persistent alert/action slots; tests nested open/armed/busy collapse guard, explicit Cancel/focus return, hidden body exclusion, independent sections, single retry and reduced motion. A reusable example demonstrates long title and both themes. | Proposed new build bead only if none exists; requires reviewed A2/.36 artifact, reconciled .34 conventions and any required Accepted ADR. .36 is Paper pattern work, not completion of this code package. |
+| Selected-A Settings composition | Recompose Settings with existing feature logic, selected headings/summaries and exact A default/state spans; no B/C headings, callback/validation/financial mutation changes or new expansion persistence. Existing feature tests plus focused composition regressions prove outside errors/retries, partial persistence, conditional setup and no destructive-guard regression; screenshots at named A widths/themes match reviewed contract. | Depends on reviewed selected-A documentation, .34 and shared disclosure implementation. Contrast .35 remains an explicit release gate; Lead/planning decides and records whether it blocks this build or final acceptance. |
+| Runtime acceptance of A | At the implementation SHA, verify actual sidebar/content fit at C992/991 and C656/655, wide/narrow Light/Dark, long fake names/paths/amounts, empty/loading/error/partial/disabled/offline and source permission-denied cases; unsupported cases carry explicit source-backed N/A. Exercise keyboard/focus, screen-reader names/live regions, reduced motion, error retry uniqueness and destructive inertness. Record evidence against `docs/architecture/definition-of-done.md`; independently review exact code SHA and residual risks. | Depends on selected-A build plus .35 treatment and reconciled conventions; can be acceptance work within the build bead if scope stays coherent. Owner merge remains separate. |
+
+Out of scope: B/C implementation, new financial behavior, library selection by
+Studio, durable expansion-storage choice, source error/callback changes, new
+analytics/network calls, supported-minimum-window promises and real-data fixtures.
+Engineering should run meaningful existing feature tests first, then the declared
+frontend typecheck/lint/test/build and required CI/DoD layers for its actual
+diff. No app commands were run for this documentation-only checkpoint.
+
+Escalate back to Lead if source drift changes approved copy, tokens, safe actions,
+component availability or responsive fit; if shared implementation cannot meet
+A2/LCR-1; or if required contrast remediation changes the visual contract.
+Do not substitute unreviewed geometry. These open dependencies mean this packet
+is **ready for Engineering planning after documentation review**, not a claim
+that implementation gates are satisfied. Routing uses Beads/GitHub through the
+owner; Studio does not message Engineering sessions.
 
 ## v3 layout craft contract
 
@@ -99,10 +246,11 @@ tests. Source input-boundary contrast remains the recorded production gate.
 No application code or dependency changed; application test/build suites were
 not run. Documentation passes `git diff --check`.
 
-Independent review must bind the new freeze, exact manifest below and the new
-PR commit. The historical v2 verdict does not apply to v3. Any Paper or tracked
-specification edit requires a new review. Owner option selection and proposed
-copy approval remain pending; no owner comment is resolved merely by intake.
+The completed v3 review binds to the freeze, exact manifest below and ed461075.
+The historical v2 verdict does not apply to v3. Any Paper or tracked specification
+edit requires a new review. Owner A/copy decisions are recorded above; the new
+documentation disposition requires review at its new commit. Paper comment
+resolution and bead closure remain separate Lead/owner actions.
 
 ## Exact alternatives v3 manifest
 
