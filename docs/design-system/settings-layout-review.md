@@ -23,6 +23,8 @@ Preserve source reading and focus order. Do not use dense packing or visual reor
 
 Align parallel preference controls at their top edges while preserving source control sizes. Keep help below controls, let labels and help wrap, and stack lanes when they cannot fit. Preference cards use three lanes from 866px card width, two from 586px, otherwise one; Appearance spans the next row when there are two lanes.
 
+Comfort lower and upper fields stack below 480px of usable editor body width.
+
 ## Controls and components
 
 Use existing semantic theme tokens and source controls. Cards retain an 8px radius, default bodies 24px padding and the delete body 16px padding. Disclosure headers have a 44px minimum, a fixed 16px chevron lane, 12px gap, and 16px semibold text with 24px line height. Source controls retain their 40px, 36px and 32px sizes.
