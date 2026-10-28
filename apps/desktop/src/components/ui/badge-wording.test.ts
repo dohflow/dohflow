@@ -8,6 +8,21 @@ const SEMANTIC = ["gain", "warning", "info", "loss"] as const;
 
 type Site = { path: string; line: number; attrs: string; label: string };
 
+/// Collapse `{...}` expressions to `{}`, innermost first, until stable, so nested braces
+/// (`{a ? `${b}` : c}`) collapse too instead of leaving stray text in the label.
+function collapse(text: string): string {
+  // A brace-free sentinel marks a collapsed expression, so an outer `{...}` around it matches next pass
+  // (a literal `{}` would match the pattern again and the loop would never finish).
+  const COLLAPSED = "\u0001";
+  let previous: string;
+  let current = text;
+  do {
+    previous = current;
+    current = current.replace(/\{[^{}]*\}/g, COLLAPSED);
+  } while (current !== previous);
+  return current.replaceAll(COLLAPSED, "{}");
+}
+
 /// Every `<Badge ...>label</Badge>` in non-test source (the dev audit page is a fixture, not a call site).
 function sites(): Site[] {
   const out: Site[] = [];
@@ -19,8 +34,7 @@ function sites(): Site[] {
         line: file.text.slice(0, m.index).split("\n").length,
         attrs: m[1] ?? "",
         // The words as written: expressions collapse to `{}`, JSX tags and whitespace are dropped.
-        label: (m[2] ?? "")
-          .replace(/\{[^{}]*\}/g, "{}")
+        label: collapse(m[2] ?? "")
           .replace(/<[^>]*>/g, " ")
           .replace(/\s+/g, " ")
           .trim(),
@@ -65,6 +79,11 @@ describe("semantic Badge wording (personal-cfo-4d8.35)", () => {
       .filter((s) => !/[A-Za-z]{3,}/.test(s.label.replace(/\{\}/g, "")))
       .map((s) => `${s.path}:${s.line}`);
     expect(wordless).toEqual([]);
+  });
+
+  it("collapses nested brace expressions to one placeholder", () => {
+    expect(collapse("Due {n > 1 ? `${n} days` : \"a day\"} left")).toBe("Due {} left");
+    expect(collapse("{a} and {b}")).toBe("{} and {}");
   });
 
   it("holds for the two sites the Studio's review found resting on color", () => {
