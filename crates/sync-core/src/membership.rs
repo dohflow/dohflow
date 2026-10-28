@@ -797,6 +797,15 @@ struct EpochRef {
 /// invalid" (C.4) be a verdict every replica shares. The only way to build one is from the id of
 /// that epoch record in a verified chain: a guessed epoch from a chain that is behind cannot be
 /// constructed, and the caller then has no position to judge by.
+///
+/// **"Positioned before" is strict, and it is consensus-critical.** By C.7, the position of an
+/// epoch record is the log head `h` at which the compare-and-swap that installs it is accepted; an
+/// envelope with `seq <= h` belongs to the epoch (and membership) before that record and one with
+/// `seq > h` to the epoch after it. So the record to pass for an envelope at `seq` is the newest
+/// whose position `h < seq`. An envelope at `seq == h` is still in the OLD epoch; an off-by-one
+/// here splits replicas. This type does not check the position (the verified chain does not carry
+/// log positions); the client engine owns it and needs a boundary test: `seq = h` stays in the old
+/// epoch and `seq = h + 1` is in the new one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpochAtPosition {
     key_epoch: u64,

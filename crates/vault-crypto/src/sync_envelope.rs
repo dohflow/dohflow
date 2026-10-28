@@ -277,10 +277,11 @@ enum MemberWindow {
 
 impl<'a> ReceiverOpener<'a> {
     /// An opener for envelopes of `key`'s epoch, checked against `chain`, for the **producer's**
-    /// own seal-then-verify: the device must be a member as of the last head of the epoch, since
-    /// it seals at the head.
+    /// own seal-then-verify ONLY: the device must be a member as of the last head of the epoch,
+    /// since it seals at the head. A replica judging a log position uses
+    /// [`Self::at_position`]; a source-scan test keeps this constructor out of replica code.
     #[must_use]
-    pub const fn new(key: &'a EpochKey, chain: &'a VerifiedState) -> Self {
+    pub const fn for_producer(key: &'a EpochKey, chain: &'a VerifiedState) -> Self {
         Self {
             key,
             chain,
@@ -406,6 +407,9 @@ impl EnvelopeOpener for ReceiverOpener<'_> {
 pub enum InvalidReason {
     /// The container or header does not parse (no key or chain condition).
     Unparseable,
+    /// The header names another vault than the replica's own (no key condition: the replica
+    /// knows its vault from its chain).
+    WrongVault,
     /// The header's `key_epoch` is not the epoch in force at the envelope's log position (C.7).
     EpochNotInForce,
     /// The open step refused it, for the reason inside.
@@ -464,6 +468,11 @@ pub fn classify_envelope(
         return Verdict::Invalid(InvalidReason::Unparseable);
     };
     let header = &container.header;
+    // 1b. A header that names another vault is invalid with no key or position condition: the
+    //     replica knows its own vault from its chain.
+    if header.vault_id != *chain.vault_id() {
+        return Verdict::Invalid(InvalidReason::WrongVault);
+    }
     // 2. Not judgeable until the log has been processed in order up to this position.
     let Some(position) = position else {
         return Verdict::NotDeterminable(Wait::ChainBehind);

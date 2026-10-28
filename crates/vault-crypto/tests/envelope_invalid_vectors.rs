@@ -518,6 +518,24 @@ fn all_cases() -> Vec<Case> {
     future_unknown.chain = ChainKind::Epoch1Only;
     cases.push(future_unknown);
 
+    // ---- invalid: a header that names another vault ----
+    let other_vault = {
+        let parsed = parse_container(&valid_a).unwrap();
+        let mut header = parsed.header.clone();
+        header.vault_id[0] ^= 1;
+        encode_container(&header, parsed.ciphertext).unwrap()
+    };
+    cases.push(case(
+        "invalid_header_names_another_vault",
+        "the header's vault id is not the replica's own, with the epoch-1 key held",
+        other_vault.clone(),
+        &[1],
+        e_grant,
+        "invalid",
+        "WrongVault",
+    ));
+    cases.push(case("invalid_header_names_another_vault_with_nothing_else_known", "the same with no keys held and the position unknown: the vault is known from the chain, so it is still invalid", other_vault, &[], None, "invalid", "WrongVault"));
+
     // ---- invalid: the container does not parse, with nothing else known ----
     cases.push(case(
         "invalid_unparseable_container_with_nothing_known",

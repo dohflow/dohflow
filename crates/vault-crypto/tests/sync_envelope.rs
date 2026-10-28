@@ -386,7 +386,7 @@ fn a_sealed_envelope_opens_through_the_receiver_path_and_is_approved_for_upload(
     let (a, b) = (Dev::new(0xa1), Dev::new(0xb1));
     let state = chain(&a, &b);
     let key = epoch_key(VAULT, 1, K1);
-    let opener = ReceiverOpener::new(&key, &state);
+    let opener = ReceiverOpener::for_producer(&key, &state);
     for dev in [&a, &b] {
         let (header, plaintext) = parts(dev, 1, 1, 7);
         let bytes = seal(&key, dev, &header, &plaintext);
@@ -411,7 +411,7 @@ fn a_mis_sealed_envelope_opens_but_is_refused_as_inconsistent() {
         *idempotency_key_tag = IdempotencyKeyTag::from_derived([0; 32]);
     }
     let bytes = seal(&key, &a, &header, &plaintext);
-    let result = verify_before_upload(&bytes, &ReceiverOpener::new(&key, &state), tag_for);
+    let result = verify_before_upload(&bytes, &ReceiverOpener::for_producer(&key, &state), tag_for);
     assert!(
         matches!(result, Err(ProducerError::Inconsistent(_))),
         "{result:?}"
@@ -430,7 +430,7 @@ fn an_envelope_sealed_by_a_device_revoked_later_still_opens_in_its_own_epoch() {
     let bytes = seal(&key1, &b, &header, &plaintext);
     let container = parse_container(&bytes).unwrap();
     use sync_core::producer::EnvelopeOpener;
-    assert!(ReceiverOpener::new(&key1, &state)
+    assert!(ReceiverOpener::for_producer(&key1, &state)
         .open(&container)
         .is_some());
 
@@ -439,13 +439,13 @@ fn an_envelope_sealed_by_a_device_revoked_later_still_opens_in_its_own_epoch() {
     let (header2, plaintext2) = parts(&b, 6, 2, 0);
     let bytes2 = seal(&key2, &b, &header2, &plaintext2);
     let container2 = parse_container(&bytes2).unwrap();
-    assert!(ReceiverOpener::new(&key2, &state)
+    assert!(ReceiverOpener::for_producer(&key2, &state)
         .open(&container2)
         .is_none());
     // A, who is, opens in both.
     let (ha, pa) = parts(&a, 7, 2, 0);
     let bytes_a = seal(&key2, &a, &ha, &pa);
-    assert!(ReceiverOpener::new(&key2, &state)
+    assert!(ReceiverOpener::for_producer(&key2, &state)
         .open(&parse_container(&bytes_a).unwrap())
         .is_some());
 }
@@ -460,24 +460,30 @@ fn the_receiver_path_refuses_every_wrong_expectation() {
     let (header, plaintext) = parts(&a, 1, 1, 0);
     let bytes = seal(&key, &a, &header, &plaintext);
     let container = parse_container(&bytes).unwrap();
-    assert!(ReceiverOpener::new(&key, &state).open(&container).is_some());
+    assert!(ReceiverOpener::for_producer(&key, &state)
+        .open(&container)
+        .is_some());
 
     // A wrong K_e (with its own, matching, commitment) fails the AEAD.
     let wrong_key = epoch_key(VAULT, 1, [0x99; 32]);
-    assert!(ReceiverOpener::new(&wrong_key, &state)
+    assert!(ReceiverOpener::for_producer(&wrong_key, &state)
         .open(&container)
         .is_none());
     // A key of another epoch or vault is refused before any AEAD.
-    assert!(ReceiverOpener::new(&epoch_key(VAULT, 2, K2), &state)
-        .open(&container)
-        .is_none());
-    assert!(ReceiverOpener::new(&epoch_key([9; 16], 1, K1), &state)
-        .open(&container)
-        .is_none());
+    assert!(
+        ReceiverOpener::for_producer(&epoch_key(VAULT, 2, K2), &state)
+            .open(&container)
+            .is_none()
+    );
+    assert!(
+        ReceiverOpener::for_producer(&epoch_key([9; 16], 1, K1), &state)
+            .open(&container)
+            .is_none()
+    );
     // A device that is not in the chain: even sealed consistently, it does not open.
     let (sh, sp) = parts(&stranger, 2, 1, 0);
     let stranger_bytes = seal(&key, &stranger, &sh, &sp);
-    assert!(ReceiverOpener::new(&key, &state)
+    assert!(ReceiverOpener::for_producer(&key, &state)
         .open(&parse_container(&stranger_bytes).unwrap())
         .is_none());
     // A header that restates a consistent but WRONG identity: a's device id with b's fingerprint.
@@ -485,7 +491,7 @@ fn the_receiver_path_refuses_every_wrong_expectation() {
     forged.device_key_fingerprint = b.fingerprint();
     forged.nonce_domain = NonceDomain::derive(&VAULT, 1, &b.fingerprint(), OBJECT_ENVELOPE);
     let forged_bytes = encode_container(&forged, container.ciphertext).unwrap();
-    assert!(ReceiverOpener::new(&key, &state)
+    assert!(ReceiverOpener::for_producer(&key, &state)
         .open(&parse_container(&forged_bytes).unwrap())
         .is_none());
 }
@@ -498,7 +504,7 @@ fn flipping_any_single_byte_of_a_sealed_envelope_stops_it_opening() {
     let key = epoch_key(VAULT, 1, K1);
     let (header, plaintext) = parts(&a, 1, 1, 0);
     let bytes = seal(&key, &a, &header, &plaintext);
-    let opener = ReceiverOpener::new(&key, &state);
+    let opener = ReceiverOpener::for_producer(&key, &state);
     assert!(opener.open(&parse_container(&bytes).unwrap()).is_some());
     for index in 0..bytes.len() {
         let mut tampered = bytes.clone();
@@ -566,4 +572,41 @@ fn the_receiver_path_is_the_only_production_envelope_opener() {
              (or a marked TEST DOUBLE under tests/) may"
         );
     }
+}
+
+/// The producer-window opener (`ReceiverOpener::for_producer`) judges a device against the last
+/// head of the epoch, which is right only for a device sealing at the head. A replica judging a log
+/// position must use `ReceiverOpener::at_position`, or its verdict would depend on how far past the
+/// position it has verified. So `for_producer` may appear only in `vault-crypto` itself and in
+/// tests; any other crate that calls it fails here.
+#[test]
+fn replica_code_never_uses_the_producer_window_opener() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut stack = vec![root.join("crates"), root.join("apps")];
+    let mut offenders = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "target" && name != "node_modules" && !name.starts_with('.') {
+                    stack.push(path);
+                }
+            } else if name.ends_with(".rs") {
+                let shown = path.to_string_lossy().replace('\\', "/");
+                let allowed = shown.contains("crates/vault-crypto/") || shown.contains("/tests/");
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                if !allowed && text.contains("ReceiverOpener::for_producer(") {
+                    offenders.push(shown);
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "replica code must use ReceiverOpener::at_position, not for_producer: {offenders:?}"
+    );
 }

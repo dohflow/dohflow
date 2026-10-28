@@ -1168,9 +1168,14 @@ or cannot yet judge it, by this sequence of stages, in this order:
 1. **The container or header does not parse: invalid.** No key or chain condition: it is
    deterministic from the bytes alone, every replica at one `engine_version` parses identically,
    and there is no `key_epoch` or device to gate on.
+1b. **The header names another vault than the replica's own: invalid.** No key or position
+   condition: the replica knows its vault from its chain.
 2. **The position is not yet known: not determinable.** The replica judges position `N` only
    after it has processed the log in order up to `N` and verified the newest epoch record
-   positioned before it (C.7: epoch records are positioned log objects). That record fixes the
+   positioned before it (C.7: epoch records are positioned log objects). **"Before" is strict:**
+   a record installed at log head `h` covers envelopes with `seq > h`, and an envelope at
+   `seq = h` is still in the previous epoch, so the record to use is the newest with `h < seq`.
+   That record fixes the
    *epoch in force at `N`* and the *membership version in force at `N`* (the head it names), and
    they are the same on every replica. If that record is not yet verified, the replica waits.
 3. **A `key_epoch` other than the epoch in force at `N`, past or future: invalid.** Decided by
