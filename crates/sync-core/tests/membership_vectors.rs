@@ -1733,3 +1733,58 @@ fn a_device_revoked_at_a_cutover_is_still_a_member_of_the_epoch_it_sealed_in() {
     assert!(state.authorized_member_in_epoch(&a, 3).is_none());
     assert!(state.authorized_member_in_epoch(&[9; 16], 1).is_none());
 }
+
+#[test]
+fn the_epoch_and_membership_at_a_position_come_from_the_newest_epoch_record_before_it() {
+    use sync_core::membership::EpochAtPosition;
+    let doc: Value = serde_json::from_str(VECTORS).unwrap();
+    let vault: [u8; 16] = unhex(doc["vault_id"].as_str().unwrap()).try_into().unwrap();
+    let case = doc["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "valid_revoke_with_cutover")
+        .unwrap();
+    let step = &case["steps"][0];
+    let decode = |key: &str| -> Vec<Vec<u8>> {
+        step[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| unhex(h.as_str().unwrap()))
+            .collect()
+    };
+    let (memberships, epochs) = (decode("memberships"), decode("epochs"));
+    let state = extend(
+        &VerifiedState::empty(vault),
+        &slices(&memberships),
+        &slices(&epochs),
+    )
+    .expect("the case is valid");
+    let id_of = |record: &[u8]| -> [u8; 32] {
+        let parsed = SignedRecord::parse(record, 1 << 20).unwrap();
+        parsed.id()
+    };
+    // The grant (epoch 1, membership head v2) and the cutover (epoch 2, head v4).
+    let grant = EpochAtPosition::after_epoch_record(&state, &id_of(&epochs[2])).unwrap();
+    assert_eq!((grant.key_epoch(), grant.membership_head_version()), (1, 3));
+    let cutover = EpochAtPosition::after_epoch_record(&state, &id_of(&epochs[3])).unwrap();
+    assert_eq!(
+        (cutover.key_epoch(), cutover.membership_head_version()),
+        (2, 4)
+    );
+    // A record the replica has not verified yields no position.
+    assert!(EpochAtPosition::after_epoch_record(&state, &[9; 32]).is_none());
+    // Membership at a version: the device revoked at v4 is a member at v3 and not at v4; one
+    // added at v2 is not a member at v1.
+    let (a, b, c) = (
+        state.members()[0].device_id,
+        state.members()[1].device_id,
+        state.members()[2].device_id,
+    );
+    assert!(state.authorized_member_at_version(&b, 3).is_some());
+    assert!(state.authorized_member_at_version(&b, 4).is_none());
+    assert!(state.authorized_member_at_version(&b, 1).is_none());
+    assert!(state.authorized_member_at_version(&a, 1).is_some());
+    assert!(state.authorized_member_at_version(&c, 2).is_none());
+}

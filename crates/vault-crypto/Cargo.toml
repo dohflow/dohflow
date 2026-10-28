@@ -39,6 +39,8 @@ thiserror = { workspace = true }
 # Chain-building for the envelope tests (personal-cfo-g3m.22): real Ed25519 keys sign a real
 # membership chain. ed25519-dalek is already in the tree through sync-core.
 ed25519-dalek = { workspace = true }
+# The pipeline-level envelope vectors file (personal-cfo-g3m.25) is JSON.
+serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

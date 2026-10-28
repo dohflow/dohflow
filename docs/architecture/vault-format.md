@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=11 -->
+<!-- vault-format: spec-version=12 -->
 <!-- vault-format: schema-version=59 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,12 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 12` fixes the sequence of stages by which a replica finds an envelope invalid or
+  cannot yet judge it (C.4 "When an envelope is found invalid"): the epoch and membership are those
+  in force **at the log position**, so the verdict does not depend on how far past it a replica has
+  verified; and adds the public pipeline vectors
+  (`docs/architecture/vectors/envelope-invalid-v1.json`, C.14). No wire layout or existing vector
+  changes.
 - `spec-version = 11` adds the public `check_envelope` conformance vectors
   (`docs/architecture/vectors/check-envelope-v1.json`, C.14), which pin the receiver checks of C.4
   that ADR 0074 Addendum D makes consensus-critical. No wire layout or existing vector changes.
@@ -1155,29 +1161,48 @@ position is identified by `(seq, canonical_envelope_digest)`: the same position 
 digest is a fork of the log (`ProtocolFork`).
 
 **When an envelope is *found invalid*.** The void rules (ADR 0074 Addendum D) depend on a
-replica's own verdict, so the verdict must be the same everywhere. A replica finds the envelope at
-position `N` invalid in exactly two ways.
+replica's own verdict, so the verdict must be the same on every replica, however far each has
+verified beyond the position being judged. A replica finds the envelope at position `N` invalid,
+or cannot yet judge it, by this sequence of stages, in this order:
 
-1. **The container or header does not parse.** This is invalid with no key or chain condition: it
-   is deterministic from the bytes alone, every replica at one `engine_version` parses
-   identically, and there is no `key_epoch` or device to gate on.
-2. **Everything after a successful header parse**, and only when the replica holds the evidence:
-   it has a **verified key** for the header's `key_epoch` (the key matched that epoch's verified
-   `key_commitment_ke`) and the chain it has verified places the header's device among the members
-   of that epoch (C.7 gives the epoch in force at `N`). Then any of these holds: the ciphertext
-   does not open under the key derived for that epoch, vault and device (a flipped ciphertext or
-   tag byte, a truncated ciphertext); the opened plaintext does not decode; or a receiver check of
-   this section fails. Equally invalid, once the chain is verified through that epoch: a
-   `key_epoch` that is not the epoch in force at `N`, and a device that is not a member of the
-   epoch it claims.
+1. **The container or header does not parse: invalid.** No key or chain condition: it is
+   deterministic from the bytes alone, every replica at one `engine_version` parses identically,
+   and there is no `key_epoch` or device to gate on.
+1b. **The header names another vault than the replica's own: invalid.** No key or position
+   condition: the replica knows its vault from its chain.
+2. **The position is not yet known: not determinable.** The replica judges position `N` only
+   after it has processed the log in order up to `N` and verified the newest epoch record
+   positioned before it (C.7: epoch records are positioned log objects). **"Before" is strict:**
+   a record installed at log head `h` covers envelopes with `seq > h`, and an envelope at
+   `seq = h` is still in the previous epoch, so the record to use is the newest with `h < seq`.
+   That record fixes the
+   *epoch in force at `N`* and the *membership version in force at `N`* (the head it names), and
+   they are the same on every replica. If that record is not yet verified, the replica waits.
+3. **A `key_epoch` other than the epoch in force at `N`, past or future: invalid.** Decided by
+   position alone; it needs no key, and it does not matter whether a later epoch exists in the
+   replica's chain.
+4. **No verified key for that epoch: not determinable.** The key must have matched the epoch
+   record's `key_commitment_ke` (C.3). Without it the replica cannot tell a bad envelope from a
+   good one.
+5. **The device is not a member at `N`, or the header restates another identity or nonce
+   domain: invalid.** Membership is judged **at the position**: authorized as of the membership
+   version in force at `N`, not as of the last head of the epoch and not as of the replica's
+   newest verified head. A device granted after `N` is not a member at `N`, however far the
+   replica has verified, and one revoked after `N` still is, so its earlier envelopes open for a
+   replica catching up. (The producer's own seal-then-verify check judges against the head it
+   seals at.)
+6. **The ciphertext does not open under the key derived for that epoch, vault and device:
+   invalid** (a flipped ciphertext or tag byte, a truncated ciphertext).
+7. **The opened plaintext does not decode: invalid** (a producer fault).
+8. **A receiver check of this section fails: invalid.**
 
-**Never invalid** (for the second way): a replica without a verified key for that epoch, whose chain is behind (the epoch or
-membership record is not yet verified), or that cannot construct the key is in a local or
-retryable state and keeps waiting. If those states counted, a replica with a missing key would
-honor a void for a valid envelope that every other replica applied, and the vault would split.
-Decode failures count as invalid: a plaintext that does not decode after a successful open is a
-producer fault, and a header that does not parse at an accepted position means the service let
-through what its own checks should have refused; both are deterministic from the bytes.
+Otherwise the envelope is valid. **A not-determinable envelope is never a basis to honor a void.**
+If it counted, a replica with a missing key or one that is behind would honor a void for a valid
+envelope that every other replica applied, and the vault would split. A header that does not
+parse at an accepted position means the service let through what its own checks should have
+refused, which is equally deterministic from the bytes. The verdict class (valid, invalid, not
+determinable) is the contract; the reason is informative. The public vectors of C.14
+(`docs/architecture/vectors/envelope-invalid-v1.json`) pin every stage.
 
 ### Counter register and nonce state
 
@@ -1882,6 +1907,19 @@ states the outcome as the C.11 failure name and the position of the offending re
 implementation's own error names. The file holds only public data; the seeds that produced it live
 only in the Rust generator (`crates/sync-core/tests/membership_vectors.rs`), which fails if the file
 drifts. A change to the file is a change to this part and follows C.13.
+
+`docs/architecture/vectors/envelope-invalid-v1.json` (`vectors_version` 1) pins the pipeline-level
+verdict of C.4 "When an envelope is found invalid": sealed envelope containers built from
+synthetic keys over a sample membership chain (device A adds device B in epoch 1, then revokes it
+in a cutover into epoch 2), each with the state of the replica (its verified chain, which epoch
+keys it holds, and the newest epoch record positioned before the envelope) and the expected
+verdict: valid, invalid, or not determinable. Flipped ciphertext and tag bytes, a truncated
+ciphertext, an undecodable plaintext, a rejected receiver check, a device revoked before the
+position, a device granted after it (identical on a short and a long chain), a past and a future
+epoch at the position, and an unparseable container (invalid even with nothing else known) are
+invalid; no verified key, a position the replica has not reached, and a bad envelope while either
+is missing are not determinable. The epoch keys are not in the file: they derive from a labeled
+formula the file states. A change to the file follows C.13.
 
 `docs/architecture/vectors/check-envelope-v1.json` (`vectors_version` 1) pins the receiver checks
 of C.4 for every implementation that decrypts: a header and a plaintext as bytes, the idempotency
