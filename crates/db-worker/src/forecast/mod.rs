@@ -50,9 +50,7 @@ pub(crate) use events::{household_today, read_household_tz, reporting_currency};
 #[cfg(test)]
 pub(crate) use loan_link::loans_with_link_in_force;
 pub(crate) use loan_link::{link_status, LinkedBill};
-// Only exercised by tests today (`household_today` is the production entry point); gated so
-// a non-test build doesn't warn on it as unused.
-#[cfg(test)]
+// `apply` resolves "today" from the command's `issued_at` with this, never `household_today`.
 pub(crate) use events::household_today_at;
 pub(crate) use payoff::debt_payoff_comparison;
 pub use payoff::{PayoffDebtSeries, PayoffPlanView};

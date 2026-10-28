@@ -103,8 +103,11 @@ pub(crate) fn apply_confirm_obligation_early(
         // in the starting balance would make cash silently vanish (5ie.9 review). "Future" is
         // relative to the household-local date (ADR 0021 §1), not UTC's — the frontend's
         // matching `max={todayIso()}` guard on the date input agrees with this boundary
-        // (personal-cfo-ku2hn).
-        if actual_date.date_naive() > crate::forecast::household_today(tx)? {
+        // (personal-cfo-ku2hn). "Today" is the household-local date of the command's `issued_at`, not
+        // the wall clock, so a replica applying the command later reaches the same verdict.
+        if actual_date.date_naive()
+            > crate::forecast::household_today_at(tx, crate::apply::issued_at(meta))?
+        {
             return Err(DbError::InvalidCommand(
                 "cannot confirm a payment dated in the future".to_owned(),
             ));
@@ -239,7 +242,7 @@ pub(crate) fn apply_confirm_obligation_early(
                     actual_date.to_rfc3339(),
                     actual_amount.minor_units(),
                     actual_amount.currency().code(),
-                    Utc::now().to_rfc3339(),
+                    crate::apply::issued_at_text(meta),
                 ],
             )?;
 
@@ -290,6 +293,7 @@ pub(crate) fn apply_unconfirm_obligation(
                         currency,
                         occurred_at,
                         meta.command_id,
+                        &crate::apply::issued_at_text(meta),
                     )?;
                 }
                 tx.execute(
@@ -512,7 +516,14 @@ pub(crate) fn apply_void_transaction(
 
         // Reverse it (nets to zero, dated at the original so it lands in the same assertion
         // window, ADR 0027) and hide both the original and the reversal.
-        reverse_and_hide_transaction(tx, txn_uuid, currency, occurred_at, meta.command_id)?;
+        reverse_and_hide_transaction(
+            tx,
+            txn_uuid,
+            currency,
+            occurred_at,
+            meta.command_id,
+            &crate::apply::issued_at_text(meta),
+        )?;
 
         txn_uuid
     };
@@ -522,6 +533,7 @@ pub(crate) fn apply_void_transaction(
 /// Applies [`WriteCommand::MarkReviewed`].
 pub(crate) fn apply_mark_reviewed(
     tx: &Connection,
+    meta: &CommandMeta,
     transaction_id: &TransactionId,
     reviewed: &bool,
 ) -> Result<Uuid, DbError> {
@@ -543,7 +555,11 @@ pub(crate) fn apply_mark_reviewed(
             "INSERT OR REPLACE INTO transaction_reviews
                     (transaction_id, reviewed, reviewed_at)
                  VALUES (?1, ?2, ?3)",
-            params![txn_uuid, i64::from(*reviewed), Utc::now().to_rfc3339()],
+            params![
+                txn_uuid,
+                i64::from(*reviewed),
+                crate::apply::issued_at_text(meta)
+            ],
         )?;
         txn_uuid
     };
@@ -553,6 +569,7 @@ pub(crate) fn apply_mark_reviewed(
 /// Applies [`WriteCommand::CreateTag`].
 pub(crate) fn apply_create_tag(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &TagId,
     name: &str,
     color: &Option<String>,
@@ -562,7 +579,12 @@ pub(crate) fn apply_create_tag(
         tx.execute(
             "INSERT INTO tags (id, name, color, archived_at, created_at)
                  VALUES (?1, ?2, ?3, NULL, ?4)",
-            params![id.as_uuid(), name.trim(), color, Utc::now().to_rfc3339()],
+            params![
+                id.as_uuid(),
+                name.trim(),
+                color,
+                crate::apply::issued_at_text(meta)
+            ],
         )
         .map_err(|_| DbError::InvalidCommand("a tag with that name already exists".to_owned()))?;
         id.as_uuid()
@@ -616,6 +638,7 @@ pub(crate) fn apply_set_tags(
 /// Applies [`WriteCommand::SetNote`].
 pub(crate) fn apply_set_note(
     tx: &Connection,
+    meta: &CommandMeta,
     transaction_id: &TransactionId,
     note: &Option<String>,
 ) -> Result<Uuid, DbError> {
@@ -637,7 +660,11 @@ pub(crate) fn apply_set_note(
                     (transaction_id, memo, counterparty, note, created_at)
                  VALUES (?1, NULL, NULL, ?2, ?3)
                  ON CONFLICT(transaction_id) DO UPDATE SET note = excluded.note",
-            params![txn_uuid, note.as_deref(), Utc::now().to_rfc3339()],
+            params![
+                txn_uuid,
+                note.as_deref(),
+                crate::apply::issued_at_text(meta)
+            ],
         )?;
         txn_uuid
     };

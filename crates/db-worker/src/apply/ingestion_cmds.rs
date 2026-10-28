@@ -22,8 +22,10 @@ use crate::{
 const IMPORT_ALIAS_CONFIDENCE_BPS: i64 = 5000;
 
 /// Applies [`WriteCommand::CreateSourceBatch`].
+#[allow(clippy::too_many_arguments)] // the command's fields plus its metadata
 pub(crate) fn apply_create_source_batch(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &SourceBatchId,
     source_type: &str,
     source_name: &Option<String>,
@@ -42,6 +44,7 @@ pub(crate) fn apply_create_source_batch(
                 parser_version: parser_version.as_deref(),
                 connector_connection_id: *connector_connection_id,
             },
+            &crate::apply::issued_at_text(meta),
         )?;
         id.as_uuid()
     };
@@ -51,6 +54,7 @@ pub(crate) fn apply_create_source_batch(
 /// Applies [`WriteCommand::UpdateBatchState`].
 pub(crate) fn apply_update_batch_state(
     tx: &Connection,
+    meta: &CommandMeta,
     batch_id: &SourceBatchId,
     status: &str,
     staged_count: &i64,
@@ -65,6 +69,7 @@ pub(crate) fn apply_update_batch_state(
             *staged_count,
             *committed_count,
             *skipped_count,
+            &crate::apply::issued_at_text(meta),
         )?;
         batch_id.as_uuid()
     };
@@ -257,6 +262,7 @@ pub(crate) fn apply_commit_staged(
                     decision: "flagged",
                     reason: "duplicate of an already-committed transaction",
                 },
+                &crate::apply::issued_at_text(meta),
             )?;
             ingestion::flag_staged_duplicate(tx, staged.id)?;
             staged.id
@@ -278,6 +284,7 @@ pub(crate) fn apply_commit_staged(
                     decision: "flagged",
                     reason,
                 },
+                &crate::apply::issued_at_text(meta),
             )?;
             ingestion::flag_staged_duplicate(tx, staged.id)?;
             staged.id
@@ -301,9 +308,10 @@ pub(crate) fn apply_commit_staged(
                             decision: "flagged",
                             reason: problem.reason(),
                         },
+                        &crate::apply::issued_at_text(meta),
                     )?;
                     ingestion::flag_staged_for_review(tx, staged.id)?;
-                    money_inbox::rebuild_in(tx)?;
+                    money_inbox::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
                     return Ok(staged.id);
                 }
                 Err(problem) => return Err(problem.error()),
@@ -344,6 +352,7 @@ pub(crate) fn apply_commit_staged(
                     source_record_id: staged.source_record_id,
                     relationship: "created_from",
                 },
+                &crate::apply::issued_at_text(meta),
             )?;
             ingestion::mark_staged_committed(tx, staged.id, txn_id.as_uuid())?;
             // Carry the source detail onto the committed transaction so the list
@@ -356,6 +365,7 @@ pub(crate) fn apply_commit_staged(
                 staged.description.as_deref(),
                 staged.normalized_merchant.as_deref(),
                 staged.transaction_date.as_deref(),
+                &crate::apply::issued_at_text(meta),
             )?;
             // Prefill the category from the source's own category column when it names
             // a real category (ADR 0045 §3): a reduced-confidence `import_alias`
@@ -373,7 +383,7 @@ pub(crate) fn apply_commit_staged(
                             txn_id.as_uuid(),
                             category_id,
                             IMPORT_ALIAS_CONFIDENCE_BPS,
-                            Utc::now().to_rfc3339(),
+                            crate::apply::issued_at_text(meta),
                         ],
                     )?;
                 }
@@ -396,13 +406,14 @@ pub(crate) fn apply_commit_staged(
                     decision: "committed",
                     reason: commit_reason,
                 },
+                &crate::apply::issued_at_text(meta),
             )?;
             txn_id.as_uuid()
         };
 
         // Refresh the Money Inbox projection so a newly-flagged duplicate gains
         // an item and a committed row drops out (ADR 0014 §7, personal-cfo-dsq).
-        money_inbox::rebuild_in(tx)?;
+        money_inbox::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
         committed_or_flagged
     };
     Ok(entity_id)
@@ -411,6 +422,7 @@ pub(crate) fn apply_commit_staged(
 /// Applies [`WriteCommand::SkipStaged`].
 pub(crate) fn apply_skip_staged(
     tx: &Connection,
+    meta: &CommandMeta,
     staged_transaction_id: &StagedTransactionId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
@@ -440,9 +452,10 @@ pub(crate) fn apply_skip_staged(
                 decision: "skipped",
                 reason: "user skipped",
             },
+            &crate::apply::issued_at_text(meta),
         )?;
         // The skipped row is no longer flagged, so the next rebuild drops it.
-        money_inbox::rebuild_in(tx)?;
+        money_inbox::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
         staged.id
     };
     Ok(entity_id)

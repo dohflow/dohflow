@@ -21,11 +21,7 @@ pub(crate) const HOUSEHOLD_TIMEZONE_CHANGED: &str = "household_timezone_changed"
 
 /// The command's `issued_at` as an RFC 3339 UTC timestamp, for a local audit column.
 pub(crate) fn issued_at_rfc3339(meta: &CommandMeta) -> Result<String, DbError> {
-    chrono::DateTime::from_timestamp_micros(meta.issued_at.as_unix_micros())
-        .map(|instant| instant.to_rfc3339())
-        .ok_or_else(|| {
-            DbError::InvalidCommand("issued_at is outside the supported range".to_owned())
-        })
+    Ok(super::issued_at_text(meta))
 }
 
 /// Applies [`WriteCommand::SetHouseholdTimezone`](crate::WriteCommand): validate the IANA

@@ -2,62 +2,32 @@
 //! Addendum A, section 2).
 //!
 //! A command carries `issued_at` in its metadata, set once at the command boundary, and
-//! `apply` must read that instead of the clock, so replaying the command on another
-//! device reads the same instant. Replacing today's reads is SYNC-1a
-//! (`personal-cfo-32fmp`). Until then this test pins the inventory exactly, in two parts:
+//! `apply` reads that instead of the clock, so replaying the command on another device reads
+//! the same instant. SYNC-1a (`personal-cfo-32fmp`) removed every read; this test keeps it at
+//! zero, in three parts:
 //!
-//! * **Direct reads** under `crates/db-worker/src/apply/`: 21 `Utc::now()` calls (the ADR's
-//!   number), plus any `SystemTime::now()`, `Instant::now()` or `Local::now()`.
-//! * **Indirect reads**: calls from `apply/` to helpers defined elsewhere in the crate
-//!   that read the clock themselves, directly or through another helper (for example
+//! * **Direct reads** under `crates/db-worker/src/apply/`: any `Utc::now()`, `SystemTime::now()`,
+//!   `Instant::now()` or `Local::now()`.
+//! * **Indirect reads**: calls from `apply/` to helpers defined elsewhere in the crate that
+//!   read the clock themselves, directly or through another helper (for example
 //!   `household_today`, the `ingestion` provenance and dedupe helpers, and the class-2
-//!   `rebuild_in` projections). The set of such helpers is **derived here** from the
-//!   crate's non-apply sources, not hand-listed, so a new clock-reading helper that
-//!   `apply/` starts calling fails the test instead of slipping past it.
-//!
-//! The tables below may only shrink. A new read fails the test; a removed read fails it
-//! too, until the table is lowered, so a stale allowance cannot linger. SYNC-1a ends with
-//! empty tables and then asserts zero. Id minting (`now_v7()`, `Id::new()`) is a separate
-//! determinism rule, tracked by the derived-id helper (part 2) and SYNC-1a; this test is
-//! about the clock only.
+//!   `rebuild_in` projections). The set of such helpers is **derived here** from the crate's
+//!   non-apply sources, not hand-listed, so a new clock-reading helper that `apply/` starts
+//!   calling fails the test instead of slipping past it.
+//! * **The dispatcher itself**: the `apply_command` function in `lib.rs` holds the match arms,
+//!   so a clock read there is a read from apply. Its two reads are bookkeeping about THIS
+//!   device's recording, pinned by name below.
 //!
 //! The derivation is name-based and conservative: a helper is a reader if its body calls
 //! `Utc::now()` and friends, or calls another reader by name. It can over-report (two
 //! functions sharing a name), never under-report a call written in the usual form; an
-//! over-report is resolved by a human pinning or renaming, which is the point.
+//! over-report is resolved by a human renaming, which is the point. Id minting (`now_v7()`,
+//! `Id::new()`) is a separate determinism rule, tracked by the derived-id helper and
+//! SYNC-1a's mint pass; this test is about the clock only.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-/// `(file under src/apply/, direct clock reads)`. SYNC-1a empties this table.
-const KNOWN_DIRECT: &[(&str, usize)] = &[
-    ("accounts.rs", 1),
-    ("categorization_cmds.rs", 6),
-    ("ingestion_cmds.rs", 1),
-    ("recurring.rs", 9),
-    ("transactions.rs", 4),
-];
-
-/// `(file under src/apply/, clock-reading helper, calls)`. SYNC-1a empties this table.
-/// `rebuild_in` is a class-2 projection rebuild (`money_inbox`, `commitments`). It is
-/// counted like every other helper and is not exempt: class-2 rows must also be hash-equal
-/// across vaults (the M2 exit criterion), so a clock read inside a class-2 rebuild is in
-/// scope for SYNC-1a, which removes it by passing the command's `issued_at` down.
-const KNOWN_INDIRECT: &[(&str, &str, usize)] = &[
-    ("inbox.rs", "rebuild_in", 2),
-    ("inbox.rs", "record_dismiss", 1),
-    ("inbox.rs", "record_snooze", 1),
-    ("ingestion_cmds.rs", "create_source_batch", 1),
-    ("ingestion_cmds.rs", "link_provenance", 1),
-    ("ingestion_cmds.rs", "rebuild_in", 3),
-    ("ingestion_cmds.rs", "record_dedupe_decision", 5),
-    ("ingestion_cmds.rs", "record_transaction_detail", 1),
-    ("ingestion_cmds.rs", "update_batch_status", 1),
-    ("recurring.rs", "rebuild_in", 6),
-    ("transactions.rs", "household_today", 1),
-    ("transactions.rs", "reverse_and_hide_transaction", 2),
-];
 
 const DIRECT: &[&str] = &[
     "Utc::now(",
@@ -345,25 +315,21 @@ fn apply_sources() -> BTreeMap<String, String> {
 }
 
 #[test]
-fn apply_direct_clock_reads_match_the_pinned_inventory() {
+fn apply_reads_no_wall_clock_directly() {
     let actual: BTreeMap<String, usize> = apply_sources()
         .into_iter()
         .map(|(file, source)| (file, count_direct(&source)))
         .filter(|(_, n)| *n > 0)
         .collect();
-    let expected: BTreeMap<String, usize> = KNOWN_DIRECT
-        .iter()
-        .map(|(f, n)| ((*f).to_owned(), *n))
-        .collect();
-    assert_eq!(
-        actual, expected,
-        "`apply` must not read the wall clock: take the instant from `meta.issued_at`. This \
-         table may only shrink; when SYNC-1a removes the last read, delete it and assert zero."
+    assert!(
+        actual.is_empty(),
+        "`apply` must not read the wall clock: take the instant from `meta.issued_at` \
+         (`crate::apply::issued_at` / `issued_at_text`). Direct reads: {actual:?}"
     );
 }
 
 #[test]
-fn apply_indirect_clock_reads_match_the_pinned_inventory() {
+fn apply_calls_no_helper_that_reads_the_wall_clock() {
     let readers = clock_readers();
     let mut actual: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (file, source) in apply_sources() {
@@ -374,35 +340,31 @@ fn apply_indirect_clock_reads_match_the_pinned_inventory() {
             }
         }
     }
-    let expected: BTreeMap<(String, String), usize> = KNOWN_INDIRECT
-        .iter()
-        .map(|(f, r, n)| (((*f).to_owned(), (*r).to_owned()), *n))
-        .collect();
-    assert_eq!(
-        actual, expected,
+    assert!(
+        actual.is_empty(),
         "`apply` must not call a helper that reads the wall clock: pass `meta.issued_at` \
-         down instead. This table may only shrink; SYNC-1a empties it."
+         down instead (a helper with a clock-reading twin of the same name must be renamed). \
+         Calls: {actual:?}"
     );
 }
 
 #[test]
-fn the_pinned_direct_total_is_the_adr_inventory() {
-    // ADR 0013 Addendum A counts 21 `Utc::now()` sites; the table must not drift from it
-    // without the ADR's number being revisited.
-    let direct: usize = KNOWN_DIRECT.iter().map(|(_, n)| n).sum();
-    assert_eq!(direct, 21);
-}
-
-#[test]
-fn every_pinned_helper_still_reads_the_clock() {
-    // If a refactor renamed or cleaned a helper, the table would silently pin nothing for it.
-    let readers = clock_readers();
-    for (_, helper, _) in KNOWN_INDIRECT {
-        assert!(
-            readers.contains(*helper),
-            "{helper} no longer reads the clock"
-        );
-    }
+fn the_dispatcher_reads_the_clock_only_for_this_devices_bookkeeping() {
+    // `apply_command` is the match that calls every apply function. Its only wall-clock reads
+    // are the operation-log row's `created_at` (when THIS device recorded the command) and the
+    // idempotency memo's expiry (class 3, local). Every command-specific instant comes from
+    // `meta.issued_at`. A third read here is a read from apply.
+    let source = blank_noise(&fs::read_to_string(src_dir().join("lib.rs")).unwrap());
+    let body = functions(&source)
+        .into_iter()
+        .find(|(name, _)| name == "apply_command")
+        .expect("apply_command exists")
+        .1;
+    assert_eq!(
+        count_direct(&body),
+        2,
+        "apply_command may read the clock only for the operation-log row and the idempotency expiry"
+    );
 }
 
 #[test]

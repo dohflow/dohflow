@@ -1,18 +1,20 @@
 //! `apply_command` arms for the category tree and transaction
 //! recategorization (moved verbatim from `lib.rs`).
 
-use chrono::Utc;
 use core_ledger::{CategoryId, TransactionId};
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::{
-    default_forecast_behavior, require_user_category, would_create_category_cycle, DbError,
+    default_forecast_behavior, require_user_category, would_create_category_cycle, CommandMeta,
+    DbError,
 };
 
 /// Applies [`WriteCommand::CreateCategory`].
+#[allow(clippy::too_many_arguments)] // the command's fields plus its metadata
 pub(crate) fn apply_create_category(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &CategoryId,
     parent_id: &Option<CategoryId>,
     name: &str,
@@ -39,7 +41,7 @@ pub(crate) fn apply_create_category(
                 ));
             }
         }
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         // Always a user category; behavior derived from the type (ADR 0030). `icon` is the
         // optional emoji set at creation (personal-cfo-kogu).
         tx.execute(
@@ -66,6 +68,7 @@ pub(crate) fn apply_create_category(
 /// Applies [`WriteCommand::UpdateCategory`].
 pub(crate) fn apply_update_category(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &CategoryId,
     name: &str,
     color: &Option<String>,
@@ -89,7 +92,7 @@ pub(crate) fn apply_update_category(
                 |r| r.get::<_, i64>(0).map(|v| v != 0),
             )
             .optional()?;
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         match is_system {
             None => {
                 return Err(DbError::InvalidCommand(
@@ -117,6 +120,7 @@ pub(crate) fn apply_update_category(
 /// Applies [`WriteCommand::MoveCategory`].
 pub(crate) fn apply_move_category(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &CategoryId,
     new_parent_id: &Option<CategoryId>,
 ) -> Result<Uuid, DbError> {
@@ -141,7 +145,7 @@ pub(crate) fn apply_move_category(
                 ));
             }
         }
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         tx.execute(
             "UPDATE categories SET parent_id = ?2, updated_at = ?3 WHERE id = ?1",
             params![id.as_uuid(), new_parent_id.map(|p| p.as_uuid()), now],
@@ -152,9 +156,13 @@ pub(crate) fn apply_move_category(
 }
 
 /// Applies [`WriteCommand::ArchiveCategory`].
-pub(crate) fn apply_archive_category(tx: &Connection, id: &CategoryId) -> Result<Uuid, DbError> {
+pub(crate) fn apply_archive_category(
+    tx: &Connection,
+    meta: &CommandMeta,
+    id: &CategoryId,
+) -> Result<Uuid, DbError> {
     let entity_id = {
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         let n = tx.execute(
             "UPDATE categories SET archived_at = ?2, updated_at = ?2 WHERE id = ?1",
             params![id.as_uuid(), now],
@@ -170,9 +178,13 @@ pub(crate) fn apply_archive_category(tx: &Connection, id: &CategoryId) -> Result
 }
 
 /// Applies [`WriteCommand::ReinstateCategory`].
-pub(crate) fn apply_reinstate_category(tx: &Connection, id: &CategoryId) -> Result<Uuid, DbError> {
+pub(crate) fn apply_reinstate_category(
+    tx: &Connection,
+    meta: &CommandMeta,
+    id: &CategoryId,
+) -> Result<Uuid, DbError> {
     let entity_id = {
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         let n = tx.execute(
             "UPDATE categories SET archived_at = NULL, updated_at = ?2 WHERE id = ?1",
             params![id.as_uuid(), now],
@@ -190,6 +202,7 @@ pub(crate) fn apply_reinstate_category(tx: &Connection, id: &CategoryId) -> Resu
 /// Applies [`WriteCommand::RecategorizeTransaction`].
 pub(crate) fn apply_recategorize_transaction(
     tx: &Connection,
+    meta: &CommandMeta,
     transaction_id: &TransactionId,
     category_id: &Option<CategoryId>,
 ) -> Result<Uuid, DbError> {
@@ -225,7 +238,7 @@ pub(crate) fn apply_recategorize_transaction(
                     params![
                         transaction_id.as_uuid(),
                         category.as_uuid(),
-                        Utc::now().to_rfc3339()
+                        crate::apply::issued_at_text(meta)
                     ],
                 )?;
             }
