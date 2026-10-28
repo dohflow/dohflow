@@ -226,6 +226,10 @@ const THEMES = [
 const SURFACES = ["background", "card"] as const;
 const SEMANTIC = ["gain", "warning", "info", "loss"] as const;
 const NON_TEXT_FLOOR = 3.0;
+/// The browser engine these were measured in (Chromium) is not the app's (WKWebView), so every value
+/// introduced by 4d8.35 must clear its floor by at least this much (planning's rule). A change that
+/// eats the headroom fails even though it would still be 3.0:1 on paper.
+const HEADROOM = 0.1;
 
 const BADGE_SRC = sourceTree.find((f) => f.path === "components/ui/badge.tsx")?.text ?? "";
 
@@ -267,7 +271,7 @@ describe("semantic badge text and marks (personal-cfo-4d8.35)", () => {
     }
   });
 
-  it("keeps the label at 4.5:1 and the mark at 3:1 against the tint, in both themes on both surfaces", () => {
+  it("keeps the label at 4.5:1 and the mark at 3:1, each plus headroom, against the tint, in both themes on both surfaces", () => {
     let checked = 0;
     for (const theme of THEMES) {
       const foreground = token(theme.block, "foreground")!;
@@ -281,12 +285,12 @@ describe("semantic badge text and marks (personal-cfo-4d8.35)", () => {
           checked++;
           expect(
             label,
-            `${theme.name} ${name} badge label on --${surfaceName} tint = ${label.toFixed(2)}:1 (need ${TEXT_PAIR_FLOOR}:1)`,
-          ).toBeGreaterThanOrEqual(TEXT_PAIR_FLOOR);
+            `${theme.name} ${name} badge label on --${surfaceName} tint = ${label.toFixed(2)}:1 (need ${TEXT_PAIR_FLOOR + HEADROOM}:1)`,
+          ).toBeGreaterThanOrEqual(TEXT_PAIR_FLOOR + HEADROOM);
           expect(
             mark,
-            `${theme.name} ${name} badge mark on --${surfaceName} tint = ${mark.toFixed(2)}:1 (need ${NON_TEXT_FLOOR}:1)`,
-          ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR);
+            `${theme.name} ${name} badge mark on --${surfaceName} tint = ${mark.toFixed(2)}:1 (need ${NON_TEXT_FLOOR + HEADROOM}:1: ${NON_TEXT_FLOOR}:1 plus ${HEADROOM} headroom)`,
+          ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR + HEADROOM);
         }
       }
     }
@@ -303,7 +307,7 @@ describe("semantic badge text and marks (personal-cfo-4d8.35)", () => {
 });
 
 describe("form-control boundary and focus ring (personal-cfo-4d8.35)", () => {
-  it("keeps the control boundary (--input) at 3:1 against every surface a control sits on, in both themes", () => {
+  it("keeps the control boundary (--input) at 3:1, plus headroom, against every surface a control sits on, in both themes", () => {
     let checked = 0;
     for (const theme of THEMES) {
       const boundary = token(theme.block, "input")!;
@@ -313,8 +317,8 @@ describe("form-control boundary and focus ring (personal-cfo-4d8.35)", () => {
         checked++;
         expect(
           ratio,
-          `${theme.name}: --input on --${surfaceName} = ${ratio.toFixed(2)}:1 (need ${NON_TEXT_FLOOR}:1)`,
-        ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR);
+          `${theme.name}: --input on --${surfaceName} = ${ratio.toFixed(2)}:1 (need ${NON_TEXT_FLOOR + HEADROOM}:1: ${NON_TEXT_FLOOR}:1 plus ${HEADROOM} headroom)`,
+        ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR + HEADROOM);
       }
     }
     expect(checked).toBe(THEMES.length * SURFACES.length);
@@ -327,8 +331,8 @@ describe("form-control boundary and focus ring (personal-cfo-4d8.35)", () => {
         const ratio = contrast(ring, token(theme.block, surfaceName)!);
         expect(
           ratio,
-          `${theme.name}: --ring on --${surfaceName} = ${ratio.toFixed(2)}:1 (need ${NON_TEXT_FLOOR}:1)`,
-        ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR);
+          `${theme.name}: --ring on --${surfaceName} = ${ratio.toFixed(2)}:1 (need ${NON_TEXT_FLOOR + HEADROOM}:1)`,
+        ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR + HEADROOM);
       }
     }
   });
