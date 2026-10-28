@@ -132,7 +132,7 @@ class = "1"
 statements = 1
 status = "allowed"
 bead = "personal-cfo-d3p"
-note = "insert_system_category: the system categories are seeded at vault creation with deterministic ids; replicated state starts from the logical genesis (SYNC-3)."
+note = "insert_system_category: ensure_default_categories seeds the system categories with random Uuid::now_v7 ids, once (guarded by is_system) and on every open via bootstrap(); safe because replicas inherit the rows from the genesis snapshot instead of seeding (personal-cfo-32fmp makes that explicit with the is_replica flag)."
 
 [[site]]
 module = "lib.rs"
@@ -159,7 +159,7 @@ class = "1"
 statements = 1
 status = "bus_internal"
 bead = "personal-cfo-klr.2"
-note = "insert_ledger_account, called from apply/accounts.rs and the system-ledger-account helper that commands call inside their transaction."
+note = "insert_ledger_account has two paths: apply/accounts.rs and ensure_system_ledger_account. The helper is reached from commands (apply, creating a system account lazily for a new currency with a random LedgerAccountId, which personal-cfo-32fmp replaces with a content-derived id) AND from ensure_system_accounts in bootstrap() (genesis seeding, also random ids)."
 
 [[site]]
 module = "lib.rs"

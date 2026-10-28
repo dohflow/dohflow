@@ -112,7 +112,15 @@ fn write_statements(source: &str, tables: &BTreeMap<String, String>) -> Vec<Stri
                 && (i == 0 || upper(words[i - 1]) != "OR"))
                 .then(|| words.get(i + 2).copied())
                 .flatten(),
-            "UPDATE" => words.get(i + 1).copied(),
+            "UPDATE" => {
+                // UPDATE [OR <verb>] <table>
+                let skip = if next(1).as_deref() == Some("OR") {
+                    3
+                } else {
+                    1
+                };
+                words.get(i + skip).copied()
+            }
             "DELETE" => (next(1).as_deref() == Some("FROM"))
                 .then(|| words.get(i + 2).copied())
                 .flatten(),
@@ -295,6 +303,8 @@ fn the_scanner_finds_each_statement_shape_and_ignores_prose_comments_and_test_mo
             conn.execute("INSERT OR IGNORE INTO tags (id) VALUES (?1)", []);
             conn.execute("REPLACE INTO scenarios (id) VALUES (?1)", []);
             conn.execute("UPDATE accounts SET name = ?1", []);
+            conn.execute("UPDATE OR IGNORE tags SET name = ?1", []);
+            conn.execute("UPDATE main.scenarios SET name = ?1", []);
             conn.execute("DELETE FROM scenarios WHERE id = ?1", []);
             conn.execute("INSERT INTO not_a_replicated_table VALUES (1)", []);
             let note = "we update the accounts page";
@@ -313,6 +323,8 @@ fn the_scanner_finds_each_statement_shape_and_ignores_prose_comments_and_test_mo
             "accounts",
             "scenarios",
             "scenarios",
+            "scenarios",
+            "tags",
             "tags",
             "tags"
         ]
