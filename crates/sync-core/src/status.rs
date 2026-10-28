@@ -29,6 +29,7 @@
 use crate::envelope::ReceiverError;
 use crate::header::{ClearHeader, Fingerprint};
 use crate::membership::ChainError;
+use crate::void::HonoredVoid;
 
 /// What a fork or an equivocation looked like (both ids, retained for diagnosis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +98,12 @@ pub enum SyncEvent {
     Halted(HaltEvidence),
     /// Sync stopped at an authenticated-but-invalid envelope.
     EnvelopeInvalid(InvalidEnvelope),
+    /// An honored void skipped the invalid position; the replica applies again from the position
+    /// after `after` (the last skipped position).
+    Resumed {
+        /// The last skipped log position.
+        after: u64,
+    },
 }
 
 impl SyncStatus {
@@ -156,6 +163,22 @@ impl SyncStatus {
         };
         *self = Self::Halted(evidence);
         Some(SyncEvent::Halted(evidence))
+    }
+
+    /// Record that a void was **honored** (see [`crate::void`]): the replica is stopped at exactly
+    /// the void's `seq` (the honor rule requires it), so the stop clears and the replica applies
+    /// again from after the range. A stop anywhere else stays (a void for another position does
+    /// not move it), and a halted replica stays halted: a void is never an answer to a fork.
+    pub fn observe_honored(&mut self, honored: &HonoredVoid) -> Option<SyncEvent> {
+        match self {
+            Self::EnvelopeInvalid(invalid) if invalid.seq == honored.first => {
+                *self = Self::Healthy;
+                Some(SyncEvent::Resumed {
+                    after: honored.last,
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Record the outcome of the receiver checks on the authenticated envelope the service placed

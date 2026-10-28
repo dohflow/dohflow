@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=12 -->
+<!-- vault-format: spec-version=14 -->
 <!-- vault-format: schema-version=59 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,14 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 14` tightens the rule by which a replica honors a void (C.10 "Void records",
+  "When a replica honors it"): only against the stop it reached in log order (every position below
+  `seq` applied or skipped), with the pinned order of checks, the inert reasons split into
+  transient and permanent, `PrecedesRoot` for a snapshot-bootstrapped replica, a different digest
+  at the stop or the same void at two positions surfaced as a suspected fork, and `V` taken only
+  from the replica's own in-order pull; and adds the public honor-rule vectors
+  (`docs/architecture/vectors/void-honor-v1.json`, C.14). No wire layout or existing vector
+  changes.
 - `spec-version = 12` fixes the sequence of stages by which a replica finds an envelope invalid or
   cannot yet judge it (C.4 "When an envelope is found invalid"): the epoch and membership are those
   in force **at the log position**, so the verdict does not depend on how far past it a replica has
@@ -1751,14 +1759,39 @@ log position `V` the service assigns when it appends the void is not in the body
   cover it**: whether a void is honored, and so what a range covers, is decided only by replicas.
   A malicious member can append a void for a *valid* envelope; replicas ignore it, and a later
   genuine void for a poisoned position inside that range must still be accepted and honored.
-- **When a replica honors it.** Only if the replica has itself evaluated position `seq`, in log
-  order, found it invalid, and the void's `command_id` and `envelope_digest` equal what it saw
-  there. The `reason` byte is for audit and diagnosis: a replica that found `seq` invalid for any
-  deterministic reason honors the void, because it cannot apply `seq` either way. Otherwise the
-  void is inert (retained for diagnosis, nothing skipped). So a malicious member cannot void a
-  valid envelope, and spam does nothing. A replica stopped at `N` has evaluated `N` before it can
-  read a void positioned after it. The signer must be an authorized member at the membership head
-  in force at the void's position `V` (C.7 gives each position its epoch).
+- **When a replica honors it.** Only against **the stop it reached in log order**. A replica
+  honors a void only if, in this order of checks (the first that fails decides the outcome, so it
+  is the same on every replica): `V > seq`; no honored void already covers `seq`; `seq` is above
+  the root of the snapshot the replica bootstrapped from (a position at or below the root was
+  never evaluated: the void is inert as `PrecedesRoot`, and the replica treats the root as
+  suspect: it checks the snapshot's recorded voids, evaluates the position from retained
+  evidence, or re-bootstraps from a snapshot at or after `V`); the replica has not applied `seq`
+  (one it applied it found valid); **every position below `seq` is already applied or skipped**
+  (a position verified out of order is not yet "evaluated in log order", and honoring early would
+  let two replicas build different ledgers and push on unreleased state); the replica is stopped
+  at an invalid envelope at exactly `seq` and can judge it; the void's `envelope_digest` equals
+  the digest the replica holds there; and the `command_id` is equal. A void whose digest differs
+  from the replica's at its stop is a **suspected fork**, never a silent inert: an authorized
+  member saw another envelope at `seq` than this replica did, which an honest service (it checks
+  the digest against its index) cannot serve. The replica surfaces it and the engine decides
+  whether to halt. A void with an equal digest and another `command_id` is a signer fault and is
+  inert. The `reason` byte is for audit and diagnosis: a replica stopped at `seq` honors the
+  void whichever reason it states. Otherwise the void is inert (retained for diagnosis, nothing
+  skipped). The inert reasons `NotYetEvaluated` (the frontier is behind `seq`, or the replica is
+  not stopped there yet) and `NotDeterminable` (at `seq` without a verified key) are transient: a
+  replica offers the void again, in log order, when the frontier or its key state changes; every
+  other reason is permanent for that void. So a malicious member cannot void a valid envelope, and
+  spam does nothing. The signer must be an authorized member at the membership head in force at
+  the void's position `V` (C.7 gives each position its epoch), by the same function the service
+  uses, so a member revoked after `V` still signs a valid void for it. A replica stopped or
+  halted keeps verifying membership and epoch records past its stop, or it could not judge a void
+  that follows. `issued_at` is for audit only and is never compared with a clock. `V` comes only
+  from the replica's own in-order pull of the void, never from an index-replay "void claimed by"
+  response, and the same void seen at two positions is a suspected fork, not an idempotent repeat.
+  A **deterministic apply failure** (reason `2`) of an envelope that passes the receiver checks is
+  not yet a stop of the replica, so no replica can honor such a void today; recording that stop,
+  and the `engine_version` rule it needs (an apply failure is deterministic only at one engine
+  version), is separate work.
 - **Range.** An honored void at position `V` skips every command envelope at positions `seq`
   through `V - 1`: later objects were built on a base that included `seq`. Membership and epoch
   records are never skipped (C.6 verifies them independently); an epoch record inside the range
@@ -1907,6 +1940,15 @@ states the outcome as the C.11 failure name and the position of the offending re
 implementation's own error names. The file holds only public data; the seeds that produced it live
 only in the Rust generator (`crates/sync-core/tests/membership_vectors.rs`), which fails if the file
 drifts. A change to the file is a change to this part and follows C.13.
+
+`docs/architecture/vectors/void-honor-v1.json` (`vectors_version` 1) pins the honor rule of C.10
+"Void records" as semantic inputs only: each case is a sequence of offers of a void (its position
+`V`, the `seq`, command id and digest it names) to one replica in a stated state (its status, the
+lowest position it has not applied or skipped, the root of the snapshot it bootstrapped from, and
+whether it can judge the position), with the outcome: honored for the range `seq` to `V - 1`,
+inert for a named reason, or a suspected fork. It includes the in-order requirement, a transient
+void honored once the replica catches up, an inert void that never blocks a later genuine one, and
+the precedence of the checks. A change to the file follows C.13.
 
 `docs/architecture/vectors/envelope-invalid-v1.json` (`vectors_version` 1) pins the pipeline-level
 verdict of C.4 "When an envelope is found invalid": sealed envelope containers built from
