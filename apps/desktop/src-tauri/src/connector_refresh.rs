@@ -211,6 +211,11 @@ fn refresh_one(
     else {
         return JobExecution::Skipped;
     };
+    // A connection that arrived from another device has no token on this one: never attempt a
+    // refresh until the user enters it (personal-cfo-07u).
+    if !connection.has_secret {
+        return JobExecution::Skipped;
+    }
     // Measured from the last refresh of any kind, so a manual refresh counts.
     if let (Some(last), Schedule::Interval { seconds }) =
         (connection.last_synced_at.as_deref(), &claimed.job.schedule)

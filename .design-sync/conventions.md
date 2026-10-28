@@ -11,8 +11,9 @@ always reads correctly.
 Components are self-contained; there is **no theme/context provider to wrap**.
 Render them directly. Two things come from the environment (both already shipped
 in `styles.css`):
-- **Font**: Inter Variable. Numbers use `tabular-nums` globally so currency
-  columns align — always render money/quantities with tabular figures.
+- **Font**: IBM Plex Sans Variable (ADR 0063; Nunito is opt-in for display only, never for
+  numbers). Numbers use `tabular-nums` globally so currency columns align — always render
+  money/quantities with tabular figures.
 - **Dark mode** is a token swap via a `.dark` class on any ancestor
   (e.g. `<html class="dark">`). Every token remaps and the emerald brightens to
   `#12a06b` — don't restyle for dark, just toggle the class.
@@ -29,7 +30,7 @@ hard-code a hex** — use the token utility. Tokens (light + dark both defined):
 | Brand / action | `bg-primary text-primary-foreground` · `bg-secondary` · `bg-destructive text-destructive-foreground` |
 | Borders | `border` (theme border) · `border-input` |
 | Money & status | `text-gain` (positive) · `text-loss` (negative) · `text-warning` · `text-info`; low-opacity tints like `bg-gain/10 border-gain/25` for badges |
-| Charts | `var(--chart-1)` … `var(--chart-5)` — these are **full hex**; reference them as `var(--chart-N)`, never `hsl(var(--chart-N))` |
+| Charts | `var(--chart-1)` … `var(--chart-4)` — **four slots, in order, never cycled** (ADR 0054); these are **full hex**; reference them as `var(--chart-N)`, never `hsl(var(--chart-N))` |
 
 **Money color rule**: positive → `text-gain`, negative → `text-loss`, neutral →
 `text-muted-foreground` or `text-foreground`. Never plain green/red.

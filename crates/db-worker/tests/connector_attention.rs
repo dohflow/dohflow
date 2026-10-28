@@ -99,11 +99,13 @@ fn deleting_a_connection_removes_its_notice() {
     worker.set_connector_attention(other, ONE_BANK).unwrap();
     worker.delete_connector_connection(id).unwrap();
     assert_eq!(attention_of(&worker, other).as_deref(), Some(ONE_BANK));
-    // Re-creating a connection with the same id starts clean (no stale notice from the old one).
-    worker
+    // The deleted connection is a tombstone now (personal-cfo-07u), so its id is never reusable;
+    // a new connection starts clean (no stale notice from the old one).
+    assert!(worker
         .create_connector_connection(id, "other", "mock-access-url", None)
-        .unwrap();
-    assert_eq!(attention_of(&worker, id), None);
+        .is_err());
+    let fresh = connection(&worker);
+    assert_eq!(attention_of(&worker, fresh), None);
 }
 
 #[test]

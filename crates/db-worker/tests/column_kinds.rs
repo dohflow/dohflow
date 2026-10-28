@@ -55,6 +55,9 @@ const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
     // `NaiveDate::to_string()` is `YYYY-MM-DD`, or at most 13 bytes for the extreme years
     // (settings_key_width.rs checks the extremes).
     ("credit_card_cycles", "cycle_close", 16, "construction"),
+    // `upsert_connector_link` rejects a longer provider account id (connector_link_key_width.rs);
+    // the primary key is (connection_id uuid, external_id text): 256 - 17 - 5 = 234.
+    ("connector_account_links", "external_id", 234, "writer"),
 ];
 
 /// BLOB columns that hold a 16-byte identifier although their name does not say so.

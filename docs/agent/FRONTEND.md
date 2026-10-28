@@ -164,8 +164,10 @@ timer under fake timers, stacking, eviction and the three dismissals.
 
 ## 7. Components + styling
 
-- Use the shadcn-style primitives in `@/components/ui` (`Button`, `Input`,
-  `Label`, `Card`); compose classes with `cn()`; import via the `@/*` alias.
+- Use the shadcn-style primitives in `@/components/ui`; compose classes with `cn()`; import via
+  the `@/*` alias. The current set (and what is **not** shared yet, such as a Dialog or a
+  disclosure) is the inventory in
+  [`docs/design-system/design-system.md`](../design-system/design-system.md) section 5.
 - Use the Tailwind theme tokens (`primary`, `secondary`, `loss`, `gain`,
   `warning`, `muted-foreground`, …) — never hard-coded hex. Money uses
   `tabular-nums`. Light + dark must both work.
@@ -204,29 +206,34 @@ behavior from the docs. Our token mapping and design conventions live in
 [`docs/design-system/`](../design-system/) (`design-system.md`, `recipes.md`);
 follow those over upstream defaults.
 
-### 7.2 UI-quality discipline + the Claude Design loop (ADR 0031)
+### 7.2 UI-quality discipline and the design workflow (ADR 0031 and its 2026-10-27 addendum)
 
-How we decide *when to just build vs. mock first* is [ADR 0031](../adr/0031-ui-quality-and-design-workflow.md).
-The short version:
+How we decide *when to just build vs. design first* is [ADR 0031](../adr/0031-ui-quality-and-design-workflow.md)
+and its addendum. The short version:
 
-- **Shared primitives are the quality lever.** Promote the `recipes.md` components
-  (chart, table, dialog, form) into `@/components/ui` and **compose** them; don't
-  hand-roll a new table/chart per view. That inconsistency is what made the app stop
-  "feeling like shadcn." Tracked by `personal-cfo-4d8.6`.
-- **Three routing lanes:** *mechanical/correctness* (layout bug, wrong value) → just
-  fix; *compose-from-primitives* (cards + shared table/chart/dialog/form) → build
-  directly against `design-system.md` + the gallery; *net-new/complex screen* → mock
-  in Claude Design first.
-- **The agent can't drive Claude Design** (`/design-sync` needs interactive auth). For
-  a net-new screen, the agent writes a ready-to-paste Claude Design prompt into the
-  bead's `design` field (purpose, data, 4 states, primitives, tokens, light+dark);
-  the maintainer mocks; the agent implements to match and drops a screenshot into
-  [`docs/design-system/screenshots/`](../design-system/screenshots/).
-- **`/design-sync` stays deferred** until the four primitives are real code
-  (≈8–12 components); see the `claude-design-design-sync-is-deferred-not-abandoned`
-  memory.
-- **Track UI-quality gaps as their own beads** under the UX epic (`personal-cfo-4d8`),
-  same as functional gaps.
+- **Two sources of truth.** **Paper** (the Desktop Studio's design file) is the source of truth
+  for design **intent**; the repository is the source of truth for what **shipped**. Tokens still
+  follow `globals.css`. [`docs/design-system/`](../design-system/) and this file describe the
+  shipped implementation and map Paper to code (`design-system.md` section 10); they never claim
+  something shipped because Paper draws it. A difference between the two is a **bead**, not a
+  silent edit on either side.
+- **Shared primitives are the quality lever.** Compose what is in `@/components/ui` (inventory in
+  `design-system.md` section 5); don't hand-roll a new table, chart or confirm per view. That
+  inconsistency is what made the app stop "feeling like shadcn." Tracked by `personal-cfo-4d8.6`.
+- **Three routing lanes:** *mechanical/correctness* (layout bug, wrong value) → just fix;
+  *compose-from-primitives* (cards + the shared table/chart/form) → build directly against
+  `design-system.md`; *net-new/complex screen* → **designed in Paper by the Desktop Studio**.
+- **A build that implements a Paper design cites the Paper version** (page and freeze) in the bead
+  and in the `design-system.md` section 10 row. **Source drift that affects approved behavior,
+  wording or tokens goes back to the Studio before coding.**
+- **Claude is still fine for simple mockups and small in-app tweaks.** Those are not
+  authoritative and do not replace the Paper design for a lane-3 screen. The agent does not drive
+  a design tool itself. `/design-sync` is unchanged and not re-enabled by the addendum.
+- **Hand back what you ship.** When a merged change is something the Studio compares against, the
+  bead records the merged commit and the evidence (screenshots of **fake data only**) and carries
+  the Studio's handoff labels.
+- **Track UI-quality gaps as their own beads** under the UX epic (`personal-cfo-4d8`), same as
+  functional gaps.
 
 ### 7.3 Theme (dark mode) — personal-cfo-17u1
 
@@ -284,6 +291,126 @@ handled; hard-code a hex and you've silently opted out of dark mode for that one
   native controls/scrollbars match an explicit override even when it disagrees with
   macOS — declaring `light dark` on `:root` instead would let the browser pick by
   system preference alone and ignore the override.
+
+### 7.4 Page layout: priority-ordered and container-aware
+
+The convention every page follows when it arranges more than one block. It comes from the Settings
+layout work (`personal-cfo-twpo.3`), whose reviewed specification is
+[`docs/design-system/settings-layout-review.md`](../design-system/settings-layout-review.md) (merged
+in #187), and from the Paper layout contract **LCR-1 v1** (page `p-8-0`, frozen 2026-10-27
+15:21:48 UTC, hash `0afec932`; `design-system.md` section 10). Settings is the first page to apply
+it (`personal-cfo-4d8.39`); the numbers below are Settings' and are examples of the method, not
+constants for every page.
+
+**The rules**
+
+1. **Measure the container, not the window.** The width that matters is the **usable width of the
+   main pane**: what is left after the sidebar and the page's horizontal insets. The sidebar can
+   collapse, so one window gives two usable widths and a layout keyed to the window gets one of
+   them wrong. Mark the page wrapper `@container` (it needs a definite width, such as `w-full`) and switch with
+   container variants (`@min-[656px]:`), not viewport breakpoints (`md:`, `lg:`). Container
+   queries and `subgrid` are supported by the WebKit that macOS 14 ships (14 is the minimum
+   supported version today, ADR 0065).
+2. **Decide the columns from the smallest tile that still reads.** A closed tile needs a minimum
+   width (Settings: 320px) and gutters are fixed (16px), so the column count falls out of the
+   usable width (Settings: three from 992px, two from 656px, otherwise one). State the thresholds
+   for the page; do not guess per card.
+3. **Spans are explicit, per section, per width.** Write the map (a table: group and state by
+   three, two and one columns) and implement exactly that. A deliberate full-row item is allowed
+   and is stated; **no orphan** cell and no auto-placement filling a gap.
+4. **Priority order is source order.** The DOM order is the reading order and the focus order at
+   **every** width. **No dense packing** (`grid-flow-dense`) and no visual reordering (`order-*`)
+   to make a layout fit.
+5. **Collapsed siblings are as tall as the tallest in their actual row, at their natural height.**
+   Equalize within the row the browser lays out, not across the page. **Never** a global height,
+   a fixed height or a line clamp to force equality, and nothing is clipped. An **expanded**
+   editor keeps its natural height.
+6. **Parallel controls align at their top edges** on shared tracks (a grid with `subgrid` rows, so
+   the tracks are the same across siblings), **preserving the source control sizes** (40, 36 and
+   32px). **Help text sits below the control.** Labels, help and errors **wrap and grow their
+   row**; when the lanes cannot fit, they **stack**.
+7. **Errors grow naturally and keep their controls.** An error or a remedy is never cut off and
+   its action never leaves the page. A narrow stress width (Settings' 368px example) is a stress
+   fixture, **not** a promised minimum.
+
+**Good and bad**
+
+```tsx
+// GOOD: the container decides; spans are explicit; DOM order is the reading order.
+<div className="@container">
+  <div className="grid gap-4 @min-[656px]:grid-cols-2 @min-[992px]:grid-cols-3">
+    <Card>{/* backups */}</Card>
+    <Card>{/* comfort */}</Card>
+    {/* deliberate: the third item takes the full row at two columns, one cell at three */}
+    <Card className="@min-[656px]:col-span-2 @min-[992px]:col-span-1">{/* categorization */}</Card>
+  </div>
+</div>
+
+// GOOD: parallel controls share the parent's row tracks, so the controls' tops align whatever
+// each label's height. DOM order stays lane by lane (label, then its control).
+<div className="grid grid-cols-2 gap-x-4">
+  <div className="row-span-2 grid grid-rows-subgrid gap-y-2">
+    <Label>Household timezone</Label>
+    <NativeSelect />
+  </div>
+  <div className="row-span-2 grid grid-rows-subgrid gap-y-2">
+    <Label>Base currency</Label>
+    <Input />
+  </div>
+</div>
+```
+
+```tsx
+// BAD: viewport breakpoints. The sidebar changes the usable width, so "lg" lies.
+<div className="grid lg:grid-cols-3">
+
+// BAD: dense packing / visual reorder: the focus order no longer matches what the eye reads.
+<div className="grid grid-flow-dense"> <Card className="order-last" />
+
+// BAD: forcing equal height by clipping or capping it. Long text is lost.
+<Card className="h-[148px] overflow-hidden"> <p className="line-clamp-2" />
+
+// BAD: unequal collapsed siblings in one row (ragged edges) from self-start.
+<div className="grid items-start">
+```
+
+**LCR-1 pre-owner visual check.** Before a layout is shown to the owner, each of these holds, with
+evidence:
+
+- [ ] Collapsed siblings are the tallest's natural height within each actual row; none clipped;
+      no global height.
+- [ ] Expanded editors are natural height.
+- [ ] Parallel control tops align; control sizes are the source sizes; help is below.
+- [ ] Long labels, help and errors grow rows; lanes stack when they cannot fit.
+- [ ] Each section's span map is right at every width, with any full-row item deliberate, no
+      orphan and no dense reorder.
+- [ ] DOM and focus order is source order at every width.
+
+**Evidence.** Capture it at **actual** usable widths and **on each side of every transition**
+(Settings: 992/991px and 656/655px), with the sidebar **open and closed**, in **Light and Dark**,
+with **long and absent** summaries, and in **open, closed, mixed, error and partial** states.
+Screenshots use **fake data only**. A **Designer critique** and an **independent review at the
+exact freeze, manifest and commit** come before the owner sees it. Layout evidence does **not**
+establish contrast: the required form-control boundary gap (`personal-cfo-4d8.35`) stays a release
+blocker and is not waived by a layout approval.
+
+### 7.5 The shared disclosure (A2): contract and what exists
+
+The Paper contract **A2** (page `p-7-0`, frozen 2026-10-26 05:24:16 UTC) is a heading button that
+opens and closes a section. Its behavior is specified in
+[`settings-layout-review.md`](../design-system/settings-layout-review.md). It is **not built**:
+`personal-cfo-4d8.38` proposes a shared component. Until it merges, treat every row below as the
+contract to build to, and the "today" column as the truth.
+
+| A2 contract | On `main` today |
+|-------------|-----------------|
+| One native trigger button inside the heading, with a stable name, `aria-expanded` and `aria-controls`; Enter and Space activate; Tab follows source order | No shared component. Individual screens implement their own (`accounts/AccountsView.tsx`, `accounts/CreditCardsView.tsx`, `future-cash/NeedsConfirmation.tsx`, `future-cash/ProjectedActivityTable.tsx`, `transactions/TransactionFilterBar.tsx`), with varying semantics; reconcile them before reuse |
+| Sections expand independently; the DOM is stable | Per screen |
+| Focus returns to the trigger **before** focused content is hidden; a hidden body leaves keyboard and accessibility navigation while ordinary drafts survive | Not provided |
+| Errors, complete remedies and the one relevant action stay **outside** the hidden body; exactly one active retry; collapse never submits, discards drafts or cancels work | Not provided |
+| Destructive confirmations that are open, armed or irreversibly busy pin every ancestor open (focusable `aria-disabled` triggers); explicit Cancel resets and returns focus without collapsing; a blocking key rotation makes the rest of the app inert and cannot be dismissed | The rotation card exists (`settings/RotateKeyCard.tsx`); the ancestor pinning does not |
+| Summaries reflect real data and never claim healthy or verified while loading or failed | None; the collapsed summaries are not shipped |
+| Respect reduced motion; announce a state change once; errors persist | Per screen |
 
 ## 8. Testing
 

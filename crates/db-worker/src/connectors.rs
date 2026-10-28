@@ -1,12 +1,20 @@
 //! Connector-connection storage (personal-cfo-gglk, ADR 0060 §1).
 //!
-//! One `connector_connections` row per linked aggregator connection; the
-//! `credential` column holds the provider access credential (SimpleFIN: the
-//! access URL) — encrypted at rest by SQLCipher like every other column, and
-//! stored in the vault deliberately so backup/restore round-trips the
-//! connection. `connector_account_links` maps the provider's external
-//! accounts (connector-core account keys) onto real accounts and carries the
-//! per-account sync watermark.
+//! One `connector_connections` row per linked aggregator connection: its IDENTITY (provider,
+//! display hint, created/updated, the `deleted_at` tombstone), class 1. The provider access
+//! credential (SimpleFIN: the access URL), the last refresh time and the last error live in the
+//! class-3 `connector_connection_secrets` row of THIS device (personal-cfo-07u, migration 60),
+//! encrypted at rest by SQLCipher like every other column and stored in the vault deliberately so
+//! backup/restore round-trips the connection on this device. `connector_account_links` maps the
+//! provider's external accounts (connector-core account keys) onto real accounts (class 1); the
+//! per-account sync watermark is this device's own cursor in `connector_link_cursors` (class 3).
+//!
+//! A connection whose identity exists but has no secret row on this device (it was created on
+//! another device) has no credential here: it is listed with `has_secret = false`, never
+//! refreshes, and entering a token ([`DbWorker::set_connector_credential`]) inserts only the secret
+//! row, never a second identity or mapping. Deleting a connection is a TOMBSTONE of the identity
+//! (the fourth soft delete after SYNC-2b's three): a hard delete replicated to another device
+//! would leave that device's class-3 rows pointing at a vanished identity.
 //!
 //! Configuration, not ledger mutations — like `settings` / `vault_metadata` /
 //! `parser_runs`, everything here bypasses the `WriteCommand` bus.
@@ -47,8 +55,14 @@ pub struct ConnectorConnectionRow {
     pub id: Uuid,
     pub adapter_id: String,
     pub display_hint: Option<String>,
+    /// This device's last refresh time (from its secret row; `None` without one).
     pub last_synced_at: Option<String>,
+    /// This device's last refresh error (from its secret row; `None` without one).
     pub last_error: Option<String>,
+    /// Whether THIS device holds a credential for the connection. `false` means the identity
+    /// arrived from another device and the user must enter a token here; such a connection never
+    /// refreshes.
+    pub has_secret: bool,
     /// The connection's re-authentication notice as stored JSON (migration 58,
     /// `connector_attention`; personal-cfo-pxi.22), `None` when there is none. The desktop layer
     /// writes and parses it; nothing else interprets it.
@@ -97,6 +111,55 @@ pub struct ConnectorLinkRow {
     pub currency: Option<String>,
 }
 
+/// The longest `connector_account_links.external_id`, in UTF-8 bytes. The link's primary key is
+/// `(connection_id, external_id)`, and the canonical row encoding caps a primary key at 256
+/// bytes (vault-format.md C.1.5): a uuid is a tag byte and 16 bytes (17) and a text key is a tag
+/// byte, a `u32` length and the bytes (5 + len), so 256 - 17 - 5 = 234. A longer provider account
+/// id is rejected with a typed error, never truncated (an adapter's account key is part of the
+/// identity, ADR 0074 Addendum B). A `column_kinds` test pins this against the encoder.
+pub const MAX_LINK_EXTERNAL_ID_BYTES: usize = 234;
+
+/// The audit event recorded when a device removes the token of a connection that was deleted.
+pub const CONNECTOR_SECRET_REMOVED_EVENT: &str = "connector.token_removed_connection_deleted";
+
+fn insert_identity(
+    conn: &rusqlite::Connection,
+    id: Uuid,
+    adapter_id: &str,
+    display_hint: Option<&str>,
+    now: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO connector_connections (id, adapter_id, display_hint, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![id, adapter_id, display_hint, now],
+    )?;
+    Ok(())
+}
+
+/// Scrub and remove THIS device's rows for a connection: the credential is overwritten with an
+/// empty value before the row is deleted, then the cursors and the notice go. The class-1 identity
+/// and mapping are untouched.
+fn scrub_local_rows(tx: &rusqlite::Transaction<'_>, id: Uuid) -> Result<(), DbError> {
+    tx.execute(
+        "UPDATE connector_connection_secrets SET credential = '' WHERE connection_id = ?1",
+        params![id],
+    )?;
+    tx.execute(
+        "DELETE FROM connector_connection_secrets WHERE connection_id = ?1",
+        params![id],
+    )?;
+    tx.execute(
+        "DELETE FROM connector_link_cursors WHERE connection_id = ?1",
+        params![id],
+    )?;
+    tx.execute(
+        "DELETE FROM connector_attention WHERE connection_id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
 impl DbWorker {
     /// Create a connection. The caller supplies the id so the IPC layer can
     /// return it without a read-back.
@@ -112,12 +175,68 @@ impl DbWorker {
     ) -> Result<(), DbError> {
         let now = Utc::now().to_rfc3339();
         let guard = self.lock();
-        guard.conn.execute(
-            "INSERT INTO connector_connections
-                (id, adapter_id, credential, display_hint, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-            params![id, adapter_id, credential, display_hint, now],
+        let tx = guard.conn.unchecked_transaction()?;
+        insert_identity(&tx, id, adapter_id, display_hint, &now)?;
+        tx.execute(
+            "INSERT INTO connector_connection_secrets (connection_id, credential, updated_at)
+             VALUES (?1, ?2, ?3)",
+            params![id, credential, now],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Create only the connection IDENTITY (class 1): what a replica gets when another device's
+    /// connection is applied. It has no secret row here, lists with `has_secret = false`, never
+    /// refreshes, and waits for the user to enter a token on this device
+    /// ([`Self::set_connector_credential`]).
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a write failure (including an id that already exists, deleted or not).
+    pub fn create_connector_identity(
+        &self,
+        id: Uuid,
+        adapter_id: &str,
+        display_hint: Option<&str>,
+    ) -> Result<(), DbError> {
+        let now = Utc::now().to_rfc3339();
+        let guard = self.lock();
+        insert_identity(&guard.conn, id, adapter_id, display_hint, &now)
+    }
+
+    /// Enter (or replace) THIS device's credential for an existing connection: inserts only the
+    /// local secret row, never a second identity or mapping. A connection created on another
+    /// device has an identity here and no secret until this is called. A tombstoned or unknown
+    /// connection is refused. A replaced credential clears the previous error and keeps the last
+    /// refresh time.
+    ///
+    /// # Errors
+    /// [`DbError::InvalidCommand`] for an unknown or deleted connection; [`DbError::Sqlite`] on a
+    /// write failure.
+    pub fn set_connector_credential(&self, id: Uuid, credential: &str) -> Result<(), DbError> {
+        let now = Utc::now().to_rfc3339();
+        let guard = self.lock();
+        let tx = guard.conn.unchecked_transaction()?;
+        let live: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM connector_connections
+                             WHERE id = ?1 AND deleted_at IS NULL)",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if !live {
+            return Err(DbError::InvalidCommand(
+                "unknown connector connection".to_owned(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO connector_connection_secrets (connection_id, credential, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (connection_id) DO UPDATE
+                SET credential = excluded.credential, last_error = NULL,
+                    updated_at = excluded.updated_at",
+            params![id, credential, now],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -128,10 +247,12 @@ impl DbWorker {
     pub fn connector_connections(&self) -> Result<Vec<ConnectorConnectionRow>, DbError> {
         let conn = self.read_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT c.id, c.adapter_id, c.display_hint, c.last_synced_at, c.last_error,
-                    a.attention, c.created_at
+            "SELECT c.id, c.adapter_id, c.display_hint, s.last_synced_at, s.last_error,
+                    a.attention, c.created_at, s.connection_id IS NOT NULL
                FROM connector_connections c
+               LEFT JOIN connector_connection_secrets s ON s.connection_id = c.id
                LEFT JOIN connector_attention a ON a.connection_id = c.id
+              WHERE c.deleted_at IS NULL
               ORDER BY c.created_at, c.id",
         )?;
         let rows = stmt
@@ -144,14 +265,15 @@ impl DbWorker {
                     last_error: r.get(4)?,
                     attention: r.get(5)?,
                     created_at: r.get(6)?,
+                    has_secret: r.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    /// Whether a connection row exists — WITHOUT selecting the credential
-    /// column, so existence checks never materialize the secret. Doubles as
+    /// Whether a live (not tombstoned) connection exists — WITHOUT selecting the credential,
+    /// so existence checks never materialize the secret. Doubles as
     /// the vault-identity witness for in-flight syncs: a switched vault has
     /// no such row, so phase-3 writes abort instead of bleeding cross-vault.
     ///
@@ -161,7 +283,7 @@ impl DbWorker {
         let conn = self.read_connection()?;
         let found = conn
             .query_row(
-                "SELECT 1 FROM connector_connections WHERE id = ?1",
+                "SELECT 1 FROM connector_connections WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
                 |_| Ok(()),
             )
@@ -192,15 +314,19 @@ impl DbWorker {
         .map_err(DbError::from)
     }
 
-    /// The stored credential for one connection. Callers treat the value as a
-    /// secret immediately (wrap, never log).
+    /// This device's stored credential for one live connection, `None` when it has none (the
+    /// connection came from another device, or was deleted). Callers treat the value as a secret
+    /// immediately (wrap, never log).
     ///
     /// # Errors
     /// [`DbError::Sqlite`] on a read failure.
     pub fn connector_credential(&self, id: Uuid) -> Result<Option<String>, DbError> {
         self.read_connection()?
             .query_row(
-                "SELECT credential FROM connector_connections WHERE id = ?1",
+                "SELECT s.credential
+                   FROM connector_connection_secrets s
+                   JOIN connector_connections c ON c.id = s.connection_id
+                  WHERE s.connection_id = ?1 AND c.deleted_at IS NULL",
                 params![id],
                 |r| r.get(0),
             )
@@ -208,29 +334,74 @@ impl DbWorker {
             .map_err(DbError::from)
     }
 
-    /// Forget a connection: its links first, then the row (no PRAGMA
-    /// foreign-key reliance). Staged/committed data from past syncs is ledger
-    /// history and is deliberately untouched.
+    /// Forget a connection: TOMBSTONE its identity (`deleted_at`) and remove this device's
+    /// local rows for it (credential scrubbed first, cursors, notice). The mapping rows stay but
+    /// are ignored (every reader joins the live identity), so a Sync replica never sees a vanished
+    /// identity. Staged/committed data from past syncs is ledger history and is deliberately
+    /// untouched. Deleting an unknown or already-deleted connection is a no-op.
     ///
     /// # Errors
     /// [`DbError::Sqlite`] on a write failure.
     pub fn delete_connector_connection(&self, id: Uuid) -> Result<(), DbError> {
+        let now = Utc::now().to_rfc3339();
         let guard = self.lock();
         let tx = guard.conn.unchecked_transaction()?;
+        scrub_local_rows(&tx, id)?;
         tx.execute(
-            "DELETE FROM connector_account_links WHERE connection_id = ?1",
-            params![id],
-        )?;
-        tx.execute(
-            "DELETE FROM connector_attention WHERE connection_id = ?1",
-            params![id],
-        )?;
-        tx.execute(
-            "DELETE FROM connector_connections WHERE id = ?1",
-            params![id],
+            "UPDATE connector_connections SET deleted_at = ?2, updated_at = ?2
+              WHERE id = ?1 AND deleted_at IS NULL",
+            params![id, now],
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The device-local cleanup AFTER a rebase swap: for every connection whose identity was
+    /// tombstoned (here or, after a Sync, on another device), scrub the credential and remove this
+    /// device's secret, cursors and notice, and record an audit event ("token removed:
+    /// connection deleted"). Returns how many connections it cleaned. Idempotent.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a write failure.
+    pub fn scrub_tombstoned_connector_secrets(&self) -> Result<u32, DbError> {
+        let guard = self.lock();
+        let tx = guard.conn.unchecked_transaction()?;
+        let ids: Vec<(Uuid, bool)> = {
+            // Every tombstoned connection that still has ANY local row, not only those with a
+            // secret: a stray cursor or notice left under a tombstone is cleaned too.
+            let mut stmt = tx.prepare(
+                "SELECT c.id,
+                        EXISTS (SELECT 1 FROM connector_connection_secrets s
+                                 WHERE s.connection_id = c.id)
+                   FROM connector_connections c
+                  WHERE c.deleted_at IS NOT NULL
+                    AND (EXISTS (SELECT 1 FROM connector_connection_secrets s
+                                  WHERE s.connection_id = c.id)
+                      OR EXISTS (SELECT 1 FROM connector_link_cursors k
+                                  WHERE k.connection_id = c.id)
+                      OR EXISTS (SELECT 1 FROM connector_attention a
+                                  WHERE a.connection_id = c.id))
+                  ORDER BY c.id",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, Uuid>(0)?, r.get::<_, bool>(1)?)))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let now = Utc::now().to_rfc3339();
+        for (id, had_secret) in &ids {
+            scrub_local_rows(&tx, *id)?;
+            // The audit event records a removed TOKEN; a stray cursor or notice is cleaned
+            // without one. A system event, not a command: it gets its own ids.
+            if *had_secret {
+                let event = Uuid::now_v7();
+                tx.execute(
+                    "INSERT INTO audit_events (id, event_type, command_id, correlation_id, created_at)
+                     VALUES (?1, ?2, ?3, ?3, ?4)",
+                    params![Uuid::now_v7(), CONNECTOR_SECRET_REMOVED_EVENT, event, now],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(u32::try_from(ids.len()).unwrap_or(u32::MAX))
     }
 
     /// Upsert a discovered external account. A re-discovery refreshes the
@@ -249,12 +420,21 @@ impl DbWorker {
         external_name: Option<&str>,
         currency: Option<&str>,
     ) -> Result<(), DbError> {
+        if external_id.len() > MAX_LINK_EXTERNAL_ID_BYTES {
+            return Err(DbError::ReplicatedKeyTooLong {
+                table: "connector_account_links",
+            });
+        }
         let now = Utc::now().to_rfc3339();
         let guard = self.lock();
+        // Never writes under a tombstoned identity: an offline refresh that races a delete on
+        // another device must not resurrect the connection (it queues for disposition instead).
         guard.conn.execute(
             "INSERT INTO connector_account_links
                 (connection_id, external_id, external_name, currency, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?5
+              WHERE EXISTS (SELECT 1 FROM connector_connections
+                             WHERE id = ?1 AND deleted_at IS NULL)
              ON CONFLICT(connection_id, external_id) DO UPDATE SET
                  external_name = excluded.external_name,
                  currency = COALESCE(excluded.currency, connector_account_links.currency),
@@ -277,8 +457,10 @@ impl DbWorker {
         let conn = self.read_connection()?;
         let currency = conn
             .query_row(
-                "SELECT currency FROM connector_account_links
-                  WHERE connection_id = ?1 AND external_id = ?2",
+                "SELECT l.currency
+                   FROM connector_account_links l
+                   JOIN connector_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL
+                  WHERE l.connection_id = ?1 AND l.external_id = ?2",
                 params![connection_id, external_id],
                 |r| r.get::<_, Option<String>>(0),
             )
@@ -297,13 +479,10 @@ impl DbWorker {
         account_id: Option<Uuid>,
     ) -> Result<(), DbError> {
         let guard = self.lock();
-        let changed = guard.conn.execute(
-            // Any (re)mapping clears the watermark: a newly-targeted account
-            // must receive the full history on its next sync (a stale
-            // watermark would silently skip it forever). Dedupe is scoped by
-            // account, so the re-walk commits cleanly.
+        let tx = guard.conn.unchecked_transaction()?;
+        let changed = tx.execute(
             "UPDATE connector_account_links
-                SET account_id = ?3, last_synced_on = NULL, updated_at = ?4
+                SET account_id = ?3, updated_at = ?4
               WHERE connection_id = ?1 AND external_id = ?2",
             params![
                 connection_id,
@@ -317,6 +496,14 @@ impl DbWorker {
                 "unknown connector account link".to_owned(),
             ));
         }
+        // Any (re)mapping clears this device's watermark: a newly-targeted account must receive
+        // the full history on its next sync (a stale watermark would silently skip it forever).
+        // Dedupe is scoped by account, so the re-walk commits cleanly.
+        tx.execute(
+            "DELETE FROM connector_link_cursors WHERE connection_id = ?1 AND external_id = ?2",
+            params![connection_id, external_id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -327,11 +514,14 @@ impl DbWorker {
     pub fn connector_links(&self, connection_id: Uuid) -> Result<Vec<ConnectorLinkRow>, DbError> {
         let conn = self.read_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT connection_id, external_id, external_name, account_id, last_synced_on,
-                    currency
-               FROM connector_account_links
-              WHERE connection_id = ?1
-              ORDER BY external_name, external_id",
+            "SELECT l.connection_id, l.external_id, l.external_name, l.account_id, k.last_synced_on,
+                    l.currency
+               FROM connector_account_links l
+               JOIN connector_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL
+               LEFT JOIN connector_link_cursors k
+                      ON k.connection_id = l.connection_id AND k.external_id = l.external_id
+              WHERE l.connection_id = ?1
+              ORDER BY l.external_name, l.external_id",
         )?;
         let rows = stmt
             .query_map(params![connection_id], |r| {
@@ -362,7 +552,7 @@ impl DbWorker {
         let mut stmt = conn.prepare(
             "SELECT l.connection_id, c.adapter_id, c.display_hint, l.external_id, l.external_name
                FROM connector_account_links l
-               JOIN connector_connections c ON c.id = l.connection_id
+               JOIN connector_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL
               WHERE l.account_id = ?1
               ORDER BY c.created_at, c.id, l.external_name, l.external_id",
         )?;
@@ -380,8 +570,9 @@ impl DbWorker {
         Ok(rows)
     }
 
-    /// Record a sync attempt's outcome on the connection row. `error: None`
-    /// clears a previous error (the connection is healthy again).
+    /// Record a sync attempt's outcome on this device's secret row. `error: None` clears a
+    /// previous error (the connection is healthy again). A connection with no secret row here is
+    /// a no-op.
     ///
     /// # Errors
     /// [`DbError::Sqlite`] on a write failure.
@@ -393,9 +584,9 @@ impl DbWorker {
         let now = Utc::now().to_rfc3339();
         let guard = self.lock();
         guard.conn.execute(
-            "UPDATE connector_connections
+            "UPDATE connector_connection_secrets
                 SET last_synced_at = ?2, last_error = ?3, updated_at = ?2
-              WHERE id = ?1",
+              WHERE connection_id = ?1",
             params![connection_id, now, error.map(sanitize_error)],
         )?;
         Ok(())
@@ -417,7 +608,8 @@ impl DbWorker {
         let guard = self.lock();
         let tx = guard.conn.unchecked_transaction()?;
         let exists: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM connector_connections WHERE id = ?1)",
+            "SELECT EXISTS (SELECT 1 FROM connector_connections
+                             WHERE id = ?1 AND deleted_at IS NULL)",
             params![connection_id],
             |r| r.get(0),
         )?;
@@ -468,10 +660,16 @@ impl DbWorker {
         let tx = guard.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
-                "UPDATE connector_account_links
-                    SET last_synced_on = ?3, updated_at = ?4
-                  WHERE connection_id = ?1 AND external_id = ?2
-                    AND account_id IS NOT NULL",
+                "INSERT INTO connector_link_cursors
+                    (connection_id, external_id, last_synced_on, updated_at)
+                 SELECT l.connection_id, l.external_id, ?3, ?4
+                   FROM connector_account_links l
+                   JOIN connector_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL
+                  WHERE l.connection_id = ?1 AND l.external_id = ?2
+                    AND l.account_id IS NOT NULL
+                 ON CONFLICT (connection_id, external_id) DO UPDATE
+                    SET last_synced_on = excluded.last_synced_on,
+                        updated_at = excluded.updated_at",
             )?;
             for external_id in advance_external_ids {
                 stmt.execute(params![connection_id, external_id, synced_on, now])?;
@@ -491,9 +689,9 @@ impl DbWorker {
     pub fn clear_connector_error(&self, connection_id: Uuid) -> Result<(), DbError> {
         let guard = self.lock();
         guard.conn.execute(
-            "UPDATE connector_connections
+            "UPDATE connector_connection_secrets
                 SET last_error = NULL, updated_at = ?2
-              WHERE id = ?1",
+              WHERE connection_id = ?1",
             params![connection_id, Utc::now().to_rfc3339()],
         )?;
         Ok(())
@@ -508,9 +706,9 @@ impl DbWorker {
     pub fn record_connector_error(&self, connection_id: Uuid, error: &str) -> Result<(), DbError> {
         let guard = self.lock();
         guard.conn.execute(
-            "UPDATE connector_connections
+            "UPDATE connector_connection_secrets
                 SET last_error = ?2, updated_at = ?3
-              WHERE id = ?1",
+              WHERE connection_id = ?1",
             params![
                 connection_id,
                 sanitize_error(error),
@@ -550,5 +748,187 @@ impl DbWorker {
             },
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CANARY: &str = "https://canary-user:canary-pass@bridge.invalid/simplefin";
+
+    fn worker() -> (tempfile::TempDir, DbWorker) {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = DbWorker::open(dir.path().join("t.vault"), "correct horse battery").unwrap();
+        (dir, worker)
+    }
+
+    fn count(worker: &DbWorker, table: &str) -> i64 {
+        worker
+            .read_connection()
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Another device deleted the connection: its tombstone reaches this device as a plain
+    /// `deleted_at` on the identity (a replicated class-1 write), leaving this device's secret,
+    /// cursor and notice rows behind. The post-swap cleanup scrubs and removes them and audits
+    /// it; the identity and mapping are untouched; running it again does nothing.
+    #[test]
+    fn a_connection_tombstoned_on_another_device_has_its_local_secret_scrubbed_and_audited() {
+        let (_dir, worker) = worker();
+        let gone = Uuid::now_v7();
+        let kept = Uuid::now_v7();
+        for id in [gone, kept] {
+            worker
+                .create_connector_connection(id, "simplefin", CANARY, None)
+                .unwrap();
+            worker
+                .upsert_connector_link(id, "acct-1", None, None)
+                .unwrap();
+            worker
+                .set_connector_attention(id, r#"{"kind":"relink_connection"}"#)
+                .unwrap();
+        }
+        // The replicated tombstone (written by apply, not by this device's own delete).
+        worker
+            .lock()
+            .conn
+            .execute(
+                "UPDATE connector_connections SET deleted_at = '2026-10-26T00:00:00Z' WHERE id = ?1",
+                params![gone],
+            )
+            .unwrap();
+        assert_eq!(count(&worker, "connector_connection_secrets"), 2);
+
+        assert_eq!(worker.scrub_tombstoned_connector_secrets().unwrap(), 1);
+
+        assert_eq!(worker.connector_credential(gone).unwrap(), None);
+        assert_eq!(
+            worker.connector_credential(kept).unwrap().as_deref(),
+            Some(CANARY)
+        );
+        assert_eq!(count(&worker, "connector_connection_secrets"), 1);
+        assert_eq!(count(&worker, "connector_attention"), 1);
+        assert_eq!(
+            count(&worker, "connector_connections"),
+            2,
+            "the identity stays as a tombstone"
+        );
+        assert_eq!(
+            count(&worker, "connector_account_links"),
+            2,
+            "the mapping is untouched"
+        );
+        assert_eq!(
+            worker
+                .audit_event_count(CONNECTOR_SECRET_REMOVED_EVENT)
+                .unwrap(),
+            1
+        );
+        // Idempotent.
+        assert_eq!(worker.scrub_tombstoned_connector_secrets().unwrap(), 0);
+        assert_eq!(
+            worker
+                .audit_event_count(CONNECTOR_SECRET_REMOVED_EVENT)
+                .unwrap(),
+            1
+        );
+    }
+
+    /// A refresh that races a delete advances a cursor after the tombstone landed: nothing is
+    /// written under a tombstoned identity, and if a stray cursor or notice is somehow left
+    /// there (written before a replicated tombstone arrived), the cleanup removes it even though
+    /// no secret row exists, without recording a token removal.
+    #[test]
+    fn nothing_is_written_under_a_tombstone_and_a_stray_cursor_or_notice_is_cleaned() {
+        let (_dir, worker) = worker();
+        let id = Uuid::now_v7();
+        worker
+            .create_connector_connection(id, "simplefin", CANARY, None)
+            .unwrap();
+        worker
+            .upsert_connector_link(id, "acct-1", None, None)
+            .unwrap();
+        // Map the link directly (no ledger account needed for this check).
+        worker
+            .lock()
+            .conn
+            .execute(
+                "UPDATE connector_account_links SET account_id = NULL WHERE connection_id = ?1",
+                params![id],
+            )
+            .unwrap();
+        worker.delete_connector_connection(id).unwrap();
+
+        // A late advance writes nothing (the link is not even mapped, and the identity is gone).
+        worker
+            .advance_connector_watermarks(id, "2026-10-27", &["acct-1".to_owned()])
+            .unwrap();
+        assert_eq!(count(&worker, "connector_link_cursors"), 0);
+        assert_eq!(worker.connector_link_currency(id, "acct-1").unwrap(), None);
+
+        // A stray cursor and notice with no secret row (planted as a replicated tombstone landing
+        // after this device's writes would leave them): the cleanup removes both.
+        worker
+            .lock()
+            .conn
+            .execute_batch(&format!(
+                "INSERT INTO connector_link_cursors (connection_id, external_id, last_synced_on, updated_at)
+                     VALUES (x'{hex}', 'acct-1', '2026-10-27', '2026-10-27T00:00:00Z');
+                 INSERT INTO connector_attention (connection_id, attention, updated_at)
+                     VALUES (x'{hex}', '{{}}', '2026-10-27T00:00:00Z');",
+                hex = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ))
+            .unwrap();
+        assert_eq!(count(&worker, "connector_link_cursors"), 1);
+        assert_eq!(count(&worker, "connector_connection_secrets"), 0);
+        assert_eq!(worker.scrub_tombstoned_connector_secrets().unwrap(), 1);
+        assert_eq!(count(&worker, "connector_link_cursors"), 0);
+        assert_eq!(count(&worker, "connector_attention"), 0);
+        assert_eq!(
+            worker
+                .audit_event_count(CONNECTOR_SECRET_REMOVED_EVENT)
+                .unwrap(),
+            0,
+            "no token was removed, so no token-removal event"
+        );
+        assert_eq!(worker.scrub_tombstoned_connector_secrets().unwrap(), 0);
+    }
+
+    /// The audit event records the removal, not the credential or the connection's name.
+    #[test]
+    fn the_removal_audit_event_carries_no_secret() {
+        let (_dir, worker) = worker();
+        let id = Uuid::now_v7();
+        worker
+            .create_connector_connection(id, "simplefin", CANARY, Some("My secret bank"))
+            .unwrap();
+        worker.delete_connector_connection(id).unwrap();
+        worker
+            .lock()
+            .conn
+            .execute(
+                "INSERT INTO connector_connection_secrets (connection_id, credential, updated_at)
+                 VALUES (?1, ?2, '2026-10-26T00:00:00Z')",
+                params![id, CANARY],
+            )
+            .unwrap();
+        assert_eq!(worker.scrub_tombstoned_connector_secrets().unwrap(), 1);
+        let dump: String = worker
+            .read_connection()
+            .unwrap()
+            .query_row(
+                "SELECT group_concat(event_type || hex(command_id) || hex(correlation_id) || created_at)
+                   FROM audit_events",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !dump.contains("canary") && !dump.contains("secret bank"),
+            "{dump}"
+        );
     }
 }

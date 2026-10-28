@@ -3613,6 +3613,46 @@ impl Kernel {
         Ok(self.worker.connector_connections()?)
     }
 
+    /// Create only a connection's IDENTITY (class 1): what a replica gets when another device's
+    /// connection is applied. It has no token here until the user enters one
+    /// (personal-cfo-07u).
+    ///
+    /// # Errors
+    /// [`KernelError`] on a write failure (including an id that already exists).
+    pub fn create_connector_identity(
+        &self,
+        id: uuid::Uuid,
+        adapter_id: &str,
+        display_hint: Option<&str>,
+    ) -> Result<(), KernelError> {
+        Ok(self
+            .worker
+            .create_connector_identity(id, adapter_id, display_hint)?)
+    }
+
+    /// Enter (or replace) THIS device's credential for an existing connection: inserts only the
+    /// local secret row, never a second identity or mapping (personal-cfo-07u).
+    ///
+    /// # Errors
+    /// [`KernelError`] for an unknown or deleted connection, or on a write failure.
+    pub fn set_connector_credential(
+        &self,
+        id: uuid::Uuid,
+        credential: &str,
+    ) -> Result<(), KernelError> {
+        Ok(self.worker.set_connector_credential(id, credential)?)
+    }
+
+    /// The device-local cleanup after a rebase swap: scrub and remove this device's secret,
+    /// cursors and notice for every tombstoned connection, with an audit event each. Returns how
+    /// many it cleaned (personal-cfo-07u).
+    ///
+    /// # Errors
+    /// [`KernelError`] on a write failure.
+    pub fn scrub_tombstoned_connector_secrets(&self) -> Result<u32, KernelError> {
+        Ok(self.worker.scrub_tombstoned_connector_secrets()?)
+    }
+
     /// Whether a connection exists (credential never touched).
     ///
     /// # Errors
