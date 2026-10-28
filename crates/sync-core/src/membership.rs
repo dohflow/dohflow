@@ -788,6 +788,47 @@ struct EpochRef {
     key_commitment_ke: [u8; 32],
 }
 
+/// The epoch and the membership in force **at one log position**, derived from the newest epoch
+/// record positioned before it (C.7: epoch records are positioned log objects).
+///
+/// A receiver that processes the log in order has seen every epoch record positioned before the
+/// envelope at `N`, so the epoch in force at `N` and the membership head it names are the same on
+/// every replica, however far each has verified beyond `N`. That determinism is what lets "found
+/// invalid" (C.4) be a verdict every replica shares. The only way to build one is from the id of
+/// that epoch record in a verified chain: a guessed epoch from a chain that is behind cannot be
+/// constructed, and the caller then has no position to judge by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpochAtPosition {
+    key_epoch: u64,
+    membership_head_version: u64,
+}
+
+impl EpochAtPosition {
+    /// From the id of the newest epoch record positioned before the envelope, looked up in the
+    /// verified chain. `None` if the chain does not contain that record (the replica has not
+    /// verified it yet).
+    #[must_use]
+    pub fn after_epoch_record(state: &VerifiedState, epoch_record_id: &[u8; 32]) -> Option<Self> {
+        let record = state.epochs.iter().find(|e| &e.id == epoch_record_id)?;
+        Some(Self {
+            key_epoch: record.key_epoch,
+            membership_head_version: (record.head_index + 1) as u64,
+        })
+    }
+
+    /// The epoch in force at the position.
+    #[must_use]
+    pub const fn key_epoch(&self) -> u64 {
+        self.key_epoch
+    }
+
+    /// The membership version in force at the position (the head that record names).
+    #[must_use]
+    pub const fn membership_head_version(&self) -> u64 {
+        self.membership_head_version
+    }
+}
+
 /// Everything verified so far, and everything later checks need: the persisted state a client
 /// keeps (under its anti-rollback witness, C.6 rule 5) between pulls. A new state is returned only
 /// when every record passed; nothing is partially applied.
@@ -855,6 +896,22 @@ impl VerifiedState {
         self.members
             .iter()
             .filter(move |m| m.authorized_at(version))
+    }
+
+    /// The member `device_id` as authorized in the state after membership version `version`, or
+    /// `None`. A receiver processing the log in order uses the version in force **at the
+    /// envelope's position** ([`EpochAtPosition::membership_head_version`]), so a device granted
+    /// after that position is not a member at it and one revoked after it still is, whatever
+    /// the receiver has verified beyond.
+    #[must_use]
+    pub fn authorized_member_at_version(
+        &self,
+        device_id: &[u8; 16],
+        version: u64,
+    ) -> Option<&Member> {
+        self.members
+            .iter()
+            .find(|m| &m.device_id == device_id && m.authorized_at(version))
     }
 
     /// The member `device_id` as authorized **during key epoch `key_epoch`**: authorized at the

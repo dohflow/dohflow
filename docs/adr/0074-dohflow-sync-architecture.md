@@ -1052,9 +1052,11 @@ trust comes from rule 3. It makes the decision attributable (nothing is skipped 
 replicas a trigger to roll back, and keeps non-members from filling the log with voids.
 
 **3. A replica honors a void only after rejecting `N` itself.** It must have evaluated position
-`seq` in log order, found it invalid (as `vault-format.md` C.4 defines it: only with a verified
-key for the epoch and the device a member of it, so a missing key or a chain that is behind is
-never "invalid"; for any deterministic reason; the void's `reason` byte is for audit), and see the same `command_id` and `envelope_digest` in the void. Anything else is
+`seq` in log order, found it invalid (as `vault-format.md` C.4 defines it, in stages: a
+position it has reached by processing the log in order, a verified key for the epoch in force
+there, and the device a member **at that position**, so a missing key or a position not yet
+reached is never "invalid"; for any deterministic reason; the void's `reason` byte is for audit),
+and see the same `command_id` and `envelope_digest` in the void. Anything else is
 inert: kept for diagnosis, skipping nothing. The service cannot make this decision (it cannot read
 the plaintext), so it never refuses a void because an earlier void's range would cover it; it
 dedupes only an identical void or a second void for the exact same position. Otherwise a member
