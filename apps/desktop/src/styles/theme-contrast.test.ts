@@ -344,3 +344,56 @@ describe("form-control boundary and focus ring (personal-cfo-4d8.35)", () => {
     expect(ratio).toBeLessThan(NON_TEXT_FLOOR);
   });
 });
+
+describe("hover state of the shared controls (personal-cfo-4d8.35)", () => {
+  // The Studio's review caught that `NativeSelect`'s `hover:border-ring/60` overrode the improved
+  // `--input` and rendered at 2.05:1 Light / 2.74:1 Dark: a token test that never looks at the HOVER
+  // class cannot see that. So read every shared control's source, find any `hover:border-*` override,
+  // composite it the way the browser paints it (over the control's own `--background` fill), and hold
+  // it to the same 3:1 plus headroom as the resting boundary.
+  const SHARED = [
+    "components/ui/input.tsx",
+    "components/ui/native-select.tsx",
+    "components/ui/combobox.tsx",
+    "components/ui/pagination.tsx",
+    "components/ui/emoji-picker.tsx",
+  ];
+  const text = (path: string) => sourceTree.find((f) => f.path === path)?.text ?? "";
+
+  it("reads the real shared control sources", () => {
+    for (const path of SHARED) expect(text(path).length, path).toBeGreaterThan(200); // guards the guard
+  });
+
+  it("keeps every hover border override on a shared control at 3:1 plus headroom, in both themes on both surfaces", () => {
+    let overrides = 0;
+    for (const path of SHARED) {
+      for (const m of text(path).matchAll(/hover:border-([a-z-]+)(?:\/(\d+))?/g)) {
+        overrides++;
+        const [, name, percent] = m;
+        for (const theme of THEMES) {
+          const fill = token(theme.block, "background")!;
+          const hoverBorder = over(token(theme.block, name!)!, fill, percent ? Number(percent) / 100 : 1);
+          for (const surfaceName of SURFACES) {
+            const surface = token(theme.block, surfaceName)!;
+            for (const [what, adjacent] of [["outside", surface], ["fill", fill]] as const) {
+              const ratio = contrast(hoverBorder, adjacent);
+              expect(
+                ratio,
+                `${path}: hover:border-${name}${percent ? `/${percent}` : ""} on ${theme.name} --${surfaceName} (${what}) = ${ratio.toFixed(2)}:1 (need ${NON_TEXT_FLOOR + HEADROOM}:1)`,
+              ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR + HEADROOM);
+            }
+          }
+        }
+      }
+    }
+    // NativeSelect is the one shared control with a hover border today. If it stops having one this
+    // guard has nothing to hold, which is fine, but it must not silently find LESS than it should.
+    expect(overrides).toBeGreaterThanOrEqual(1);
+  });
+
+  it("would have FAILED the 60% hover the Studio caught (the guard is load-bearing)", () => {
+    const fill = token(LIGHT, "background")!;
+    const old = over(token(LIGHT, "ring")!, fill, 0.6);
+    expect(contrast(old, fill)).toBeLessThan(NON_TEXT_FLOOR);
+  });
+});

@@ -8,6 +8,12 @@ import { cn } from "@/lib/utils";
 /// and standardizes the skin here instead of hand-rolling classes at every call site.
 /// A Radix-based `Select` can replace this wholesale later — call sites won't change
 /// shape. Sizes: `sm` for inline row controls, default for forms.
+///
+/// personal-cfo-4d8.35: the hover border is the FULL `--ring` color, not `border-ring/60`. At 60% over
+/// the control's fill it rendered at 2.05:1 (Light) and 2.74:1 (Dark), below the 3:1 a boundary needs to
+/// keep identifying the control while hovered, and LOWER than the resting `--input` boundary it replaced.
+/// Full `--ring` is 3.55:1 / 5.56:1 on `--background`; `styles/theme-contrast.test.ts` pins any hover
+/// border override on a shared control to 3:1 plus headroom.
 const NativeSelect = React.forwardRef<
   HTMLSelectElement,
   Omit<React.ComponentProps<"select">, "size"> & { size?: "sm" | "default" }
@@ -17,7 +23,7 @@ const NativeSelect = React.forwardRef<
       ref={ref}
       className={cn(
         "w-full cursor-pointer appearance-none rounded-md border border-input bg-background pr-8 text-foreground transition-colors",
-        "hover:border-ring/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "hover:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         "disabled:cursor-not-allowed disabled:opacity-50",
         size === "sm" ? "h-8 px-2.5 text-xs" : "h-10 px-3 py-2 text-sm",
       )}

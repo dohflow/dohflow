@@ -11,9 +11,11 @@ import { cn } from "@/lib/utils";
 /// semantic MARK (the dot before the label), not as colored text. Colored text on its own 10%
 /// tint measured below 4.5:1 for 12px text as rendered (light: gain 4.36, warning 3.14, info
 /// 4.32, loss 4.30 on --background), and amber text cannot reach 4.5:1 without turning brown.
-/// The mark carries the meaning and clears the 3:1 non-text floor on its tint in both themes;
-/// the label is `--foreground` (12.9 to 15.8:1). A caller with its own icon passes
-/// `before:hidden` and colors the icon with the same token (see CardReviewModal).
+/// The label's WORDING carries the meaning (every caller says what the status is: "Needs attention",
+/// "Refreshed ...", "Actual"); the mark is a redundant reinforcement, never the only signal (WCAG 1.4.1),
+/// and it is generated content, so it adds nothing to the accessible name. It clears the 3:1 non-text
+/// floor on its tint in both themes; the label is `--foreground` (12.9 to 15.8:1). A caller with its own
+/// icon passes `before:hidden` and colors the icon with the same token (see CardReviewModal).
 const badgeVariants = cva(
   "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors",
   {
