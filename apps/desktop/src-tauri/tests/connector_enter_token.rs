@@ -67,6 +67,7 @@ fn input(id: Uuid, token: &str) -> ConnectorEnterTokenInput {
     ConnectorEnterTokenInput {
         connection_id: id.to_string(),
         setup_token: token.to_owned(),
+        replace: false,
     }
 }
 
@@ -165,6 +166,23 @@ fn the_registered_path_resolves_the_connections_own_provider() {
         Err(IpcError::Validation(_))
     ));
     assert!(dto(&state, unknown_provider).needs_token);
+}
+
+#[test]
+fn a_stored_token_is_never_silently_replaced() {
+    let (_dir, state) = open_state();
+    let id = arrived(&state, "other");
+    connector_enter_token_impl(&state, mock(), input(id, "mock-setup-token")).unwrap();
+    // Entering another token for a connection that has one is refused, before any claim.
+    assert!(matches!(
+        connector_enter_token_impl(&state, mock(), input(id, "mock-setup-token")),
+        Err(IpcError::Validation(m)) if m.contains("already stored")
+    ));
+    // Only an explicit replace goes through.
+    let mut replace = input(id, "mock-setup-token");
+    replace.replace = true;
+    connector_enter_token_impl(&state, mock(), replace).unwrap();
+    assert!(!dto(&state, id).needs_token);
 }
 
 #[test]

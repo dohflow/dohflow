@@ -1995,7 +1995,9 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         // column, and one is never invented; a tombstoned connection would be silently
         // resurrected. Otherwise the old shape is rebuilt exactly (the old `credential` column
         // is NOT NULL, so the table is rebuilt rather than altered) and the cursors go back onto
-        // their links.
+        // their links. What it cannot restore is harmless: the connection's `updated_at` is taken
+        // from the identity (equal to the secret's for every pre-split row), and the cursors'
+        // own `updated_at` is dropped (the old shape never had one).
         down: Some(
             "CREATE TEMP TABLE connector_split_down_needs_a_secret_for_every_connection
                  (ok INTEGER NOT NULL CHECK (ok = 1));

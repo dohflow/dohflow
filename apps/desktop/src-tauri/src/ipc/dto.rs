@@ -4093,6 +4093,12 @@ impl std::fmt::Debug for ConnectorLinkInput {
 pub struct ConnectorEnterTokenInput {
     pub connection_id: String,
     pub setup_token: String,
+    /// `true` only when the user explicitly chose to replace a token already stored on this
+    /// device. Without it, entering a token for a connection that already has one is refused, so
+    /// a working token is never silently replaced (and a fresh single-use setup token never
+    /// spent on it by accident).
+    #[serde(default)]
+    pub replace: bool,
 }
 
 impl std::fmt::Debug for ConnectorEnterTokenInput {
@@ -4100,6 +4106,7 @@ impl std::fmt::Debug for ConnectorEnterTokenInput {
         f.debug_struct("ConnectorEnterTokenInput")
             .field("connection_id", &self.connection_id)
             .field("setup_token", &"[redacted]")
+            .field("replace", &self.replace)
             .finish()
     }
 }

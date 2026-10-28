@@ -1162,6 +1162,13 @@ export type ConnectorEconomicsDto = {
 export type ConnectorEnterTokenInput = {
 	connection_id: string,
 	setup_token: string,
+	/**
+	 *  `true` only when the user explicitly chose to replace a token already stored on this
+	 *  device. Without it, entering a token for a connection that already has one is refused, so
+	 *  a working token is never silently replaced (and a fresh single-use setup token never
+	 *  spent on it by accident).
+	 */
+	replace?: boolean,
 };
 
 /**  An external account the provider exposes on a connection. */

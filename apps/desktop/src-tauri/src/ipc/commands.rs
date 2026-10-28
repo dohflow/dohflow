@@ -5615,25 +5615,32 @@ fn connector_enter_token_inner(
     let connection_id = parse_connector_connection_id(&input.connection_id)?;
     // Captured BEFORE the network claim, as in linking.
     let vault = current_vault_path(state)?;
-    let belongs_here = with_kernel(state, |kernel| {
+    let state_here = with_kernel(state, |kernel| {
         Ok(kernel
             .connector_connections()?
             .into_iter()
             .find(|row| row.id == connection_id)
-            .map(|row| row.adapter_id == adapter.id()))
+            .map(|row| (row.adapter_id == adapter.id(), row.has_secret)))
     })?;
-    match belongs_here {
+    match state_here {
         None => {
             return Err(IpcError::Validation(
                 "unknown connector connection".to_owned(),
             ))
         }
-        Some(false) => {
+        Some((false, _)) => {
             return Err(IpcError::Validation(
                 "this connection belongs to another provider".to_owned(),
             ))
         }
-        Some(true) => {}
+        // Refused BEFORE the provider claim, so a working token is never silently replaced and no
+        // single-use setup token is spent on it.
+        Some((true, true)) if !input.replace => {
+            return Err(IpcError::Validation(
+                "a token is already stored on this device for this connection".to_owned(),
+            ))
+        }
+        Some((true, _)) => {}
     }
     let session = adapter
         .link(&ProviderLinkInput {
@@ -5648,7 +5655,20 @@ fn connector_enter_token_inner(
     };
     // Store before anything else can fail: the setup token was single-use.
     with_vault_bound(state, &vault, |kernel| {
-        kernel.set_connector_credential(connection_id, credential.expose_secret())?;
+        if let Err(error) =
+            kernel.set_connector_credential(connection_id, credential.expose_secret())
+        {
+            // The connection was deleted between the check and the store: the provider already
+            // issued an access credential that nothing here holds.
+            if !kernel.connector_connection_exists(connection_id)? {
+                return Err(IpcError::Validation(
+                    "the connection was deleted while the token was being claimed; revoke this \
+                     app's access at the provider so the unused credential stops working"
+                        .to_owned(),
+                ));
+            }
+            return Err(error.into());
+        }
         crate::connector_refresh::ensure_refresh_job(
             kernel,
             connection_id,
