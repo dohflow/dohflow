@@ -1,0 +1,55 @@
+# The Review gate (personal-cfo-md8h2.23, owner decision personal-cfo-915.20): a change enters
+# `main` only while the reviewer's `merge-ready` label is on it. The label is applied by the
+# review session to the exact head SHA it reviewed and is removed on every new commit by
+# merge-ready-label.yml, so this check turns "reviewed at this SHA" into something the merge
+# queue enforces (the #180 refresh-merge went in unreviewed because nothing did).
+#
+# The job name "Review gate" is what the main ruleset requires: keep it stable.
+#
+#  - pull_request: passes only while the PR carries merge-ready, and never on `synchronize`: the
+#    label on a just-pushed head is stale, and the Actions-token label removal does not re-run
+#    this check, so reading the label during the push would race the removal.
+#  - merge_group: each queue entry runs alone and gates ONLY the PR named in its
+#    gh-readonly-queue/<base>/pr-<N>-<sha> ref (the sha is the entry's BASE): N must carry the
+#    label AND its current head must be an ancestor of the tested commit. Fails closed.
+#
+# GUARDRAIL, NOT A SECURITY BOUNDARY (ADR 0071): labels are not permission-restricted, and a pull
+# request can edit this workflow. LIMITATION: removing the label after an entry's run passed does
+# not eject it from the queue; only a new commit does. See scripts/review-gate.sh.
+name: Review gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+# The read-only token only (contents: read for the ancestry comparison, pull-requests: read).
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  review-gate:
+    name: Review gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Check the reviewer's merge-ready label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          TESTED_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/review-gate.sh --event "$EVENT" --action "$ACTION" --repo "$GITHUB_REPOSITORY" \
+            --pr "$PR_NUMBER" --ref "$QUEUE_REF" --head-sha "$TESTED_SHA"
