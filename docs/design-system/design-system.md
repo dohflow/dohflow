@@ -185,7 +185,7 @@ Paths are under `apps/desktop/src/`. "Shared" means it lives in `components/ui/`
 | `Label` | `components/ui/label.tsx` | `text-sm font-medium`, above its control. |
 | `NativeSelect` | `components/ui/native-select.tsx` | The platform `<select>` with one shared skin (h-10; `size="sm"` is h-8 `text-xs`). Kept native on purpose: reliable keyboard and assistive-technology behavior. |
 | `Combobox` | `components/ui/combobox.tsx` | Searchable single select (`items` with `label`, optional `hint` and `searchText`; a `clearLabel` and a persistent `footerAction`). Portal-rendered. |
-| `Badge` | `components/ui/badge.tsx` | Variants `default` · `secondary` · `outline` · `gain` · `warning` · `info` (the semantic ones are a 10% tint with a 25 to 30% border). |
+| `Badge` | `components/ui/badge.tsx` | Variants `default` · `secondary` · `outline` · `gain` · `warning` · `info` · `loss` (the four semantic ones are a 10% tint with a 25% border, `warning` 30%). |
 | `Skeleton` | `components/ui/skeleton.tsx` | Pulsing placeholder block for loading states. |
 | `EmptyState` | `components/ui/empty-state.tsx` | Icon medallion, one-line title, "what to do next" description. |
 | `Table` family | `components/ui/table.tsx` | `Table` (wraps an `overflow-x-auto` container), `TableHeader`, `TableBody`, `TableFooter`, `TableHead`, `TableRow`, `TableCell`, `TableCaption`. |
@@ -224,7 +224,7 @@ Naming these so a mock is not drawn from a component that does not exist:
 focus ring `ring-2 ring-ring ring-offset-2`, disabled `opacity-50`, icons `size-4`. Card:
 `rounded-lg border bg-card text-card-foreground shadow-sm`.
 
-**Badge.** `rounded-full px-2.5 py-0.5 text-xs font-medium`. The semantic variants are
+**Badge.** `inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium`. The semantic variants are
 `border-<token>/25 bg-<token>/10 text-<token>` (warning uses `/30` on the border); see the known
 contrast gap in section 3.
 
@@ -359,15 +359,15 @@ time, and the hash or revision the Studio recorded). The Paper *file* is recorde
 here: a page id alone is only meaningful with it, so a row is a pointer for the Studio and for
 engineering, not a link for a casual reader. **Status** is one of: **Shipped** (code exists and
 matches), **Convention** (a written rule in `FRONTEND.md`, no component), **Proposed** (a bead
-exists, nothing is built), **Not shipped** (drawn in Paper, no code or bead claims it).
+exists, nothing is built), **Not shipped** (drawn in Paper, and no code or bead claims it; none yet).
 
 | Paper pattern | Paper page and freeze | Code | Status |
 |---------------|-----------------------|------|--------|
 | Shared independent disclosure ("A2"): a heading button that opens and closes a section, with the error, remedy and action outside the hidden body and nested destructive guards | page `p-7-0`, frozen 2026-10-26 05:24:16 UTC | none shared. Screens implement their own today (section 5, "Not shared yet"). Proposed as a shared component by `personal-cfo-4d8.38`; the specification is [`settings-layout-review.md`](./settings-layout-review.md) | **Proposed** |
 | Layout contract ("LCR-1 v1"): priority-ordered, container-aware 3, 2 or 1 spans; collapsed siblings at the tallest natural height; parallel control tops aligned | page `p-8-0`, frozen 2026-10-27 15:21:48 UTC, hash `0afec932` | the written convention in [`FRONTEND.md`](../agent/FRONTEND.md) section 7.4. No layout component: a page composes it with Tailwind grid and subgrid | **Convention** |
-| Settings page, selected composition "A" | the Settings design page, v3, frozen 2026-10-27 15:36:39 UTC | `apps/desktop/src/settings/SettingsView.tsx` composes the existing cards today as **one column of always-open cards** (no disclosure, no grid). The target composition is `personal-cfo-4d8.39` | **Not shipped** |
-| Collapsed-section summaries (frequency and verified backup status, the formatted Comfort range, the active vault name, the connection count, the application version) | within the Settings design page above | none; they depend on the shared disclosure | **Not shipped** |
-| Neutral-foreground status text with a semantic mark | owner decision recorded on the Studio's bead | none. It depends on the contrast remediation `personal-cfo-4d8.35`, and **no palette change is made or implied here** | **Not shipped** |
+| Settings page, selected composition "A" | the Settings design page, v3, frozen 2026-10-27 15:36:39 UTC | `apps/desktop/src/settings/SettingsView.tsx` composes the existing cards today as **one column of always-open cards** (no disclosure, no grid). The target composition is `personal-cfo-4d8.39` | **Proposed** |
+| Collapsed-section summaries (frequency and verified backup status, the formatted Comfort range, the active vault name, the connection count, the application version) | within the Settings design page above | none; they depend on the shared disclosure (`personal-cfo-4d8.38`) and belong to the Settings composition (`personal-cfo-4d8.39`) | **Proposed** |
+| Neutral-foreground status text with a semantic mark | owner decision recorded on the Studio's bead | none. It depends on the contrast remediation `personal-cfo-4d8.35`, and **no palette change is made or implied here** | **Proposed** |
 | Every component in the section 5 inventory | **no Paper comparison has been made yet** | the section 5 table | **Shipped**, Paper counterpart to be recorded by the Studio on its first comparison |
 
 **Adding a row.** When a build implements a Paper design, add or update its row in the same change:
