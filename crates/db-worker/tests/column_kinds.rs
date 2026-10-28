@@ -1099,11 +1099,69 @@ fn the_write_set_of_real_commands_equals_the_state_difference_of_full_dumps() {
 // apply writes a replicated row the capture mishandles (a cascade, a REPLACE, a folded child, a key
 // change) disagrees with its dump diff. A variant with no setup fails by name: it is never exempt.
 
+/// The fully captured tables, from the checked-in manifest.
+fn full_capture_tables() -> Vec<String> {
+    manifest_tables()
+        .iter()
+        .filter(|(_, spec)| spec.write_set == "full")
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// The (table, write kind) pairs that none of the 56 command variants performs on a fresh sample
+/// run, so the all-variants oracle does not prove the capture trigger for them (`bi` insert, `bu`
+/// update, `bd` delete). Why, by group:
+///
+/// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
+///   never deleted by a command;
+/// * the rows of `balance_observations`, `category_aliases`, `credit_card_cycles`,
+///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
+///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
+///   reach the command bus with `personal-cfo-5ymg8`;
+/// * the rest need a second command on the same row (an update after a create).
+///
+/// `ledger_transactions` insert IS exercised but its trigger is an equivalent mutant: the folded
+/// `ledger_postings` child marks the parent touched, so dropping the parent's INSERT trigger
+/// changes nothing observable.
+const UNEXERCISED: &[(&str, &[&str])] = &[
+    ("accounts", &["bd"]),
+    ("balance_observations", &["bi", "bu", "bd"]),
+    ("bill_contracts", &["bd"]),
+    ("categories", &["bd"]),
+    ("category_aliases", &["bi", "bu", "bd"]),
+    ("change_journal_entries", &["bu", "bd"]),
+    ("confirmed_obligations", &["bu"]),
+    ("credit_card_cycles", &["bi", "bu", "bd"]),
+    ("credit_card_statements", &["bu", "bd"]),
+    ("debt_terms", &["bu", "bd"]),
+    ("dedupe_decisions", &["bu", "bd"]),
+    ("forecast_assumption_events", &["bd"]),
+    ("forecast_dependency_edges", &["bi", "bu", "bd"]),
+    ("income_sources", &["bd"]),
+    ("ledger_accounts", &["bu", "bd"]),
+    ("ledger_transactions", &["bd"]),
+    ("manual_entry_links", &["bi", "bu", "bd"]),
+    ("merchant_aliases", &["bi", "bu", "bd"]),
+    ("merchant_identities", &["bi", "bu", "bd"]),
+    ("recurring_event_instances", &["bi", "bu", "bd"]),
+    ("recurring_event_tags", &["bu", "bd"]),
+    ("recurring_events", &["bd"]),
+    ("recurring_transfers", &["bd"]),
+    ("scenarios", &["bi", "bd"]),
+    ("split_line_tags", &["bu", "bd"]),
+    ("split_lines", &["bu", "bd"]),
+    ("tags", &["bu", "bd"]),
+    ("transaction_categorizations", &["bu", "bd"]),
+    ("transaction_details", &["bu", "bd"]),
+    ("transaction_reviews", &["bu", "bd"]),
+    ("transaction_tags", &["bu", "bd"]),
+];
+
 mod all_variants {
     use super::common::samples::{
         account, category, event, samples, tag, txn, u, usd, BEYOND_DOUBLE,
     };
-    use super::{meta, oracle, replicated_state, worker};
+    use super::{full_capture_tables, meta, oracle, replicated_state, worker, UNEXERCISED};
     use chrono::{NaiveDate, Utc};
     use core_ledger::{
         Account, AccountFlags, BillContractId, CashflowRole, CategoryId, LedgerAccountId,
@@ -1556,7 +1614,12 @@ mod all_variants {
         }
     }
 
-    fn run_checked(worker: &DbWorker, label: &str, command: WriteCommand) -> bool {
+    fn run_checked(
+        worker: &DbWorker,
+        label: &str,
+        command: WriteCommand,
+        exercised: &mut std::collections::BTreeSet<(String, &'static str)>,
+    ) -> bool {
         let before = replicated_state(&worker.read_connection().unwrap());
         worker
             .dispatch(meta(), command)
@@ -1570,13 +1633,13 @@ mod all_variants {
         );
         for (key, digest) in &after {
             match before.get(key) {
-                None => eprintln!("NET {}:insert", key.0),
-                Some(d) if d != digest => eprintln!("NET {}:change", key.0),
-                _ => {}
-            }
+                None => exercised.insert((key.0.clone(), "bi")),
+                Some(d) if d != digest => exercised.insert((key.0.clone(), "bu")),
+                _ => false,
+            };
         }
         for key in before.keys().filter(|k| !after.contains_key(*k)) {
-            eprintln!("NET {}:remove", key.0);
+            exercised.insert((key.0.clone(), "bd"));
         }
         !captured.rows.is_empty()
     }
@@ -1597,15 +1660,16 @@ mod all_variants {
         let mut rt = Runtime::default();
         let mut by_name: std::collections::BTreeMap<&str, WriteCommand> =
             samples().into_iter().collect();
+        let mut exercised = std::collections::BTreeSet::new();
         let mut checked = 0;
         let mut nonempty = 0;
         for name in ORDER {
             let sample = by_name.remove(name).expect("a sample per variant");
             for (label, setup) in before(name, &worker, &mut rt) {
-                nonempty += usize::from(run_checked(&worker, label, setup));
+                nonempty += usize::from(run_checked(&worker, label, setup, &mut exercised));
             }
             let command = command_for(name, sample, &rt);
-            nonempty += usize::from(run_checked(&worker, name, command));
+            nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
         assert_eq!(checked, 56, "every variant ran");
@@ -1613,6 +1677,27 @@ mod all_variants {
         assert!(
             nonempty >= 40,
             "the capture was exercised across the variants ({nonempty})"
+        );
+        // Which kinds of write the 56 variants actually performed, per fully captured table (the
+        // net effect of a command on a row: created, changed, removed; they are what the capture
+        // triggers for INSERT, UPDATE and DELETE decide). A kind no variant performs is not proven
+        // by this test, so the set of them is pinned: a command that starts performing one fails
+        // here until the list shrinks, and a new table fails until it is listed or exercised.
+        let mut unexercised: Vec<String> = full_capture_tables()
+            .iter()
+            .flat_map(|t| ["bi", "bu", "bd"].map(|k| (t.clone(), k)))
+            .filter(|pair| !exercised.contains(pair))
+            .map(|(t, k)| format!("{t}:{k}"))
+            .collect();
+        unexercised.sort();
+        let mut pinned: Vec<String> = UNEXERCISED
+            .iter()
+            .flat_map(|(t, kinds)| kinds.iter().map(move |k| format!("{t}:{k}")))
+            .collect();
+        pinned.sort();
+        assert_eq!(
+            unexercised, pinned,
+            "the write kinds no command variant performs changed: update UNEXERCISED"
         );
         // Unused helpers keep the import list honest for the next variant that needs them.
         let _ = (
