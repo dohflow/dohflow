@@ -15,6 +15,8 @@ const ALLOWED: &[&str] = &[
     "crates/sync-core/src/membership.rs",
     // The accepted-record decoder wraps the tag and commitment it reads off the wire.
     "crates/sync-core/src/accepted.rs",
+    // The void decoder wraps the signer fingerprint it reads off the wire (as membership does).
+    "crates/sync-core/src/void.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];

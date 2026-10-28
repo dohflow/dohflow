@@ -907,6 +907,18 @@ impl VerifiedState {
             .filter(move |m| m.authorized_at(version))
     }
 
+    /// The member with this `fingerprint` as authorized in the state after membership version
+    /// `version`, or `None`. A signed record is judged against the version in force at ITS OWN log
+    /// position, so a signer revoked later still verifies it.
+    #[must_use]
+    pub fn authorized_member_by_fingerprint_at_version(
+        &self,
+        fingerprint: &Fingerprint,
+        version: u64,
+    ) -> Option<&Member> {
+        self.authorized_member(fingerprint, version)
+    }
+
     /// The member `device_id` as authorized in the state after membership version `version`, or
     /// `None`. A receiver processing the log in order uses the version in force **at the
     /// envelope's position** ([`EpochAtPosition::membership_head_version`]), so a device granted
