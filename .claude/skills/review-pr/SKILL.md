@@ -135,8 +135,11 @@ If you cannot establish all three, the verdict is `CHANGES_REQUIRED`, not a
 fast-path `PASS`. Every other required check must be green.
 
 Apply the label, so the owner can see at a glance that this pull request needs
-their merge: `gh pr edit <N> --add-label merge-ready`. A workflow removes it on any
-new commit, so it can never outlive the SHA you approved. Name the lane in your
+their merge: `gh pr edit <N> --add-label merge-ready`. **Apply it only to the exact
+head SHA you reviewed** (re-check that the head still equals it first): the required
+`Review gate` check lets a pull request into the merge queue only while the label is on,
+and it fails every new commit until you re-apply the label to the head you re-reviewed. A
+workflow removes the label on any new commit, so it can never outlive the SHA you approved. Name the lane in your
 report to `00-overseer`, which notifies the owner.
 
 > **Automatic reviewer merging is DISABLED for the calibration period.** Return
