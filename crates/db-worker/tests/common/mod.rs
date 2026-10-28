@@ -3,6 +3,8 @@
 //! what it needs, so unused items here are expected.
 #![allow(dead_code)]
 
+pub mod samples;
+
 use chrono::NaiveDate;
 use core_ledger::{
     Account, AccountFlags, AccountId, AccountSubtype, BillContractId, CashflowRole, CategoryId,

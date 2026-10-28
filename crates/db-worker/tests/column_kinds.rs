@@ -1090,3 +1090,628 @@ fn the_write_set_of_real_commands_equals_the_state_difference_of_full_dumps() {
         "the commands exercised the capture ({seen_nonempty})"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The oracle for EVERY command variant (personal-cfo-vpza7)
+// ---------------------------------------------------------------------------
+//
+// The test above proves the write-set capture for seven hand-picked commands. This one runs the
+// deterministic sample of every `WriteCommand` variant (`common::samples`, the payload_v1 samples)
+// in dependency order on one vault, and for each compares the capture's hash with the hash of the
+// difference between two full dumps of the replicated state taken with no triggers. A variant whose
+// apply writes a replicated row the capture mishandles (a cascade, a REPLACE, a folded child, a key
+// change) disagrees with its dump diff. A variant with no setup fails by name: it is never exempt.
+
+/// The fully captured tables, from the checked-in manifest.
+fn full_capture_tables() -> Vec<String> {
+    manifest_tables()
+        .iter()
+        .filter(|(_, spec)| spec.write_set == "full")
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// The (table, write kind) pairs that none of the 56 command variants performs on a fresh sample
+/// run, so the all-variants oracle does not prove the capture trigger for them (`bi` insert, `bu`
+/// update, `bd` delete). Why, by group:
+///
+/// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
+///   never deleted by a command;
+/// * the rows of `balance_observations`, `category_aliases`, `connector_account_links`,
+///   `connector_connections`, `credit_card_cycles`,
+///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
+///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
+///   reach the command bus with `personal-cfo-5ymg8`;
+/// * the rest need a second command on the same row (an update after a create).
+///
+/// `ledger_transactions` insert IS exercised but its trigger is an equivalent mutant: the folded
+/// `ledger_postings` child marks the parent touched, so dropping the parent's INSERT trigger
+/// changes nothing observable.
+const UNEXERCISED: &[(&str, &[&str])] = &[
+    ("accounts", &["bd"]),
+    ("balance_observations", &["bi", "bu", "bd"]),
+    ("bill_contracts", &["bd"]),
+    ("categories", &["bd"]),
+    ("category_aliases", &["bi", "bu", "bd"]),
+    ("change_journal_entries", &["bu", "bd"]),
+    ("confirmed_obligations", &["bu"]),
+    ("connector_account_links", &["bi", "bu", "bd"]),
+    ("connector_connections", &["bi", "bu", "bd"]),
+    ("credit_card_cycles", &["bi", "bu", "bd"]),
+    ("credit_card_statements", &["bu", "bd"]),
+    ("debt_terms", &["bu", "bd"]),
+    ("dedupe_decisions", &["bu", "bd"]),
+    ("forecast_assumption_events", &["bd"]),
+    ("forecast_dependency_edges", &["bi", "bu", "bd"]),
+    ("income_sources", &["bd"]),
+    ("ledger_accounts", &["bu", "bd"]),
+    ("ledger_transactions", &["bd"]),
+    ("manual_entry_links", &["bi", "bu", "bd"]),
+    ("merchant_aliases", &["bi", "bu", "bd"]),
+    ("merchant_identities", &["bi", "bu", "bd"]),
+    ("recurring_event_instances", &["bi", "bu", "bd"]),
+    ("recurring_event_tags", &["bu", "bd"]),
+    ("recurring_events", &["bd"]),
+    ("recurring_transfers", &["bd"]),
+    ("scenarios", &["bi", "bd"]),
+    ("split_line_tags", &["bu", "bd"]),
+    ("split_lines", &["bu", "bd"]),
+    ("tags", &["bu", "bd"]),
+    ("transaction_categorizations", &["bu", "bd"]),
+    ("transaction_details", &["bu", "bd"]),
+    ("transaction_reviews", &["bu", "bd"]),
+    ("transaction_tags", &["bu", "bd"]),
+];
+
+mod all_variants {
+    use super::common::samples::{
+        account, category, event, samples, tag, txn, u, usd, BEYOND_DOUBLE,
+    };
+    use super::{full_capture_tables, meta, oracle, replicated_state, worker, UNEXERCISED};
+    use chrono::{NaiveDate, Utc};
+    use core_ledger::{
+        Account, AccountFlags, BillContractId, CashflowRole, CategoryId, LedgerAccountId,
+        RecurringEventId, TagId,
+    };
+    use core_money::{Currency, Money};
+    use db_worker::{
+        AssumptionKind, AssumptionSource, DbWorker, NewAssumptionEvent, NewScenario, WriteCommand,
+    };
+    use importer_core::{ParsedAccount, ParsedBatch, ParsedRecord, ParsedTransaction};
+    use pay_schedule::Frequency;
+    use uuid::Uuid;
+
+    /// The order in which the samples can apply: every variant after the entities it refers to
+    /// exist, and the variants that end a transaction's life (`void_transaction`) last. A new
+    /// variant must be placed here, or the permutation check below fails.
+    const ORDER: &[&str] = &[
+        "create_account",
+        "update_account",
+        "archive_account",
+        "reinstate_account",
+        "set_account_subtype",
+        "set_account_note",
+        "set_account_link",
+        "set_debt_terms",
+        "set_card_statement_balance",
+        "record_transaction",
+        "create_category",
+        "update_category",
+        "move_category",
+        "archive_category",
+        "reinstate_category",
+        "create_tag",
+        "recategorize_transaction",
+        "mark_reviewed",
+        "set_tags",
+        "set_note",
+        "set_splits",
+        "confirm_obligation_early",
+        "unconfirm_obligation",
+        "convert_unexplained_to_transaction",
+        "transfer",
+        "create_recurring_transfer",
+        "delete_recurring_transfer",
+        "reinstate_recurring_transfer",
+        "create_income_source",
+        "update_income_source",
+        "delete_income_source",
+        "reinstate_income_source",
+        "archive_income_source",
+        "restore_income_source",
+        "create_recurring_bill",
+        "set_bill_autopay",
+        "update_recurring_bill",
+        "delete_recurring_bill",
+        "reinstate_recurring_bill",
+        "archive_recurring_bill",
+        "restore_recurring_bill",
+        "link_bill_to_loan",
+        "unlink_bill_from_loan",
+        "set_bill_not_loan_payment",
+        "create_source_batch",
+        "attach_source_record",
+        "update_batch_state",
+        "commit_staged",
+        "skip_staged",
+        "snooze_inbox_item",
+        "dismiss_inbox_item",
+        "dismiss_recurring_suggestion",
+        "apply_scenario",
+        "revert_scenario_apply",
+        "void_transaction",
+        "set_household_timezone",
+    ];
+
+    /// Ids the setup learns at run time (staging mints its own).
+    #[derive(Default)]
+    struct Runtime {
+        staged: Vec<Uuid>,
+    }
+
+    fn account_cmd(n: u128, name: &str, role: CashflowRole) -> WriteCommand {
+        WriteCommand::CreateAccount {
+            account: Box::new(Account::new(
+                account(n),
+                LedgerAccountId::from_uuid(u(100 + n)),
+                name,
+                role,
+                Currency::Usd,
+                AccountFlags::default(),
+            )),
+            opening_balance: None,
+        }
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// Commands that satisfy a variant's references, dispatched (and checked) just before it.
+    fn before(
+        name: &str,
+        worker: &DbWorker,
+        rt: &mut Runtime,
+    ) -> Vec<(&'static str, WriteCommand)> {
+        match name {
+            "set_account_link" => vec![
+                (
+                    "setup: asset account",
+                    account_cmd(4, "House", CashflowRole::RealAsset),
+                ),
+                (
+                    "setup: liability account",
+                    account_cmd(5, "Mortgage", CashflowRole::LoanLiability),
+                ),
+            ],
+            "set_card_statement_balance" => vec![
+                (
+                    "setup: a credit card",
+                    account_cmd(28, "Visa", CashflowRole::CreditFacility),
+                ),
+                (
+                    "setup: mark it a credit card",
+                    WriteCommand::SetAccountSubtype {
+                        id: account(28),
+                        subtype: Some(core_ledger::AccountSubtype::CreditCard),
+                    },
+                ),
+            ],
+            "link_bill_to_loan" => vec![
+                (
+                    "setup: a loan paid monthly",
+                    account_cmd(27, "Auto loan", CashflowRole::LoanLiability),
+                ),
+                (
+                    "setup: its monthly payment terms",
+                    WriteCommand::SetDebtTerms {
+                        account_id: account(27),
+                        terms: db_worker::DebtTermsInput {
+                            apr_bps: Some(500),
+                            statement_close_day: None,
+                            payment_due_day: Some(1),
+                            grace_period_days: None,
+                            credit_limit_minor: None,
+                            repayment_philosophy: db_worker::RepaymentPhilosophy::PayFixedAmount,
+                            fixed_amount_minor: Some(215_000),
+                            min_payment_percent_bps: None,
+                            min_payment_floor_minor: None,
+                            paying_source_account_id: Some(account(3)),
+                            original_principal_minor: Some(30_000_000),
+                        },
+                    },
+                ),
+            ],
+            "set_debt_terms" => vec![(
+                "setup: paying source account",
+                account_cmd(3, "Savings", CashflowRole::LiquidCash),
+            )],
+            "create_category" => vec![(
+                "setup: parent category",
+                WriteCommand::CreateCategory {
+                    id: category(24),
+                    parent_id: None,
+                    name: "Spending".into(),
+                    category_type: "expense".into(),
+                    color: None,
+                    icon: None,
+                },
+            )],
+            "create_tag" => vec![(
+                "setup: second tag",
+                WriteCommand::CreateTag {
+                    id: tag(18),
+                    name: "work".into(),
+                    color: None,
+                },
+            )],
+            "confirm_obligation_early" => vec![(
+                "setup: the recurring bill the obligation belongs to",
+                WriteCommand::CreateRecurringBill {
+                    event_id: event(11),
+                    contract_id: BillContractId::from_uuid(u(26)),
+                    name: "Phone".into(),
+                    amount: usd(8_000),
+                    bill_type: "utility".into(),
+                    frequency: Frequency::Monthly,
+                    anchor: date(2026, 1, 1),
+                    autopay_account_id: None,
+                    description: None,
+                    source_merchant_key: None,
+                    category_id: None,
+                    tag_ids: vec![],
+                },
+            )],
+            "convert_unexplained_to_transaction" => {
+                // An asserted balance with nothing explaining it: the residual to convert.
+                worker
+                    .record_balance_assertion(
+                        Uuid::now_v7(),
+                        account(1),
+                        Money::new(900_000, Currency::Usd),
+                        Utc::now().date_naive(),
+                    )
+                    .expect("setup: balance assertion");
+                vec![]
+            }
+            "commit_staged" => {
+                // Two staged transactions: one to commit, one to skip.
+                let batch = Uuid::now_v7();
+                worker
+                    .read_connection()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO source_batches
+                            (id, source_type, source_name, status, created_at, updated_at)
+                         VALUES (?1, 'csv', 'oracle', 'staged', ?2, ?2)",
+                        rusqlite::params![batch, Utc::now().to_rfc3339()],
+                    )
+                    .unwrap();
+                let record = |n: i64| ParsedRecord {
+                    external_id: None,
+                    source_hash: format!("sha256:oracle-{n}"),
+                    normalized_json: "{}".to_owned(),
+                    parse_confidence_bps: Some(10_000),
+                    transaction: Some(ParsedTransaction {
+                        posted_date: date(2026, 6, 1),
+                        transaction_date: None,
+                        raw_date: "06/01/2026".to_owned(),
+                        date_confidence_bps: 10_000,
+                        amount: Money::new(-100 * n, Currency::Usd),
+                        description: Some(format!("payee {n}")),
+                        category: None,
+                        normalized_merchant: Some(format!("payee {n}")),
+                        external_account: None,
+                        txn_fingerprint: format!("2026-06-01|{}|payee {n}", -100 * n),
+                    }),
+                    balance: None,
+                };
+                let batch_data = ParsedBatch {
+                    source_format: "csv".to_owned(),
+                    accounts: vec![ParsedAccount {
+                        external_id: None,
+                        external_name: None,
+                        external_number_hash: None,
+                        proposed_subtype: None,
+                        currency: None,
+                    }],
+                    records: vec![record(1), record(2)],
+                    warnings: Vec::new(),
+                    skipped: Vec::new(),
+                };
+                rt.staged = worker
+                    .stage_parsed_batch(batch, &batch_data, account(1).as_uuid())
+                    .expect("setup: staged transactions");
+                assert!(rt.staged.len() >= 2, "two staged transactions");
+                vec![]
+            }
+            "apply_scenario" => {
+                let scenario = u(25);
+                worker
+                    .create_scenario(&NewScenario {
+                        id: scenario,
+                        name: "Oracle".to_owned(),
+                        description: None,
+                        base_run_id: None,
+                    })
+                    .expect("setup: scenario");
+                worker
+                    .record_assumption_event(&NewAssumptionEvent {
+                        id: Uuid::now_v7(),
+                        kind: AssumptionKind::InflationRate,
+                        target_entity_type: None,
+                        target_entity_id: None,
+                        params_json: r#"{"annual_bps":400}"#.to_owned(),
+                        source: AssumptionSource::UserOverride,
+                        scenario_id: Some(scenario),
+                        origin_run_id: None,
+                    })
+                    .expect("setup: assumption event");
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// The command to run for a variant. Most are the sample itself. A few samples carry values
+    /// chosen to stress the payload codec (an amount beyond a double, a zero transfer, a negative
+    /// bill) that no vault would accept, or ids minted at run time; those run as a command of the
+    /// SAME variant with applicable values, so the variant is still proven, not exempted.
+    fn command_for(name: &str, sample: WriteCommand, rt: &Runtime) -> WriteCommand {
+        let mut command = command_for_inner(name, sample, rt);
+        // The sample's bill type `rent` is not one of the vault's bill types.
+        if let WriteCommand::CreateRecurringBill { bill_type, .. }
+        | WriteCommand::UpdateRecurringBill { bill_type, .. } = &mut command
+        {
+            *bill_type = "rent_mortgage".to_owned();
+        }
+        command
+    }
+
+    fn command_for_inner(name: &str, sample: WriteCommand, rt: &Runtime) -> WriteCommand {
+        match (name, sample) {
+            (
+                "confirm_obligation_early",
+                WriteCommand::ConfirmObligationEarly {
+                    recurring_event_id,
+                    scheduled_date,
+                    actual_date,
+                    paying_account_id,
+                    ..
+                },
+            ) => WriteCommand::ConfirmObligationEarly {
+                recurring_event_id,
+                scheduled_date,
+                actual_amount: usd(7_500),
+                actual_date,
+                paying_account_id,
+            },
+            (
+                "transfer",
+                WriteCommand::Transfer {
+                    source_account_id,
+                    occurred_at,
+                    ..
+                },
+            ) => WriteCommand::Transfer {
+                // The sample's destination is a property, which cannot receive a transfer.
+                source_account_id,
+                dest_account_id: account(3),
+                amount: usd(12_345),
+                occurred_at,
+            },
+            (
+                "create_recurring_transfer",
+                WriteCommand::CreateRecurringTransfer {
+                    id,
+                    source_account_id,
+                    amount,
+                    frequency,
+                    anchor,
+                    ..
+                },
+            ) => WriteCommand::CreateRecurringTransfer {
+                id,
+                source_account_id,
+                dest_account_id: account(3),
+                amount,
+                frequency,
+                anchor,
+            },
+            (
+                "create_recurring_bill",
+                WriteCommand::CreateRecurringBill {
+                    event_id,
+                    contract_id,
+                    name,
+                    bill_type,
+                    frequency,
+                    anchor,
+                    autopay_account_id,
+                    description,
+                    source_merchant_key,
+                    category_id,
+                    tag_ids,
+                    ..
+                },
+            ) => WriteCommand::CreateRecurringBill {
+                event_id,
+                contract_id,
+                name,
+                amount: usd(215_000),
+                bill_type,
+                frequency,
+                anchor,
+                autopay_account_id,
+                description,
+                source_merchant_key,
+                category_id,
+                tag_ids,
+            },
+            (
+                "update_recurring_bill",
+                WriteCommand::UpdateRecurringBill {
+                    event_id,
+                    name,
+                    bill_type,
+                    frequency,
+                    anchor,
+                    autopay_account_id,
+                    description,
+                    ..
+                },
+            ) => WriteCommand::UpdateRecurringBill {
+                event_id,
+                name,
+                amount: usd(220_000),
+                bill_type,
+                frequency,
+                anchor,
+                autopay_account_id,
+                description,
+            },
+            ("link_bill_to_loan", WriteCommand::LinkBillToLoan { event_id, .. }) => {
+                WriteCommand::LinkBillToLoan {
+                    event_id,
+                    loan_account_id: account(27),
+                }
+            }
+            ("set_bill_not_loan_payment", WriteCommand::SetBillNotLoanPayment { event_id, .. }) => {
+                WriteCommand::SetBillNotLoanPayment {
+                    event_id,
+                    loan_account_id: Some(account(27)),
+                }
+            }
+            (
+                "set_card_statement_balance",
+                WriteCommand::SetCardStatementBalance { cycle_close, .. },
+            ) => WriteCommand::SetCardStatementBalance {
+                account_id: account(28),
+                cycle_close,
+                statement_balance_minor: Some(184_500),
+            },
+            (
+                "record_transaction",
+                WriteCommand::RecordTransaction {
+                    transaction_id,
+                    account_id,
+                    occurred_at,
+                    ..
+                },
+            ) => WriteCommand::RecordTransaction {
+                // The split sample divides -1,000 into -700 and -300.
+                transaction_id,
+                account_id,
+                amount: usd(-1_000),
+                occurred_at,
+            },
+            ("commit_staged", WriteCommand::CommitStaged { force, .. }) => {
+                WriteCommand::CommitStaged {
+                    staged_transaction_id: core_ledger::StagedTransactionId::from_uuid(
+                        rt.staged[0],
+                    ),
+                    force,
+                }
+            }
+            ("skip_staged", WriteCommand::SkipStaged { .. }) => WriteCommand::SkipStaged {
+                staged_transaction_id: core_ledger::StagedTransactionId::from_uuid(rt.staged[1]),
+            },
+            (_, sample) => sample,
+        }
+    }
+
+    fn run_checked(
+        worker: &DbWorker,
+        label: &str,
+        command: WriteCommand,
+        exercised: &mut std::collections::BTreeSet<(String, &'static str)>,
+    ) -> bool {
+        let before = replicated_state(&worker.read_connection().unwrap());
+        worker
+            .dispatch(meta(), command)
+            .unwrap_or_else(|e| panic!("{label}: the command did not apply: {e}"));
+        let after = replicated_state(&worker.read_connection().unwrap());
+        let captured = worker.last_write_set().expect("a write set");
+        assert_eq!(
+            captured.hash,
+            oracle(&before, &after),
+            "{label}: the capture disagrees with the dump diff"
+        );
+        for (key, digest) in &after {
+            match before.get(key) {
+                None => exercised.insert((key.0.clone(), "bi")),
+                Some(d) if d != digest => exercised.insert((key.0.clone(), "bu")),
+                _ => false,
+            };
+        }
+        for key in before.keys().filter(|k| !after.contains_key(*k)) {
+            exercised.insert((key.0.clone(), "bd"));
+        }
+        !captured.rows.is_empty()
+    }
+
+    #[test]
+    fn the_write_set_of_every_command_variant_equals_the_state_difference_of_full_dumps() {
+        // The order covers exactly the samples: no variant is left out and none is extra.
+        let mut ordered: Vec<&str> = ORDER.to_vec();
+        ordered.sort_unstable();
+        let mut sampled: Vec<&str> = samples().iter().map(|(n, _)| *n).collect();
+        sampled.sort_unstable();
+        assert_eq!(
+            ordered, sampled,
+            "ORDER must place every WriteCommand variant exactly once"
+        );
+
+        let (_dir, worker) = worker();
+        let mut rt = Runtime::default();
+        let mut by_name: std::collections::BTreeMap<&str, WriteCommand> =
+            samples().into_iter().collect();
+        let mut exercised = std::collections::BTreeSet::new();
+        let mut checked = 0;
+        let mut nonempty = 0;
+        for name in ORDER {
+            let sample = by_name.remove(name).expect("a sample per variant");
+            for (label, setup) in before(name, &worker, &mut rt) {
+                nonempty += usize::from(run_checked(&worker, label, setup, &mut exercised));
+            }
+            let command = command_for(name, sample, &rt);
+            nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
+            checked += 1;
+        }
+        assert_eq!(checked, 56, "every variant ran");
+        assert!(by_name.is_empty());
+        assert!(
+            nonempty >= 40,
+            "the capture was exercised across the variants ({nonempty})"
+        );
+        // Which kinds of write the 56 variants actually performed, per fully captured table (the
+        // net effect of a command on a row: created, changed, removed; they are what the capture
+        // triggers for INSERT, UPDATE and DELETE decide). A kind no variant performs is not proven
+        // by this test, so the set of them is pinned: a command that starts performing one fails
+        // here until the list shrinks, and a new table fails until it is listed or exercised.
+        let mut unexercised: Vec<String> = full_capture_tables()
+            .iter()
+            .flat_map(|t| ["bi", "bu", "bd"].map(|k| (t.clone(), k)))
+            .filter(|pair| !exercised.contains(pair))
+            .map(|(t, k)| format!("{t}:{k}"))
+            .collect();
+        unexercised.sort();
+        let mut pinned: Vec<String> = UNEXERCISED
+            .iter()
+            .flat_map(|(t, kinds)| kinds.iter().map(move |k| format!("{t}:{k}")))
+            .collect();
+        pinned.sort();
+        assert_eq!(
+            unexercised, pinned,
+            "the write kinds no command variant performs changed: update UNEXERCISED"
+        );
+        // Unused helpers keep the import list honest for the next variant that needs them.
+        let _ = (
+            txn(1),
+            BEYOND_DOUBLE,
+            CategoryId::new(),
+            RecurringEventId::new(),
+            TagId::new(),
+        );
+    }
+}
