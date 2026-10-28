@@ -1568,6 +1568,16 @@ mod all_variants {
             oracle(&before, &after),
             "{label}: the capture disagrees with the dump diff"
         );
+        for (key, digest) in &after {
+            match before.get(key) {
+                None => eprintln!("NET {}:insert", key.0),
+                Some(d) if d != digest => eprintln!("NET {}:change", key.0),
+                _ => {}
+            }
+        }
+        for key in before.keys().filter(|k| !after.contains_key(*k)) {
+            eprintln!("NET {}:remove", key.0);
+        }
         !captured.rows.is_empty()
     }
 
