@@ -302,8 +302,20 @@ fn clock_readers() -> BTreeSet<String> {
     reader_closure(&bodies)
 }
 
+/// The body of `apply_command` in `lib.rs`: the match that calls every apply function, so what
+/// it calls is reached from apply even when the callee lives outside `apply/`.
+fn dispatcher_body() -> String {
+    let source = blank_noise(&fs::read_to_string(src_dir().join("lib.rs")).unwrap());
+    functions(&source)
+        .into_iter()
+        .find(|(name, _)| name == "apply_command")
+        .expect("apply_command exists")
+        .1
+}
+
 fn apply_sources() -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
+    out.insert("lib.rs (apply_command)".to_owned(), dispatcher_body());
     for entry in fs::read_dir(src_dir().join("apply")).unwrap().flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("rs") {
@@ -316,8 +328,10 @@ fn apply_sources() -> BTreeMap<String, String> {
 
 #[test]
 fn apply_reads_no_wall_clock_directly() {
+    // The dispatcher's own two bookkeeping reads are pinned in its own test below.
     let actual: BTreeMap<String, usize> = apply_sources()
         .into_iter()
+        .filter(|(file, _)| !file.starts_with("lib.rs"))
         .map(|(file, source)| (file, count_direct(&source)))
         .filter(|(_, n)| *n > 0)
         .collect();
@@ -334,6 +348,12 @@ fn apply_calls_no_helper_that_reads_the_wall_clock() {
     let mut actual: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (file, source) in apply_sources() {
         for reader in &readers {
+            // `next_hlc` advances THIS device's hybrid logical clock for the operation-log row
+            // (excluded from the write set, B.2): bookkeeping, like the dispatcher's two direct
+            // reads pinned below.
+            if file.starts_with("lib.rs") && reader == "next_hlc" {
+                continue;
+            }
             let n = count_calls(&source, reader);
             if n > 0 {
                 actual.insert((file.clone(), reader.clone()), n);
@@ -354,16 +374,30 @@ fn the_dispatcher_reads_the_clock_only_for_this_devices_bookkeeping() {
     // are the operation-log row's `created_at` (when THIS device recorded the command) and the
     // idempotency memo's expiry (class 3, local). Every command-specific instant comes from
     // `meta.issued_at`. A third read here is a read from apply.
-    let source = blank_noise(&fs::read_to_string(src_dir().join("lib.rs")).unwrap());
-    let body = functions(&source)
-        .into_iter()
-        .find(|(name, _)| name == "apply_command")
-        .expect("apply_command exists")
-        .1;
+    let body = dispatcher_body();
     assert_eq!(
         count_direct(&body),
         2,
         "apply_command may read the clock only for the operation-log row and the idempotency expiry"
+    );
+}
+
+#[test]
+fn the_dispatcher_refuses_an_issued_at_outside_the_calendar_before_anything_else() {
+    // A command from another device may carry any i64 of microseconds; `apply::issued_at`
+    // converts it to a calendar instant and would panic on one chrono cannot represent, so
+    // `apply_command` must check first (a panic is not a deterministic outcome).
+    let body = dispatcher_body();
+    let check = body
+        .find("require_issued_at(")
+        .expect("the dispatcher checks issued_at");
+    let first_use = body
+        .find("next_hlc(")
+        .min(body.find("transaction("))
+        .expect("the dispatcher opens its transaction");
+    assert!(
+        check < first_use,
+        "require_issued_at must come before any other work"
     );
 }
 

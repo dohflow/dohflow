@@ -254,13 +254,7 @@ impl CommandMeta {
         if self.idempotency_key.trim().is_empty() {
             return Err(DbError::MissingMetadata("idempotency_key"));
         }
-        // `apply` converts `issued_at` to a calendar instant; refuse one that has none.
-        if chrono::DateTime::from_timestamp_micros(self.issued_at.as_unix_micros()).is_none() {
-            return Err(DbError::InvalidCommand(
-                "issued_at is outside the supported date range".to_owned(),
-            ));
-        }
-        Ok(())
+        apply::require_issued_at(self)
     }
 }
 
@@ -3269,6 +3263,7 @@ impl DbWorker {
                     normalized_json: &rec.normalized_json,
                     parse_confidence_bps: rec.parse_confidence_bps.map(i64::from),
                 },
+                &Utc::now().to_rfc3339(),
             )?;
             if let (Some(txn), Some(Some(account))) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
@@ -3376,6 +3371,7 @@ impl DbWorker {
                     normalized_json: &rec.normalized_json,
                     parse_confidence_bps: rec.parse_confidence_bps.map(i64::from),
                 },
+                &Utc::now().to_rfc3339(),
             )?;
             if let (Some(txn), Some(account)) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
@@ -6884,6 +6880,9 @@ fn apply_command(
     schema_version: i64,
     fault: Fault,
 ) -> Result<Outcome, DbError> {
+    // Before anything else: `apply` converts `issued_at` to a calendar instant, and a command
+    // from another device may carry any i64 (apply::require_issued_at).
+    apply::require_issued_at(meta)?;
     // Advance the HLC before borrowing the connection for the transaction.
     let hlc = inner.next_hlc();
     let tx = inner.conn.transaction()?;
@@ -6928,7 +6927,7 @@ fn apply_command(
             liability_id,
         } => apply::accounts::apply_set_account_link(&tx, asset_id, liability_id.as_ref())?,
         WriteCommand::SetDebtTerms { account_id, terms } => {
-            debt::apply_set_debt_terms(&tx, *account_id, *terms)?;
+            debt::apply_set_debt_terms(&tx, meta, *account_id, *terms)?;
             account_id.as_uuid()
         }
         WriteCommand::SetCardStatementBalance {
@@ -6938,6 +6937,7 @@ fn apply_command(
         } => {
             debt::apply_set_card_statement_balance(
                 &tx,
+                meta,
                 *account_id,
                 *cycle_close,
                 *statement_balance_minor,
@@ -7175,6 +7175,7 @@ fn apply_command(
                 normalized_json: normalized_json.as_str(),
                 parse_confidence_bps: *parse_confidence_bps,
             },
+            &apply::issued_at_text(meta),
         )?,
         WriteCommand::UpdateBatchState {
             batch_id,

@@ -166,6 +166,25 @@ fn commands() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "set debt terms",
+            WriteCommand::SetDebtTerms {
+                account_id: account(28),
+                terms: db_worker::DebtTermsInput {
+                    apr_bps: Some(2_499),
+                    statement_close_day: Some(15),
+                    payment_due_day: Some(10),
+                    grace_period_days: Some(25),
+                    credit_limit_minor: Some(500_000),
+                    repayment_philosophy: db_worker::RepaymentPhilosophy::PayStatementBalance,
+                    fixed_amount_minor: None,
+                    min_payment_percent_bps: Some(200),
+                    min_payment_floor_minor: Some(2_500),
+                    paying_source_account_id: Some(account(1)),
+                    original_principal_minor: None,
+                },
+            },
+        ),
+        (
             "set the household timezone",
             WriteCommand::SetHouseholdTimezone {
                 timezone: "America/Chicago".into(),
@@ -178,6 +197,14 @@ fn commands() -> Vec<(&'static str, WriteCommand)> {
 /// cannot agree on the write set until the derived-id pass. They still stamp `issued_at`.
 fn minting_commands() -> Vec<(&'static str, WriteCommand)> {
     vec![
+        (
+            "record a statement balance for a closed cycle",
+            WriteCommand::SetCardStatementBalance {
+                account_id: account(28),
+                cycle_close: NaiveDate::from_ymd_opt(2001, 8, 15).unwrap(),
+                statement_balance_minor: Some(184_500),
+            },
+        ),
         (
             "snooze an inbox item",
             WriteCommand::SnoozeInboxItem {
@@ -217,6 +244,35 @@ fn base(dir: &Path) -> PathBuf {
                 account_id: account(1),
                 amount: usd(-4_250),
                 occurred_at: DateTime::<Utc>::from_timestamp_micros(ISSUED_MICROS).unwrap(),
+            },
+        )
+        .unwrap();
+    let mut card = common::meta();
+    card.issued_at = setup.issued_at;
+    worker
+        .dispatch(
+            card,
+            WriteCommand::CreateAccount {
+                account: Box::new(core_ledger::Account::new(
+                    account(28),
+                    core_ledger::LedgerAccountId::from_uuid(u(128)),
+                    "Visa",
+                    core_ledger::CashflowRole::CreditFacility,
+                    Currency::Usd,
+                    core_ledger::AccountFlags::default(),
+                )),
+                opening_balance: None,
+            },
+        )
+        .unwrap();
+    let mut subtype = common::meta();
+    subtype.issued_at = setup.issued_at;
+    worker
+        .dispatch(
+            subtype,
+            WriteCommand::SetAccountSubtype {
+                id: account(28),
+                subtype: Some(core_ledger::AccountSubtype::CreditCard),
             },
         )
         .unwrap();
@@ -364,4 +420,33 @@ fn an_issued_at_outside_the_calendar_is_refused_before_anything_is_written() {
         matches!(err, db_worker::DbError::InvalidCommand(_)),
         "{err:?}"
     );
+}
+
+#[test]
+fn a_statement_for_a_cycle_not_yet_closed_at_issued_at_is_refused_whatever_the_wall_clock() {
+    // The close date is in the "future" of the command's issued_at (2001) but long past by the
+    // wall clock (2026): a verdict that depended on the clock would differ between the device that
+    // issued the command and a replica applying it later. Both refuse.
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path());
+    let (a_path, b_path) = (dir.path().join("a.vault"), dir.path().join("b.vault"));
+    std::fs::copy(&base, &a_path).unwrap();
+    std::fs::copy(&base, &b_path).unwrap();
+    for path in [a_path, b_path] {
+        let worker = open(&path);
+        let err = worker
+            .dispatch(
+                meta(0),
+                WriteCommand::SetCardStatementBalance {
+                    account_id: account(28),
+                    cycle_close: NaiveDate::from_ymd_opt(2001, 12, 1).unwrap(),
+                    statement_balance_minor: Some(100),
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already closed"),
+            "refused on the issued_at date: {err}"
+        );
+    }
 }

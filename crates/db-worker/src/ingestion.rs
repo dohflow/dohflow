@@ -272,6 +272,7 @@ pub(crate) fn insert_source_record(
     conn: &Connection,
     id: Uuid,
     rec: &NewSourceRecord,
+    at: &str,
 ) -> Result<Uuid, DbError> {
     if let Some(existing) = conn
         .query_row(
@@ -295,7 +296,7 @@ pub(crate) fn insert_source_record(
             rec.source_hash,
             rec.normalized_json,
             rec.parse_confidence_bps,
-            Utc::now().to_rfc3339(),
+            at,
         ],
     )?;
     Ok(id)
@@ -995,6 +996,7 @@ mod tests {
                 normalized_json: "{\"amount\":-1299}",
                 parse_confidence_bps: Some(10_000),
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         let staged = stage_transaction(
@@ -1189,6 +1191,7 @@ mod tests {
                 normalized_json: "{}",
                 parse_confidence_bps: None,
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
 

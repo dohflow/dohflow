@@ -17,14 +17,29 @@ pub(crate) mod transactions;
 
 use chrono::{DateTime, Utc};
 
-use crate::CommandMeta;
+use crate::{CommandMeta, DbError};
+
+/// Refuse a command whose `issued_at` has no calendar date. `apply_command` calls this FIRST,
+/// before it touches the connection, so a command from another device (whose `issued_at` is any
+/// `i64` of microseconds) fails with a deterministic `InvalidCommand` and never reaches
+/// [`issued_at`], which would panic.
+pub(crate) fn require_issued_at(meta: &CommandMeta) -> Result<(), DbError> {
+    if DateTime::from_timestamp_micros(meta.issued_at.as_unix_micros()).is_none() {
+        return Err(DbError::InvalidCommand(
+            "issued_at is outside the supported date range".to_owned(),
+        ));
+    }
+    Ok(())
+}
 
 /// The instant the command was issued. `apply` reads this, never the wall clock, so a replica
-/// applying the command later stamps the same instant (ADR 0013 Addendum A; SYNC-1a). The value
-/// is range-checked when the command is accepted, so this cannot fail.
+/// applying the command later stamps the same instant (ADR 0013 Addendum A; SYNC-1a).
+///
+/// Every `apply` function is reached only through `apply_command`, which calls
+/// [`require_issued_at`] first, so the conversion cannot fail here.
 pub(crate) fn issued_at(meta: &CommandMeta) -> DateTime<Utc> {
     DateTime::from_timestamp_micros(meta.issued_at.as_unix_micros())
-        .expect("issued_at is range-checked by CommandMeta::validate")
+        .expect("apply_command checks issued_at with require_issued_at before any apply function")
 }
 
 /// [`issued_at`] as the text stored in `created_at` / `updated_at` style columns.
