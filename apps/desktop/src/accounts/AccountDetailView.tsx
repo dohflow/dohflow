@@ -45,6 +45,9 @@ import { useCashFlowHistory } from "./useCashFlowHistory";
 
 /// History lookback + forward horizon per range choice (days). Forward is shorter than
 /// back, mirroring the approved mock's proportions.
+/// A card payment this many days away or fewer reads "Due soon" (personal-cfo-4d8.35: the words carry it).
+const DUE_SOON_DAYS = 5;
+
 const RANGES = {
   "3M": { lookback: 90, horizon: 45 },
   "6M": { lookback: 180, horizon: 90 },
@@ -579,10 +582,15 @@ function CardStatsStrip({
           <p className="text-[11px] text-muted-foreground">Payment due</p>
           <p className="flex items-center gap-2 text-sm font-semibold">
             {formatIsoDate(cycle.due_date)}
-            {dueDays !== null && dueDays >= 0 && (
-              <Badge variant={dueDays <= 5 ? "warning" : "secondary"}>
-                in {dueDays} {dueDays === 1 ? "day" : "days"}
+            {/* Two elements, not one with a conditional variant: the words must say "due soon" when it is
+                (a Badge's tint and mark are only a redundant cue; personal-cfo-4d8.35). */}
+            {dueDays !== null && dueDays >= 0 && dueDays <= DUE_SOON_DAYS && (
+              <Badge variant="warning">
+                Due soon · in {dueDays} {dueDays === 1 ? "day" : "days"}
               </Badge>
+            )}
+            {dueDays !== null && dueDays > DUE_SOON_DAYS && (
+              <Badge variant="secondary">in {dueDays} days</Badge>
             )}
           </p>
         </div>

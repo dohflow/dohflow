@@ -139,10 +139,20 @@ nothing to the accessible name; the label's words are the signal.
 | `CardReviewModal` warning | "Resurfaced" (own icon) | yes |
 | `AccountDetailView` outline / secondary, `CardReviewModal` tag, `ProviderPicker` chip | neutral tags | n/a (not semantic) |
 
-Two sites rest on color alone. They need **new wording**, which is a copy decision, so it has been sent to
-planning with proposals ("Stale · refreshed {stamp}" and "Due soon · in {n} days") and is **not** in this PR
-until approved. When it is, the PR adds a source-scan test that fails if any semantic Badge uses the same words
-under two variants or picks its variant by a condition on one element.
+Two sites rested on color alone and now have **planning-approved wording**, implemented in this PR:
+
+- `ConnectionsCard`: a connection refreshed 3 whole days ago or more reads **"Out of date · refreshed {stamp}"**
+  (fresh stays "Refreshed {stamp}"). "Stale" was rejected as jargon.
+- `AccountDetailView`: a card payment 0 to 5 days away reads **"Due soon · in {n} days"** (otherwise "in {n} days").
+  It was one `<Badge>` with a conditional variant; it is now one element per variant, each with its own words.
+
+Tests: the due badge at 0, 1, 5 and 6 days, far away, and past; the connection age at 1 day 23 h 59 m (fresh), exactly
+3 days (out of date), and a month; and a **source-scan guard** (`components/ui/badge-wording.test.ts`) that reads every
+`<Badge>` call site and fails if a semantic Badge picks its variant by a condition on one element, uses the same
+words under two variants, or has no literal words. Each of those rules was shown to trip by mutating a real call site
+(the old stale wording, the old conditional variant, a value-only label, the same words under two variants).
+One existing test only passed because its fixture's stamp was old enough to be the *stale* branch today; it now
+pins the clock.
 
 **4. Counts.** 04b-review counts **40 uses in 30 files** at this PR's head; that includes the one comment in
 `globals.css` (and my dev files' own mentions are excluded from the audit). At `093dbb3` it is **39 in 29**.

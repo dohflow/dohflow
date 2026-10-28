@@ -82,8 +82,10 @@ function HealthBadge({ connection }: { connection: ConnectorConnectionDto }) {
     (Date.now() - new Date(connection.last_synced_at ?? "").getTime()) /
       86_400_000,
   );
+  // The words, not the tint, say it is out of date (a Badge's mark is only a redundant cue;
+  // docs/agent/FRONTEND.md 7.3, personal-cfo-4d8.35). Fresh and stale must not read the same.
   if (ageDays >= STALE_AFTER_DAYS) {
-    return <Badge variant="warning">Refreshed {stamp}</Badge>;
+    return <Badge variant="warning">Out of date · refreshed {stamp}</Badge>;
   }
   return <Badge variant="gain">Refreshed {stamp}</Badge>;
 }
