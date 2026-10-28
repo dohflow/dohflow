@@ -1,0 +1,297 @@
+# Raw write sites to replicated tables (personal-cfo-5ymg8.1).
+#
+# The module write lint (`tests/write_lint.rs`) scans non-test source under `crates/db-worker/src`
+# (except `apply/`, `migrations.rs` and test modules) for INSERT / UPDATE / DELETE / REPLACE
+# statements, and partitions them over write SITES: one entry per (module, table) with the number of
+# statements. Only tables of class 1, 1b or 4 in `table_classes.toml` count; class 2 (derived) and
+# class 3 (device-local) tables may be written anywhere.
+#
+# Every site must be listed here, with the count of statements, and the lint fails on a new one, on
+# a stale one and on a changed count: a new raw write to a replicated table has to be routed
+# through the command bus or justified in this file in the same change.
+#
+# `status`:
+#   pending       a violation awaiting the child bead named in `bead` (the warn-mode checklist; the
+#                 lint prints it). `personal-cfo-5ymg8.8` flips the lint to fail while any remains.
+#   bus_internal  not a violation: a helper reached only from `apply/` (the command bus), so its
+#                 writes are inside the command's transaction and write set.
+#   allowed       not a violation, with the reason in `note`.
+
+[[site]]
+module = "attachments.rs"
+table = "attachment_links"
+class = "4"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.6"
+note = "Attachment link writer outside the bus."
+
+[[site]]
+module = "attachments.rs"
+table = "attachments"
+class = "4"
+statements = 3
+status = "pending"
+bead = "personal-cfo-5ymg8.6"
+note = "Attachment metadata writer outside the bus (blobs are class 1b); AttachDocument / DetachDocument."
+
+[[site]]
+module = "connectors.rs"
+table = "connector_account_links"
+class = "1"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.2"
+note = "Connector mapping writes (upsert link, set account, remap): AC9 of 5ymg8; the cursor and secret tables are class 3."
+
+[[site]]
+module = "connectors.rs"
+table = "connector_connections"
+class = "1"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.2"
+note = "Connector identity create and tombstone: AC9 of 5ymg8 (ADR 0073 Addendum C)."
+
+[[site]]
+module = "debt.rs"
+table = "credit_card_statements"
+class = "1"
+statements = 2
+status = "bus_internal"
+bead = "personal-cfo-4d8.25.20"
+note = "apply_set_card_statement_balance, called only from apply_command (the bus, lib.rs)."
+
+[[site]]
+module = "debt.rs"
+table = "debt_terms"
+class = "1"
+statements = 1
+status = "bus_internal"
+bead = "personal-cfo-4d8.25.15"
+note = "apply_set_debt_terms, called only from apply_command (the bus, lib.rs)."
+
+[[site]]
+module = "ingestion.rs"
+table = "dedupe_decisions"
+class = "4"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.6"
+note = "Import dedupe decision writer outside the bus."
+
+[[site]]
+module = "ingestion.rs"
+table = "parser_runs"
+class = "1b"
+statements = 2
+status = "pending"
+bead = "personal-cfo-0g528"
+note = "Class 1b import provenance; reshaped by SYNC-2c."
+
+[[site]]
+module = "ingestion.rs"
+table = "source_batches"
+class = "1b"
+statements = 3
+status = "pending"
+bead = "personal-cfo-0g528"
+note = "Class 1b import provenance; reshaped by SYNC-2c."
+
+[[site]]
+module = "ingestion.rs"
+table = "source_provenance_links"
+class = "1b"
+statements = 2
+status = "pending"
+bead = "personal-cfo-0g528"
+note = "Class 1b import provenance; reshaped by SYNC-2c."
+
+[[site]]
+module = "ingestion.rs"
+table = "source_records"
+class = "1b"
+statements = 2
+status = "pending"
+bead = "personal-cfo-0g528"
+note = "Class 1b import provenance; reshaped by SYNC-2c."
+
+[[site]]
+module = "lib.rs"
+table = "balance_observations"
+class = "4"
+statements = 3
+status = "pending"
+bead = "personal-cfo-5ymg8.3"
+note = "Manual assertions (record_balance_assertion) and the connector staging path (stage_sync_batch DELETE + INSERT) write observations outside the bus."
+
+[[site]]
+module = "lib.rs"
+table = "categories"
+class = "1"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-d3p"
+note = "insert_system_category: the system categories are seeded at vault creation with deterministic ids; replicated state starts from the logical genesis (SYNC-3)."
+
+[[site]]
+module = "lib.rs"
+table = "forecast_assumption_events"
+class = "4"
+statements = 5
+status = "pending"
+bead = "personal-cfo-5ymg8.4"
+note = "Assumption events recorded, superseded, cleared, deleted and cloned outside the bus (ADR 0055)."
+
+[[site]]
+module = "lib.rs"
+table = "forecast_dependency_edges"
+class = "4"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.4"
+note = "Dependency edges recorded and deleted outside the bus."
+
+[[site]]
+module = "lib.rs"
+table = "ledger_accounts"
+class = "1"
+statements = 1
+status = "bus_internal"
+bead = "personal-cfo-klr.2"
+note = "insert_ledger_account, called from apply/accounts.rs and the system-ledger-account helper that commands call inside their transaction."
+
+[[site]]
+module = "lib.rs"
+table = "ledger_postings"
+class = "1"
+statements = 1
+status = "bus_internal"
+bead = "personal-cfo-klr.2"
+note = "persist_transaction, called from apply/ and reverse_and_hide_transaction."
+
+[[site]]
+module = "lib.rs"
+table = "ledger_transactions"
+class = "1"
+statements = 2
+status = "bus_internal"
+bead = "personal-cfo-klr.2"
+note = "persist_transaction and reverse_and_hide_transaction, called from apply/."
+
+[[site]]
+module = "lib.rs"
+table = "operation_log"
+class = "1"
+statements = 1
+status = "bus_internal"
+bead = "personal-cfo-0s0"
+note = "apply_command: the bus itself writes the operation log row."
+
+[[site]]
+module = "lib.rs"
+table = "provenance_links"
+class = "1"
+statements = 1
+status = "bus_internal"
+bead = "personal-cfo-0s0"
+note = "apply_command: the bus itself writes provenance links."
+
+[[site]]
+module = "lib.rs"
+table = "scenarios"
+class = "4"
+statements = 6
+status = "pending"
+bead = "personal-cfo-5ymg8.4"
+note = "Scenario create, status, rename, expiry, delete and clone outside the bus."
+
+[[site]]
+module = "lib.rs"
+table = "transaction_details"
+class = "1"
+statements = 1
+status = "bus_internal"
+bead = "personal-cfo-klr.2"
+note = "record_transaction_detail, called from apply/ingestion_cmds.rs."
+
+[[site]]
+module = "manual_entry.rs"
+table = "manual_entry_links"
+class = "4"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.6"
+note = "LinkManualEntry writer outside the bus."
+
+[[site]]
+module = "merchant_grouping.rs"
+table = "merchant_aliases"
+class = "4"
+statements = 1
+status = "pending"
+bead = "personal-cfo-5ymg8.5"
+note = "Merchant grouping writes aliases outside the bus."
+
+[[site]]
+module = "merchant_grouping.rs"
+table = "merchant_identities"
+class = "4"
+statements = 1
+status = "pending"
+bead = "personal-cfo-5ymg8.5"
+note = "Merchant grouping writes identities outside the bus."
+
+[[site]]
+module = "merchant_identity.rs"
+table = "merchant_aliases"
+class = "4"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.5"
+note = "Alias create and re-link (link_merchant_alias) outside the bus."
+
+[[site]]
+module = "merchant_identity.rs"
+table = "merchant_identities"
+class = "4"
+statements = 2
+status = "pending"
+bead = "personal-cfo-5ymg8.5"
+note = "Identity create and merge outside the bus."
+
+[[site]]
+module = "merchant_memory.rs"
+table = "transaction_categorizations"
+class = "4"
+statements = 1
+status = "pending"
+bead = "personal-cfo-5ymg8.5"
+note = "The class-4 categorization writer beside apply/'s class-1 writer; route through the existing categorization command."
+
+[[site]]
+module = "money_inbox.rs"
+table = "change_journal_entries"
+class = "1"
+statements = 1
+status = "bus_internal"
+bead = "personal-cfo-0s0"
+note = "record_snooze / record_dismiss, called only from apply/inbox.rs."
+
+[[site]]
+module = "recurring_instances.rs"
+table = "recurring_event_instances"
+class = "1"
+statements = 2
+status = "pending"
+bead = "UNASSIGNED"
+note = "Materialized occurrences are rebuilt (DELETE + INSERT) on reads outside the bus although the manifest says class 1 with user outcomes. No child owns this yet: planning must decide (derived class 2 with outcomes stored elsewhere, or a command)."
+
+[[site]]
+module = "rekey.rs"
+table = "attachments"
+class = "4"
+statements = 1
+status = "pending"
+bead = "personal-cfo-5ymg8.6"
+note = "Re-wraps attachment key material during a vault key rotation; decide with .6 whether rotation is a vault-level operation outside the log or a command."

@@ -97,6 +97,7 @@ Non-negotiables:
 - Importers, connector adapters, document extractors, and AI agents submit staged candidates, typed commands, or report proposals. They do not write committed financial records directly.
 - Financial history is append-friendly. Use reversals, amendments, superseding records, and audit history instead of invisible destructive mutation.
 - Read models are rebuildable from canonical tables plus operation/provenance records.
+- Replicated tables (class 1, 1b, 4 in `crates/db-worker/table_classes.toml`) are written through the command bus in `crates/db-worker/src/apply/`. The write lint (`crates/db-worker/tests/write_lint.rs`, manifest `write_sites.toml`, personal-cfo-5ymg8.1) fails on a new raw write to one outside `apply/`; a pending site names the child bead that will route it.
 - Materialized read models should power dashboard, ledger, search, forecast, and reports.
 - Tauri capabilities are deny-by-default and should be window/webview-specific.
 - The main app window is local-only and cannot navigate to arbitrary remote URLs in production.
