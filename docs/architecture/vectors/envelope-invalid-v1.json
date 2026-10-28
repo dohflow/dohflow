@@ -471,6 +471,7 @@
   "spec": "docs/architecture/vault-format.md C.4 \"When an envelope is found invalid\" and C.14",
   "stage_order": [
     "Unparseable",
+    "WrongVault",
     "ChainBehind (position unknown)",
     "EpochNotInForce",
     "NoVerifiedKey",
@@ -482,11 +483,11 @@
   "tag_secret": "The tagger is the idempotency-key tagger of C.3 under the C.14 sample tag secret S (the 32 bytes 0x20 to 0x3f). 'tagger_output' is its answer for the plaintext's canonical key.",
   "unreachable_from_classification": [
     {
-      "variant": "WrongVault",
-      "why": "Raised when the header names another vault than the key's; the key is selected by the header's vault and epoch, so a header of another vault finds no key and is NoVerifiedKey."
+      "variant": "Open:WrongVault",
+      "why": "Raised by the open step when the header names another vault than the key's; classification judges the vault first (stage WrongVault), and the key is selected by the header's vault and epoch, so the open step is never reached with another vault."
     },
     {
-      "variant": "WrongEpoch",
+      "variant": "Open:WrongEpoch",
       "why": "Raised when the header names another epoch than the key's; the key is selected by the header's epoch."
     }
   ],

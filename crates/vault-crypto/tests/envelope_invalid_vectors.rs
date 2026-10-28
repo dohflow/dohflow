@@ -698,10 +698,10 @@ fn document() -> Value {
             { "name": "B", "device_id": hex(&b.device_id), "fingerprint": hex(b.fingerprint().as_bytes()) },
         ],
         "how_to_read": "Each case is the state of one replica at one log position and the envelope container found there. 'newest_epoch_record_before_position' is the id of the newest epoch record positioned before the envelope (C.7), as the replica sees it processing the log in order, or null when it has not processed the log up to this position; the epoch in force and the membership version in force at the position are that record's key_epoch and the version of the membership record it names, and exist only if the replica's verified chain contains the record. The verdict is 'valid', 'invalid' or 'not_determinable'. The verdict class is the contract; 'reason' is informative. 'invalid' needs the evidence (C.4); 'not_determinable' means the replica must wait and never honors a void on that basis.",
-        "stage_order": ["Unparseable", "ChainBehind (position unknown)", "EpochNotInForce", "NoVerifiedKey", "Open (NotAnEnvelope, DeviceOutsideEpoch, IdentityMismatch, NonceDomain, NotOpenable)", "PlaintextMalformed", "Check"],
+        "stage_order": ["Unparseable", "WrongVault", "ChainBehind (position unknown)", "EpochNotInForce", "NoVerifiedKey", "Open (NotAnEnvelope, DeviceOutsideEpoch, IdentityMismatch, NonceDomain, NotOpenable)", "PlaintextMalformed", "Check"],
         "unreachable_from_classification": [
-            { "variant": "WrongVault", "why": "Raised when the header names another vault than the key's; the key is selected by the header's vault and epoch, so a header of another vault finds no key and is NoVerifiedKey." },
-            { "variant": "WrongEpoch", "why": "Raised when the header names another epoch than the key's; the key is selected by the header's epoch." }
+            { "variant": "Open:WrongVault", "why": "Raised by the open step when the header names another vault than the key's; classification judges the vault first (stage WrongVault), and the key is selected by the header's vault and epoch, so the open step is never reached with another vault." },
+            { "variant": "Open:WrongEpoch", "why": "Raised when the header names another epoch than the key's; the key is selected by the header's epoch." }
         ],
         "cases": cases,
     })
@@ -852,7 +852,7 @@ fn every_verdict_reason_has_a_vector_or_a_stated_reason() {
     for variant in variants_of("OpenFailure") {
         let wanted = format!("Open:{variant}");
         assert!(
-            covered.contains(&wanted) || excused.contains(&variant),
+            covered.contains(&wanted) || excused.contains(&wanted.as_str()),
             "OpenFailure::{variant} has no vector"
         );
     }
