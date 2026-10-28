@@ -155,6 +155,7 @@ pub const PERSISTED_SETTING_KEYS: &[&str] = &[
     FUTURE_CASH_SERIES_KEY,
 ];
 pub use categorization::RecurringCandidate;
+pub use connectors::MAX_LINK_EXTERNAL_ID_BYTES;
 pub use debt::{DebtTermsInput, DebtTermsView, RepaymentPhilosophy};
 pub use forecast_engine::{AssumptionBasis, Band};
 pub use forecast_events::{AssumptionParams, ForecastAssumptionSpec};
