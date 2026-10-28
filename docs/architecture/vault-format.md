@@ -1773,8 +1773,10 @@ log position `V` the service assigns when it appends the void is not in the body
   the digest the replica holds there; and the `command_id` is equal. A void whose digest differs
   from the replica's at its stop is a **suspected fork**, never a silent inert: an authorized
   member saw another envelope at `seq` than this replica did, which an honest service (it checks
-  the digest against its index) cannot serve. The replica surfaces it and the engine decides
-  whether to halt. A void with an equal digest and another `command_id` is a signer fault and is
+  the digest against its index) cannot serve. The replica **halts as a log fork** (the
+  `SeqConflict` class of C.4; ruled 2026-10-27 from owner decision 915.19 rules 1 and 10): the
+  rule returns `ForkSuspected` and the engine halts; the same void honored at two different
+  positions is the same kind of fork and halts the same way. A void with an equal digest and another `command_id` is a signer fault and is
   inert. The `reason` byte is for audit and diagnosis: a replica stopped at `seq` honors the
   void whichever reason it states. Otherwise the void is inert (retained for diagnosis, nothing
   skipped). The inert reasons `NotYetEvaluated` (the frontier is behind `seq`, or the replica is
@@ -1789,9 +1791,14 @@ log position `V` the service assigns when it appends the void is not in the body
   from the replica's own in-order pull of the void, never from an index-replay "void claimed by"
   response, and the same void seen at two positions is a suspected fork, not an idempotent repeat.
   A **deterministic apply failure** (reason `2`) of an envelope that passes the receiver checks is
-  not yet a stop of the replica, so no replica can honor such a void today; recording that stop,
-  and the `engine_version` rule it needs (an apply failure is deterministic only at one engine
-  version), is separate work.
+  not yet a stop of the replica, so no replica can honor such a void today; recording that stop
+  is `personal-cfo-g3m.26`. A reason-`2` void is **version-scoped** (ruled 2026-10-27): an apply
+  failure is deterministic only at one `engine_version`, so such a void names the
+  `engine_version` it was observed at and is honored only by a replica running an **equal**
+  `engine_version` that reproduces the failure itself; across engine versions the replica never
+  applies the position (R40) and the void is inert for it. The void body does not carry
+  `engine_version` yet: adding it is a body change under C.13 that `personal-cfo-g3m.26` makes
+  before any reason-`2` void exists.
 - **Range.** An honored void at position `V` skips every command envelope at positions `seq`
   through `V - 1`: later objects were built on a base that included `seq`. Membership and epoch
   records are never skipped (C.6 verifies them independently); an epoch record inside the range

@@ -275,9 +275,9 @@ impl Inert {
     }
 }
 
-/// A void that contradicts what the replica holds: the log or the ledger forked. The decision to
-/// halt is the engine's (ADR 0074 Addendum D; routed to 05-decisions): this type only makes sure
-/// the contradiction is never a silent inert.
+/// A void that contradicts what the replica holds: the log or the ledger forked. The engine
+/// **halts** on it as a log fork, the `SeqConflict` class (ADR 0074 Addendum E); sync-core only
+/// reports it, and makes sure the contradiction is never a silent inert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForkSuspected {
     /// An authorized member saw another digest at the stop's position than this replica did. An
