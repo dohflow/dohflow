@@ -145,8 +145,8 @@ fn dispositions_follow_the_class_unless_explicitly_excepted() {
 fn credential_and_key_bearing_tables_never_travel() {
     let spec = inventory();
     for table in [
-        "connector_connections",
-        "connector_account_links",
+        "connector_connection_secrets",
+        "connector_link_cursors",
         "command_idempotency_keys",
         "durable_jobs",
         "backup_history",

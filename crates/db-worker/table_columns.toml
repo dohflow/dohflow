@@ -103,10 +103,10 @@ columns = ["id:uuid", "recurring_event_id:uuid", "scheduled_date:text", "transac
 
 [[table]]
 name = "connector_account_links"
-class = "3"
-write_set = "none"
+class = "1"
+write_set = "full"
 primary_key = ["connection_id", "external_id"]
-columns = ["connection_id:uuid", "external_id:text", "external_name:text", "account_id:uuid", "last_synced_on:text", "created_at:text", "updated_at:text", "currency:text"]
+columns = ["connection_id:uuid", "external_id:text", "external_name:text", "account_id:uuid", "created_at:text", "updated_at:text", "currency:text"]
 
 [[table]]
 name = "connector_attention"
@@ -116,11 +116,25 @@ primary_key = ["connection_id"]
 columns = ["connection_id:uuid", "attention:text", "updated_at:text"]
 
 [[table]]
-name = "connector_connections"
+name = "connector_connection_secrets"
 class = "3"
 write_set = "none"
+primary_key = ["connection_id"]
+columns = ["connection_id:uuid", "credential:text", "last_synced_at:text", "last_error:text", "updated_at:text"]
+
+[[table]]
+name = "connector_connections"
+class = "1"
+write_set = "full"
 primary_key = ["id"]
-columns = ["id:uuid", "adapter_id:text", "credential:text", "display_hint:text", "last_synced_at:text", "last_error:text", "created_at:text", "updated_at:text"]
+columns = ["id:uuid", "adapter_id:text", "display_hint:text", "created_at:text", "updated_at:text", "deleted_at:text"]
+
+[[table]]
+name = "connector_link_cursors"
+class = "3"
+write_set = "none"
+primary_key = ["connection_id", "external_id"]
+columns = ["connection_id:uuid", "external_id:text", "last_synced_on:text", "updated_at:text"]
 
 [[table]]
 name = "credit_card_cycles"
@@ -527,6 +541,12 @@ table = "credit_card_cycles"
 column = "cycle_close"
 max_bytes = 16
 mechanism = "construction"
+
+[[key_bound]]
+table = "connector_account_links"
+column = "external_id"
+max_bytes = 234
+mechanism = "writer"
 
 [[projection]]
 source = "attachments"

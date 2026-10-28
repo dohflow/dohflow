@@ -1939,6 +1939,111 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Connection identity / device-local secret split (personal-cfo-07u, SYNC-2a; ADR 0074
+    // decision 5 and Addendum B; ADR 0073 item 1). `connector_connections` held, in one row, what
+    // every device agrees on (which provider, what it is called) and what only THIS device may
+    // hold (the provider credential, when it last refreshed, its last error). Sync must replicate
+    // the first and never the second, so the table is split by class:
+    //   * `connector_connections` (CLASS 1) keeps id, adapter_id, display_hint, created_at,
+    //     updated_at and gains `deleted_at`: deleting a connection is a tombstone (the fourth hard
+    //     delete after egn67's three), because a hard delete replicated to another device would
+    //     leave that device's class-3 rows pointing at a vanished identity and wedge its rebase.
+    //   * `connector_account_links` (CLASS 1) keeps the external-account -> ledger-account mapping
+    //     and currency; its per-account watermark `last_synced_on` is this device's fetch cursor.
+    //   * `connector_connection_secrets` (CLASS 3, NEW): credential, last_synced_at, last_error.
+    //   * `connector_link_cursors` (CLASS 3, NEW): the per-account `last_synced_on` watermark.
+    // The class-3 tables reference the identity (RESTRICT, class 3 -> class 1 only, never the
+    // reverse); the cursor's `external_id` is DATA, not a foreign key to the links, so a mapping a
+    // remote command removed never wedges a rebase. Existing rows move across unchanged. The old
+    // credential column is overwritten with the empty string before it is dropped, so the free
+    // pages the rebuild leaves behind do not keep the secret (the file stays SQLCipher-encrypted
+    // either way). Nothing here logs a row value.
+    Migration {
+        version: 60,
+        name: "connection_identity_secret_split",
+        up: "CREATE TABLE connector_connection_secrets (
+                 connection_id  BLOB PRIMARY KEY REFERENCES connector_connections(id) ON DELETE RESTRICT,
+                 credential     TEXT NOT NULL,
+                 last_synced_at TEXT,
+                 last_error     TEXT,
+                 updated_at     TEXT NOT NULL
+             );
+             INSERT INTO connector_connection_secrets
+                    (connection_id, credential, last_synced_at, last_error, updated_at)
+                 SELECT id, credential, last_synced_at, last_error, updated_at
+                   FROM connector_connections;
+             CREATE TABLE connector_link_cursors (
+                 connection_id  BLOB NOT NULL REFERENCES connector_connections(id) ON DELETE RESTRICT,
+                 external_id    TEXT NOT NULL,
+                 last_synced_on TEXT NOT NULL,
+                 updated_at     TEXT NOT NULL,
+                 PRIMARY KEY (connection_id, external_id)
+             );
+             INSERT INTO connector_link_cursors (connection_id, external_id, last_synced_on, updated_at)
+                 SELECT connection_id, external_id, last_synced_on, updated_at
+                   FROM connector_account_links
+                  WHERE last_synced_on IS NOT NULL;
+             UPDATE connector_connections SET credential = '';
+             ALTER TABLE connector_connections DROP COLUMN credential;
+             ALTER TABLE connector_connections DROP COLUMN last_synced_at;
+             ALTER TABLE connector_connections DROP COLUMN last_error;
+             ALTER TABLE connector_connections ADD COLUMN deleted_at TEXT;
+             ALTER TABLE connector_account_links DROP COLUMN last_synced_on;",
+        // Reverse: refuses (atomically, like 57 and 59) in two cases where merging the tables
+        // back would lose or invent something. A connection with NO secret row on this device (it
+        // was created on another device) has no credential to put back into the old NOT NULL
+        // column, and one is never invented; a tombstoned connection would be silently
+        // resurrected. Otherwise the old shape is rebuilt exactly (the old `credential` column
+        // is NOT NULL, so the table is rebuilt rather than altered) and the cursors go back onto
+        // their links. What it cannot restore is harmless: the connection's `updated_at` is taken
+        // from the identity (equal to the secret's for every pre-split row), and the cursors'
+        // own `updated_at` is dropped (the old shape never had one).
+        down: Some(
+            "CREATE TEMP TABLE connector_split_down_needs_a_secret_for_every_connection
+                 (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO connector_split_down_needs_a_secret_for_every_connection
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM connector_connections c
+                                           WHERE NOT EXISTS (SELECT 1 FROM connector_connection_secrets s
+                                                              WHERE s.connection_id = c.id))
+                        THEN 0 ELSE 1 END;
+             DROP TABLE connector_split_down_needs_a_secret_for_every_connection;
+             CREATE TEMP TABLE connector_split_down_refuses_a_tombstone (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO connector_split_down_refuses_a_tombstone
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM connector_connections WHERE deleted_at IS NOT NULL)
+                        THEN 0 ELSE 1 END;
+             DROP TABLE connector_split_down_refuses_a_tombstone;
+             ALTER TABLE connector_account_links ADD COLUMN last_synced_on TEXT;
+             UPDATE connector_account_links
+                SET last_synced_on = (SELECT k.last_synced_on FROM connector_link_cursors k
+                                       WHERE k.connection_id = connector_account_links.connection_id
+                                         AND k.external_id = connector_account_links.external_id);
+             CREATE TABLE connector_connections_v48 (
+                 id BLOB PRIMARY KEY,
+                 adapter_id TEXT NOT NULL,
+                 credential TEXT NOT NULL,
+                 display_hint TEXT,
+                 last_synced_at TEXT,
+                 last_error TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             INSERT INTO connector_connections_v48
+                    (id, adapter_id, credential, display_hint, last_synced_at, last_error, created_at, updated_at)
+                 SELECT c.id, c.adapter_id, s.credential, c.display_hint, s.last_synced_at, s.last_error,
+                        c.created_at, c.updated_at
+                   FROM connector_connections c
+                   JOIN connector_connection_secrets s ON s.connection_id = c.id;
+             DROP TABLE connector_link_cursors;
+             DROP TABLE connector_connection_secrets;
+             DROP TABLE connector_connections;
+             ALTER TABLE connector_connections_v48 RENAME TO connector_connections;",
+        ),
+        rebuilds_read_models: false,
+        // The down rebuilds a table other tables reference (the links and the attention notice),
+        // SQLite's documented rebuild procedure; both directions run with enforcement off and
+        // require an empty foreign_key_check before COMMIT.
+        foreign_keys_off: true,
+    },
 ];
 
 const fn max_version() -> i64 {
@@ -2652,6 +2757,231 @@ mod tests {
                 "core accounts lost migrating down to v{to}"
             );
         }
+    }
+
+    /// The connection identity / secret split (v60, personal-cfo-07u): existing rows move across
+    /// unchanged, the credential never lands in a class-1 column, the old credential bytes do
+    /// not survive in the file, and the schema matches the manifest's shape.
+    const CANARY: &str = "https://canary-user:canary-pass@bridge.invalid/simplefin";
+
+    fn seed_v59_connection(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO connector_connections
+                (id, adapter_id, credential, display_hint, last_synced_at, last_error,
+                 created_at, updated_at)
+             VALUES (?1, 'simplefin', ?2, 'Primary bank', '2026-10-20T10:00:00Z',
+                     'a past error', '2026-09-01T00:00:00Z', '2026-10-20T10:00:00Z')",
+            rusqlite::params![&[7u8; 16][..], CANARY],
+        )
+        .unwrap();
+        for (external, synced) in [("acct-1", Some("2026-10-19")), ("acct-2", None)] {
+            conn.execute(
+                "INSERT INTO connector_account_links
+                    (connection_id, external_id, external_name, account_id, last_synced_on,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, ?2, NULL, ?3, '2026-09-01T00:00:00Z', '2026-10-19T00:00:00Z')",
+                rusqlite::params![&[7u8; 16][..], external, synced],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn v60_moves_the_credential_and_state_to_the_device_local_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v60.db");
+        let mut conn = Connection::open(&path).unwrap();
+        apply(&mut conn, &MIGRATIONS[..59]).unwrap(); // schema through v59
+        seed_v59_connection(&conn);
+
+        apply(&mut conn, &MIGRATIONS[59..60]).unwrap(); // v60
+
+        // The secret table holds exactly what the connection row held.
+        let secret: (String, Option<String>, Option<String>, String) = conn
+            .query_row(
+                "SELECT credential, last_synced_at, last_error, updated_at
+                   FROM connector_connection_secrets WHERE connection_id = ?1",
+                rusqlite::params![&[7u8; 16][..]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            secret,
+            (
+                CANARY.to_owned(),
+                Some("2026-10-20T10:00:00Z".to_owned()),
+                Some("a past error".to_owned()),
+                "2026-10-20T10:00:00Z".to_owned()
+            )
+        );
+        // The cursors hold only the links that had a watermark.
+        let cursors: Vec<(String, String)> = conn
+            .prepare("SELECT external_id, last_synced_on FROM connector_link_cursors ORDER BY 1")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            cursors,
+            vec![("acct-1".to_owned(), "2026-10-19".to_owned())]
+        );
+        // The class-1 identity keeps its identity columns and gained the tombstone.
+        let identity: (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT adapter_id, display_hint, deleted_at FROM connector_connections",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            identity,
+            (
+                "simplefin".to_owned(),
+                Some("Primary bank".to_owned()),
+                None
+            )
+        );
+        // No class-1 column mentions the credential, and the class-1 tables lost the moved columns.
+        for (table, gone) in [
+            (
+                "connector_connections",
+                ["credential", "last_synced_at", "last_error"],
+            ),
+            ("connector_account_links", ["last_synced_on", "", ""]),
+        ] {
+            let columns: Vec<String> = conn
+                .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for column in gone.iter().filter(|c| !c.is_empty()) {
+                assert!(
+                    !columns.iter().any(|c| c == column),
+                    "{table}.{column} remains"
+                );
+            }
+        }
+        for table in ["connector_connections", "connector_account_links"] {
+            let dump: String = conn
+                .query_row(
+                    &format!("SELECT group_concat(quote(t.rowid) || quote(t.*)) FROM {table} t"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            assert!(!dump.contains("canary"), "{table} holds the credential");
+        }
+        assert!(
+            conn.query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+                .is_err(),
+            "no foreign-key violation"
+        );
+        drop(conn);
+        // The old credential bytes do not survive in the database file.
+        let bytes = std::fs::read(&path).unwrap();
+        let occurrences = bytes
+            .windows(CANARY.len())
+            .filter(|w| *w == CANARY.as_bytes())
+            .count();
+        // One copy remains: the secret row itself, in the class-3 table.
+        assert_eq!(
+            occurrences, 1,
+            "the credential survives only in the secret row"
+        );
+    }
+
+    #[test]
+    fn v60_down_restores_the_old_shape_and_refuses_when_it_would_lose_or_invent_a_secret() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..59]).unwrap();
+        seed_v59_connection(&conn);
+        apply(&mut conn, &MIGRATIONS[59..60]).unwrap();
+
+        // An identity with no secret row (it came from another device) refuses the down, atomically.
+        conn.execute(
+            "INSERT INTO connector_connections (id, adapter_id, created_at, updated_at)
+             VALUES (?1, 'simplefin', '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')",
+            rusqlite::params![&[8u8; 16][..]],
+        )
+        .unwrap();
+        assert!(
+            migrate_down(&mut conn, 59).is_err(),
+            "must refuse: no credential to restore"
+        );
+        let still_split: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM connector_connection_secrets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_split, 1, "a refused down changes nothing");
+        conn.execute(
+            "DELETE FROM connector_connections WHERE id = ?1",
+            rusqlite::params![&[8u8; 16][..]],
+        )
+        .unwrap();
+
+        // A tombstone refuses the down (it would be silently resurrected).
+        conn.execute(
+            "UPDATE connector_connections SET deleted_at = '2026-10-22T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            migrate_down(&mut conn, 59).is_err(),
+            "must refuse: a tombstone"
+        );
+        conn.execute("UPDATE connector_connections SET deleted_at = NULL", [])
+            .unwrap();
+
+        // Otherwise the old shape comes back with its data.
+        migrate_down(&mut conn, 59).unwrap();
+        let restored: (String, String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT adapter_id, credential, last_synced_at, last_error FROM connector_connections",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            restored,
+            (
+                "simplefin".to_owned(),
+                CANARY.to_owned(),
+                Some("2026-10-20T10:00:00Z".to_owned()),
+                Some("a past error".to_owned())
+            )
+        );
+        let watermark: Option<String> = conn
+            .query_row(
+                "SELECT last_synced_on FROM connector_account_links WHERE external_id = 'acct-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(watermark.as_deref(), Some("2026-10-19"));
+        let secrets_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'connector_connection_secrets'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(secrets_table, 0);
+        // And it composes: up again gives the split back.
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let again: String = conn
+            .query_row(
+                "SELECT credential FROM connector_connection_secrets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(again, CANARY);
     }
 
     /// A full round-trip — CURRENT → baseline → CURRENT — restores the schema and

@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=12 -->
-<!-- vault-format: schema-version=59 -->
+<!-- vault-format: spec-version=13 -->
+<!-- vault-format: schema-version=60 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -270,6 +270,12 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 13` changes the portable-export and Sync inventory (Part B.5, the CLASS-0 table
+  inventory) for the connector tables (personal-cfo-07u): `connector_connections` and
+  `connector_account_links` become class 1 (identity and mapping travel; the credential, refresh
+  time, last error and per-account watermark do not) and the new class-3 tables
+  `connector_connection_secrets` and `connector_link_cursors` never leave the device. No wire
+  layout or vector changes.
 - `spec-version = 12` fixes the sequence of stages by which a replica finds an envelope invalid or
   cannot yet judge it (C.4 "When an envelope is found invalid"): the epoch and membership are those
   in force **at the log position**, so the verdict does not depend on how far past it a replica has
@@ -399,8 +405,10 @@ therefore requires reviewing this inventory.
 | `schema_migrations` | 3 | exclude | exclude | Device-local state. |
 | `audit_events` | 3 | exclude | exclude | Device-local security evidence and replay-owned planned-command rows; not a user-owned financial record. |
 | `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
-| `connector_connections` | 3 | exclude | exclude | Holds provider credentials. Excluded whole until the identity/secret split in `personal-cfo-07u` yields a replicable identity table. |
-| `connector_account_links` | 3 | exclude | exclude | Holds local refresh watermarks. Excluded whole until the split in `personal-cfo-07u`. |
+| `connector_connections` | 1 | include | include | Connection identity only: id, provider (`adapter_id`), display hint, created and updated times, and the `deleted_at` tombstone. No credential, refresh time or error: those are in `connector_connection_secrets`. |
+| `connector_account_links` | 1 | include | include | The external-account to ledger-account mapping and currency, per connection. The per-account refresh watermark is device-local (`connector_link_cursors`). |
+| `connector_connection_secrets` | 3 | exclude | exclude | Device-local provider credential, last refresh time and last error; never leaves the device. |
+| `connector_link_cursors` | 3 | exclude | exclude | Device-local per-account refresh watermark. |
 | `connector_attention` | 3 | exclude | exclude | Device-local re-authentication notices (personal-cfo-pxi.22); rebuilt by the next refresh. |
 | `staged_accounts` | 3 | exclude | exclude | Device-local state. |
 | `staged_balances` | 3 | exclude | exclude | Device-local state. |
@@ -426,7 +434,7 @@ Rules that apply to the whole inventory:
 
 1. **Credentials, device keys, endpoint overrides, caches and runtime queues
    never travel in either format.** Provider credentials and refresh watermarks
-   (`connector_connections`, `connector_account_links`), idempotency memos,
+   (`connector_connection_secrets`, `connector_link_cursors`), idempotency memos,
    durable jobs, staged import rows, backup receipts and the vault's
    key-derivation parameters are excluded by the rows above.
 2. **No raw database image and no recovery key or packet** is part of the

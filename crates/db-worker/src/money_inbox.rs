@@ -385,10 +385,11 @@ pub(crate) fn failed_job_items(conn: &Connection) -> Result<Vec<MoneyInboxItem>,
 /// LEAK RULE: selects only non-secret columns — the credential is never read.
 pub(crate) fn connector_error_items(conn: &Connection) -> Result<Vec<MoneyInboxItem>, DbError> {
     let mut stmt = conn.prepare(
-        "SELECT id, adapter_id, display_hint, last_synced_at, last_error, updated_at
-           FROM connector_connections
-          WHERE last_error IS NOT NULL
-          ORDER BY updated_at, id",
+        "SELECT c.id, c.adapter_id, c.display_hint, s.last_synced_at, s.last_error, s.updated_at
+           FROM connector_connections c
+           JOIN connector_connection_secrets s ON s.connection_id = c.id
+          WHERE c.deleted_at IS NULL AND s.last_error IS NOT NULL
+          ORDER BY s.updated_at, c.id",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
