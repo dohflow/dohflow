@@ -29,7 +29,7 @@
 use crate::envelope::ReceiverError;
 use crate::header::{ClearHeader, Fingerprint};
 use crate::membership::ChainError;
-use crate::void::HonoredVoid;
+use crate::void::{ForkSuspected, HonoredVoid, VoidLedger};
 
 /// What a fork or an equivocation looked like (both ids, retained for diagnosis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +52,15 @@ pub enum HaltEvidence {
         first: [u8; 32],
         /// The different digest seen later.
         second: [u8; 32],
+    },
+    /// A void already honored at one position was offered at another: the log forked.
+    VoidAtTwoPositions {
+        /// The void's id.
+        void_id: [u8; 32],
+        /// The position it was honored at.
+        honored_at: u64,
+        /// The position it is offered at now.
+        offered_at: u64,
     },
     /// Two epoch records after one `prev_epoch_id`.
     Equivocation {
@@ -181,6 +190,55 @@ impl SyncStatus {
         }
     }
 
+    /// Halt on a suspected fork reported by the void honor rule (ADR 0074 Addendum E): a void
+    /// naming another digest than the one held at the stop is the `SeqConflict` class; the same
+    /// void honored at two positions is its own evidence. Halting is the rule, so every engine
+    /// gets it from here instead of hand-rolling it. A status that is already `Halted` absorbs it.
+    pub fn observe_fork_suspected(&mut self, fork: &ForkSuspected) -> Option<SyncEvent> {
+        if matches!(self, Self::Halted(_)) {
+            return None;
+        }
+        let evidence = match *fork {
+            ForkSuspected::DigestAtStop { seq, ours, theirs } => HaltEvidence::SeqConflict {
+                seq,
+                first: ours,
+                second: theirs,
+            },
+            ForkSuspected::VoidAtTwoPositions {
+                void_id,
+                honored_at,
+                offered_at,
+            } => HaltEvidence::VoidAtTwoPositions {
+                void_id,
+                honored_at,
+                offered_at,
+            },
+        };
+        *self = Self::Halted(evidence);
+        Some(SyncEvent::Halted(evidence))
+    }
+
+    /// [`Self::observe_envelope`] for an engine that also holds the void ledger and its cursor:
+    /// a position an honored void skips, or one below `next_to_apply` (already applied), is not
+    /// evaluated again. Re-verifying such a position (after a restart, a re-pull, or a verifier
+    /// running ahead) must not re-open a stop the replica has already moved past; the "found
+    /// invalid" fact is recomputable only for the positions at or after the frontier that no
+    /// honored void skips.
+    pub fn observe_envelope_in_context(
+        &mut self,
+        ledger: &VoidLedger,
+        next_to_apply: u64,
+        seq: u64,
+        envelope_digest: [u8; 32],
+        header: &ClearHeader,
+        outcome: Result<(), ReceiverError>,
+    ) -> Option<SyncEvent> {
+        if ledger.skips(seq) || seq < next_to_apply {
+            return None;
+        }
+        self.observe_envelope(seq, envelope_digest, header, outcome)
+    }
+
     /// Record the outcome of the receiver checks on the authenticated envelope the service placed
     /// at `seq` (with its `canonical_envelope_digest`). A failure stops the replica at `seq`; if
     /// it is already stopped at a later position (envelopes can be verified out of order) the
@@ -190,7 +248,9 @@ impl SyncStatus {
     ///
     /// The "found invalid" fact needs no persistence: it is recomputable from the log by running
     /// the same deterministic checks on the same bytes, and a replica must evaluate a position
-    /// itself before it considers any void naming it.
+    /// itself before it considers any void naming it. An engine that keeps a void ledger MUST call
+    /// [`Self::observe_envelope_in_context`] instead, so a position already skipped or applied is
+    /// not evaluated again.
     pub fn observe_envelope(
         &mut self,
         seq: u64,

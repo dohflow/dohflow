@@ -20,9 +20,7 @@ use serde_json::{json, Value};
 use sync_core::envelope::ReceiverError;
 use sync_core::membership::EpochAtPosition;
 use sync_core::status::{HaltEvidence, InvalidEnvelope, SyncStatus};
-use sync_core::void::{
-    verify_void, ForkSuspected, Honor, HonorContext, VoidBody, VoidLedger, VoidReason,
-};
+use sync_core::void::{verify_void, ForkSuspected, Honor, HonorContext, VoidBody, VoidLedger};
 
 const VECTORS: &str = include_str!("../../../docs/architecture/vectors/void-honor-v1.json");
 const VECTORS_PATH: &str = "../../docs/architecture/vectors/void-honor-v1.json";
@@ -40,16 +38,21 @@ enum Status {
     Stopped(u64, u8, u8),
 }
 
-#[derive(Clone, Copy)]
+/// A void: (seq, position, command byte, digest byte, issued_at offset).
+type VoidSpec = (u64, u64, u8, u8, i64);
+
+#[derive(Clone)]
 struct Step {
-    /// The void: (seq, position, command byte, digest byte, reason byte).
-    void: (u64, u64, u8, u8, u8),
+    /// The voids offered in this step, in the order given (the rule requires ascending position).
+    voids: Vec<VoidSpec>,
     status: Status,
     next_to_apply: u64,
     snapshot_root: Option<u64>,
     not_determinable: bool,
-    /// `honored:first:last`, `inert:Reason`, or `fork:Kind`.
-    expect: &'static str,
+    /// One outcome per void offered, up to and including the first that changes the replica:
+    /// `honored:first:last`, `already_honored`, `inert:Reason`, `fork:Kind`; or one `error:Kind`
+    /// for a refused offer.
+    expect: Vec<&'static str>,
 }
 
 struct Case {
@@ -58,25 +61,20 @@ struct Case {
     steps: Vec<Step>,
 }
 
-fn step(
-    void: (u64, u64, u8, u8, u8),
-    status: Status,
-    next_to_apply: u64,
-    expect: &'static str,
-) -> Step {
+fn step(void: VoidSpec, status: Status, next_to_apply: u64, expect: &'static str) -> Step {
     Step {
-        void,
+        voids: vec![void],
         status,
         next_to_apply,
         snapshot_root: None,
         not_determinable: false,
-        expect,
+        expect: vec![expect],
     }
 }
 
-/// A void for `seq` at `position`, naming command byte 0x11 and digest byte 0x22 (reason 1).
-const fn v(seq: u64, position: u64) -> (u64, u64, u8, u8, u8) {
-    (seq, position, 0x11, 0x22, 1)
+/// A void for `seq` at `position`, naming command byte 0x11 and digest byte 0x22.
+const fn v(seq: u64, position: u64) -> VoidSpec {
+    (seq, position, 0x11, 0x22, 0)
 }
 
 /// The replica is stopped at `seq` on the envelope the default void names.
@@ -93,6 +91,14 @@ fn all_cases() -> Vec<Case> {
         s.not_determinable = true;
         s
     };
+    let batch = |voids: Vec<VoidSpec>, status: Status, next: u64, expect: Vec<&'static str>| Step {
+        voids,
+        status,
+        next_to_apply: next,
+        snapshot_root: None,
+        not_determinable: false,
+        expect,
+    };
     vec![
         Case {
             name: "honored_for_the_range_before_the_void",
@@ -105,11 +111,6 @@ fn all_cases() -> Vec<Case> {
             steps: vec![step(v(5, 6), at(5), 5, "honored:5:5")],
         },
         Case {
-            name: "honored_whichever_reason_byte_the_void_states",
-            description: "The reason byte is audit only: a reason-2 void is honored exactly as a reason-1 void.",
-            steps: vec![step((5, 9, 0x11, 0x22, 2), at(5), 5, "honored:5:8")],
-        },
-        Case {
             name: "honored_at_the_edges_of_the_position_space",
             description: "Range arithmetic at the extremes: the first position, and the last two.",
             steps: vec![
@@ -118,11 +119,11 @@ fn all_cases() -> Vec<Case> {
             ],
         },
         Case {
-            name: "the_same_void_offered_again_at_the_same_position_is_idempotent",
-            description: "Honoring the identical void at the identical position twice is one ledger entry.",
+            name: "the_same_void_offered_again_at_the_same_position_is_already_honored",
+            description: "After a restart or a re-pull the identical void at the identical position is reported as already honored, so rollback and re-issue (driven off the first honor only) run exactly once. The replica's cursor has moved past the range by then.",
             steps: vec![
                 step(v(5, 9), at(5), 5, "honored:5:8"),
-                step(v(5, 9), at(5), 5, "honored:5:8"),
+                step(v(5, 9), Status::Healthy, 9, "already_honored"),
             ],
         },
         Case {
@@ -140,16 +141,16 @@ fn all_cases() -> Vec<Case> {
         },
         Case {
             name: "inert_when_an_honored_void_already_covers_the_position",
-            description: "Coverage comes only from honored voids. After 5..=19 is honored, a void naming 8 is inert whatever the replica's state.",
+            description: "Coverage comes only from honored voids. After 5..=19 is honored (the cursor is now 20), a void naming 8 is inert.",
             steps: vec![
                 step(v(5, 20), at(5), 5, "honored:5:19"),
-                step(v(8, 21), at(8), 8, "inert:AlreadyCovered"),
+                step(v(8, 21), Status::Healthy, 20, "inert:AlreadyCovered"),
             ],
         },
         Case {
             name: "inert_when_the_position_is_at_or_below_the_snapshot_root",
-            description: "A replica bootstrapped from a snapshot at root 8 never evaluated position 5; the void is not honored and the engine must treat the root as suspect.",
-            steps: vec![root(step(v(5, 12), at(5), 5, "inert:PrecedesRoot"), 8), root(step(v(8, 12), at(8), 8, "inert:PrecedesRoot"), 8)],
+            description: "A replica bootstrapped from a snapshot at root 8 starts its cursor at 9 and never evaluated position 5 or 8; the void is not honored and the engine must treat the root as suspect.",
+            steps: vec![root(step(v(5, 12), Status::Healthy, 9, "inert:PrecedesRoot"), 8), root(step(v(8, 12), Status::Healthy, 9, "inert:PrecedesRoot"), 8)],
         },
         Case {
             name: "inert_when_the_replica_applied_the_position",
@@ -172,23 +173,27 @@ fn all_cases() -> Vec<Case> {
         },
         Case {
             name: "inert_when_the_replica_cannot_judge_the_position",
-            description: "At the position with no verified key yet: NotDeterminable is never a basis to honor.",
-            steps: vec![undeterminable(step(v(5, 9), Status::Healthy, 5, "inert:NotDeterminable"))],
+            description: "At the position with no verified key yet: NotDeterminable is never a basis to honor. It is reported whenever the replica is at the position, cannot judge it and is not stopped there, including with an out-of-order stop at a later position; a halted replica judges nothing.",
+            steps: vec![
+                undeterminable(step(v(5, 9), Status::Healthy, 5, "inert:NotDeterminable")),
+                undeterminable(step(v(5, 9), at(9), 5, "inert:NotDeterminable")),
+                undeterminable(step(v(5, 9), Status::Halted, 5, "inert:NotYetEvaluated")),
+            ],
         },
         Case {
             name: "inert_when_the_command_differs_but_the_digest_matches",
             description: "The digest binds the command id, so equal digests with different command ids is a signer fault: inert.",
-            steps: vec![step((5, 9, 0x99, 0x22, 1), at(5), 5, "inert:CommandMismatch")],
+            steps: vec![step((5, 9, 0x99, 0x22, 0), at(5), 5, "inert:CommandMismatch")],
         },
         Case {
             name: "a_different_digest_at_the_stop_is_a_suspected_fork",
-            description: "An authorized member saw another envelope at the stop's position than this replica did. An honest service refuses such a void; the engine MUST surface this (whether to halt is a decision of the engine).",
-            steps: vec![step((5, 9, 0x11, 0x77, 1), at(5), 5, "fork:DigestAtStop")],
+            description: "An authorized member saw another envelope at the stop's position than this replica did. An honest service refuses such a void; the engine halts (a log fork).",
+            steps: vec![step((5, 9, 0x11, 0x77, 0), at(5), 5, "fork:DigestAtStop")],
         },
         Case {
             name: "the_same_void_at_another_position_is_a_suspected_fork",
             description: "A void already honored at position 9 offered again at 12: the log forked, not an idempotent repeat.",
-            steps: vec![step(v(5, 9), at(5), 5, "honored:5:8"), step(v(5, 12), at(5), 5, "fork:VoidAtTwoPositions")],
+            steps: vec![step(v(5, 9), at(5), 5, "honored:5:8"), step(v(5, 12), Status::Healthy, 9, "fork:VoidAtTwoPositions")],
         },
         Case {
             name: "a_transient_inert_void_is_honored_when_the_replica_catches_up",
@@ -204,6 +209,30 @@ fn all_cases() -> Vec<Case> {
             steps: vec![
                 step(v(3, 10), Status::Healthy, 7, "inert:FoundValid"),
                 step(v(6, 12), at(6), 6, "honored:6:11"),
+            ],
+        },
+        Case {
+            name: "two_voids_for_one_position_are_offered_in_position_order_and_the_earlier_wins",
+            description: "A service that skips its same-seq dedupe serves two different voids for 10 at positions 12 and 15 (they differ in issued_at). Offered ascending, the earlier is honored for 10..=11 and the offer stops there (the context is stale); out of order, or at equal positions, the offer is refused. After the cursor moves past the range the later void is covered.",
+            steps: vec![
+                batch(vec![(10, 15, 0x11, 0x22, 1), v(10, 12)], at(10), 10, vec!["error:VoidsNotAscending"]),
+                batch(vec![v(10, 12), (10, 15, 0x11, 0x22, 1)], at(10), 10, vec!["honored:10:11"]),
+                step((10, 15, 0x11, 0x22, 1), Status::Healthy, 12, "inert:AlreadyCovered"),
+            ],
+        },
+        Case {
+            name: "a_batch_of_inert_voids_is_reported_in_full",
+            description: "Voids that change nothing are all reported, in order.",
+            steps: vec![batch(vec![v(10, 12), (10, 15, 0x11, 0x22, 1)], Status::Healthy, 3, vec!["inert:NotYetEvaluated", "inert:NotYetEvaluated"])],
+        },
+        Case {
+            name: "an_inconsistent_replica_state_is_refused_never_a_permanent_found_valid",
+            description: "A cursor that passed the stop (chain records verified past the stop must not advance it), a snapshot root at or above the cursor, and a cursor inside a range an honored void skipped are refused with an error, checked before any void: answering FoundValid would be permanent and split the vault.",
+            steps: vec![
+                step(v(5, 9), at(5), 7, "error:StopBehindFrontier"),
+                root(step(v(5, 9), Status::Healthy, 5, "error:RootNotBelowFrontier"), 5),
+                step(v(5, 9), at(5), 5, "honored:5:8"),
+                step(v(5, 9), Status::Healthy, 8, "error:FrontierInsideHonoredRange"),
             ],
         },
     ]
@@ -228,30 +257,43 @@ fn status_of(step: &Step) -> SyncStatus {
     }
 }
 
-/// Run a case against the real implementation; returns each step's outcome and void id.
-fn run(case: &Case) -> Vec<(String, String)> {
+fn outcome_name(outcome: Honor) -> String {
+    match outcome {
+        Honor::Honored(h) => format!("honored:{}:{}", h.first, h.last),
+        Honor::AlreadyHonored(_) => "already_honored".to_owned(),
+        Honor::Inert(why) => format!("inert:{why:?}"),
+        Honor::ForkSuspected(ForkSuspected::DigestAtStop { .. }) => "fork:DigestAtStop".to_owned(),
+        Honor::ForkSuspected(ForkSuspected::VoidAtTwoPositions { .. }) => {
+            "fork:VoidAtTwoPositions".to_owned()
+        }
+    }
+}
+
+/// Run a case against the real implementation; returns each step's outcomes and void ids.
+fn run(case: &Case) -> Vec<(Vec<String>, Vec<String>)> {
     let chain = chain();
     let at_end = EpochAtPosition::after_epoch_record(&chain.state, &chain.e2).unwrap();
     let mut ledger = VoidLedger::new();
     case.steps
         .iter()
         .map(|s| {
-            let (seq, position, cmd, dig, reason) = s.void;
-            let body = VoidBody {
-                command_id: [cmd; 16],
-                envelope_digest: [dig; 32],
-                reason: if reason == 2 {
-                    VoidReason::DeterministicApply
-                } else {
-                    VoidReason::ReceiverCheck
-                },
-                ..body(&chain.a, seq)
-            };
-            let void =
-                verify_void(&chain.state, &at_end, position, &signed(&body, &chain.a)).unwrap();
+            let voids: Vec<_> = s
+                .voids
+                .iter()
+                .map(|&(seq, position, cmd, dig, issued)| {
+                    let body = VoidBody {
+                        command_id: [cmd; 16],
+                        envelope_digest: [dig; 32],
+                        issued_at: 1_790_000_000_000_000 + issued,
+                        ..body(&chain.a, seq)
+                    };
+                    verify_void(&chain.state, &at_end, position, &signed(&body, &chain.a)).unwrap()
+                })
+                .collect();
+            let ids = voids.iter().map(|v| hex(v.id())).collect();
             let status = status_of(s);
-            let outcome = match ledger.offer(
-                &void,
+            let outcomes = match ledger.offer_in_order(
+                &voids,
                 &HonorContext {
                     status: &status,
                     next_to_apply: s.next_to_apply,
@@ -259,16 +301,10 @@ fn run(case: &Case) -> Vec<(String, String)> {
                     target_not_determinable: s.not_determinable,
                 },
             ) {
-                Honor::Honored(h) => format!("honored:{}:{}", h.first, h.last),
-                Honor::Inert(why) => format!("inert:{why:?}"),
-                Honor::ForkSuspected(ForkSuspected::DigestAtStop { .. }) => {
-                    "fork:DigestAtStop".to_owned()
-                }
-                Honor::ForkSuspected(ForkSuspected::VoidAtTwoPositions { .. }) => {
-                    "fork:VoidAtTwoPositions".to_owned()
-                }
+                Ok(outcomes) => outcomes.into_iter().map(outcome_name).collect(),
+                Err(error) => vec![format!("error:{error:?}")],
             };
-            (outcome, hex(void.id()))
+            (outcomes, ids)
         })
         .collect()
 }
@@ -277,14 +313,13 @@ fn document() -> Value {
     let cases: Vec<Value> = all_cases()
         .iter()
         .map(|case| {
-            let outcomes = run(case);
+            let results = run(case);
             let steps: Vec<Value> = case
                 .steps
                 .iter()
-                .zip(&outcomes)
-                .map(|(s, (outcome, void_id))| {
-                    assert_eq!(outcome, s.expect, "{}: intended outcome", case.name);
-                    let (seq, position, cmd, dig, reason) = s.void;
+                .zip(&results)
+                .map(|(s, (outcomes, ids))| {
+                    assert_eq!(outcomes, &s.expect, "{}: intended outcome", case.name);
                     let status = match s.status {
                         Status::Healthy => json!({"kind": "healthy"}),
                         Status::Halted => json!({"kind": "halted"}),
@@ -295,15 +330,22 @@ fn document() -> Value {
                             "command_id": hex(&[cmd; 16]),
                         }),
                     };
+                    let voids: Vec<Value> = s
+                        .voids
+                        .iter()
+                        .zip(ids)
+                        .map(|(&(seq, position, cmd, dig, _), id)| {
+                            json!({
+                                "id": id,
+                                "seq": seq,
+                                "position": position,
+                                "command_id": hex(&[cmd; 16]),
+                                "envelope_digest": hex(&[dig; 32]),
+                            })
+                        })
+                        .collect();
                     json!({
-                        "void": {
-                            "id": void_id,
-                            "seq": seq,
-                            "position": position,
-                            "command_id": hex(&[cmd; 16]),
-                            "envelope_digest": hex(&[dig; 32]),
-                            "reason": reason,
-                        },
+                        "voids": voids,
                         "replica": {
                             "status": status,
                             "next_to_apply": s.next_to_apply,
@@ -319,25 +361,30 @@ fn document() -> Value {
         .collect();
     json!({
         "vectors_version": 1,
-        "spec": "docs/architecture/vault-format.md C.10 \"Void records\" and C.14; ADR 0074 Addendum D",
+        "spec": "docs/architecture/vault-format.md C.10 \"Void records\" and C.14; ADR 0074 Addendum D and E",
         "synthetic": "Every value is a repeated byte or a small integer. No key, signature or real value is in this file: the void's signature and signer are checked before the rule runs (membership vectors), and this file pins the rule alone.",
-        "how_to_read": "Each case is a sequence of steps against ONE replica, sharing one ledger of honored voids that starts empty. In each step the replica is offered a verified void ('void': its id, the log 'seq' it names, the log 'position' V it occupies, the 'command_id' and 'envelope_digest' it names, and its audit-only 'reason') in the replica's state ('replica': its 'status' (healthy, halted, or stopped at an invalid envelope at a position with a digest and a command id), 'next_to_apply' (the lowest position not yet applied or skipped; every position below it is done), the 'snapshot_root' it bootstrapped from or null, and whether it is at the position but 'target_not_determinable'). 'expect' is 'honored:FIRST:LAST' (positions FIRST..=LAST are skipped and added to the ledger), 'inert:REASON' (nothing changes) or 'fork:KIND' (nothing changes and the engine must surface a suspected fork).",
+        "how_to_read": "Each case is a sequence of steps against ONE replica, sharing one ledger of honored voids that starts empty. In each step the replica is offered a list of verified voids, in the order given ('voids': each with its id, the log 'seq' it names, the log 'position' V it occupies, and the 'command_id' and 'envelope_digest' it names) in the replica's state ('replica': its 'status' (healthy, halted, or stopped at an invalid envelope at a position with a digest and a command id), 'next_to_apply' (the lowest position not yet applied or skipped; every position below it is done; it never passes the stop), the 'snapshot_root' it bootstrapped from or null, and whether it is at the position but 'target_not_determinable'). 'expect' has one outcome per void offered, up to and including the first that changes the replica (the rest are not offered), or a single 'error:KIND' when the offer is refused. An outcome is 'honored:FIRST:LAST' (positions FIRST..=LAST are skipped and added to the ledger; rollback and re-issue are driven off this outcome only), 'already_honored' (the same void at the same position again: nothing changes and nothing is re-issued), 'inert:REASON' (nothing changes) or 'fork:KIND' (nothing changes and the replica halts as a log fork).",
+        "refused_before_any_void": [
+            "StopBehindFrontier: the status is a stop at a position below next_to_apply",
+            "RootNotBelowFrontier: snapshot_root is set and snapshot_root >= next_to_apply",
+            "FrontierInsideHonoredRange: an honored range ends at or after next_to_apply",
+            "VoidsNotAscending: the voids' positions are not strictly ascending"
+        ],
         "rule_order": [
-            "same void id already honored: same position is idempotent (honored again, unchanged), another position is fork:VoidAtTwoPositions",
+            "same void id already honored: same position is already_honored, another position is fork:VoidAtTwoPositions",
             "VoidNotAfterTarget: position <= seq",
             "AlreadyCovered: an honored range contains seq",
             "PrecedesRoot: snapshot_root is set and seq <= snapshot_root",
             "FoundValid: seq < next_to_apply",
             "NotYetEvaluated: next_to_apply < seq",
-            "here next_to_apply == seq. If the status is not 'stopped at an invalid envelope': NotDeterminable when the replica is healthy and target_not_determinable, else NotYetEvaluated",
-            "stopped at a different position: NotYetEvaluated",
+            "here next_to_apply == seq. Stopped at an invalid envelope at seq: continue below. Halted: NotYetEvaluated. Otherwise (healthy, or stopped at another position): NotDeterminable when target_not_determinable, else NotYetEvaluated",
             "stopped here with a different envelope_digest: fork:DigestAtStop",
             "stopped here with a different command_id: CommandMismatch",
             "otherwise honored: FIRST = seq, LAST = position - 1"
         ],
         "transient_reasons": ["NotYetEvaluated", "NotDeterminable"],
         "transient_note": "A transient void is offered again, in position order, when the frontier or the key state changes. Every other inert reason is permanent for that void.",
-        "not_in_scope": "A deterministic apply failure (reason 2 of a position the receiver checks pass) has no stop in the status machine yet, so no replica can honor such a void: it is Inert(FoundValid) once applied or NotYetEvaluated before. Recording that stop and the engine_version rule it needs is separate work.",
+        "not_in_scope": "A deterministic apply failure (reason 2) has no stop in the status machine yet and the void body has no engine_version field, so reason 2 is refused as malformed in this version (personal-cfo-g3m.26).",
         "cases": cases,
     })
 }
@@ -364,7 +411,7 @@ fn the_committed_vectors_are_what_the_generator_produces() {
 }
 
 /// An independent implementation of the rule, written from the spec text and reading ONLY the JSON.
-fn reference(doc: &Value) -> Vec<(String, Vec<String>)> {
+fn reference(doc: &Value) -> Vec<(String, Vec<Vec<String>>)> {
     let u = |v: &Value| v.as_u64().expect("an integer");
     doc["cases"]
         .as_array()
@@ -372,61 +419,87 @@ fn reference(doc: &Value) -> Vec<(String, Vec<String>)> {
         .iter()
         .map(|case| {
             let mut ledger: Vec<(String, u64, u64)> = Vec::new();
-            let outcomes = case["steps"]
+            let steps = case["steps"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .map(|step| {
-                    let void = &step["void"];
                     let replica = &step["replica"];
-                    let id = void["id"].as_str().unwrap().to_owned();
-                    let (seq, position) = (u(&void["seq"]), u(&void["position"]));
                     let next = u(&replica["next_to_apply"]);
-                    if let Some((_, first, last)) = ledger.iter().find(|(i, _, _)| *i == id) {
-                        return if *last + 1 == position {
-                            format!("honored:{first}:{last}")
-                        } else {
-                            "fork:VoidAtTwoPositions".to_owned()
-                        };
-                    }
-                    if position <= seq {
-                        return "inert:VoidNotAfterTarget".to_owned();
-                    }
-                    if ledger.iter().any(|(_, f, l)| *f <= seq && seq <= *l) {
-                        return "inert:AlreadyCovered".to_owned();
-                    }
-                    if replica["snapshot_root"].as_u64().is_some_and(|r| seq <= r) {
-                        return "inert:PrecedesRoot".to_owned();
-                    }
-                    if seq < next {
-                        return "inert:FoundValid".to_owned();
-                    }
-                    if next < seq {
-                        return "inert:NotYetEvaluated".to_owned();
-                    }
                     let status = &replica["status"];
-                    if status["kind"] != "stopped_at_invalid_envelope" {
-                        let healthy = status["kind"] == "healthy";
-                        return if healthy && replica["target_not_determinable"] == true {
-                            "inert:NotDeterminable".to_owned()
-                        } else {
-                            "inert:NotYetEvaluated".to_owned()
-                        };
+                    let stop_seq = (status["kind"] == "stopped_at_invalid_envelope")
+                        .then(|| u(&status["seq"]));
+                    let voids = step["voids"].as_array().unwrap();
+                    if stop_seq.is_some_and(|s| s < next) {
+                        return vec!["error:StopBehindFrontier".to_owned()];
                     }
-                    if u(&status["seq"]) != seq {
-                        return "inert:NotYetEvaluated".to_owned();
+                    if replica["snapshot_root"].as_u64().is_some_and(|r| r >= next) {
+                        return vec!["error:RootNotBelowFrontier".to_owned()];
                     }
-                    if status["envelope_digest"] != void["envelope_digest"] {
-                        return "fork:DigestAtStop".to_owned();
+                    if ledger.iter().any(|(_, _, last)| *last >= next) {
+                        return vec!["error:FrontierInsideHonoredRange".to_owned()];
                     }
-                    if status["command_id"] != void["command_id"] {
-                        return "inert:CommandMismatch".to_owned();
+                    if voids
+                        .windows(2)
+                        .any(|w| u(&w[0]["position"]) >= u(&w[1]["position"]))
+                    {
+                        return vec!["error:VoidsNotAscending".to_owned()];
                     }
-                    ledger.push((id, seq, position - 1));
-                    format!("honored:{seq}:{}", position - 1)
+                    let mut outcomes = Vec::new();
+                    for void in voids {
+                        let id = void["id"].as_str().unwrap().to_owned();
+                        let (seq, position) = (u(&void["seq"]), u(&void["position"]));
+                        let (outcome, changes) = (|| {
+                            if let Some((_, _, last)) = ledger.iter().find(|(i, _, _)| *i == id) {
+                                return if *last + 1 == position {
+                                    ("already_honored".to_owned(), false)
+                                } else {
+                                    ("fork:VoidAtTwoPositions".to_owned(), true)
+                                };
+                            }
+                            let inert = |why: &str| (format!("inert:{why}"), false);
+                            if position <= seq {
+                                return inert("VoidNotAfterTarget");
+                            }
+                            if ledger.iter().any(|(_, f, l)| *f <= seq && seq <= *l) {
+                                return inert("AlreadyCovered");
+                            }
+                            if replica["snapshot_root"].as_u64().is_some_and(|r| seq <= r) {
+                                return inert("PrecedesRoot");
+                            }
+                            if seq < next {
+                                return inert("FoundValid");
+                            }
+                            if next < seq {
+                                return inert("NotYetEvaluated");
+                            }
+                            if stop_seq != Some(seq) {
+                                let judged = status["kind"] != "halted"
+                                    && replica["target_not_determinable"] == true;
+                                return inert(if judged {
+                                    "NotDeterminable"
+                                } else {
+                                    "NotYetEvaluated"
+                                });
+                            }
+                            if status["envelope_digest"] != void["envelope_digest"] {
+                                return ("fork:DigestAtStop".to_owned(), true);
+                            }
+                            if status["command_id"] != void["command_id"] {
+                                return inert("CommandMismatch");
+                            }
+                            ledger.push((id.clone(), seq, position - 1));
+                            (format!("honored:{seq}:{}", position - 1), true)
+                        })();
+                        outcomes.push(outcome);
+                        if changes {
+                            break;
+                        }
+                    }
+                    outcomes
                 })
                 .collect();
-            (case["name"].as_str().unwrap().to_owned(), outcomes)
+            (case["name"].as_str().unwrap().to_owned(), steps)
         })
         .collect()
 }
@@ -435,14 +508,21 @@ fn reference(doc: &Value) -> Vec<(String, Vec<String>)> {
 fn an_independent_reference_implementation_agrees_with_every_expected_outcome() {
     let doc: Value = serde_json::from_str(VECTORS).unwrap();
     let produced = reference(&doc);
-    for (case, (name, outcomes)) in doc["cases"].as_array().unwrap().iter().zip(&produced) {
-        let expected: Vec<&str> = case["steps"]
+    for (case, (name, steps)) in doc["cases"].as_array().unwrap().iter().zip(&produced) {
+        let expected: Vec<Vec<&str>> = case["steps"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|s| s["expect"].as_str().unwrap())
+            .map(|s| {
+                s["expect"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e.as_str().unwrap())
+                    .collect()
+            })
             .collect();
-        assert_eq!(&expected, outcomes, "{name}");
+        assert_eq!(&expected, steps, "{name}");
     }
 }
 
@@ -475,7 +555,8 @@ fn every_inert_and_fork_variant_has_a_vector() {
         .unwrap()
         .iter()
         .flat_map(|c| c["steps"].as_array().unwrap().iter())
-        .map(|s| s["expect"].as_str().unwrap().to_owned())
+        .flat_map(|s| s["expect"].as_array().unwrap().iter())
+        .map(|e| e.as_str().unwrap().to_owned())
         .collect();
     let inert = variants_of("Inert");
     assert!(inert.len() >= 7, "the scan read the variants: {inert:?}");
@@ -483,6 +564,12 @@ fn every_inert_and_fork_variant_has_a_vector() {
         assert!(
             expected.contains(&format!("inert:{variant}")),
             "Inert::{variant} has no vector"
+        );
+    }
+    for variant in variants_of("OfferError") {
+        assert!(
+            expected.contains(&format!("error:{variant}")),
+            "OfferError::{variant} has no vector"
         );
     }
     let forks = variants_of("ForkSuspected");

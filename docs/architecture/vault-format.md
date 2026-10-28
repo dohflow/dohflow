@@ -274,7 +274,7 @@ synthetic no-app recovery test before any such public claim.
   "When a replica honors it"): only against the stop it reached in log order (every position below
   `seq` applied or skipped), with the pinned order of checks, the inert reasons split into
   transient and permanent, `PrecedesRoot` for a snapshot-bootstrapped replica, a different digest
-  at the stop or the same void at two positions surfaced as a suspected fork, and `V` taken only
+  at the stop or the same void honored at two positions surfaced as a suspected fork, and `V` taken only
   from the replica's own in-order pull; and adds the public honor-rule vectors
   (`docs/architecture/vectors/void-honor-v1.json`, C.14). No wire layout or existing vector
   changes.
@@ -1748,8 +1748,10 @@ claims against its own index, and mark the index.
 Body: `label "dohflow/sync-void/v1" ‖ u16 protocol_version ‖ u16 suite_id ‖ uuid vault_id ‖
 u64 seq ‖ uuid command_id ‖ digest envelope_digest ‖ u8 reason ‖ fingerprint signer_fingerprint ‖
 i64 issued_at`. `seq` is the poisoned position `N`; `command_id` and `envelope_digest` are those
-of the envelope the signer saw there; `reason` is `1` (receiver-check failure) or `2`
-(deterministic apply failure). The record is `u32 body_len ‖ body ‖ 64-byte Ed25519 signature`,
+of the envelope the signer saw there; `reason` is `1` (receiver-check failure). Reason `2`
+(deterministic apply failure) is reserved: a producer MUST NOT emit it and a replica refuses it as
+a malformed object until `personal-cfo-g3m.26` adds its `engine_version` field, so no reason-`2`
+body lives in a log as a legacy form. The record is `u32 body_len ‖ body ‖ 64-byte Ed25519 signature`,
 identified by `SHA-256(body)`, with the strict acceptance rules and the check order of C.6. The
 log position `V` the service assigns when it appends the void is not in the body, exactly as a
 `seq` is not in an envelope's header.
@@ -1785,8 +1787,7 @@ log position `V` the service assigns when it appends the void is not in the body
   `SeqConflict` class of C.4; ruled 2026-10-27 from owner decision 915.19 rules 1 and 10): the
   rule returns `ForkSuspected` and the engine halts; the same void honored at two different
   positions is the same kind of fork and halts the same way. A void with an equal digest and another `command_id` is a signer fault and is
-  inert. The `reason` byte is for audit and diagnosis: a replica stopped at `seq` honors the
-  void whichever reason it states. Otherwise the void is inert (retained for diagnosis, nothing
+  inert. The `reason` byte is for audit and diagnosis only. Otherwise the void is inert (retained for diagnosis, nothing
   skipped). The inert reasons `NotYetEvaluated` (the frontier is behind `seq`, or the replica is
   not stopped there yet) and `NotDeterminable` (at `seq` without a verified key) are transient: a
   replica offers the void again, in log order, when the frontier or its key state changes; every
@@ -1805,8 +1806,19 @@ log position `V` the service assigns when it appends the void is not in the body
   `engine_version` it was observed at and is honored only by a replica running an **equal**
   `engine_version` that reproduces the failure itself; across engine versions the replica never
   applies the position (R40) and the void is inert for it. The void body does not carry
-  `engine_version` yet: adding it is a body change under C.13 that `personal-cfo-g3m.26` makes
-  before any reason-`2` void exists.
+  `engine_version` yet: adding it, and accepting reason `2`, is a body change under C.13 that
+  `personal-cfo-g3m.26` makes before any reason-`2` void exists.
+  **What the engine supplies.** The replica's cursor `next_to_apply` (the lowest position neither
+  applied nor skipped) never passes the stop (chain records verified past a stop do not advance
+  it), starts at `root + 1` for a bootstrapped replica, and moves past a range once a void for it
+  is honored; an offer whose state contradicts this is refused, never answered with a permanent
+  "found valid". Voids are offered in ascending position order, and the offer stops at the first
+  that is honored (or is a suspected fork), because the context is then stale. The same void
+  offered again at the same position is `AlreadyHonored` and must not drive rollback and re-issue
+  a second time. A position that an honored void skips, or that lies below the cursor, is not
+  evaluated again when re-verified. A snapshot-bootstrapped replica seeds its ledger from the
+  voided ranges the snapshot records. The ledger's canonical encoding lists ranges in strictly
+  ascending order, so it is unique.
 - **Range.** An honored void at position `V` skips every command envelope at positions `seq`
   through `V - 1`: later objects were built on a base that included `seq`. Membership and epoch
   records are never skipped (C.6 verifies them independently); an epoch record inside the range

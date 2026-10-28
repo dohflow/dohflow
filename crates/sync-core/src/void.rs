@@ -30,14 +30,15 @@ pub const VOID_LABEL: &str = "dohflow/sync-void/v1";
 /// The longest void body: the label, the fixed fields and nothing else (well under this).
 pub const MAX_VOID_BODY: usize = 256;
 
-/// Why the voider says the position is poisoned. Audit only: a replica honors a void for any
-/// position it found invalid, whichever reason the void states.
+/// Why the voider says the position is poisoned. Audit only. Only reason `1` exists in this
+/// version: reason `2` (an envelope that passes the receiver checks but cannot be applied
+/// deterministically) is version-scoped and is added with its `engine_version` body field by
+/// `personal-cfo-g3m.26`. Until then a producer must not emit it and a replica refuses it as a
+/// malformed object, so no reason-2 body lives in a log as a legacy form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoidReason {
     /// `1`: the envelope fails the receiver checks.
     ReceiverCheck,
-    /// `2`: the envelope passes them but cannot be applied deterministically.
-    DeterministicApply,
 }
 
 /// A void record's body (C.10).
@@ -74,7 +75,6 @@ impl VoidBody {
             .fixed(&self.envelope_digest)
             .u8(match self.reason {
                 VoidReason::ReceiverCheck => 1,
-                VoidReason::DeterministicApply => 2,
             })
             .fixed(self.signer_fingerprint.as_bytes())
             .i64(self.issued_at);
@@ -99,7 +99,6 @@ impl VoidBody {
         let envelope_digest = r.fixed::<32>()?;
         let reason = match r.u8()? {
             1 => VoidReason::ReceiverCheck,
-            2 => VoidReason::DeterministicApply,
             _ => return Err(WireError::UnknownObjectType),
         };
         let signer_fingerprint = Fingerprint::from_derived(r.fixed::<32>()?);
@@ -305,12 +304,40 @@ pub enum ForkSuspected {
 /// The outcome of offering a void to the honor rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Honor {
-    /// Skip the range.
+    /// Skip the range: the void was honored **now**. Rollback and re-issue of the commands in the
+    /// range are driven off this outcome, exactly once per void id.
     Honored(HonoredVoid),
+    /// The same void was already honored at this position (an offer repeated after a restart or a
+    /// re-pull). Nothing changes, and it must **not** drive rollback or re-issue again: that would
+    /// issue the voided commands a second time with new command ids.
+    AlreadyHonored(HonoredVoid),
     /// Skip nothing.
     Inert(Inert),
     /// Skip nothing, and the engine MUST surface a possible fork.
     ForkSuspected(ForkSuspected),
+}
+
+/// A refused offer: the engine supplied an inconsistent replica state, or voids out of order. The
+/// honor rule never guesses (a wrong `FoundValid` would be permanent and split the vault).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum OfferError {
+    /// The replica is stopped at a position below `next_to_apply`: the cursor must never pass the
+    /// stop (chain records verified past the stop do not advance it).
+    #[error("the frontier has passed the stop")]
+    StopBehindFrontier,
+    /// A snapshot root at or above `next_to_apply`: a bootstrapped replica's cursor starts at
+    /// `root + 1`.
+    #[error("the frontier is not above the snapshot root")]
+    RootNotBelowFrontier,
+    /// An honored range reaches `next_to_apply` or beyond: after honoring a void the cursor moves
+    /// past its range.
+    #[error("the frontier is inside an honored range")]
+    FrontierInsideHonoredRange,
+    /// The voids are not in strictly ascending position order. Order decides which of two voids
+    /// for one position wins, so it is enforced here, not left to the engine.
+    #[error("the voids are not in ascending position order")]
+    VoidsNotAscending,
 }
 
 /// What the replica itself holds when a void is offered. The stop comes from the status (not from
@@ -321,7 +348,10 @@ pub struct HonorContext<'a> {
     /// The replica's status; the void is honored only against a stop at exactly its `seq`.
     pub status: &'a SyncStatus,
     /// The lowest log position this replica has neither applied nor skipped: every position below
-    /// it is done. A void is honored only when this equals the void's `seq`.
+    /// it is done. A void is honored only when this equals the void's `seq`. It **never passes the
+    /// stop** (chain records verified past a stop do not count), starts at `root + 1` for a
+    /// bootstrapped replica, and moves past a range once a void for it is honored; an offer with
+    /// a state that contradicts this is refused ([`OfferError`]).
     pub next_to_apply: u64,
     /// The root (last position) of the snapshot the replica bootstrapped from, if it did.
     pub snapshot_root: Option<u64>,
@@ -356,8 +386,14 @@ impl VoidLedger {
         self.honored.iter().any(|v| v.first <= seq && seq <= v.last)
     }
 
-    /// Offer a verified void. Honored only if **all** hold, checked in this order (the first
-    /// failure decides the outcome, which makes it the same on every replica):
+    /// Offer the verified voids known for this replica, **in ascending position order**, and
+    /// return the outcome of each until the first one that changes the replica (a void honored
+    /// now, or a suspected fork): after that the context is stale and the engine re-evaluates and
+    /// offers again. Order decides which of two voids for one position wins, so it is enforced
+    /// here: positions must be strictly ascending.
+    ///
+    /// A void is honored only if **all** hold, checked in this order (the first failure decides
+    /// the outcome, which makes it the same on every replica):
     ///
     /// - `V > seq`;
     /// - no honored void already covers `seq`;
@@ -370,16 +406,53 @@ impl VoidLedger {
     ///   never a silent inert);
     /// - and the same `command_id`.
     ///
-    /// The void's reason byte and signer play no part beyond verification.
+    /// The void's reason byte and signer play no part beyond verification. The same void at the
+    /// same position again is [`Honor::AlreadyHonored`]; at another position it is a suspected
+    /// fork. An honored void is recorded; an inert one changes nothing.
     ///
-    /// The same void honored again at the same position is idempotent; at another position it is
-    /// a suspected fork. An honored void is recorded; an inert one changes nothing.
-    pub fn offer(&mut self, void: &VerifiedVoid, ctx: &HonorContext<'_>) -> Honor {
+    /// # Errors
+    /// [`OfferError`] for an inconsistent context (checked first, before any void) or voids out of
+    /// order.
+    pub fn offer_in_order(
+        &mut self,
+        voids: &[VerifiedVoid],
+        ctx: &HonorContext<'_>,
+    ) -> Result<Vec<Honor>, OfferError> {
+        if let SyncStatus::EnvelopeInvalid(stop) = ctx.status {
+            if stop.seq < ctx.next_to_apply {
+                return Err(OfferError::StopBehindFrontier);
+            }
+        }
+        if ctx
+            .snapshot_root
+            .is_some_and(|root| root >= ctx.next_to_apply)
+        {
+            return Err(OfferError::RootNotBelowFrontier);
+        }
+        if self.honored.iter().any(|h| h.last >= ctx.next_to_apply) {
+            return Err(OfferError::FrontierInsideHonoredRange);
+        }
+        if voids.windows(2).any(|w| w[0].position() >= w[1].position()) {
+            return Err(OfferError::VoidsNotAscending);
+        }
+        let mut outcomes = Vec::new();
+        for void in voids {
+            let outcome = self.offer_one(void, ctx);
+            let changes = matches!(outcome, Honor::Honored(_) | Honor::ForkSuspected(_));
+            outcomes.push(outcome);
+            if changes {
+                break;
+            }
+        }
+        Ok(outcomes)
+    }
+
+    fn offer_one(&mut self, void: &VerifiedVoid, ctx: &HonorContext<'_>) -> Honor {
         let body = void.body();
         let position = void.position();
         if let Some(existing) = self.honored.iter().find(|h| &h.void_id == void.id()) {
             return if existing.last.checked_add(1) == Some(position) {
-                Honor::Honored(*existing)
+                Honor::AlreadyHonored(*existing)
             } else {
                 Honor::ForkSuspected(ForkSuspected::VoidAtTwoPositions {
                     void_id: *void.id(),
@@ -403,16 +476,20 @@ impl VoidLedger {
         if ctx.next_to_apply < body.seq {
             return Honor::Inert(Inert::NotYetEvaluated);
         }
-        let SyncStatus::EnvelopeInvalid(stop) = ctx.status else {
-            return Honor::Inert(if ctx.target_not_determinable && ctx.status.is_healthy() {
-                Inert::NotDeterminable
-            } else {
-                Inert::NotYetEvaluated
-            });
+        // Here the replica is at the position. Stopped at it: judge the void. Otherwise it is
+        // either unable to judge it (no verified key) or has not found it invalid yet; a halted
+        // replica applies nothing and judges nothing.
+        let stop = match ctx.status {
+            SyncStatus::EnvelopeInvalid(stop) if stop.seq == body.seq => stop,
+            SyncStatus::Halted(_) => return Honor::Inert(Inert::NotYetEvaluated),
+            _ => {
+                return Honor::Inert(if ctx.target_not_determinable {
+                    Inert::NotDeterminable
+                } else {
+                    Inert::NotYetEvaluated
+                });
+            }
         };
-        if stop.seq != body.seq {
-            return Honor::Inert(Inert::NotYetEvaluated);
-        }
         if stop.envelope_digest != body.envelope_digest {
             return Honor::ForkSuspected(ForkSuspected::DigestAtStop {
                 seq: body.seq,
@@ -445,8 +522,10 @@ impl VoidLedger {
         Ok(w.finish())
     }
 
-    /// Parse a ledger. A damaged one is refused: a range that runs backwards, or one that overlaps
-    /// an earlier entry (an honored void never covers a position an earlier one covers).
+    /// Parse a ledger. A damaged one is refused: a range that runs backwards, or one that does not
+    /// start strictly after the previous range ends. Honoring only ever produces strictly
+    /// ascending, disjoint ranges, so the encoding of a set of ranges is unique (snapshot
+    /// metadata records it).
     ///
     /// # Errors
     /// A [`WireError`].
@@ -465,10 +544,7 @@ impl VoidLedger {
             if h.first > h.last {
                 return Err(WireError::ListNotAscending);
             }
-            if honored[..i]
-                .iter()
-                .any(|e| e.first <= h.last && h.first <= e.last)
-            {
+            if i > 0 && h.first <= honored[i - 1].last {
                 return Err(WireError::ListNotAscending);
             }
         }

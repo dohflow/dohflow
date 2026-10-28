@@ -3,12 +3,16 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
-use sync_core::header::Fingerprint;
+use sync_core::header::{
+    ClearHeader, Fingerprint, IdempotencyKeyTag, MetadataCommitment, NonceDomain, ObjectKind,
+};
 use sync_core::membership::{
     device_fingerprint, verify_chain, Action, EpochAtPosition, EpochBody, MembershipBody, Reason,
     Recipient, SignedRecord, VerifiedState, KEM_ID, SEALED_KEYS_CIPHERTEXT_LEN, SUITE_ID,
 };
-use sync_core::void::{verify_void, VerifiedVoid, VoidBody, VoidReason};
+use sync_core::void::{
+    verify_void, Honor, HonorContext, OfferError, VerifiedVoid, VoidBody, VoidLedger, VoidReason,
+};
 
 pub const VAULT: [u8; 16] = [0, 0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0xf0];
 
@@ -170,4 +174,53 @@ pub fn void_at(c: &Chain, seq: u64, position: u64) -> VerifiedVoid {
         &signed(&body(&c.a, seq), &c.a),
     )
     .unwrap()
+}
+
+/// Offer one void; the tests that are about the context or the order use `offer_in_order`.
+pub trait OfferOne {
+    fn offer(&mut self, void: &VerifiedVoid, ctx: &HonorContext<'_>) -> Honor;
+    fn try_offer(
+        &mut self,
+        void: &VerifiedVoid,
+        ctx: &HonorContext<'_>,
+    ) -> Result<Honor, OfferError>;
+}
+
+impl OfferOne for VoidLedger {
+    fn offer(&mut self, void: &VerifiedVoid, ctx: &HonorContext<'_>) -> Honor {
+        self.try_offer(void, ctx).expect("a consistent context")
+    }
+
+    fn try_offer(
+        &mut self,
+        void: &VerifiedVoid,
+        ctx: &HonorContext<'_>,
+    ) -> Result<Honor, OfferError> {
+        let outcomes = self.offer_in_order(std::slice::from_ref(void), ctx)?;
+        Ok(outcomes[0])
+    }
+}
+
+/// A coherent-looking envelope header; the status machine only reads its identifiers.
+pub fn sample_header() -> ClearHeader {
+    let dev = Dev::new(1);
+    let fingerprint = dev.fingerprint();
+    ClearHeader {
+        vault_id: VAULT,
+        key_epoch: 1,
+        object: ObjectKind::Envelope {
+            idempotency_key_tag: IdempotencyKeyTag::from_derived([1; 32]),
+            immutable_metadata_commitment: MetadataCommitment::from_derived([2; 32]),
+            artifact_manifest_commitment: None,
+        },
+        object_id: [0x11; 16],
+        device_id: dev.device_id,
+        device_key_fingerprint: fingerprint,
+        nonce_domain: NonceDomain::derive(&VAULT, 1, &fingerprint, 1),
+        invocation_counter: 0,
+        base_seq: 1,
+        payload_schema_version: 1,
+        engine_version: "dohflow-engine-1".to_owned(),
+        schema_version: 55,
+    }
 }

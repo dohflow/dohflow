@@ -6,10 +6,11 @@ use common::*;
 use sync_core::cbe::WireError;
 use sync_core::envelope::ReceiverError;
 use sync_core::membership::EpochAtPosition;
+use sync_core::status::HaltEvidence;
 use sync_core::status::{InvalidEnvelope, SyncEvent, SyncStatus};
 use sync_core::void::{
-    verify_void, ForkSuspected, Honor, HonorContext, HonoredVoid, Inert, VerifiedVoid, VoidBody,
-    VoidError, VoidLedger, VoidReason,
+    verify_void, ForkSuspected, Honor, HonorContext, HonoredVoid, Inert, OfferError, VerifiedVoid,
+    VoidBody, VoidError, VoidLedger,
 };
 
 // -- format ------------------------------------------------------------------------------------
@@ -22,7 +23,7 @@ fn the_body_round_trips_and_its_id_is_the_digest_of_its_bytes() {
     assert_eq!(VoidBody::decode(&bytes).unwrap(), b);
     assert_eq!(b.id(), id_of(&bytes));
     let other = VoidBody {
-        reason: VoidReason::DeterministicApply,
+        issued_at: b.issued_at + 1,
         ..b.clone()
     };
     assert_ne!(other.id(), b.id(), "every field is bound into the id");
@@ -40,7 +41,8 @@ fn the_decoder_refuses_each_malformation() {
     // The reason byte sits after label + 2 + 2 + 16 + 8 + 16 + 32 bytes.
     let reason_at = bytes.len() - 8 - 32 - 1;
     assert_eq!(bytes[reason_at], 1);
-    for unknown in [0_u8, 3, 255] {
+    // Reason 2 is refused until personal-cfo-g3m.26 adds its engine_version field.
+    for unknown in [0_u8, 2, 3, 255] {
         let mut b = bytes.clone();
         b[reason_at] = unknown;
         assert_eq!(
@@ -186,24 +188,14 @@ fn a_void_over_the_stop_the_replica_reached_in_order_is_honored_for_the_range_be
         !ledger.skips(4) && !ledger.skips(9),
         "the void itself applies as a log object"
     );
-    // Offering it again at the same position is idempotent.
-    assert_eq!(ledger.offer(&v, &ctx(&status, 5)), Honor::Honored(expected));
+    // Offering it again at the same position (after a restart or a re-pull, with the cursor
+    // past the range) is AlreadyHonored: it must not drive rollback and re-issue a second time.
+    let healthy = SyncStatus::Healthy;
+    assert_eq!(
+        ledger.offer(&v, &ctx(&healthy, 9)),
+        Honor::AlreadyHonored(expected)
+    );
     assert_eq!(ledger.honored().len(), 1);
-}
-
-#[test]
-fn the_reason_byte_plays_no_part_in_honoring() {
-    let c = chain();
-    let apply = VoidBody {
-        reason: VoidReason::DeterministicApply,
-        ..body(&c.a, 5)
-    };
-    let v = verify_void(&c.state, &at_end(&c), 6, &signed(&apply, &c.a)).unwrap();
-    let status = stopped_at(5);
-    assert!(matches!(
-        VoidLedger::new().offer(&v, &ctx(&status, 5)),
-        Honor::Honored(_)
-    ));
 }
 
 #[test]
@@ -212,6 +204,11 @@ fn each_failing_condition_leaves_the_void_inert_in_the_pinned_order() {
     let healthy = SyncStatus::Healthy;
     let stop5 = stopped_at(5);
     let stop9 = stopped_at(9);
+    let halted = SyncStatus::Halted(sync_core::status::HaltEvidence::Fork {
+        version: 2,
+        accepted: [1; 32],
+        conflicting: [2; 32],
+    });
     let wrong_command = SyncStatus::EnvelopeInvalid(InvalidEnvelope {
         command_id: [0x99; 16],
         ..match stopped_at(5) {
@@ -224,8 +221,8 @@ fn each_failing_condition_leaves_the_void_inert_in_the_pinned_order() {
         ..ctx(status, 5)
     };
     let with_root = |status| HonorContext {
-        snapshot_root: Some(5),
-        ..ctx(status, 5)
+        snapshot_root: Some(8),
+        ..ctx(status, 9)
     };
     let v = |position| void_at(&c, 5, position);
 
@@ -235,7 +232,7 @@ fn each_failing_condition_leaves_the_void_inert_in_the_pinned_order() {
         (
             "below the root",
             v(9),
-            with_root(&stop5),
+            with_root(&healthy),
             Inert::PrecedesRoot,
         ),
         ("already applied", v(9), ctx(&healthy, 6), Inert::FoundValid),
@@ -256,6 +253,18 @@ fn each_failing_condition_leaves_the_void_inert_in_the_pinned_order() {
             v(9),
             not_determinable(&healthy),
             Inert::NotDeterminable,
+        ),
+        (
+            "cannot judge, stopped later",
+            v(9),
+            not_determinable(&stop9),
+            Inert::NotDeterminable,
+        ),
+        (
+            "halted does not judge",
+            v(9),
+            not_determinable(&halted),
+            Inert::NotYetEvaluated,
         ),
         ("a later stop", v(9), ctx(&stop9, 5), Inert::NotYetEvaluated),
         (
@@ -373,10 +382,11 @@ fn a_position_an_honored_void_covers_cannot_be_voided_again() {
         ledger.offer(&void_at(&c, 5, 20), &ctx(&stop, 5)),
         Honor::Honored(_)
     ));
-    // A second void naming a position inside the honored range is inert, wherever the replica is.
-    let stop8 = stopped_at(8);
+    // A second void naming a position inside the honored range is inert: the cursor moved past
+    // the range, and coverage is checked before the frontier.
+    let healthy = SyncStatus::Healthy;
     assert_eq!(
-        ledger.offer(&void_at(&c, 8, 21), &ctx(&stop8, 8)),
+        ledger.offer(&void_at(&c, 8, 21), &ctx(&healthy, 20)),
         Honor::Inert(Inert::AlreadyCovered)
     );
     assert_eq!(ledger.honored().len(), 1);
@@ -392,8 +402,9 @@ fn the_same_void_at_two_positions_is_a_suspected_fork_not_idempotent() {
         Honor::Honored(_)
     ));
     let moved = void_at(&c, 5, 12);
+    let healthy = SyncStatus::Healthy;
     assert_eq!(
-        ledger.offer(&moved, &ctx(&stop, 5)),
+        ledger.offer(&moved, &ctx(&healthy, 9)),
         Honor::ForkSuspected(ForkSuspected::VoidAtTwoPositions {
             void_id: *moved.id(),
             honored_at: 9,
@@ -513,4 +524,205 @@ fn a_void_for_another_position_or_a_halted_replica_leaves_the_status_alone() {
     let before = halted;
     assert_eq!(halted.observe_honored(&honored), None);
     assert_eq!(halted, before, "a void is never an answer to a fork");
+}
+
+// -- the context and the order are enforced ----------------------------------------------------
+
+#[test]
+fn an_inconsistent_context_is_refused_never_a_permanent_found_valid() {
+    let c = chain();
+    let v = void_at(&c, 5, 9);
+    let mut ledger = VoidLedger::new();
+    // The cursor advanced over chain records past the stop: refused, not Inert(FoundValid).
+    let stop = stopped_at(5);
+    assert_eq!(
+        ledger.try_offer(&v, &ctx(&stop, 7)),
+        Err(OfferError::StopBehindFrontier)
+    );
+    // A bootstrapped replica's cursor starts above its root.
+    let healthy = SyncStatus::Healthy;
+    let at_root = HonorContext {
+        snapshot_root: Some(5),
+        ..ctx(&healthy, 5)
+    };
+    assert_eq!(
+        ledger.try_offer(&v, &at_root),
+        Err(OfferError::RootNotBelowFrontier)
+    );
+    // The cursor sits inside a range an honored void already skipped.
+    let stop5 = stopped_at(5);
+    assert!(matches!(
+        ledger.offer(&v, &ctx(&stop5, 5)),
+        Honor::Honored(_)
+    ));
+    assert_eq!(
+        ledger.try_offer(&v, &ctx(&healthy, 8)),
+        Err(OfferError::FrontierInsideHonoredRange)
+    );
+    assert_eq!(ledger.honored().len(), 1);
+}
+
+#[test]
+fn two_voids_for_one_position_are_offered_in_position_order_and_the_earlier_wins() {
+    let c = chain();
+    // A service that skips its same-seq dedupe serves two different voids for seq 10, at 12
+    // and 15 (here they differ in `issued_at`, so their ids differ).
+    let at = at_end(&c);
+    let again = VoidBody {
+        issued_at: 1_790_000_000_000_001,
+        ..body(&c.a, 10)
+    };
+    let early = void_at(&c, 10, 12);
+    let late = verify_void(&c.state, &at, 15, &signed(&again, &c.a)).unwrap();
+    let stop = stopped_at(10);
+    // Not ascending (or equal) is refused.
+    let mut ledger = VoidLedger::new();
+    assert_eq!(
+        ledger.offer_in_order(&[late.clone(), early.clone()], &ctx(&stop, 10)),
+        Err(OfferError::VoidsNotAscending)
+    );
+    assert_eq!(
+        ledger.offer_in_order(&[early.clone(), early.clone()], &ctx(&stop, 10)),
+        Err(OfferError::VoidsNotAscending)
+    );
+    // In order, the earlier is honored and the later is not even offered (the context is stale).
+    let outcomes = ledger
+        .offer_in_order(&[early.clone(), late.clone()], &ctx(&stop, 10))
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert!(matches!(
+        outcomes[0],
+        Honor::Honored(HonoredVoid {
+            first: 10,
+            last: 11,
+            ..
+        })
+    ));
+    // After the engine moves its cursor past the range, the later one is covered: inert.
+    let healthy = SyncStatus::Healthy;
+    assert_eq!(
+        ledger.offer(&late, &ctx(&healthy, 12)),
+        Honor::Inert(Inert::AlreadyCovered)
+    );
+    // The very same void body served at two positions is a suspected fork instead.
+    let same_again = void_at(&c, 10, 15);
+    assert!(matches!(
+        ledger.offer(&same_again, &ctx(&healthy, 12)),
+        Honor::ForkSuspected(ForkSuspected::VoidAtTwoPositions { .. })
+    ));
+    // A batch of inert voids is reported in full.
+    let behind = SyncStatus::Healthy;
+    let all_inert = VoidLedger::new()
+        .offer_in_order(&[early, late], &ctx(&behind, 3))
+        .unwrap();
+    assert_eq!(all_inert.len(), 2);
+}
+
+#[test]
+fn the_ledger_encoding_is_unique_strictly_ascending_ranges() {
+    let entry = |first: u64, last: u64| -> Vec<u8> {
+        let mut e = vec![7_u8; 32];
+        e.extend(first.to_be_bytes());
+        e.extend(last.to_be_bytes());
+        e
+    };
+    let build = |entries: &[Vec<u8>]| -> Vec<u8> {
+        let empty = VoidLedger::new().encode().unwrap();
+        let mut out = empty[..empty.len() - 4].to_vec();
+        out.extend((entries.len() as u32).to_be_bytes());
+        for e in entries {
+            out.extend(e);
+        }
+        out
+    };
+    assert!(VoidLedger::decode(&build(&[entry(2, 3), entry(10, 14)])).is_ok());
+    assert!(
+        VoidLedger::decode(&build(&[entry(10, 14), entry(2, 3)])).is_err(),
+        "the same set in another order is another encoding"
+    );
+    assert!(VoidLedger::decode(&build(&[entry(2, 3), entry(3, 5)])).is_err());
+}
+
+// -- the status machine: halting and re-verification ---------------------------------------------
+
+#[test]
+fn a_suspected_fork_halts_from_healthy_and_from_a_stop_and_a_halt_absorbs_it() {
+    let digest = ForkSuspected::DigestAtStop {
+        seq: 5,
+        ours: [1; 32],
+        theirs: [2; 32],
+    };
+    let two = ForkSuspected::VoidAtTwoPositions {
+        void_id: [3; 32],
+        honored_at: 9,
+        offered_at: 12,
+    };
+    for start in [SyncStatus::Healthy, stopped_at(5)] {
+        let mut status = start;
+        assert!(matches!(
+            status.observe_fork_suspected(&digest),
+            Some(SyncEvent::Halted(HaltEvidence::SeqConflict {
+                seq: 5,
+                first,
+                second,
+            })) if first == [1; 32] && second == [2; 32]
+        ));
+        assert!(matches!(status, SyncStatus::Halted(_)) && !status.can_apply(0));
+        let before = status;
+        assert_eq!(
+            status.observe_fork_suspected(&two),
+            None,
+            "a halt absorbs it"
+        );
+        assert_eq!(status, before);
+    }
+    let mut status = SyncStatus::Healthy;
+    assert!(matches!(
+        status.observe_fork_suspected(&two),
+        Some(SyncEvent::Halted(HaltEvidence::VoidAtTwoPositions {
+            honored_at: 9,
+            offered_at: 12,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn re_verifying_a_skipped_or_applied_position_does_not_reopen_a_stop() {
+    let c = chain();
+    let mut ledger = VoidLedger::new();
+    let stop = stopped_at(10);
+    assert!(matches!(
+        ledger.offer(&void_at(&c, 10, 20), &ctx(&stop, 10)),
+        Honor::Honored(_)
+    ));
+    let header = sample_header();
+    let mut status = SyncStatus::Healthy;
+    // Position 15 is inside the honored range; 7 was applied. Both are ignored when re-verified.
+    for seq in [15, 7] {
+        assert_eq!(
+            status.observe_envelope_in_context(
+                &ledger,
+                20,
+                seq,
+                [9; 32],
+                &header,
+                Err(ReceiverError::TagMismatch)
+            ),
+            None
+        );
+        assert!(status.is_healthy(), "position {seq}");
+    }
+    // A position at or past the frontier that no void skips still stops the replica.
+    assert!(matches!(
+        status.observe_envelope_in_context(
+            &ledger,
+            20,
+            25,
+            [9; 32],
+            &header,
+            Err(ReceiverError::TagMismatch)
+        ),
+        Some(SyncEvent::EnvelopeInvalid(_))
+    ));
 }

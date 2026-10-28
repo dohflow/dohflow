@@ -1154,8 +1154,11 @@ owner decisions), recorded with the sync-core honor rule (spec-version 14):
   is not yet evaluated in log order. This keeps every replica's ledger, snapshot metadata and
   pushes identical regardless of arrival order.
 - **A different digest is a fork.** A void naming another envelope digest than the replica holds
-  at its stop, or the same void seen at two positions, means the log forked: the replica halts
-  (the `SeqConflict` class), it does not stay quietly stopped.
+  at its stop, or the same void honored at two different positions, means the log forked: the
+  replica halts (the `SeqConflict` class or its own evidence), it does not stay quietly stopped.
+  The second is detected only against a void this replica honored (the ledger records only
+  honored voids), so replicas can differ on whether they halt when a misbehaving service re-serves
+  a void that one of them found inert; that needs a misbehaving service and is accepted.
 - **A reason-2 void is version-scoped.** An apply failure is deterministic only at one
   `engine_version`: a reason-2 void names its `engine_version` and is honored only at an equal
   version where the replica reproduces the failure itself. Across versions the replica never
