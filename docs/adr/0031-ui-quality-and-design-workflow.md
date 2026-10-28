@@ -145,7 +145,7 @@ and §3 and leaves §1, §2 lanes 1 and 2, §5 and §6 as they are.
 
 A design audit of the shipped app (at `e8e6ed0`) found the repository's design material
 describing a workflow and an implementation that no longer match: the kit named the wrong
-typeface and an older warning colour, listed four UI primitives where `components/ui/` now holds
+typeface and an older warning color, listed four UI primitives where `components/ui/` now holds
 many more, and both the kit README and the frontend workflow still described the CSS kit and
 Claude Design as the design authority. The owner has since directed that **Paper.design** is the
 design source of truth, with the Desktop Studio working in it. The kit, this ADR and
@@ -158,7 +158,7 @@ design source of truth, with the Desktop Studio working in it. The kit, this ADR
    For tokens that stays the existing rule: `apps/desktop/src/styles/globals.css` is the
    implementation truth, and `design-tokens.json` and `design-system.md` mirror it. When Paper
    and the shipped app disagree, that is a **gap to be recorded as a bead and reconciled
-   through the Studio and engineering together**; neither side recolours or restyles the other's
+   through the Studio and engineering together**; neither side recolors or restyles the other's
    artifact silently, and a change to a shipped token goes to the Studio with its measured
    evidence before it merges.
 2. **The kit and the frontend conventions describe the shipped implementation and map Paper to
@@ -168,7 +168,7 @@ design source of truth, with the Desktop Studio working in it. The kit, this ADR
    something is shipped because Paper draws it.
 3. **A build that implements a Paper design cites the Paper version it was built from**: the
    file, the page, and the freeze time or revision the Studio recorded. Source drift that affects
-   approved behaviour, wording or tokens **goes back to the Studio before coding**, not into the
+   approved behavior, wording or tokens **goes back to the Studio before coding**, not into the
    build.
 4. **§3 (the Claude Design loop) is amended.** A net-new or complex screen (§2 lane 3) is
    designed **in Paper by the Desktop Studio**. It is no longer mocked in Claude Design first.
@@ -176,8 +176,10 @@ design source of truth, with the Desktop Studio working in it. The kit, this ADR
    authoritative and do not replace the Paper design for a lane-3 screen. The agent still does
    not drive a design tool itself. §2 lanes 1 and 2 (just fix; compose from primitives) are
    unchanged.
-5. **§4 is unchanged and not re-enabled.** `/design-sync` and the `.design-sync/` tooling in the
-   repository are left as they are; this addendum neither removes nor relies on them.
+5. **`/design-sync` stays off, by this decision.** §4's own trigger for re-enabling it (the four
+   primitives existing as real code) is now arguably met, but the kit is consumed through Paper
+   rather than Claude Design, so this addendum does not re-enable it. The `.design-sync/` tooling
+   in the repository is left as it is: neither removed nor relied on.
 6. **Handoffs travel on beads.** What engineering ships that the Studio compares against is
    handed back on the bead: the merged commit and the evidence (screenshots of **fake data
    only**, never real figures), with the Studio's handoff labels. What the Studio hands to
@@ -191,11 +193,12 @@ design source of truth, with the Desktop Studio working in it. The kit, this ADR
 - A lane-3 screen has one design source and a recorded version, so a build can be checked
   against what was approved.
 - The wording that sent contributors to Claude Design for a lane-3 screen is retired from the
-  kit README and from `FRONTEND.md` section 7.2 (`personal-cfo-4d8.34`).
+  kit README and from `FRONTEND.md` section 7.2 by the follow-up on this bead
+  (`personal-cfo-4d8.34`), not by this addendum alone.
 
 ### What does not change
 
-The shadcn-primitives-in-code rule (§1), the token rule for chart colours, tracking UI-quality
+The shadcn-primitives-in-code rule (§1), the token rule for chart colors, tracking UI-quality
 gaps as beads (§5), and the evolving kit (§6) all stand. The Context's remark that "only four
 trivial UI primitives exist" described June 2026; the current inventory is in `design-system.md`.
 
