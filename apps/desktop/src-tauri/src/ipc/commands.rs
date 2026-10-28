@@ -5382,11 +5382,11 @@ use crate::ipc::dto::{
     ConnectorAccountLinkDto, ConnectorAccountTypeDto, ConnectorAdapterDto, ConnectorAttentionDto,
     ConnectorBillingPeriodDto, ConnectorCapabilitiesDto, ConnectorConnectionDto,
     ConnectorCreateMappedAccountInput, ConnectorCredentialTierDto, ConnectorDisclosureDto,
-    ConnectorEconomicsDto, ConnectorExternalAccountDto, ConnectorFeedDto, ConnectorForgetInput,
-    ConnectorLinkGuideDto, ConnectorLinkInput, ConnectorLinkResultDto, ConnectorPayerDto,
-    ConnectorProviderSiteInput, ConnectorReferralDto, ConnectorSetAccountLinkInput,
-    ConnectorSetAccountLinkResultDto, ConnectorSetRefreshCadenceInput, ConnectorSyncInput,
-    ConnectorSyncResultDto,
+    ConnectorEconomicsDto, ConnectorEnterTokenInput, ConnectorExternalAccountDto, ConnectorFeedDto,
+    ConnectorForgetInput, ConnectorLinkGuideDto, ConnectorLinkInput, ConnectorLinkResultDto,
+    ConnectorPayerDto, ConnectorProviderSiteInput, ConnectorReferralDto,
+    ConnectorSetAccountLinkInput, ConnectorSetAccountLinkResultDto,
+    ConnectorSetRefreshCadenceInput, ConnectorSyncInput, ConnectorSyncResultDto,
 };
 
 /// Auto-sync debounce: a connection synced (or attempted) within this many
@@ -5586,6 +5586,124 @@ pub async fn connector_link(
     .map_err(|_| IpcError::Unavailable("connector task failed".to_owned()))?
 }
 
+/// Enter this device's token for a connection that arrived from another device (personal-cfo-07u).
+/// The identity and its mapping already exist; only the local secret row is written, never a second
+/// identity or mapping. The provider claim happens before anything is stored and the connection
+/// must belong to the adapter. Refreshes never run for a connection without a token.
+///
+/// # Errors
+/// `Validation` for an unknown or deleted connection, one that belongs to another provider, or a
+/// token the provider refuses.
+pub fn connector_enter_token_impl(
+    state: &AppState,
+    adapter: &dyn ConnectorAdapter,
+    input: ConnectorEnterTokenInput,
+) -> Result<(), IpcError> {
+    let started_at = std::time::Instant::now();
+    let span = connector_span("connector_enter_token", adapter);
+    let _entered = span.enter();
+    let result = connector_enter_token_inner(state, adapter, &input);
+    finish_connector_span(&span, started_at, &result);
+    result
+}
+
+fn connector_enter_token_inner(
+    state: &AppState,
+    adapter: &dyn ConnectorAdapter,
+    input: &ConnectorEnterTokenInput,
+) -> Result<(), IpcError> {
+    let connection_id = parse_connector_connection_id(&input.connection_id)?;
+    // Captured BEFORE the network claim, as in linking.
+    let vault = current_vault_path(state)?;
+    let belongs_here = with_kernel(state, |kernel| {
+        Ok(kernel
+            .connector_connections()?
+            .into_iter()
+            .find(|row| row.id == connection_id)
+            .map(|row| row.adapter_id == adapter.id()))
+    })?;
+    match belongs_here {
+        None => {
+            return Err(IpcError::Validation(
+                "unknown connector connection".to_owned(),
+            ))
+        }
+        Some(false) => {
+            return Err(IpcError::Validation(
+                "this connection belongs to another provider".to_owned(),
+            ))
+        }
+        Some(true) => {}
+    }
+    let session = adapter
+        .link(&ProviderLinkInput {
+            user_token: Some(ProviderCredential::new(input.setup_token.clone())),
+            params: std::collections::BTreeMap::new(),
+        })
+        .map_err(|e| connector_link_error(&e))?;
+    let LinkSession::Established { credential, .. } = session else {
+        return Err(IpcError::Validation(
+            "this adapter requires browser-based auth, which is not supported yet".to_owned(),
+        ));
+    };
+    // Store before anything else can fail: the setup token was single-use.
+    with_vault_bound(state, &vault, |kernel| {
+        kernel.set_connector_credential(connection_id, credential.expose_secret())?;
+        crate::connector_refresh::ensure_refresh_job(
+            kernel,
+            connection_id,
+            adapter.id(),
+            chrono::Utc::now(),
+        )?;
+        Ok(())
+    })
+}
+
+/// Resolve the connection's provider through the registry (refusing a disabled one, ADR 0015 §6)
+/// and enter the token. This is the path the `connector_enter_token` command takes.
+///
+/// # Errors
+/// `Validation` for an unknown connection or an unknown or disabled provider; otherwise whatever
+/// [`connector_enter_token_impl`] returns.
+pub fn connector_enter_token_registered_impl(
+    state: &AppState,
+    resolve: ConnectorRegistrationResolver,
+    input: ConnectorEnterTokenInput,
+) -> Result<(), IpcError> {
+    let connection_id = parse_connector_connection_id(&input.connection_id)?;
+    let adapter_id = with_kernel(state, |kernel| {
+        Ok(kernel
+            .connector_connections()?
+            .into_iter()
+            .find(|row| row.id == connection_id)
+            .map(|row| row.adapter_id))
+    })?
+    .ok_or_else(|| IpcError::Validation("unknown connector connection".to_owned()))?;
+    let registration = resolve(&adapter_id)
+        .ok_or_else(|| IpcError::Validation(format!("no connector adapter {adapter_id:?}")))?;
+    if !registration.metadata.enabled {
+        return Err(IpcError::Validation(format!(
+            "connector {adapter_id:?} is not available yet"
+        )));
+    }
+    connector_enter_token_impl(state, registration.adapter, input)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn connector_enter_token(
+    app: tauri::AppHandle,
+    input: ConnectorEnterTokenInput,
+) -> Result<(), IpcError> {
+    // Network in spawn_blocking: a stalled provider must not freeze the UI.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        connector_enter_token_registered_impl(&state, connector_core::registration_by_id, input)
+    })
+    .await
+    .map_err(|_| IpcError::Unavailable("connector task failed".to_owned()))?
+}
+
 /// Registration lookup shape for linking, injected so tests drive a mock
 /// registration (enabled or not) through the same refusal path.
 pub type ConnectorRegistrationResolver = fn(&str) -> Option<&'static ConnectorRegistration>;
@@ -5769,6 +5887,7 @@ pub fn connector_connections_impl(
                 display_hint: row.display_hint,
                 last_synced_at: row.last_synced_at,
                 last_error: row.last_error,
+                needs_token: !row.has_secret,
                 refresh_cadence: refresh_cadence.token().to_owned(),
                 attention: crate::connector_attention::decode(row.attention.as_deref())
                     .into_iter()
@@ -6038,7 +6157,12 @@ fn connector_sync_inner(
             kernel
                 .connector_credential(connection_id)?
                 .map(ProviderCredential::new)
-                .ok_or_else(|| IpcError::Validation("unknown connector connection".to_owned()))
+                .ok_or_else(|| {
+                    IpcError::Validation(
+                        "no token is stored on this device for this connection; enter it first"
+                            .to_owned(),
+                    )
+                })
         })?;
         return match adapter.fetch_accounts(&ProviderConnection { credential }) {
             Ok(list) => {
@@ -6097,7 +6221,12 @@ fn connector_sync_inner(
         kernel
             .connector_credential(connection_id)?
             .map(ProviderCredential::new)
-            .ok_or_else(|| IpcError::Validation("unknown connector connection".to_owned()))
+            .ok_or_else(|| {
+                IpcError::Validation(
+                    "no token is stored on this device for this connection; enter it first"
+                        .to_owned(),
+                )
+            })
     })?;
     // The walk's lower bound: the OLDEST mapped watermark, full history if any
     // mapped account has never synced. The adapter rewinds it further itself.

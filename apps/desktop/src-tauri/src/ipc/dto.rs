@@ -4086,6 +4086,24 @@ impl std::fmt::Debug for ConnectorLinkInput {
     }
 }
 
+/// The setup token a user enters on THIS device for a connection that arrived from another device
+/// (personal-cfo-07u). Same leak rule as [`ConnectorLinkInput`]: the manual `Debug` redacts it and
+/// there is no `Serialize`.
+#[derive(Clone, PartialEq, Eq, Deserialize, Type)]
+pub struct ConnectorEnterTokenInput {
+    pub connection_id: String,
+    pub setup_token: String,
+}
+
+impl std::fmt::Debug for ConnectorEnterTokenInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectorEnterTokenInput")
+            .field("connection_id", &self.connection_id)
+            .field("setup_token", &"[redacted]")
+            .finish()
+    }
+}
+
 /// An external account the provider exposes on a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct ConnectorExternalAccountDto {
@@ -4250,6 +4268,10 @@ pub struct ConnectorConnectionDto {
     pub display_hint: Option<String>,
     pub last_synced_at: Option<String>,
     pub last_error: Option<String>,
+    /// `true` when this device holds no token for the connection (the connection came from
+    /// another device, personal-cfo-07u): the card shows "Enter your token on this device", and
+    /// the connection never refreshes until the user does. The token itself never crosses the wire.
+    pub needs_token: bool,
     /// How often this connection refreshes (lqk): `every_open`, `daily`,
     /// `weekly` or `manual`.
     pub refresh_cadence: String,

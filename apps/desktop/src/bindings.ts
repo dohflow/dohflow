@@ -296,6 +296,7 @@ export const commands = {
 	restoreBackup: (packagePath: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup", { packagePath, password })),
 	restoreBackupAsNewVault: (packagePath: string, password: string, name: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("restore_backup_as_new_vault", { packagePath, password, name })),
 	connectorLink: (input: ConnectorLinkInput) => typedError<ConnectorLinkResultDto, IpcError>(__TAURI_INVOKE("connector_link", { input })),
+	connectorEnterToken: (input: ConnectorEnterTokenInput) => typedError<null, IpcError>(__TAURI_INVOKE("connector_enter_token", { input })),
 	connectorAdapters: () => __TAURI_INVOKE<ConnectorAdapterDto[]>("connector_adapters"),
 	connectorConnections: () => typedError<ConnectorConnectionDto[], IpcError>(__TAURI_INVOKE("connector_connections")),
 	connectorSetAccountLink: (input: ConnectorSetAccountLinkInput) => typedError<ConnectorSetAccountLinkResultDto, IpcError>(__TAURI_INVOKE("connector_set_account_link", { input })),
@@ -1088,6 +1089,12 @@ export type ConnectorConnectionDto = {
 	last_synced_at: string | null,
 	last_error: string | null,
 	/**
+	 *  `true` when this device holds no token for the connection (the connection came from
+	 *  another device, personal-cfo-07u): the card shows "Enter your token on this device", and
+	 *  the connection never refreshes until the user does. The token itself never crosses the wire.
+	 */
+	needs_token: boolean,
+	/**
 	 *  How often this connection refreshes (lqk): `every_open`, `daily`,
 	 *  `weekly` or `manual`.
 	 */
@@ -1145,6 +1152,16 @@ export type ConnectorEconomicsDto = {
 	/**  `YYYY-MM-DD`. */
 	terms_reviewed_at: string,
 	history_depth_expectation: string,
+};
+
+/**
+ *  The setup token a user enters on THIS device for a connection that arrived from another device
+ *  (personal-cfo-07u). Same leak rule as [`ConnectorLinkInput`]: the manual `Debug` redacts it and
+ *  there is no `Serialize`.
+ */
+export type ConnectorEnterTokenInput = {
+	connection_id: string,
+	setup_token: string,
 };
 
 /**  An external account the provider exposes on a connection. */

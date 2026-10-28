@@ -381,6 +381,30 @@ its write set includes those rows and the Toggle rule's "touched write set" pred
 them: a concurrent edit of a linked bill on another device queues the archive rather than letting it
 silently undo that edit.
 
+## Addendum C — Deleting a connection is a tombstone (2026-10-27, `personal-cfo-07u`)
+
+SYNC-2a splits a connector connection into a replicated identity (`connector_connections`,
+`connector_account_links`, class 1) and device-local secrets (`connector_connection_secrets`,
+`connector_link_cursors`, class 3; schema version 60). Forgetting a connection used to run a
+hard `DELETE` of its links and row. That is a **fourth** hard delete beyond SYNC-2b's three, and
+it cannot be replicated as a delete: a replica applying it would leave its own class-3 secret,
+cursor and notice rows pointing at a vanished identity, and ADR 0074 decision 2 step 5 puts a
+device whose class-3 reference becomes invalid into `RebaseBlockedLocalState`, never dropping the
+row, so every device holding a token for the connection would wedge. So the delete is a tombstone:
+it sets `deleted_at` on the identity, the mapping rows stay and are ignored (every reader joins
+the live identity), the class-3 foreign keys stay valid, and a device-local cleanup after the
+rebase swap scrubs and removes that device's secret, cursors and notice and records an audit
+event ("token removed: connection deleted"). A tombstone is final: the id is never reusable and
+nothing reinstates a connection (a new connection needs a new setup token and a new id). A refresh
+that races a delete on another device writes nothing under the tombstoned identity.
+
+Disposition: when the delete becomes a `WriteCommand` (`personal-cfo-5ymg8` routes the identity and
+mapping writes through the command bus), it is a **Toggle**-shaped tombstone with the outcome of
+every other tombstone, except that there is no `Reinstate`. Nothing in the generated appendix or
+its tally changes in this change, because the connector writes are still raw: the tombstone and
+the classification are in force, and replication of the identity and mapping starts when
+`personal-cfo-5ymg8` lands.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` — ADR 0074, the CAS/rebase premise
@@ -390,3 +414,4 @@ silently undo that edit.
 - `personal-cfo-tp2ln` — two-vault simulator exit cases
 - `personal-cfo-5ymg8` — five write classes and new command dispositions
 - `personal-cfo-g3m.12` — ADR 0074 Addendum B, which defines the `AlreadyPresent` exception
+- `personal-cfo-07u` — SYNC-2a connection identity/secret split (Addendum C)

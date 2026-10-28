@@ -22,6 +22,7 @@ commands.allow = [
   # Re-encrypts the whole vault under a new DEK (personal-cfo-2y8, ADR 0083):
   # it replaces vault.db on disk, so never an untrusted window.
   "rotate_vault_key",
-  # Hard-deletes a stored connector credential (personal-cfo-gglk).
+  # Forgets a connection: tombstones its identity and scrubs and removes the stored connector
+  # credential on this device (personal-cfo-gglk, personal-cfo-07u).
   "connector_forget",
 ]
