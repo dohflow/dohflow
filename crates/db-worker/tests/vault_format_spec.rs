@@ -27,7 +27,7 @@ fn hex(bytes: &[u8]) -> String {
 
 #[test]
 fn migrated_schema_version_matches_public_spec() {
-    assert_eq!(marker("spec-version"), "11");
+    assert_eq!(marker("spec-version"), "12");
     let documented: i64 = marker("schema-version").parse().unwrap();
     let (_dir, worker) = worker();
     let actual: i64 = worker

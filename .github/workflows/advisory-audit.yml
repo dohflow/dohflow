@@ -7,7 +7,8 @@
 # audits main itself, and on any finding it opens (or updates) ONE issue labeled
 # `security-advisory`. A stale allowance (an exception in scripts/cargo-audit.py
 # that matches nothing) fails the audit too, so it raises the same issue. A clean
-# run only comments on an open issue; it never closes one. The agent on duty files
+# run closes the open issue with a comment linking that run (scripts/alert-close.sh), unless
+# it carries `keep-open` or a person reopened it in the last 24 hours. The agent on duty files
 # a P0 bead from the issue (ADR 0069: P0 bypasses queues); see
 # docs/security/scanning.md.
 #

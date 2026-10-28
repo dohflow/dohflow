@@ -1847,6 +1847,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "libc",
+ "serde_json",
  "sha2",
  "sync-core",
  "thiserror",

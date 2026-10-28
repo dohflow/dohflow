@@ -32,11 +32,12 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
+use sync_core::envelope::ReceiverError;
 use sync_core::header::{
     encode_container, ClearHeader, Fingerprint, NonceDomain, ParsedContainer,
     MAX_ENVELOPE_CONTAINER_LEN, OBJECT_ENVELOPE, OBJECT_SNAPSHOT, PROTOCOL_VERSION,
 };
-use sync_core::membership::VerifiedState;
+use sync_core::membership::{EpochAtPosition, VerifiedState};
 use sync_core::producer::EnvelopeOpener;
 use thiserror::Error;
 
@@ -262,13 +263,46 @@ pub fn seal_envelope(
 pub struct ReceiverOpener<'a> {
     key: &'a EpochKey,
     chain: &'a VerifiedState,
+    window: MemberWindow,
+}
+
+/// Which membership a receiver judges a header's device against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberWindow {
+    /// The producer's own check: the last head of the key's epoch (it is sealing at the head).
+    InEpoch,
+    /// A replica processing the log in order: the membership version in force at the position.
+    AtVersion(u64),
 }
 
 impl<'a> ReceiverOpener<'a> {
-    /// An opener for envelopes of `key`'s epoch, checked against `chain`.
+    /// An opener for envelopes of `key`'s epoch, checked against `chain`, for the **producer's**
+    /// own seal-then-verify ONLY: the device must be a member as of the last head of the epoch,
+    /// since it seals at the head. A replica judging a log position uses
+    /// [`Self::at_position`]; a source-scan test keeps this constructor out of replica code.
     #[must_use]
-    pub const fn new(key: &'a EpochKey, chain: &'a VerifiedState) -> Self {
-        Self { key, chain }
+    pub const fn for_producer(key: &'a EpochKey, chain: &'a VerifiedState) -> Self {
+        Self {
+            key,
+            chain,
+            window: MemberWindow::InEpoch,
+        }
+    }
+
+    /// An opener for a **replica** judging the envelope at one log position: the device must be a
+    /// member as of the membership version in force at that position, so the verdict does not
+    /// depend on how far past the position the replica has verified.
+    #[must_use]
+    pub const fn at_position(
+        key: &'a EpochKey,
+        chain: &'a VerifiedState,
+        position: &EpochAtPosition,
+    ) -> Self {
+        Self {
+            key,
+            chain,
+            window: MemberWindow::AtVersion(position.membership_head_version()),
+        }
     }
 }
 
@@ -280,41 +314,198 @@ impl core::fmt::Debug for ReceiverOpener<'_> {
     }
 }
 
+/// Why the receiver path refused to open an envelope. Each is deterministic from the bytes, the
+/// verified key and the verified chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum OpenFailure {
+    /// The header is not an envelope header.
+    #[error("not an envelope header")]
+    NotAnEnvelope,
+    /// The header names another vault than the key's.
+    #[error("another vault")]
+    WrongVault,
+    /// The header names another key epoch than the key's.
+    #[error("another key epoch")]
+    WrongEpoch,
+    /// The header's device is not a member at the position (or, for the producer's own check, of
+    /// the epoch).
+    #[error("the device is not a member of the epoch")]
+    DeviceOutsideEpoch,
+    /// The header's fingerprint is not the one the chain holds for its device.
+    #[error("the fingerprint is not the chain's")]
+    IdentityMismatch,
+    /// The header's nonce domain is not the derived one.
+    #[error("the nonce domain is not the derived one")]
+    NonceDomain,
+    /// The ciphertext does not open under the derived key and the header as AAD.
+    #[error("the ciphertext does not open")]
+    NotOpenable,
+}
+
+/// The receiver path with its reasons. [`ReceiverOpener`] and [`classify_envelope`] both use it,
+/// so there is a single implementation of the checks.
+fn open_typed(
+    key: &EpochKey,
+    chain: &VerifiedState,
+    window: MemberWindow,
+    container: &ParsedContainer<'_>,
+) -> Result<Vec<u8>, OpenFailure> {
+    let header = &container.header;
+    if header.object_type() != OBJECT_ENVELOPE {
+        return Err(OpenFailure::NotAnEnvelope);
+    }
+    if header.vault_id != key.vault_id {
+        return Err(OpenFailure::WrongVault);
+    }
+    if header.key_epoch != key.key_epoch {
+        return Err(OpenFailure::WrongEpoch);
+    }
+    // The fingerprint comes from the chain, for the epoch the envelope claims and the key
+    // belongs to; the header must restate it.
+    let member = match window {
+        MemberWindow::InEpoch => chain.authorized_member_in_epoch(&header.device_id, key.key_epoch),
+        MemberWindow::AtVersion(version) => {
+            chain.authorized_member_at_version(&header.device_id, version)
+        }
+    }
+    .ok_or(OpenFailure::DeviceOutsideEpoch)?;
+    if member.fingerprint != header.device_key_fingerprint {
+        return Err(OpenFailure::IdentityMismatch);
+    }
+    let domain = NonceDomain::derive(
+        &key.vault_id,
+        key.key_epoch,
+        &member.fingerprint,
+        OBJECT_ENVELOPE,
+    );
+    if header.nonce_domain != domain {
+        return Err(OpenFailure::NonceDomain);
+    }
+    let aead = aead_key(key, &member.fingerprint, ObjectType::Envelope);
+    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
+        .decrypt(
+            Nonce::from_slice(&gcm_nonce(&domain, header.invocation_counter)),
+            Payload {
+                msg: container.ciphertext,
+                aad: container.header_bytes,
+            },
+        )
+        .map_err(|_| OpenFailure::NotOpenable)
+}
+
 impl EnvelopeOpener for ReceiverOpener<'_> {
     fn open(&self, container: &ParsedContainer<'_>) -> Option<Vec<u8>> {
-        let header = &container.header;
-        if header.object_type() != OBJECT_ENVELOPE
-            || header.vault_id != self.key.vault_id
-            || header.key_epoch != self.key.key_epoch
-        {
-            return None;
-        }
-        // The fingerprint comes from the chain, for the epoch the envelope claims and the key
-        // belongs to; the header must restate it.
-        let member = self
-            .chain
-            .authorized_member_in_epoch(&header.device_id, self.key.key_epoch)?;
-        if member.fingerprint != header.device_key_fingerprint {
-            return None;
-        }
-        let domain = NonceDomain::derive(
-            &self.key.vault_id,
-            self.key.key_epoch,
-            &member.fingerprint,
-            OBJECT_ENVELOPE,
-        );
-        if header.nonce_domain != domain {
-            return None;
-        }
-        let aead = aead_key(self.key, &member.fingerprint, ObjectType::Envelope);
-        Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
-            .decrypt(
-                Nonce::from_slice(&gcm_nonce(&domain, header.invocation_counter)),
-                Payload {
-                    msg: container.ciphertext,
-                    aad: container.header_bytes,
-                },
-            )
-            .ok()
+        open_typed(self.key, self.chain, self.window, container).ok()
+    }
+}
+
+/// Why an envelope is **invalid** (C.4 "When an envelope is found invalid"). The verdict class is
+/// the contract; the reason is informative and for diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InvalidReason {
+    /// The container or header does not parse (no key or chain condition).
+    Unparseable,
+    /// The header names another vault than the replica's own (no key condition: the replica
+    /// knows its vault from its chain).
+    WrongVault,
+    /// The header's `key_epoch` is not the epoch in force at the envelope's log position (C.7).
+    EpochNotInForce,
+    /// The open step refused it, for the reason inside.
+    Open(OpenFailure),
+    /// The opened plaintext does not decode.
+    PlaintextMalformed,
+    /// A receiver check of `check_envelope` rejected it.
+    Check(ReceiverError),
+}
+
+/// Why a replica cannot yet judge an envelope. Never a basis to honor a void.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Wait {
+    /// The replica has not processed the log in order up to this position: the epoch record that
+    /// fixes the epoch and membership in force there is not verified yet.
+    ChainBehind,
+    /// The replica holds no verified key for the header's epoch.
+    NoVerifiedKey,
+}
+
+/// A replica's verdict on the envelope at one log position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Authentic, consistent and checked: apply it.
+    Valid,
+    /// Found invalid: voidable.
+    Invalid(InvalidReason),
+    /// Cannot be judged yet: wait, retry, fetch more. A void for it is inert.
+    NotDeterminable(Wait),
+}
+
+/// Classify the envelope at one log position the way C.4 "When an envelope is found invalid"
+/// defines it: **invalid** only with the evidence, **not determinable** while the replica's key or
+/// log position is missing, otherwise valid.
+///
+/// `keys` are the replica's *verified* epoch keys. `position` is the epoch and membership in force
+/// **at this position**, built from the newest epoch record positioned before it (see
+/// [`EpochAtPosition`]); `None` means the replica has not processed the log in order up to this
+/// position (that record is not verified yet). The verdict then does not depend on how far past
+/// the position the replica has verified. `tag_for` is the receiver's idempotency-key tagger, as
+/// for `check_envelope`.
+#[must_use]
+pub fn classify_envelope(
+    container_bytes: &[u8],
+    keys: &[EpochKey],
+    chain: &VerifiedState,
+    position: Option<&EpochAtPosition>,
+    tag_for: impl FnOnce(&sync_core::envelope::IdempotencyKey) -> sync_core::header::IdempotencyKeyTag,
+) -> Verdict {
+    use sync_core::envelope::{check_envelope, EnvelopePlaintext};
+    // 1. A container or header that does not parse is invalid with no key or chain condition.
+    let Ok(container) =
+        sync_core::header::parse_container_with_limit(container_bytes, MAX_ENVELOPE_CONTAINER_LEN)
+    else {
+        return Verdict::Invalid(InvalidReason::Unparseable);
+    };
+    let header = &container.header;
+    // 1b. A header that names another vault is invalid with no key or position condition: the
+    //     replica knows its own vault from its chain.
+    if header.vault_id != *chain.vault_id() {
+        return Verdict::Invalid(InvalidReason::WrongVault);
+    }
+    // 2. Not judgeable until the log has been processed in order up to this position.
+    let Some(position) = position else {
+        return Verdict::NotDeterminable(Wait::ChainBehind);
+    };
+    // 3. Any epoch other than the one in force at this position, past or future, is invalid by
+    //    position alone and needs no key (C.7).
+    if header.key_epoch != position.key_epoch() {
+        return Verdict::Invalid(InvalidReason::EpochNotInForce);
+    }
+    // 4. Judging the rest needs the verified key for this epoch.
+    let Some(key) = keys
+        .iter()
+        .find(|k| k.key_epoch == header.key_epoch && k.vault_id == header.vault_id)
+    else {
+        return Verdict::NotDeterminable(Wait::NoVerifiedKey);
+    };
+    // 5 and 6. Device membership at the position, restated identity, nonce domain, AEAD.
+    let plaintext_bytes = match open_typed(
+        key,
+        chain,
+        MemberWindow::AtVersion(position.membership_head_version()),
+        &container,
+    ) {
+        Ok(bytes) => bytes,
+        Err(failure) => return Verdict::Invalid(InvalidReason::Open(failure)),
+    };
+    // 7. The opened plaintext must decode.
+    let Ok(plaintext) = EnvelopePlaintext::decode(&plaintext_bytes) else {
+        return Verdict::Invalid(InvalidReason::PlaintextMalformed);
+    };
+    // 8. The receiver checks.
+    match check_envelope(header, &plaintext, tag_for) {
+        Ok(_) => Verdict::Valid,
+        Err(error) => Verdict::Invalid(InvalidReason::Check(error)),
     }
 }

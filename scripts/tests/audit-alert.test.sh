@@ -23,17 +23,25 @@ case_start() { CASES=$((CASES + 1)); echo; echo "[$CASES] $*"; }
 
 mkdir -p "$TMP/bin"
 CALLS="$TMP/gh-calls"
-# The stub: `issue list` answers with STUB_EXISTING (empty = none open); every call is recorded.
+# The stub: `issue list --json number,labels` answers with STUB_OPEN_LINES (lines "N<TAB>labels",
+# empty = none open); any other `issue list` answers with STUB_EXISTING (empty = none open);
+# `api` (the reopen-events query) answers STUB_RECENT_REOPEN (default 0); every call is recorded.
 cat > "$TMP/bin/gh" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$CALLS"
-if [ "\$1 \$2" = "issue list" ]; then printf '%s' "\${STUB_EXISTING:-}"; fi
+if [ "\$1 \$2" = "issue list" ]; then
+  case "\$*" in
+    *number,labels*) printf '%s' "\${STUB_OPEN_LINES:-}" ;;
+    *) printf '%s' "\${STUB_EXISTING:-}" ;;
+  esac
+fi
+if [ "\$1" = "api" ]; then printf '%s\n' "\${STUB_RECENT_REOPEN:-0}"; fi
 exit 0
 STUB
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
 
-run() { ( STUB_EXISTING="${STUB_EXISTING:-}" "$SCRIPT" --repo o/r --run-url https://example.test/run/1 "$@" ); }
+run() { ( STUB_EXISTING="${STUB_EXISTING:-}" STUB_OPEN_LINES="${STUB_OPEN_LINES:-}" STUB_RECENT_REOPEN="${STUB_RECENT_REOPEN:-0}" "$SCRIPT" --repo o/r --run-url https://example.test/run/1 "$@" ); }
 
 printf 'Crate: rustls-webpki\nID: RUSTSEC-2026-0381\nID: RUSTSEC-2026-0382\nAlso RUSTSEC-2026-0381 again\n' > "$TMP/found.txt"
 printf 'allowance X matches nothing; remove it\n' > "$TMP/stale.txt"
@@ -59,14 +67,21 @@ grep -q "^issue create " "$CALLS" && pass "opens an issue" || fail "no issue for
 grep -q "stale allowance" "$CALLS" && pass "the body names the stale allowance" || fail "stale allowance not named"
 grep -q "Dependency audit failing on main (no advisory ID" "$CALLS" && pass "title says no advisory ID was found" || fail "title: $(grep 'issue create' "$CALLS")"
 
-case_start "a clean audit with an open issue comments but never closes it"
-: > "$CALLS"; STUB_EXISTING="42" run --status clean --report "$TMP/ok.txt" >/dev/null
-grep -q "^issue comment 42 " "$CALLS" && pass "comments that the audit is clean" || fail "no comment"
-grep -q "^issue close" "$CALLS" && fail "closed the issue" || pass "does not close the issue"
+case_start "a clean audit closes the open issue, with a comment linking the run (md8h2.21)"
+: > "$CALLS"; STUB_OPEN_LINES="$(printf '42\tsecurity-advisory')" run --status clean --report "$TMP/ok.txt" >/dev/null
+grep -q "^issue comment 42 .*https://example.test/run/1" "$CALLS" && pass "comments with the clean run's link" || fail "no comment with the run link: $(cat "$CALLS")"
+grep -q "^issue close 42 " "$CALLS" && pass "closes the issue" || fail "did not close #42"
+
+case_start "a clean audit leaves a keep-open issue and a recently reopened one"
+: > "$CALLS"; STUB_OPEN_LINES="$(printf '42\tsecurity-advisory,keep-open')" run --status clean --report "$TMP/ok.txt" >/dev/null
+grep -q "^issue close" "$CALLS" && fail "closed a keep-open issue" || pass "keep-open is left open"
+: > "$CALLS"; STUB_OPEN_LINES="$(printf '42\tsecurity-advisory')" STUB_RECENT_REOPEN=1 run --status clean --report "$TMP/ok.txt" >/dev/null
+grep -q "^issue close" "$CALLS" && fail "closed an issue reopened within 24 hours" || pass "a recent human reopen is left open"
 
 case_start "a clean audit with no open issue does nothing to issues"
 : > "$CALLS"; STUB_EXISTING="" run --status clean --report "$TMP/ok.txt" >/dev/null
 grep -q "^issue create\|^issue comment\|^issue close" "$CALLS" && fail "touched an issue: $(cat "$CALLS")" || pass "no issue created, commented or closed"
+
 
 case_start "a report that contains a tilde fence cannot close the issue's code fence early"
 printf 'before\n~~~~\ninjected ~~~~~~~~ text\n```\nafter\n' > "$TMP/fence.txt"
