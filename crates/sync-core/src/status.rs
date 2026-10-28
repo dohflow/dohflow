@@ -53,6 +53,15 @@ pub enum HaltEvidence {
         /// The different digest seen later.
         second: [u8; 32],
     },
+    /// A position the replica says it applied is now found invalid (and no honored void skips
+    /// it): the cursor was overstated or determinism broke. Either way the replica cannot trust
+    /// its own state.
+    AppliedPositionInvalid {
+        /// The log position.
+        seq: u64,
+        /// The digest of the envelope found invalid.
+        envelope_digest: [u8; 32],
+    },
     /// A void already honored at one position was offered at another: the log forked.
     VoidAtTwoPositions {
         /// The void's id.
@@ -219,11 +228,13 @@ impl SyncStatus {
     }
 
     /// [`Self::observe_envelope`] for an engine that also holds the void ledger and its cursor:
-    /// a position an honored void skips, or one below `next_to_apply` (already applied), is not
-    /// evaluated again. Re-verifying such a position (after a restart, a re-pull, or a verifier
-    /// running ahead) must not re-open a stop the replica has already moved past; the "found
-    /// invalid" fact is recomputable only for the positions at or after the frontier that no
-    /// honored void skips.
+    /// a position an honored void skips is not evaluated again, and neither is a **valid** result
+    /// for one below `next_to_apply` (already applied). Re-verifying such a position (after a
+    /// restart, a re-pull, or a verifier running ahead) must not re-open a stop the replica has
+    /// already moved past; the "found invalid" fact is recomputable only for the positions at or
+    /// after the frontier that no honored void skips. A **failed** result for a position below
+    /// the frontier that no void skips contradicts the replica's own state (an overstated cursor
+    /// or broken determinism): it halts, with [`HaltEvidence::AppliedPositionInvalid`].
     pub fn observe_envelope_in_context(
         &mut self,
         ledger: &VoidLedger,
@@ -233,8 +244,19 @@ impl SyncStatus {
         header: &ClearHeader,
         outcome: Result<(), ReceiverError>,
     ) -> Option<SyncEvent> {
-        if ledger.skips(seq) || seq < next_to_apply {
+        if ledger.skips(seq) {
             return None;
+        }
+        if seq < next_to_apply {
+            if outcome.is_ok() || matches!(self, Self::Halted(_)) {
+                return None;
+            }
+            let evidence = HaltEvidence::AppliedPositionInvalid {
+                seq,
+                envelope_digest,
+            };
+            *self = Self::Halted(evidence);
+            return Some(SyncEvent::Halted(evidence));
         }
         self.observe_envelope(seq, envelope_digest, header, outcome)
     }

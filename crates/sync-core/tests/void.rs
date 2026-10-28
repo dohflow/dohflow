@@ -698,21 +698,42 @@ fn re_verifying_a_skipped_or_applied_position_does_not_reopen_a_stop() {
     ));
     let header = sample_header();
     let mut status = SyncStatus::Healthy;
-    // Position 15 is inside the honored range; 7 was applied. Both are ignored when re-verified.
-    for seq in [15, 7] {
-        assert_eq!(
-            status.observe_envelope_in_context(
-                &ledger,
-                20,
-                seq,
-                [9; 32],
-                &header,
-                Err(ReceiverError::TagMismatch)
-            ),
-            None
-        );
-        assert!(status.is_healthy(), "position {seq}");
-    }
+    // Position 15 is inside the honored range: re-verified as invalid, it is ignored.
+    assert_eq!(
+        status.observe_envelope_in_context(
+            &ledger,
+            20,
+            15,
+            [9; 32],
+            &header,
+            Err(ReceiverError::TagMismatch)
+        ),
+        None
+    );
+    assert!(status.is_healthy());
+    // A valid result for an applied position is ignored; a FAILED one that no void skips
+    // contradicts the replica's own state and halts.
+    assert_eq!(
+        status.observe_envelope_in_context(&ledger, 20, 7, [9; 32], &header, Ok(())),
+        None
+    );
+    assert!(status.is_healthy());
+    let mut contradicted = SyncStatus::Healthy;
+    assert!(matches!(
+        contradicted.observe_envelope_in_context(
+            &ledger,
+            20,
+            7,
+            [9; 32],
+            &header,
+            Err(ReceiverError::TagMismatch)
+        ),
+        Some(SyncEvent::Halted(HaltEvidence::AppliedPositionInvalid {
+            seq: 7,
+            ..
+        }))
+    ));
+    assert!(matches!(contradicted, SyncStatus::Halted(_)));
     // A position at or past the frontier that no void skips still stops the replica.
     assert!(matches!(
         status.observe_envelope_in_context(
