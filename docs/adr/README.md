@@ -51,7 +51,7 @@ when the ADR was written (owner-confirmed).
 | 0028 | [Account subtypes and cash-tier rollups](0028-account-subtype-and-cash-tiers.md) | Public | Accepted |
 | 0029 | [Cash availability model](0029-cash-availability-model.md) | Public | Accepted |
 | 0030 | [Transaction categorization](0030-categorization.md) | Public | Accepted |
-| 0031 | [UI-quality discipline and the Claude Design workflow](0031-ui-quality-and-design-workflow.md) | Public | Accepted |
+| 0031 | [UI-quality discipline and the Claude Design workflow](0031-ui-quality-and-design-workflow.md) | Public | Accepted (Paper design-authority addendum) |
 | 0032 | [Reviewed-state and the unified review queue](0032-reviewed-state-and-unified-review-queue.md) | Public | Accepted |
 | 0033 | [Transaction tags and notes](0033-transaction-tags-and-notes.md) | Public | Accepted |
 | 0034 | [Transaction splits](0034-transaction-splits.md) | Public | Accepted |

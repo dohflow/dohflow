@@ -136,6 +136,77 @@ recurring patterns get promoted into the spec + the gallery + (if a real compone
 - A design tool with a non-interactive / API path becomes available to the agent →
   revisit §3 (the agent could then mock directly).
 
+## Addendum (2026-10-27, `personal-cfo-4d8.34`): Paper is the design source of truth
+
+**Status:** Accepted. Records the owner's operating model of 2026-10-25. It amends §2 lane 3
+and §3 and leaves §1, §2 lanes 1 and 2, §5 and §6 as they are.
+
+### Context
+
+A design audit of the shipped app (at `e8e6ed0`) found the repository's design material
+describing a workflow and an implementation that no longer match: the kit named the wrong
+typeface and an older warning color, listed four UI primitives where `components/ui/` now holds
+many more, and both the kit README and the frontend workflow still described the CSS kit and
+Claude Design as the design authority. The owner has since directed that **Paper.design** is the
+design source of truth, with the Desktop Studio working in it. The kit, this ADR and
+`docs/agent/FRONTEND.md` need to say who owns what.
+
+### Decision
+
+1. **Two sources of truth, one each.** Paper is the source of truth for **design intent**: how a
+   screen should look and behave. The repository is the source of truth for **what shipped**.
+   For tokens that stays the existing rule: `apps/desktop/src/styles/globals.css` is the
+   implementation truth, and `design-tokens.json` and `design-system.md` mirror it. When Paper
+   and the shipped app disagree, that is a **gap to be recorded as a bead and reconciled
+   through the Studio and engineering together**; neither side recolors or restyles the other's
+   artifact silently, and a change to a shipped token goes to the Studio with its measured
+   evidence before it merges.
+2. **The kit and the frontend conventions describe the shipped implementation and map Paper to
+   code.** `docs/design-system/` and `docs/agent/FRONTEND.md` record what is built, with real
+   component paths, and `design-system.md` keeps the map from Paper components and patterns to
+   the code that implements them (or says plainly that none exists yet). They do not claim
+   something is shipped because Paper draws it.
+3. **A build that implements a Paper design cites the Paper version it was built from**: the
+   file, the page, and the freeze time or revision the Studio recorded. Source drift that affects
+   approved behavior, wording or tokens **goes back to the Studio before coding**, not into the
+   build.
+4. **§3 (the Claude Design loop) is amended.** A net-new or complex screen (§2 lane 3) is
+   designed **in Paper by the Desktop Studio**. It is no longer mocked in Claude Design first.
+   Claude may still be used for **simple mockups and small in-app tweaks**, which are not
+   authoritative and do not replace the Paper design for a lane-3 screen. The agent still does
+   not drive a design tool itself. §2 lanes 1 and 2 (just fix; compose from primitives) are
+   unchanged.
+5. **`/design-sync` stays off, by this decision.** §4's own trigger for re-enabling it (the four
+   primitives existing as real code) is now arguably met, but the kit is consumed through Paper
+   rather than Claude Design, so this addendum does not re-enable it. The `.design-sync/` tooling
+   in the repository is left as it is: neither removed nor relied on.
+6. **Handoffs travel on beads.** What engineering ships that the Studio compares against is
+   handed back on the bead: the merged commit and the evidence (screenshots of **fake data
+   only**, never real figures), with the Studio's handoff labels. What the Studio hands to
+   engineering arrives the same way. Private design records stay in the private repository
+   (ADR 0082); this repository carries the engineering-facing specification only.
+
+### Consequences
+
+- The kit can be reconciled against `globals.css` without arguing about authority: tokens follow
+  the shipped file; intent follows Paper; the difference is a bead.
+- A lane-3 screen has one design source and a recorded version, so a build can be checked
+  against what was approved.
+- The wording that sent contributors to Claude Design for a lane-3 screen is retired from the
+  kit README and from `FRONTEND.md` section 7.2 by the follow-up on this bead
+  (`personal-cfo-4d8.34`), not by this addendum alone.
+
+### What does not change
+
+The shadcn-primitives-in-code rule (§1), the token rule for chart colors, tracking UI-quality
+gaps as beads (§5), and the evolving kit (§6) all stand. The Context's remark that "only four
+trivial UI primitives exist" described June 2026; the current inventory is in `design-system.md`.
+
+### Revisit if
+
+Paper (or the Studio's tooling) gains a path that lets the design be read from the repository
+directly, or the owner changes the operating model.
+
 ## Linked beads
 
 - `personal-cfo-6s8t` (this ADR)
