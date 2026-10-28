@@ -8,6 +8,10 @@
  */
 
 import globalsCss from "virtual:globals-css-raw";
+// The component sources, so the badge checks below read the classes the app ACTUALLY ships
+// (same reason as globals.css above: a test carrying its own copy of the markup would keep passing
+// while the app rendered something else).
+import sourceTree from "virtual:source-tree";
 
 // ── allowlists — both intentional, both documented at the source ──────────────
 /// `:root` tokens that deliberately do NOT flip with the theme — see each one's own
@@ -200,5 +204,139 @@ describe("theme contrast (personal-cfo-17u1)", () => {
         `--${name} no longer needs its light-mode exemption (${ratio.toFixed(4)}:1 >= ${CHART_CONTRAST_FLOOR}) — remove it from LIGHT_CHART_CONTRAST_EXEMPTIONS and close the follow-up bead`,
       ).toBeLessThan(CHART_CONTRAST_FLOOR);
     }
+  });
+});
+
+// ── personal-cfo-4d8.35: semantic badge text and form-control boundaries ──────────────────────
+//
+// The audit measured, as RENDERED in both themes on both supported surfaces (--background and
+// --card), that coloured text on its own 10% tint was below 4.5:1 for 12px text (light, on
+// --background: gain 4.36, warning 3.14, info 4.32, loss 4.30) and that the control boundary
+// (--input) was 1.27:1 light / 1.46:1 dark. The treatment: semantic Badge labels are neutral
+// foreground text with a semantic MARK, and --input clears 3:1. These tests pin both, reading the
+// real stylesheet and the real badge.tsx.
+//
+// Source math, not a render: the tint is mixed in sRGB here and in oklab by the browser, which moved
+// the measured ratios by about 0.04. Every assertion below therefore has more headroom than that.
+
+const THEMES = [
+  { name: "light", block: LIGHT },
+  { name: "dark", block: DARK },
+] as const;
+const SURFACES = ["background", "card"] as const;
+const SEMANTIC = ["gain", "warning", "info", "loss"] as const;
+const NON_TEXT_FLOOR = 3.0;
+
+const BADGE_SRC = sourceTree.find((f) => f.path === "components/ui/badge.tsx")?.text ?? "";
+
+/// `rgb` of a #rrggbb, 0 to 255.
+const rgb = (hex: string): [number, number, number] => {
+  const h = hex.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+};
+/// `fg` at `alpha` over the opaque `bg`, as hex (what a `bg-<token>/10` fill looks like on a surface).
+function over(fg: string, bg: string, alpha: number): string {
+  const [f, b] = [rgb(fg), rgb(bg)];
+  return (
+    "#" +
+    f
+      .map((v, i) => Math.round(v * alpha + b[i]! * (1 - alpha)))
+      .map((v) => v.toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+/// The class string of one `badgeVariants` variant, as written in badge.tsx.
+function variantClasses(name: string): string {
+  const m = new RegExp(`\\b${name}:\\s*"([^"]*)"`).exec(BADGE_SRC);
+  return m?.[1] ?? "";
+}
+
+describe("semantic badge text and marks (personal-cfo-4d8.35)", () => {
+  it("reads the real badge.tsx", () => {
+    expect(BADGE_SRC.length).toBeGreaterThan(300); // guards the guard
+    for (const name of SEMANTIC) expect(variantClasses(name), name).not.toBe("");
+  });
+
+  it("each semantic variant is neutral foreground text, a 10% tint of its token, and a mark of its own token", () => {
+    for (const name of SEMANTIC) {
+      const classes = variantClasses(name);
+      expect(classes, `${name}: label colour`).toContain("text-foreground");
+      expect(classes, `${name}: not coloured text`).not.toMatch(new RegExp(`(^|\\s)text-${name}\\b`));
+      expect(classes, `${name}: tint`).toMatch(new RegExp(`bg-${name}/10\\b`));
+      expect(classes, `${name}: mark`).toContain(`before:bg-${name}`);
+    }
+  });
+
+  it("keeps the label at 4.5:1 and the mark at 3:1 against the tint, in both themes on both surfaces", () => {
+    let checked = 0;
+    for (const theme of THEMES) {
+      const foreground = token(theme.block, "foreground")!;
+      for (const surfaceName of SURFACES) {
+        const surface = token(theme.block, surfaceName)!;
+        for (const name of SEMANTIC) {
+          const tokenHex = token(theme.block, name)!;
+          const tint = over(tokenHex, surface, 0.1);
+          const label = contrast(foreground, tint);
+          const mark = contrast(tokenHex, tint);
+          checked++;
+          expect(
+            label,
+            `${theme.name} ${name} badge label on --${surfaceName} tint = ${label.toFixed(2)}:1 (need ${TEXT_PAIR_FLOOR}:1)`,
+          ).toBeGreaterThanOrEqual(TEXT_PAIR_FLOOR);
+          expect(
+            mark,
+            `${theme.name} ${name} badge mark on --${surfaceName} tint = ${mark.toFixed(2)}:1 (need ${NON_TEXT_FLOOR}:1)`,
+          ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR);
+        }
+      }
+    }
+    expect(checked).toBe(THEMES.length * SURFACES.length * SEMANTIC.length); // guards the guard
+  });
+
+  it("would FAIL as coloured text: the treatment is needed, not decorative", () => {
+    // The pre-fix design: the token itself as the label. Light-mode warning is the clearest case
+    // (3.17:1 here, 3.14:1 rendered); if this ever passes, the treatment is no longer load-bearing.
+    const surface = token(LIGHT, "background")!;
+    const warning = token(LIGHT, "warning")!;
+    expect(contrast(warning, over(warning, surface, 0.1))).toBeLessThan(TEXT_PAIR_FLOOR);
+  });
+});
+
+describe("form-control boundary and focus ring (personal-cfo-4d8.35)", () => {
+  it("keeps the control boundary (--input) at 3:1 against every surface a control sits on, in both themes", () => {
+    let checked = 0;
+    for (const theme of THEMES) {
+      const boundary = token(theme.block, "input")!;
+      for (const surfaceName of SURFACES) {
+        const surface = token(theme.block, surfaceName)!;
+        const ratio = contrast(boundary, surface);
+        checked++;
+        expect(
+          ratio,
+          `${theme.name}: --input on --${surfaceName} = ${ratio.toFixed(2)}:1 (need ${NON_TEXT_FLOOR}:1)`,
+        ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR);
+      }
+    }
+    expect(checked).toBe(THEMES.length * SURFACES.length);
+  });
+
+  it("keeps the focus ring (--ring) at 3:1 against both surfaces, in both themes", () => {
+    for (const theme of THEMES) {
+      const ring = token(theme.block, "ring")!;
+      for (const surfaceName of SURFACES) {
+        const ratio = contrast(ring, token(theme.block, surfaceName)!);
+        expect(
+          ratio,
+          `${theme.name}: --ring on --${surfaceName} = ${ratio.toFixed(2)}:1 (need ${NON_TEXT_FLOOR}:1)`,
+        ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR);
+      }
+    }
+  });
+
+  it("leaves the decorative --border (cards, dividers) alone: only controls need a 3:1 boundary", () => {
+    // Documents the scope: --border is a divider, not what identifies a control. If this ever
+    // starts failing because --border was raised to 3:1, that was a decision, not an accident.
+    const ratio = contrast(token(LIGHT, "border")!, token(LIGHT, "background")!);
+    expect(ratio).toBeLessThan(NON_TEXT_FLOOR);
   });
 });

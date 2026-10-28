@@ -37,7 +37,12 @@
   --destructive-foreground: #ffffff;
 
   --border: #e3ddd5;
-  --input: #e3ddd5;
+  /* personal-cfo-4d8.35: the boundary of a form control (Input, NativeSelect, Combobox, and every
+     hand-rolled `border-input` field). Was #e3ddd5, which is 1.27:1 on --background and 1.35:1 on
+     --card as RENDERED, below the 3:1 a boundary needs to identify a control (WCAG 1.4.11). #948c84
+     is the same warm gray moved only in lightness: 3.11:1 on --background (#faf8f6), 3.30:1 on
+     --card (#ffffff). --border (cards, dividers) is deliberately NOT changed. */
+  --input: #948c84;
   --ring: #2e9470;
   --radius: 0.5rem;
 
@@ -96,7 +101,9 @@
   --destructive-foreground: #2a0e0b;
 
   --border: #26302a;
-  --input: #2a352e;
+  /* personal-cfo-4d8.35: was #2a352e (1.46:1 on --background, 1.36:1 on --card as rendered).
+     #5f6b63 is 3.35:1 on --background (#0e1411) and 3.11:1 on --card (#151c18). */
+  --input: #5f6b63;
   --ring: #12a06b;
 
   --terracotta: #db8f6b;
