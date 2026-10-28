@@ -366,27 +366,39 @@ impl DbWorker {
     pub fn scrub_tombstoned_connector_secrets(&self) -> Result<u32, DbError> {
         let guard = self.lock();
         let tx = guard.conn.unchecked_transaction()?;
-        let ids: Vec<Uuid> = {
+        let ids: Vec<(Uuid, bool)> = {
+            // Every tombstoned connection that still has ANY local row, not only those with a
+            // secret: a stray cursor or notice left under a tombstone is cleaned too.
             let mut stmt = tx.prepare(
-                "SELECT s.connection_id
-                   FROM connector_connection_secrets s
-                   JOIN connector_connections c ON c.id = s.connection_id
+                "SELECT c.id,
+                        EXISTS (SELECT 1 FROM connector_connection_secrets s
+                                 WHERE s.connection_id = c.id)
+                   FROM connector_connections c
                   WHERE c.deleted_at IS NOT NULL
-                  ORDER BY s.connection_id",
+                    AND (EXISTS (SELECT 1 FROM connector_connection_secrets s
+                                  WHERE s.connection_id = c.id)
+                      OR EXISTS (SELECT 1 FROM connector_link_cursors k
+                                  WHERE k.connection_id = c.id)
+                      OR EXISTS (SELECT 1 FROM connector_attention a
+                                  WHERE a.connection_id = c.id))
+                  ORDER BY c.id",
             )?;
-            let rows = stmt.query_map([], |r| r.get(0))?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, Uuid>(0)?, r.get::<_, bool>(1)?)))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
         let now = Utc::now().to_rfc3339();
-        for id in &ids {
+        for (id, had_secret) in &ids {
             scrub_local_rows(&tx, *id)?;
-            // A system event, not a command: it gets its own ids.
-            let event = Uuid::now_v7();
-            tx.execute(
-                "INSERT INTO audit_events (id, event_type, command_id, correlation_id, created_at)
-                 VALUES (?1, ?2, ?3, ?3, ?4)",
-                params![Uuid::now_v7(), CONNECTOR_SECRET_REMOVED_EVENT, event, now],
-            )?;
+            // The audit event records a removed TOKEN; a stray cursor or notice is cleaned
+            // without one. A system event, not a command: it gets its own ids.
+            if *had_secret {
+                let event = Uuid::now_v7();
+                tx.execute(
+                    "INSERT INTO audit_events (id, event_type, command_id, correlation_id, created_at)
+                     VALUES (?1, ?2, ?3, ?3, ?4)",
+                    params![Uuid::now_v7(), CONNECTOR_SECRET_REMOVED_EVENT, event, now],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(u32::try_from(ids.len()).unwrap_or(u32::MAX))
@@ -445,8 +457,10 @@ impl DbWorker {
         let conn = self.read_connection()?;
         let currency = conn
             .query_row(
-                "SELECT currency FROM connector_account_links
-                  WHERE connection_id = ?1 AND external_id = ?2",
+                "SELECT l.currency
+                   FROM connector_account_links l
+                   JOIN connector_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL
+                  WHERE l.connection_id = ?1 AND l.external_id = ?2",
                 params![connection_id, external_id],
                 |r| r.get::<_, Option<String>>(0),
             )
@@ -650,6 +664,7 @@ impl DbWorker {
                     (connection_id, external_id, last_synced_on, updated_at)
                  SELECT l.connection_id, l.external_id, ?3, ?4
                    FROM connector_account_links l
+                   JOIN connector_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL
                   WHERE l.connection_id = ?1 AND l.external_id = ?2
                     AND l.account_id IS NOT NULL
                  ON CONFLICT (connection_id, external_id) DO UPDATE
@@ -820,6 +835,66 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    /// A refresh that races a delete advances a cursor after the tombstone landed: nothing is
+    /// written under a tombstoned identity, and if a stray cursor or notice is somehow left
+    /// there (written before a replicated tombstone arrived), the cleanup removes it even though
+    /// no secret row exists, without recording a token removal.
+    #[test]
+    fn nothing_is_written_under_a_tombstone_and_a_stray_cursor_or_notice_is_cleaned() {
+        let (_dir, worker) = worker();
+        let id = Uuid::now_v7();
+        worker
+            .create_connector_connection(id, "simplefin", CANARY, None)
+            .unwrap();
+        worker
+            .upsert_connector_link(id, "acct-1", None, None)
+            .unwrap();
+        // Map the link directly (no ledger account needed for this check).
+        worker
+            .lock()
+            .conn
+            .execute(
+                "UPDATE connector_account_links SET account_id = NULL WHERE connection_id = ?1",
+                params![id],
+            )
+            .unwrap();
+        worker.delete_connector_connection(id).unwrap();
+
+        // A late advance writes nothing (the link is not even mapped, and the identity is gone).
+        worker
+            .advance_connector_watermarks(id, "2026-10-27", &["acct-1".to_owned()])
+            .unwrap();
+        assert_eq!(count(&worker, "connector_link_cursors"), 0);
+        assert_eq!(worker.connector_link_currency(id, "acct-1").unwrap(), None);
+
+        // A stray cursor and notice with no secret row (planted as a replicated tombstone landing
+        // after this device's writes would leave them): the cleanup removes both.
+        worker
+            .lock()
+            .conn
+            .execute_batch(&format!(
+                "INSERT INTO connector_link_cursors (connection_id, external_id, last_synced_on, updated_at)
+                     VALUES (x'{hex}', 'acct-1', '2026-10-27', '2026-10-27T00:00:00Z');
+                 INSERT INTO connector_attention (connection_id, attention, updated_at)
+                     VALUES (x'{hex}', '{{}}', '2026-10-27T00:00:00Z');",
+                hex = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ))
+            .unwrap();
+        assert_eq!(count(&worker, "connector_link_cursors"), 1);
+        assert_eq!(count(&worker, "connector_connection_secrets"), 0);
+        assert_eq!(worker.scrub_tombstoned_connector_secrets().unwrap(), 1);
+        assert_eq!(count(&worker, "connector_link_cursors"), 0);
+        assert_eq!(count(&worker, "connector_attention"), 0);
+        assert_eq!(
+            worker
+                .audit_event_count(CONNECTOR_SECRET_REMOVED_EVENT)
+                .unwrap(),
+            0,
+            "no token was removed, so no token-removal event"
+        );
+        assert_eq!(worker.scrub_tombstoned_connector_secrets().unwrap(), 0);
     }
 
     /// The audit event records the removal, not the credential or the connection's name.

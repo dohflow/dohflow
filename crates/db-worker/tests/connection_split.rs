@@ -329,3 +329,27 @@ fn the_secret_and_cursor_tables_reference_the_identity_and_the_identity_referenc
         "the identity references no local table"
     );
 }
+
+#[test]
+fn a_refresh_that_finishes_after_the_tombstone_advances_no_cursor() {
+    // A MAPPED link, a delete, then the refresh that started before it finishes and advances the
+    // watermark: nothing is written under the tombstoned identity.
+    let (_dir, worker) = worker();
+    let id = local(&worker);
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), Some("USD"))
+        .unwrap();
+    worker
+        .set_connector_link_account(id, "acct-1", Some(account(&worker, "Checking")))
+        .unwrap();
+    worker.delete_connector_connection(id).unwrap();
+    worker
+        .advance_connector_watermarks(id, "2026-10-27", &["acct-1".to_owned()])
+        .unwrap();
+    assert_eq!(count(&worker, "connector_link_cursors"), 0);
+    assert_eq!(
+        worker.connector_link_currency(id, "acct-1").unwrap(),
+        None,
+        "the lookup ignores the mapping of a deleted connection"
+    );
+}
