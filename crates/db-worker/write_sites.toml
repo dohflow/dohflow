@@ -132,7 +132,7 @@ class = "1"
 statements = 1
 status = "allowed"
 bead = "personal-cfo-d3p"
-note = "insert_system_category: ensure_default_categories seeds the system categories with random Uuid::now_v7 ids, once (guarded by is_system) and on every open via bootstrap(); safe because replicas inherit the rows from the genesis snapshot instead of seeding (personal-cfo-32fmp makes that explicit with the is_replica flag)."
+note = "insert_system_category: ensure_default_categories seeds the system categories with random Uuid::now_v7 ids, once (guarded by is_system) and on every open via bootstrap(); safe because replicas inherit the rows from the genesis snapshot instead of seeding; personal-cfo-32fmp.3 item 2 replaces the random ids with content-derived ones and makes seeding genesis-only (is_replica)."
 
 [[site]]
 module = "lib.rs"
@@ -159,7 +159,7 @@ class = "1"
 statements = 1
 status = "bus_internal"
 bead = "personal-cfo-klr.2"
-note = "insert_ledger_account has two paths: apply/accounts.rs and ensure_system_ledger_account. The helper is reached from commands (apply, creating a system account lazily for a new currency with a random LedgerAccountId, which personal-cfo-32fmp replaces with a content-derived id) AND from ensure_system_accounts in bootstrap() (genesis seeding, also random ids)."
+note = "insert_ledger_account has two paths: apply/accounts.rs and ensure_system_ledger_account. The helper is reached from commands (apply, creating a system account lazily for a new currency with a random LedgerAccountId, which personal-cfo-32fmp.3 item 2 replaces with a content-derived id) AND from ensure_system_accounts in bootstrap() (genesis seeding, also random ids)."
 
 [[site]]
 module = "lib.rs"
@@ -284,8 +284,8 @@ table = "recurring_event_instances"
 class = "1"
 statements = 2
 status = "pending"
-bead = "UNASSIGNED"
-note = "Materialized occurrences are rebuilt (DELETE + INSERT) on reads outside the bus although the manifest says class 1 with user outcomes. No child owns this yet: planning must decide (derived class 2 with outcomes stored elsewhere, or a command)."
+bead = "personal-cfo-5ymg8.9"
+note = "Materialized occurrences are rebuilt (DELETE + INSERT) on reads outside the bus although the manifest says class 1 with user outcomes. Owned by personal-cfo-5ymg8.9, which splits it: derived occurrences become class 2 and rebuild locally, user outcomes stay class 1 through commands."
 
 [[site]]
 module = "rekey.rs"

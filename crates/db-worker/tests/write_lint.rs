@@ -28,7 +28,7 @@ const FAIL_ON_PENDING: bool = false;
 const CLASSES: &str = include_str!("../table_classes.toml");
 const SITES: &str = include_str!("../write_sites.toml");
 
-/// The beads a pending site may name: the children of 5ymg8, SYNC-2c, and the explicit gap.
+/// The beads a pending site may name: the children of 5ymg8 and SYNC-2c.
 const KNOWN_BEADS: &[&str] = &[
     "personal-cfo-5ymg8.2",
     "personal-cfo-5ymg8.3",
@@ -36,9 +36,9 @@ const KNOWN_BEADS: &[&str] = &[
     "personal-cfo-5ymg8.5",
     "personal-cfo-5ymg8.6",
     "personal-cfo-5ymg8.7",
+    "personal-cfo-5ymg8.9",
     "personal-cfo-0g528",
     "personal-cfo-339",
-    "UNASSIGNED",
 ];
 
 /// `key = "value"` / `key = 123` rows of `[[header]]` blocks.
@@ -243,14 +243,11 @@ fn every_site_is_classified_justified_and_pending_ones_name_their_child() {
         let note = site.get("note").map_or("", String::as_str);
         assert!(note.len() >= 20, "{module} {table}: a note saying why");
         let bead = site["bead"].as_str();
-        assert!(
-            bead.starts_with("personal-cfo-") || bead == "UNASSIGNED",
-            "{module} {table}"
-        );
+        assert!(bead.starts_with("personal-cfo-"), "{module} {table}");
         match site["status"].as_str() {
             "pending" => assert!(
                 KNOWN_BEADS.contains(&bead),
-                "{module} {table}: a pending site names its child bead (or UNASSIGNED), not {bead}"
+                "{module} {table}: a pending site names its child bead, not {bead}"
             ),
             "bus_internal" | "allowed" => {}
             other => panic!("{module} {table}: unknown status {other}"),
