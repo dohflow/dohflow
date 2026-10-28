@@ -210,7 +210,7 @@ describe("theme contrast (personal-cfo-17u1)", () => {
 // ── personal-cfo-4d8.35: semantic badge text and form-control boundaries ──────────────────────
 //
 // The audit measured, as RENDERED in both themes on both supported surfaces (--background and
-// --card), that coloured text on its own 10% tint was below 4.5:1 for 12px text (light, on
+// --card), that colored text on its own 10% tint was below 4.5:1 for 12px text (light, on
 // --background: gain 4.36, warning 3.14, info 4.32, loss 4.30) and that the control boundary
 // (--input) was 1.27:1 light / 1.46:1 dark. The treatment: semantic Badge labels are neutral
 // foreground text with a semantic MARK, and --input clears 3:1. These tests pin both, reading the
@@ -264,8 +264,8 @@ describe("semantic badge text and marks (personal-cfo-4d8.35)", () => {
   it("each semantic variant is neutral foreground text, a 10% tint of its token, and a mark of its own token", () => {
     for (const name of SEMANTIC) {
       const classes = variantClasses(name);
-      expect(classes, `${name}: label colour`).toContain("text-foreground");
-      expect(classes, `${name}: not coloured text`).not.toMatch(new RegExp(`(^|\\s)text-${name}\\b`));
+      expect(classes, `${name}: label color`).toContain("text-foreground");
+      expect(classes, `${name}: not colored text`).not.toMatch(new RegExp(`(^|\\s)text-${name}\\b`));
       expect(classes, `${name}: tint`).toMatch(new RegExp(`bg-${name}/10\\b`));
       expect(classes, `${name}: mark`).toContain(`before:bg-${name}`);
     }
@@ -297,7 +297,7 @@ describe("semantic badge text and marks (personal-cfo-4d8.35)", () => {
     expect(checked).toBe(THEMES.length * SURFACES.length * SEMANTIC.length); // guards the guard
   });
 
-  it("would FAIL as coloured text: the treatment is needed, not decorative", () => {
+  it("would FAIL as colored text: the treatment is needed, not decorative", () => {
     // The pre-fix design: the token itself as the label. Light-mode warning is the clearest case
     // (3.17:1 here, 3.14:1 rendered); if this ever passes, the treatment is no longer load-bearing.
     const surface = token(LIGHT, "background")!;

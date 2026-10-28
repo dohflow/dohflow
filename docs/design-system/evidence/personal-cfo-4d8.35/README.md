@@ -99,6 +99,54 @@ Classified (the audit discovers these from the source and reports each, three st
 there is no separate invalid border to measure. **Open/selected:** the Combobox trigger's border does not change
 when open; selected chips are exempt as above.
 
+## For the Studio's decision
+
+**1. Every outline `Button` border darkens too.** `button.tsx` outline is `border border-input`, so it
+follows the token. Rendered, its border goes from 1.27 / 1.35:1 (Light) and 1.46 / 1.36:1 (Dark) to
+**3.12 / 3.31** (Light) and **3.35 / 3.11** (Dark). It is **reported, not required**: a labelled button is
+identified by its text. It is visible in every screenshot below (the `outline` button beside `secondary`). The
+alternative is to give the outline `Button` its own lighter border token, which keeps today's quiet buttons and
+adds one more token; this PR does not.
+
+**2. The Dark-card boundary has almost no spare headroom.** With the 0.1 rule the requirement is 3.1:1, and
+`#5f6b63` on `--card` measures **3.11** (Light `#948c84` on `--background` is 3.12), so 0.01 to 0.02 to spare.
+The borders are opaque, so these static ratios equal the rendered ones. **Offered alternatives**, same hue
+family, only lightness moves:
+
+| | Light `--input` | on `--background` / `--card` | Dark `--input` | on `--background` / `--card` |
+|---|---|---|---|---|
+| **A (this PR)** | `#948c84` | 3.12 / 3.31 | `#5f6b63` | 3.35 / **3.11** |
+| **A+ (3.3 target)** | `#90877f` | 3.33 / 3.52 | `#607065` | 3.55 / 3.31 |
+| A++ (3.5 target) | `#8c837b` | 3.51 / 3.72 | `#637569` | 3.80 / 3.53 |
+
+The PR stays on A until the Studio chooses; switching is a two-token edit in `globals.css` and
+`design-tokens.json`, with the contrast tests unchanged.
+
+**3. B: the text must carry the status, and the mark is only a redundant cue.** Audit of every non-test
+`<Badge>` call site (15) against that rule. The mark is generated content (`::before` with no text), so it adds
+nothing to the accessible name; the label's words are the signal.
+
+| Call site | Wording | Names the status in words? |
+|---|---|---|
+| `ConnectionsCard` warning | "Needs attention" | yes |
+| `ConnectionsCard` outline | "Never refreshed" | yes |
+| `ConnectionsCard` warning / gain | "Refreshed {stamp}" under **both** variants | **no**: stale (3 days or more) and fresh differ only by tint and dot |
+| `AccountDetailView:583` | "in {n} days" under `warning` (5 days or fewer) or `secondary` | **no**: urgency is carried by the variant alone |
+| `FutureCashEntries` gain | "Matched" | yes |
+| `CreditCardsView` gain x2 | "Actual" | yes |
+| `CreditCardsView` warning | "Not yet closed — ignored" | yes |
+| `BillsView` gain | "Autopay" | yes (a state, not a verdict) |
+| `CardReviewModal` warning | "Resurfaced" (own icon) | yes |
+| `AccountDetailView` outline / secondary, `CardReviewModal` tag, `ProviderPicker` chip | neutral tags | n/a (not semantic) |
+
+Two sites rest on color alone. They need **new wording**, which is a copy decision, so it has been sent to
+planning with proposals ("Stale · refreshed {stamp}" and "Due soon · in {n} days") and is **not** in this PR
+until approved. When it is, the PR adds a source-scan test that fails if any semantic Badge uses the same words
+under two variants or picks its variant by a condition on one element.
+
+**4. Counts.** 04b-review counts **40 uses in 30 files** at this PR's head; that includes the one comment in
+`globals.css` (and my dev files' own mentions are excluded from the audit). At `093dbb3` it is **39 in 29**.
+
 ## Screenshots (fake data)
 
 | | |
