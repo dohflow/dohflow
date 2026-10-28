@@ -10,12 +10,16 @@
 #    label on a just-pushed head is stale, and the Actions-token label removal does not re-run
 #    this check, so reading the label during the push would race the removal.
 #  - merge_group: each queue entry runs alone and gates ONLY the PR named in its
-#    gh-readonly-queue/<base>/pr-<N>-<sha> ref (the sha is the entry's BASE): N must carry the
-#    label AND its current head must be an ancestor of the tested commit. Fails closed.
+#    gh-readonly-queue/<base>/pr-<N>-<sha> ref (the sha is the entry's BASE). N must carry the label
+#    AND its current head must equal the SHA in the newest `<!-- review-verdict: PASS <sha> -->`
+#    marker in the reviewer's comments, with no later marker of another verdict. The queue
+#    squash-merges, so ancestry cannot bind the head (the first version of this check failed its own
+#    queue run for that reason, run 40614311641); the marker can. Fails closed.
 #
-# GUARDRAIL, NOT A SECURITY BOUNDARY (ADR 0071): labels are not permission-restricted, and a pull
-# request can edit this workflow. LIMITATION: removing the label after an entry's run passed does
-# not eject it from the queue; only a new commit does. See scripts/review-gate.sh.
+# GUARDRAIL AGAINST MISTAKES, NOT MALICE (ADR 0071): labels are not permission-restricted, any
+# commenter can write a marker, and a pull request can edit this workflow. LIMITATIONS: the head
+# binding relies on GitHub dequeuing an entry on a new commit plus the label removal; removing the
+# label after an entry's run passed does not eject it. See scripts/review-gate.sh.
 name: Review gate
 
 on:
@@ -48,8 +52,7 @@ jobs:
           ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           QUEUE_REF: ${{ github.event.merge_group.head_ref }}
-          TESTED_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           bash scripts/review-gate.sh --event "$EVENT" --action "$ACTION" --repo "$GITHUB_REPOSITORY" \
-            --pr "$PR_NUMBER" --ref "$QUEUE_REF" --head-sha "$TESTED_SHA"
+            --pr "$PR_NUMBER" --ref "$QUEUE_REF"
