@@ -123,12 +123,12 @@ Every color is a CSS variable, exposed to Tailwind as a theme color (so
 | `chart-4`     | `#8e492e` | `#c87450` | Series 4 (clay) |
 
 **Theme-invariant ink.** Two tokens deliberately do **not** flip with the theme, because the thing
-they sit on does not: `--on-brand-fill` (`#1c1815`) is the text colour on a brand fill such as the
+they sit on does not: `--on-brand-fill` (`#1c1815`) is the text color on a brand fill such as the
 terracotta build badge, and `--brand-white` (`#ffffff`) is the white band of the brand mark. They
 exist so that "no raw hex in components" stays true: the exceptions are named.
 
-**Known contrast gaps (open, not waived; `personal-cfo-4d8.35`).** Text in a semantic colour on a 10%
-tint of that colour over the Light background (the `Badge` treatment) is below 4.5:1 for 12px text
+**Known contrast gaps (open, not waived; `personal-cfo-4d8.35`).** Text in a semantic color on a 10%
+tint of that color over the Light background (the `Badge` treatment) is below 4.5:1 for 12px text
 (measured: gain 4.40, warning 3.17, info 4.36, loss 4.34), and the `Input` boundary against its background is 1.27:1 Light and 1.46:1 Dark, below the
 3:1 expected of a boundary that identifies a control. Neither is remediated yet, and no document
 here treats them as accepted. Do not copy these treatments into new work as if they were settled.
@@ -138,7 +138,7 @@ These are not free choices: the four steps are picked so every *adjacent* pair s
 distinguishable under protanopia and deuteranopia in **both** modes, so reshuffling the
 order or adding a fifth breaks the property. Past four series, fold the tail into an
 explicit "Other", facet into small multiples, or cap the selection and say so — never
-reuse a colour, and never ask for a `--chart-5`. `apps/desktop/src/styles/chart-palette.test.ts`
+reuse a color, and never ask for a `--chart-5`. `apps/desktop/src/styles/chart-palette.test.ts`
 enforces this; it exists because the previous by-eye palette shipped with dark-mode
 `chart-1` and `chart-2` collapsing to ΔE 1.6 under protanopia.
 
@@ -183,7 +183,7 @@ Paths are under `apps/desktop/src/`. "Shared" means it lives in `components/ui/`
 | `Card` family | `components/ui/card.tsx` | `Card`, `CardHeader` (`p-6`, `gap-1.5`), `CardTitle`, `CardDescription`, `CardContent` (`p-6 pt-0`), `CardFooter` (`flex items-center p-6 pt-0`). |
 | `Input` | `components/ui/input.tsx` | h-10, `rounded-md border border-input bg-background px-3 text-sm tabular-nums shadow-sm`. |
 | `Label` | `components/ui/label.tsx` | `text-sm font-medium`, above its control. |
-| `NativeSelect` | `components/ui/native-select.tsx` | The platform `<select>` with one shared skin (h-10; `size="sm"` is h-8 `text-xs`). Kept native on purpose: reliable keyboard and assistive-technology behaviour. |
+| `NativeSelect` | `components/ui/native-select.tsx` | The platform `<select>` with one shared skin (h-10; `size="sm"` is h-8 `text-xs`). Kept native on purpose: reliable keyboard and assistive-technology behavior. |
 | `Combobox` | `components/ui/combobox.tsx` | Searchable single select (`items` with `label`, optional `hint` and `searchText`; a `clearLabel` and a persistent `footerAction`). Portal-rendered. |
 | `Badge` | `components/ui/badge.tsx` | Variants `default` · `secondary` · `outline` · `gain` · `warning` · `info` (the semantic ones are a 10% tint with a 25 to 30% border). |
 | `Skeleton` | `components/ui/skeleton.tsx` | Pulsing placeholder block for loading states. |
@@ -191,7 +191,7 @@ Paths are under `apps/desktop/src/`. "Shared" means it lives in `components/ui/`
 | `Table` family | `components/ui/table.tsx` | `Table` (wraps an `overflow-x-auto` container), `TableHeader`, `TableBody`, `TableFooter`, `TableHead`, `TableRow`, `TableCell`, `TableCaption`. |
 | `DataTable` | `components/ui/data-table.tsx` | The collection surface (ADR 0053): columns, sort, an expander row, and the **loading / empty / error** treatments, so a screen cannot invent a fourth. |
 | `PaginationControls` | `components/ui/pagination.tsx` | Display range, sticky page-size selector (10 / 25 / 50 / 100), previous and next. Pairs with `usePagination`. |
-| `ChartContainer`, `ChartTooltipContent` | `components/ui/chart.tsx` | The themed chart wrapper (Recharts): exposes each series colour as `--color-<key>`. See [`dataviz.md`](./dataviz.md). |
+| `ChartContainer`, `ChartTooltipContent` | `components/ui/chart.tsx` | The themed chart wrapper (Recharts): exposes each series color as `--color-<key>`. See [`dataviz.md`](./dataviz.md). |
 | `RankedBars` | `components/ui/ranked-bars.tsx` | Ranked horizontal bars for a nominal category and the money against it. |
 | `EmojiPicker` | `components/ui/emoji-picker.tsx` | Curated, dependency-free emoji grid with filtering. |
 | Notices | `components/ui/notice.tsx`, `notice-context.ts`, `notice-stack.ts` | `NoticeProvider`, `NotificationsRegion`, `useNotices()`; the Undo notice and the stack rule ([`FRONTEND.md`](../agent/FRONTEND.md) section 6.2). |

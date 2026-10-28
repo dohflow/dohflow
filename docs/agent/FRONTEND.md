@@ -309,7 +309,8 @@ constants for every page.
    collapse, so one window gives two usable widths and a layout keyed to the window gets one of
    them wrong. Mark the page wrapper `@container` (it needs a definite width, such as `w-full`) and switch with
    container variants (`@min-[656px]:`), not viewport breakpoints (`md:`, `lg:`). Container
-   queries and `subgrid` are supported by the WebKit that macOS 14 (the app's minimum) ships.
+   queries and `subgrid` are supported by the WebKit that macOS 14 ships (14 is the minimum
+   supported version today, ADR 0065).
 2. **Decide the columns from the smallest tile that still reads.** A closed tile needs a minimum
    width (Settings: 320px) and gutters are fixed (16px), so the column count falls out of the
    usable width (Settings: three from 992px, two from 656px, otherwise one). State the thresholds
