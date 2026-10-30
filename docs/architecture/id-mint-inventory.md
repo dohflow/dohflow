@@ -64,20 +64,68 @@ deliberate row here, in the same change.
 | `apply/household.rs` `SetHouseholdTimezone` audit row (class 3, written once per command: `INSERT OR IGNORE`) | keyed | `audit.household-timezone` | none (the command id is in every keyed id) |
 | `apply/recurring.rs` `apply_dismiss_recurring_suggestion` | none | | the suppression row has a natural key; the affected entity recorded with the command is the command id |
 
+## The nine base-dependent upsert and ignore statements in `apply/` (and the helpers they call)
+
+Each is a statement whose outcome depends on rows that may already exist. None mints an id: every
+one is keyed by the row's natural key, so a replay or a rebase onto another base converges on the
+same row. Disposition: **idempotent on a natural key, fine**; the one that does carry a minted id is
+listed as keyed above.
+
+| Statement | Table | Natural key | Disposition |
+| --- | --- | --- | --- |
+| `apply/recurring.rs` `INSERT OR IGNORE` | `recurring_event_tags` | (recurring event, tag) | idempotent on the composite key |
+| `apply/recurring.rs` `ON CONFLICT ... DO UPDATE` | `recurring_suggestion_suppressions` | (merchant key, currency) | idempotent on the key; no id |
+| `apply/household.rs` `INSERT OR IGNORE` | `audit_events` (class 3) | the keyed audit id | idempotent on the keyed id: one row per command |
+| `apply/ingestion_cmds.rs` `INSERT OR IGNORE` | `transaction_categorizations` | transaction (1:1) | idempotent on the key; no id minted |
+| `apply/transactions.rs` `INSERT OR REPLACE` | `transaction_reviews` | transaction | idempotent on the key |
+| `apply/transactions.rs` `INSERT OR IGNORE` | `transaction_tags` | (transaction, tag) | idempotent on the composite key |
+| `apply/transactions.rs` `ON CONFLICT ... DO UPDATE` | `transaction_notes` | transaction | idempotent on the key |
+| `apply/transactions.rs` `INSERT OR IGNORE` | `split_line_tags` | (split line, tag) | idempotent; the split line id is an ordinal id |
+| `apply/categorization_cmds.rs` `INSERT OR REPLACE` | `transaction_categorizations` | transaction (1:1) | latest wins on the key; no id |
+
+Helpers reached from apply with the same shape: `debt.rs` `INSERT OR REPLACE` (`debt_terms`, keyed by
+account: idempotent), `debt.rs` `ON CONFLICT` (`credit_card_statements`: the id is keyed, above) and
+`lib.rs` `INSERT OR REPLACE` (`transaction_details`, keyed by transaction: idempotent).
+
+## The `ORDER BY id` sites that sort by `id` alone
+
+An id sort carries a meaning only where the ids were minted in an order that matters. Ordinal ids
+sort in creation order (the ordinal sits in `rand_a`, right after the millisecond timestamp); keyed
+ids and singleton ids sort in an arbitrary but replica-independent order. The ten sites that order by
+`id` with no other key, and the verdict on each:
+
+| Site | What it orders | Verdict |
+| --- | --- | --- |
+| `lib.rs` split-line and provenance read (`ORDER BY spl.id LIMIT 1`) | the one `created_from` provenance link of a transaction | at most one such link exists per transaction (its commit); the order is moot |
+| `lib.rs` `dependency_edges_for_row` | class-2 forecast edges | stable output only; rebuilt locally |
+| `forecast_persist.rs` (three: recurring events, income sources, assumption inputs) | the inputs hashed into a forecast snapshot | stable hashing; ids come from payloads or are derived, so equal across replicas |
+| `money_inbox.rs` `low_confidence_category_transaction_ids` | class-2 inbox candidates | stable output only |
+| `forecast/events.rs` (two: recurring transfers) | projected events | stable output; ids are payload ids |
+| `forecast/loan_link.rs` `read_linked_bills` | linked bills | stable output; ids are payload ids |
+| `apply/recurring.rs` "other bill linked to this loan" `ORDER BY id LIMIT 1` | which existing bill to name in the "already linked" error | the choice of which bill to name; the same bill on every replica, and the refusal does not depend on it |
+
+The split-line read orders by `(sort_order, id)`, so the line order never depends on id order at all;
+`tests/derived_ids_in_apply.rs` also checks that `ORDER BY id` is creation order for ordinal ids.
+
 ## Known gaps
 
 * **`CommitStaged` is not replicable as a command.** It reads the device-local (class 3) staging
   rows to decide what to commit, so its effect depends on state a replica does not have. Its ids
-  are keyed (never ordinals, never a count), but the command itself must be reshaped by the import
-  reshape before Sync ships; that bead blocks Sync shipping.
+  are keyed (never ordinals, never a count), but the command itself must be reshaped before Sync
+  ships by `personal-cfo-0g528` (SYNC-2c, import-family payload materialization), which blocks the
+  Sync client engine and genesis; that bead also re-keys these ids on payload-carried identity
+  (never a staged id, which does not cross the service boundary) and removes this row.
 * **SQLite's own clock and random values** are the only other nondeterminism source in SQL:
   `tests/id_mint_inventory.rs` also fails on `'now'`, `randomblob`, `CURRENT_TIMESTAMP` or
-  `datetime(` in any SQL the engine runs, except migration 44's two `strftime('now')` stamps, which
-  ran before any genesis and so cannot fork a Sync vault.
+  `datetime(` in any SQL the engine runs, except migration 44's two `strftime('now')` stamps. They
+  touch only a pre-44 vault, which predates any genesis; a restored pre-44 backup re-bootstraps (its
+  nonce state is lost) rather than rejoining.
 
 ## Measured
 
-The largest known per-command mint count is a `SetSplits` with one id per payload line; the cap is
-4,096 ordinals per command (`DerivedIds`), and a command that would exceed it is refused before any
-row is written (`tests/derived_ids_in_apply.rs`). An import batch commit commits one staged
-transaction per command, so it mints a handful of keyed ids.
+The largest per-command mint count is a `SetSplits`, one ordinal id per payload line; every other
+command mints at most a handful of ordinal ids and a handful of keyed ids (a commit of one staged
+transaction mints its transaction, up to one decision row and one provenance row; a scenario apply
+mints one keyed id per active scenario event). The cap is 4,096 ordinals per command (`DerivedIds`),
+and a command that would exceed it is refused before any row is kept
+(`tests/derived_ids_in_apply.rs`).

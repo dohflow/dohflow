@@ -378,3 +378,111 @@ fn the_household_timezone_audit_row_is_written_once_per_command_with_a_derived_i
     assert_eq!(first.len(), 1);
     assert_eq!(first, second, "an identical id on two fresh vaults");
 }
+
+/// The row ids a command wrote, by its operation id (the command id): the transactions it posted.
+fn transaction_ids_of(worker: &DbWorker, command: u128) -> Vec<String> {
+    let conn = worker.read_connection().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT hex(id) FROM ledger_transactions WHERE operation_id = ?1 ORDER BY id")
+        .unwrap();
+    stmt.query_map([u(1_000 + command)], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A copy of `base` with `setup` dispatched on top, as a new vault.
+fn with(base: &Path, dir: &Path, name: &str, setup: Vec<WriteCommand>) -> DbWorker {
+    let path = dir.join(name);
+    std::fs::copy(base, &path).unwrap();
+    let worker = open(&path);
+    for (n, command) in setup.into_iter().enumerate() {
+        let mut m = meta(800 + n as u128);
+        m.issued_at = IssuedAt::from_unix_micros(ISSUED_MICROS - 500_000);
+        worker.dispatch(m, command).unwrap();
+    }
+    worker
+}
+
+#[test]
+fn a_base_that_already_holds_the_create_if_missing_rows_does_not_shift_the_ids_a_command_mints() {
+    // The same command on two DIFFERENT bases: one has no `opening_balance_equity` system
+    // account yet (the command creates it), the other already holds it. Whether the singleton is
+    // minted is base state; the command's own transaction id is an ordinal and must not move.
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path());
+    let without = with(&base, dir.path(), "without.vault", vec![]);
+    let with_equity = with(
+        &base,
+        dir.path(),
+        "with.vault",
+        // The base already has the equity account (from account 1's opening balance, in `base`),
+        // so make the other base DIFFER: drop nothing, add another opening on top.
+        vec![create_account(7, CashflowRole::LiquidCash, Some(usd(1)))],
+    );
+    let command = || create_account(3, CashflowRole::LiquidCash, Some(usd(12_000)));
+    without.dispatch(meta(1), command()).unwrap();
+    with_equity.dispatch(meta(1), command()).unwrap();
+    let (a, b) = (
+        transaction_ids_of(&without, 1),
+        transaction_ids_of(&with_equity, 1),
+    );
+    assert_eq!(a.len(), 1);
+    assert_eq!(
+        a, b,
+        "the opening transaction's id does not depend on the base"
+    );
+}
+
+#[test]
+fn a_keyed_mint_is_the_same_on_a_base_where_a_sibling_row_already_exists() {
+    // ConfirmObligationEarly mints under "not already confirmed" (keyed). Two bases that differ
+    // in unrelated rows (another bill already confirmed on one, which also makes the
+    // `unmatched_expense` system account exist there) mint the same id for the same occurrence.
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path());
+    let bill = |event: u128, contract: u128| WriteCommand::CreateRecurringBill {
+        event_id: core_ledger::RecurringEventId::from_uuid(u(event)),
+        contract_id: core_ledger::BillContractId::from_uuid(u(contract)),
+        name: format!("Bill {event}"),
+        amount: usd(8_000),
+        bill_type: "utility".into(),
+        frequency: pay_schedule::Frequency::Monthly,
+        anchor: NaiveDate::from_ymd_opt(2001, 1, 1).unwrap(),
+        autopay_account_id: None,
+        description: None,
+        source_merchant_key: None,
+        category_id: None,
+        tag_ids: vec![],
+    };
+    let confirm = |event: u128| WriteCommand::ConfirmObligationEarly {
+        recurring_event_id: core_ledger::RecurringEventId::from_uuid(u(event)),
+        scheduled_date: NaiveDate::from_ymd_opt(2001, 8, 1).unwrap(),
+        actual_amount: usd(7_500),
+        actual_date: chrono::DateTime::from_timestamp_micros(ISSUED_MICROS - 86_400_000_000)
+            .unwrap(),
+        paying_account_id: account(1),
+    };
+    let plain = with(&base, dir.path(), "plain.vault", vec![bill(41, 141)]);
+    let busier = with(
+        &base,
+        dir.path(),
+        "busier.vault",
+        vec![bill(41, 141), bill(42, 142), confirm(42)],
+    );
+    plain.dispatch(meta(2), confirm(41)).unwrap();
+    busier.dispatch(meta(2), confirm(41)).unwrap();
+    let (a, b) = (
+        transaction_ids_of(&plain, 2),
+        transaction_ids_of(&busier, 2),
+    );
+    assert_eq!(a.len(), 1);
+    assert_eq!(
+        a, b,
+        "a keyed id depends on the command and the occurrence, not on the base"
+    );
+    // Confirming the already-confirmed occurrence again is the base-dependent branch that does NOT
+    // mint: an accepted no-op that posts nothing.
+    busier.dispatch(meta(3), confirm(42)).unwrap();
+    assert!(transaction_ids_of(&busier, 3).is_empty());
+}
