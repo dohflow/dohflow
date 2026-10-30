@@ -1144,6 +1144,29 @@ still never reads a payload. (d) A void is a tool for a rare, serious state; the
 `personal-cfo-elciw` (the client: honoring, rollback, re-issue, the status and its persistence),
 `personal-cfo-g3m.22` (the receiver-path opener) and `personal-cfo-g3m.23` (the vectors).
 
+## Addendum E — Honoring a void: rulings (2026-10-27, `personal-cfo-g3m.17` part C)
+
+Clarifications to Addendum D, ruled by planning from owner decision 915.19 rules 1 and 10 (not new
+owner decisions), recorded with the sync-core honor rule (spec-version 14):
+
+- **Honor only the in-order stop.** A replica honors a void only while it is stopped at exactly the
+  void's `seq` with every earlier position applied or skipped; a position verified out of order
+  is not yet evaluated in log order. This keeps every replica's ledger, snapshot metadata and
+  pushes identical regardless of arrival order.
+- **A different digest is a fork.** A void naming another envelope digest than the replica holds
+  at its stop, or the same void honored at two different positions, means the log forked: the
+  replica halts (the `SeqConflict` class or its own evidence), it does not stay quietly stopped.
+  The second is detected only against a void this replica honored (the ledger records only
+  honored voids), so replicas can differ on whether they halt when a misbehaving service re-serves
+  a void that one of them found inert; that needs a misbehaving service and is accepted.
+- **A reason-2 void is version-scoped.** An apply failure is deterministic only at one
+  `engine_version`: a reason-2 void names its `engine_version` and is honored only at an equal
+  version where the replica reproduces the failure itself. Across versions the replica never
+  applies the position (R40). The apply-failure stop and the body field are
+  `personal-cfo-g3m.26`.
+- **A snapshot-bootstrapped replica** does not honor a void for a position at or below its root
+  (it never evaluated it); the root is treated as suspect.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` (this ADR)

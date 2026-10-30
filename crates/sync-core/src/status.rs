@@ -29,6 +29,7 @@
 use crate::envelope::ReceiverError;
 use crate::header::{ClearHeader, Fingerprint};
 use crate::membership::ChainError;
+use crate::void::{ForkSuspected, HonoredVoid, VoidLedger};
 
 /// What a fork or an equivocation looked like (both ids, retained for diagnosis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,24 @@ pub enum HaltEvidence {
         first: [u8; 32],
         /// The different digest seen later.
         second: [u8; 32],
+    },
+    /// A position the replica says it applied is now found invalid (and no honored void skips
+    /// it): the cursor was overstated or determinism broke. Either way the replica cannot trust
+    /// its own state.
+    AppliedPositionInvalid {
+        /// The log position.
+        seq: u64,
+        /// The digest of the envelope found invalid.
+        envelope_digest: [u8; 32],
+    },
+    /// A void already honored at one position was offered at another: the log forked.
+    VoidAtTwoPositions {
+        /// The void's id.
+        void_id: [u8; 32],
+        /// The position it was honored at.
+        honored_at: u64,
+        /// The position it is offered at now.
+        offered_at: u64,
     },
     /// Two epoch records after one `prev_epoch_id`.
     Equivocation {
@@ -97,6 +116,12 @@ pub enum SyncEvent {
     Halted(HaltEvidence),
     /// Sync stopped at an authenticated-but-invalid envelope.
     EnvelopeInvalid(InvalidEnvelope),
+    /// An honored void skipped the invalid position; the replica applies again from the position
+    /// after `after` (the last skipped position).
+    Resumed {
+        /// The last skipped log position.
+        after: u64,
+    },
 }
 
 impl SyncStatus {
@@ -158,6 +183,84 @@ impl SyncStatus {
         Some(SyncEvent::Halted(evidence))
     }
 
+    /// Record that a void was **honored** (see [`crate::void`]): the replica is stopped at exactly
+    /// the void's `seq` (the honor rule requires it), so the stop clears and the replica applies
+    /// again from after the range. A stop anywhere else stays (a void for another position does
+    /// not move it), and a halted replica stays halted: a void is never an answer to a fork.
+    pub fn observe_honored(&mut self, honored: &HonoredVoid) -> Option<SyncEvent> {
+        match self {
+            Self::EnvelopeInvalid(invalid) if invalid.seq == honored.first => {
+                *self = Self::Healthy;
+                Some(SyncEvent::Resumed {
+                    after: honored.last,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Halt on a suspected fork reported by the void honor rule (ADR 0074 Addendum E): a void
+    /// naming another digest than the one held at the stop is the `SeqConflict` class; the same
+    /// void honored at two positions is its own evidence. Halting is the rule, so every engine
+    /// gets it from here instead of hand-rolling it. A status that is already `Halted` absorbs it.
+    pub fn observe_fork_suspected(&mut self, fork: &ForkSuspected) -> Option<SyncEvent> {
+        if matches!(self, Self::Halted(_)) {
+            return None;
+        }
+        let evidence = match *fork {
+            ForkSuspected::DigestAtStop { seq, ours, theirs } => HaltEvidence::SeqConflict {
+                seq,
+                first: ours,
+                second: theirs,
+            },
+            ForkSuspected::VoidAtTwoPositions {
+                void_id,
+                honored_at,
+                offered_at,
+            } => HaltEvidence::VoidAtTwoPositions {
+                void_id,
+                honored_at,
+                offered_at,
+            },
+        };
+        *self = Self::Halted(evidence);
+        Some(SyncEvent::Halted(evidence))
+    }
+
+    /// [`Self::observe_envelope`] for an engine that also holds the void ledger and its cursor:
+    /// a position an honored void skips is not evaluated again, and neither is a **valid** result
+    /// for one below `next_to_apply` (already applied). Re-verifying such a position (after a
+    /// restart, a re-pull, or a verifier running ahead) must not re-open a stop the replica has
+    /// already moved past; the "found invalid" fact is recomputable only for the positions at or
+    /// after the frontier that no honored void skips. A **failed** result for a position below
+    /// the frontier that no void skips contradicts the replica's own state (an overstated cursor
+    /// or broken determinism): it halts, with [`HaltEvidence::AppliedPositionInvalid`].
+    pub fn observe_envelope_in_context(
+        &mut self,
+        ledger: &VoidLedger,
+        next_to_apply: u64,
+        seq: u64,
+        envelope_digest: [u8; 32],
+        header: &ClearHeader,
+        outcome: Result<(), ReceiverError>,
+    ) -> Option<SyncEvent> {
+        if ledger.skips(seq) {
+            return None;
+        }
+        if seq < next_to_apply {
+            if outcome.is_ok() || matches!(self, Self::Halted(_)) {
+                return None;
+            }
+            let evidence = HaltEvidence::AppliedPositionInvalid {
+                seq,
+                envelope_digest,
+            };
+            *self = Self::Halted(evidence);
+            return Some(SyncEvent::Halted(evidence));
+        }
+        self.observe_envelope(seq, envelope_digest, header, outcome)
+    }
+
     /// Record the outcome of the receiver checks on the authenticated envelope the service placed
     /// at `seq` (with its `canonical_envelope_digest`). A failure stops the replica at `seq`; if
     /// it is already stopped at a later position (envelopes can be verified out of order) the
@@ -167,7 +270,9 @@ impl SyncStatus {
     ///
     /// The "found invalid" fact needs no persistence: it is recomputable from the log by running
     /// the same deterministic checks on the same bytes, and a replica must evaluate a position
-    /// itself before it considers any void naming it.
+    /// itself before it considers any void naming it. An engine that keeps a void ledger MUST call
+    /// [`Self::observe_envelope_in_context`] instead, so a position already skipped or applied is
+    /// not evaluated again.
     pub fn observe_envelope(
         &mut self,
         seq: u64,
