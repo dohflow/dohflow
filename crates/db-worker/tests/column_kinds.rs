@@ -1117,8 +1117,7 @@ fn full_capture_tables() -> Vec<String> {
 ///
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
-/// * the rows of `balance_observations`, `category_aliases`, `connector_account_links`,
-///   `connector_connections`, `credit_card_cycles`,
+/// * the rows of `balance_observations`, `category_aliases`, `credit_card_cycles`,
 ///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
 ///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
 ///   reach the command bus with `personal-cfo-5ymg8`;
@@ -1135,8 +1134,8 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("category_aliases", &["bi", "bu", "bd"]),
     ("change_journal_entries", &["bu", "bd"]),
     ("confirmed_obligations", &["bu"]),
-    ("connector_account_links", &["bi", "bu", "bd"]),
-    ("connector_connections", &["bi", "bu", "bd"]),
+    ("connector_account_links", &["bd"]),
+    ("connector_connections", &["bd"]),
     ("credit_card_cycles", &["bi", "bu", "bd"]),
     ("credit_card_statements", &["bu", "bd"]),
     ("debt_terms", &["bu", "bd"]),
@@ -1229,6 +1228,10 @@ mod all_variants {
         "link_bill_to_loan",
         "unlink_bill_from_loan",
         "set_bill_not_loan_payment",
+        "create_connector_connection",
+        "upsert_connector_link",
+        "set_connector_link_account",
+        "delete_connector_connection",
         "create_source_batch",
         "attach_source_record",
         "update_batch_state",
@@ -1678,7 +1681,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 56, "every variant ran");
+        assert_eq!(checked, 60, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

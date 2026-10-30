@@ -353,3 +353,222 @@ fn a_refresh_that_finishes_after_the_tombstone_advances_no_cursor() {
         "the lookup ignores the mapping of a deleted connection"
     );
 }
+
+// -- the class-1 half is commands (personal-cfo-5ymg8.2) --------------------------------------------
+
+fn written_tables(worker: &DbWorker) -> Vec<String> {
+    let mut tables: Vec<String> = worker
+        .last_write_set()
+        .expect("a write set")
+        .rows
+        .into_iter()
+        .map(|(table, _)| table)
+        .collect();
+    tables.dedup();
+    tables
+}
+
+fn operation_count(worker: &DbWorker) -> i64 {
+    count(worker, "operation_log")
+}
+
+#[test]
+fn the_identity_and_the_mapping_are_commands_with_class_1_write_sets_and_no_credential() {
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    let before = operation_count(&worker);
+    worker
+        .create_connector_connection(id, "simplefin", SECRET, Some("Primary"))
+        .unwrap();
+    assert_eq!(
+        operation_count(&worker),
+        before + 1,
+        "the create is one logged command"
+    );
+    assert_eq!(written_tables(&worker), ["connector_connections"]);
+    // The credential is stored locally, and it is in no operation-log payload.
+    assert_eq!(
+        worker.connector_credential(id).unwrap().as_deref(),
+        Some(SECRET)
+    );
+    let payloads: Vec<Vec<u8>> = worker
+        .read_connection()
+        .unwrap()
+        .prepare("SELECT payload FROM operation_log WHERE payload IS NOT NULL")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(!payloads.is_empty());
+    for payload in payloads {
+        let text = String::from_utf8_lossy(&payload);
+        assert!(
+            !text.contains("bridge.invalid") && !text.contains("pass"),
+            "{text}"
+        );
+    }
+
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), Some("USD"))
+        .unwrap();
+    assert_eq!(written_tables(&worker), ["connector_account_links"]);
+    let checking = account(&worker, "Checking");
+    worker
+        .set_connector_link_account(id, "acct-1", Some(checking))
+        .unwrap();
+    assert_eq!(written_tables(&worker), ["connector_account_links"]);
+    worker.delete_connector_connection(id).unwrap();
+    assert_eq!(written_tables(&worker), ["connector_connections"]);
+}
+
+#[test]
+fn a_discovery_that_changes_nothing_is_not_a_command() {
+    let (_dir, worker) = worker();
+    let id = local(&worker);
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), Some("USD"))
+        .unwrap();
+    let logged = operation_count(&worker);
+    // The same name and currency, and an unknown currency that would not clobber the known one.
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), Some("USD"))
+        .unwrap();
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), None)
+        .unwrap();
+    assert_eq!(
+        operation_count(&worker),
+        logged,
+        "nothing was logged or would sync"
+    );
+    // A rename is a command.
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking (renamed)"), None)
+        .unwrap();
+    assert_eq!(operation_count(&worker), logged + 1);
+}
+
+#[test]
+fn every_command_on_a_deleted_connection_is_an_accepted_no_op_not_a_rejection() {
+    let (_dir, worker) = worker();
+    let id = local(&worker);
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), Some("USD"))
+        .unwrap();
+    worker.delete_connector_connection(id).unwrap();
+    let meta = |n: u8| {
+        let mut m = meta();
+        m.idempotency_key = format!("00000000-0000-4000-8000-0000000000{n:02x}");
+        m
+    };
+    // The commands a replica may receive AFTER the tombstone (a race on another device) apply
+    // with an empty write set instead of stopping the replica.
+    for (n, command) in [
+        WriteCommand::UpsertConnectorLink {
+            connection_id: id,
+            external_id: "acct-2".into(),
+            external_name: None,
+            currency: None,
+        },
+        WriteCommand::SetConnectorLinkAccount {
+            connection_id: id,
+            external_id: "acct-1".into(),
+            account_id: None,
+        },
+        WriteCommand::DeleteConnectorConnection { id },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        worker.dispatch(meta(n as u8), command).unwrap();
+        assert!(
+            worker.last_write_set().unwrap().rows.is_empty(),
+            "command {n} wrote class-1 rows under a tombstone"
+        );
+    }
+    assert_eq!(count(&worker, "connector_account_links"), 1);
+    // An UNKNOWN connection is a producer fault and is rejected.
+    let unknown = worker.dispatch(
+        meta(9),
+        WriteCommand::UpsertConnectorLink {
+            connection_id: Uuid::now_v7(),
+            external_id: "x".into(),
+            external_name: None,
+            currency: None,
+        },
+    );
+    assert!(matches!(unknown, Err(DbError::InvalidCommand(_))));
+}
+
+#[test]
+fn creating_the_same_connection_again_is_a_no_op_and_another_adapter_is_refused() {
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    worker
+        .create_connector_identity(id, "simplefin", Some("Primary"))
+        .unwrap();
+    let logged = operation_count(&worker);
+    worker
+        .create_connector_identity(id, "simplefin", Some("Primary"))
+        .unwrap();
+    assert!(worker.last_write_set().unwrap().rows.is_empty());
+    assert_eq!(operation_count(&worker), logged + 1);
+    assert!(matches!(
+        worker.create_connector_identity(id, "lunchflow", None),
+        Err(DbError::InvalidCommand(_))
+    ));
+    assert_eq!(count(&worker, "connector_connections"), 1);
+}
+
+#[test]
+fn deleting_a_connection_with_a_token_writes_the_removal_audit_row_once() {
+    let (_dir, worker) = worker();
+    let id = local(&worker);
+    worker.delete_connector_connection(id).unwrap();
+    assert_eq!(count(&worker, "connector_connection_secrets"), 0);
+    let audit = |w: &DbWorker| {
+        w.audit_event_count("connector.token_removed_connection_deleted")
+            .unwrap()
+    };
+    assert_eq!(audit(&worker), 1);
+    // A second delete finds nothing to remove and writes no second row.
+    worker.delete_connector_connection(id).unwrap();
+    assert_eq!(audit(&worker), 1);
+}
+
+#[test]
+fn mapping_a_deleted_connection_tells_the_user_it_did_not_happen() {
+    let (_dir, worker) = worker();
+    let id = local(&worker);
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), Some("USD"))
+        .unwrap();
+    worker.delete_connector_connection(id).unwrap();
+    let logged = operation_count(&worker);
+    let result = worker.set_connector_link_account(id, "acct-1", None);
+    assert!(
+        matches!(result, Err(DbError::InvalidCommand(_))),
+        "{result:?}"
+    );
+    assert_eq!(operation_count(&worker), logged, "nothing was dispatched");
+}
+
+#[test]
+fn an_identity_of_an_unknown_adapter_is_inert_it_lists_and_never_refreshes() {
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    // A replicated identity of an adapter this build has never heard of: no registry check in
+    // apply (a verdict must not depend on the build's adapter list).
+    worker
+        .create_connector_identity(id, "future-provider-9", Some("Elsewhere"))
+        .unwrap();
+    let listed = worker.connector_connections().unwrap();
+    let row = listed.iter().find(|c| c.id == id).expect("it lists");
+    assert_eq!(row.adapter_id, "future-provider-9");
+    assert!(
+        !row.has_secret,
+        "no token on this device, so nothing can refresh it"
+    );
+    assert!(worker.connector_credential(id).unwrap().is_none());
+}
