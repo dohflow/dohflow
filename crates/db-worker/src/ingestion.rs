@@ -398,13 +398,14 @@ pub(crate) fn stage_balance(conn: &Connection, bal: &NewStagedBalance) -> Result
     Ok(id)
 }
 
-/// Record a dedupe decision (`decided_at` stamped now), returning its id.
+/// Record a dedupe decision under the id the caller supplies (a derived id when called from
+/// `apply`, so a replica mints the same one), returning it.
 pub(crate) fn record_dedupe_decision(
     conn: &Connection,
+    id: Uuid,
     dec: &NewDedupeDecision,
     at: &str,
 ) -> Result<Uuid, DbError> {
-    let id = Uuid::now_v7();
     conn.execute(
         "INSERT INTO dedupe_decisions
             (id, source_batch_id, layer, staged_transaction_id, matched_entity_type,
@@ -430,6 +431,7 @@ pub(crate) fn record_dedupe_decision(
 /// the audit chain never dangles.
 pub(crate) fn link_provenance(
     conn: &Connection,
+    id: Uuid,
     link: &NewProvenanceLink,
     at: &str,
 ) -> Result<Uuid, DbError> {
@@ -447,7 +449,6 @@ pub(crate) fn link_provenance(
             link.source_record_id
         )));
     }
-    let id = Uuid::now_v7();
     conn.execute(
         "INSERT INTO source_provenance_links
             (id, entity_type, entity_id, source_record_id, relationship, created_at)
@@ -1039,6 +1040,7 @@ mod tests {
         .unwrap();
         record_dedupe_decision(
             &conn,
+            Uuid::now_v7(),
             &NewDedupeDecision {
                 source_batch_id: batch,
                 layer: "transaction",
@@ -1053,6 +1055,7 @@ mod tests {
         .unwrap();
         link_provenance(
             &conn,
+            Uuid::now_v7(),
             &NewProvenanceLink {
                 entity_type: "ledger_transaction",
                 entity_id: Uuid::now_v7(),
@@ -1127,6 +1130,7 @@ mod tests {
 
         record_dedupe_decision(
             &conn,
+            Uuid::now_v7(),
             &NewDedupeDecision {
                 source_batch_id: batch,
                 layer: "file",
@@ -1141,6 +1145,7 @@ mod tests {
         .unwrap();
         record_dedupe_decision(
             &conn,
+            Uuid::now_v7(),
             &NewDedupeDecision {
                 source_batch_id: batch,
                 layer: "transaction",
@@ -1198,6 +1203,7 @@ mod tests {
         // Dangling link → refused, nothing inserted.
         let dangling = link_provenance(
             &conn,
+            Uuid::now_v7(),
             &NewProvenanceLink {
                 entity_type: "ledger_transaction",
                 entity_id: Uuid::now_v7(),
@@ -1212,6 +1218,7 @@ mod tests {
         // Real source_record → linked.
         link_provenance(
             &conn,
+            Uuid::now_v7(),
             &NewProvenanceLink {
                 entity_type: "ledger_transaction",
                 entity_id: Uuid::now_v7(),

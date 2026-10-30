@@ -390,3 +390,54 @@ fn two_allocators_for_the_same_command_agree_without_sharing_state() {
         assert_eq!(original.next("x").unwrap(), replay.next("x").unwrap());
     }
 }
+
+#[test]
+fn a_keyed_id_is_a_pure_function_of_the_command_the_tag_and_the_length_prefixed_key() {
+    // Known answers computed independently with Python's hmac/hashlib from the doc's construction.
+    let key = sample_key();
+    let command = sample_command();
+    assert_eq!(
+        key.keyed_id(&command, "scenario-event", &[&[1; 16], &[2; 16]])
+            .unwrap()
+            .to_string(),
+        "76b3e713-7d89-815a-adc6-eea2f928a26c"
+    );
+    assert_eq!(
+        key.keyed_id(&command, "reversal-txn", &[&[3; 16]])
+            .unwrap()
+            .to_string(),
+        "77c9106d-a4c4-8e49-bd13-5acd6f1b7cb4"
+    );
+    // Parts are length-prefixed: the split point matters.
+    let ab_c = key.keyed_id(&command, "x", &[b"ab", b"c"]).unwrap();
+    let a_bc = key.keyed_id(&command, "x", &[b"a", b"bc"]).unwrap();
+    assert_eq!(ab_c.to_string(), "7af329d4-98c6-8b41-8aef-db33dcf2bc67");
+    assert_eq!(a_bc.to_string(), "b28cdcf4-9a13-8d2c-b36b-37ed12662488");
+    assert_ne!(ab_c, a_bc);
+    // The command is part of the key: another command mints another id for the same row.
+    assert_eq!(
+        key.keyed_id(&Uuid::from_u128(1), "reversal-txn", &[&[3; 16]])
+            .unwrap()
+            .to_string(),
+        "ebcc5a57-6bf6-80be-8069-c97e7e6b79d8"
+    );
+    // Version 8, variant 10; the tag rules are the tag rules.
+    let id = key.keyed_id(&command, "x", &[]).unwrap();
+    assert_eq!(id.get_version_num(), 8);
+    assert_eq!(id.as_bytes()[8] >> 6, 0b10);
+    assert_eq!(
+        key.keyed_id(&command, "", &[]).unwrap_err(),
+        DerivedIdError::EmptyTag
+    );
+}
+
+#[test]
+fn a_keyed_mint_consumes_no_ordinal() {
+    let mut ids = DerivedIds::new(sample_key(), issued_ms(1_700_000_000_123), sample_command());
+    let first = ids.next("x").unwrap();
+    ids.keyed("scenario-event", &[&[9; 16]]).unwrap();
+    ids.keyed("scenario-event", &[&[8; 16]]).unwrap();
+    assert_eq!(ids.minted(), 1);
+    let mut replay = DerivedIds::new(sample_key(), issued_ms(1_700_000_000_123), sample_command());
+    assert_eq!(replay.next("x").unwrap(), first);
+}

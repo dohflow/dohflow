@@ -212,6 +212,7 @@ fn commit_target(
 pub(crate) fn apply_commit_staged(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &core_ids::DerivedIds,
     staged_transaction_id: &StagedTransactionId,
     force: &bool,
 ) -> Result<Uuid, DbError> {
@@ -253,6 +254,7 @@ pub(crate) fn apply_commit_staged(
             // than re-deriving it (personal-cfo-yl5).
             ingestion::record_dedupe_decision(
                 tx,
+                ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"flagged"])?,
                 &ingestion::NewDedupeDecision {
                     source_batch_id: batch_id,
                     layer: "transaction",
@@ -275,6 +277,7 @@ pub(crate) fn apply_commit_staged(
             // itself vouches distinct rows are distinct transactions).
             ingestion::record_dedupe_decision(
                 tx,
+                ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"flagged"])?,
                 &ingestion::NewDedupeDecision {
                     source_batch_id: batch_id,
                     layer: "transaction",
@@ -299,6 +302,7 @@ pub(crate) fn apply_commit_staged(
                 Err(problem) if !*force => {
                     ingestion::record_dedupe_decision(
                         tx,
+                        ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"flagged"])?,
                         &ingestion::NewDedupeDecision {
                             source_batch_id: batch_id,
                             layer: "transaction",
@@ -330,7 +334,13 @@ pub(crate) fn apply_commit_staged(
                 ("unmatched_expense", AccountKind::Expense)
             };
             let counter_id = ensure_system_ledger_account(tx, role, amount.currency(), kind)?;
-            let txn_id = TransactionId::new();
+            // KEYED by the staged record: this command reads class-3 staging rows to decide what
+            // to commit (known non-replicable until the import reshape), so its mints must never
+            // consume ordinals or depend on a count.
+            let txn_id = TransactionId::from_uuid(ids.keyed(
+                "txn.commit-staged",
+                &[staged_transaction_id.as_uuid().as_bytes()],
+            )?);
             let txn = LedgerTransaction::new(
                 txn_id,
                 OperationId::from_uuid(meta.command_id),
@@ -346,6 +356,7 @@ pub(crate) fn apply_commit_staged(
             // FK-strict import provenance: the committed txn ← its source_record.
             ingestion::link_provenance(
                 tx,
+                ids.keyed("provenance-link", &[staged.id.as_bytes(), b"created_from"])?,
                 &ingestion::NewProvenanceLink {
                     entity_type: "ledger_transaction",
                     entity_id: txn_id.as_uuid(),
@@ -397,6 +408,7 @@ pub(crate) fn apply_commit_staged(
             };
             ingestion::record_dedupe_decision(
                 tx,
+                ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"committed"])?,
                 &ingestion::NewDedupeDecision {
                     source_batch_id: batch_id,
                     layer: "transaction",
@@ -423,6 +435,7 @@ pub(crate) fn apply_commit_staged(
 pub(crate) fn apply_skip_staged(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &core_ids::DerivedIds,
     staged_transaction_id: &StagedTransactionId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
@@ -443,6 +456,7 @@ pub(crate) fn apply_skip_staged(
         ingestion::mark_staged_skipped(tx, staged.id)?;
         ingestion::record_dedupe_decision(
             tx,
+            ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"skipped"])?,
             &ingestion::NewDedupeDecision {
                 source_batch_id: batch_id,
                 layer: "transaction",

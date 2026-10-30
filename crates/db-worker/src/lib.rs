@@ -1338,6 +1338,14 @@ pub enum DbError {
     },
 }
 
+impl From<core_ids::DerivedIdError> for DbError {
+    /// A derived-id failure is a function of the payload (the 4,096th mint of one command, an
+    /// invalid tag): it is raised before the row it would name is written.
+    fn from(error: core_ids::DerivedIdError) -> Self {
+        DbError::InvalidCommand(error.to_string())
+    }
+}
+
 impl From<MoneyError> for DbError {
     fn from(error: MoneyError) -> Self {
         DbError::InvalidCommand(error.to_string())
@@ -5417,16 +5425,22 @@ fn persist_transaction(conn: &Connection, txn: &LedgerTransaction) -> Result<(),
 /// and the reversal from every view — so balances net to zero while the ledger stays
 /// append-only (ADR 0007 §9). The caller has verified the transaction exists and is not already
 /// voided. Shared by `VoidTransaction` and `UnconfirmObligation`.
+///
+/// The reversal's id is a KEYED id of the original transaction (`ids.keyed`, consuming no ordinal):
+/// whether a reversal is minted at all depends on the base (the original may already be voided),
+/// so it must not shift the ordinals of the ids a command mints after it.
 fn reverse_and_hide_transaction(
     conn: &Connection,
     txn_uuid: Uuid,
     currency: Currency,
     occurred_at: DateTime<Utc>,
     command_id: Uuid,
+    ids: &core_ids::DerivedIds,
     voided_at: &str,
 ) -> Result<(), DbError> {
     let mut stmt = conn.prepare(
-        "SELECT ledger_account_id, minor_units FROM ledger_postings WHERE transaction_id = ?1",
+        "SELECT ledger_account_id, minor_units FROM ledger_postings WHERE transaction_id = ?1
+         ORDER BY ledger_account_id, minor_units",
     )?;
     let legs: Vec<(Uuid, i64)> = stmt
         .query_map([txn_uuid], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -5439,7 +5453,7 @@ fn reverse_and_hide_transaction(
             Money::new(minor, currency).checked_neg()?,
         ));
     }
-    let reversal_id = TransactionId::new();
+    let reversal_id = TransactionId::from_uuid(ids.keyed("txn.reversal", &[txn_uuid.as_bytes()])?);
     let reversal = LedgerTransaction::new(
         reversal_id,
         OperationId::from_uuid(command_id),
@@ -6889,6 +6903,19 @@ fn apply_command(
     // A direct (non-command) writer may have left before-images in the capture tables; the
     // command starts from an empty capture.
     write_set::clear(&tx)?;
+    // The command's ONE id allocator (ADR 0013 Addendum A): every id `apply` mints comes from it,
+    // so the same command on another device mints the same ids. The key derives from the vault id
+    // (not a secret), the time from `issued_at`, and nothing from the clock or a counter.
+    let vault_id: Uuid = tx.query_row(
+        "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut ids = core_ids::DerivedIds::new(
+        core_ids::DerivedIdKey::for_vault(&vault_id),
+        meta.issued_at,
+        meta.command_id,
+    );
 
     // The command's payload (ADR 0074 decision 3, vault-format.md C.5): encoded up front so a
     // command the format cannot carry (text with a U+0000, say) is refused before anything is
@@ -6910,7 +6937,7 @@ fn apply_command(
         WriteCommand::CreateAccount {
             account,
             opening_balance,
-        } => apply::accounts::apply_create_account(&tx, meta, account, opening_balance)?,
+        } => apply::accounts::apply_create_account(&tx, meta, &mut ids, account, opening_balance)?,
         WriteCommand::UpdateAccount { id, name } => {
             apply::accounts::apply_update_account(&tx, id, name)?
         }
@@ -6938,6 +6965,7 @@ fn apply_command(
             debt::apply_set_card_statement_balance(
                 &tx,
                 meta,
+                &ids,
                 *account_id,
                 *cycle_close,
                 *statement_balance_minor,
@@ -6966,6 +6994,7 @@ fn apply_command(
         } => apply::transactions::apply_confirm_obligation_early(
             &tx,
             meta,
+            &ids,
             recurring_event_id,
             scheduled_date,
             actual_amount,
@@ -6978,11 +7007,14 @@ fn apply_command(
         } => apply::transactions::apply_unconfirm_obligation(
             &tx,
             meta,
+            &ids,
             recurring_event_id,
             scheduled_date,
         )?,
         WriteCommand::ConvertUnexplainedToTransaction { account_id } => {
-            apply::transactions::apply_convert_unexplained_to_transaction(&tx, meta, account_id)?
+            apply::transactions::apply_convert_unexplained_to_transaction(
+                &tx, meta, &mut ids, account_id,
+            )?
         }
         WriteCommand::Transfer {
             source_account_id,
@@ -6992,6 +7024,7 @@ fn apply_command(
         } => apply::transactions::apply_transfer(
             &tx,
             meta,
+            &mut ids,
             source_account_id,
             dest_account_id,
             amount,
@@ -7195,15 +7228,21 @@ fn apply_command(
         WriteCommand::CommitStaged {
             staged_transaction_id,
             force,
-        } => apply::ingestion_cmds::apply_commit_staged(&tx, meta, staged_transaction_id, force)?,
+        } => apply::ingestion_cmds::apply_commit_staged(
+            &tx,
+            meta,
+            &ids,
+            staged_transaction_id,
+            force,
+        )?,
         WriteCommand::SkipStaged {
             staged_transaction_id,
-        } => apply::ingestion_cmds::apply_skip_staged(&tx, meta, staged_transaction_id)?,
+        } => apply::ingestion_cmds::apply_skip_staged(&tx, meta, &ids, staged_transaction_id)?,
         WriteCommand::SnoozeInboxItem { item_id, until } => {
-            apply::inbox::apply_snooze_inbox_item(&tx, meta, item_id, until)?
+            apply::inbox::apply_snooze_inbox_item(&tx, meta, &mut ids, item_id, until)?
         }
         WriteCommand::DismissInboxItem { item_id, reason } => {
-            apply::inbox::apply_dismiss_inbox_item(&tx, meta, item_id, reason)?
+            apply::inbox::apply_dismiss_inbox_item(&tx, meta, &mut ids, item_id, reason)?
         }
         WriteCommand::DismissRecurringSuggestion {
             merchant_key,
@@ -7247,7 +7286,7 @@ fn apply_command(
             apply::categorization_cmds::apply_move_category(&tx, meta, id, new_parent_id)?
         }
         WriteCommand::SetHouseholdTimezone { timezone } => {
-            apply::household::apply_set_household_timezone(&tx, meta, timezone)?
+            apply::household::apply_set_household_timezone(&tx, meta, &ids, timezone)?
         }
         WriteCommand::ArchiveCategory(id) => {
             apply::categorization_cmds::apply_archive_category(&tx, meta, id)?
@@ -7265,7 +7304,7 @@ fn apply_command(
             category_id,
         )?,
         WriteCommand::VoidTransaction { transaction_id } => {
-            apply::transactions::apply_void_transaction(&tx, meta, transaction_id)?
+            apply::transactions::apply_void_transaction(&tx, meta, &ids, transaction_id)?
         }
         WriteCommand::MarkReviewed {
             transaction_id,
@@ -7275,6 +7314,7 @@ fn apply_command(
         // which is why apply is on this bus at all.
         WriteCommand::ApplyScenario { scenario_id } => apply::scenario_apply::apply_scenario(
             &tx,
+            &ids,
             *scenario_id,
             meta.command_id,
             &apply::issued_at_text(meta),
@@ -7300,7 +7340,7 @@ fn apply_command(
         WriteCommand::SetSplits {
             transaction_id,
             lines,
-        } => apply::transactions::apply_set_splits(&tx, transaction_id, lines)?,
+        } => apply::transactions::apply_set_splits(&tx, &mut ids, transaction_id, lines)?,
     };
 
     fault.maybe_panic(FaultPoint::AfterMutation);

@@ -37,6 +37,9 @@ use crate::IssuedAt;
 /// The label hashed with the vault id to form the per-vault identifier key.
 pub const ID_KEY_LABEL: &[u8] = b"dohflow/derived-id-key/v1";
 
+/// The domain label of [`DerivedIdKey::keyed_id`].
+const KEYED_ID_LABEL: &[u8] = b"dohflow/keyed-id/v1";
+
 /// How many ids one command may mint: ordinals `0..MAX_ORDINALS` fit `rand_a`'s 12 bits.
 pub const MAX_ORDINALS: u32 = 4096;
 
@@ -111,6 +114,50 @@ impl DerivedIdKey {
         } else {
             Err(DerivedIdError::GenesisKeyMismatch)
         }
+    }
+
+    /// A KEYED id: the id of a row minted under a BASE-DEPENDENT branch of a command, derived
+    /// from the command, an entity tag and the row's natural key rather than from an ordinal, so
+    /// the number of ordinals a command consumes depends only on its payload (ADR 0013-A section
+    /// 10(a)). Re-applying the same command on another base mints the same id for the same
+    /// natural key; another command (a second reversal, a later scenario apply) mints another.
+    ///
+    /// ```text
+    /// mac = HMAC-SHA256(id_key, "dohflow/keyed-id/v1" || command_id || u8(tag_len) || tag
+    ///                           || for each part: u32_be(len) || part)
+    /// id  = mac[0..16] with the version nibble set to 8 and the variant bits to 10
+    /// ```
+    ///
+    /// Every part is length-prefixed, so `("ab", "c")` and `("a", "bc")` differ. A UUIDv8 layout,
+    /// disjoint from the UUIDv7 ordinal ids.
+    ///
+    /// # Errors
+    /// [`DerivedIdError`] for an invalid tag, or a part longer than `u32::MAX` bytes.
+    pub fn keyed_id(
+        &self,
+        command_id: &Uuid,
+        tag: &str,
+        natural_key: &[&[u8]],
+    ) -> Result<Uuid, DerivedIdError> {
+        let tag = tag.as_bytes();
+        validate_tag(tag)?;
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.0)
+            .expect("HMAC accepts a key of any length");
+        mac.update(KEYED_ID_LABEL);
+        mac.update(command_id.as_bytes());
+        mac.update(&[u8::try_from(tag.len()).expect("tag length at most 255")]);
+        mac.update(tag);
+        for part in natural_key {
+            let length = u32::try_from(part.len())
+                .map_err(|_| DerivedIdError::TagTooLong { len: part.len() })?;
+            mac.update(&length.to_be_bytes());
+            mac.update(part);
+        }
+        let out: [u8; 32] = mac.finalize().into_bytes().into();
+        let mut bytes: [u8; 16] = out[..16].try_into().expect("sixteen bytes");
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Ok(Uuid::from_bytes(bytes))
     }
 
     /// The 32 key bytes.
@@ -288,6 +335,15 @@ impl DerivedIds {
         )?;
         self.next_ordinal += 1;
         Ok(id)
+    }
+
+    /// A keyed id for this command (see [`DerivedIdKey::keyed_id`]): consumes NO ordinal, so a
+    /// mint under a base-dependent branch never shifts the ordinals of the ids after it.
+    ///
+    /// # Errors
+    /// See [`DerivedIdKey::keyed_id`].
+    pub fn keyed(&self, tag: &str, natural_key: &[&[u8]]) -> Result<Uuid, DerivedIdError> {
+        self.key.keyed_id(&self.command_id, tag, natural_key)
     }
 
     /// How many identifiers this command has minted so far.

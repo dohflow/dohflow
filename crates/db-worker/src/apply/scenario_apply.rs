@@ -31,6 +31,7 @@ use crate::DbError;
 /// carries no active events; [`DbError::Sqlite`] on a write failure.
 pub(crate) fn apply_scenario(
     tx: &Transaction<'_>,
+    ids: &core_ids::DerivedIds,
     scenario_id: Uuid,
     op_id: Uuid,
     now: &str,
@@ -66,6 +67,7 @@ pub(crate) fn apply_scenario(
           ORDER BY created_at, id",
     )?;
     struct Promote {
+        id: Uuid,
         kind: String,
         target_entity_type: Option<String>,
         target_entity_id: Option<Uuid>,
@@ -75,6 +77,7 @@ pub(crate) fn apply_scenario(
     let events: Vec<Promote> = stmt
         .query_map(params![scenario_id], |row| {
             Ok(Promote {
+                id: row.get(0)?,
                 kind: row.get(1)?,
                 target_entity_type: row.get(2)?,
                 target_entity_id: row.get(3)?,
@@ -95,7 +98,12 @@ pub(crate) fn apply_scenario(
     }
 
     for event in &events {
-        let new_id = Uuid::now_v7();
+        // The promoted event's id is KEYED by the scenario and the source event it copies (the
+        // number of events is the scenario's, i.e. base state, so no ordinal is consumed).
+        let new_id = ids.keyed(
+            "scenario-event",
+            &[scenario_id.as_bytes(), event.id.as_bytes()],
+        )?;
         // Supersede the base event this collides with, if any. Two `active` events of the
         // same kind against the same target would force the forecast to pick one by row
         // order (ADR 0055 §2). `IS` rather than `=` so a NULL target matches a NULL

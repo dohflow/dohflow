@@ -7452,6 +7452,43 @@ fn panic_after_a_household_timezone_change_rolls_back_value_audit_and_oplog() {
     assert_eq!(worker.idempotency_key_count().unwrap(), 0);
 }
 
+/// ADR 0073 Addendum D rule (i): a class-3 side effect in apply is idempotent under replay. The
+/// timezone change's audit row has an id KEYED by the command, so applying the same command again
+/// (a rebase replay) leaves exactly one row, with the id the allocator derives.
+#[test]
+fn replaying_a_household_timezone_command_leaves_one_audit_row_with_a_derived_id() {
+    let (_dir, worker) = worker();
+    let m = meta();
+    let vault_id = worker.vault_metadata().unwrap().vault_id;
+    let ids = core_ids::DerivedIds::new(
+        core_ids::DerivedIdKey::for_vault(&vault_id),
+        m.issued_at,
+        m.command_id,
+    );
+    let expected = ids.keyed("audit.household-timezone", &[]).unwrap();
+    let guard = worker.lock();
+    let tx = guard.conn.unchecked_transaction().unwrap();
+    for zone in ["Asia/Tokyo", "Asia/Tokyo", "America/Chicago"] {
+        crate::apply::household::apply_set_household_timezone(&tx, &m, &ids, zone).unwrap();
+    }
+    tx.commit().unwrap();
+    drop(guard);
+    let stored: Vec<Uuid> = worker
+        .read_connection()
+        .unwrap()
+        .prepare("SELECT id FROM audit_events WHERE event_type = 'household_timezone_changed'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        stored,
+        vec![expected],
+        "one command, one audit row, however often it is applied"
+    );
+}
+
 /// The `TransactionRow` reads carry no correlated per-row subqueries
 /// (personal-cfo-3fdd.3a): tags / split counts / import provenance are
 /// pre-aggregated LEFT JOINs (and the tag *filter* is a PK-backed INNER JOIN),
