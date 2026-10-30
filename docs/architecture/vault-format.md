@@ -1836,7 +1836,14 @@ log position `V` the service assigns when it appends the void is not in the body
   `engine_version` equals the envelope's, or a re-bootstrap from a snapshot rooted past the
   position of this build's `engine_version` and not inside any void range the replica holds; for
   a stop covered by an honored void, a snapshot rooted past the void that records it. A snapshot
-  rooted inside a voided range is never an exit. A snapshot is installed only against a permit
+  rooted inside a voided range is never an exit, and EVERY exit (for every kind of stop) requires a
+  snapshot of this build's `engine_version` that is not rooted inside any void range the replica
+  holds. The ranges counted are those of every verified void, honored or not (an update-required
+  replica cannot judge them), and the service dedupes only a second void for the same position,
+  so a member can keep appending voids for early positions and keep recent roots inside some
+  range: the snapshot exit is best-effort under such spam. The other exit, a build whose
+  `engine_version` equals the envelope's, is unaffected; until one of them is available the
+  replica shows "update required" at that position and applies nothing past it. A snapshot is installed only against a permit
   the status machine itself issues for the current stop after the engine verified the snapshot, so
   a stop cannot be cleared with an unverified one. A re-bootstrap whose root reaches the position
   also ends a write-set mismatch and an applied position found invalid (the recovery ADR 0074

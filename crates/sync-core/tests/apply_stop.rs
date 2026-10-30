@@ -269,6 +269,12 @@ fn a_snapshot_is_an_exit_only_when_it_is_past_a_recorded_void_that_covers_the_st
     assert!(!snapshot_passes_stop(12, 500, &[]));
 }
 
+/// This build's version in the snapshot tests.
+fn own() -> &'static EngineVersion {
+    static OWN: std::sync::OnceLock<EngineVersion> = std::sync::OnceLock::new();
+    OWN.get_or_init(|| v("dohflow-engine-1"))
+}
+
 fn facts<'a>(
     root: u64,
     version: &'a EngineVersion,
@@ -277,6 +283,7 @@ fn facts<'a>(
 ) -> SnapshotFacts<'a> {
     SnapshotFacts {
         root,
+        own_engine_version: own(),
         engine_version: version,
         recorded_voids: recorded,
         held_voids: held,
@@ -572,4 +579,100 @@ fn a_successful_apply_with_another_write_set_hash_halts_and_a_void_never_answers
         .observe_write_set_mismatch(4, [1; 32], [2; 32])
         .is_some());
     assert!(matches!(stopped, SyncStatus::Halted(_)));
+}
+
+#[test]
+fn every_kind_of_stop_requires_a_snapshot_of_this_builds_version_outside_every_held_void() {
+    let own = v("dohflow-engine-1");
+    let other = v("dohflow-engine-9");
+    let recorded = [HonoredVoid {
+        void_id: [7; 32],
+        first: 5,
+        last: 7,
+    }];
+    // A second void range the replica holds, and a snapshot rooted inside it.
+    let held = [(9, 12)];
+    let statuses: Vec<(&str, SyncStatus)> = vec![
+        ("apply stop at 5", {
+            let mut s = SyncStatus::Healthy;
+            healthy_apply_stop(&mut s, 5, 1);
+            s
+        }),
+        ("receiver-check stop at 5", {
+            let mut s = SyncStatus::Healthy;
+            s.observe_envelope(
+                5,
+                [1; 32],
+                &sample_header(),
+                &own_engine(),
+                Err(ReceiverError::TagMismatch),
+            );
+            s
+        }),
+        ("update required at 5", {
+            let mut s = SyncStatus::Healthy;
+            s.observe_engine_version(5, [1; 32], v("dohflow-engine-2"), v("dohflow-engine-1"));
+            s
+        }),
+        ("write-set mismatch at 5", {
+            let mut s = SyncStatus::Healthy;
+            s.observe_write_set_mismatch(5, [1; 32], [2; 32]);
+            s
+        }),
+        (
+            "applied position invalid at 5",
+            SyncStatus::Halted(HaltEvidence::AppliedPositionInvalid {
+                seq: 5,
+                envelope_digest: [3; 32],
+            }),
+        ),
+    ];
+    for (label, status) in statuses {
+        // The good case: this build's version, rooted at 8 (past the recorded void, outside the held range).
+        assert!(
+            status
+                .rebootstrap_permit(&facts(8, &own, &recorded, &held))
+                .is_some(),
+            "{label}: a good snapshot"
+        );
+        // Another engine version: never.
+        assert!(
+            status
+                .rebootstrap_permit(&facts(8, &other, &recorded, &held))
+                .is_none(),
+            "{label}: another engine version"
+        );
+        // Rooted inside a held void range: never, however the stop would otherwise be cleared.
+        assert!(
+            status
+                .rebootstrap_permit(&facts(10, &own, &recorded, &held))
+                .is_none(),
+            "{label}: rooted inside a held void range"
+        );
+    }
+}
+
+#[test]
+fn a_permit_for_one_stop_at_a_position_does_not_clear_another_stop_there() {
+    // An apply stop at 5, a permit for it; then an update-required replaces it at the same
+    // position (same digest). The permit is for the other kind and must change nothing.
+    let own = v("dohflow-engine-1");
+    let recorded = [HonoredVoid {
+        void_id: [7; 32],
+        first: 5,
+        last: 7,
+    }];
+    let mut status = SyncStatus::Healthy;
+    healthy_apply_stop(&mut status, 5, 1);
+    let permit = status
+        .rebootstrap_permit(&facts(8, &own, &recorded, &[]))
+        .unwrap();
+    status.observe_engine_version(5, [1; 32], v("dohflow-engine-2"), v("dohflow-engine-1"));
+    assert!(matches!(status, SyncStatus::UpdateRequired(_)));
+    assert_eq!(status.observe_rebootstrapped(permit), None);
+    assert!(matches!(status, SyncStatus::UpdateRequired(_)));
+    // A permit for another digest at the same position and kind does not clear it either.
+    let mut other_digest = SyncStatus::Healthy;
+    healthy_apply_stop(&mut other_digest, 5, 9);
+    assert_eq!(other_digest.observe_rebootstrapped(permit), None);
 }

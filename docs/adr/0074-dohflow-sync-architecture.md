@@ -1166,6 +1166,10 @@ owner decisions), recorded with the sync-core honor rule (spec-version 14):
   `personal-cfo-g3m.26`.
 - **A snapshot-bootstrapped replica** does not honor a void for a position at or below its root
   (it never evaluated it); the root is treated as suspect.
+- **Snapshot exits are best-effort under void spam (2026-10-30).** Every exit from a stop needs a
+  snapshot of the running build's `engine_version` rooted outside every void range the replica
+  holds, honored or not; a member can append voids for early positions to deny that exit to an
+  update-required replica. Running a build of the envelope's version always remains.
 - **Reason 2 needs no new void field (2026-10-30, `personal-cfo-g3m.26`).** The earlier ruling
   that a reason-2 void "names its engine_version" is satisfied by the envelope digest the void
   already names (it binds the envelope's `engine_version`) together with R40 (a replica of

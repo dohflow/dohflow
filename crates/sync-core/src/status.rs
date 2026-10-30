@@ -191,10 +191,15 @@ impl EngineVersion {
 }
 
 /// The header's `engine_version` as a value. A decoded header always holds a valid one (decode
-/// refuses anything else); a hand-built header with a bad value is treated as a foreign version.
+/// refuses anything else), so the fallback is unreachable from the wire; a hand-built header with
+/// a bad value maps to a value no build is named, so the gate treats it as foreign.
 fn header_engine_version(header: &ClearHeader) -> EngineVersion {
+    debug_assert!(
+        EngineVersion::new(&header.engine_version).is_ok(),
+        "a decoded header holds a valid engine_version"
+    );
     EngineVersion::new(&header.engine_version)
-        .unwrap_or_else(|_| EngineVersion::new("unparseable").expect("a valid literal"))
+        .unwrap_or_else(|_| EngineVersion::new("!unparseable!").expect("a valid literal"))
 }
 
 /// An envelope at `seq` carries an `engine_version` this build does not equal (R40).
@@ -216,6 +221,8 @@ pub struct UpdateRequired {
 pub struct SnapshotFacts<'a> {
     /// The snapshot's root: the last log position it covers.
     pub root: u64,
+    /// This build's `engine_version`: a snapshot of any other value is update-required itself.
+    pub own_engine_version: &'a EngineVersion,
     /// The snapshot's `engine_version`.
     pub engine_version: &'a EngineVersion,
     /// The honored voids the snapshot records.
@@ -231,7 +238,24 @@ pub struct SnapshotFacts<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebootstrapPermit {
     root: u64,
-    stop_seq: u64,
+    stop: StopIdentity,
+}
+
+/// Which stop a permit was issued for: its kind, position and envelope digest (the same position
+/// can hold an invalid envelope and later an update-required one, and each has its own exit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StopIdentity {
+    kind: StopKind,
+    seq: u64,
+    digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopKind {
+    EnvelopeInvalid,
+    UpdateRequired,
+    WriteSetMismatch,
+    AppliedPositionInvalid,
 }
 
 /// The replica's status.
@@ -628,29 +652,58 @@ impl SyncStatus {
     ///   is key quarantine and re-enrollment, never a snapshot.
     #[must_use]
     pub fn rebootstrap_permit(&self, snapshot: &SnapshotFacts<'_>) -> Option<RebootstrapPermit> {
-        let (stop_seq, ok) = match self {
+        // For EVERY kind of stop: the snapshot is of this build's version (any other would be
+        // update-required itself) and is not rooted inside a void range this replica holds (it
+        // was built on poisoned state).
+        if *snapshot.engine_version != *snapshot.own_engine_version
+            || snapshot
+                .held_voids
+                .iter()
+                .any(|(first, last)| *first <= snapshot.root && snapshot.root <= *last)
+        {
+            return None;
+        }
+        let (stop, ok) = match self {
             Self::EnvelopeInvalid(stop) => (
-                stop.seq,
+                StopIdentity {
+                    kind: StopKind::EnvelopeInvalid,
+                    seq: stop.seq,
+                    digest: stop.envelope_digest,
+                },
                 crate::void::snapshot_passes_stop(stop.seq, snapshot.root, snapshot.recorded_voids),
             ),
             Self::UpdateRequired(update) => (
-                update.seq,
-                snapshot.root >= update.seq
-                    && *snapshot.engine_version == update.own_engine_version
-                    && !snapshot
-                        .held_voids
-                        .iter()
-                        .any(|(first, last)| *first <= snapshot.root && snapshot.root <= *last),
+                StopIdentity {
+                    kind: StopKind::UpdateRequired,
+                    seq: update.seq,
+                    digest: update.envelope_digest,
+                },
+                snapshot.root >= update.seq,
             ),
-            Self::Halted(
-                HaltEvidence::WriteSetMismatch { seq, .. }
-                | HaltEvidence::AppliedPositionInvalid { seq, .. },
-            ) => (*seq, snapshot.root >= *seq),
+            Self::Halted(HaltEvidence::WriteSetMismatch { seq, expected, .. }) => (
+                StopIdentity {
+                    kind: StopKind::WriteSetMismatch,
+                    seq: *seq,
+                    digest: *expected,
+                },
+                snapshot.root >= *seq,
+            ),
+            Self::Halted(HaltEvidence::AppliedPositionInvalid {
+                seq,
+                envelope_digest,
+            }) => (
+                StopIdentity {
+                    kind: StopKind::AppliedPositionInvalid,
+                    seq: *seq,
+                    digest: *envelope_digest,
+                },
+                snapshot.root >= *seq,
+            ),
             _ => return None,
         };
         ok.then_some(RebootstrapPermit {
             root: snapshot.root,
-            stop_seq,
+            stop,
         })
     }
 
@@ -658,15 +711,32 @@ impl SyncStatus {
     /// A permit for another stop (the status moved on since) changes nothing.
     pub fn observe_rebootstrapped(&mut self, permit: RebootstrapPermit) -> Option<SyncEvent> {
         let current = match self {
-            Self::EnvelopeInvalid(i) => i.seq,
-            Self::UpdateRequired(u) => u.seq,
-            Self::Halted(
-                HaltEvidence::WriteSetMismatch { seq, .. }
-                | HaltEvidence::AppliedPositionInvalid { seq, .. },
-            ) => *seq,
+            Self::EnvelopeInvalid(i) => StopIdentity {
+                kind: StopKind::EnvelopeInvalid,
+                seq: i.seq,
+                digest: i.envelope_digest,
+            },
+            Self::UpdateRequired(u) => StopIdentity {
+                kind: StopKind::UpdateRequired,
+                seq: u.seq,
+                digest: u.envelope_digest,
+            },
+            Self::Halted(HaltEvidence::WriteSetMismatch { seq, expected, .. }) => StopIdentity {
+                kind: StopKind::WriteSetMismatch,
+                seq: *seq,
+                digest: *expected,
+            },
+            Self::Halted(HaltEvidence::AppliedPositionInvalid {
+                seq,
+                envelope_digest,
+            }) => StopIdentity {
+                kind: StopKind::AppliedPositionInvalid,
+                seq: *seq,
+                digest: *envelope_digest,
+            },
             _ => return None,
         };
-        if current != permit.stop_seq {
+        if current != permit.stop {
             return None;
         }
         *self = Self::Healthy;
