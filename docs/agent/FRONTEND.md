@@ -398,19 +398,36 @@ blocker and is not waived by a layout approval.
 
 The Paper contract **A2** (page `p-7-0`, frozen 2026-10-26 05:24:16 UTC) is a heading button that
 opens and closes a section. Its behavior is specified in
-[`settings-layout-review.md`](../design-system/settings-layout-review.md). It is **not built**:
-`personal-cfo-4d8.38` proposes a shared component. Until it merges, treat every row below as the
-contract to build to, and the "today" column as the truth.
+[`settings-layout-review.md`](../design-system/settings-layout-review.md). The shared component is
+`@/components/ui/disclosure` (`Disclosure` and `usePinDisclosures`, `personal-cfo-4d8.38`),
+hand-authored in the shadcn style (section 7.1) on React primitives with no new dependency. **No
+screen uses it yet**: each existing screen keeps its own until it is migrated, and a migration
+reconciles that screen's differences (the "today" column) rather than changing its behavior in
+passing.
+
+How to use it:
+
+- Put the heading text in `title` (it is the trigger's stable name). A `summary` shows only while
+  collapsed and must come from real data.
+- Put the error, its complete remedy and the one relevant action in `persistent`. It renders once,
+  outside the hidden body, and is never collapsed away. Keep exactly one active retry.
+- The body stays mounted when collapsed (`hidden` and `inert`), so drafts survive; do not unmount
+  it to collapse. Collapse never submits, resets or cancels work.
+- A component that owns a destructive confirmation calls `usePinDisclosures(active)` with `active`
+  true while the confirmation is open, armed, or busy past the point of no return. Every enclosing
+  disclosure stays open and its trigger turns `aria-disabled` (still focusable). The component's
+  own Cancel clears its state and returns focus to the control that opened it.
+- No expansion state is persisted by the component.
 
 | A2 contract | On `main` today |
 |-------------|-----------------|
-| One native trigger button inside the heading, with a stable name, `aria-expanded` and `aria-controls`; Enter and Space activate; Tab follows source order | No shared component. Individual screens implement their own (`accounts/AccountsView.tsx`, `accounts/CreditCardsView.tsx`, `future-cash/NeedsConfirmation.tsx`, `future-cash/ProjectedActivityTable.tsx`, `transactions/TransactionFilterBar.tsx`), with varying semantics; reconcile them before reuse |
-| Sections expand independently; the DOM is stable | Per screen |
-| Focus returns to the trigger **before** focused content is hidden; a hidden body leaves keyboard and accessibility navigation while ordinary drafts survive | Not provided |
-| Errors, complete remedies and the one relevant action stay **outside** the hidden body; exactly one active retry; collapse never submits, discards drafts or cancels work | Not provided |
-| Destructive confirmations that are open, armed or irreversibly busy pin every ancestor open (focusable `aria-disabled` triggers); explicit Cancel resets and returns focus without collapsing; a blocking key rotation makes the rest of the app inert and cannot be dismissed | The rotation card exists (`settings/RotateKeyCard.tsx`); the ancestor pinning does not |
-| Summaries reflect real data and never claim healthy or verified while loading or failed | None; the collapsed summaries are not shipped |
-| Respect reduced motion; announce a state change once; errors persist | Per screen |
+| One native trigger button inside the heading, with a stable name, `aria-expanded` and `aria-controls`; Enter and Space activate; Tab follows source order | `Disclosure` is the shared component; no screen uses it yet. Individual screens implement their own (`accounts/AccountsView.tsx`, `accounts/CreditCardsView.tsx`, `future-cash/NeedsConfirmation.tsx`, `future-cash/ProjectedActivityTable.tsx`, `transactions/TransactionFilterBar.tsx`), with varying semantics; reconcile them before reuse |
+| Sections expand independently; the DOM is stable | In `Disclosure`; per screen elsewhere |
+| Focus returns to the trigger **before** focused content is hidden; a hidden body leaves keyboard and accessibility navigation while ordinary drafts survive | In `Disclosure` (focus returns before the hide; the body is `hidden` and `inert` and stays mounted); not provided elsewhere |
+| Errors, complete remedies and the one relevant action stay **outside** the hidden body; exactly one active retry; collapse never submits, discards drafts or cancels work | In `Disclosure` (`persistent` slot); not provided elsewhere |
+| Destructive confirmations that are open, armed or irreversibly busy pin every ancestor open (focusable `aria-disabled` triggers); explicit Cancel resets and returns focus without collapsing; a blocking key rotation makes the rest of the app inert and cannot be dismissed | The rotation card exists (`settings/RotateKeyCard.tsx`) and is not yet inside a disclosure; ancestor pinning is `usePinDisclosures`, which no screen calls yet |
+| Summaries reflect real data and never claim healthy or verified while loading or failed | `Disclosure` has a `summary` slot; no screen supplies one, so no collapsed summary is shipped |
+| Respect reduced motion; announce a state change once; errors persist | `Disclosure`: the chevron respects reduced motion and the body does not animate; the state change is the native `aria-expanded` (no extra live region); the `persistent` slot keeps errors. Per screen elsewhere |
 
 ## 8. Testing
 
