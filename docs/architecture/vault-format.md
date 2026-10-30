@@ -1200,6 +1200,14 @@ or cannot yet judge it, by this sequence of stages, in this order:
    and there is no `key_epoch` or device to gate on.
 1b. **The header names another vault than the replica's own: invalid.** No key or position
    condition: the replica knows its vault from its chain.
+1c. **The header's `engine_version` is not the replica's own: update required, no verdict.**
+   The receiver checks and the apply semantics are bound to the engine version (C.13), so a
+   replica never judges an envelope of another version: not valid, not invalid, not determinable
+   in the sense of waiting for a key or a position, but update-required (R40). This precedes every
+   later stage (the position, the key, the membership, the AEAD, the decode, the checks), so a
+   replica of version E' cannot find invalid what version E finds valid, and a void can never
+   split a vault by version. It applies equally to a failed apply: an outcome formed at a foreign
+   version is not a verdict.
 2. **The position is not yet known: not determinable.** The replica judges position `N` only
    after it has processed the log in order up to `N` and verified the newest epoch record
    positioned before it (C.7: epoch records are positioned log objects). **"Before" is strict:**
@@ -1232,7 +1240,8 @@ envelope that every other replica applied, and the vault would split. A header t
 parse at an accepted position means the service let through what its own checks should have
 refused, which is equally deterministic from the bytes. The verdict class (valid, invalid, not
 determinable) is the contract; the reason is informative. The public vectors of C.14
-(`docs/architecture/vectors/envelope-invalid-v1.json`) pin every stage.
+(`docs/architecture/vectors/envelope-invalid-v1.json`) pin every stage, including the version gate
+taking precedence over each later defect.
 
 ### Counter register and nonce state
 
@@ -1822,11 +1831,18 @@ log position `V` the service assigns when it appends the void is not in the body
   digest, which binds the envelope's `engine_version`, and a replica of another `engine_version`
   never evaluates the position (R40): it is update-required there (C.13), forms no verdict, is
   not stopped on the envelope, and can neither find it invalid nor honor the void (the void is
-  inert and transient for it). The exits of an update-required replica are a build whose
+  inert and transient for it; voids for positions BELOW its update-required stop are judged
+  normally, because those envelopes were of its own version). The exits of an update-required replica are a build whose
   `engine_version` equals the envelope's, or a re-bootstrap from a snapshot rooted past the
-  position of this build's `engine_version`; for a stop covered by an honored void, a snapshot
-  rooted past the void that records it. A snapshot rooted inside a voided range is never an
-  exit. **Not an apply failure:** a replica whose apply SUCCEEDS with a write-set hash other than
+  position of this build's `engine_version` and not inside any void range the replica holds; for
+  a stop covered by an honored void, a snapshot rooted past the void that records it. A snapshot
+  rooted inside a voided range is never an exit. A snapshot is installed only against a permit
+  the status machine itself issues for the current stop after the engine verified the snapshot, so
+  a stop cannot be cleared with an unverified one. A re-bootstrap whose root reaches the position
+  also ends a write-set mismatch and an applied position found invalid (the recovery ADR 0074
+  names), and never a fork, an equivocation, a position conflict or a void honored at two
+  positions (key quarantine and re-enrollment). After a stop ends, the engine observes again from
+  its cursor: the machine discards later stops while an earlier one stands. **Not an apply failure:** a replica whose apply SUCCEEDS with a write-set hash other than
   the envelope's has forked from the apply semantics (ADR 0074): it halts, with its own
   evidence, and no void answers it. Transient errors (I/O, lock, resource exhaustion,
   cancellation) never produce an apply failure. An `issued_at` outside the years 0000 to 9999
@@ -1973,7 +1989,10 @@ typed outcomes of Part B apply unchanged.
   envelope or snapshot whose `engine_version` it does not equal is in the update-required
   state; it never guesses compatibility. For an envelope that state is a stop at its position
   (nothing at or past it is evaluated or applied; no verdict is formed), recomputed on every
-  start and so not persisted; its exits are in C.10. (A vault reading back its own operation-log rows
+  start and so not persisted; its exits are in C.10. A change to what the receiver checks accept
+  (such as the `issued_at` bound of spec-version 15) is a change of `engine_version` under this
+  rule; it is made before `dohflow-engine-1` is pinned, so no envelope of the first value exists
+  without it. (A vault reading back its own operation-log rows
   is not gated by this.) The value
   an operation-log row stores is the one the producing build wrote, unchanged. (The first
   value is `dohflow-engine-1`.)

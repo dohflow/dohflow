@@ -705,6 +705,7 @@ fn re_verifying_a_skipped_or_applied_position_does_not_reopen_a_stop() {
             15,
             [9; 32],
             &header,
+            &own_engine(),
             Err(ReceiverError::TagMismatch)
         ),
         None
@@ -713,7 +714,7 @@ fn re_verifying_a_skipped_or_applied_position_does_not_reopen_a_stop() {
     // A valid result for an applied position is ignored; a FAILED one that no void skips
     // contradicts the replica's own state and halts.
     assert_eq!(
-        status.observe_envelope_in_context(&ledger, 20, 7, [9; 32], &header, Ok(())),
+        status.observe_envelope_in_context(&ledger, 20, 7, [9; 32], &header, &own_engine(), Ok(())),
         None
     );
     assert!(status.is_healthy());
@@ -725,6 +726,7 @@ fn re_verifying_a_skipped_or_applied_position_does_not_reopen_a_stop() {
             7,
             [9; 32],
             &header,
+            &own_engine(),
             Err(ReceiverError::TagMismatch)
         ),
         Some(SyncEvent::Halted(HaltEvidence::AppliedPositionInvalid {
@@ -741,6 +743,7 @@ fn re_verifying_a_skipped_or_applied_position_does_not_reopen_a_stop() {
             25,
             [9; 32],
             &header,
+            &own_engine(),
             Err(ReceiverError::TagMismatch)
         ),
         Some(SyncEvent::EnvelopeInvalid(_))

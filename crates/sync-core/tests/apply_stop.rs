@@ -7,8 +7,8 @@ use common::*;
 use sync_core::envelope::ReceiverError;
 use sync_core::membership::EpochAtPosition;
 use sync_core::status::{
-    snapshot_passes_update_required, ApplyFailureCode, EngineVersion, HaltEvidence, StopReason,
-    SyncEvent, SyncStatus, UpdateRequired,
+    ApplyFailureCode, EngineVersion, HaltEvidence, SnapshotFacts, StopReason, SyncEvent,
+    SyncStatus, UpdateRequired,
 };
 use sync_core::void::{
     snapshot_passes_stop, verify_void, Honor, HonorContext, HonoredVoid, VoidBody, VoidLedger,
@@ -24,7 +24,13 @@ fn v(text: &str) -> EngineVersion {
 }
 
 fn healthy_apply_stop(status: &mut SyncStatus, seq: u64, digest: u8) -> Option<SyncEvent> {
-    status.observe_apply_failure(seq, [digest; 32], &sample_header(), Err(code(7)))
+    status.observe_apply_failure(
+        seq,
+        [digest; 32],
+        &sample_header(),
+        &own_engine(),
+        Err(code(7)),
+    )
 }
 
 // -- values ----------------------------------------------------------------------------------------
@@ -69,7 +75,13 @@ fn the_earlier_stop_wins_whichever_kind_it_is() {
     let header = sample_header();
     let mut status = SyncStatus::Healthy;
     // A receiver-check stop at 20, then an apply stop at 15: the earlier one replaces it.
-    status.observe_envelope(20, [1; 32], &header, Err(ReceiverError::TagMismatch));
+    status.observe_envelope(
+        20,
+        [1; 32],
+        &header,
+        &own_engine(),
+        Err(ReceiverError::TagMismatch),
+    );
     assert!(matches!(
         healthy_apply_stop(&mut status, 15, 2),
         Some(SyncEvent::EnvelopeInvalid(_))
@@ -80,13 +92,19 @@ fn the_earlier_stop_wins_whichever_kind_it_is() {
     ));
     // A later receiver-check stop does not displace it.
     assert_eq!(
-        status.observe_envelope(30, [3; 32], &header, Err(ReceiverError::TagMismatch)),
+        status.observe_envelope(
+            30,
+            [3; 32],
+            &header,
+            &own_engine(),
+            Err(ReceiverError::TagMismatch)
+        ),
         None
     );
     // An Ok outcome records nothing.
     let mut fresh = SyncStatus::Healthy;
     assert_eq!(
-        fresh.observe_apply_failure(5, [1; 32], &header, Ok(())),
+        fresh.observe_apply_failure(5, [1; 32], &header, &own_engine(), Ok(())),
         None
     );
     assert!(fresh.is_healthy());
@@ -99,7 +117,7 @@ fn a_reason_2_void_is_honored_at_an_apply_stop_and_a_reason_1_void_too() {
     for reason in [VoidReason::DeterministicApply, VoidReason::ReceiverCheck] {
         let mut status = SyncStatus::Healthy;
         // The stop carries the command the sample header names and the digest the void names.
-        status.observe_apply_failure(5, [0x22; 32], &sample_header(), Err(code(3)));
+        status.observe_apply_failure(5, [0x22; 32], &sample_header(), &own_engine(), Err(code(3)));
         let body = VoidBody {
             reason,
             ..body(&c.a, 5)
@@ -251,54 +269,269 @@ fn a_snapshot_is_an_exit_only_when_it_is_past_a_recorded_void_that_covers_the_st
     assert!(!snapshot_passes_stop(12, 500, &[]));
 }
 
+fn facts<'a>(
+    root: u64,
+    version: &'a EngineVersion,
+    recorded: &'a [HonoredVoid],
+    held: &'a [(u64, u64)],
+) -> SnapshotFacts<'a> {
+    SnapshotFacts {
+        root,
+        engine_version: version,
+        recorded_voids: recorded,
+        held_voids: held,
+    }
+}
+
 #[test]
-fn an_update_required_snapshot_exit_needs_the_position_covered_and_this_builds_version() {
+fn an_update_required_snapshot_exit_needs_the_position_covered_this_builds_version_and_no_held_void(
+) {
     let mut status = SyncStatus::Healthy;
     status.observe_engine_version(5, [1; 32], v("dohflow-engine-2"), v("dohflow-engine-1"));
-    let SyncStatus::UpdateRequired(stop) = status else {
-        panic!()
-    };
-    assert!(snapshot_passes_update_required(
-        &stop,
-        5,
-        &v("dohflow-engine-1")
-    ));
-    assert!(snapshot_passes_update_required(
-        &stop,
-        40,
-        &v("dohflow-engine-1")
-    ));
+    let own = v("dohflow-engine-1");
+    let other = v("dohflow-engine-2");
+    assert!(status
+        .rebootstrap_permit(&facts(5, &own, &[], &[]))
+        .is_some());
+    assert!(status
+        .rebootstrap_permit(&facts(40, &own, &[], &[]))
+        .is_some());
     assert!(
-        !snapshot_passes_update_required(&stop, 4, &v("dohflow-engine-1")),
+        status
+            .rebootstrap_permit(&facts(4, &own, &[], &[]))
+            .is_none(),
         "does not cover 5"
     );
     assert!(
-        !snapshot_passes_update_required(&stop, 40, &v("dohflow-engine-2")),
+        status
+            .rebootstrap_permit(&facts(40, &other, &[], &[]))
+            .is_none(),
         "a snapshot of the envelope's version is update-required itself"
+    );
+    // A void this replica holds covers 10..=19: a snapshot rooted inside it is never a root, but
+    // one rooted past it is.
+    let held = [(10, 19)];
+    assert!(status
+        .rebootstrap_permit(&facts(12, &own, &[], &held))
+        .is_none());
+    assert!(status
+        .rebootstrap_permit(&facts(10, &own, &[], &held))
+        .is_none());
+    assert!(status
+        .rebootstrap_permit(&facts(19, &own, &[], &held))
+        .is_none());
+    assert!(status
+        .rebootstrap_permit(&facts(20, &own, &[], &held))
+        .is_some());
+}
+
+#[test]
+fn a_stop_covered_by_a_recorded_void_needs_a_snapshot_rooted_past_the_void() {
+    let mut status = SyncStatus::Healthy;
+    healthy_apply_stop(&mut status, 12, 1);
+    let own = v("dohflow-engine-1");
+    let recorded = [HonoredVoid {
+        void_id: [7; 32],
+        first: 10,
+        last: 19,
+    }];
+    assert!(status
+        .rebootstrap_permit(&facts(20, &own, &recorded, &[]))
+        .is_some());
+    assert!(status
+        .rebootstrap_permit(&facts(19, &own, &recorded, &[]))
+        .is_none());
+    assert!(
+        status
+            .rebootstrap_permit(&facts(500, &own, &[], &[]))
+            .is_none(),
+        "no recorded void"
     );
 }
 
 #[test]
-fn installing_a_snapshot_ends_a_stop_at_or_below_its_root_and_never_a_halt() {
+fn only_a_permit_for_the_current_stop_ends_it() {
+    let own = v("dohflow-engine-1");
+    let recorded = [HonoredVoid {
+        void_id: [7; 32],
+        first: 10,
+        last: 19,
+    }];
     let mut status = SyncStatus::Healthy;
     healthy_apply_stop(&mut status, 12, 1);
-    assert_eq!(
-        status.observe_rebootstrapped(11),
-        None,
-        "the stop is above the root"
-    );
+    let permit = status
+        .rebootstrap_permit(&facts(20, &own, &recorded, &[]))
+        .unwrap();
+    // The status moved on to an EARLIER stop before the snapshot was installed: the old permit
+    // is for another stop and changes nothing.
+    let mut earlier = SyncStatus::Healthy;
+    healthy_apply_stop(&mut earlier, 3, 2);
+    assert_eq!(earlier.observe_rebootstrapped(permit), None);
+    assert!(!earlier.is_healthy());
     assert!(matches!(
-        status.observe_rebootstrapped(20),
+        status.observe_rebootstrapped(permit),
         Some(SyncEvent::Rebootstrapped { root: 20 })
     ));
     assert!(status.is_healthy());
-    let mut update = SyncStatus::Healthy;
-    update.observe_engine_version(5, [1; 32], v("dohflow-engine-2"), v("dohflow-engine-1"));
-    assert!(update.observe_rebootstrapped(5).is_some() && update.is_healthy());
-    let mut halted = SyncStatus::Healthy;
-    halted.observe_write_set_mismatch(3, [1; 32], [2; 32]);
-    assert_eq!(halted.observe_rebootstrapped(100), None);
-    assert!(matches!(halted, SyncStatus::Halted(_)));
+    assert_eq!(
+        status.observe_rebootstrapped(permit),
+        None,
+        "nothing left to clear"
+    );
+}
+
+#[test]
+fn a_re_bootstrap_clears_the_apply_semantics_forks_by_evidence_and_never_the_others() {
+    let own = v("dohflow-engine-1");
+    for mut halted in [
+        {
+            let mut s = SyncStatus::Healthy;
+            s.observe_write_set_mismatch(8, [1; 32], [2; 32]);
+            s
+        },
+        SyncStatus::Halted(HaltEvidence::AppliedPositionInvalid {
+            seq: 8,
+            envelope_digest: [3; 32],
+        }),
+    ] {
+        assert!(halted
+            .rebootstrap_permit(&facts(7, &own, &[], &[]))
+            .is_none());
+        let permit = halted
+            .rebootstrap_permit(&facts(8, &own, &[], &[]))
+            .unwrap();
+        assert!(matches!(
+            halted.observe_rebootstrapped(permit),
+            Some(SyncEvent::Rebootstrapped { root: 8 })
+        ));
+        assert!(halted.is_healthy());
+    }
+    // Key quarantine and re-enrollment are the recovery of these, never a snapshot.
+    for evidence in [
+        HaltEvidence::Fork {
+            version: 2,
+            accepted: [1; 32],
+            conflicting: [2; 32],
+        },
+        HaltEvidence::Equivocation {
+            accepted: [1; 32],
+            conflicting: [2; 32],
+        },
+        HaltEvidence::SeqConflict {
+            seq: 4,
+            first: [1; 32],
+            second: [2; 32],
+        },
+        HaltEvidence::VoidAtTwoPositions {
+            void_id: [3; 32],
+            honored_at: 9,
+            offered_at: 12,
+        },
+    ] {
+        let halted = SyncStatus::Halted(evidence);
+        assert!(
+            halted
+                .rebootstrap_permit(&facts(1_000, &own, &[], &[]))
+                .is_none(),
+            "{evidence:?}"
+        );
+    }
+}
+
+// -- the version gate is a precondition of every verdict (C.4 stage 1c) -----------------------------------
+
+fn foreign_header() -> sync_core::header::ClearHeader {
+    let mut header = sample_header();
+    header.engine_version = "dohflow-engine-2".to_owned();
+    header
+}
+
+#[test]
+fn a_verdict_formed_at_a_foreign_version_is_not_a_verdict_in_either_call_order() {
+    let foreign = foreign_header();
+    let own = own_engine();
+    // A failed receiver check on an envelope of another version: update required, not invalid.
+    let mut a = SyncStatus::Healthy;
+    assert!(matches!(
+        a.observe_envelope(5, [1; 32], &foreign, &own, Err(ReceiverError::TagMismatch)),
+        Some(SyncEvent::UpdateRequired(_))
+    ));
+    assert!(matches!(a, SyncStatus::UpdateRequired(_)));
+    // Likewise an apply failure.
+    let mut b = SyncStatus::Healthy;
+    assert!(matches!(
+        b.observe_apply_failure(5, [1; 32], &foreign, &own, Err(code(3))),
+        Some(SyncEvent::UpdateRequired(_))
+    ));
+    // Even an Ok outcome for a foreign envelope is a stop: nothing was evaluated.
+    let mut c = SyncStatus::Healthy;
+    assert!(matches!(
+        c.observe_envelope(5, [1; 32], &foreign, &own, Ok(())),
+        Some(SyncEvent::UpdateRequired(_))
+    ));
+    // Order 1: the engine saw a verdict first (an equal-version observation), then learned the
+    // version: at the same position update-required replaces the verdict.
+    let mut d = SyncStatus::Healthy;
+    d.observe_envelope(
+        5,
+        [1; 32],
+        &sample_header(),
+        &own,
+        Err(ReceiverError::TagMismatch),
+    );
+    assert!(matches!(d, SyncStatus::EnvelopeInvalid(_)));
+    assert!(matches!(
+        d.observe_engine_version(5, [1; 32], v("dohflow-engine-2"), own),
+        Some(SyncEvent::UpdateRequired(_))
+    ));
+    // Order 2: update-required first; a later verdict for the same position changes nothing.
+    let mut e = SyncStatus::Healthy;
+    e.observe_engine_version(5, [1; 32], v("dohflow-engine-2"), own);
+    assert_eq!(
+        e.observe_envelope(
+            5,
+            [1; 32],
+            &sample_header(),
+            &own,
+            Err(ReceiverError::TagMismatch)
+        ),
+        None
+    );
+    assert!(matches!(e, SyncStatus::UpdateRequired(_)));
+    // An equal-version header takes the ordinary path.
+    let mut f = SyncStatus::Healthy;
+    assert!(matches!(
+        f.observe_envelope(
+            5,
+            [1; 32],
+            &sample_header(),
+            &own,
+            Err(ReceiverError::TagMismatch)
+        ),
+        Some(SyncEvent::EnvelopeInvalid(_))
+    ));
+}
+
+#[test]
+fn a_cursor_past_an_update_required_stop_is_refused_like_one_past_an_invalid_stop() {
+    let c = chain();
+    let at = EpochAtPosition::after_epoch_record(&c.state, &c.e2).unwrap();
+    let mut status = SyncStatus::Healthy;
+    status.observe_engine_version(5, [0x22; 32], v("dohflow-engine-2"), v("dohflow-engine-1"));
+    let void = verify_void(&c.state, &at, 9, &signed(&body(&c.a, 5), &c.a)).unwrap();
+    let mut ledger = VoidLedger::new();
+    let error = ledger
+        .offer_in_order(
+            &[void],
+            &HonorContext {
+                status: &status,
+                next_to_apply: 7,
+                snapshot_root: None,
+                target_not_determinable: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error, sync_core::void::OfferError::StopBehindFrontier);
 }
 
 // -- a write-set mismatch is a fork --------------------------------------------------------------------------

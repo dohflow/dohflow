@@ -435,10 +435,13 @@ impl VoidLedger {
         voids: &[VerifiedVoid],
         ctx: &HonorContext<'_>,
     ) -> Result<Vec<Honor>, OfferError> {
-        if let SyncStatus::EnvelopeInvalid(stop) = ctx.status {
-            if stop.seq < ctx.next_to_apply {
-                return Err(OfferError::StopBehindFrontier);
-            }
+        let stop_seq = match ctx.status {
+            SyncStatus::EnvelopeInvalid(stop) => Some(stop.seq),
+            SyncStatus::UpdateRequired(update) => Some(update.seq),
+            _ => None,
+        };
+        if stop_seq.is_some_and(|seq| seq < ctx.next_to_apply) {
+            return Err(OfferError::StopBehindFrontier);
         }
         if ctx
             .snapshot_root

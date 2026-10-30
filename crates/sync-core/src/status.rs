@@ -190,6 +190,13 @@ impl EngineVersion {
     }
 }
 
+/// The header's `engine_version` as a value. A decoded header always holds a valid one (decode
+/// refuses anything else); a hand-built header with a bad value is treated as a foreign version.
+fn header_engine_version(header: &ClearHeader) -> EngineVersion {
+    EngineVersion::new(&header.engine_version)
+        .unwrap_or_else(|_| EngineVersion::new("unparseable").expect("a valid literal"))
+}
+
 /// An envelope at `seq` carries an `engine_version` this build does not equal (R40).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpdateRequired {
@@ -203,17 +210,28 @@ pub struct UpdateRequired {
     pub own_engine_version: EngineVersion,
 }
 
-/// Whether a snapshot rooted at `root`, of engine version `snapshot_engine_version`, is a valid way
-/// out of an update-required stop: it covers the position and it is of THIS build's
-/// `engine_version` (a snapshot of any other version would be update-required itself). Its
-/// provenance (membership, epoch, signature) is the engine's existing snapshot verification.
-#[must_use]
-pub fn snapshot_passes_update_required(
-    stop: &UpdateRequired,
+/// What the engine verified about a snapshot it is about to install (its provenance: membership,
+/// epoch, signature, is the engine's existing snapshot verification and is not repeated here).
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotFacts<'a> {
+    /// The snapshot's root: the last log position it covers.
+    pub root: u64,
+    /// The snapshot's `engine_version`.
+    pub engine_version: &'a EngineVersion,
+    /// The honored voids the snapshot records.
+    pub recorded_voids: &'a [HonoredVoid],
+    /// The ranges `(seq, V - 1)` of every verified void this replica holds, honored or not. A
+    /// snapshot rooted inside any of them was built on poisoned state and is never a root.
+    pub held_voids: &'a [(u64, u64)],
+}
+
+/// Proof that a snapshot is a valid way out of the replica's CURRENT stop. Only
+/// [`SyncStatus::rebootstrap_permit`] can build one, and [`SyncStatus::observe_rebootstrapped`]
+/// accepts nothing else, so a stop cannot be cleared with an unverified snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebootstrapPermit {
     root: u64,
-    snapshot_engine_version: &EngineVersion,
-) -> bool {
-    root >= stop.seq && *snapshot_engine_version == stop.own_engine_version
+    stop_seq: u64,
 }
 
 /// The replica's status.
@@ -365,6 +383,7 @@ impl SyncStatus {
     /// after the frontier that no honored void skips. A **failed** result for a position below
     /// the frontier that no void skips contradicts the replica's own state (an overstated cursor
     /// or broken determinism): it halts, with [`HaltEvidence::AppliedPositionInvalid`].
+    #[allow(clippy::too_many_arguments)] // the position, its envelope, the engine's ledger and cursor
     pub fn observe_envelope_in_context(
         &mut self,
         ledger: &VoidLedger,
@@ -372,6 +391,7 @@ impl SyncStatus {
         seq: u64,
         envelope_digest: [u8; 32],
         header: &ClearHeader,
+        own_engine_version: &EngineVersion,
         outcome: Result<(), ReceiverError>,
     ) -> Option<SyncEvent> {
         if ledger.skips(seq) {
@@ -388,7 +408,7 @@ impl SyncStatus {
             *self = Self::Halted(evidence);
             return Some(SyncEvent::Halted(evidence));
         }
-        self.observe_envelope(seq, envelope_digest, header, outcome)
+        self.observe_envelope(seq, envelope_digest, header, own_engine_version, outcome)
     }
 
     /// Record the outcome of the receiver checks on the authenticated envelope the service placed
@@ -408,12 +428,14 @@ impl SyncStatus {
         seq: u64,
         envelope_digest: [u8; 32],
         header: &ClearHeader,
+        own_engine_version: &EngineVersion,
         outcome: Result<(), ReceiverError>,
     ) -> Option<SyncEvent> {
         self.observe_stop(
             seq,
             envelope_digest,
             header,
+            own_engine_version,
             outcome.map_err(StopReason::ReceiverCheck),
         )
     }
@@ -429,23 +451,39 @@ impl SyncStatus {
         seq: u64,
         envelope_digest: [u8; 32],
         header: &ClearHeader,
+        own_engine_version: &EngineVersion,
         outcome: Result<(), ApplyFailureCode>,
     ) -> Option<SyncEvent> {
         self.observe_stop(
             seq,
             envelope_digest,
             header,
+            own_engine_version,
             outcome.map_err(StopReason::Apply),
         )
     }
 
+    /// The version gate (C.4 stage 1c, R40) is a precondition of every verdict, so it lives here
+    /// and cannot be skipped: an envelope whose `engine_version` is not this build's is routed to
+    /// [`Self::observe_engine_version`] whatever the outcome says, because an outcome formed at a
+    /// foreign version is not a verdict.
     fn observe_stop(
         &mut self,
         seq: u64,
         envelope_digest: [u8; 32],
         header: &ClearHeader,
+        own_engine_version: &EngineVersion,
         outcome: Result<(), StopReason>,
     ) -> Option<SyncEvent> {
+        let envelope_version = header_engine_version(header);
+        if envelope_version != *own_engine_version {
+            return self.observe_engine_version(
+                seq,
+                envelope_digest,
+                envelope_version,
+                *own_engine_version,
+            );
+        }
         if let Some(event) = self.same_position_other_digest(seq, envelope_digest) {
             return Some(event);
         }
@@ -525,6 +563,12 @@ impl SyncStatus {
         };
         match self {
             Self::Halted(_) => None,
+            // At the SAME position (same digest: another digest was a fork above) the version
+            // gate beats any verdict: one formed at a foreign version is not a verdict.
+            Self::EnvelopeInvalid(InvalidEnvelope { seq: existing, .. }) if *existing == seq => {
+                *self = Self::UpdateRequired(update);
+                Some(SyncEvent::UpdateRequired(update))
+            }
             Self::EnvelopeInvalid(InvalidEnvelope { seq: existing, .. })
             | Self::UpdateRequired(UpdateRequired { seq: existing, .. })
                 if *existing <= seq =>
@@ -569,20 +613,63 @@ impl SyncStatus {
         Some(SyncEvent::Halted(evidence))
     }
 
-    /// A snapshot rooted at `root` was installed after [`crate::void::snapshot_passes_stop`] or [`snapshot_passes_update_required`] accepted it: a
-    /// stop (an invalid envelope or an update-required position) at or below `root` ends. A halt
-    /// is not ended by a snapshot here (re-enrollment is its recovery), and a stop above `root`
-    /// stays.
-    pub fn observe_rebootstrapped(&mut self, root: u64) -> Option<SyncEvent> {
-        let stop = match self {
-            Self::EnvelopeInvalid(i) => i.seq,
-            Self::UpdateRequired(u) => u.seq,
+    /// Whether `snapshot` is a valid way out of the current stop, and if so the permit that
+    /// [`Self::observe_rebootstrapped`] requires:
+    ///
+    /// * a stop at an invalid envelope or an apply failure: the snapshot records an honored void
+    ///   whose range covers the stop and is rooted past it (never inside a voided range);
+    /// * an update-required stop: the snapshot covers the position, is of THIS build's
+    ///   `engine_version` (any other would be update-required itself), and is not rooted inside
+    ///   any void range this replica holds (it cannot judge those voids, so it is conservative);
+    /// * a fork of the apply semantics (a write-set mismatch, or an applied position found
+    ///   invalid): a snapshot rooted at or past the position (ADR 0074: the recovery is a
+    ///   re-bootstrap);
+    /// * no other halt: a fork, an equivocation, a position conflict or a void at two positions
+    ///   is key quarantine and re-enrollment, never a snapshot.
+    #[must_use]
+    pub fn rebootstrap_permit(&self, snapshot: &SnapshotFacts<'_>) -> Option<RebootstrapPermit> {
+        let (stop_seq, ok) = match self {
+            Self::EnvelopeInvalid(stop) => (
+                stop.seq,
+                crate::void::snapshot_passes_stop(stop.seq, snapshot.root, snapshot.recorded_voids),
+            ),
+            Self::UpdateRequired(update) => (
+                update.seq,
+                snapshot.root >= update.seq
+                    && *snapshot.engine_version == update.own_engine_version
+                    && !snapshot
+                        .held_voids
+                        .iter()
+                        .any(|(first, last)| *first <= snapshot.root && snapshot.root <= *last),
+            ),
+            Self::Halted(
+                HaltEvidence::WriteSetMismatch { seq, .. }
+                | HaltEvidence::AppliedPositionInvalid { seq, .. },
+            ) => (*seq, snapshot.root >= *seq),
             _ => return None,
         };
-        if stop > root {
+        ok.then_some(RebootstrapPermit {
+            root: snapshot.root,
+            stop_seq,
+        })
+    }
+
+    /// Install the snapshot a [`RebootstrapPermit`] vouches for: the stop it was issued for ends.
+    /// A permit for another stop (the status moved on since) changes nothing.
+    pub fn observe_rebootstrapped(&mut self, permit: RebootstrapPermit) -> Option<SyncEvent> {
+        let current = match self {
+            Self::EnvelopeInvalid(i) => i.seq,
+            Self::UpdateRequired(u) => u.seq,
+            Self::Halted(
+                HaltEvidence::WriteSetMismatch { seq, .. }
+                | HaltEvidence::AppliedPositionInvalid { seq, .. },
+            ) => *seq,
+            _ => return None,
+        };
+        if current != permit.stop_seq {
             return None;
         }
         *self = Self::Healthy;
-        Some(SyncEvent::Rebootstrapped { root })
+        Some(SyncEvent::Rebootstrapped { root: permit.root })
     }
 }
