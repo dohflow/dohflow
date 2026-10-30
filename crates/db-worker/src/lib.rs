@@ -620,6 +620,48 @@ pub enum WriteCommand {
         /// The loan the bill is not the payment of, or `None` to clear the answer.
         loan_account_id: Option<AccountId>,
     },
+    /// Create a connector connection's IDENTITY (personal-cfo-5ymg8.2; ADR 0074 Addendum B): which
+    /// provider and what it is called. Class 1: it replicates. The credential is class 3 and is
+    /// never in a payload; it is stored on this device afterwards. The same id and adapter again
+    /// is an accepted no-op.
+    CreateConnectorConnection {
+        /// The connection id, minted by the caller.
+        id: Uuid,
+        /// The provider's registry token (for example `simplefin`).
+        adapter_id: String,
+        /// A name to recognize the connection by, if the provider gave one.
+        display_hint: Option<String>,
+    },
+    /// Record an external account a connection exposes, or refresh it (personal-cfo-5ymg8.2): the
+    /// name, and the currency when the provider states one. Never clobbers the user's mapping or
+    /// a known currency. On a deleted connection it is an accepted no-op.
+    UpsertConnectorLink {
+        /// The connection.
+        connection_id: Uuid,
+        /// The provider's stable account key.
+        external_id: String,
+        /// The provider's name for the account.
+        external_name: Option<String>,
+        /// An uppercase three-letter ISO code, when the provider states one.
+        currency: Option<String>,
+    },
+    /// Map an external account onto a DohFlow account, or unmap it with `None`
+    /// (personal-cfo-5ymg8.2). Also clears this device's refresh watermark for the account.
+    SetConnectorLinkAccount {
+        /// The connection.
+        connection_id: Uuid,
+        /// The provider's account key.
+        external_id: String,
+        /// The DohFlow account to feed, or `None` to unmap.
+        account_id: Option<AccountId>,
+    },
+    /// Forget a connection (personal-cfo-5ymg8.2; ADR 0073 Addendum C and D): tombstone its
+    /// identity (never a hard delete) and remove this device's credential, watermarks and notice
+    /// for it. There is no reinstate: a new connection needs a new setup token and a new id.
+    DeleteConnectorConnection {
+        /// The connection.
+        id: Uuid,
+    },
     /// Open an ingestion source batch (ADR 0008, personal-cfo-3bb). Status starts
     /// at `parsing`; importers stage records under it, then advance its state.
     CreateSourceBatch {
@@ -888,6 +930,10 @@ impl WriteCommand {
             WriteCommand::LinkBillToLoan { .. } => "link_bill_to_loan",
             WriteCommand::UnlinkBillFromLoan { .. } => "unlink_bill_from_loan",
             WriteCommand::SetBillNotLoanPayment { .. } => "set_bill_not_loan_payment",
+            WriteCommand::CreateConnectorConnection { .. } => "create_connector_connection",
+            WriteCommand::UpsertConnectorLink { .. } => "upsert_connector_link",
+            WriteCommand::SetConnectorLinkAccount { .. } => "set_connector_link_account",
+            WriteCommand::DeleteConnectorConnection { .. } => "delete_connector_connection",
             WriteCommand::RestoreRecurringBill(_) => "restore_recurring_bill",
             WriteCommand::CreateSourceBatch { .. } => "create_source_batch",
             WriteCommand::AttachSourceRecord { .. } => "attach_source_record",
@@ -7141,6 +7187,44 @@ fn apply_command(
             event_id,
             loan_account_id,
         } => apply::recurring::apply_set_bill_not_loan_payment(&tx, event_id, loan_account_id)?,
+        WriteCommand::CreateConnectorConnection {
+            id,
+            adapter_id,
+            display_hint,
+        } => apply::connector_cmds::apply_create_connector_connection(
+            &tx,
+            meta,
+            id,
+            adapter_id,
+            display_hint.as_deref(),
+        )?,
+        WriteCommand::UpsertConnectorLink {
+            connection_id,
+            external_id,
+            external_name,
+            currency,
+        } => apply::connector_cmds::apply_upsert_connector_link(
+            &tx,
+            meta,
+            connection_id,
+            external_id,
+            external_name.as_deref(),
+            currency.as_deref(),
+        )?,
+        WriteCommand::SetConnectorLinkAccount {
+            connection_id,
+            external_id,
+            account_id,
+        } => apply::connector_cmds::apply_set_connector_link_account(
+            &tx,
+            meta,
+            connection_id,
+            external_id,
+            account_id.map(|a| a.as_uuid()),
+        )?,
+        WriteCommand::DeleteConnectorConnection { id } => {
+            apply::connector_cmds::apply_delete_connector_connection(&tx, meta, id)?
+        }
         WriteCommand::CreateSourceBatch {
             id,
             source_type,
@@ -7328,6 +7412,11 @@ fn apply_command(
         | WriteCommand::LinkBillToLoan { .. }
         | WriteCommand::UnlinkBillFromLoan { .. }
         | WriteCommand::SetBillNotLoanPayment { .. } => "recurring_events",
+        WriteCommand::CreateConnectorConnection { .. }
+        | WriteCommand::DeleteConnectorConnection { .. } => "connector_connections",
+        WriteCommand::UpsertConnectorLink { .. } | WriteCommand::SetConnectorLinkAccount { .. } => {
+            "connector_account_links"
+        }
         WriteCommand::CreateSourceBatch { .. } | WriteCommand::UpdateBatchState { .. } => {
             "source_batches"
         }
