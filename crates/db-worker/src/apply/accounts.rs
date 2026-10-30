@@ -1,7 +1,6 @@
 //! `apply_command` arms for account lifecycle commands (moved verbatim
 //! from `lib.rs`).
 
-use chrono::Utc;
 use core_ledger::{
     Account, AccountId, AccountKind, AccountSubtype, LedgerTransaction, OperationId, Posting,
     TransactionId,
@@ -73,7 +72,7 @@ pub(crate) fn apply_create_account(
                 let txn = LedgerTransaction::new(
                     TransactionId::new(),
                     OperationId::from_uuid(meta.command_id),
-                    Utc::now(),
+                    crate::apply::issued_at(meta),
                     vec![
                         Posting::new(ledger_account_id, *ob),
                         Posting::new(equity_id, ob.checked_neg()?),

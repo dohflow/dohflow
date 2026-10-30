@@ -83,7 +83,7 @@ fn json_opt(value: Option<&str>) -> String {
 /// Returns [`DbError`] if a SQLite operation fails.
 pub(crate) fn rebuild(conn: &mut Connection) -> Result<u64, DbError> {
     let tx = conn.transaction()?;
-    let count = rebuild_in(&tx)?;
+    let count = rebuild_in(&tx, &Utc::now().to_rfc3339())?;
     tx.commit()?;
     Ok(count)
 }
@@ -95,7 +95,7 @@ pub(crate) fn rebuild(conn: &mut Connection) -> Result<u64, DbError> {
 ///
 /// # Errors
 /// Returns [`DbError`] if a SQLite operation fails.
-pub(crate) fn rebuild_in(conn: &Connection) -> Result<u64, DbError> {
+pub(crate) fn rebuild_in(conn: &Connection, at: &str) -> Result<u64, DbError> {
     conn.execute("DELETE FROM money_inbox_read_model", [])?;
     let mut total = 0u64;
     total += generate_imported_waiting_commit(conn)?;
@@ -104,7 +104,7 @@ pub(crate) fn rebuild_in(conn: &Connection) -> Result<u64, DbError> {
     // by stored values (the entry's `created_at` / payload date), so it stays
     // deterministic — the snooze *expiry* is evaluated at read time, not here.
     apply_change_journal(conn)?;
-    set_cursor(conn, op_log_head(conn)?, checksum(conn)?)?;
+    set_inbox_cursor(conn, op_log_head(conn)?, checksum(conn)?, at)?;
     Ok(total)
 }
 
@@ -115,29 +115,30 @@ fn record_change_journal(
     item_id: Uuid,
     entry_kind: &str,
     payload_json: &str,
+    at: &str,
 ) -> Result<(), DbError> {
     conn.execute(
         "INSERT INTO change_journal_entries
             (id, item_id, entry_kind, actor, payload_json, created_at)
          VALUES (?1, ?2, ?3, 'user', ?4, ?5)",
-        params![
-            Uuid::now_v7(),
-            item_id,
-            entry_kind,
-            payload_json,
-            Utc::now().to_rfc3339()
-        ],
+        params![Uuid::now_v7(), item_id, entry_kind, payload_json, at],
     )?;
     Ok(())
 }
 
 /// Record a **snooze** — hide the item until `until` (`YYYY-MM-DD`).
-pub(crate) fn record_snooze(conn: &Connection, item_id: Uuid, until: &str) -> Result<(), DbError> {
+pub(crate) fn record_snooze(
+    conn: &Connection,
+    item_id: Uuid,
+    until: &str,
+    at: &str,
+) -> Result<(), DbError> {
     record_change_journal(
         conn,
         item_id,
         "snooze",
         &format!("{{\"until\":{}}}", json_str(until)),
+        at,
     )
 }
 
@@ -146,12 +147,14 @@ pub(crate) fn record_dismiss(
     conn: &Connection,
     item_id: Uuid,
     reason: &str,
+    at: &str,
 ) -> Result<(), DbError> {
     record_change_journal(
         conn,
         item_id,
         "dismiss",
         &format!("{{\"reason\":{}}}", json_str(reason)),
+        at,
     )
 }
 
@@ -772,8 +775,13 @@ fn op_log_head(conn: &Connection) -> Result<i64, DbError> {
 /// Advance the projection cursor and record the content checksum + rebuild time,
 /// plus the authoritative drift-detection checksum in `read_model_checksums`
 /// (mirrors `commitments::set_cursor` / `projection::set_cursor`).
-fn set_cursor(conn: &Connection, op_seq: i64, content_checksum: u64) -> Result<(), DbError> {
-    let now = Utc::now().to_rfc3339();
+fn set_inbox_cursor(
+    conn: &Connection,
+    op_seq: i64,
+    content_checksum: u64,
+    at: &str,
+) -> Result<(), DbError> {
+    let now = at;
     let checksum = content_checksum as i64;
     conn.execute(
         "INSERT OR REPLACE INTO projection_cursors

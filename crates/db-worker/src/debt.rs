@@ -3,7 +3,6 @@
 //! liability-target rules are validated here (not a column CHECK), since they read another
 //! account's `cashflow_role`.
 
-use chrono::Utc;
 use core_ledger::AccountId;
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -166,6 +165,7 @@ fn check_range(value: Option<i64>, lo: i64, hi: i64, what: &str) -> Result<(), D
 /// source is missing / not liquid, or a day field is out of range; [`DbError`] on a write fail.
 pub(crate) fn apply_set_debt_terms(
     tx: &Connection,
+    meta: &crate::CommandMeta,
     account_id: AccountId,
     input: DebtTermsInput,
 ) -> Result<(), DbError> {
@@ -233,7 +233,7 @@ pub(crate) fn apply_set_debt_terms(
             input.min_payment_floor_minor,
             input.paying_source_account_id.map(|a| a.as_uuid()),
             input.original_principal_minor,
-            Utc::now().to_rfc3339(),
+            crate::apply::issued_at_text(meta),
         ],
     )?;
     Ok(())
@@ -249,6 +249,7 @@ pub(crate) fn apply_set_debt_terms(
 /// amount is negative; [`DbError`] on a write fail.
 pub(crate) fn apply_set_card_statement_balance(
     tx: &Connection,
+    meta: &crate::CommandMeta,
     account_id: AccountId,
     cycle_close: chrono::NaiveDate,
     statement_balance_minor: Option<i64>,
@@ -276,11 +277,10 @@ pub(crate) fn apply_set_card_statement_balance(
     // An actual statement can only exist for a cycle that has CLOSED (ADR 0039 addendum
     // 2026-07-10 §1): recording against a future close would key the row to a shifting
     // derived date and silently replay into an upcoming cycle (personal-cfo-4d8.25.2).
-    // Clearing (the `None` branch above) is always allowed. Replay-safe: a write accepted
-    // when its close was past stays past on any later op-log replay.
-    let today = Utc::now()
-        .with_timezone(&crate::forecast::read_household_tz(tx)?)
-        .date_naive();
+    // Clearing (the `None` branch above) is always allowed. "Today" is the household-local date
+    // of the command's `issued_at`, not the wall clock, so a replica applying the command
+    // later reaches the same verdict as the device that issued it.
+    let today = crate::forecast::household_today_at(tx, crate::apply::issued_at(meta))?;
     if cycle_close > today {
         return Err(DbError::InvalidCommand(
             "a statement balance can only be recorded for a cycle that has already closed"
@@ -305,7 +305,7 @@ pub(crate) fn apply_set_card_statement_balance(
             cycle_close.to_string(),
             balance,
             currency,
-            Utc::now().to_rfc3339(),
+            crate::apply::issued_at_text(meta),
         ],
     )?;
     Ok(())
