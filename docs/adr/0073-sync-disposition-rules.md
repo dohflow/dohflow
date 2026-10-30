@@ -84,7 +84,7 @@ the shape counts (8 Create, 18 Set, 12 Toggle, 4 Base-dependent), and prints
 the table used below. A new variant without a row fails the test before a
 SYNC-2 implementation can ship it.
 
-#### Create (9)
+#### Create (10)
 
 Create commands append an entity or balanced posting. They auto-apply only
 when the strict predicate holds and all referenced rows are still valid on the
@@ -258,6 +258,10 @@ receives semantic auto-merge treatment.
 | `LinkBillToLoan` | Set | auto iff strict predicate; a loan that is archived or no longer a loan on the new base applies as no link; a second bill for the same loan queue-choose |
 | `UnlinkBillFromLoan` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SetBillNotLoanPayment` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `CreateConnectorConnection` | Create | auto; the same id and adapter again applies as a no-op; queue-edit if the id belongs to another adapter |
+| `UpsertConnectorLink` | Set | auto (an idempotent upsert; applies as a no-op on a deleted connection) |
+| `SetConnectorLinkAccount` | Set | queue-choose if the mapping changed on both sides (applies as a no-op on a deleted connection) |
+| `DeleteConnectorConnection` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate) |
 | `SetHouseholdName` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `AddHouseholdMember` | Create | auto; queue-edit if the member id is already in use |
 | `RenameHouseholdMember` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
@@ -413,14 +417,45 @@ its tally changes in this change, because the connector writes are still raw: th
 the classification are in force, and replication of the identity and mapping starts when
 `personal-cfo-5ymg8` lands.
 
+## Addendum D — The connector identity and mapping are commands (2026-10-30, `personal-cfo-5ymg8.2`)
+
+The four writes Addendum C left raw become `WriteCommand`s, so the identity and the mapping
+replicate and survive a rebase: `CreateConnectorConnection` (Create), `UpsertConnectorLink` and
+`SetConnectorLinkAccount` (Set), and `DeleteConnectorConnection` (Toggle with no `Reinstate`, the
+tombstone of Addendum C). That makes **Create 9**, **Set 23**, **Toggle 19** and 60 appendix rows;
+the payloads are additive version 1 payloads. The credential, the refresh watermark and the notice
+are class 3 and never in a payload, a log or a write set: this device stores its credential after
+the create command, and a delete command also scrubs and removes this device's secret, cursors and
+notice (writing the "token removed" audit row keyed by the command) on every device that applies it.
+
+**A race with a delete is an accepted no-op, never a rejection.** A link discovered or a mapping
+changed on one device while another device deleted the connection reaches a replica after the
+tombstone. Refusing it would be a deterministic apply failure that stops every replica over an
+ordinary race, so every command on a tombstoned connection applies as a logged no-op with an empty
+write set. An unknown connection is a producer fault (the create precedes it in the log) and is
+rejected. A discovery that would change nothing is not issued at all, so a refresh does not log or
+sync a no-op.
+
+**Class-3 side effects inside apply: the rule.** Applying a command may touch class-3 (device-local)
+state only when all of these hold: (i) it is **idempotent under replay**, because a rebase replays
+the command and catch-up can apply it again; (ii) it is **monotone**: it clears or destroys, and
+never creates anything a rollback would have to undo; (iii) it **never reads class-3 state to
+decide a class-1 write**, so every device writes the same class-1 rows whatever it holds locally.
+`DeleteConnectorConnection` follows it: the secret, cursor and notice removals are idempotent and
+destroy only, and `had_secret` decides only whether the class-3 audit row is written. That audit
+row (`connector.token_removed_connection_deleted`, keyed by the command id) records a destruction
+that a rebase never undoes, so it is a **stable** event type for the rebase of the mixed
+`audit_events` table (`personal-cfo-bxsbz`), never dropped or re-planned with the replayed
+commands. `SetConnectorLinkAccount`'s cursor clearing is the same kind of effect.
+
 ## Addendum E — The household record (2026-10-30, `personal-cfo-339`)
 
 Schema version 61 adds three class-1 tables, `households` (one row per vault), `household_members`
 and `profiles`, written only by eight additive version 1 commands: `SetHouseholdName`,
 `AddHouseholdMember`, `RenameHouseholdMember`, `SetMemberRole`, `SetMemberProfile` (Sets, and one
 Create), `TransferPrimary` (Base-dependent) and `RemoveHouseholdMember` / `RestoreHouseholdMember`
-(Toggles over a `deleted_at` tombstone, never a hard delete). That makes **Create 9**, **Set 25**,
-**Toggle 20**, **Base-dependent 5** and 64 appendix rows. `SetHouseholdTimezone` keeps its
+(Toggles over a `deleted_at` tombstone, never a hard delete). That makes **Create 10**, **Set 27**,
+**Toggle 21**, **Base-dependent 5** and 68 appendix rows. `SetHouseholdTimezone` keeps its
 payload and its meaning; its write set is now the `households` row instead of the logical
 `household` record (vault-format C.13, spec-version 16).
 

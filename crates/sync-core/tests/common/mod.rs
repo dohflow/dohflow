@@ -224,3 +224,8 @@ pub fn sample_header() -> ClearHeader {
         schema_version: 55,
     }
 }
+
+/// This build's `engine_version` in the tests (the sample header carries the same value).
+pub fn own_engine() -> sync_core::status::EngineVersion {
+    sync_core::status::EngineVersion::new("dohflow-engine-1").unwrap()
+}

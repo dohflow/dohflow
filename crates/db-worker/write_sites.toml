@@ -36,24 +36,6 @@ bead = "personal-cfo-5ymg8.6"
 note = "Attachment metadata writer outside the bus (blobs are class 1b); AttachDocument / DetachDocument."
 
 [[site]]
-module = "connectors.rs"
-table = "connector_account_links"
-class = "1"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.2"
-note = "Connector mapping writes (upsert link, set account, remap): AC9 of 5ymg8; the cursor and secret tables are class 3."
-
-[[site]]
-module = "connectors.rs"
-table = "connector_connections"
-class = "1"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.2"
-note = "Connector identity create and tombstone: AC9 of 5ymg8 (ADR 0073 Addendum C)."
-
-[[site]]
 module = "debt.rs"
 table = "credit_card_statements"
 class = "1"

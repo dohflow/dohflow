@@ -24,6 +24,10 @@ use sync_core::producer::{verify_before_upload, EnvelopeOpener, ProducerError};
 use sync_core::service::{check_new_push, parse_push, PushRefusal, PushView};
 use sync_core::status::{HaltEvidence, SyncEvent, SyncStatus};
 
+fn own_engine() -> sync_core::status::EngineVersion {
+    sync_core::status::EngineVersion::new("dohflow-engine-1").unwrap()
+}
+
 const VAULT: [u8; 16] = [0, 0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0xf0];
 
 /// A synthetic device (a repeated-byte seed; nothing here is a real key).
@@ -469,7 +473,13 @@ fn a_replica_stops_at_an_invalid_envelope_applies_nothing_past_it_and_cannot_pus
     let mut status = SyncStatus::Healthy;
     assert!(status.is_healthy() && status.can_apply(1_000_000) && status.can_push());
 
-    let event = status.observe_envelope(7, [7; 32], &header, Err(ReceiverError::TagMismatch));
+    let event = status.observe_envelope(
+        7,
+        [7; 32],
+        &header,
+        &own_engine(),
+        Err(ReceiverError::TagMismatch),
+    );
     let Some(SyncEvent::EnvelopeInvalid(invalid)) = event else {
         panic!("expected an EnvelopeInvalid event, got {event:?}");
     };
@@ -480,7 +490,10 @@ fn a_replica_stops_at_an_invalid_envelope_applies_nothing_past_it_and_cannot_pus
         invalid.device_key_fingerprint,
         header.device_key_fingerprint
     );
-    assert_eq!(invalid.reason, ReceiverError::TagMismatch);
+    assert_eq!(
+        invalid.reason,
+        sync_core::status::StopReason::ReceiverCheck(ReceiverError::TagMismatch)
+    );
     assert!(
         status.can_apply(6),
         "positions before the invalid one still apply"
@@ -496,23 +509,50 @@ fn seeing_the_same_invalid_envelope_again_is_idempotent_and_the_earlier_position
     let (header, _) = parts(&dev, 1, 1);
     let mut status = SyncStatus::Healthy;
     assert!(status
-        .observe_envelope(9, [9; 32], &header, Err(ReceiverError::TagMismatch))
+        .observe_envelope(
+            9,
+            [9; 32],
+            &header,
+            &own_engine(),
+            Err(ReceiverError::TagMismatch)
+        )
         .is_some());
     // After a restart the device re-pulls position 9 and recomputes the same digest: no new event.
     assert_eq!(
-        status.observe_envelope(9, [9; 32], &header, Err(ReceiverError::TagMismatch)),
+        status.observe_envelope(
+            9,
+            [9; 32],
+            &header,
+            &own_engine(),
+            Err(ReceiverError::TagMismatch)
+        ),
         None
     );
     // A valid envelope never changes the status.
-    assert_eq!(status.observe_envelope(3, [3; 32], &header, Ok(())), None);
+    assert_eq!(
+        status.observe_envelope(3, [3; 32], &header, &own_engine(), Ok(())),
+        None
+    );
     // An invalid one at an EARLIER position (verified out of order) moves the stop earlier.
     assert!(status
-        .observe_envelope(5, [5; 32], &header, Err(ReceiverError::DeviceMismatch))
+        .observe_envelope(
+            5,
+            [5; 32],
+            &header,
+            &own_engine(),
+            Err(ReceiverError::DeviceMismatch)
+        )
         .is_some());
     assert!(status.can_apply(4) && !status.can_apply(5) && !status.can_apply(9));
     // A later one does not.
     assert_eq!(
-        status.observe_envelope(8, [8; 32], &header, Err(ReceiverError::TagMismatch)),
+        status.observe_envelope(
+            8,
+            [8; 32],
+            &header,
+            &own_engine(),
+            Err(ReceiverError::TagMismatch)
+        ),
         None
     );
 }
@@ -522,8 +562,14 @@ fn a_different_digest_at_a_recorded_position_is_a_fork_of_the_log_and_halts() {
     let dev = Dev::new(0x11);
     let (header, _) = parts(&dev, 1, 1);
     let mut status = SyncStatus::Healthy;
-    status.observe_envelope(9, [9; 32], &header, Err(ReceiverError::TagMismatch));
-    let event = status.observe_envelope(9, [0xaa; 32], &header, Ok(()));
+    status.observe_envelope(
+        9,
+        [9; 32],
+        &header,
+        &own_engine(),
+        Err(ReceiverError::TagMismatch),
+    );
+    let event = status.observe_envelope(9, [0xaa; 32], &header, &own_engine(), Ok(()));
     assert_eq!(
         event,
         Some(SyncEvent::Halted(HaltEvidence::SeqConflict {
@@ -535,7 +581,13 @@ fn a_different_digest_at_a_recorded_position_is_a_fork_of_the_log_and_halts() {
     assert!(!status.can_apply(0), "a halted replica applies nothing");
     // A halted replica stays halted and emits nothing more.
     assert_eq!(
-        status.observe_envelope(2, [2; 32], &header, Err(ReceiverError::TagMismatch)),
+        status.observe_envelope(
+            2,
+            [2; 32],
+            &header,
+            &own_engine(),
+            Err(ReceiverError::TagMismatch)
+        ),
         None
     );
 }
@@ -576,7 +628,13 @@ fn a_fork_found_while_stopped_at_an_invalid_envelope_halts() {
     let dev = Dev::new(0x11);
     let (header, _) = parts(&dev, 1, 1);
     let mut status = SyncStatus::Healthy;
-    status.observe_envelope(7, [7; 32], &header, Err(ReceiverError::TagMismatch));
+    status.observe_envelope(
+        7,
+        [7; 32],
+        &header,
+        &own_engine(),
+        Err(ReceiverError::TagMismatch),
+    );
     assert!(matches!(status, SyncStatus::EnvelopeInvalid(_)));
     // The halt class takes precedence: keys must be quarantined and exposure flagged.
     let event = status.observe_chain_error(&sync_core::membership::ChainError::EpochEquivocation {

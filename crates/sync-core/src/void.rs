@@ -30,15 +30,17 @@ pub const VOID_LABEL: &str = "dohflow/sync-void/v1";
 /// The longest void body: the label, the fixed fields and nothing else (well under this).
 pub const MAX_VOID_BODY: usize = 256;
 
-/// Why the voider says the position is poisoned. Audit only. Only reason `1` exists in this
-/// version: reason `2` (an envelope that passes the receiver checks but cannot be applied
-/// deterministically) is version-scoped and is added with its `engine_version` body field by
-/// `personal-cfo-g3m.26`. Until then a producer must not emit it and a replica refuses it as a
-/// malformed object, so no reason-2 body lives in a log as a legacy form.
+/// Why the voider says the position is poisoned. Audit only: a replica stopped at the position
+/// honors the void whichever reason it states (the stop's own reason is audit too). Reason `2` is
+/// version-scoped without a body field: the void names the envelope digest, which binds the
+/// envelope's `engine_version`, and a replica of another `engine_version` never evaluates the
+/// position (R40), so it can neither stop there nor honor the void.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoidReason {
     /// `1`: the envelope fails the receiver checks.
     ReceiverCheck,
+    /// `2`: the envelope passes them but cannot be applied deterministically.
+    DeterministicApply,
 }
 
 /// A void record's body (C.10).
@@ -75,6 +77,7 @@ impl VoidBody {
             .fixed(&self.envelope_digest)
             .u8(match self.reason {
                 VoidReason::ReceiverCheck => 1,
+                VoidReason::DeterministicApply => 2,
             })
             .fixed(self.signer_fingerprint.as_bytes())
             .i64(self.issued_at);
@@ -99,6 +102,7 @@ impl VoidBody {
         let envelope_digest = r.fixed::<32>()?;
         let reason = match r.u8()? {
             1 => VoidReason::ReceiverCheck,
+            2 => VoidReason::DeterministicApply,
             _ => return Err(WireError::UnknownObjectType),
         };
         let signer_fingerprint = Fingerprint::from_derived(r.fixed::<32>()?);
@@ -359,6 +363,19 @@ pub struct HonorContext<'a> {
     pub target_not_determinable: bool,
 }
 
+/// Whether a snapshot rooted at `root` is a valid way out of a stop at `stop_seq` (an invalid
+/// envelope, or an update-required position that a void's range covers): the snapshot records an
+/// honored void whose range covers `stop_seq`, and the snapshot is rooted **past** that void
+/// (`root` above the range's last position; a snapshot inside a voided range was built on
+/// poisoned state and is never a valid bootstrap root, C.10). The snapshot's provenance is the
+/// engine's existing snapshot verification, not this function's.
+#[must_use]
+pub fn snapshot_passes_stop(stop_seq: u64, root: u64, recorded: &[HonoredVoid]) -> bool {
+    recorded
+        .iter()
+        .any(|v| v.first <= stop_seq && stop_seq <= v.last && root > v.last)
+}
+
 /// The honored voids so far. Coverage comes only from here: an inert void covers nothing.
 ///
 /// Persist it in the same transaction as the applied cursor, under the anti-rollback witness.
@@ -418,10 +435,13 @@ impl VoidLedger {
         voids: &[VerifiedVoid],
         ctx: &HonorContext<'_>,
     ) -> Result<Vec<Honor>, OfferError> {
-        if let SyncStatus::EnvelopeInvalid(stop) = ctx.status {
-            if stop.seq < ctx.next_to_apply {
-                return Err(OfferError::StopBehindFrontier);
-            }
+        let stop_seq = match ctx.status {
+            SyncStatus::EnvelopeInvalid(stop) => Some(stop.seq),
+            SyncStatus::UpdateRequired(update) => Some(update.seq),
+            _ => None,
+        };
+        if stop_seq.is_some_and(|seq| seq < ctx.next_to_apply) {
+            return Err(OfferError::StopBehindFrontier);
         }
         if ctx
             .snapshot_root

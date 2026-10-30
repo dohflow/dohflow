@@ -309,6 +309,35 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "create_connector_connection",
+            WriteCommand::CreateConnectorConnection {
+                id: u(40),
+                adapter_id: "simplefin".into(),
+                display_hint: Some("Primary bank \u{e9}".into()),
+            },
+        ),
+        (
+            "upsert_connector_link",
+            WriteCommand::UpsertConnectorLink {
+                connection_id: u(40),
+                external_id: "ACT-1".into(),
+                external_name: Some("Checking".into()),
+                currency: Some("USD".into()),
+            },
+        ),
+        (
+            "set_connector_link_account",
+            WriteCommand::SetConnectorLinkAccount {
+                connection_id: u(40),
+                external_id: "ACT-1".into(),
+                account_id: Some(account(1)),
+            },
+        ),
+        (
+            "delete_connector_connection",
+            WriteCommand::DeleteConnectorConnection { id: u(40) },
+        ),
+        (
             "create_source_batch",
             WriteCommand::CreateSourceBatch {
                 id: SourceBatchId::from_uuid(u(19)),

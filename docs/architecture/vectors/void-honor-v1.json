@@ -15,7 +15,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -25,6 +26,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -46,7 +48,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -56,6 +59,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 6,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -77,7 +81,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 0
+              "seq": 0,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -87,6 +92,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "5bbb7be1ba3a35b2e82258f665c8cd5c77af8e7e06b38d268c8b78d88118342f",
               "position": 1,
+              "reason": 1,
               "seq": 0
             }
           ]
@@ -102,7 +108,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 18446744073709551614
+              "seq": 18446744073709551614,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -112,6 +119,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "6edb79607118cca009fb00661e8dec17098efdecdbca22db246df62c9e1d1eaf",
               "position": 18446744073709551615,
+              "reason": 1,
               "seq": 18446744073709551614
             }
           ]
@@ -133,7 +141,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -143,6 +152,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -165,6 +175,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -186,7 +197,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -196,6 +208,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 5,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -211,7 +224,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -221,6 +235,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 4,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -249,6 +264,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 5,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -270,7 +286,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -280,6 +297,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 20,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -302,6 +320,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "be7380c40efc4eca6f4e186c2c3a1d947b5b3371c66f717ebcdec1b9f8bc68ea",
               "position": 21,
+              "reason": 1,
               "seq": 8
             }
           ]
@@ -330,6 +349,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 12,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -352,6 +372,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "be7380c40efc4eca6f4e186c2c3a1d947b5b3371c66f717ebcdec1b9f8bc68ea",
               "position": 12,
+              "reason": 1,
               "seq": 8
             }
           ]
@@ -380,6 +401,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -401,7 +423,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 30
+              "seq": 30,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -411,6 +434,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "e608582087daa54af3e29e77781c8051cbff25249d54af7d6380f5c4c0959d3d",
               "position": 40,
+              "reason": 1,
               "seq": 30
             }
           ]
@@ -439,6 +463,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -461,6 +486,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -476,7 +502,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 9
+              "seq": 9,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -486,6 +513,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -514,6 +542,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -529,7 +558,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 9
+              "seq": 9,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": true
           },
@@ -539,6 +569,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -561,6 +592,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -582,7 +614,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -592,6 +625,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "4ec8d32688de80a93cef66faf473c61d86a69f7f6b9e2869471c3a8e51caf266",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -613,7 +647,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -623,6 +658,7 @@
               "envelope_digest": "7777777777777777777777777777777777777777777777777777777777777777",
               "id": "51bd960c6db10e538db4e2488ae6b6556da1f5d1d4ba8011b94657de2d22b36b",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -644,7 +680,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -654,6 +691,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -676,6 +714,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 12,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -697,7 +736,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 30
+              "seq": 30,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -707,6 +747,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "e608582087daa54af3e29e77781c8051cbff25249d54af7d6380f5c4c0959d3d",
               "position": 40,
+              "reason": 1,
               "seq": 30
             }
           ]
@@ -722,7 +763,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 30
+              "seq": 30,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -732,6 +774,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "e608582087daa54af3e29e77781c8051cbff25249d54af7d6380f5c4c0959d3d",
               "position": 40,
+              "reason": 1,
               "seq": 30
             }
           ]
@@ -760,6 +803,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "e951cf108020cb200ae17ad6e3655f7c30fb7a7f9abe33c85574e628810ec688",
               "position": 10,
+              "reason": 1,
               "seq": 3
             }
           ]
@@ -775,7 +819,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 6
+              "seq": 6,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -785,6 +830,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "e3d8af43348fe8b4d92f74a4ab46e8287eec24c2bcf3158ef9125b864698478d",
               "position": 12,
+              "reason": 1,
               "seq": 6
             }
           ]
@@ -806,7 +852,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 10
+              "seq": 10,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -816,6 +863,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
               "position": 15,
+              "reason": 1,
               "seq": 10
             },
             {
@@ -823,6 +871,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "4de9da3b02048fdeee8290e19f2f81ced950de186b06210bffb6b2020af055a5",
               "position": 12,
+              "reason": 1,
               "seq": 10
             }
           ]
@@ -838,7 +887,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 10
+              "seq": 10,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -848,6 +898,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "4de9da3b02048fdeee8290e19f2f81ced950de186b06210bffb6b2020af055a5",
               "position": 12,
+              "reason": 1,
               "seq": 10
             },
             {
@@ -855,6 +906,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
               "position": 15,
+              "reason": 1,
               "seq": 10
             }
           ]
@@ -877,6 +929,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
               "position": 15,
+              "reason": 1,
               "seq": 10
             }
           ]
@@ -906,6 +959,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "4de9da3b02048fdeee8290e19f2f81ced950de186b06210bffb6b2020af055a5",
               "position": 12,
+              "reason": 1,
               "seq": 10
             },
             {
@@ -913,7 +967,165 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
               "position": 15,
+              "reason": 1,
               "seq": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A deterministic apply failure stops the replica at 5 like an invalid envelope; the reason-2 void for it is honored for the range before the void.",
+      "name": "honored_at_an_apply_failure_stop_by_a_reason_2_void",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "apply"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "9b501ea84444cc1f001cf763e0c7895d2c39626e1670d801bac7b8bc602027e7",
+              "position": 9,
+              "reason": 2,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A reason-1 void at an apply stop and a reason-2 void at a receiver-check stop are honored just the same.",
+      "name": "the_reason_byte_plays_no_part_in_honoring",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "apply"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "honored:20:23"
+          ],
+          "replica": {
+            "next_to_apply": 20,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 20,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "39844b20de3fe5ffd3614744fac7c117bb9ad1295f97567228e00c753e6712aa",
+              "position": 24,
+              "reason": 2,
+              "seq": 20
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "The same fork rule holds at an apply stop.",
+      "name": "a_different_digest_at_an_apply_stop_is_a_suspected_fork",
+      "steps": [
+        {
+          "expect": [
+            "fork:DigestAtStop"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "apply"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+              "id": "b62ac792070c17fdcd55a878e2db9894ba643e91292eccff64251936fdadd8d1",
+              "position": 9,
+              "reason": 2,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "The envelope at 5 carries another engine_version than this build: the replica is update-required there (R40), has formed no verdict and is not stopped on the envelope, so the void is inert and transient. Its exits (a build of the envelope's version, or a snapshot past the void) are status transitions, not honoring.",
+      "name": "a_replica_of_another_engine_version_cannot_judge_a_reason_2_void",
+      "steps": [
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "update_required",
+              "seq": 5
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "9b501ea84444cc1f001cf763e0c7895d2c39626e1670d801bac7b8bc602027e7",
+              "position": 9,
+              "reason": 2,
+              "seq": 5
             }
           ]
         }
@@ -934,7 +1146,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -944,6 +1157,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -966,6 +1180,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -981,7 +1196,8 @@
               "command_id": "11111111111111111111111111111111",
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "kind": "stopped_at_invalid_envelope",
-              "seq": 5
+              "seq": 5,
+              "stop_reason": "receiver_check"
             },
             "target_not_determinable": false
           },
@@ -991,6 +1207,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -1013,6 +1230,7 @@
               "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
               "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
               "position": 9,
+              "reason": 1,
               "seq": 5
             }
           ]
@@ -1021,7 +1239,7 @@
     }
   ],
   "how_to_read": "Each case is a sequence of steps against ONE replica, sharing one ledger of honored voids that starts empty. In each step the replica is offered a list of verified voids, in the order given ('voids': each with its id, the log 'seq' it names, the log 'position' V it occupies, and the 'command_id' and 'envelope_digest' it names) in the replica's state ('replica': its 'status' (healthy, halted, or stopped at an invalid envelope at a position with a digest and a command id), 'next_to_apply' (the lowest position not yet applied or skipped; every position below it is done; it never passes the stop), the 'snapshot_root' it bootstrapped from or null, and whether it is at the position but 'target_not_determinable'). 'expect' has one outcome per void offered, up to and including the first that changes the replica (the rest are not offered), or a single 'error:KIND' when the offer is refused. An outcome is 'honored:FIRST:LAST' (positions FIRST..=LAST are skipped and added to the ledger; rollback and re-issue are driven off this outcome only), 'already_honored' (the same void at the same position again: nothing changes and nothing is re-issued), 'inert:REASON' (nothing changes) or 'fork:KIND' (nothing changes and the replica halts as a log fork).",
-  "not_in_scope": "A deterministic apply failure (reason 2) has no stop in the status machine yet and the void body has no engine_version field, so reason 2 is refused as malformed in this version (personal-cfo-g3m.26).",
+  "reasons": "A void states reason 1 (the envelope fails the receiver checks) or 2 (it passes them and fails to apply deterministically). The reason is audit only: a replica stopped at the position honors the void whichever reason the void or the stop states. A replica of another engine_version is update-required at the position (R40), is not stopped there and cannot judge the void: the outcome is the transient NotYetEvaluated.",
   "refused_before_any_void": [
     "StopBehindFrontier: the status is a stop at a position below next_to_apply",
     "RootNotBelowFrontier: snapshot_root is set and snapshot_root >= next_to_apply",

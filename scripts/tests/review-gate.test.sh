@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Tests for scripts/review-gate.sh (personal-cfo-md8h2.23) with a stub `gh`. No network.
-# The stub answers `gh pr view N` from per-PR files and `gh api .../compare/A...B` from a table.
+# The stub answers `gh pr view N --json labels,headRefOid,comments` from per-PR files.
 
 # The `check && pass || fail` lines are if-then-else on purpose: pass() always
 # returns 0, so fail() runs only when the check failed.
@@ -25,16 +25,8 @@ mkdir -p "$TMP/bin" "$TMP/prs"
 cat > "$TMP/bin/gh" <<STUB
 #!/usr/bin/env bash
 # gh pr view N ...  -> prs/N.json, or exit 1 when the file is absent (a lookup error)
-# gh api repos/R/compare/A...B -> the status in compare/A...B, or exit 1
 if [ "\$1 \$2" = "pr view" ]; then
   f="$TMP/prs/\$3.json"
-  [ -f "\$f" ] || exit 1
-  cat "\$f"
-  exit 0
-fi
-if [ "\$1" = "api" ]; then
-  key="\${2##*/compare/}"
-  f="$TMP/compare/\$key"
   [ -f "\$f" ] || exit 1
   cat "\$f"
   exit 0
@@ -42,25 +34,32 @@ fi
 exit 1
 STUB
 chmod +x "$TMP/bin/gh"
-mkdir -p "$TMP/compare"
 export PATH="$TMP/bin:$PATH"
 
 H1=1111111111111111111111111111111111111111
 H2=2222222222222222222222222222222222222222
-TESTED=cccccccccccccccccccccccccccccccccccccccc
 BASE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ref() { printf 'refs/heads/gh-readonly-queue/main/pr-%s-%s' "$1" "$BASE"; }
 
-pr() { # pr N "label,label" HEAD   (labels contain no spaces)
-  local labels="" first=1 l
-  for l in $(printf '%s' "${2:-}" | tr ',' ' '); do
+# pr N "label,label" HEAD [comment-body ...]   (labels contain no spaces; each body is one comment, oldest first)
+pr() {
+  local n="$1" labels="" first=1 l head="$3" comments="" c
+  local labelnames="$2"
+  shift 3
+  for l in $(printf '%s' "$labelnames" | tr ',' ' '); do
     [ "$first" = 1 ] || labels="$labels,"
     labels="$labels{\"name\":\"$l\"}"
     first=0
   done
-  printf '{"labels":[%s],"headRefOid":"%s"}' "$labels" "$3" > "$TMP/prs/$1.json"
+  first=1
+  for c in "$@"; do
+    [ "$first" = 1 ] || comments="$comments,"
+    comments="$comments$(jq -n --arg b "$c" '{body: $b, author: {login: "reviewer"}}')"
+    first=0
+  done
+  printf '{"labels":[%s],"headRefOid":"%s","comments":[%s]}' "$labels" "$head" "$comments" > "$TMP/prs/$n.json"
 }
-compare() { printf '%s' "$3" > "$TMP/compare/$1...$2"; }   # compare HEAD TESTED status
+marker() { printf 'Verdict.\n\n<!-- review-verdict: %s %s -->' "$1" "$2"; }
 
 GRC=0
 gate() { "$SCRIPT" --repo o/r "$@" >"$TMP/out" 2>&1; GRC=$?; }
@@ -95,49 +94,81 @@ gate --event pull_request
 gate --event pull_request --pr "10; echo owned"
 [ "$GRC" = 1 ] && pass "a non-numeric number: fail" || fail "a non-numeric number did not fail"
 
-case_start "merge_group: a labeled PR whose head is part of the tested commit passes"
-pr 20 "merge-ready" "$H1"; compare "$H1" "$TESTED" ahead
-gate --event merge_group --ref "$(ref 20)" --head-sha "$TESTED"
-[ "$GRC" = 0 ] && pass "ahead: pass" || fail "ahead failed: $(cat "$TMP/out")"
-compare "$H1" "$TESTED" identical
-gate --event merge_group --ref "$(ref 20)" --head-sha "$TESTED"
-[ "$GRC" = 0 ] && pass "identical: pass" || fail "identical failed: $(cat "$TMP/out")"
+# A real recorded queue entry (dohflow/dohflow run 40614311641, #191): the queue ref and the tested
+# commit exactly as GitHub sent them. Squash merges: the tested commit is NOT a descendant of the PR head.
+REAL_REF="refs/heads/gh-readonly-queue/main/pr-191-2d5668a2bd8106aabcc8bfe59cf9eb05934742e6"
+REAL_HEAD=8373e7f1218711e157437202ccd031684bfd5b04
+
+case_start "merge_group: the label plus a PASS marker for the current head passes (a real recorded queue ref)"
+pr 191 "merge-ready" "$REAL_HEAD" "Review.\n$(marker PASS "$REAL_HEAD")"
+gate --event merge_group --ref "$REAL_REF"
+[ "$GRC" = 0 ] && pass "recorded squash-queue ref: pass" || fail "recorded ref failed: $(cat "$TMP/out")"
+pr 20 "merge-ready" "$H1" "$(marker PASS "$H1")"
+gate --event merge_group --ref "$(ref 20)"
+[ "$GRC" = 0 ] && pass "label + matching PASS marker: pass" || fail "failed: $(cat "$TMP/out")"
+pr 20 "merge-ready" "$H1" "$(marker CHANGES_REQUIRED "$H1")" "$(marker PASS "$H1")"
+gate --event merge_group --ref "$(ref 20)"
+[ "$GRC" = 0 ] && pass "a PASS after an earlier CHANGES_REQUIRED: pass" || fail "failed: $(cat "$TMP/out")"
+pr 20 "merge-ready" "$H1" "intro $(marker PASS "$H2") then $(marker PASS "$H1")"
+gate --event merge_group --ref "$(ref 20)"
+[ "$GRC" = 0 ] && pass "two markers in one comment: the last one counts" || fail "failed: $(cat "$TMP/out")"
 
 case_start "merge_group: the label removed while queued fails"
-pr 21 "area:ci" "$H1"; compare "$H1" "$TESTED" ahead
-gate --event merge_group --ref "$(ref 21)" --head-sha "$TESTED"
+pr 21 "area:ci" "$H1" "$(marker PASS "$H1")"
+gate --event merge_group --ref "$(ref 21)"
 [ "$GRC" = 1 ] && pass "unlabeled entry: fail" || fail "unlabeled entry passed"
 
-case_start "merge_group: a head that is not an ancestor of the tested commit fails"
-pr 22 "merge-ready" "$H2"
-for status in behind diverged; do
-  compare "$H2" "$TESTED" "$status"
-  gate --event merge_group --ref "$(ref 22)" --head-sha "$TESTED"
-  [ "$GRC" = 1 ] && pass "comparison '$status': fail" || fail "'$status' passed"
-done
-rm_cmp() { find "$TMP/compare" -type f -exec unlink {} \; ; }
-rm_cmp
-gate --event merge_group --ref "$(ref 22)" --head-sha "$TESTED"
-[ "$GRC" = 1 ] && pass "comparison unavailable: fail" || fail "an unavailable comparison passed"
+case_start "merge_group: a head the reviewer did not pass fails"
+pr 22 "merge-ready" "$H2" "$(marker PASS "$H1")"
+gate --event merge_group --ref "$(ref 22)"
+[ "$GRC" = 1 ] && pass "marker for an older SHA: fail" || fail "an older-SHA marker passed"
+grep -q "not the head the reviewer passed" "$TMP/out" && pass "the failure says why" || fail "no reason: $(cat "$TMP/out")"
+pr 23 "merge-ready" "$H1" "$(marker PASS "$H1")" "$(marker CHANGES_REQUIRED "$H1")"
+gate --event merge_group --ref "$(ref 23)"
+[ "$GRC" = 1 ] && pass "a later CHANGES_REQUIRED at the same SHA: fail" || fail "a later CHANGES_REQUIRED passed"
+pr 24 "merge-ready" "$H1" "$(marker PASS "$H1")" "$(marker HUMAN_DECISION_REQUIRED "$H2")"
+gate --event merge_group --ref "$(ref 24)"
+[ "$GRC" = 1 ] && pass "a later HUMAN_DECISION_REQUIRED: fail" || fail "a later HUMAN_DECISION_REQUIRED passed"
+pr 25 "merge-ready" "$H1" "$(marker PASS "$H2")" "$(marker PASS "$H1")" "$(marker PASS "$H2")"
+gate --event merge_group --ref "$(ref 25)"
+[ "$GRC" = 1 ] && pass "only the newest marker counts (PASS for the head, then a newer PASS for another): fail" || fail "an older matching marker passed"
 
-case_start "merge_group: fails closed on an unparsable ref or a bad tested commit"
+case_start "merge_group: no marker, or a malformed one, fails closed"
+pr 26 "merge-ready" "$H1" "Looks good to me."
+gate --event merge_group --ref "$(ref 26)"
+[ "$GRC" = 1 ] && pass "no marker: fail" || fail "no marker passed"
+pr 26 "merge-ready" "$H1"
+gate --event merge_group --ref "$(ref 26)"
+[ "$GRC" = 1 ] && pass "no comments at all: fail" || fail "no comments passed"
+for bad in "<!-- review-verdict: PASS ${H1:0:39} -->" "<!-- review-verdict: PASS $H1" "<!-- review-verdict: pass $H1 -->" "<!-- review-verdict: PASS $H1 extra -->" "<!-- review-verdict: PASS -->" "<!-- review-verdict:PASS $H1 -->"; do
+  pr 26 "merge-ready" "$H1" "$(marker PASS "$H1")" "$bad"
+  gate --event merge_group --ref "$(ref 26)"
+  [ "$GRC" = 1 ] && pass "malformed marker '${bad:0:48}': fail" || fail "malformed marker '$bad' passed"
+done
+pr 26 "merge-ready" "$H1" "<!-- review-verdict: PASS $(printf 'G%.0s' $(seq 1 40)) -->"
+gate --event merge_group --ref "$(ref 26)"
+[ "$GRC" = 1 ] && pass "a non-hex SHA: fail" || fail "a non-hex SHA passed"
+
+case_start "merge_group: fails closed on an unparsable ref or an unreadable pull request"
 for bad in "" "refs/heads/main" "refs/heads/gh-readonly-queue/main/pr-x-$BASE" "refs/heads/gh-readonly-queue/main/pr-20-short" "refs/heads/gh-readonly-queue/main/pr-20-$BASE/extra" "gh-readonly-queue/main/pr-20-$BASE"; do
-  pr 20 "merge-ready" "$H1"; compare "$H1" "$TESTED" ahead
-  gate --event merge_group --ref "$bad" --head-sha "$TESTED"
+  pr 20 "merge-ready" "$H1" "$(marker PASS "$H1")"
+  gate --event merge_group --ref "$bad"
   [ "$GRC" = 1 ] && pass "ref '${bad:0:50}': fail" || fail "ref '$bad' passed"
 done
-gate --event merge_group --ref "$(ref 20)" --head-sha "short"
-[ "$GRC" = 1 ] && pass "a short tested SHA: fail" || fail "a short tested SHA passed"
-gate --event merge_group --ref "$(ref 404)" --head-sha "$TESTED"
+gate --event merge_group --ref "$(ref 404)"
 [ "$GRC" = 1 ] && pass "the named PR cannot be read: fail" || fail "an unreadable PR passed"
 
 case_start "merge_group: a two-PR group is TWO entries, each gated in its own run"
-pr 30 "merge-ready" "$H1"; pr 31 "area:ci" "$H2"
-compare "$H1" "$TESTED" ahead; compare "$H2" "$TESTED" ahead
-gate --event merge_group --ref "$(ref 30)" --head-sha "$TESTED"; a=$GRC
-gate --event merge_group --ref "$(ref 31)" --head-sha "$TESTED"; b=$GRC
-[ "$a" = 0 ] && [ "$b" = 1 ] && pass "#30 (labeled) passes in its run, #31 (unlabeled) fails in its own" || fail "entries: #30=$a #31=$b"
+pr 30 "merge-ready" "$H1" "$(marker PASS "$H1")"
+pr 31 "area:ci" "$H2" "$(marker PASS "$H2")"
+gate --event merge_group --ref "$(ref 30)"; a=$GRC
+gate --event merge_group --ref "$(ref 31)"; b=$GRC
+[ "$a" = 0 ] && [ "$b" = 1 ] && pass "#30 (labeled, passed) passes in its run, #31 (unlabeled) fails in its own" || fail "entries: #30=$a #31=$b"
 grep -q "#31" "$TMP/out" && pass "the failure names the PR that lacks the label" || fail "failure does not name #31: $(cat "$TMP/out")"
+pr 32 "merge-ready" "$H2" "$(marker PASS "$H1")"
+gate --event merge_group --ref "$(ref 30)"; a=$GRC
+gate --event merge_group --ref "$(ref 32)"; b=$GRC
+[ "$a" = 0 ] && [ "$b" = 1 ] && pass "a second entry whose head moved fails while the first passes" || fail "entries: #30=$a #32=$b"
 
 case_start "an unknown event, or none, is an error"
 gate --event push --pr 10

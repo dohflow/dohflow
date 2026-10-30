@@ -19,8 +19,13 @@ use common::*;
 use serde_json::{json, Value};
 use sync_core::envelope::ReceiverError;
 use sync_core::membership::EpochAtPosition;
-use sync_core::status::{HaltEvidence, InvalidEnvelope, SyncStatus};
-use sync_core::void::{verify_void, ForkSuspected, Honor, HonorContext, VoidBody, VoidLedger};
+use sync_core::status::{
+    ApplyFailureCode, EngineVersion, HaltEvidence, InvalidEnvelope, StopReason, SyncStatus,
+    UpdateRequired,
+};
+use sync_core::void::{
+    verify_void, ForkSuspected, Honor, HonorContext, VoidBody, VoidLedger, VoidReason,
+};
 
 const VECTORS: &str = include_str!("../../../docs/architecture/vectors/void-honor-v1.json");
 const VECTORS_PATH: &str = "../../docs/architecture/vectors/void-honor-v1.json";
@@ -36,10 +41,14 @@ enum Status {
     Halted,
     /// Stopped at an invalid envelope: (seq, digest byte, command byte).
     Stopped(u64, u8, u8),
+    /// Stopped at an envelope that failed to apply deterministically: (seq, digest, command).
+    ApplyStopped(u64, u8, u8),
+    /// Update-required at an envelope of another engine version: (seq, digest).
+    UpdateRequired(u64, u8),
 }
 
-/// A void: (seq, position, command byte, digest byte, issued_at offset).
-type VoidSpec = (u64, u64, u8, u8, i64);
+/// A void: (seq, position, command byte, digest byte, issued_at offset, reason byte).
+type VoidSpec = (u64, u64, u8, u8, i64, u8);
 
 #[derive(Clone)]
 struct Step {
@@ -74,7 +83,7 @@ fn step(void: VoidSpec, status: Status, next_to_apply: u64, expect: &'static str
 
 /// A void for `seq` at `position`, naming command byte 0x11 and digest byte 0x22.
 const fn v(seq: u64, position: u64) -> VoidSpec {
-    (seq, position, 0x11, 0x22, 0)
+    (seq, position, 0x11, 0x22, 0, 1)
 }
 
 /// The replica is stopped at `seq` on the envelope the default void names.
@@ -183,12 +192,12 @@ fn all_cases() -> Vec<Case> {
         Case {
             name: "inert_when_the_command_differs_but_the_digest_matches",
             description: "The digest binds the command id, so equal digests with different command ids is a signer fault: inert.",
-            steps: vec![step((5, 9, 0x99, 0x22, 0), at(5), 5, "inert:CommandMismatch")],
+            steps: vec![step((5, 9, 0x99, 0x22, 0, 1), at(5), 5, "inert:CommandMismatch")],
         },
         Case {
             name: "a_different_digest_at_the_stop_is_a_suspected_fork",
             description: "An authorized member saw another envelope at the stop's position than this replica did. An honest service refuses such a void; the engine halts (a log fork).",
-            steps: vec![step((5, 9, 0x11, 0x77, 0), at(5), 5, "fork:DigestAtStop")],
+            steps: vec![step((5, 9, 0x11, 0x77, 0, 1), at(5), 5, "fork:DigestAtStop")],
         },
         Case {
             name: "the_same_void_at_another_position_is_a_suspected_fork",
@@ -215,15 +224,38 @@ fn all_cases() -> Vec<Case> {
             name: "two_voids_for_one_position_are_offered_in_position_order_and_the_earlier_wins",
             description: "A service that skips its same-seq dedupe serves two different voids for 10 at positions 12 and 15 (they differ in issued_at). Offered ascending, the earlier is honored for 10..=11 and the offer stops there (the context is stale); out of order, or at equal positions, the offer is refused. After the cursor moves past the range the later void is covered.",
             steps: vec![
-                batch(vec![(10, 15, 0x11, 0x22, 1), v(10, 12)], at(10), 10, vec!["error:VoidsNotAscending"]),
-                batch(vec![v(10, 12), (10, 15, 0x11, 0x22, 1)], at(10), 10, vec!["honored:10:11"]),
-                step((10, 15, 0x11, 0x22, 1), Status::Healthy, 12, "inert:AlreadyCovered"),
+                batch(vec![(10, 15, 0x11, 0x22, 1, 1), v(10, 12)], at(10), 10, vec!["error:VoidsNotAscending"]),
+                batch(vec![v(10, 12), (10, 15, 0x11, 0x22, 1, 1)], at(10), 10, vec!["honored:10:11"]),
+                step((10, 15, 0x11, 0x22, 1, 1), Status::Healthy, 12, "inert:AlreadyCovered"),
             ],
         },
         Case {
             name: "a_batch_of_inert_voids_is_reported_in_full",
             description: "Voids that change nothing are all reported, in order.",
-            steps: vec![batch(vec![v(10, 12), (10, 15, 0x11, 0x22, 1)], Status::Healthy, 3, vec!["inert:NotYetEvaluated", "inert:NotYetEvaluated"])],
+            steps: vec![batch(vec![v(10, 12), (10, 15, 0x11, 0x22, 1, 1)], Status::Healthy, 3, vec!["inert:NotYetEvaluated", "inert:NotYetEvaluated"])],
+        },
+        Case {
+            name: "honored_at_an_apply_failure_stop_by_a_reason_2_void",
+            description: "A deterministic apply failure stops the replica at 5 like an invalid envelope; the reason-2 void for it is honored for the range before the void.",
+            steps: vec![step((5, 9, 0x11, 0x22, 0, 2), Status::ApplyStopped(5, 0x22, 0x11), 5, "honored:5:8")],
+        },
+        Case {
+            name: "the_reason_byte_plays_no_part_in_honoring",
+            description: "A reason-1 void at an apply stop and a reason-2 void at a receiver-check stop are honored just the same.",
+            steps: vec![
+                step((5, 9, 0x11, 0x22, 0, 1), Status::ApplyStopped(5, 0x22, 0x11), 5, "honored:5:8"),
+                step((20, 24, 0x11, 0x22, 0, 2), at(20), 20, "honored:20:23"),
+            ],
+        },
+        Case {
+            name: "a_different_digest_at_an_apply_stop_is_a_suspected_fork",
+            description: "The same fork rule holds at an apply stop.",
+            steps: vec![step((5, 9, 0x11, 0x77, 0, 2), Status::ApplyStopped(5, 0x22, 0x11), 5, "fork:DigestAtStop")],
+        },
+        Case {
+            name: "a_replica_of_another_engine_version_cannot_judge_a_reason_2_void",
+            description: "The envelope at 5 carries another engine_version than this build: the replica is update-required there (R40), has formed no verdict and is not stopped on the envelope, so the void is inert and transient. Its exits (a build of the envelope's version, or a snapshot past the void) are status transitions, not honoring.",
+            steps: vec![step((5, 9, 0x11, 0x22, 0, 2), Status::UpdateRequired(5, 0x22), 5, "inert:NotYetEvaluated")],
         },
         Case {
             name: "an_inconsistent_replica_state_is_refused_never_a_permanent_found_valid",
@@ -246,13 +278,29 @@ fn status_of(step: &Step) -> SyncStatus {
             accepted: [1; 32],
             conflicting: [2; 32],
         }),
+        Status::ApplyStopped(seq, digest, command) => {
+            SyncStatus::EnvelopeInvalid(InvalidEnvelope {
+                seq,
+                envelope_digest: [digest; 32],
+                command_id: [command; 16],
+                device_id: [1; 16],
+                device_key_fingerprint: Dev::new(1).fingerprint(),
+                reason: StopReason::Apply(ApplyFailureCode::new(7).unwrap()),
+            })
+        }
+        Status::UpdateRequired(seq, digest) => SyncStatus::UpdateRequired(UpdateRequired {
+            seq,
+            envelope_digest: [digest; 32],
+            envelope_engine_version: EngineVersion::new("dohflow-engine-1").unwrap(),
+            own_engine_version: EngineVersion::new("dohflow-engine-2").unwrap(),
+        }),
         Status::Stopped(seq, digest, command) => SyncStatus::EnvelopeInvalid(InvalidEnvelope {
             seq,
             envelope_digest: [digest; 32],
             command_id: [command; 16],
             device_id: [1; 16],
             device_key_fingerprint: Dev::new(1).fingerprint(),
-            reason: ReceiverError::TagMismatch,
+            reason: StopReason::ReceiverCheck(ReceiverError::TagMismatch),
         }),
     }
 }
@@ -280,11 +328,16 @@ fn run(case: &Case) -> Vec<(Vec<String>, Vec<String>)> {
             let voids: Vec<_> = s
                 .voids
                 .iter()
-                .map(|&(seq, position, cmd, dig, issued)| {
+                .map(|&(seq, position, cmd, dig, issued, reason)| {
                     let body = VoidBody {
                         command_id: [cmd; 16],
                         envelope_digest: [dig; 32],
                         issued_at: 1_790_000_000_000_000 + issued,
+                        reason: if reason == 2 {
+                            VoidReason::DeterministicApply
+                        } else {
+                            VoidReason::ReceiverCheck
+                        },
                         ..body(&chain.a, seq)
                     };
                     verify_void(&chain.state, &at_end, position, &signed(&body, &chain.a)).unwrap()
@@ -325,22 +378,36 @@ fn document() -> Value {
                         Status::Halted => json!({"kind": "halted"}),
                         Status::Stopped(seq, dig, cmd) => json!({
                             "kind": "stopped_at_invalid_envelope",
+                            "stop_reason": "receiver_check",
                             "seq": seq,
                             "envelope_digest": hex(&[dig; 32]),
                             "command_id": hex(&[cmd; 16]),
+                        }),
+                        Status::ApplyStopped(seq, dig, cmd) => json!({
+                            "kind": "stopped_at_invalid_envelope",
+                            "stop_reason": "apply",
+                            "seq": seq,
+                            "envelope_digest": hex(&[dig; 32]),
+                            "command_id": hex(&[cmd; 16]),
+                        }),
+                        Status::UpdateRequired(seq, dig) => json!({
+                            "kind": "update_required",
+                            "seq": seq,
+                            "envelope_digest": hex(&[dig; 32]),
                         }),
                     };
                     let voids: Vec<Value> = s
                         .voids
                         .iter()
                         .zip(ids)
-                        .map(|(&(seq, position, cmd, dig, _), id)| {
+                        .map(|(&(seq, position, cmd, dig, _, reason), id)| {
                             json!({
                                 "id": id,
                                 "seq": seq,
                                 "position": position,
                                 "command_id": hex(&[cmd; 16]),
                                 "envelope_digest": hex(&[dig; 32]),
+                                "reason": reason,
                             })
                         })
                         .collect();
@@ -384,7 +451,7 @@ fn document() -> Value {
         ],
         "transient_reasons": ["NotYetEvaluated", "NotDeterminable"],
         "transient_note": "A transient void is offered again, in position order, when the frontier or the key state changes. Every other inert reason is permanent for that void.",
-        "not_in_scope": "A deterministic apply failure (reason 2) has no stop in the status machine yet and the void body has no engine_version field, so reason 2 is refused as malformed in this version (personal-cfo-g3m.26).",
+        "reasons": "A void states reason 1 (the envelope fails the receiver checks) or 2 (it passes them and fails to apply deterministically). The reason is audit only: a replica stopped at the position honors the void whichever reason the void or the stop states. A replica of another engine_version is update-required at the position (R40), is not stopped there and cannot judge the void: the outcome is the transient NotYetEvaluated.",
         "cases": cases,
     })
 }
