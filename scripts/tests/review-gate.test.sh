@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Tests for scripts/review-gate.sh (personal-cfo-md8h2.23) with a stub `gh`. No network.
-# The stub answers `gh pr view N` from per-PR files and `gh api .../compare/A...B` from a table.
+# The stub answers `gh pr view N --json labels,headRefOid,comments` from per-PR files.
 
 # The `check && pass || fail` lines are if-then-else on purpose: pass() always
 # returns 0, so fail() runs only when the check failed.

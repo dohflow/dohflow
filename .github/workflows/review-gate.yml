@@ -28,7 +28,7 @@ on:
   merge_group:
     types: [checks_requested]
 
-# The read-only token only (contents: read for the ancestry comparison, pull-requests: read).
+# The read-only token only (pull-requests: read for the label, head and comments; contents: read for checkout).
 permissions:
   contents: read
   pull-requests: read
