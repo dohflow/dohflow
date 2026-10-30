@@ -878,8 +878,8 @@ fn a_command_that_also_rebuilds_a_read_model_has_the_same_write_set_as_one_that_
     let (_dir, rebuilt) = worker();
     let rebuilt_set = command(&rebuilt, |tx| {
         tag_insert(tx)?;
-        crate::money_inbox::rebuild_in(tx).map_err(to_sqlite)?;
-        crate::commitments::rebuild_in(tx).map_err(to_sqlite)?;
+        crate::money_inbox::rebuild_in(tx, "2026-10-27T12:00:00+00:00").map_err(to_sqlite)?;
+        crate::commitments::rebuild_in(tx, "2026-10-27T12:00:00+00:00").map_err(to_sqlite)?;
         crate::recurring_instances::rebuild_in(
             tx,
             chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap(),

@@ -254,7 +254,7 @@ impl CommandMeta {
         if self.idempotency_key.trim().is_empty() {
             return Err(DbError::MissingMetadata("idempotency_key"));
         }
-        Ok(())
+        apply::require_issued_at(self)
     }
 }
 
@@ -3263,6 +3263,7 @@ impl DbWorker {
                     normalized_json: &rec.normalized_json,
                     parse_confidence_bps: rec.parse_confidence_bps.map(i64::from),
                 },
+                &Utc::now().to_rfc3339(),
             )?;
             if let (Some(txn), Some(Some(account))) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
@@ -3370,6 +3371,7 @@ impl DbWorker {
                     normalized_json: &rec.normalized_json,
                     parse_confidence_bps: rec.parse_confidence_bps.map(i64::from),
                 },
+                &Utc::now().to_rfc3339(),
             )?;
             if let (Some(txn), Some(account)) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
@@ -5421,6 +5423,7 @@ fn reverse_and_hide_transaction(
     currency: Currency,
     occurred_at: DateTime<Utc>,
     command_id: Uuid,
+    voided_at: &str,
 ) -> Result<(), DbError> {
     let mut stmt = conn.prepare(
         "SELECT ledger_account_id, minor_units FROM ledger_postings WHERE transaction_id = ?1",
@@ -5445,10 +5448,9 @@ fn reverse_and_hide_transaction(
     )
     .map_err(|e| DbError::InvalidCommand(e.to_string()))?;
     persist_transaction(conn, &reversal)?;
-    let now = Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE ledger_transactions SET voided_at = ?1 WHERE id IN (?2, ?3)",
-        params![now, txn_uuid, reversal_id.as_uuid()],
+        params![voided_at, txn_uuid, reversal_id.as_uuid()],
     )?;
     Ok(())
 }
@@ -5496,6 +5498,7 @@ fn record_transaction_detail(
     memo: Option<&str>,
     counterparty: Option<&str>,
     transaction_date: Option<&str>,
+    created_at: &str,
 ) -> Result<(), DbError> {
     if memo.is_none() && counterparty.is_none() && transaction_date.is_none() {
         return Ok(());
@@ -5509,7 +5512,7 @@ fn record_transaction_detail(
             memo,
             counterparty,
             transaction_date,
-            Utc::now().to_rfc3339()
+            created_at
         ],
     )?;
     Ok(())
@@ -6877,6 +6880,9 @@ fn apply_command(
     schema_version: i64,
     fault: Fault,
 ) -> Result<Outcome, DbError> {
+    // Before anything else: `apply` converts `issued_at` to a calendar instant, and a command
+    // from another device may carry any i64 (apply::require_issued_at).
+    apply::require_issued_at(meta)?;
     // Advance the HLC before borrowing the connection for the transaction.
     let hlc = inner.next_hlc();
     let tx = inner.conn.transaction()?;
@@ -6921,7 +6927,7 @@ fn apply_command(
             liability_id,
         } => apply::accounts::apply_set_account_link(&tx, asset_id, liability_id.as_ref())?,
         WriteCommand::SetDebtTerms { account_id, terms } => {
-            debt::apply_set_debt_terms(&tx, *account_id, *terms)?;
+            debt::apply_set_debt_terms(&tx, meta, *account_id, *terms)?;
             account_id.as_uuid()
         }
         WriteCommand::SetCardStatementBalance {
@@ -6931,6 +6937,7 @@ fn apply_command(
         } => {
             debt::apply_set_card_statement_balance(
                 &tx,
+                meta,
                 *account_id,
                 *cycle_close,
                 *statement_balance_minor,
@@ -6999,6 +7006,7 @@ fn apply_command(
             anchor,
         } => apply::recurring::apply_create_recurring_transfer(
             &tx,
+            meta,
             id,
             source_account_id,
             dest_account_id,
@@ -7021,6 +7029,7 @@ fn apply_command(
             deposit_account_id,
         } => apply::recurring::apply_create_income_source(
             &tx,
+            meta,
             id,
             name,
             net_amount,
@@ -7051,7 +7060,7 @@ fn apply_command(
             apply::recurring::apply_reinstate_income_source(&tx, id)?
         }
         WriteCommand::ArchiveIncomeSource(id) => {
-            apply::recurring::apply_archive_income_source(&tx, id)?
+            apply::recurring::apply_archive_income_source(&tx, meta, id)?
         }
         WriteCommand::RestoreIncomeSource(id) => {
             apply::recurring::apply_restore_income_source(&tx, id)?
@@ -7071,6 +7080,7 @@ fn apply_command(
             tag_ids,
         } => apply::recurring::apply_create_recurring_bill(
             &tx,
+            meta,
             event_id,
             contract_id,
             name,
@@ -7085,7 +7095,7 @@ fn apply_command(
             tag_ids,
         )?,
         WriteCommand::SetBillAutopay { event_id, autopay } => {
-            apply::recurring::apply_set_bill_autopay(&tx, event_id, autopay)?
+            apply::recurring::apply_set_bill_autopay(&tx, meta, event_id, autopay)?
         }
         WriteCommand::UpdateRecurringBill {
             event_id,
@@ -7098,6 +7108,7 @@ fn apply_command(
             description,
         } => apply::recurring::apply_update_recurring_bill(
             &tx,
+            meta,
             event_id,
             name,
             amount,
@@ -7111,13 +7122,13 @@ fn apply_command(
             apply::recurring::apply_delete_recurring_bill(&tx, meta, event_id)?
         }
         WriteCommand::ReinstateRecurringBill { event_id } => {
-            apply::recurring::apply_reinstate_recurring_bill(&tx, event_id)?
+            apply::recurring::apply_reinstate_recurring_bill(&tx, meta, event_id)?
         }
         WriteCommand::ArchiveRecurringBill(event_id) => {
-            apply::recurring::apply_archive_recurring_bill(&tx, event_id)?
+            apply::recurring::apply_archive_recurring_bill(&tx, meta, event_id)?
         }
         WriteCommand::RestoreRecurringBill(event_id) => {
-            apply::recurring::apply_restore_recurring_bill(&tx, event_id)?
+            apply::recurring::apply_restore_recurring_bill(&tx, meta, event_id)?
         }
         WriteCommand::LinkBillToLoan {
             event_id,
@@ -7139,6 +7150,7 @@ fn apply_command(
             connector_connection_id,
         } => apply::ingestion_cmds::apply_create_source_batch(
             &tx,
+            meta,
             id,
             source_type,
             source_name,
@@ -7163,6 +7175,7 @@ fn apply_command(
                 normalized_json: normalized_json.as_str(),
                 parse_confidence_bps: *parse_confidence_bps,
             },
+            &apply::issued_at_text(meta),
         )?,
         WriteCommand::UpdateBatchState {
             batch_id,
@@ -7172,6 +7185,7 @@ fn apply_command(
             skipped_count,
         } => apply::ingestion_cmds::apply_update_batch_state(
             &tx,
+            meta,
             batch_id,
             status,
             staged_count,
@@ -7184,12 +7198,12 @@ fn apply_command(
         } => apply::ingestion_cmds::apply_commit_staged(&tx, meta, staged_transaction_id, force)?,
         WriteCommand::SkipStaged {
             staged_transaction_id,
-        } => apply::ingestion_cmds::apply_skip_staged(&tx, staged_transaction_id)?,
+        } => apply::ingestion_cmds::apply_skip_staged(&tx, meta, staged_transaction_id)?,
         WriteCommand::SnoozeInboxItem { item_id, until } => {
-            apply::inbox::apply_snooze_inbox_item(&tx, item_id, until)?
+            apply::inbox::apply_snooze_inbox_item(&tx, meta, item_id, until)?
         }
         WriteCommand::DismissInboxItem { item_id, reason } => {
-            apply::inbox::apply_dismiss_inbox_item(&tx, item_id, reason)?
+            apply::inbox::apply_dismiss_inbox_item(&tx, meta, item_id, reason)?
         }
         WriteCommand::DismissRecurringSuggestion {
             merchant_key,
@@ -7199,6 +7213,7 @@ fn apply_command(
             reason,
         } => apply::recurring::apply_dismiss_recurring_suggestion(
             &tx,
+            meta,
             merchant_key,
             currency,
             *amount_minor,
@@ -7214,6 +7229,7 @@ fn apply_command(
             icon,
         } => apply::categorization_cmds::apply_create_category(
             &tx,
+            meta,
             id,
             parent_id,
             name,
@@ -7226,24 +7242,25 @@ fn apply_command(
             name,
             color,
             icon,
-        } => apply::categorization_cmds::apply_update_category(&tx, id, name, color, icon)?,
+        } => apply::categorization_cmds::apply_update_category(&tx, meta, id, name, color, icon)?,
         WriteCommand::MoveCategory { id, new_parent_id } => {
-            apply::categorization_cmds::apply_move_category(&tx, id, new_parent_id)?
+            apply::categorization_cmds::apply_move_category(&tx, meta, id, new_parent_id)?
         }
         WriteCommand::SetHouseholdTimezone { timezone } => {
             apply::household::apply_set_household_timezone(&tx, meta, timezone)?
         }
         WriteCommand::ArchiveCategory(id) => {
-            apply::categorization_cmds::apply_archive_category(&tx, id)?
+            apply::categorization_cmds::apply_archive_category(&tx, meta, id)?
         }
         WriteCommand::ReinstateCategory(id) => {
-            apply::categorization_cmds::apply_reinstate_category(&tx, id)?
+            apply::categorization_cmds::apply_reinstate_category(&tx, meta, id)?
         }
         WriteCommand::RecategorizeTransaction {
             transaction_id,
             category_id,
         } => apply::categorization_cmds::apply_recategorize_transaction(
             &tx,
+            meta,
             transaction_id,
             category_id,
         )?,
@@ -7253,24 +7270,24 @@ fn apply_command(
         WriteCommand::MarkReviewed {
             transaction_id,
             reviewed,
-        } => apply::transactions::apply_mark_reviewed(&tx, transaction_id, reviewed)?,
+        } => apply::transactions::apply_mark_reviewed(&tx, meta, transaction_id, reviewed)?,
         // The command_id is stored on the scenario as the reversal handle (ADR 0055 §3),
         // which is why apply is on this bus at all.
         WriteCommand::ApplyScenario { scenario_id } => apply::scenario_apply::apply_scenario(
             &tx,
             *scenario_id,
             meta.command_id,
-            &Utc::now().to_rfc3339(),
+            &apply::issued_at_text(meta),
         )?,
         WriteCommand::RevertScenarioApply { scenario_id } => {
             apply::scenario_apply::revert_scenario_apply(
                 &tx,
                 *scenario_id,
-                &Utc::now().to_rfc3339(),
+                &apply::issued_at_text(meta),
             )?
         }
         WriteCommand::CreateTag { id, name, color } => {
-            apply::transactions::apply_create_tag(&tx, id, name, color)?
+            apply::transactions::apply_create_tag(&tx, meta, id, name, color)?
         }
         WriteCommand::SetTags {
             transaction_id,
@@ -7279,7 +7296,7 @@ fn apply_command(
         WriteCommand::SetNote {
             transaction_id,
             note,
-        } => apply::transactions::apply_set_note(&tx, transaction_id, note)?,
+        } => apply::transactions::apply_set_note(&tx, meta, transaction_id, note)?,
         WriteCommand::SetSplits {
             transaction_id,
             lines,

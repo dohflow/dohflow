@@ -214,8 +214,9 @@ pub(crate) fn create_source_batch(
     conn: &Connection,
     id: Uuid,
     batch: &NewSourceBatch,
+    at: &str,
 ) -> Result<Uuid, DbError> {
-    let now = Utc::now().to_rfc3339();
+    let now = at;
     conn.execute(
         "INSERT INTO source_batches
             (id, source_type, source_name, file_fingerprint, parser_version,
@@ -245,20 +246,14 @@ pub(crate) fn update_batch_status(
     staged: i64,
     committed: i64,
     skipped: i64,
+    at: &str,
 ) -> Result<(), DbError> {
     let n = conn.execute(
         "UPDATE source_batches
             SET status = ?2, staged_count = ?3, committed_count = ?4,
                 skipped_count = ?5, updated_at = ?6
           WHERE id = ?1",
-        params![
-            batch_id,
-            status,
-            staged,
-            committed,
-            skipped,
-            Utc::now().to_rfc3339()
-        ],
+        params![batch_id, status, staged, committed, skipped, at],
     )?;
     if n == 0 {
         return Err(DbError::InvalidCommand(format!(
@@ -277,6 +272,7 @@ pub(crate) fn insert_source_record(
     conn: &Connection,
     id: Uuid,
     rec: &NewSourceRecord,
+    at: &str,
 ) -> Result<Uuid, DbError> {
     if let Some(existing) = conn
         .query_row(
@@ -300,7 +296,7 @@ pub(crate) fn insert_source_record(
             rec.source_hash,
             rec.normalized_json,
             rec.parse_confidence_bps,
-            Utc::now().to_rfc3339(),
+            at,
         ],
     )?;
     Ok(id)
@@ -406,6 +402,7 @@ pub(crate) fn stage_balance(conn: &Connection, bal: &NewStagedBalance) -> Result
 pub(crate) fn record_dedupe_decision(
     conn: &Connection,
     dec: &NewDedupeDecision,
+    at: &str,
 ) -> Result<Uuid, DbError> {
     let id = Uuid::now_v7();
     conn.execute(
@@ -422,7 +419,7 @@ pub(crate) fn record_dedupe_decision(
             dec.matched_entity_id,
             dec.decision,
             dec.reason,
-            Utc::now().to_rfc3339(),
+            at,
         ],
     )?;
     Ok(id)
@@ -434,6 +431,7 @@ pub(crate) fn record_dedupe_decision(
 pub(crate) fn link_provenance(
     conn: &Connection,
     link: &NewProvenanceLink,
+    at: &str,
 ) -> Result<Uuid, DbError> {
     let exists = conn
         .query_row(
@@ -460,7 +458,7 @@ pub(crate) fn link_provenance(
             link.entity_id,
             link.source_record_id,
             link.relationship,
-            Utc::now().to_rfc3339(),
+            at,
         ],
     )?;
     Ok(id)
@@ -971,6 +969,7 @@ mod tests {
                 parser_version: Some("csv-v1"),
                 connector_connection_id: None,
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         record_parser_run(
@@ -997,6 +996,7 @@ mod tests {
                 normalized_json: "{\"amount\":-1299}",
                 parse_confidence_bps: Some(10_000),
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         let staged = stage_transaction(
@@ -1048,6 +1048,7 @@ mod tests {
                 decision: "committed",
                 reason: "unique",
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         link_provenance(
@@ -1058,6 +1059,7 @@ mod tests {
                 source_record_id: record,
                 relationship: "created_from",
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
 
@@ -1119,6 +1121,7 @@ mod tests {
                 parser_version: None,
                 connector_connection_id: None,
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
 
@@ -1133,6 +1136,7 @@ mod tests {
                 decision: "skipped",
                 reason: "exact re-upload, already imported 2026-06-01",
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         record_dedupe_decision(
@@ -1146,6 +1150,7 @@ mod tests {
                 decision: "flagged",
                 reason: "possible duplicate of committed txn",
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
 
@@ -1173,6 +1178,7 @@ mod tests {
                 parser_version: None,
                 connector_connection_id: None,
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         let record = insert_source_record(
@@ -1185,6 +1191,7 @@ mod tests {
                 normalized_json: "{}",
                 parse_confidence_bps: None,
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
 
@@ -1197,6 +1204,7 @@ mod tests {
                 source_record_id: Uuid::now_v7(),
                 relationship: "created_from",
             },
+            &chrono::Utc::now().to_rfc3339(),
         );
         assert!(matches!(dangling, Err(DbError::InvalidCommand(_))));
         assert_eq!(count(&conn, "source_provenance_links"), 0);
@@ -1210,6 +1218,7 @@ mod tests {
                 source_record_id: record,
                 relationship: "created_from",
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         assert_eq!(count(&conn, "source_provenance_links"), 1);
@@ -1230,11 +1239,21 @@ mod tests {
                 parser_version: None,
                 connector_connection_id: None,
             },
+            &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
         assert_eq!(read_batch(&conn, batch).unwrap().unwrap().status, "parsing");
 
-        update_batch_status(&conn, batch, "committed", 10, 9, 1).unwrap();
+        update_batch_status(
+            &conn,
+            batch,
+            "committed",
+            10,
+            9,
+            1,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
         let b = read_batch(&conn, batch).unwrap().unwrap();
         assert_eq!(b.status, "committed");
         assert_eq!(b.staged_count, 10);
@@ -1242,6 +1261,15 @@ mod tests {
         assert_eq!(b.skipped_count, 1);
 
         // Unknown batch → error.
-        assert!(update_batch_status(&conn, Uuid::now_v7(), "committed", 0, 0, 0).is_err());
+        assert!(update_batch_status(
+            &conn,
+            Uuid::now_v7(),
+            "committed",
+            0,
+            0,
+            0,
+            &chrono::Utc::now().to_rfc3339()
+        )
+        .is_err());
     }
 }
