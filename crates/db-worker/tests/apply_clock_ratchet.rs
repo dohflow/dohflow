@@ -33,7 +33,13 @@ const DIRECT: &[&str] = &[
     "Utc::now(",
     "SystemTime::now(",
     "Instant::now(",
-    "Local::now(",
+    "Local::",
+    // The device's time zone is as much an input as its clock: `Local` in any form.
+    "Local)",
+    "Local.from_",
+    "Local.timestamp",
+    "Local.with_",
+    "Local.ymd",
 ];
 
 fn src_dir() -> PathBuf {
@@ -422,6 +428,11 @@ fn the_scanner_recognizes_what_it_exists_to_catch() {
     assert_eq!(direct("std::time::SystemTime::now()"), 1);
     assert_eq!(direct("Instant::now()"), 1);
     assert_eq!(direct("chrono::Local::now()"), 1);
+    // The device's zone in any other form.
+    assert_eq!(direct("t.with_timezone(&Local)"), 1);
+    assert_eq!(direct("t.with_timezone(&chrono::Local)"), 1);
+    assert_eq!(direct("Local.from_utc_datetime(&t)"), 1);
+    assert_eq!(direct("use chrono::Local;"), 0);
     // Prose and string text that merely mention a call are not a call.
     assert_eq!(direct("// replaces Utc::now() with meta.issued_at"), 0);
     assert_eq!(direct("/// never calls `Utc::now()`"), 0);

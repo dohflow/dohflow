@@ -281,6 +281,80 @@ fn base(dir: &Path) -> PathBuf {
     path
 }
 
+/// Apply the payload-id commands to a copy of `base`, returning `label hash` lines.
+fn hashes_on_a_copy(base: &Path, dir: &Path) -> Vec<String> {
+    let path = dir.join("child.vault");
+    std::fs::copy(base, &path).unwrap();
+    let worker = open(&path);
+    let mut lines = Vec::new();
+    for (n, (label, command)) in commands().into_iter().enumerate() {
+        worker
+            .dispatch(meta(n as u128), command)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        let hash: String = worker
+            .last_write_set()
+            .unwrap()
+            .hash
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        lines.push(format!("HASH {label}: {hash}"));
+    }
+    lines
+}
+
+/// The child half of the time-zone test: run only when the parent re-invokes this binary with
+/// `TZ` set and `DOHFLOW_TZ_BASE` naming the base vault.
+#[test]
+#[ignore = "run by apply_is_independent_of_the_device_time_zone in a child process"]
+fn child_apply_under_the_inherited_time_zone() {
+    let base = PathBuf::from(std::env::var("DOHFLOW_TZ_BASE").expect("run by the parent test"));
+    let dir = tempfile::tempdir().unwrap();
+    for line in hashes_on_a_copy(&base, dir.path()) {
+        println!("{line}");
+    }
+}
+
+#[test]
+fn apply_is_independent_of_the_device_time_zone() {
+    // The device's zone must not change what apply writes. Each zone runs in its own child
+    // process (a zone set in-process would race the other tests), on a copy of the same base.
+    let dir = tempfile::tempdir().unwrap();
+    let base = base(dir.path());
+    let run = |zone: &str| -> Vec<String> {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "child_apply_under_the_inherited_time_zone",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("TZ", zone)
+            .env("DOHFLOW_TZ_BASE", &base)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child under {zone} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            // The harness prints "test name ... " before the first line of output.
+            .filter_map(|l| l.find("HASH ").map(|at| l[at..].to_owned()))
+            .collect();
+        assert_eq!(lines.len(), commands().len(), "under {zone}: {lines:?}");
+        lines
+    };
+    let chicago = run("America/Chicago");
+    let auckland = run("Pacific/Auckland");
+    assert_eq!(
+        chicago, auckland,
+        "the write sets differ between two device time zones"
+    );
+}
+
 #[test]
 fn the_same_command_on_identical_vaults_writes_the_same_rows_and_hash() {
     let dir = tempfile::tempdir().unwrap();
