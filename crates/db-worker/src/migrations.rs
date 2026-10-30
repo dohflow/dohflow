@@ -2044,7 +2044,108 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         // require an empty foreign_key_check before COMMIT.
         foreign_keys_off: true,
     },
+    // The household record (personal-cfo-339): `households`, `household_members` and `profiles`,
+    // all class 1. The timezone moves from `vault_metadata` onto the household row; the
+    // post-step in `POST_UP` seeds an existing vault's household and member (ids derived from the
+    // vault id, every column from the vault's own creation time, never this migration's clock)
+    // and then drops the old column. Schema-only for a fresh vault, whose household is seeded
+    // when its `vault_metadata` row is created.
+    Migration {
+        version: 61,
+        name: "households",
+        up: "CREATE TABLE households (
+                 id                    BLOB PRIMARY KEY,
+                 name                  TEXT NOT NULL,
+                 household_timezone    TEXT NOT NULL,
+                 platform_household_id TEXT,
+                 created_at            TEXT NOT NULL,
+                 updated_at            TEXT NOT NULL
+             );
+             CREATE TRIGGER households_single_row BEFORE INSERT ON households
+             WHEN (SELECT COUNT(*) FROM households) >= 1
+             BEGIN
+                 SELECT RAISE(ABORT, 'a vault has exactly one household');
+             END;
+             CREATE TABLE household_members (
+                 id                 BLOB PRIMARY KEY,
+                 household_id       BLOB NOT NULL REFERENCES households(id) ON DELETE RESTRICT,
+                 display_name       TEXT NOT NULL,
+                 role               TEXT NOT NULL CHECK (role IN ('primary', 'partner', 'viewer')),
+                 platform_member_id TEXT,
+                 created_at         TEXT NOT NULL,
+                 deleted_at         TEXT
+             );
+             CREATE INDEX idx_household_members_household ON household_members (household_id);
+             CREATE UNIQUE INDEX idx_household_members_one_live_primary
+                 ON household_members (household_id)
+                 WHERE role = 'primary' AND deleted_at IS NULL;
+             CREATE TABLE profiles (
+                 member_id  BLOB PRIMARY KEY REFERENCES household_members(id) ON DELETE RESTRICT,
+                 initials   TEXT,
+                 color      TEXT,
+                 updated_at TEXT NOT NULL
+             );",
+        // Reverse: refuses (atomically, like 57, 59 and 60) unless the three tables are EXACTLY
+        // the backfill state, because dropping them would lose the household name, a renamed
+        // primary, every other member, every profile and the platform ids. In that state the
+        // timezone goes back onto `vault_metadata`, which is rebuilt in its old shape (the old
+        // column was NOT NULL without a default).
+        down: Some(
+            "CREATE TEMP TABLE households_down_needs_the_backfill_state (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO households_down_needs_the_backfill_state
+                 SELECT CASE WHEN
+                        ((SELECT COUNT(*) FROM households) = 0
+                         AND (SELECT COUNT(*) FROM household_members) = 0
+                         AND (SELECT COUNT(*) FROM profiles) = 0)
+                     OR ((SELECT COUNT(*) FROM households) = 1
+                         AND EXISTS (SELECT 1 FROM households
+                                      WHERE name = 'My household' AND platform_household_id IS NULL)
+                         AND (SELECT COUNT(*) FROM household_members) = 1
+                         AND EXISTS (SELECT 1 FROM household_members
+                                      WHERE role = 'primary' AND display_name = 'Me'
+                                        AND platform_member_id IS NULL AND deleted_at IS NULL)
+                         AND (SELECT COUNT(*) FROM profiles) = 0)
+                    THEN 1 ELSE 0 END;
+             DROP TABLE households_down_needs_the_backfill_state;
+             CREATE TABLE vault_metadata_v60 (
+                 singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 vault_id           BLOB    NOT NULL,
+                 schema_version     INTEGER NOT NULL,
+                 envelope_version   INTEGER NOT NULL,
+                 kdf_algorithm      TEXT    NOT NULL,
+                 kdf_memory_kib     INTEGER NOT NULL,
+                 kdf_time_cost      INTEGER NOT NULL,
+                 kdf_parallelism    INTEGER NOT NULL,
+                 household_timezone TEXT    NOT NULL,
+                 manifest_pointer   TEXT,
+                 created_at         TEXT    NOT NULL
+             );
+             INSERT INTO vault_metadata_v60
+                    (singleton, vault_id, schema_version, envelope_version, kdf_algorithm,
+                     kdf_memory_kib, kdf_time_cost, kdf_parallelism, household_timezone,
+                     manifest_pointer, created_at)
+                 SELECT v.singleton, v.vault_id, v.schema_version, v.envelope_version,
+                        v.kdf_algorithm, v.kdf_memory_kib, v.kdf_time_cost, v.kdf_parallelism,
+                        COALESCE((SELECT h.household_timezone FROM households h), 'UTC'), v.manifest_pointer,
+                        v.created_at
+                   FROM vault_metadata v;
+             DROP TABLE vault_metadata;
+             ALTER TABLE vault_metadata_v60 RENAME TO vault_metadata;
+             DROP TABLE profiles;
+             DROP TABLE household_members;
+             DROP TRIGGER households_single_row;
+             DROP TABLE households;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
+
+/// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
+/// cannot do (hashing). Keyed by migration version. They run only on the way up.
+type PostUp = fn(&rusqlite::Connection) -> rusqlite::Result<()>;
+
+const POST_UP: &[(i64, PostUp)] = &[(61, crate::households::migrate_up)];
 
 const fn max_version() -> i64 {
     let mut max = 0;
@@ -2207,6 +2308,11 @@ pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u
             continue;
         }
         run_step(conn, m, m.up, |tx| {
+            for (version, step) in POST_UP {
+                if *version == m.version {
+                    step(tx)?;
+                }
+            }
             tx.execute(
                 "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
                  VALUES (?1, ?2, ?3, ?4)",
@@ -3007,5 +3113,227 @@ mod tests {
             before,
             "accounts lost across a down→up round-trip"
         );
+    }
+
+    /// A vault at schema version 60 with a `vault_metadata` row, as an older build left it.
+    fn v60_vault_with_metadata(created_at: &str, timezone: &str) -> (Connection, uuid::Uuid) {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..60]).unwrap();
+        let vault_id = uuid::Uuid::from_u128(0x0123_4567_89ab_7def_8123_4567_89ab_cdef);
+        conn.execute(
+            "INSERT INTO vault_metadata (singleton, vault_id, schema_version, envelope_version,
+                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                household_timezone, manifest_pointer, created_at)
+             VALUES (1, ?1, 60, 1, 'argon2id', 65536, 3, 1, ?2, NULL, ?3)",
+            rusqlite::params![vault_id, timezone, created_at],
+        )
+        .unwrap();
+        (conn, vault_id)
+    }
+
+    /// Every class-1 household row of a vault as comparable text.
+    fn household_rows(conn: &Connection) -> Vec<String> {
+        let mut rows = Vec::new();
+        for sql in [
+            "SELECT hex(id) || '|' || name || '|' || household_timezone || '|' ||
+                    COALESCE(platform_household_id, '~') || '|' || created_at || '|' || updated_at
+               FROM households",
+            "SELECT hex(id) || '|' || hex(household_id) || '|' || display_name || '|' || role || '|' ||
+                    COALESCE(platform_member_id, '~') || '|' || created_at || '|' ||
+                    COALESCE(deleted_at, '~')
+               FROM household_members",
+            "SELECT hex(member_id) || '|' || COALESCE(initials, '~') FROM profiles",
+        ] {
+            let mut stmt = conn.prepare(sql).unwrap();
+            rows.extend(
+                stmt.query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .map(Result::unwrap),
+            );
+        }
+        rows
+    }
+
+    /// The migration backfills one household and ONE primary member from the vault's own id and
+    /// creation time, moves the timezone, and drops the old column. Two copies of one vault
+    /// migrated at different wall-clock times hold byte-identical class-1 rows.
+    #[test]
+    fn v61_backfills_one_household_and_one_primary_deterministically() {
+        let created = "2026-03-01T09:30:00+00:00";
+        let (mut a, vault_id) = v60_vault_with_metadata(created, "America/Denver");
+        let (mut b, _) = v60_vault_with_metadata(created, "America/Denver");
+        apply(&mut a, &MIGRATIONS[60..61]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        apply(&mut b, &MIGRATIONS[60..61]).unwrap();
+
+        let rows = household_rows(&a);
+        assert_eq!(
+            rows,
+            household_rows(&b),
+            "independent migrations agree on every column"
+        );
+        assert_eq!(rows.len(), 2, "one household and one member: {rows:?}");
+        let household = crate::households::household_id(&vault_id);
+        let member = crate::households::primary_member_id(&vault_id);
+        assert_eq!(
+            rows[0],
+            format!(
+                "{}|My household|America/Denver|~|{created}|{created}",
+                hex_upper(household.as_bytes())
+            )
+        );
+        assert_eq!(
+            rows[1],
+            format!(
+                "{}|{}|Me|primary|~|{created}|~",
+                hex_upper(member.as_bytes()),
+                hex_upper(household.as_bytes())
+            )
+        );
+        let old_column: i64 = a
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('vault_metadata') WHERE name = 'household_timezone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_column, 0, "the timezone moved");
+    }
+
+    /// The down migration restores the column from the household row in the backfill state and
+    /// refuses (atomically) in every state that dropping the tables would lose data from.
+    #[test]
+    fn v61_down_restores_the_timezone_and_refuses_when_it_would_lose_data() {
+        let created = "2026-03-01T09:30:00+00:00";
+        let (mut conn, vault_id) = v60_vault_with_metadata(created, "Asia/Tokyo");
+        apply(&mut conn, &MIGRATIONS[60..61]).unwrap();
+        let member = crate::households::primary_member_id(&vault_id);
+        let household = crate::households::household_id(&vault_id);
+
+        // Each of these is data the down would lose, so it refuses and changes nothing.
+        let edits: [(&str, &str); 6] = [
+            (
+                "a renamed household",
+                "UPDATE households SET name = 'Garcias'",
+            ),
+            (
+                "a renamed primary",
+                "UPDATE household_members SET display_name = 'Pat'",
+            ),
+            (
+                "a platform household link",
+                "UPDATE households SET platform_household_id = 'h-1'",
+            ),
+            (
+                "a platform member link",
+                "UPDATE household_members SET platform_member_id = 'm-1'",
+            ),
+            (
+                "a second member",
+                "INSERT INTO household_members (id, household_id, display_name, role, created_at)
+                 VALUES (x'00000000000000000000000000000001', (SELECT id FROM households),
+                         'Sam', 'partner', '2026-03-02T00:00:00+00:00')",
+            ),
+            (
+                "a profile",
+                "INSERT INTO profiles (member_id, initials, color, updated_at)
+                 SELECT id, 'ME', NULL, '2026-03-02T00:00:00+00:00' FROM household_members",
+            ),
+        ];
+        for (label, edit) in edits {
+            let tx = conn.unchecked_transaction().unwrap();
+            tx.execute_batch(edit).unwrap();
+            tx.commit().unwrap();
+            let rows_before = household_rows(&conn);
+            assert!(
+                migrate_down(&mut conn, 60).is_err(),
+                "down must refuse with {label}"
+            );
+            assert_eq!(user_version_of(&conn), 61, "{label}: still at 61");
+            assert_eq!(
+                household_rows(&conn),
+                rows_before,
+                "{label}: nothing changed"
+            );
+            // Undo the edit for the next case.
+            let undo = match label {
+                "a renamed household" => "UPDATE households SET name = 'My household'",
+                "a renamed primary" => "UPDATE household_members SET display_name = 'Me'",
+                "a platform household link" => "UPDATE households SET platform_household_id = NULL",
+                "a platform member link" => {
+                    "UPDATE household_members SET platform_member_id = NULL"
+                }
+                "a second member" => "DELETE FROM household_members WHERE role = 'partner'",
+                _ => "DELETE FROM profiles",
+            };
+            conn.execute_batch(undo).unwrap();
+        }
+        let _ = (member, household);
+
+        // The pristine backfill state goes back, with the timezone on the old column.
+        assert_eq!(migrate_down(&mut conn, 60).unwrap(), 1);
+        let timezone: String = conn
+            .query_row("SELECT household_timezone FROM vault_metadata", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(timezone, "Asia/Tokyo");
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('households', 'household_members', 'profiles')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0);
+        // And up again yields the same rows.
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(household_rows(&conn).len(), 2);
+    }
+
+    fn hex_upper(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02X}")).collect()
+    }
+
+    fn user_version_of(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A fresh vault has no `vault_metadata` row when migrations run: nothing is backfilled and
+    /// the column still goes.
+    #[test]
+    fn v61_on_a_fresh_vault_creates_empty_tables() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert!(household_rows(&conn).is_empty());
+    }
+
+    /// A vault has exactly one household, however a row is inserted.
+    #[test]
+    fn a_second_household_is_refused_by_the_schema() {
+        let (mut conn, _) = v60_vault_with_metadata("2026-03-01T09:30:00+00:00", "UTC");
+        apply(&mut conn, &MIGRATIONS[60..61]).unwrap();
+        let second = conn.execute(
+            "INSERT INTO households (id, name, household_timezone, created_at, updated_at)
+             VALUES (x'00000000000000000000000000000002', 'x', 'UTC', 't', 't')",
+            [],
+        );
+        assert!(second.is_err());
+    }
+
+    /// At most one live primary exists, and a tombstoned primary does not count.
+    #[test]
+    fn the_schema_allows_at_most_one_live_primary() {
+        let (mut conn, _) = v60_vault_with_metadata("2026-03-01T09:30:00+00:00", "UTC");
+        apply(&mut conn, &MIGRATIONS[60..61]).unwrap();
+        let insert =
+            "INSERT INTO household_members (id, household_id, display_name, role, created_at)
+                      VALUES (x'00000000000000000000000000000009', (SELECT id FROM households),
+                              'Second', 'primary', 't')";
+        assert!(conn.execute(insert, []).is_err());
+        conn.execute_batch("UPDATE household_members SET deleted_at = 't'")
+            .unwrap();
+        conn.execute(insert, []).unwrap();
     }
 }

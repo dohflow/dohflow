@@ -488,5 +488,57 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
                 timezone: "America/Chicago".into(),
             },
         ),
+        (
+            "set_household_name",
+            WriteCommand::SetHouseholdName {
+                name: "The Garcia household".into(),
+            },
+        ),
+        (
+            "add_household_member",
+            WriteCommand::AddHouseholdMember {
+                member_id: u(60),
+                display_name: "Sam".into(),
+                role: db_worker::HouseholdRole::Partner,
+            },
+        ),
+        (
+            "rename_household_member",
+            WriteCommand::RenameHouseholdMember {
+                member_id: u(60),
+                display_name: "Samuel".into(),
+            },
+        ),
+        (
+            "set_member_role",
+            WriteCommand::SetMemberRole {
+                member_id: u(60),
+                role: db_worker::HouseholdRole::Viewer,
+            },
+        ),
+        (
+            "set_member_profile",
+            WriteCommand::SetMemberProfile {
+                member_id: u(60),
+                initials: Some("SG".into()),
+                color: Some("#3366CC".into()),
+            },
+        ),
+        // The primary's id is derived from the vault; the oracle fills it in.
+        (
+            "transfer_primary",
+            WriteCommand::TransferPrimary {
+                from_member_id: u(0),
+                to_member_id: u(60),
+            },
+        ),
+        (
+            "remove_household_member",
+            WriteCommand::RemoveHouseholdMember { member_id: u(0) },
+        ),
+        (
+            "restore_household_member",
+            WriteCommand::RestoreHouseholdMember { member_id: u(0) },
+        ),
     ]
 }

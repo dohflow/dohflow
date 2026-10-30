@@ -60,7 +60,7 @@ require_text "whole correlation group queues" "$ADR" "the whole \`correlation_id
 require_text "causal descendants queue" "$ADR" "causal descendant (\`causation_id\`)"
 require_text "no data is dropped" "$ADR" "No financial data is"
 
-require_text "Create shape is counted" "$ADR" "#### Create (8)"
+require_text "Create shape is counted" "$ADR" "#### Create (9)"
 require_text "Set shape is counted" "$ADR" "#### Set (18)"
 require_text "Toggle shape is counted" "$ADR" "#### Toggle (12)"
 require_text "base-dependent shape is counted" "$ADR" "#### Base-dependent (4)"
@@ -89,6 +89,8 @@ require_text "toggle count after tombstones" "$ADR" "**Toggle 18**"
 require_text "tombstone-first is empty after tombstones" "$ADR" "**Tombstone first 0**"
 require_text "link addendum is present" "$ADR" "## Addendum B — The bill-to-loan link (2026-10-25, \`personal-cfo-6wk.22\`)"
 require_text "link commands are Sets" "$ADR" "That makes **Set 21** and 56 appendix rows"
+require_text "household addendum is present" "$ADR" "## Addendum E — The household record"
+require_text "household counts" "$ADR" "**Create 9**, **Set 25**,"
 require_text "dangling link applies as no link" "$ADR" "the command **applies as no link**"
 require_text "loan archive clears links in the same command" "$ADR" "\`ArchiveAccount\` clears every link to the archived loan"
 require_text "bill archive and delete clear the link" "$ADR" "\`ArchiveRecurringBill\` and \`DeleteRecurringBill\` clear the bill's own link"
@@ -138,6 +140,8 @@ variants=(
   VoidTransaction MarkReviewed ApplyScenario RevertScenarioApply CreateTag SetTags SetNote
   SetSplits ReinstateRecurringTransfer ReinstateIncomeSource ReinstateRecurringBill
   LinkBillToLoan UnlinkBillFromLoan SetBillNotLoanPayment
+  SetHouseholdName AddHouseholdMember RenameHouseholdMember SetMemberRole SetMemberProfile
+  TransferPrimary RemoveHouseholdMember RestoreHouseholdMember
 )
 for variant in "${variants[@]}"; do
   require_text "appendix maps $variant" "$ADR" "| \`$variant\` |"
@@ -148,8 +152,8 @@ require_text "test parses the ADR table" "$TEST" "fn parse_adr_appendix"
 require_text "test compares every ADR cell" "$TEST" "fn compare_adr_appendix"
 require_text "test proves one-cell drift fails" "$TEST" "adr_appendix_comparison_rejects_one_cell_outcome_drift"
 require_text "test asserts live enum count" "$TEST" "variants.len(),"
-require_text "test pins the current enum count" "$TEST" "        56,"
-require_text "test asserts shape counts" "$TEST" "assert_eq!(shape_count(Shape::Create), 8"
+require_text "test pins the current enum count" "$TEST" "        64,"
+require_text "test asserts shape counts" "$TEST" "assert_eq!(shape_count(Shape::Create), 9"
 require_text "test rejects unmapped variants" "$TEST" "exactly one disposition row"
 require_text "two-vault toggle strict test" "$TEST" "two_vault_strict_rebase_queues_equal_end_state_toggle_when_touched"
 require_text "two-vault tags strict test" "$TEST" "two_vault_strict_rebase_queues_set_tags_without_union_rewrite"

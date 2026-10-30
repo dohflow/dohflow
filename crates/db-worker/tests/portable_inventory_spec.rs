@@ -102,7 +102,6 @@ fn dispositions_follow_the_class_unless_explicitly_excepted() {
     // The only tables whose treatment differs from their class default. Adding
     // an exception here is a deliberate, reviewed change to the contract.
     let exceptions: BTreeMap<&str, (&str, &str)> = BTreeMap::from([
-        ("vault_metadata", ("fields", "fields")),
         ("settings", ("fields", "fields")),
         ("settings_user_keys", ("fields", "fields")),
         ("attachments", ("fields", "fields")),
@@ -168,7 +167,7 @@ fn split_field_tables_name_every_real_column() {
     let spec = inventory();
     let (_dir, worker) = worker();
     let conn = worker.read_connection().unwrap();
-    for table in ["vault_metadata", "attachments"] {
+    for table in ["attachments"] {
         let rule = &spec[table].rule;
         let mut stmt = conn
             .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))

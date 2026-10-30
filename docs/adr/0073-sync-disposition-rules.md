@@ -84,7 +84,7 @@ the shape counts (8 Create, 18 Set, 12 Toggle, 4 Base-dependent), and prints
 the table used below. A new variant without a row fails the test before a
 SYNC-2 implementation can ship it.
 
-#### Create (8)
+#### Create (9)
 
 Create commands append an entity or balanced posting. They auto-apply only
 when the strict predicate holds and all referenced rows are still valid on the
@@ -258,6 +258,14 @@ receives semantic auto-merge treatment.
 | `LinkBillToLoan` | Set | auto iff strict predicate; a loan that is archived or no longer a loan on the new base applies as no link; a second bill for the same loan queue-choose |
 | `UnlinkBillFromLoan` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SetBillNotLoanPayment` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `SetHouseholdName` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `AddHouseholdMember` | Create | auto; queue-edit if the member id is already in use |
+| `RenameHouseholdMember` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
+| `SetMemberRole` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member became the primary |
+| `SetMemberProfile` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
+| `TransferPrimary` | Base-dependent | queue-choose; re-validated against the new base (the from member must still be the live primary, the to member live), never auto |
+| `RemoveHouseholdMember` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed; queue-edit if the member became the primary |
+| `RestoreHouseholdMember` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -404,6 +412,38 @@ every other tombstone, except that there is no `Reinstate`. Nothing in the gener
 its tally changes in this change, because the connector writes are still raw: the tombstone and
 the classification are in force, and replication of the identity and mapping starts when
 `personal-cfo-5ymg8` lands.
+
+## Addendum E — The household record (2026-10-30, `personal-cfo-339`)
+
+Schema version 61 adds three class-1 tables, `households` (one row per vault), `household_members`
+and `profiles`, written only by eight additive version 1 commands: `SetHouseholdName`,
+`AddHouseholdMember`, `RenameHouseholdMember`, `SetMemberRole`, `SetMemberProfile` (Sets, and one
+Create), `TransferPrimary` (Base-dependent) and `RemoveHouseholdMember` / `RestoreHouseholdMember`
+(Toggles over a `deleted_at` tombstone, never a hard delete). That makes **Create 9**, **Set 25**,
+**Toggle 20**, **Base-dependent 5** and 64 appendix rows. `SetHouseholdTimezone` keeps its
+payload and its meaning; its write set is now the `households` row instead of the logical
+`household` record (vault-format C.13, spec-version 16).
+
+**State-validated commands.** The primary seat has exactly one live holder. `TransferPrimary`
+names both members and is validated against STATE (`from` must be the live primary, `to` live and
+not primary), so after a rebase a stale `from` is a deterministic rejection at the producer and
+never a second primary. `SetMemberRole` and `AddHouseholdMember` never touch the primary seat, and
+the live primary cannot be removed. Apply validates explicitly first; the partial unique index
+`one live primary` is a backstop, and the transfer demotes before it promotes because SQLite checks
+a unique index per statement.
+
+**A role is not access control.** `household_members.role` is display and ownership metadata.
+Every device in the membership chain holds the epoch key and can issue any command, so Sync does
+not enforce `viewer`; nothing may rely on a role for security until an ADR says how it is enforced.
+
+**Seeded rows, deterministic in every column.** The household and the first member are not created
+by a command. They are seeded at vault creation, or by the migration for an existing vault, with
+ids derived from the vault id and every column a pure function of the vault (its own creation
+time, fixed default texts), so two devices that create or migrate the same vault independently
+hold byte-identical class-1 rows. The local ids are for local use: they derive from the sync-visible
+`vault_id` and must never be sent to the platform service (the platform link is
+`platform_household_id` / `platform_member_id`, both null with no account, and no command writes
+them yet).
 
 ## Linked beads
 

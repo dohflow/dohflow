@@ -87,7 +87,7 @@ fn every_write_command_variant_has_exactly_one_sample() {
     expected.sort();
     let mut actual: Vec<String> = samples().iter().map(|(n, _)| (*n).to_owned()).collect();
     actual.sort();
-    assert_eq!(expected.len(), 56, "the enum has 56 variants");
+    assert_eq!(expected.len(), 64, "the enum has 64 variants");
     assert_eq!(
         actual, expected,
         "a variant without a sample, or a sample without a variant"
@@ -341,8 +341,11 @@ fn fixture_digest(files: &[(String, Vec<u8>)]) -> String {
 /// three files were added. So did `LinkBillToLoan`, `UnlinkBillFromLoan` and
 /// `SetBillNotLoanPayment` of personal-cfo-6wk.22: the 53 existing fixtures are byte-identical
 /// and three files were added (planning's rule: new additive v1 payloads, no field added to any
-/// existing payload).
-const PAYLOAD_V1_DIGEST: &str = "3a8f00be27e2936616a18fc4db854cc2bf3c542b4c85d506308f832120e7525f";
+/// existing payload). So did the eight household commands of personal-cfo-339 (`SetHouseholdName`,
+/// `AddHouseholdMember`, `RenameHouseholdMember`, `SetMemberRole`, `TransferPrimary`,
+/// `RemoveHouseholdMember`, `RestoreHouseholdMember`, `SetMemberProfile`): the 56 existing
+/// fixtures are byte-identical and eight files were added.
+const PAYLOAD_V1_DIGEST: &str = "8e8c1ef668d28d78b1fecf413ad92946edd5a3c921c93033910f3f3ffc93b20f";
 
 #[test]
 fn the_frozen_version_1_fixtures_match_the_samples_and_the_pinned_digest() {
@@ -413,7 +416,7 @@ fn every_frozen_fixture_decodes_under_its_version() {
             count += 1;
         }
         assert_eq!(
-            count, 56,
+            count, 64,
             "version {version} has a fixture for every variant"
         );
     }

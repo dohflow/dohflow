@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=14 -->
-<!-- vault-format: schema-version=60 -->
+<!-- vault-format: spec-version=15 -->
+<!-- vault-format: schema-version=61 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -270,6 +270,16 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 15` (personal-cfo-339) moves the household timezone off `vault_metadata` onto
+  a new class-1 `households` table, with `household_members` and `profiles` beside it (schema
+  version 61). The logical `household` record (table name `household`, key `int 1`, one column)
+  is RETIRED: `SetHouseholdTimezone` keeps its payload and meaning, and its write set is now the
+  `households` row (table name `households`, key the row's uuid, all columns), a change of the
+  frozen write-set vectors that is legal because no envelope has shipped. `data/household.jsonl`
+  becomes `data/households.jsonl` in the logical bundle, and `vault_metadata` becomes wholly
+  device-local (`exclude`). The household and its first member are seeded, not created by a
+  command, with ids derived from the vault id and every column a pure function of the vault, so
+  independent devices agree.
 - `spec-version = 14` tightens the rule by which a replica honors a void (C.10 "Void records",
   "When a replica honors it"): only against the stop it reached in log order (every position below
   `seq` applied or skipped), with the pinned order of checks, the inert reasons split into
@@ -369,6 +379,9 @@ therefore requires reviewing this inventory.
 | `provenance_links` | 1 | history | exclude | Travels with the history it indexes, on the same terms as `operation_log`. |
 | `categories` | 1 | include | include | Canonical user intent. |
 | `category_aliases` | 1 | include | include | Canonical user intent. |
+| `households` | 1 | include | include | The vault's one household row: name, household timezone (the field `SetHouseholdTimezone` changes), an optional platform household link (null with no account). Its id is derived from the vault id and is for local use only: it is never sent to the platform service. |
+| `household_members` | 1 | include | include | Household seats: display name, role (primary, partner, viewer; display and ownership metadata, NOT access control), an optional platform member link, and a `deleted_at` tombstone. Exactly one live primary. |
+| `profiles` | 1 | include | include | Per-member non-secret display preferences (initials, color). No secret-bearing column. |
 | `income_sources` | 1 | include | include | Canonical user intent. |
 | `recurring_events` | 1 | include | include | Canonical user intent. |
 | `recurring_event_instances` | 1 | include | include | Canonical user intent. |
@@ -409,7 +422,7 @@ therefore requires reviewing this inventory.
 | `recurring_suggestion_suppressions` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `command_idempotency_keys` | 3 | exclude | exclude | Device-local state. |
 | `vault_meta` | 3 | exclude | exclude | Device-local state. |
-| `vault_metadata` | 3 | fields | fields | Only `household_timezone` travels, as the logical class-1 field of the `household` record (B.3); it is stored here today and may move to the households row (`personal-cfo-339`) without a format change. `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. |
+| `vault_metadata` | 3 | exclude | exclude | Device-local state: `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. The household timezone lives on the class-1 `households` row since schema version 61. |
 | `schema_migrations` | 3 | exclude | exclude | Device-local state. |
 | `audit_events` | 3 | exclude | exclude | Device-local security evidence and replay-owned planned-command rows; not a user-owned financial record. |
 | `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
@@ -462,11 +475,12 @@ Rules that apply to the whole inventory:
    **not** limit what a Sync device can see: the genesis carries every class-1
    ledger row of every age (C.8).
 6. **The household timezone is user data, not a header.** `household_timezone`
-   changes the forecast horizon boundary, so it is a class-1 logical field and is
+   changes the forecast horizon boundary, so it is a class-1 field and is
    changed only through a logged command (`SetHouseholdTimezone`, a
    `WriteCommand` with an operation-log row and an audit event; the value is
-   stored on the `vault_metadata` row today). It is never a manifest-only or
-   genesis-header-only value, because a header would not propagate later changes.
+   stored on the class-1 `households` row, where it moved from `vault_metadata` in
+   schema version 61). It is never a manifest-only or genesis-header-only value,
+   because a header would not propagate later changes.
 
 ## B.3 Portable logical model
 
@@ -480,7 +494,6 @@ container.
 | --- | --- |
 | `manifest.json` | format identity and version, producer versions, the vault profile, per-table row counts and hashes, the artifact list, and the inventory version |
 | `data/<table>.jsonl` | one file per table with disposition `include`, `fields` or `history`; one canonical JSON object per line, in primary-key order |
-| `data/household.jsonl` | the logical `household` record: one row holding `household_timezone` (B.2 rule 6) |
 | `artifacts/<artifact_id>` | the plaintext bytes of one document, addressed by the attachment's logical `id` |
 | `exports/transactions.csv` | the existing plaintext transaction export (`personal-cfo-hbd8`), included unchanged |
 | `RECOVERY.txt` | plain-language instructions for opening the bundle without DohFlow (B.6) |
@@ -815,11 +828,10 @@ encoding). It uses CBE1 (C.1.1).
   enters a digest. These are `attachments` (`id`, `plaintext_size`, `mime_type`,
   `original_filename`, `created_at`; never `storage_id`, wrapped keys or nonces, and not
   the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys and the
-  six legacy user keys, never `device.*`), and `vault_metadata`, whose
-  `household_timezone` is the single field of the logical `household` record (B.3): its
-  digest uses the table name `household`, the one column `household_timezone`, and the
-  key `int 1`. The projection a command's apply writes is therefore never empty for
-  `SetHouseholdTimezone`.
+  six legacy user keys, never `device.*`). The household timezone is NOT a projection since
+  schema version 61: it is a column of the fully captured class-1 `households` row, so
+  `SetHouseholdTimezone` writes the `households` entry (and its `updated_at`, which moves only
+  when the zone does), and `vault_metadata` has no replicated field.
 
 **Folded children.** A replicated table that declares no primary key cannot be a write-set
 entry of its own, because a rowid is not the same on two devices. Such a table is **folded
@@ -1633,9 +1645,9 @@ files are the `data/<table>.jsonl` files in ascending path order. The manifest
 the header's `artifact_manifest_commitment`. The set of files must equal the set
 the manifest names, with none missing and none extra.
 
-The household timezone travels as the logical class-1 field `household_timezone`
-of the `household` record in `data/household.jsonl` (Part B), never as a header
-field, so later changes to it propagate by command.
+The household timezone travels as the `household_timezone` column of the class-1 `households`
+row in `data/households.jsonl` (Part B), never as a header field, so later changes to it
+propagate by command.
 
 A snapshot's plaintext is at most `2^30` bytes (1 GiB). A larger vault fails with
 the typed error `SnapshotTooLarge` until a chunked framing is specified.

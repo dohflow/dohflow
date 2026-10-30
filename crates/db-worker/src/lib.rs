@@ -53,6 +53,8 @@ mod band_drift;
 mod categories;
 mod column_manifest;
 mod connectors;
+pub mod households;
+pub use households::HouseholdRole;
 pub mod payload;
 pub mod write_set;
 #[cfg(test)]
@@ -849,6 +851,68 @@ pub enum WriteCommand {
         /// The IANA zone name, for example `America/Chicago`.
         timezone: String,
     },
+    /// Rename the household (personal-cfo-339). A name that is already set is an accepted no-op.
+    SetHouseholdName {
+        /// The new name: 1 to 100 characters after trimming.
+        name: String,
+    },
+    /// Add a household member (personal-cfo-339). The id is minted by the caller, never in
+    /// apply. The role is `partner` or `viewer`; the primary seat exists from the start and
+    /// moves only through [`WriteCommand::TransferPrimary`]. The role is DISPLAY and ownership
+    /// metadata, not access control: every device holds the vault key and can issue any command.
+    AddHouseholdMember {
+        /// The new member's id.
+        member_id: Uuid,
+        /// The display name: 1 to 100 characters after trimming.
+        display_name: String,
+        /// `partner` or `viewer`.
+        role: HouseholdRole,
+    },
+    /// Rename a live member (personal-cfo-339).
+    RenameHouseholdMember {
+        /// The member.
+        member_id: Uuid,
+        /// The new display name.
+        display_name: String,
+    },
+    /// Change a live partner or viewer between those two roles (personal-cfo-339). Never
+    /// touches the primary seat.
+    SetMemberRole {
+        /// The member (not the primary).
+        member_id: Uuid,
+        /// `partner` or `viewer`.
+        role: HouseholdRole,
+    },
+    /// Move the primary seat from the live primary to another live member in one atomic step,
+    /// so exactly one live primary exists at every point (personal-cfo-339). The old primary
+    /// becomes a partner. Validated against STATE: `from_member_id` must be the live primary.
+    TransferPrimary {
+        /// The current live primary.
+        from_member_id: Uuid,
+        /// The live partner or viewer who becomes primary.
+        to_member_id: Uuid,
+    },
+    /// Remove a member by tombstone (`deleted_at` = the command's `issued_at`), never a hard
+    /// delete (personal-cfo-339). The live primary cannot be removed.
+    RemoveHouseholdMember {
+        /// The member.
+        member_id: Uuid,
+    },
+    /// Restore a tombstoned member (personal-cfo-339).
+    RestoreHouseholdMember {
+        /// The member.
+        member_id: Uuid,
+    },
+    /// Set a live member's non-secret display preferences (personal-cfo-339). Clearing both
+    /// fields keeps the row with empty values (a replicated row is never deleted).
+    SetMemberProfile {
+        /// The member.
+        member_id: Uuid,
+        /// One to four characters, or none.
+        initials: Option<String>,
+        /// A `#RRGGBB` color, or none.
+        color: Option<String>,
+    },
 }
 
 impl WriteCommand {
@@ -901,6 +965,14 @@ impl WriteCommand {
             WriteCommand::UpdateCategory { .. } => "update_category",
             WriteCommand::MoveCategory { .. } => "move_category",
             WriteCommand::SetHouseholdTimezone { .. } => "set_household_timezone",
+            WriteCommand::SetHouseholdName { .. } => "set_household_name",
+            WriteCommand::AddHouseholdMember { .. } => "add_household_member",
+            WriteCommand::RenameHouseholdMember { .. } => "rename_household_member",
+            WriteCommand::SetMemberRole { .. } => "set_member_role",
+            WriteCommand::TransferPrimary { .. } => "transfer_primary",
+            WriteCommand::RemoveHouseholdMember { .. } => "remove_household_member",
+            WriteCommand::RestoreHouseholdMember { .. } => "restore_household_member",
+            WriteCommand::SetMemberProfile { .. } => "set_member_profile",
             WriteCommand::ArchiveCategory(_) => "archive_category",
             WriteCommand::ReinstateCategory(_) => "reinstate_category",
             WriteCommand::RecategorizeTransaction { .. } => "recategorize_transaction",
@@ -4975,24 +5047,58 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
         )?;
         return Ok(());
     }
-    conn.execute(
-        "INSERT INTO vault_metadata (
-            singleton, vault_id, schema_version, envelope_version,
-            kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
-            household_timezone, manifest_pointer, created_at
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
-        params![
-            Uuid::now_v7(),
-            schema_version,
-            VAULT_ENVELOPE_VERSION,
-            DEFAULT_KDF_ALGORITHM,
-            DEFAULT_KDF_MEMORY_KIB,
-            DEFAULT_KDF_TIME_COST,
-            DEFAULT_KDF_PARALLELISM,
-            DEFAULT_HOUSEHOLD_TIMEZONE,
-            Utc::now().to_rfc3339(),
-        ],
+    let vault_id = Uuid::now_v7();
+    let created_at = Utc::now().to_rfc3339();
+    // Schema version 61 moved the household timezone off this row onto `households`. A
+    // database caught between migrations (a crash, or a test that stops at a prefix) still has
+    // the old column and no household table, so its row keeps the old shape and nothing is
+    // seeded; the migration seeds it when it runs.
+    let has_households: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'households')",
+        [],
+        |r| r.get(0),
     )?;
+    if has_households {
+        conn.execute(
+            "INSERT INTO vault_metadata (
+                singleton, vault_id, schema_version, envelope_version,
+                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                manifest_pointer, created_at
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+            params![
+                vault_id,
+                schema_version,
+                VAULT_ENVELOPE_VERSION,
+                DEFAULT_KDF_ALGORITHM,
+                DEFAULT_KDF_MEMORY_KIB,
+                DEFAULT_KDF_TIME_COST,
+                DEFAULT_KDF_PARALLELISM,
+                created_at,
+            ],
+        )?;
+        // The genesis seed of the household and its first member, from the vault's own id and
+        // creation time (personal-cfo-339).
+        households::seed(conn, &vault_id, DEFAULT_HOUSEHOLD_TIMEZONE, &created_at)?;
+    } else {
+        conn.execute(
+            "INSERT INTO vault_metadata (
+                singleton, vault_id, schema_version, envelope_version,
+                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                household_timezone, manifest_pointer, created_at
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+            params![
+                vault_id,
+                schema_version,
+                VAULT_ENVELOPE_VERSION,
+                DEFAULT_KDF_ALGORITHM,
+                DEFAULT_KDF_MEMORY_KIB,
+                DEFAULT_KDF_TIME_COST,
+                DEFAULT_KDF_PARALLELISM,
+                DEFAULT_HOUSEHOLD_TIMEZONE,
+                created_at,
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -6840,11 +6946,25 @@ pub(crate) fn read_recurring_transfer_views(
 }
 
 fn read_vault_metadata(conn: &Connection) -> Result<VaultMetadata, DbError> {
+    // This also runs on a vault still at an older schema (the pre-migration inspection), where
+    // the timezone is the `vault_metadata` column; from schema version 61 it is the households row.
+    let on_households: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'households')",
+        [],
+        |r| r.get(0),
+    )?;
+    let timezone = if on_households {
+        "(SELECT household_timezone FROM households LIMIT 1)"
+    } else {
+        "household_timezone"
+    };
     conn.query_row(
-        "SELECT vault_id, schema_version, envelope_version, kdf_algorithm,
-                kdf_memory_kib, kdf_time_cost, kdf_parallelism, household_timezone,
-                manifest_pointer
-         FROM vault_metadata WHERE singleton = 1",
+        &format!(
+            "SELECT vault_id, schema_version, envelope_version, kdf_algorithm,
+                    kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                    {timezone}, manifest_pointer
+             FROM vault_metadata WHERE singleton = 1"
+        ),
         [],
         |r| {
             Ok(VaultMetadata {
@@ -7249,6 +7369,42 @@ fn apply_command(
         WriteCommand::SetHouseholdTimezone { timezone } => {
             apply::household::apply_set_household_timezone(&tx, meta, timezone)?
         }
+        WriteCommand::SetHouseholdName { name } => {
+            apply::household::apply_set_household_name(&tx, meta, name)?
+        }
+        WriteCommand::AddHouseholdMember {
+            member_id,
+            display_name,
+            role,
+        } => apply::household::apply_add_member(&tx, meta, member_id, display_name, *role)?,
+        WriteCommand::RenameHouseholdMember {
+            member_id,
+            display_name,
+        } => apply::household::apply_rename_member(&tx, member_id, display_name)?,
+        WriteCommand::SetMemberRole { member_id, role } => {
+            apply::household::apply_set_member_role(&tx, member_id, *role)?
+        }
+        WriteCommand::TransferPrimary {
+            from_member_id,
+            to_member_id,
+        } => apply::household::apply_transfer_primary(&tx, from_member_id, to_member_id)?,
+        WriteCommand::RemoveHouseholdMember { member_id } => {
+            apply::household::apply_remove_member(&tx, meta, member_id)?
+        }
+        WriteCommand::RestoreHouseholdMember { member_id } => {
+            apply::household::apply_restore_member(&tx, member_id)?
+        }
+        WriteCommand::SetMemberProfile {
+            member_id,
+            initials,
+            color,
+        } => apply::household::apply_set_member_profile(
+            &tx,
+            meta,
+            member_id,
+            initials.as_deref(),
+            color.as_deref(),
+        )?,
         WriteCommand::ArchiveCategory(id) => {
             apply::categorization_cmds::apply_archive_category(&tx, meta, id)?
         }
@@ -7357,9 +7513,18 @@ fn apply_command(
         }
         WriteCommand::DismissRecurringSuggestion { .. } => "recurring_suggestion_suppressions",
         WriteCommand::SetCardStatementBalance { .. } => "credit_card_statements",
-        // The household timezone lives on the singleton vault_metadata row; its entity id
-        // is the vault id (personal-cfo-g3m.8).
-        WriteCommand::SetHouseholdTimezone { .. } => "vault_metadata",
+        // The household timezone lives on the singleton households row (personal-cfo-339;
+        // it was on vault_metadata before schema version 61).
+        WriteCommand::SetHouseholdTimezone { .. } | WriteCommand::SetHouseholdName { .. } => {
+            "households"
+        }
+        WriteCommand::AddHouseholdMember { .. }
+        | WriteCommand::RenameHouseholdMember { .. }
+        | WriteCommand::SetMemberRole { .. }
+        | WriteCommand::TransferPrimary { .. }
+        | WriteCommand::RemoveHouseholdMember { .. }
+        | WriteCommand::RestoreHouseholdMember { .. } => "household_members",
+        WriteCommand::SetMemberProfile { .. } => "profiles",
         WriteCommand::CreateCategory { .. }
         | WriteCommand::UpdateCategory { .. }
         | WriteCommand::MoveCategory { .. }

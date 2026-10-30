@@ -45,11 +45,9 @@ pub(super) fn to_day_views(
 
 /// The IANA household timezone (defaults to `UTC` in a fresh vault).
 pub(crate) fn read_household_tz(conn: &Connection) -> Result<Tz, DbError> {
-    let tz_str: String = conn.query_row(
-        "SELECT household_timezone FROM vault_metadata WHERE singleton = 1",
-        [],
-        |r| r.get(0),
-    )?;
+    let tz_str: String = conn.query_row("SELECT household_timezone FROM households", [], |r| {
+        r.get(0)
+    })?;
     tz_str
         .parse::<Tz>()
         .map_err(|e| DbError::InvalidCommand(format!("invalid household timezone {tz_str:?}: {e}")))
