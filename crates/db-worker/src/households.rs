@@ -47,6 +47,11 @@ pub fn primary_member_id(vault_id: &Uuid) -> Uuid {
         .expect("the label is a valid tag")
 }
 
+/// **Frozen like migration SQL.** `seed` and [`migrate_up`] define what migration 61 does, and
+/// `schema_migrations.content_hash` covers only the migration's SQL, so a later edit here would
+/// change migration 61's result with no drift signal. The known-answer test and the full-row
+/// migration test pin today's output; a change to either needs a NEW migration.
+///
 /// Insert the household and its primary member for a vault that has neither. Every column is a
 /// pure function of the arguments: `created_at` is the vault's own creation time and
 /// `household_timezone` its current zone, never the clock.

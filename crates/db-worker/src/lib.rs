@@ -6975,11 +6975,18 @@ fn read_vault_metadata(conn: &Connection) -> Result<VaultMetadata, DbError> {
                 kdf_memory_kib: r.get(4)?,
                 kdf_time_cost: r.get(5)?,
                 kdf_parallelism: r.get(6)?,
-                household_timezone: r.get(7)?,
+                // NULL only when the households table is empty (a transient, unexpected state).
+                household_timezone: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
                 manifest_pointer: r.get(8)?,
             })
         },
     )
+    .and_then(|metadata| {
+        if on_households && metadata.household_timezone.is_empty() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(metadata)
+    })
     .map_err(|error| match error {
         rusqlite::Error::QueryReturnedNoRows => {
             DbError::SelfTestFailed("vault_metadata row is missing".to_owned())

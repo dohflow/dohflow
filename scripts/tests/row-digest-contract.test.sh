@@ -94,7 +94,7 @@ require_text "a moved child touches both parents" "both parents are write-set en
 require_text "every replicated table has a key or is folded" "declares a supplied primary key or is listed as a folded child with its"
 require_text "digests are bound to the schema version" "The digests are bound to the schema version"
 require_text "C.4 points at C.1.5" "is defined in C.1.5, as is the \`primary_key\` encoding"
-require_text "spec-version 15" "<!-- vault-format: spec-version=15 -->"
+require_text "spec-version 16" "<!-- vault-format: spec-version=16 -->"
 require_text "change-control note" '`spec-version = 4` adds C.1.5'
 
 CASES=$((CASES + 1))

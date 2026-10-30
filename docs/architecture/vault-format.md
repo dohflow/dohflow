@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=15 -->
+<!-- vault-format: spec-version=16 -->
 <!-- vault-format: schema-version=61 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,7 +270,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 15` (personal-cfo-339) moves the household timezone off `vault_metadata` onto
+- `spec-version = 16` (personal-cfo-339) moves the household timezone off `vault_metadata` onto
   a new class-1 `households` table, with `household_members` and `profiles` beside it (schema
   version 61). The logical `household` record (table name `household`, key `int 1`, one column)
   is RETIRED: `SetHouseholdTimezone` keeps its payload and meaning, and its write set is now the
