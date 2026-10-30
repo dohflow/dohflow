@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=15 -->
+<!-- vault-format: spec-version=17 -->
 <!-- vault-format: schema-version=60 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,9 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 17` (personal-cfo-g3m.26 part 2) lists the deterministic rejection codes in C.10
+  and states the site-level classification rule; no wire layout or vector changes. (16 is
+  personal-cfo-339's household record.)
 - `spec-version = 15` (personal-cfo-g3m.26) adds, in one change: the apply-failure stop (C.10:
   a deterministic apply failure stops the replica as an invalid envelope does, with an audit
   code; a successful apply with another write-set hash is a fork and halts), reason-`2` voids
@@ -1853,7 +1856,29 @@ log position `V` the service assigns when it appends the void is not in the body
   the envelope's has forked from the apply semantics (ADR 0074): it halts, with its own
   evidence, and no void answers it. Transient errors (I/O, lock, resource exhaustion,
   cancellation) never produce an apply failure. An `issued_at` outside the years 0000 to 9999
-  is invalid at the receiver checks (C.4), so it never reaches apply as a failure.
+  is invalid at the receiver checks (C.4), so on a conforming log it never reaches apply; the
+  engine's own metadata check shares the same bound and rejects it as `IssuedAtOutOfRange`.
+
+  **What counts as deterministic.** An apply failure is a pure function of the command's payload
+  and metadata and the **class-1** base state at the `engine_version`; the engine classifies by
+  SITE, never by error variant. A validator that has been audited as reading nothing else raises a
+  typed deterministic rejection with a stable code; every other error, including an unclassified
+  invalid-command error and any SQLite error, is NOT a verdict and never stops a replica. The audit
+  is proven behaviorally (the same rejection, the same code and the same write set, under two device
+  time zones and two class-3 states) and the sites are listed in the engine's ledger, which a
+  ratchet test enforces. A foreign-key error counts only under the schema rule that a class-1
+  table's foreign keys target class-1 tables (so no class-3 or class-2 state can decide an apply),
+  which a schema test enforces. The code is audit-only (honoring never depends on it). The
+  registry:
+
+  | Code | Name | Meaning |
+  | --- | --- | --- |
+  | `1` | `IssuedAtOutOfRange` | The command's `issued_at` is outside the years 0000 to 9999. |
+  | `2` | `PayloadInvalid` | A payload field is outside its domain. |
+  | `3` | `ReferenceMissing` | A row the command references does not exist on the base. |
+  | `4` | `StateConflict` | The base state forbids the command. |
+
+  A new code, and a site moving from unclassified to deterministic, is a change under C.13.
   **What the engine supplies.** The replica's cursor `next_to_apply` (the lowest position neither
   applied nor skipped) never passes the stop (chain records verified past a stop do not advance
   it), starts at `root + 1` for a bootstrapped replica, and moves past a range once a void for it

@@ -54,6 +54,8 @@ mod categories;
 mod column_manifest;
 mod connectors;
 pub mod payload;
+pub mod reject;
+pub use reject::RejectCode;
 pub mod write_set;
 #[cfg(test)]
 mod write_set_tests;
@@ -1300,6 +1302,17 @@ pub enum DbError {
     /// unknown currency, missing system account).
     #[error("invalid command: {0}")]
     InvalidCommand(String),
+    /// A command rejected DETERMINISTICALLY (personal-cfo-g3m.26): a pure function of the
+    /// payload, the metadata and the class-1 base state, raised only by audited validators
+    /// through [`DbError::reject`]. A Sync replica that meets one stops at the command's
+    /// position and a void can name it; no other error variant ever does.
+    #[error("invalid command: {message}")]
+    Rejected {
+        /// The stable registry code.
+        code: RejectCode,
+        /// The text for the person; not part of the verdict.
+        message: String,
+    },
     /// At most one bill is linked to a loan (personal-cfo-6wk.22): linking a second is refused
     /// and names the first so the user can unlink it. The Display text is fixed (bill names are
     /// user data and stay out of logs); the fields carry the name for the interface.
@@ -1336,6 +1349,28 @@ pub enum DbError {
         /// The table whose key was too wide.
         table: &'static str,
     },
+}
+
+impl DbError {
+    /// A deterministic rejection. The only constructor of [`DbError::Rejected`]: a ratchet test
+    /// (`deterministic_sites.toml`) lists the modules that may call it.
+    #[must_use]
+    pub fn reject(code: RejectCode, message: impl Into<String>) -> Self {
+        DbError::Rejected {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// The apply-failure code Sync records, when this error is a deterministic rejection and
+    /// `None` for everything else (transient errors, unclassified `InvalidCommand`, SQLite errors).
+    #[must_use]
+    pub fn apply_failure_code(&self) -> Option<sync_core::status::ApplyFailureCode> {
+        match self {
+            DbError::Rejected { code, .. } => Some(code.apply_failure_code()),
+            _ => None,
+        }
+    }
 }
 
 impl From<MoneyError> for DbError {
