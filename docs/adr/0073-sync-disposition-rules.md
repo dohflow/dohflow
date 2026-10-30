@@ -428,6 +428,18 @@ write set. An unknown connection is a producer fault (the create precedes it in 
 rejected. A discovery that would change nothing is not issued at all, so a refresh does not log or
 sync a no-op.
 
+**Class-3 side effects inside apply: the rule.** Applying a command may touch class-3 (device-local)
+state only when all of these hold: (i) it is **idempotent under replay**, because a rebase replays
+the command and catch-up can apply it again; (ii) it is **monotone**: it clears or destroys, and
+never creates anything a rollback would have to undo; (iii) it **never reads class-3 state to
+decide a class-1 write**, so every device writes the same class-1 rows whatever it holds locally.
+`DeleteConnectorConnection` follows it: the secret, cursor and notice removals are idempotent and
+destroy only, and `had_secret` decides only whether the class-3 audit row is written. That audit
+row (`connector.token_removed_connection_deleted`, keyed by the command id) records a destruction
+that a rebase never undoes, so it is a **stable** event type for the rebase of the mixed
+`audit_events` table (`personal-cfo-bxsbz`), never dropped or re-planned with the replayed
+commands. `SetConnectorLinkAccount`'s cursor clearing is the same kind of effect.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` — ADR 0074, the CAS/rebase premise

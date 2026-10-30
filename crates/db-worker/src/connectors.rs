@@ -501,14 +501,29 @@ impl DbWorker {
     /// cleanly.
     ///
     /// # Errors
-    /// [`DbError::InvalidCommand`] for an unknown connection or link; [`DbError::Sqlite`] on a
-    /// write failure (an account that does not exist).
+    /// [`DbError::InvalidCommand`] for an unknown or deleted connection, or an unknown link;
+    /// [`DbError::Sqlite`] on a write failure (an account that does not exist). The apply side
+    /// treats a deleted connection as an accepted no-op (a replica must not stop over a race), so
+    /// this producer checks first: the user is told the mapping did not happen.
     pub fn set_connector_link_account(
         &self,
         connection_id: Uuid,
         external_id: &str,
         account_id: Option<Uuid>,
     ) -> Result<(), DbError> {
+        let live: Option<bool> = self
+            .read_connection()?
+            .query_row(
+                "SELECT deleted_at IS NULL FROM connector_connections WHERE id = ?1",
+                params![connection_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if live != Some(true) {
+            return Err(DbError::InvalidCommand(
+                "that connection was deleted".to_owned(),
+            ));
+        }
         self.dispatch(
             local_meta(ActorType::User, "user"),
             WriteCommand::SetConnectorLinkAccount {

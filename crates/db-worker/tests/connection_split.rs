@@ -536,3 +536,39 @@ fn deleting_a_connection_with_a_token_writes_the_removal_audit_row_once() {
     worker.delete_connector_connection(id).unwrap();
     assert_eq!(audit(&worker), 1);
 }
+
+#[test]
+fn mapping_a_deleted_connection_tells_the_user_it_did_not_happen() {
+    let (_dir, worker) = worker();
+    let id = local(&worker);
+    worker
+        .upsert_connector_link(id, "acct-1", Some("Checking"), Some("USD"))
+        .unwrap();
+    worker.delete_connector_connection(id).unwrap();
+    let logged = operation_count(&worker);
+    let result = worker.set_connector_link_account(id, "acct-1", None);
+    assert!(
+        matches!(result, Err(DbError::InvalidCommand(_))),
+        "{result:?}"
+    );
+    assert_eq!(operation_count(&worker), logged, "nothing was dispatched");
+}
+
+#[test]
+fn an_identity_of_an_unknown_adapter_is_inert_it_lists_and_never_refreshes() {
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    // A replicated identity of an adapter this build has never heard of: no registry check in
+    // apply (a verdict must not depend on the build's adapter list).
+    worker
+        .create_connector_identity(id, "future-provider-9", Some("Elsewhere"))
+        .unwrap();
+    let listed = worker.connector_connections().unwrap();
+    let row = listed.iter().find(|c| c.id == id).expect("it lists");
+    assert_eq!(row.adapter_id, "future-provider-9");
+    assert!(
+        !row.has_secret,
+        "no token on this device, so nothing can refresh it"
+    );
+    assert!(worker.connector_credential(id).unwrap().is_none());
+}
