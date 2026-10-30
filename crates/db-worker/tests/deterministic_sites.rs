@@ -95,7 +95,10 @@ fn every_site_names_its_bead_and_a_note() {
 fn the_error_variants_that_are_not_verdicts_never_produce_an_apply_failure_code() {
     use db_worker::{DbError, RejectCode};
     for code in RejectCode::ALL {
-        let error = DbError::reject(code, "x");
+        let error = DbError::Rejected {
+            code,
+            message: "x".to_owned(),
+        };
         assert_eq!(
             error.apply_failure_code().map(|c| c.get()),
             Some(code.as_u16())

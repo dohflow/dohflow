@@ -1352,10 +1352,11 @@ pub enum DbError {
 }
 
 impl DbError {
-    /// A deterministic rejection. The only constructor of [`DbError::Rejected`]: a ratchet test
-    /// (`deterministic_sites.toml`) lists the modules that may call it.
+    /// A deterministic rejection. The only constructor of [`DbError::Rejected`] in this crate and
+    /// crate-private on purpose: a ratchet test (`deterministic_sites.toml`) lists the modules that
+    /// may call it, and another crate must not mint a verdict.
     #[must_use]
-    pub fn reject(code: RejectCode, message: impl Into<String>) -> Self {
+    pub(crate) fn reject(code: RejectCode, message: impl Into<String>) -> Self {
         DbError::Rejected {
             code,
             message: message.into(),

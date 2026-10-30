@@ -1878,7 +1878,20 @@ log position `V` the service assigns when it appends the void is not in the body
   | `3` | `ReferenceMissing` | A row the command references does not exist on the base. |
   | `4` | `StateConflict` | The base state forbids the command. |
 
-  A new code, and a site moving from unclassified to deterministic, is a change under C.13.
+  A new code is a change under C.13. Moving a site from unclassified to deterministic changes only
+  whether a void can name its failure, never what the command writes (both outcomes apply nothing),
+  so it is not an `engine_version` change.
+
+  **An unclassified failure is a stall, not a verdict.** A replica that meets an apply error that
+  is not a deterministic rejection (an unclassified invalid-command error, a database constraint
+  error, a transient error) can neither apply the command nor skip it, because no void can name
+  it. With compare-and-swap and a deterministic apply, an honest producer never seals a command
+  its own apply rejects, so a replica meets such an error only from a faulty or malicious
+  producer; the engine therefore treats it as "blocked, transient": nothing past the position is
+  applied, skipped or pushed, it retries with backoff, and the block is a typed, surfaced state
+  that persists across restarts and tells the user an update may be needed (elciw). The engine
+  keeps a shrink-only ledger of the unclassified sites; the follow-up bead drives it to zero
+  before Sync ships to users.
   **What the engine supplies.** The replica's cursor `next_to_apply` (the lowest position neither
   applied nor skipped) never passes the stop (chain records verified past a stop do not advance
   it), starts at `root + 1` for a bootstrapped replica, and moves past a range once a void for it
