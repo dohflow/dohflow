@@ -258,6 +258,10 @@ receives semantic auto-merge treatment.
 | `LinkBillToLoan` | Set | auto iff strict predicate; a loan that is archived or no longer a loan on the new base applies as no link; a second bill for the same loan queue-choose |
 | `UnlinkBillFromLoan` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SetBillNotLoanPayment` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `CreateConnectorConnection` | Create | auto; the same id and adapter again applies as a no-op; queue-edit if the id belongs to another adapter |
+| `UpsertConnectorLink` | Set | auto (an idempotent upsert; applies as a no-op on a deleted connection) |
+| `SetConnectorLinkAccount` | Set | queue-choose if the mapping changed on both sides (applies as a no-op on a deleted connection) |
+| `DeleteConnectorConnection` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate) |
 | `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -404,6 +408,25 @@ every other tombstone, except that there is no `Reinstate`. Nothing in the gener
 its tally changes in this change, because the connector writes are still raw: the tombstone and
 the classification are in force, and replication of the identity and mapping starts when
 `personal-cfo-5ymg8` lands.
+
+## Addendum D — The connector identity and mapping are commands (2026-10-30, `personal-cfo-5ymg8.2`)
+
+The four writes Addendum C left raw become `WriteCommand`s, so the identity and the mapping
+replicate and survive a rebase: `CreateConnectorConnection` (Create), `UpsertConnectorLink` and
+`SetConnectorLinkAccount` (Set), and `DeleteConnectorConnection` (Toggle with no `Reinstate`, the
+tombstone of Addendum C). That makes **Create 9**, **Set 23**, **Toggle 19** and 60 appendix rows;
+the payloads are additive version 1 payloads. The credential, the refresh watermark and the notice
+are class 3 and never in a payload, a log or a write set: this device stores its credential after
+the create command, and a delete command also scrubs and removes this device's secret, cursors and
+notice (writing the "token removed" audit row keyed by the command) on every device that applies it.
+
+**A race with a delete is an accepted no-op, never a rejection.** A link discovered or a mapping
+changed on one device while another device deleted the connection reaches a replica after the
+tombstone. Refusing it would be a deterministic apply failure that stops every replica over an
+ordinary race, so every command on a tombstoned connection applies as a logged no-op with an empty
+write set. An unknown connection is a producer fault (the create precedes it in the log) and is
+rejected. A discovery that would change nothing is not issued at all, so a refresh does not log or
+sync a no-op.
 
 ## Linked beads
 

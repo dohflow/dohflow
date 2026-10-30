@@ -858,8 +858,9 @@ mod tests {
     fn nothing_is_written_under_a_tombstone_and_a_stray_cursor_or_notice_is_cleaned() {
         let (_dir, worker) = worker();
         let id = Uuid::now_v7();
+        // No token is stored for this connection, so deleting it removes no token.
         worker
-            .create_connector_connection(id, "simplefin", CANARY, None)
+            .create_connector_identity(id, "simplefin", None)
             .unwrap();
         worker
             .upsert_connector_link(id, "acct-1", None, None)
