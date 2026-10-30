@@ -1166,6 +1166,14 @@ owner decisions), recorded with the sync-core honor rule (spec-version 14):
   `personal-cfo-g3m.26`.
 - **A snapshot-bootstrapped replica** does not honor a void for a position at or below its root
   (it never evaluated it); the root is treated as suspect.
+- **Reason 2 needs no new void field (2026-10-30, `personal-cfo-g3m.26`).** The earlier ruling
+  that a reason-2 void "names its engine_version" is satisfied by the envelope digest the void
+  already names (it binds the envelope's `engine_version`) together with R40 (a replica of
+  another `engine_version` never evaluates the position). So reason 2 is accepted with no body
+  field; a replica of another version is update-required, not stranded by a void, and exits by
+  running an equal build or re-bootstrapping from a snapshot of its own version rooted past the
+  position (past the voided range when a void covers it). A successful apply with another
+  write-set hash is a fork and halts; it is never an apply failure.
 
 ## Linked beads
 

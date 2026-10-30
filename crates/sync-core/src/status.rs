@@ -11,6 +11,11 @@
 //!   it and stops at `N`: nothing at or past `N` is applied. It is not a fork, and it is not
 //!   transient: retrying changes nothing. It needs a defined recovery (see the ADR 0074
 //!   addendum); until then the status is sticky.
+//! * **UpdateRequired** (R40): an envelope whose `engine_version` this build does not equal. The
+//!   replica never evaluates or applies it (versions are opaque and equality-only), so it stops
+//!   at that position without having judged it. It is not a verdict on the envelope. The exits
+//!   are a build whose `engine_version` equals the envelope's, or a re-bootstrap from a snapshot
+//!   past the position (ADR 0074 Addendum E).
 //! * Retryable conditions (a coupled epoch record not yet delivered, a transient network error)
 //!   are not in this machine at all: they change nothing about what may be applied.
 //!
@@ -26,6 +31,9 @@
 //! visible here. The engine's applied-log check owns that and should feed the same
 //! [`HaltEvidence::SeqConflict`], so the halt class stays complete.
 
+use std::num::NonZeroU16;
+
+use crate::cbe::WireError;
 use crate::envelope::ReceiverError;
 use crate::header::{ClearHeader, Fingerprint};
 use crate::membership::ChainError;
@@ -52,6 +60,17 @@ pub enum HaltEvidence {
         first: [u8; 32],
         /// The different digest seen later.
         second: [u8; 32],
+    },
+    /// The replica applied an envelope and its write-set hash is not the one the envelope
+    /// carries. That is a fork of the apply semantics (ADR 0074), recovered through a
+    /// re-bootstrap. It is NEVER an apply failure and a void never papers over it.
+    WriteSetMismatch {
+        /// The log position.
+        seq: u64,
+        /// The write-set hash the envelope carries.
+        expected: [u8; 32],
+        /// The write-set hash this replica computed.
+        computed: [u8; 32],
     },
     /// A position the replica says it applied is now found invalid (and no honored void skips
     /// it): the cursor was overstated or determinism broke. Either way the replica cannot trust
@@ -94,8 +113,107 @@ pub struct InvalidEnvelope {
     pub device_id: [u8; 16],
     /// The fingerprint of the key that sealed it.
     pub device_key_fingerprint: Fingerprint,
-    /// Which receiver check failed.
-    pub reason: ReceiverError,
+    /// Why the replica stopped here.
+    pub reason: StopReason,
+}
+
+/// Why a replica stopped at an authenticated envelope. Audit only: honoring a void never depends
+/// on the reason, only on the stop's position, digest and command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// The envelope failed a receiver check (C.4).
+    ReceiverCheck(ReceiverError),
+    /// The envelope passed them and then failed to apply for a deterministic reason (C.10).
+    Apply(ApplyFailureCode),
+}
+
+/// A stable code for a deterministic apply rejection. The registry of codes is C.10's
+/// classification; the code is audit-only here (never consulted by honoring), so a new code
+/// never changes consensus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplyFailureCode(NonZeroU16);
+
+impl ApplyFailureCode {
+    /// A code; `0` is not a code.
+    #[must_use]
+    pub const fn new(code: u16) -> Option<Self> {
+        match NonZeroU16::new(code) {
+            Some(code) => Some(Self(code)),
+            None => None,
+        }
+    }
+
+    /// The numeric code.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+/// An `engine_version`: opaque printable ASCII (`0x21..=0x7e`), 1 to 64 bytes, compared byte for
+/// byte and never ordered (C.13).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct EngineVersion {
+    len: u8,
+    bytes: [u8; 64],
+}
+
+impl std::fmt::Debug for EngineVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EngineVersion({:?})", self.as_str())
+    }
+}
+
+impl EngineVersion {
+    /// Parse a value; anything but 1 to 64 printable ASCII bytes is refused.
+    ///
+    /// # Errors
+    /// [`WireError::BadEngineVersion`].
+    pub fn new(value: &str) -> Result<Self, WireError> {
+        let raw = value.as_bytes();
+        if raw.is_empty() || raw.len() > 64 || !raw.iter().all(|b| (0x21..=0x7e).contains(b)) {
+            return Err(WireError::BadEngineVersion);
+        }
+        let mut bytes = [0_u8; 64];
+        bytes[..raw.len()].copy_from_slice(raw);
+        Ok(Self {
+            len: u8::try_from(raw.len()).map_err(|_| WireError::BadEngineVersion)?,
+            bytes,
+        })
+    }
+
+    /// The value as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        // The constructor admits only printable ASCII.
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
+    }
+}
+
+/// An envelope at `seq` carries an `engine_version` this build does not equal (R40).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateRequired {
+    /// The log position.
+    pub seq: u64,
+    /// The `canonical_envelope_digest` of the envelope there.
+    pub envelope_digest: [u8; 32],
+    /// The `engine_version` the envelope carries.
+    pub envelope_engine_version: EngineVersion,
+    /// This build's `engine_version`.
+    pub own_engine_version: EngineVersion,
+}
+
+/// Whether a snapshot rooted at `root`, of engine version `snapshot_engine_version`, is a valid way
+/// out of an update-required stop: it covers the position and it is of THIS build's
+/// `engine_version` (a snapshot of any other version would be update-required itself). Its
+/// provenance (membership, epoch, signature) is the engine's existing snapshot verification.
+#[must_use]
+pub fn snapshot_passes_update_required(
+    stop: &UpdateRequired,
+    root: u64,
+    snapshot_engine_version: &EngineVersion,
+) -> bool {
+    root >= stop.seq && *snapshot_engine_version == stop.own_engine_version
 }
 
 /// The replica's status.
@@ -105,8 +223,12 @@ pub enum SyncStatus {
     Healthy,
     /// A fork or an equivocation was detected.
     Halted(HaltEvidence),
-    /// An authenticated envelope at `seq` failed the receiver checks.
+    /// An authenticated envelope at `seq` failed the receiver checks, or failed to apply for a
+    /// deterministic reason.
     EnvelopeInvalid(InvalidEnvelope),
+    /// An envelope at `seq` carries an `engine_version` this build does not equal: nothing at or
+    /// past `seq` is evaluated or applied (R40).
+    UpdateRequired(UpdateRequired),
 }
 
 /// Something the UI and the audit log should show, emitted once per change of status.
@@ -116,6 +238,13 @@ pub enum SyncEvent {
     Halted(HaltEvidence),
     /// Sync stopped at an authenticated-but-invalid envelope.
     EnvelopeInvalid(InvalidEnvelope),
+    /// Sync stopped at an envelope of another `engine_version` (R40): update, or re-bootstrap.
+    UpdateRequired(UpdateRequired),
+    /// A snapshot past the stop was installed; the replica applies again from after `root`.
+    Rebootstrapped {
+        /// The snapshot's root position.
+        root: u64,
+    },
     /// An honored void skipped the invalid position; the replica applies again from the position
     /// after `after` (the last skipped position).
     Resumed {
@@ -133,6 +262,7 @@ impl SyncStatus {
             Self::Healthy => true,
             Self::Halted(_) => false,
             Self::EnvelopeInvalid(invalid) => seq < invalid.seq,
+            Self::UpdateRequired(update) => seq < update.seq,
         }
     }
 
@@ -280,16 +410,44 @@ impl SyncStatus {
         header: &ClearHeader,
         outcome: Result<(), ReceiverError>,
     ) -> Option<SyncEvent> {
-        if let Self::EnvelopeInvalid(existing) = self {
-            if existing.seq == seq && existing.envelope_digest != envelope_digest {
-                let evidence = HaltEvidence::SeqConflict {
-                    seq,
-                    first: existing.envelope_digest,
-                    second: envelope_digest,
-                };
-                *self = Self::Halted(evidence);
-                return Some(SyncEvent::Halted(evidence));
-            }
+        self.observe_stop(
+            seq,
+            envelope_digest,
+            header,
+            outcome.map_err(StopReason::ReceiverCheck),
+        )
+    }
+
+    /// Record that applying the envelope at `seq` failed for a **deterministic** reason (C.10's
+    /// classification; transient errors never reach here). The same rules as
+    /// [`Self::observe_envelope`]: the earlier position wins, the same `(seq, digest)` is
+    /// idempotent, another digest at the position halts. An apply stop is never found out of
+    /// order (applying `seq` needs `seq - 1` applied), so a receiver-check stop at a later
+    /// position simply loses to it.
+    pub fn observe_apply_failure(
+        &mut self,
+        seq: u64,
+        envelope_digest: [u8; 32],
+        header: &ClearHeader,
+        outcome: Result<(), ApplyFailureCode>,
+    ) -> Option<SyncEvent> {
+        self.observe_stop(
+            seq,
+            envelope_digest,
+            header,
+            outcome.map_err(StopReason::Apply),
+        )
+    }
+
+    fn observe_stop(
+        &mut self,
+        seq: u64,
+        envelope_digest: [u8; 32],
+        header: &ClearHeader,
+        outcome: Result<(), StopReason>,
+    ) -> Option<SyncEvent> {
+        if let Some(event) = self.same_position_other_digest(seq, envelope_digest) {
+            return Some(event);
         }
         let Err(reason) = outcome else {
             return None;
@@ -304,11 +462,127 @@ impl SyncStatus {
         };
         match self {
             Self::Halted(_) => None,
-            Self::EnvelopeInvalid(existing) if existing.seq <= seq => None,
+            Self::EnvelopeInvalid(InvalidEnvelope { seq: existing, .. })
+            | Self::UpdateRequired(UpdateRequired { seq: existing, .. })
+                if *existing <= seq =>
+            {
+                None
+            }
             _ => {
                 *self = Self::EnvelopeInvalid(invalid);
                 Some(SyncEvent::EnvelopeInvalid(invalid))
             }
         }
+    }
+
+    /// A different digest at a position already recorded as a stop is a fork of the log.
+    fn same_position_other_digest(
+        &mut self,
+        seq: u64,
+        envelope_digest: [u8; 32],
+    ) -> Option<SyncEvent> {
+        let (recorded_seq, recorded_digest) = match self {
+            Self::EnvelopeInvalid(i) => (i.seq, i.envelope_digest),
+            Self::UpdateRequired(u) => (u.seq, u.envelope_digest),
+            _ => return None,
+        };
+        if recorded_seq != seq || recorded_digest == envelope_digest {
+            return None;
+        }
+        let evidence = HaltEvidence::SeqConflict {
+            seq,
+            first: recorded_digest,
+            second: envelope_digest,
+        };
+        *self = Self::Halted(evidence);
+        Some(SyncEvent::Halted(evidence))
+    }
+
+    /// Record the `engine_version` of the envelope the service placed at `seq`. One this build
+    /// does not equal (versions are opaque; equality only) puts the replica in the R40
+    /// update-required state at `seq`: the envelope is neither evaluated nor applied, and no
+    /// verdict on it is formed. The earlier position wins and the same `(seq, digest)` is
+    /// idempotent; another digest at the position halts; a halted replica stays halted. An equal
+    /// version changes nothing.
+    pub fn observe_engine_version(
+        &mut self,
+        seq: u64,
+        envelope_digest: [u8; 32],
+        envelope_engine_version: EngineVersion,
+        own_engine_version: EngineVersion,
+    ) -> Option<SyncEvent> {
+        if let Some(event) = self.same_position_other_digest(seq, envelope_digest) {
+            return Some(event);
+        }
+        if envelope_engine_version == own_engine_version {
+            return None;
+        }
+        let update = UpdateRequired {
+            seq,
+            envelope_digest,
+            envelope_engine_version,
+            own_engine_version,
+        };
+        match self {
+            Self::Halted(_) => None,
+            Self::EnvelopeInvalid(InvalidEnvelope { seq: existing, .. })
+            | Self::UpdateRequired(UpdateRequired { seq: existing, .. })
+                if *existing <= seq =>
+            {
+                None
+            }
+            _ => {
+                *self = Self::UpdateRequired(update);
+                Some(SyncEvent::UpdateRequired(update))
+            }
+        }
+    }
+
+    /// The build now running has `own_engine_version`: an update-required stop whose envelope
+    /// carries exactly that version ends (the replica evaluates the position normally). It is
+    /// recomputed on every start, so nothing is persisted. Any other status is unchanged.
+    pub fn observe_own_engine_version(&mut self, own_engine_version: EngineVersion) {
+        if matches!(self, Self::UpdateRequired(u) if u.envelope_engine_version == own_engine_version)
+        {
+            *self = Self::Healthy;
+        }
+    }
+
+    /// Halt on a successful apply whose write-set hash is not the envelope's: a fork of the apply
+    /// semantics (ADR 0074), never an apply failure and never voidable. A status that is already
+    /// `Halted` absorbs it.
+    pub fn observe_write_set_mismatch(
+        &mut self,
+        seq: u64,
+        expected: [u8; 32],
+        computed: [u8; 32],
+    ) -> Option<SyncEvent> {
+        if matches!(self, Self::Halted(_)) || expected == computed {
+            return None;
+        }
+        let evidence = HaltEvidence::WriteSetMismatch {
+            seq,
+            expected,
+            computed,
+        };
+        *self = Self::Halted(evidence);
+        Some(SyncEvent::Halted(evidence))
+    }
+
+    /// A snapshot rooted at `root` was installed after [`crate::void::snapshot_passes_stop`] or [`snapshot_passes_update_required`] accepted it: a
+    /// stop (an invalid envelope or an update-required position) at or below `root` ends. A halt
+    /// is not ended by a snapshot here (re-enrollment is its recovery), and a stop above `root`
+    /// stays.
+    pub fn observe_rebootstrapped(&mut self, root: u64) -> Option<SyncEvent> {
+        let stop = match self {
+            Self::EnvelopeInvalid(i) => i.seq,
+            Self::UpdateRequired(u) => u.seq,
+            _ => return None,
+        };
+        if stop > root {
+            return None;
+        }
+        *self = Self::Healthy;
+        Some(SyncEvent::Rebootstrapped { root })
     }
 }

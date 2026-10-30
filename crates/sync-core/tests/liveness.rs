@@ -480,7 +480,10 @@ fn a_replica_stops_at_an_invalid_envelope_applies_nothing_past_it_and_cannot_pus
         invalid.device_key_fingerprint,
         header.device_key_fingerprint
     );
-    assert_eq!(invalid.reason, ReceiverError::TagMismatch);
+    assert_eq!(
+        invalid.reason,
+        sync_core::status::StopReason::ReceiverCheck(ReceiverError::TagMismatch)
+    );
     assert!(
         status.can_apply(6),
         "positions before the invalid one still apply"

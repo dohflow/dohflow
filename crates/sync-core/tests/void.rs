@@ -7,7 +7,7 @@ use sync_core::cbe::WireError;
 use sync_core::envelope::ReceiverError;
 use sync_core::membership::EpochAtPosition;
 use sync_core::status::HaltEvidence;
-use sync_core::status::{InvalidEnvelope, SyncEvent, SyncStatus};
+use sync_core::status::{InvalidEnvelope, StopReason, SyncEvent, SyncStatus};
 use sync_core::void::{
     verify_void, ForkSuspected, Honor, HonorContext, HonoredVoid, Inert, OfferError, VerifiedVoid,
     VoidBody, VoidError, VoidLedger,
@@ -41,8 +41,7 @@ fn the_decoder_refuses_each_malformation() {
     // The reason byte sits after label + 2 + 2 + 16 + 8 + 16 + 32 bytes.
     let reason_at = bytes.len() - 8 - 32 - 1;
     assert_eq!(bytes[reason_at], 1);
-    // Reason 2 is refused until personal-cfo-g3m.26 adds its engine_version field.
-    for unknown in [0_u8, 2, 3, 255] {
+    for unknown in [0_u8, 3, 255] {
         let mut b = bytes.clone();
         b[reason_at] = unknown;
         assert_eq!(
@@ -156,7 +155,7 @@ fn stopped_at(seq: u64) -> SyncStatus {
         command_id: [0x11; 16],
         device_id: [1; 16],
         device_key_fingerprint: Dev::new(1).fingerprint(),
-        reason: ReceiverError::TagMismatch,
+        reason: StopReason::ReceiverCheck(ReceiverError::TagMismatch),
     })
 }
 
