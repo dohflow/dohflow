@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=14 -->
+<!-- vault-format: spec-version=15 -->
 <!-- vault-format: schema-version=60 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,15 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 15` (personal-cfo-g3m.26) adds, in one change: the apply-failure stop (C.10:
+  a deterministic apply failure stops the replica as an invalid envelope does, with an audit
+  code; a successful apply with another write-set hash is a fork and halts), reason-`2` voids
+  (accepted with no body field: the envelope digest already binds the `engine_version`, and R40
+  gates every evaluation), the update-required state of a replica facing another
+  `engine_version` and its exits (C.10, C.13), and the bound on `issued_at` to the years 0000 to
+  9999 as a sixth receiver check (C.4, `IssuedAtOutOfRange`). The `void_body` and `void_id`
+  vectors are unchanged. New cases are added to `check-envelope-v1.json` and
+  `void-honor-v1.json`.
 - `spec-version = 14` tightens the rule by which a replica honors a void (C.10 "Void records",
   "When a replica honors it"): only against the stop it reached in log order (every position below
   `seq` applied or skipped), with the pinned order of checks, the inert reasons split into
@@ -1095,7 +1104,12 @@ index reconciliation, a receiver:
    with a different `canonical_envelope_digest`;
 5. checks that the header's `object_id` is the plaintext's `command_id`, that its
    `device_id` is the plaintext's `device_id`, and that its `nonce_domain` is the one
-   derived (C.3) for its epoch, device fingerprint and object type.
+   derived (C.3) for its epoch, device fingerprint and object type;
+6. for an envelope, requires `issued_at` to lie within the years 0000 to 9999: from
+   `-62_167_219_200_000_000` (0000-01-01T00:00:00Z) to `253_402_300_799_999_999`
+   (9999-12-31T23:59:59.999999Z) microseconds, inclusive. Outside it the envelope is invalid
+   (`IssuedAtOutOfRange`): every stored `*_at` column then stays an RFC 3339 text that orders as
+   text, and `apply` never meets an instant it cannot represent.
 
 ### Envelope plaintext (`EnvelopePlaintextV1`)
 
@@ -1186,6 +1200,14 @@ or cannot yet judge it, by this sequence of stages, in this order:
    and there is no `key_epoch` or device to gate on.
 1b. **The header names another vault than the replica's own: invalid.** No key or position
    condition: the replica knows its vault from its chain.
+1c. **The header's `engine_version` is not the replica's own: update required, no verdict.**
+   The receiver checks and the apply semantics are bound to the engine version (C.13), so a
+   replica never judges an envelope of another version: not valid, not invalid, not determinable
+   in the sense of waiting for a key or a position, but update-required (R40). This precedes every
+   later stage (the position, the key, the membership, the AEAD, the decode, the checks), so a
+   replica of version E' cannot find invalid what version E finds valid, and a void can never
+   split a vault by version. It applies equally to a failed apply: an outcome formed at a foreign
+   version is not a verdict.
 2. **The position is not yet known: not determinable.** The replica judges position `N` only
    after it has processed the log in order up to `N` and verified the newest epoch record
    positioned before it (C.7: epoch records are positioned log objects). **"Before" is strict:**
@@ -1218,7 +1240,8 @@ envelope that every other replica applied, and the vault would split. A header t
 parse at an accepted position means the service let through what its own checks should have
 refused, which is equally deterministic from the bytes. The verdict class (valid, invalid, not
 determinable) is the contract; the reason is informative. The public vectors of C.14
-(`docs/architecture/vectors/envelope-invalid-v1.json`) pin every stage.
+(`docs/architecture/vectors/envelope-invalid-v1.json`) pin every stage, including the version gate
+taking precedence over each later defect.
 
 ### Counter register and nonce state
 
@@ -1748,10 +1771,8 @@ claims against its own index, and mark the index.
 Body: `label "dohflow/sync-void/v1" ‖ u16 protocol_version ‖ u16 suite_id ‖ uuid vault_id ‖
 u64 seq ‖ uuid command_id ‖ digest envelope_digest ‖ u8 reason ‖ fingerprint signer_fingerprint ‖
 i64 issued_at`. `seq` is the poisoned position `N`; `command_id` and `envelope_digest` are those
-of the envelope the signer saw there; `reason` is `1` (receiver-check failure). Reason `2`
-(deterministic apply failure) is reserved: a producer MUST NOT emit it and a replica refuses it as
-a malformed object until `personal-cfo-g3m.26` adds its `engine_version` field, so no reason-`2`
-body lives in a log as a legacy form. The record is `u32 body_len ‖ body ‖ 64-byte Ed25519 signature`,
+of the envelope the signer saw there; `reason` is `1` (receiver-check failure) or `2`
+(deterministic apply failure). The record is `u32 body_len ‖ body ‖ 64-byte Ed25519 signature`,
 identified by `SHA-256(body)`, with the strict acceptance rules and the check order of C.6. The
 log position `V` the service assigns when it appends the void is not in the body, exactly as a
 `seq` is not in an envelope's header.
@@ -1798,16 +1819,41 @@ log position `V` the service assigns when it appends the void is not in the body
   halted keeps verifying membership and epoch records past its stop, or it could not judge a void
   that follows. `issued_at` is for audit only and is never compared with a clock. `V` comes only
   from the replica's own in-order pull of the void, never from an index-replay "void claimed by"
-  response, and the same void seen at two positions is a suspected fork, not an idempotent repeat.
-  A **deterministic apply failure** (reason `2`) of an envelope that passes the receiver checks is
-  not yet a stop of the replica, so no replica can honor such a void today; recording that stop
-  is `personal-cfo-g3m.26`. A reason-`2` void is **version-scoped** (ruled 2026-10-27): an apply
-  failure is deterministic only at one `engine_version`, so such a void names the
-  `engine_version` it was observed at and is honored only by a replica running an **equal**
-  `engine_version` that reproduces the failure itself; across engine versions the replica never
-  applies the position (R40) and the void is inert for it. The void body does not carry
-  `engine_version` yet: adding it, and accepting reason `2`, is a body change under C.13 that
-  `personal-cfo-g3m.26` makes before any reason-`2` void exists.
+  response, and the same void honored at two different positions is a suspected fork, not an idempotent repeat.
+  **Apply failures.** An envelope that passes the receiver checks and then fails to apply for a
+  deterministic reason (the classification below) stops the replica at its position exactly as an
+  invalid envelope does: nothing at or past it is applied, the outbox is untouched, and the apply
+  is one transaction that leaves no partial write. The stop is the same state with a different
+  audit reason (an apply-failure code), so every rule above (first stop wins, another digest at
+  the position is a fork, the honor order of checks) covers both. A reason-`2` void is honored
+  at a stop of either kind with an equal digest and command id; the `reason` byte and the stop's
+  code are audit only. **Version scope falls out of the digest:** the void names the envelope
+  digest, which binds the envelope's `engine_version`, and a replica of another `engine_version`
+  never evaluates the position (R40): it is update-required there (C.13), forms no verdict, is
+  not stopped on the envelope, and can neither find it invalid nor honor the void (the void is
+  inert and transient for it; voids for positions BELOW its update-required stop are judged
+  normally, because those envelopes were of its own version). The exits of an update-required replica are a build whose
+  `engine_version` equals the envelope's, or a re-bootstrap from a snapshot rooted past the
+  position of this build's `engine_version` and not inside any void range the replica holds; for
+  a stop covered by an honored void, a snapshot rooted past the void that records it. A snapshot
+  rooted inside a voided range is never an exit, and EVERY exit (for every kind of stop) requires a
+  snapshot of this build's `engine_version` that is not rooted inside any void range the replica
+  holds. The ranges counted are those of every verified void, honored or not (an update-required
+  replica cannot judge them), and the service dedupes only a second void for the same position,
+  so a member can keep appending voids for early positions and keep recent roots inside some
+  range: the snapshot exit is best-effort under such spam. The other exit, a build whose
+  `engine_version` equals the envelope's, is unaffected; until one of them is available the
+  replica shows "update required" at that position and applies nothing past it. A snapshot is installed only against a permit
+  the status machine itself issues for the current stop after the engine verified the snapshot, so
+  a stop cannot be cleared with an unverified one. A re-bootstrap whose root reaches the position
+  also ends a write-set mismatch and an applied position found invalid (the recovery ADR 0074
+  names), and never a fork, an equivocation, a position conflict or a void honored at two
+  positions (key quarantine and re-enrollment). After a stop ends, the engine observes again from
+  its cursor: the machine discards later stops while an earlier one stands. **Not an apply failure:** a replica whose apply SUCCEEDS with a write-set hash other than
+  the envelope's has forked from the apply semantics (ADR 0074): it halts, with its own
+  evidence, and no void answers it. Transient errors (I/O, lock, resource exhaustion,
+  cancellation) never produce an apply failure. An `issued_at` outside the years 0000 to 9999
+  is invalid at the receiver checks (C.4), so it never reaches apply as a failure.
   **What the engine supplies.** The replica's cursor `next_to_apply` (the lowest position neither
   applied nor skipped) never passes the stop (chain records verified past a stop do not advance
   it), starts at `root + 1` for a bootstrapped replica, and moves past a range once a void for it
@@ -1948,7 +1994,12 @@ typed outcomes of Part B apply unchanged.
   positive integer N, and increments N, in the same change, whenever a change to `apply`
   alters what it writes for an unchanged payload and base. A replica that receives an
   envelope or snapshot whose `engine_version` it does not equal is in the update-required
-  state; it never guesses compatibility. (A vault reading back its own operation-log rows
+  state; it never guesses compatibility. For an envelope that state is a stop at its position
+  (nothing at or past it is evaluated or applied; no verdict is formed), recomputed on every
+  start and so not persisted; its exits are in C.10. A change to what the receiver checks accept
+  (such as the `issued_at` bound of spec-version 15) is a change of `engine_version` under this
+  rule; it is made before `dohflow-engine-1` is pinned, so no envelope of the first value exists
+  without it. (A vault reading back its own operation-log rows
   is not gated by this.) The value
   an operation-log row stores is the one the producing build wrote, unchanged. (The first
   value is `dohflow-engine-1`.)
@@ -1996,8 +2047,9 @@ tag the receiver's own tagger returns for the plaintext's key (an input, because
 not in the file), and the expected outcome, which is `ok`, `MalformedHeader` or
 `MalformedPlaintext` (the bytes do not decode), or the name of the **first** failing check in the
 order `NotAnEnvelope`, `ObjectIdMismatch`, `DeviceMismatch`, `TagMismatch`,
-`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`. What is
-normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
+`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`,
+`IssuedAtOutOfRange` (the last also pins the exact bounds, with cases at 0000-01-01T00:00:00Z,
+9999-12-31T23:59:59.999999Z and one microsecond outside each). What is normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
 failures included); the specific error is normative for every single-defect case and informative
 (the reference order) for the multi-defect cases, where another implementation must agree the
 envelope is invalid but may report a different first error. The tagger answer in each case is

@@ -413,6 +413,80 @@
       "tagger_output": "105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea"
     },
     {
+      "chain": "full",
+      "container": "444653590001000000e60016646f68666c6f772f73796e632d6865616465722f76310001111111111111111111111111111111110000000000000001010101010101010101010101010101010101105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea014f5d7cfd5c63445764bd45d571d71eaac21ee0e9e95790a8876cc532bd820436000000000000400080000000000000a1c21da9f6add3323fc5899071400d1076056bf6a9b83c0f716af646f626be6448236bce8e000000000000000000000000000000290000000100000010646f68666c6f772d656e67696e652d32000000370000000000000000b2e88a9dbd79dfd930d22e61ee2d3741e4c6b718440c4e406327616c272d92fc981c8ee6d77b9db1e6e523481d1d5699a9814367c39c051d6964ec50f169a6f8a2b9479848f49b9be33e3700716e96549b228c162ee56cae33f8b6e95aea8ad8874d6ab7b975f4b90c44ba8b335f07952f809b6f831ce2b33cd2dea368ade9f5b01421d92605da0312900c2554b773c096994ba291176fa88de305707538bfad6fa01678b1fb6b0c0198866546cf3956a96ee8",
+      "description": "a coherent envelope sealed by a build of engine version 2, classified by a replica of version 1 that holds the key: no verdict (update required)",
+      "expect": {
+        "reason": "UpdateRequired",
+        "verdict": "not_determinable"
+      },
+      "held_epoch_keys": [
+        1
+      ],
+      "name": "not_determinable_envelope_of_another_engine_version",
+      "newest_epoch_record_before_position": "5ae9bd59533600c02dbecbdaf9c433fb213702c54a5f28943f9feb1e8c94a790",
+      "tagger_output": "105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea"
+    },
+    {
+      "chain": "full",
+      "container": "444653590001000000e60016646f68666c6f772f73796e632d6865616465722f76310001111111111111111111111111111111110000000000000001010101010101010101010101010101010101105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea014f5d7cfd5c63445764bd45d571d71eaac21ee0e9e95790a8876cc532bd820436000000000000400080000000000000a1c21da9f6add3323fc5899071400d1076056bf6a9b83c0f716af646f626be6448236bce8e000000000000000000000000000000290000000100000010646f68666c6f772d656e67696e652d32000000370000000000000000b2e88a9dbd79dfd930d22e61ee2d3741e4c6b718440c4e406327616c272d92fc981c8ee6d77b9db1e6e523481d1d5699a9814367c39c051d6964ec50f169a6f8a2b9479848f49b9be33e3700716e96549b228c162ee56cae33f9b6e95aea8ad8874d6ab7b975f4b90c44ba8b335f07952f809b6f831ce2b33cd2dea368ade9f5b01421d92605da0312900c2554b773c096994ba291176fa88de305707538bfad6fa01678b1fb6b0c0198866546cf3956a96ee8",
+      "description": "the same envelope with a flipped ciphertext byte: still update required, never invalid",
+      "expect": {
+        "reason": "UpdateRequired",
+        "verdict": "not_determinable"
+      },
+      "held_epoch_keys": [
+        1
+      ],
+      "name": "not_determinable_foreign_version_takes_precedence_over_a_flipped_byte",
+      "newest_epoch_record_before_position": "5ae9bd59533600c02dbecbdaf9c433fb213702c54a5f28943f9feb1e8c94a790",
+      "tagger_output": "105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea"
+    },
+    {
+      "chain": "full",
+      "container": "444653590001000000e60016646f68666c6f772f73796e632d6865616465722f76310001111111111111111111111111111111110000000000000002010101010101010101010101010101010101105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea014f5d7cfd5c63445764bd45d571d71eaac21ee0e9e95790a8876cc532bd820436000000000000400080000000000000a1c21da9f6add3323fc5899071400d1076056bf6a9b83c0f716af646f626be644853f5b95f000000000000000000000000000000290000000100000010646f68666c6f772d656e67696e652d32000000370000000000000000b2edaddc1da15fd18160035acc6161cea0284d778c07922ba5e26bcd12c221ef27c3e64116bc96fce7b4cbaa32e7d7ab94cbf3e7ed15a66393e133c0199d8025b5edba8762572596e89f85446602fb9c6d44516969ab01142766e3236ca71131222938572a9d607345dc6fb7f2393253a07090e818f12035e346788c5d28d1d5c5ef9166c5e4b1a1b5cea13162338599de4ce066623012791d3094a554700eb6a7413a5e29da61617e2c6036b4513b71fbc496",
+      "description": "sealed in epoch 2 by version 2 while epoch 1 is in force: update required, not EpochNotInForce",
+      "expect": {
+        "reason": "UpdateRequired",
+        "verdict": "not_determinable"
+      },
+      "held_epoch_keys": [
+        1,
+        2
+      ],
+      "name": "not_determinable_foreign_version_takes_precedence_over_an_epoch_not_in_force",
+      "newest_epoch_record_before_position": "5ae9bd59533600c02dbecbdaf9c433fb213702c54a5f28943f9feb1e8c94a790",
+      "tagger_output": "105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea"
+    },
+    {
+      "chain": "full",
+      "container": "444653590001000000e60016646f68666c6f772f73796e632d6865616465722f76310001111111111111111111111111111111110000000000000001010101010101010101010101010101010101105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea014f5d7cfd5c63445764bd45d571d71eaac21ee0e9e95790a8876cc532bd820436000000000000400080000000000000a1c21da9f6add3323fc5899071400d1076056bf6a9b83c0f716af646f626be6448236bce8e000000000000000000000000000000290000000100000010646f68666c6f772d656e67696e652d32000000370000000000000000b2e88a9dbd79dfd930d22e61ee2d3741e4c6b718440c4e406327616c272d92fc981c8ee6d77b9db1e6e523481d1d5699a9814367c39c051d6964ec50f169a6f8a2b9479848f49b9be33e3700716e96549b228c162ee56cae33f8b6e95aea8ad8874d6ab7b975f4b90c44ba8b335f07952f809b6f831ce2b33cd2dea368ade9f5b01421d92605da0312900c2554b773c096994ba291176fa88de305707538bfad6fa01678b1fb6b0c0198866546cf3956a96ee8",
+      "description": "no key held for the envelope's epoch: update required comes first",
+      "expect": {
+        "reason": "UpdateRequired",
+        "verdict": "not_determinable"
+      },
+      "held_epoch_keys": [],
+      "name": "not_determinable_foreign_version_takes_precedence_over_a_missing_key",
+      "newest_epoch_record_before_position": "5ae9bd59533600c02dbecbdaf9c433fb213702c54a5f28943f9feb1e8c94a790",
+      "tagger_output": "105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea"
+    },
+    {
+      "chain": "full",
+      "container": "444653590001000000e60016646f68666c6f772f73796e632d6865616465722f76310001111111111111111111111111111111110000000000000001010101010101010101010101010101010101105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea014f5d7cfd5c63445764bd45d571d71eaac21ee0e9e95790a8876cc532bd820436000000000000400080000000000000a1c21da9f6add3323fc5899071400d1076056bf6a9b83c0f716af646f626be6448236bce8e000000000000000000000000000000290000000100000010646f68666c6f772d656e67696e652d32000000370000000000000000b2e88a9dbd79dfd930d22e61ee2d3741e4c6b718440c4e406327616c272d92fc981c8ee6d77b9db1e6e523481d1d5699a9814367c39c051d6964ec50f169a6f8a2b9479848f49b9be33e3700716e96549b228c162ee56cae33f8b6e95aea8ad8874d6ab7b975f4b90c44ba8b335f07952f809b6f831ce2b33cd2dea368ade9f5b01421d92605da0312900c2554b773c096994ba291176fa88de305707538bfad6fa01678b1fb6b0c0198866546cf3956a96ee8",
+      "description": "the position is not known yet: update required comes first",
+      "expect": {
+        "reason": "UpdateRequired",
+        "verdict": "not_determinable"
+      },
+      "held_epoch_keys": [
+        1
+      ],
+      "name": "not_determinable_foreign_version_takes_precedence_over_an_unknown_position",
+      "newest_epoch_record_before_position": null,
+      "tagger_output": "105c5c13720a2f7073791503d613171b6746dd5b3e2c274247de888add0824ea"
+    },
+    {
       "chain": "epoch1_only",
       "container": "444653590001000000e60016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000201040404040404040404040404040404040140f156cf425cf149f7f81c05ba775b4f95fd74aeddaed67add485b29326f4d1001961898f517e161bd30c0ea54fb402b0f484174e91af4876d74c2345c11f698b0000000000000400080000000000000a1c21da9f6add3323fc5899071400d1076056bf6a9b83c0f716af646f626be644853f5b95f000000000000000000000000000000290000000100000010646f68666c6f772d656e67696e652d31000000370000000000000000b2edaddc1da15fd18160035acc6161cea0284d778c07922ba5e26bcd12c221ef27c3e64116b993f9e2b1ceaf37e2d2ae91cef6e2e815a66393e133c0199d8025b5edba8762572596e89f85446602fb9c6d41546c6cae04112263e62669a21434272938572a9d607345dc6fb7f2393253a07090e818f12035e346788c5d28d1d5c5ef9166c5e4b1a1b5cea13162338599de4ce066623012791d3094a554700eb6a7413aa0398b23dbe07d86180401cb6f55d89d",
       "description": "the newest epoch record before the position is the cutover, but the replica's verified chain stops at the grant: it cannot build the position",
@@ -467,11 +541,13 @@
     }
   ],
   "epoch_keys": "The replica's epoch key for epoch e is SHA-256 of the CBE1 label 'dohflow/test-vector-epoch-key/v1' followed by the 8-byte big-endian epoch e. A replica 'holds a verified key' for e when that key matches the epoch record's key_commitment_ke (C.3); 'held_epoch_keys' lists the epochs it holds.",
-  "how_to_read": "Each case is the state of one replica at one log position and the envelope container found there. 'newest_epoch_record_before_position' is the id of the newest epoch record positioned before the envelope (C.7), as the replica sees it processing the log in order, or null when it has not processed the log up to this position; the epoch in force and the membership version in force at the position are that record's key_epoch and the version of the membership record it names, and exist only if the replica's verified chain contains the record. The verdict is 'valid', 'invalid' or 'not_determinable'. The verdict class is the contract; 'reason' is informative. 'invalid' needs the evidence (C.4); 'not_determinable' means the replica must wait and never honors a void on that basis.",
+  "how_to_read": "Each case is the state of one replica at one log position and the envelope container found there. 'newest_epoch_record_before_position' is the id of the newest epoch record positioned before the envelope (C.7), as the replica sees it processing the log in order, or null when it has not processed the log up to this position; the epoch in force and the membership version in force at the position are that record's key_epoch and the version of the membership record it names, and exist only if the replica's verified chain contains the record. The verdict is 'valid', 'invalid' or 'not_determinable'. The replica's own engine_version for every case is 'dohflow-engine-1' ('own_engine_version'): an envelope of any other value is not determinable (reason UpdateRequired) before the position, the key or any check is considered. The verdict class is the contract; 'reason' is informative. 'invalid' needs the evidence (C.4); 'not_determinable' means the replica must wait and never honors a void on that basis.",
+  "own_engine_version": "dohflow-engine-1",
   "spec": "docs/architecture/vault-format.md C.4 \"When an envelope is found invalid\" and C.14",
   "stage_order": [
     "Unparseable",
     "WrongVault",
+    "UpdateRequired (header engine_version is not the replica's own)",
     "ChainBehind (position unknown)",
     "EpochNotInForce",
     "NoVerifiedKey",

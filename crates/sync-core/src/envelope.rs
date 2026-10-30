@@ -340,6 +340,20 @@ pub fn canonical_envelope_digest(
     Ok(hasher.finalize().into())
 }
 
+/// The earliest `issued_at` a command may carry: 0000-01-01T00:00:00Z, in microseconds since the
+/// Unix epoch. Bounding `issued_at` to the years 0000 to 9999 keeps every stored `*_at` column an
+/// RFC 3339 text that orders as text (chrono would write `+10000-...` beyond it).
+pub const ISSUED_AT_MIN_MICROS: i64 = -62_167_219_200_000_000;
+/// The latest `issued_at` a command may carry: 9999-12-31T23:59:59.999999Z.
+pub const ISSUED_AT_MAX_MICROS: i64 = 253_402_300_799_999_999;
+
+/// Whether `micros` lies within the years 0000 to 9999 ([`ISSUED_AT_MIN_MICROS`] to
+/// [`ISSUED_AT_MAX_MICROS`]).
+#[must_use]
+pub const fn issued_at_in_range(micros: i64) -> bool {
+    micros >= ISSUED_AT_MIN_MICROS && micros <= ISSUED_AT_MAX_MICROS
+}
+
 /// Why a decrypted envelope failed the receiver's checks (C.4). Every variant fails closed:
 /// nothing is applied, rebased, queued or indexed, and the caller keeps the ciphertext and a
 /// diagnostic record.
@@ -372,6 +386,10 @@ pub enum ReceiverError {
     /// actor id).
     #[error("the plaintext metadata is not encodable")]
     UnencodableMetadata,
+    /// The plaintext's `issued_at` is outside the years 0000 to 9999
+    /// ([`ISSUED_AT_MIN_MICROS`], [`ISSUED_AT_MAX_MICROS`]).
+    #[error("issued_at is outside the supported date range")]
+    IssuedAtOutOfRange,
 }
 
 /// The checks of C.4 "Receiver checks" that need no membership chain, run **after**
@@ -443,6 +461,9 @@ pub fn check_envelope<'a>(
     };
     if !manifest_ok {
         return Err(ReceiverError::ManifestCommitmentMismatch);
+    }
+    if !issued_at_in_range(plaintext.meta.issued_at) {
+        return Err(ReceiverError::IssuedAtOutOfRange);
     }
     Ok(CheckedEnvelope { header, plaintext })
 }
