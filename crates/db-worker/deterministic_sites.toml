@@ -15,7 +15,7 @@
 
 [[site]]
 module = "apply/accounts.rs"
-statements = 9
+statements = 8
 bead = "personal-cfo-g3m.26"
 note = "Payload-domain and class-1 reference checks of the account commands."
 

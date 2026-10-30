@@ -80,7 +80,10 @@ pub(crate) fn apply_create_account(
                         Posting::new(equity_id, ob.checked_neg()?),
                     ],
                 )
-                .map_err(|e| DbError::reject(RejectCode::PayloadInvalid, e.to_string()))?;
+                // The postings are the opening amount and its negation in one currency (checked
+                // above), so double entry cannot fail here: this arm is unreachable, and it stays
+                // unclassified rather than carrying a classification no scenario can reach.
+                .map_err(|e| DbError::InvalidCommand(e.to_string()))?;
                 persist_transaction(tx, &txn)?;
             }
         }

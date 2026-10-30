@@ -72,3 +72,26 @@ impl RejectCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RejectCode;
+    use crate::DbError;
+
+    #[test]
+    fn a_rejection_yields_its_registry_code_and_nothing_else_does() {
+        for code in RejectCode::ALL {
+            let error = DbError::reject(code, "x");
+            assert_eq!(
+                error.apply_failure_code().map(|c| c.get()),
+                Some(code.as_u16())
+            );
+            assert!(
+                matches!(error, DbError::Rejected { site, .. } if site.file().ends_with("reject.rs"))
+            );
+        }
+        assert!(DbError::InvalidCommand("x".to_owned())
+            .apply_failure_code()
+            .is_none());
+    }
+}

@@ -1307,11 +1307,16 @@ pub enum DbError {
     /// through [`DbError::reject`]. A Sync replica that meets one stops at the command's
     /// position and a void can name it; no other error variant ever does.
     #[error("invalid command: {message}")]
+    #[non_exhaustive]
     Rejected {
         /// The stable registry code.
         code: RejectCode,
         /// The text for the person; not part of the verdict.
         message: String,
+        /// Where in the source the rejection was raised (the call of [`DbError::reject`]); the
+        /// behavioral proof requires every listed site to be reached by a scenario. Not part of
+        /// the verdict.
+        site: &'static std::panic::Location<'static>,
     },
     /// At most one bill is linked to a loan (personal-cfo-6wk.22): linking a second is refused
     /// and names the first so the user can unlink it. The Display text is fixed (bill names are
@@ -1356,10 +1361,12 @@ impl DbError {
     /// crate-private on purpose: a ratchet test (`deterministic_sites.toml`) lists the modules that
     /// may call it, and another crate must not mint a verdict.
     #[must_use]
+    #[track_caller]
     pub(crate) fn reject(code: RejectCode, message: impl Into<String>) -> Self {
         DbError::Rejected {
             code,
             message: message.into(),
+            site: std::panic::Location::caller(),
         }
     }
 

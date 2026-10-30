@@ -15,6 +15,10 @@
 # it is not an engine_version change.
 
 [[site]]
+module = "apply/accounts.rs"
+statements = 1
+
+[[site]]
 module = "apply/household.rs"
 statements = 2
 

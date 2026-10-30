@@ -7,7 +7,7 @@
 //!   idempotency record, a backup record;
 //! * the process under two different device time zones (each in a child process).
 //!
-//! The outcome of every scenario (the code of a rejection, or the write-set hash of a success) must
+//! The outcome of every scenario (the code of a rejection, or the row count of a setup success) must
 //! be identical in all of them. That is the behavioral proof of the audit: a validator that read a
 //! clock, a time zone or class-3 state would differ somewhere.
 
@@ -125,6 +125,16 @@ fn scenarios() -> Vec<Step> {
             WriteCommand::SetAccountLink {
                 asset_id: account(2),
                 liability_id: Some(account(3)),
+            },
+            Fine,
+        ),
+        step(
+            "a recorded transaction",
+            WriteCommand::RecordTransaction {
+                transaction_id: TransactionId::from_uuid(u(30)),
+                account_id: account(1),
+                amount: Money::new(-1_000, Currency::Usd),
+                occurred_at: chrono::DateTime::from_timestamp_micros(ISSUED_MICROS).unwrap(),
             },
             Fine,
         ),
@@ -268,6 +278,14 @@ fn scenarios() -> Vec<Step> {
             Reject(ReferenceMissing),
         ),
         step(
+            "recategorizing a real transaction to an unknown category",
+            WriteCommand::RecategorizeTransaction {
+                transaction_id: TransactionId::from_uuid(u(30)),
+                category_id: Some(category(92)),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
             "recategorizing an unknown transaction",
             WriteCommand::RecategorizeTransaction {
                 transaction_id: TransactionId::from_uuid(u(93)),
@@ -293,12 +311,9 @@ fn run(worker: &DbWorker) -> Vec<String> {
             let line = match (&outcome, s.expect) {
                 (Ok(_), Fine) => {
                     let set = worker.last_write_set().unwrap();
-                    format!(
-                        "{}: ok rows={} hash={:02x?}",
-                        s.label,
-                        set.rows.len(),
-                        set.hash
-                    )
+                    // Setup steps only: their write sets can include a system account whose id is
+                    // random until personal-cfo-32fmp.3, so only the row count is compared.
+                    format!("{}: ok rows={}", s.label, set.rows.len())
                 }
                 (Err(DbError::Rejected { code, .. }), Reject(expected)) => {
                     assert_eq!(*code, expected, "{}", s.label);
@@ -386,37 +401,69 @@ fn a_rejection_is_the_same_under_every_environment() {
         "the device time zone changed a verdict or a write set"
     );
     assert_eq!(
-        plain
-            .iter()
-            .map(|l| l.split(" hash=").next().unwrap().to_owned())
-            .collect::<Vec<_>>(),
-        chicago
-            .iter()
-            .map(|l| l.split(" hash=").next().unwrap().to_owned())
-            .collect::<Vec<_>>(),
+        plain, chicago,
         "the parent process and the children agree on every verdict"
     );
 }
 
+/// Every `DbError::reject(` call in the production source of a listed module, as (file, line).
+fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sites = std::collections::BTreeSet::new();
+    for module in [
+        "apply/accounts.rs",
+        "apply/categorization_cmds.rs",
+        "apply/mod.rs",
+    ] {
+        let path = root.join("src").join(module);
+        let source = std::fs::read_to_string(&path).unwrap();
+        for (index, line) in source.lines().enumerate() {
+            if line.contains("DbError::reject(") && !line.trim_start().starts_with("//") {
+                sites.insert((
+                    format!("crates/db-worker/src/{module}"),
+                    u32::try_from(index + 1).unwrap(),
+                ));
+            }
+        }
+    }
+    sites
+}
+
 #[test]
-fn every_listed_site_has_a_scenario_that_reaches_it() {
-    // Each module in the ledger contributes at least one rejection scenario; the per-code coverage
-    // is pinned so a code with no scenario cannot hide.
-    let covered: std::collections::BTreeSet<u16> = scenarios()
-        .iter()
-        .filter_map(|s| match s.expect {
-            Reject(code) => Some(code.as_u16()),
-            Fine => None,
+fn every_listed_site_is_reached_by_a_scenario() {
+    // Per SITE, not per code: the location each rejection reports (the call of `reject`) is
+    // collected over every scenario and compared with the `reject(` calls in the source.
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.vault"));
+    let mut reached = std::collections::BTreeSet::new();
+    for (n, s) in scenarios().into_iter().enumerate() {
+        if let Err(DbError::Rejected { site, .. }) = worker.dispatch(meta(n as u128), s.command) {
+            reached.insert((site.file().replace('\\', "/"), site.line()));
+        }
+    }
+    // The issued_at refusal is a site too.
+    let mut late = meta(900);
+    late.issued_at = IssuedAt::from_unix_micros(i64::MAX);
+    if let Err(DbError::Rejected { site, .. }) = worker.dispatch(
+        late,
+        WriteCommand::SetHouseholdTimezone {
+            timezone: "UTC".to_owned(),
+        },
+    ) {
+        reached.insert((site.file().replace('\\', "/"), site.line()));
+    }
+    let reached: std::collections::BTreeSet<(String, u32)> = reached
+        .into_iter()
+        .map(|(file, line)| {
+            let at = file.find("crates/db-worker/").unwrap_or(0);
+            (file[at..].to_owned(), line)
         })
         .collect();
-    for code in [PayloadInvalid, ReferenceMissing, StateConflict] {
-        assert!(covered.contains(&code.as_u16()), "{code:?}");
-    }
-    let rejections = scenarios()
-        .iter()
-        .filter(|s| matches!(s.expect, Reject(_)))
-        .count();
-    assert!(rejections >= 18, "{rejections} rejection scenarios");
+    assert_eq!(
+        reached,
+        source_sites(),
+        "a listed rejection site has no scenario that reaches it (or a scenario hit an unlisted one)"
+    );
 }
 
 #[test]

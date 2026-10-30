@@ -93,17 +93,9 @@ fn every_site_names_its_bead_and_a_note() {
 
 #[test]
 fn the_error_variants_that_are_not_verdicts_never_produce_an_apply_failure_code() {
-    use db_worker::{DbError, RejectCode};
-    for code in RejectCode::ALL {
-        let error = DbError::Rejected {
-            code,
-            message: "x".to_owned(),
-        };
-        assert_eq!(
-            error.apply_failure_code().map(|c| c.get()),
-            Some(code.as_u16())
-        );
-    }
+    use db_worker::DbError;
+    // (The positive half, a Rejected error carrying its code, is a unit test in reject.rs: the
+    // variant is non-exhaustive, so a verdict can be built only inside this crate.)
     for error in [
         DbError::InvalidCommand("x".to_owned()),
         DbError::WriterPanicked,
