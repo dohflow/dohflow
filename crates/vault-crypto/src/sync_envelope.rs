@@ -429,6 +429,10 @@ pub enum Wait {
     ChainBehind,
     /// The replica holds no verified key for the header's epoch.
     NoVerifiedKey,
+    /// The header's `engine_version` is not this build's (C.13, R40): the replica forms no
+    /// verdict at all, because every later stage runs checks that are bound to the engine
+    /// version. It waits for a build of the envelope's version, or a snapshot past it.
+    UpdateRequired,
 }
 
 /// A replica's verdict on the envelope at one log position.
@@ -446,7 +450,9 @@ pub enum Verdict {
 /// defines it: **invalid** only with the evidence, **not determinable** while the replica's key or
 /// log position is missing, otherwise valid.
 ///
-/// `keys` are the replica's *verified* epoch keys. `position` is the epoch and membership in force
+/// `own_engine_version` is this build's `engine_version` (C.13): an envelope of any other value
+/// is not determinable ([`Wait::UpdateRequired`]) before anything else but the parse and the vault
+/// are judged. `keys` are the replica's *verified* epoch keys. `position` is the epoch and membership in force
 /// **at this position**, built from the newest epoch record positioned before it (see
 /// [`EpochAtPosition`]); `None` means the replica has not processed the log in order up to this
 /// position (that record is not verified yet). The verdict then does not depend on how far past
@@ -455,6 +461,7 @@ pub enum Verdict {
 #[must_use]
 pub fn classify_envelope(
     container_bytes: &[u8],
+    own_engine_version: &str,
     keys: &[EpochKey],
     chain: &VerifiedState,
     position: Option<&EpochAtPosition>,
@@ -472,6 +479,13 @@ pub fn classify_envelope(
     //     replica knows its own vault from its chain.
     if header.vault_id != *chain.vault_id() {
         return Verdict::Invalid(InvalidReason::WrongVault);
+    }
+    // 1c. The version gate (C.13, R40): the receiver checks and the apply semantics are bound to
+    //     the engine version, so a header of another version is not judged at all. Without this
+    //     a replica could find invalid what the sealing version finds valid, and the vault would
+    //     split by version on a void.
+    if header.engine_version != own_engine_version {
+        return Verdict::NotDeterminable(Wait::UpdateRequired);
     }
     // 2. Not judgeable until the log has been processed in order up to this position.
     let Some(position) = position else {

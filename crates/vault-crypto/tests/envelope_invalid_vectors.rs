@@ -274,6 +274,16 @@ fn parts(dev: &Dev, command: u8, key_epoch: u64) -> (ClearHeader, EnvelopePlaint
     (header, plaintext)
 }
 
+/// The `engine_version` of the replica classifying in these vectors.
+const OWN_ENGINE_VERSION: &str = "dohflow-engine-1";
+
+/// An envelope sealed by a build of another `engine_version`.
+fn sealed_at_version(dev: &Dev, command: u8, key_epoch: u64, version: &str) -> Vec<u8> {
+    let (mut header, plaintext) = parts(dev, command, key_epoch);
+    header.engine_version = version.to_owned();
+    seal(dev, &header, &plaintext.encode().unwrap())
+}
+
 fn seal(dev: &Dev, header: &ClearHeader, plaintext: &[u8]) -> Vec<u8> {
     seal_envelope(
         &epoch_key(header.key_epoch),
@@ -604,6 +614,38 @@ fn all_cases() -> Vec<Case> {
         "not_determinable",
         "ChainBehind",
     ));
+    // The version gate (C.4 stage 1c): an envelope of another engine_version is judged by no one
+    // here, whatever else is wrong with it.
+    let foreign = sealed_at_version(&a, 1, 1, "dohflow-engine-2");
+    cases.push(case("not_determinable_envelope_of_another_engine_version", "a coherent envelope sealed by a build of engine version 2, classified by a replica of version 1 that holds the key: no verdict (update required)", foreign.clone(), &[1], e_grant, "not_determinable", "UpdateRequired"));
+    cases.push(case(
+        "not_determinable_foreign_version_takes_precedence_over_a_flipped_byte",
+        "the same envelope with a flipped ciphertext byte: still update required, never invalid",
+        flip(&foreign, 90),
+        &[1],
+        e_grant,
+        "not_determinable",
+        "UpdateRequired",
+    ));
+    cases.push(case("not_determinable_foreign_version_takes_precedence_over_an_epoch_not_in_force", "sealed in epoch 2 by version 2 while epoch 1 is in force: update required, not EpochNotInForce", sealed_at_version(&a, 1, 2, "dohflow-engine-2"), &[1, 2], e_grant, "not_determinable", "UpdateRequired"));
+    cases.push(case(
+        "not_determinable_foreign_version_takes_precedence_over_a_missing_key",
+        "no key held for the envelope's epoch: update required comes first",
+        foreign.clone(),
+        &[],
+        e_grant,
+        "not_determinable",
+        "UpdateRequired",
+    ));
+    cases.push(case(
+        "not_determinable_foreign_version_takes_precedence_over_an_unknown_position",
+        "the position is not known yet: update required comes first",
+        foreign,
+        &[1],
+        None,
+        "not_determinable",
+        "UpdateRequired",
+    ));
     let mut behind = case("not_determinable_epoch_record_before_the_position_not_verified", "the newest epoch record before the position is the cutover, but the replica's verified chain stops at the grant: it cannot build the position", sealed(&a, 4, 2), &[2], e_cutover, "not_determinable", "ChainBehind");
     behind.chain = ChainKind::Epoch1Only;
     cases.push(behind);
@@ -655,9 +697,14 @@ fn classify(
     // The position exists only if the replica's verified chain contains that epoch record.
     let position =
         newest.and_then(|i| EpochAtPosition::after_epoch_record(&state, &epoch_ids()[i]));
-    classify_envelope(container, &keys, &state, position.as_ref(), |_| {
-        IdempotencyKeyTag::from_derived(tag)
-    })
+    classify_envelope(
+        container,
+        OWN_ENGINE_VERSION,
+        &keys,
+        &state,
+        position.as_ref(),
+        |_| IdempotencyKeyTag::from_derived(tag),
+    )
 }
 
 fn document() -> Value {
@@ -697,8 +744,9 @@ fn document() -> Value {
             { "name": "A", "device_id": hex(&a.device_id), "fingerprint": hex(a.fingerprint().as_bytes()) },
             { "name": "B", "device_id": hex(&b.device_id), "fingerprint": hex(b.fingerprint().as_bytes()) },
         ],
-        "how_to_read": "Each case is the state of one replica at one log position and the envelope container found there. 'newest_epoch_record_before_position' is the id of the newest epoch record positioned before the envelope (C.7), as the replica sees it processing the log in order, or null when it has not processed the log up to this position; the epoch in force and the membership version in force at the position are that record's key_epoch and the version of the membership record it names, and exist only if the replica's verified chain contains the record. The verdict is 'valid', 'invalid' or 'not_determinable'. The verdict class is the contract; 'reason' is informative. 'invalid' needs the evidence (C.4); 'not_determinable' means the replica must wait and never honors a void on that basis.",
-        "stage_order": ["Unparseable", "WrongVault", "ChainBehind (position unknown)", "EpochNotInForce", "NoVerifiedKey", "Open (NotAnEnvelope, DeviceOutsideEpoch, IdentityMismatch, NonceDomain, NotOpenable)", "PlaintextMalformed", "Check"],
+        "how_to_read": "Each case is the state of one replica at one log position and the envelope container found there. 'newest_epoch_record_before_position' is the id of the newest epoch record positioned before the envelope (C.7), as the replica sees it processing the log in order, or null when it has not processed the log up to this position; the epoch in force and the membership version in force at the position are that record's key_epoch and the version of the membership record it names, and exist only if the replica's verified chain contains the record. The verdict is 'valid', 'invalid' or 'not_determinable'. The replica's own engine_version for every case is 'dohflow-engine-1' ('own_engine_version'): an envelope of any other value is not determinable (reason UpdateRequired) before the position, the key or any check is considered. The verdict class is the contract; 'reason' is informative. 'invalid' needs the evidence (C.4); 'not_determinable' means the replica must wait and never honors a void on that basis.",
+        "own_engine_version": OWN_ENGINE_VERSION,
+        "stage_order": ["Unparseable", "WrongVault", "UpdateRequired (header engine_version is not the replica's own)", "ChainBehind (position unknown)", "EpochNotInForce", "NoVerifiedKey", "Open (NotAnEnvelope, DeviceOutsideEpoch, IdentityMismatch, NonceDomain, NotOpenable)", "PlaintextMalformed", "Check"],
         "unreachable_from_classification": [
             { "variant": "Open:WrongVault", "why": "Raised by the open step when the header names another vault than the key's; classification judges the vault first (stage WrongVault), and the key is selected by the header's vault and epoch, so the open step is never reached with another vault." },
             { "variant": "Open:WrongEpoch", "why": "Raised when the header names another epoch than the key's; the key is selected by the header's epoch." }

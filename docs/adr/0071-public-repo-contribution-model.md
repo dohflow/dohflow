@@ -108,6 +108,17 @@ advisory's affected API (owner decision 2026-10-21). The rule and its procedure 
 `docs/agent/WORKFLOW_ROLES.md` ("Red-main fast path"). Nothing in the ruleset
 changes; this records how the existing bypass is used.
 
+**Enforcement note, 2026-10-28 (`personal-cfo-md8h2.23`, owner decision `personal-cfo-915.20`): a
+`Review gate` check.** The ruleset gains one more required check, `Review gate`, once it has passed
+on a real merge-queue run. On a pull request it passes only while `merge-ready` is on; in the merge
+queue it passes an entry only if the named pull request carries the label and its current head
+equals the SHA in the newest `<!-- review-verdict: PASS <sha> -->` marker in the reviewer's
+comments. This turns the review-binds-to-a-SHA rule (AGENTS.md section 16, rule 3) from something
+the owner checks into something the queue checks. **It is a guardrail against mistakes, not
+malice**: labels are not permission-restricted, any commenter can write a marker, and a pull
+request can edit the workflow; the Admin bypass is untouched. The first version bound the head by
+ancestry and failed its own queue run (the queue squash-merges), which is why the marker exists.
+
 ### 2. Fork-PR secret isolation
 
 GitHub's platform default already isolates `pull_request`-triggered runs
