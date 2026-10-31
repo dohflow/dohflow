@@ -655,6 +655,16 @@ impl<C: ?Sized> JobDispatcher<C> {
         Ok(())
     }
 
+    /// The kinds that currently have a registered handler, in sorted order. A cross-cutting suite
+    /// (cancellation, personal-cfo-gdsz) walks this so a newly registered kind cannot slip past it.
+    #[must_use]
+    pub fn kinds(&self) -> Vec<String> {
+        self.handlers
+            .read()
+            .map(|handlers| handlers.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Whether a handler for `kind` is currently registered.
     #[must_use]
     pub fn contains(&self, kind: &str) -> bool {
@@ -1360,8 +1370,10 @@ mod tests {
     fn dispatcher_routes_registered_kinds_and_skips_unknown_jobs() {
         let dispatcher = JobDispatcher::new();
         assert!(!dispatcher.should_run(&job(Schedule::Once), &()));
+        assert!(dispatcher.kinds().is_empty());
         dispatcher.register(Arc::new(TestHandler)).unwrap();
         assert!(dispatcher.contains("test"));
+        assert_eq!(dispatcher.kinds(), vec!["test".to_owned()]);
 
         let registered = job(Schedule::Once);
         assert!(dispatcher.should_run(&registered, &()));
