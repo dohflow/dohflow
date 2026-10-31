@@ -262,6 +262,8 @@ receives semantic auto-merge treatment.
 | `UpsertConnectorLink` | Set | auto (an idempotent upsert; applies as a no-op on a deleted connection) |
 | `SetConnectorLinkAccount` | Set | queue-choose if the mapping changed on both sides (applies as a no-op on a deleted connection) |
 | `DeleteConnectorConnection` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate) |
+| `RecordBalanceAssertion` | Create | auto; queue-choose only when the base already holds a manual assertion for the same account and day (both are kept, never LWW) |
+| `RecordConnectorBalance` | Set | auto, newest issued_at wins (monotone upsert); an older command applies as a no-op |
 | `SetHouseholdName` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `AddHouseholdMember` | Create | auto; queue-edit if the member id is already in use |
 | `RenameHouseholdMember` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
@@ -487,20 +489,50 @@ hold byte-identical class-1 rows. The local ids are for local use: they derive f
 `platform_household_id` / `platform_member_id`, both null with no account, and no command writes
 them yet).
 
+## Addendum F — Balance observations are commands (2026-10-31, `personal-cfo-5ymg8.3`)
+
+The two raw writers of `balance_observations` become `WriteCommand`s: `RecordBalanceAssertion`
+(Create; a manual observation with a caller-minted id) and `RecordConnectorBalance` (Set). That
+makes **Create 11**, **Set 27**, **Toggle 21**, **Base-dependent 5** and 69 appendix rows.
+
+**Manual assertions are never last-wins.** Two assertions for one account and day are both kept
+(the latest by `created_at`, then by `id`, anchors the balance) and a rebase that finds two
+queues a choice with both values (ADR 0027; ADR 0074 decision 5).
+
+**Connector readings are an upsert, newest wins.** `RecordConnectorBalance` updates the one
+`connector_sync` row of an (account, day) IN PLACE, and only when the command's `issued_at` is
+newer than the row's `created_at`; an older command applies as a no-op, so a stale refresh from an
+offline device cannot overwrite a newer same-day reading, and the rebase disposition is auto. The
+row is never hard-deleted (the old staging DELETE and INSERT are gone), and its id is a content id
+of (account, day), identical on every device. It carries **no source record**: a staged source
+record is device-local (the table is class 1b and not yet routed through the bus,
+`personal-cfo-0g528`), and writing it on one device would fork the row's digest, so provenance
+returns when connector source records go through the bus. The producer clamps `observed_at` to the
+household's today at its impure boundary; apply refuses a reading dated after the household-local
+date of `issued_at`.
+
+**A manual assertion keeps the behavior it had: no future-date bound.** Only the connector path is
+bounded, because a provider reading of a day that has not happened is a clock fault. Whether a
+person's assertion may be dated ahead is a product question this change does not settle; it is
+recorded on `personal-cfo-5ymg8.3` for planning, and adding the bound later is one more
+classified site with no format change.
+
 ## Addendum G — Assumption events are commands (2026-10-31, `personal-cfo-5ymg8.4`)
 
 `forecast_assumption_events` is written only by three additive version 1 commands:
 `RecordAssumptionEvent` (Create, a caller-minted id), `SupersedeAssumptionEvent` (Toggle) and
-`ClearAssumptionEvent` (Toggle). That makes **Create 11**, **Set 26**, **Toggle 23**,
-**Base-dependent 5** and 70 appendix rows.
+`ClearAssumptionEvent` (Toggle). That makes **Create 12**, **Set 27**, **Toggle 23**,
+**Base-dependent 5** and 72 appendix rows.
 
 **An edit is one command.** Editing a manual entry used to be a record of the new entry followed by
 a supersession of the old one, two writes that a replica could apply apart and so leave two active
 entries, doubling a cash event. `SupersedeAssumptionEvent` carries the replacement's whole payload
 and does both in one transaction. Supersede and clear require the old event to exist and still be
 `active` (classified `ReferenceMissing` and `StateConflict`), so two devices that concurrently
-supersede or clear one event cannot leave two active replacements: the later one is refused and
-queued by its disposition. A supersede keeps the event's scope (a base event is never replaced by a scenario overlay, nor the reverse; `StateConflict`). An event carries no forecast run: `origin_run_id` is written NULL by
+supersede one event cannot leave two active replacements: the later one is refused and queued by
+its disposition. A clear of an event that is already `cleared` is an accepted no-op that writes
+nothing (the same end state, so two devices clearing one event auto-apply); a clear of a
+superseded event is refused. A supersede keeps the event's scope (a base event is never replaced by a scenario overlay, nor the reverse; `StateConflict`). An event carries no forecast run: `origin_run_id` is written NULL by
 every command (a run is class 2 and never replicates), and `created_at` and `updated_at` are the
 command's `issued_at`.
 

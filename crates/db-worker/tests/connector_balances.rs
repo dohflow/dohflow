@@ -112,7 +112,9 @@ fn synced_balance_promotes_anchors_and_resolves_stale() {
     // Sync a provider balance observed today.
     stage_batch(&worker, account, &balance_batch("ext-1", today, 123_456));
 
-    // Promoted with provenance, staged row consumed.
+    // Promoted, staged row consumed. The observation carries NO source record: that is a
+    // device-local staging row, and writing it on one device only would fork the row's digest
+    // (personal-cfo-5ymg8.3).
     let conn = worker.read_connection().unwrap();
     let (count, source, provenance): (i64, String, Option<Uuid>) = conn
         .query_row(
@@ -124,7 +126,10 @@ fn synced_balance_promotes_anchors_and_resolves_stale() {
         .unwrap();
     assert_eq!(count, 1);
     assert_eq!(source, "connector_sync");
-    assert!(provenance.is_some(), "observation keeps its source record");
+    assert!(
+        provenance.is_none(),
+        "the replicated row names no device-local source record"
+    );
     let staged: i64 = conn
         .query_row("SELECT COUNT(*) FROM staged_balances", [], |r| r.get(0))
         .unwrap();

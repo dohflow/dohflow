@@ -13,6 +13,7 @@
 
 mod common;
 
+use chrono::NaiveDate;
 use common::KEY;
 use core_ledger::{
     Account, AccountFlags, AccountId, AccountSubtype, CashflowRole, CategoryId, LedgerAccountId,
@@ -91,6 +92,15 @@ fn supersede_event(old: u128, new: u128) -> WriteCommand {
 
 fn clear_event(n: u128) -> WriteCommand {
     WriteCommand::ClearAssumptionEvent { id: u(n) }
+}
+
+fn assertion(id: u128, account_id: AccountId, amount: Money) -> WriteCommand {
+    WriteCommand::RecordBalanceAssertion {
+        id: u(id),
+        account_id,
+        amount,
+        as_of: NaiveDate::from_ymd_opt(2001, 9, 1).unwrap(),
+    }
 }
 
 fn create_category(n: u128, parent: Option<u128>, name: &str) -> WriteCommand {
@@ -385,6 +395,35 @@ fn scenarios() -> Vec<Step> {
             clear_event(70),
             Reject(StateConflict),
         ),
+        step(
+            "an assertion on a real account",
+            assertion(78, account(1), Money::new(100, Currency::Usd)),
+            Fine,
+        ),
+        step(
+            "an assertion on an unknown account",
+            assertion(79, account(96), Money::new(100, Currency::Usd)),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "an assertion in a currency other than the account's",
+            assertion(79, account(1), Money::new(100, Currency::Eur)),
+            Reject(StateConflict),
+        ),
+        step(
+            "an assertion whose id is already in use",
+            assertion(78, account(1), Money::new(200, Currency::Usd)),
+            Reject(StateConflict),
+        ),
+        step(
+            "a connector reading dated after the command's household-local day",
+            WriteCommand::RecordConnectorBalance {
+                account_id: account(1),
+                observed_at: NaiveDate::from_ymd_opt(2030, 1, 1).unwrap(),
+                amount: Money::new(100, Currency::Usd),
+            },
+            Reject(StateConflict),
+        ),
     ]
 }
 
@@ -505,6 +544,7 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
     for module in [
         "apply/accounts.rs",
         "apply/assumption_cmds.rs",
+        "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
         "apply/mod.rs",
     ] {

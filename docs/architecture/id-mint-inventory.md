@@ -38,7 +38,7 @@ deliberate row here, in the same change.
 | `lib.rs` | `import_attachment` | 1 | keep-caller | An attachment id minted by the import call before it is recorded; not an apply path. |
 | `lib.rs` | `record_audit_event` | 1 | keep-class-3 | A device-local security audit row. |
 | `lib.rs` | `stage_file_batch` | 1 | keep-class-3 | Device-local import staging. |
-| `lib.rs` | `stage_sync_batch` | 2 | keep-class-3 | Device-local import staging. |
+| `lib.rs` | `stage_sync_batch` | 1 | keep-class-3 | Device-local import staging. |
 | `lib.rs` | `clone_scenario` | 1 | keep-pending | A direct writer outside the bus; `personal-cfo-5ymg8.5` routes it as a command with a derived id. |
 | `lib.rs` | `ensure_node_id` | 1 | keep-class-3 | The device's own node id. |
 | `lib.rs` | `ensure_vault_metadata` | 1 | keep-seeder | The vault id, minted once at creation (genesis). |
@@ -61,6 +61,7 @@ deliberate row here, in the same change.
 | `debt.rs` `apply_set_card_statement_balance` (upsert; the id is used only on insert) | keyed | `card-statement` | account id, cycle close |
 | `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (reads class-3 staging; see below) | keyed | `txn.commit-staged` | staged transaction id |
 | `apply/ingestion_cmds.rs` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
+| `apply/balance_cmds.rs` connector balance observation (insert branch of the upsert) | content | `balance-obs.connector` | account id, day (independent of the command: later commands update the row in place) |
 | `apply/ingestion_cmds.rs` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
 | `apply/household.rs` `SetHouseholdTimezone` audit row (class 3, written once per command: `INSERT OR IGNORE`) | keyed | `audit.household-timezone` | none (the command id is in every keyed id) |
 | `apply/recurring.rs` `apply_dismiss_recurring_suggestion` | none | | the suppression row has a natural key; the affected entity recorded with the command is the command id |

@@ -182,7 +182,7 @@ fn a_second_supersede_of_one_event_is_refused_and_leaves_one_active_event() {
 }
 
 #[test]
-fn clear_deactivates_keeps_the_row_and_refuses_an_unknown_or_inactive_event() {
+fn clear_deactivates_keeps_the_row_and_a_second_clear_is_a_no_op_that_writes_nothing() {
     let (_dir, worker) = worker();
     record(&worker, 1, 0);
     worker
@@ -191,21 +191,120 @@ fn clear_deactivates_keeps_the_row_and_refuses_an_unknown_or_inactive_event() {
             WriteCommand::ClearAssumptionEvent { id: u(1) },
         )
         .unwrap();
-    let (status, _, _, created, updated) = row(&worker, 1);
-    assert_eq!(status, "cleared");
+    let cleared = row(&worker, 1);
+    assert_eq!(cleared.0, "cleared");
     assert_ne!(
-        created, updated,
+        cleared.3, cleared.4,
         "updated_at moved to the clearing command's instant"
     );
     assert!(active_ids(&worker).is_empty());
-    for (n, id, code) in [
-        (3, u(1), RejectCode::StateConflict),
-        (4, u(99), RejectCode::ReferenceMissing),
-    ] {
-        let again = worker.dispatch(meta(n, at(6)), WriteCommand::ClearAssumptionEvent { id });
-        assert!(
-            matches!(&again, Err(DbError::Rejected { code: c, .. }) if *c == code),
-            "{again:?}"
-        );
-    }
+    // A second clear (another device cleared it too) is accepted and changes nothing, not even
+    // updated_at.
+    worker
+        .dispatch(
+            meta(3, at(60)),
+            WriteCommand::ClearAssumptionEvent { id: u(1) },
+        )
+        .unwrap();
+    assert_eq!(row(&worker, 1), cleared);
+    assert!(
+        worker.last_write_set().unwrap().rows.is_empty(),
+        "a repeated clear writes nothing"
+    );
+    // An unknown event is a missing reference.
+    let unknown = worker.dispatch(
+        meta(4, at(61)),
+        WriteCommand::ClearAssumptionEvent { id: u(99) },
+    );
+    assert!(
+        matches!(
+            unknown,
+            Err(DbError::Rejected {
+                code: RejectCode::ReferenceMissing,
+                ..
+            })
+        ),
+        "{unknown:?}"
+    );
+}
+
+/// Two copies of one vault holding the active event 1, to play two devices that edit it
+/// concurrently.
+fn two_devices() -> (tempfile::TempDir, DbWorker, DbWorker) {
+    let (dir, worker) = worker();
+    record(&worker, 1, 0);
+    worker.checkpoint_truncate().unwrap();
+    let base = dir.path().join("v.vault");
+    let copy = |name: &str| {
+        let path = dir.path().join(name);
+        std::fs::copy(&base, &path).unwrap();
+        DbWorker::open(&path, KEY).unwrap()
+    };
+    let (a, b) = (copy("a.vault"), copy("b.vault"));
+    (dir, a, b)
+}
+
+fn refused(result: Result<db_worker::Outcome, DbError>, code: RejectCode) {
+    assert!(
+        matches!(&result, Err(DbError::Rejected { code: c, .. }) if *c == code),
+        "{result:?}"
+    );
+}
+
+fn supersede(n: u128, replacement: u128) -> (CommandMeta, WriteCommand) {
+    (
+        meta(n, at(10)),
+        WriteCommand::SupersedeAssumptionEvent {
+            id: u(1),
+            replacement: event(replacement),
+        },
+    )
+}
+
+fn clear(n: u128) -> (CommandMeta, WriteCommand) {
+    (
+        meta(n, at(10)),
+        WriteCommand::ClearAssumptionEvent { id: u(1) },
+    )
+}
+
+#[test]
+fn two_devices_superseding_one_event_cannot_both_win_on_either_base() {
+    let (_dir, a, b) = two_devices();
+    let (ma, ca) = supersede(10, 2);
+    let (mb, cb) = supersede(11, 3);
+    a.dispatch(ma.clone(), ca.clone()).unwrap();
+    b.dispatch(mb.clone(), cb.clone()).unwrap();
+    // Each device's command, replayed onto the other's base, is refused and writes nothing.
+    refused(a.dispatch(meta(12, at(11)), cb), RejectCode::StateConflict);
+    refused(b.dispatch(meta(13, at(11)), ca), RejectCode::StateConflict);
+    assert_eq!(active_ids(&a), [u(2)]);
+    assert_eq!(active_ids(&b), [u(3)]);
+}
+
+#[test]
+fn a_clear_and_a_supersede_of_one_event_are_opposed_on_either_base() {
+    let (_dir, a, b) = two_devices();
+    let (mc, cc) = clear(10);
+    let (ms, cs) = supersede(11, 2);
+    a.dispatch(mc, cc.clone()).unwrap();
+    b.dispatch(ms, cs.clone()).unwrap();
+    // The supersede finds the event cleared; the clear finds it superseded.
+    refused(a.dispatch(meta(12, at(11)), cs), RejectCode::StateConflict);
+    refused(b.dispatch(meta(13, at(11)), cc), RejectCode::StateConflict);
+    assert!(active_ids(&a).is_empty());
+    assert_eq!(active_ids(&b), [u(2)]);
+}
+
+#[test]
+fn two_devices_clearing_one_event_agree_and_the_second_clear_writes_nothing() {
+    let (_dir, a, b) = two_devices();
+    let (m1, c1) = clear(10);
+    let (_, c2) = clear(11);
+    a.dispatch(m1, c1).unwrap();
+    b.dispatch(meta(11, at(20)), c2.clone()).unwrap();
+    let before = row(&a, 1);
+    a.dispatch(meta(12, at(30)), c2).unwrap();
+    assert_eq!(row(&a, 1), before, "the repeated clear changed nothing");
+    assert!(a.last_write_set().unwrap().rows.is_empty());
 }

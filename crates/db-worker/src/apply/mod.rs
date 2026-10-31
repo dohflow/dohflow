@@ -8,6 +8,7 @@
 
 pub(crate) mod accounts;
 pub(crate) mod assumption_cmds;
+pub(crate) mod balance_cmds;
 pub(crate) mod categorization_cmds;
 pub(crate) mod connector_cmds;
 pub(crate) mod household;

@@ -521,6 +521,23 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "record_balance_assertion",
+            WriteCommand::RecordBalanceAssertion {
+                id: u(70),
+                account_id: account(1),
+                amount: Money::new(123_456, Currency::Usd),
+                as_of: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+            },
+        ),
+        (
+            "record_connector_balance",
+            WriteCommand::RecordConnectorBalance {
+                account_id: account(1),
+                observed_at: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+                amount: Money::new(125_000, Currency::Usd),
+            },
+        ),
+        (
             "set_household_name",
             WriteCommand::SetHouseholdName {
                 name: "The Garcia household".into(),

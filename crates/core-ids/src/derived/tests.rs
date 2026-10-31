@@ -464,6 +464,35 @@ fn a_keyed_mint_consumes_no_ordinal() {
 }
 
 #[test]
+fn a_content_id_ignores_the_command_and_is_length_prefixed_with_known_answers() {
+    // Known answers computed independently with Python's hmac/hashlib from the doc's construction.
+    let key = sample_key();
+    assert_eq!(
+        key.content_id("balance-obs.connector", &[&[7; 16], b"2026-10-30"])
+            .unwrap()
+            .to_string(),
+        "a4da6bf4-cd9b-85be-a9db-741a44cdb874"
+    );
+    let ab_c = key.content_id("x", &[b"ab", b"c"]).unwrap();
+    let a_bc = key.content_id("x", &[b"a", b"bc"]).unwrap();
+    assert_eq!(ab_c.to_string(), "c57d355e-9af5-8ec7-ad03-23a2bfc3706b");
+    assert_eq!(a_bc.to_string(), "d153b378-5c22-8a77-9004-938e2b101e65");
+    // Domain-separated from a keyed id over the same tag and key, whatever the command.
+    let keyed = key
+        .keyed_id(&sample_command(), "x", &[b"ab", b"c"])
+        .unwrap();
+    assert_eq!(keyed.to_string(), "7af329d4-98c6-8b41-8aef-db33dcf2bc67");
+    assert_ne!(ab_c, keyed);
+    // Version 8, variant 10; the tag rules are the tag rules.
+    assert_eq!(ab_c.get_version_num(), 8);
+    assert_eq!(ab_c.as_bytes()[8] >> 6, 0b10);
+    assert_eq!(
+        key.content_id("", &[]).unwrap_err(),
+        DerivedIdError::EmptyTag
+    );
+}
+
+#[test]
 fn a_singleton_id_is_a_pure_function_of_the_vault_and_the_label_with_known_answers() {
     // Computed independently with Python's hmac/hashlib from the construction in the doc.
     let key = sample_key();

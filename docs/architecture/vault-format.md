@@ -462,7 +462,7 @@ therefore requires reviewing this inventory.
 | `system_ledger_accounts` | 3 | exclude | exclude | Device-local state. |
 | `projection_cursors` | 3 | exclude | exclude | Device-local state. |
 | `dedupe_decisions` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `balance_observations` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `balance_observations` | 1 | include | include | An account's balance as of a day (manual or connector). Written only by `RecordBalanceAssertion` and `RecordConnectorBalance`; a connector row's `source_record_id` is NULL on every command-written row. |
 | `scenarios` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `forecast_assumption_events` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `forecast_dependency_edges` | 2 | rebuild | rebuild | Derived per-run attribution (an assumption event to a forecast row of one run); rebuilt locally, never shipped. Corrected from class 4 by ADR 0074 Addendum F. |
