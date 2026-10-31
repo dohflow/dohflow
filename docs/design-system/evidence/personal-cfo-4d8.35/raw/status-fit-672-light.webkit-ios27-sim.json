@@ -1,0 +1,194 @@
+{
+ "meta": {
+  "sourceSha": "bfe7e074e9df9cbc9f743ccd72c1ad4fe024d414",
+  "capturedAt": "2026-10-31T17:22:31.255Z",
+  "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1",
+  "locale": "en-US",
+  "timeZone": "America/Los_Angeles",
+  "innerWidth": 402,
+  "innerHeight": 714,
+  "devicePixelRatio": 3,
+  "componentWidth": 672,
+  "theme": "light"
+ },
+ "rows": {
+  "connection · fresh, short stamp": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 182,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "connection · 2 days, still fresh": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 182,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "connection · 3 days: Out of date": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 182,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "connection · Out of date, prior-year stamp": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 182,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "connection · Out of date, long name, prior-year stamp": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 221.984375,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "connection · Out of date, refresh pending (spinner)": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 182,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "connection · Needs attention": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 210,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "connection · Never refreshed": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 182,
+    "scrollW": 672,
+    "clientW": 672,
+    "contentWidth": 646,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 1,
+    "narrow": 0
+   },
+   "verdict": "fits"
+  },
+  "card strip · due today": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 85,
+    "scrollW": 672,
+    "clientW": 672
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 1 day (singular)": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 85,
+    "scrollW": 672,
+    "clientW": 672
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 5 days": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 85,
+    "scrollW": 672,
+    "clientW": 672
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 6 days (secondary)": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 85,
+    "scrollW": 672,
+    "clientW": 672
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 34 days": {
+   "problems": [],
+   "metrics": {
+    "width": 672,
+    "height": 85,
+    "scrollW": 672,
+    "clientW": 672
+   },
+   "verdict": "fits"
+  }
+ }
+}
