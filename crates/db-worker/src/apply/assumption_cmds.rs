@@ -6,7 +6,8 @@
 //! * [`apply_supersede_assumption_event`] replaces an active event with a new one in ONE command,
 //!   so an edit can never land as two writes that a replica applies apart (which would leave two
 //!   active events and double a cash entry).
-//! * [`apply_clear_assumption_event`] deactivates an active event and keeps the row.
+//! * [`apply_clear_assumption_event`] deactivates an active event and keeps the row; clearing one
+//!   that is already cleared is a no-op.
 //!
 //! An event is never deleted by these commands, and none of them reads the clock: `created_at` and
 //! `updated_at` are the command's `issued_at`. An event carries no forecast run (a run is class 2
@@ -123,6 +124,19 @@ pub(crate) fn apply_supersede_assumption_event(
         ));
     }
     require_active(tx, id)?;
+    // An edit keeps the event's scope: a base event is never replaced by a scenario overlay, nor
+    // the reverse, because the two feed different forecasts.
+    let old_scenario: Option<Uuid> = tx.query_row(
+        "SELECT scenario_id FROM forecast_assumption_events WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if old_scenario != replacement.scenario_id {
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
+            "a replacement must keep the scope of the event it supersedes".to_owned(),
+        ));
+    }
     insert_event(tx, meta, replacement)?;
     tx.execute(
         "UPDATE forecast_assumption_events
@@ -134,12 +148,17 @@ pub(crate) fn apply_supersede_assumption_event(
 }
 
 /// Applies [`WriteCommand::ClearAssumptionEvent`](crate::WriteCommand): the event must be
-/// `active`. Returns the event id.
+/// `active`. Clearing an event that is already `cleared` is an accepted no-op that writes nothing
+/// (the same end state, so a concurrent clear from another device auto-applies); an event another
+/// command superseded is refused. Returns the event id.
 pub(crate) fn apply_clear_assumption_event(
     tx: &Connection,
     meta: &CommandMeta,
     id: &Uuid,
 ) -> Result<Uuid, DbError> {
+    if status_of(tx, id)?.as_deref() == Some("cleared") {
+        return Ok(*id);
+    }
     require_active(tx, id)?;
     tx.execute(
         "UPDATE forecast_assumption_events SET status = 'cleared', updated_at = ?2 WHERE id = ?1",

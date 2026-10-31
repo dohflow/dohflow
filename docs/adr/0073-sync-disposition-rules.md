@@ -500,7 +500,7 @@ entries, doubling a cash event. `SupersedeAssumptionEvent` carries the replaceme
 and does both in one transaction. Supersede and clear require the old event to exist and still be
 `active` (classified `ReferenceMissing` and `StateConflict`), so two devices that concurrently
 supersede or clear one event cannot leave two active replacements: the later one is refused and
-queued by its disposition. An event carries no forecast run: `origin_run_id` is written NULL by
+queued by its disposition. A supersede keeps the event's scope (a base event is never replaced by a scenario overlay, nor the reverse; `StateConflict`). An event carries no forecast run: `origin_run_id` is written NULL by
 every command (a run is class 2 and never replicates), and `created_at` and `updated_at` are the
 command's `issued_at`.
 

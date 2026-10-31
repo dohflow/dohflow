@@ -111,6 +111,9 @@ token_enum! {
 /// The fields needed to record a new assumption event. On write the status is
 /// set `Active` and both timestamps to the command's `issued_at`. The event carries no run:
 /// a run is class 2 and never replicates, and no producer ever set one.
+///
+/// This is also the version 1 payload shape of the three assumption-event commands: the
+/// `payload_v1` fixtures freeze it, and a change to a field is a payload schema version bump.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NewAssumptionEvent {
     /// Caller-supplied id (time-ordered `Uuid::now_v7`).

@@ -361,10 +361,28 @@ fn scenarios() -> Vec<Step> {
             supersede_event(70, 75),
             Reject(StateConflict),
         ),
+        step(
+            "recording a base event to supersede",
+            record_event(76, None, "{}"),
+            Fine,
+        ),
+        step(
+            "superseding a base event with a scenario overlay",
+            WriteCommand::SupersedeAssumptionEvent {
+                id: u(76),
+                replacement: event(77, Some(97), "{}"),
+            },
+            Reject(StateConflict),
+        ),
         step("clearing an active event", clear_event(74), Fine),
         step(
-            "clearing an event that is no longer active",
+            "clearing an event that is already cleared",
             clear_event(74),
+            Fine,
+        ),
+        step(
+            "clearing an event that was superseded",
+            clear_event(70),
             Reject(StateConflict),
         ),
     ]
