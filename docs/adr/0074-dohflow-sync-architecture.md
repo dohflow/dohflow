@@ -379,7 +379,7 @@ as local.
 | Intent group | Class | Decision and accepted UX consequence |
 |---|---|---|
 | `balance_observations` | 1 | Assertions replicate. They are never last-write-wins: two assertions for one account and date queue for an explicit choice under ADR 0073. |
-| `scenarios`, `forecast_assumption_events`, and `forecast_dependency_edges` | 1 | Scenario work follows the user to another device; conflicting changes queue rather than silently losing an assumption. |
+| `scenarios` and `forecast_assumption_events` | 1 | Scenario work follows the user to another device; conflicting changes queue rather than silently losing an assumption. (`forecast_dependency_edges` was listed here and is class 2: Addendum F.) |
 | `dedupe_decisions` | 1 | An import decision follows the related history, so another device does not rediscover or reverse it. |
 | `merchant_aliases` | 1 | A user correction to a merchant name follows the user instead of producing different local interpretations. |
 | `merchant_identities` | 1 | Identity knowledge follows the user; conflicts remain visible through the disposition queue. |
@@ -1178,6 +1178,19 @@ owner decisions), recorded with the sync-core honor rule (spec-version 14):
   running an equal build or re-bootstrapping from a snapshot of its own version rooted past the
   position (past the voided range when a void covers it). A successful apply with another
   write-set hash is a fork and halts; it is never an apply failure.
+
+## Addendum F — Table-class corrections (2026-10-31, `personal-cfo-5ymg8.4`)
+
+Engineering corrections to the class a table was given in Decision 5, ruled by planning inside this
+ADR and ADR 0073: they change no product behavior and no user-visible outcome.
+
+**`forecast_dependency_edges` is class 2.** A row is a per-run attribution edge: it names a
+`forecast_runs` row and a `forecast_rows` row, both class 2, rebuilt locally and never shipped, so
+a replicated edge would reference rows a replica never receives. Its writers (`record_dependency_edges`
+and the read `dependency_edges_for_row`) have no production caller, only tests. It leaves the Sync
+inventory and the write set; the scenario cascade that deletes a scenario's edges becomes a local
+cleanup of a rebuildable table. No command is written for it. The inventory row (vault-format.md,
+spec-version 18) and the manifests follow.
 
 ## Linked beads
 

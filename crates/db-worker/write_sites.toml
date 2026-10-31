@@ -145,15 +145,6 @@ note = "Assumption events recorded, superseded, cleared, deleted and cloned outs
 
 [[site]]
 module = "lib.rs"
-table = "forecast_dependency_edges"
-class = "4"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.4"
-note = "Dependency edges recorded and deleted outside the bus."
-
-[[site]]
-module = "lib.rs"
 table = "ledger_accounts"
 class = "1"
 statements = 1

@@ -1111,7 +1111,7 @@ fn full_capture_tables() -> Vec<String> {
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
 /// * the rows of `balance_observations`, `category_aliases`, `credit_card_cycles`,
-///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
+///   `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
 ///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
 ///   reach the command bus with `personal-cfo-5ymg8`;
 /// * the rest need a second command on the same row (an update after a create).
@@ -1134,7 +1134,6 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("debt_terms", &["bu", "bd"]),
     ("dedupe_decisions", &["bu", "bd"]),
     ("forecast_assumption_events", &["bd"]),
-    ("forecast_dependency_edges", &["bi", "bu", "bd"]),
     ("household_members", &["bd"]),
     ("households", &["bi", "bd"]),
     ("income_sources", &["bd"]),

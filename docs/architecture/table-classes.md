@@ -97,7 +97,7 @@ routing is owned by ADR 0074 / SYNC-2.
 
 The current direct-writer rows are intentionally visible rather than silently
 treated as replicated. `balance_observations`, `scenarios`,
-`forecast_assumption_events`, `forecast_dependency_edges`, `dedupe_decisions`,
+`forecast_assumption_events`, `dedupe_decisions`,
 `merchant_aliases`, `merchant_identities`, `manual_entry_links`,
 `transaction_categorizations`, `attachments`, and `attachment_links` each carry
 the candidate disposition in the manifest note and explicitly point at ADR
