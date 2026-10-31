@@ -201,6 +201,7 @@ fn a_due_connection_refreshes_once_per_interval_and_a_manual_refresh_counts() {
         RefreshSweepReport {
             refreshed: 1,
             skipped: 0,
+            cancelled: 0,
             failed: 0
         }
     );
@@ -240,6 +241,7 @@ fn a_due_connection_refreshes_once_per_interval_and_a_manual_refresh_counts() {
         RefreshSweepReport {
             refreshed: 0,
             skipped: 1,
+            cancelled: 0,
             failed: 0
         }
     );

@@ -14,8 +14,14 @@
 //! * A cancel racing a real scheduled backup, at many offsets, leaves only whole artifacts: every
 //!   file in the destination is a complete `.pcfobk` with a matching verified receipt, no temp
 //!   leftovers, and nothing at all when the job never ran.
-//! * A cancel during a provider fetch is recorded as terminal, and the refresh's own commit is all
-//!   or nothing against an uncancelled control.
+//! * A cancel during a provider fetch stops the refresh within the SLA without waiting for the
+//!   provider, writes nothing (no rows, stamp, cursor or notice change) and is recorded as
+//!   cancelled; the abandoned fetch's late result never reaches the commit and the connection's
+//!   sync slot is held until the fetch ends. A cancel that lands as the fetch returns, or after
+//!   the commit, is decided at the commit: before it, nothing is written; after it, the job stays
+//!   succeeded (personal-cfo-pxi.25).
+//! * A crash between the commit and the terminal write recovers to a truthful outcome, never
+//!   cancelled, and the re-run imports nothing twice.
 //! * The terminal state is durable: after the vault is closed and reopened the job is still
 //!   cancelled and is not claimed again.
 //! * Queued cancels are terminal at once and their P99 is under the 500 ms SLA (live: one indexed
@@ -25,22 +31,25 @@
 //!   at a time, `cargo test --test job_cancellation -- --ignored --exact --test-threads=1 <name>`;
 //!   in parallel they contend for the vault and can miss the bound.
 //!
-//! It does NOT prove that a running export or fetch stops early, and it does not assert the
-//! "cancelled means nothing was committed" rule, because neither holds today: the backup handler
-//! checks its token once, before the export starts, and the connector refresh is handed no token
-//! at all, so work in flight runs to completion and the job is then recorded as cancelled. Those
-//! two gaps are the `#[ignore]`d cases below, each naming the bead that fixes it
-//! (personal-cfo-g3m.29 for the backup, personal-cfo-pxi.25 for the connector refresh); each
-//! bead un-ignores its case.
+//! It does NOT prove that a running backup export stops early, and it does not assert the
+//! "cancelled means nothing was committed" rule for it, because neither holds today: the backup
+//! handler checks its token once, before the export starts, so an export in flight runs to
+//! completion and the job is then recorded as cancelled. That gap is the `#[ignore]`d case below,
+//! naming the bead that fixes it (personal-cfo-g3m.29), which un-ignores it.
 
 use std::fs;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use app_lib::connector_refresh::{refresh_job_id, run_due_connector_refresh, RefreshSweepReport};
+use app_lib::connector_attention::{encode, AttentionEntry, AttentionKind};
+use app_lib::connector_refresh::{
+    refresh_job_id, run_due_connector_refresh, run_due_connector_refresh_observed,
+    RefreshSweepReport,
+};
 use app_lib::ipc::commands::{
     connector_link_impl, connector_set_account_link_impl, create_account_impl,
     transaction_list_impl, unlock_vault_impl,
@@ -560,6 +569,66 @@ fn resolve_healthy(_: &str) -> Option<&'static dyn ConnectorAdapter> {
     Some(healthy())
 }
 
+/// A provider that runs a hook inside its fetch, which a test uses to cancel at that instant.
+type OnSync = Box<dyn Fn() + Send>;
+static ON_SYNC: Mutex<Option<OnSync>> = Mutex::new(None);
+
+struct CancellingProvider(MockConnector);
+
+impl ConnectorAdapter for CancellingProvider {
+    fn id(&self) -> &'static str {
+        self.0.id()
+    }
+    fn display_name(&self) -> &'static str {
+        self.0.display_name()
+    }
+    fn version(&self) -> Version {
+        self.0.version()
+    }
+    fn capabilities(&self) -> CapabilitySet {
+        self.0.capabilities()
+    }
+    fn link(&self, input: &LinkInput) -> Result<LinkSession, ConnectorError> {
+        self.0.link(input)
+    }
+    fn fetch_accounts(&self, conn: &Connection) -> Result<Vec<ParsedAccount>, ConnectorError> {
+        self.0.fetch_accounts(conn)
+    }
+    fn fetch_transactions(
+        &self,
+        conn: &Connection,
+        account: &str,
+        since: Option<chrono::NaiveDate>,
+    ) -> Result<Vec<ParsedRecord>, ConnectorError> {
+        self.0.fetch_transactions(conn, account, since)
+    }
+    fn fetch_balances(
+        &self,
+        conn: &Connection,
+        account: &str,
+    ) -> Result<Vec<ParsedBalance>, ConnectorError> {
+        self.0.fetch_balances(conn, account)
+    }
+    fn health(&self, conn: &Connection) -> Result<HealthStatus, ConnectorError> {
+        self.0.health(conn)
+    }
+    fn sync(
+        &self,
+        conn: &Connection,
+        since: Option<chrono::NaiveDate>,
+    ) -> Result<SyncBatch, ConnectorError> {
+        if let Some(hook) = ON_SYNC.lock().unwrap().as_ref() {
+            hook();
+        }
+        self.0.sync(conn, since)
+    }
+}
+
+fn resolve_cancelling(_: &str) -> Option<&'static dyn ConnectorAdapter> {
+    static ADAPTER: OnceLock<CancellingProvider> = OnceLock::new();
+    Some(ADAPTER.get_or_init(|| CancellingProvider(MockConnector::with_fixture().with_id("other"))))
+}
+
 fn open_state() -> (TempDir, AppState) {
     let dir = TempDir::new().expect("temp dir");
     let mut controller = VaultController::open(dir.path().join("vault.db"));
@@ -663,6 +732,51 @@ fn a_queued_connector_refresh_cancelled_before_the_sweep_never_fetches() {
     assert_eq!(transaction_count(&state), 0, "nothing was imported");
 }
 
+/// Everything a refresh may change on a connection besides the imported rows, so a cancelled run
+/// can be shown to change none of it.
+#[derive(Debug, PartialEq, Eq)]
+struct ConnectionSnapshot {
+    last_synced_at: Option<String>,
+    attention: Option<String>,
+    watermarks: Vec<Option<String>>,
+}
+
+fn snapshot(state: &AppState, connection: Uuid) -> ConnectionSnapshot {
+    let controller = state.lock_controller().unwrap();
+    let kernel = controller.kernel().unwrap();
+    let row = kernel
+        .connector_connections()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == connection)
+        .expect("the connection");
+    ConnectionSnapshot {
+        last_synced_at: row.last_synced_at,
+        attention: row.attention,
+        watermarks: kernel
+            .connector_links(connection)
+            .unwrap()
+            .into_iter()
+            .map(|link| link.last_synced_on)
+            .collect(),
+    }
+}
+
+/// Give the connection a re-authentication notice, which a healthy refresh would clear.
+fn set_notice(state: &AppState, connection: Uuid) {
+    let notice = encode(&[AttentionEntry {
+        kind: AttentionKind::ReauthInstitution,
+        institution: Some("Example Bank".to_owned()),
+    }]);
+    state
+        .lock_controller()
+        .unwrap()
+        .kernel()
+        .unwrap()
+        .set_connector_attention(connection, &notice)
+        .unwrap();
+}
+
 /// What a cancel during the provider fetch left behind.
 struct FetchCancel {
     /// How long the cancel request took (the vault lock is released during a fetch).
@@ -670,8 +784,11 @@ struct FetchCancel {
     /// How long the sweep took to return after the request, with the provider released after
     /// `release_after`.
     to_return: Duration,
+    report: RefreshSweepReport,
     imported: usize,
     state: JobState,
+    before: ConnectionSnapshot,
+    after: ConnectionSnapshot,
     dir: TempDir,
     app: AppState,
     connection: Uuid,
@@ -679,13 +796,17 @@ struct FetchCancel {
 
 /// A cancel during the provider fetch, with the vault lock released, as production runs it. The
 /// provider is released `release_after` after the request (a test with no deadline would hang on
-/// a fix that makes the fetch stop early, so the release is on a timer).
+/// a fix that makes the fetch stop early, so the release is on a timer). The returned snapshot is
+/// taken once the provider has been released, so a late result that reached the commit would show.
 fn cancel_during_fetch(window: &str, release_after: Duration) -> FetchCancel {
     let _gate = serialize_blocking();
     let (dir, app) = open_state();
     let connection = linked(&app);
+    set_notice(&app, connection);
+    let before = snapshot(&app, connection);
     let mut request = Duration::ZERO;
     let mut to_return = Duration::ZERO;
+    let mut report = RefreshSweepReport::default();
     thread::scope(|scope| {
         let state = &app;
         let refresh = scope.spawn(move || sweep(state, resolve_blocking, window));
@@ -702,22 +823,41 @@ fn cancel_during_fetch(window: &str, release_after: Duration) -> FetchCancel {
             *lock.lock().unwrap() = true;
             released.notify_all();
         });
-        let report = refresh.join().expect("sweep joins");
+        report = refresh.join().expect("sweep joins");
         to_return = requested_at.elapsed();
         release.join().expect("release joins");
         assert_eq!(report.failed, 0, "{report:?}");
     });
+    // The abandoned fetch ends on its own thread; wait until it has released the sync slot.
+    wait_for_sync_slot(&app, connection);
     let imported = transaction_count(&app);
     let state = job_state(&app, connection);
+    let after = snapshot(&app, connection);
     FetchCancel {
         request,
         to_return,
+        report,
         imported,
         state,
+        before,
+        after,
         dir,
         app,
         connection,
     }
+}
+
+/// Block until the connection's sync slot can be claimed (an abandoned fetch has ended).
+fn wait_for_sync_slot(app: &AppState, connection: Uuid) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !app.claim_connector_sync(connection) {
+        assert!(
+            Instant::now() < deadline,
+            "the sync slot was never released"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    app.release_connector_sync(connection);
 }
 
 #[test]
@@ -773,10 +913,10 @@ fn connector_refresh_cancel_request_is_under_the_sla() {
 }
 
 /// The contract for a cancel that lands during a slow fetch: the cancellation reaches the fetch,
-/// the sweep returns within the SLA without waiting for the provider, and a job recorded as
-/// cancelled committed nothing.
+/// the sweep returns within the SLA without waiting for the provider, the job is recorded as
+/// cancelled and committed nothing, and the provider's late result (released 3 s after the cancel)
+/// never reaches the commit.
 #[test]
-#[ignore = "personal-cfo-pxi.25: connector_refresh is handed no cancellation token, so a cancel during a fetch waits for the fetch, commits its whole batch, then records the job as cancelled"]
 fn a_connector_refresh_cancelled_mid_fetch_stops_within_the_sla_and_commits_nothing() {
     let cancelled = cancel_during_fetch("slow", Duration::from_secs(3));
     assert!(
@@ -784,12 +924,194 @@ fn a_connector_refresh_cancelled_mid_fetch_stops_within_the_sla_and_commits_noth
         "the sweep took {:?} to return after the cancel",
         cancelled.to_return
     );
-    if cancelled.state == JobState::Cancelled {
-        assert_eq!(
-            cancelled.imported, 0,
-            "the job is recorded as cancelled but its batch was committed"
+    assert_eq!(cancelled.state, JobState::Cancelled);
+    assert_eq!(cancelled.report.cancelled, 1, "{:?}", cancelled.report);
+    assert_eq!(cancelled.report.refreshed, 0, "{:?}", cancelled.report);
+    assert_eq!(cancelled.imported, 0, "no row was imported");
+    assert_eq!(
+        cancelled.after, cancelled.before,
+        "the last-refreshed stamp, the cursors and the re-authentication notice are unchanged"
+    );
+    assert!(
+        cancelled.before.attention.is_some() && cancelled.before.last_synced_at.is_none(),
+        "the snapshot would have shown a refresh: a healthy one clears the notice and stamps the time"
+    );
+}
+
+/// The same release timing with no cancel, as the control for "a late result never commits": an
+/// uncancelled refresh of the same blocking provider imports the fixture and clears the notice.
+#[test]
+fn the_uncancelled_control_commits_and_changes_what_the_cancelled_run_must_not() {
+    let _gate = serialize_blocking();
+    let (_dir, app) = open_state();
+    let connection = linked(&app);
+    set_notice(&app, connection);
+    let before = snapshot(&app, connection);
+    *blocking().gate.0.lock().unwrap() = true;
+    let report = sweep(&app, resolve_blocking, "control");
+    assert_eq!(report.refreshed, 1, "{report:?}");
+    assert!(transaction_count(&app) > 0);
+    let after = snapshot(&app, connection);
+    assert_ne!(after.last_synced_at, before.last_synced_at);
+    assert_ne!(after.attention, before.attention);
+    assert_eq!(job_state(&app, connection), JobState::Succeeded);
+}
+
+#[test]
+fn an_abandoned_fetch_keeps_the_connections_sync_slot_until_it_ends() {
+    let _gate = serialize_blocking();
+    let (_dir, app) = open_state();
+    let connection = linked(&app);
+    thread::scope(|scope| {
+        let state = &app;
+        let refresh = scope.spawn(move || sweep(state, resolve_blocking, "slot"));
+        while !blocking().entered.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            !app.claim_connector_sync(connection),
+            "the running refresh holds the slot"
+        );
+        assert!(cancel(&app, connection).0);
+        let report = refresh.join().expect("sweep joins");
+        assert_eq!(report.cancelled, 1, "{report:?}");
+        // The sweep has returned and the job is cancelled, but the provider call is still in
+        // flight: one sync per connection means a second walk must not start.
+        assert!(
+            !app.claim_connector_sync(connection),
+            "the abandoned fetch still holds the slot"
+        );
+        let (lock, released) = &blocking().gate;
+        *lock.lock().unwrap() = true;
+        released.notify_all();
+    });
+    wait_for_sync_slot(&app, connection);
+    assert_eq!(transaction_count(&app), 0, "the late result was dropped");
+}
+
+/// A cancel that lands exactly as the provider returns: the request is decided in the section
+/// that commits, so nothing is written and the job is cancelled.
+#[test]
+fn a_cancel_that_lands_as_the_fetch_returns_commits_nothing() {
+    let (_dir, app) = open_state();
+    let app: &'static AppState = Box::leak(Box::new(app));
+    let connection = linked(app);
+    set_notice(app, connection);
+    let before = snapshot(app, connection);
+    *ON_SYNC.lock().unwrap() = Some(Box::new(move || {
+        assert!(cancel(app, connection).0);
+    }));
+    let report = sweep(app, resolve_cancelling, "as-it-returns");
+    *ON_SYNC.lock().unwrap() = None;
+
+    assert_eq!(report.cancelled, 1, "{report:?}");
+    assert_eq!(job_state(app, connection), JobState::Cancelled);
+    assert_eq!(transaction_count(app), 0);
+    assert_eq!(snapshot(app, connection), before);
+}
+
+/// A cancel that lands after the commit and before the job's outcome is recorded is too late: the
+/// refresh's rows are in, so the job says it succeeded.
+#[test]
+fn a_cancel_after_the_commit_leaves_the_job_succeeded() {
+    let (_dir, app) = open_state();
+    let connection = linked(&app);
+    let (_control_dir, control) = open_state();
+    linked(&control);
+    sweep(&control, resolve_healthy, "control");
+    let full = transaction_count(&control);
+
+    let accepted = std::sync::atomic::AtomicBool::new(false);
+    let report = run_due_connector_refresh_observed(
+        &app,
+        resolve_healthy,
+        "after-commit",
+        &FixedClock(Utc::now()),
+        &|_| {
+            accepted.store(cancel(&app, connection).0, Ordering::SeqCst);
+        },
+    )
+    .expect("sweep");
+
+    assert!(accepted.load(Ordering::SeqCst), "the cancel was accepted");
+    assert_eq!((report.refreshed, report.cancelled), (1, 0), "{report:?}");
+    assert_eq!(job_state(&app, connection), JobState::Succeeded);
+    assert_eq!(transaction_count(&app), full, "the whole batch is in");
+    assert!(
+        !job_cancel_pending(&app, connection),
+        "the late request is cleared"
+    );
+}
+
+fn job_cancel_pending(state: &AppState, connection: Uuid) -> bool {
+    state
+        .lock_controller()
+        .unwrap()
+        .kernel()
+        .unwrap()
+        .job_cancellation_requested(refresh_job_id(connection))
+        .unwrap()
+}
+
+/// A crash between the commit and the terminal write leaves the job `running`. Recovery requeues
+/// it; the re-run is skipped while the committed refresh is recent, and when it does run again
+/// (past the cadence) the dedupe imports nothing twice. Never cancelled.
+#[test]
+fn a_crash_between_the_commit_and_the_outcome_recovers_without_a_duplicate_import() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("vault.db");
+    let mut controller = VaultController::open(&path);
+    controller
+        .create(PASSWORD.as_bytes())
+        .expect("create vault");
+    let app = AppState::new(controller);
+    let connection = linked(&app);
+
+    // The process dies after the refresh committed and before the job's outcome was written.
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        run_due_connector_refresh_observed(
+            &app,
+            resolve_healthy,
+            "crashes",
+            &FixedClock(Utc::now()),
+            &|_| panic!("the process died here"),
+        )
+    }));
+    assert!(crashed.is_err());
+    let imported = transaction_count(&app);
+    assert!(imported > 0, "the refresh committed before the crash");
+    assert_eq!(job_state(&app, connection), JobState::Running);
+    drop(app);
+
+    // Reopen. The main sweep's recovery requeues the interrupted job.
+    let reopened = AppState::new(VaultController::open(&path));
+    unlock_vault_impl(&reopened, PASSWORD.to_owned()).expect("unlock reopened vault");
+    {
+        let guard = reopened.lock_controller().unwrap();
+        run_due(
+            guard.kernel().unwrap(),
+            reopened.job_dispatcher().as_ref(),
+            "recover",
         );
     }
+    assert_eq!(job_state(&reopened, connection), JobState::Queued);
+
+    // The next sweep, a day later: the dedupe makes the re-run import nothing a second time.
+    let report = run_due_connector_refresh(
+        &reopened,
+        resolve_healthy,
+        "after-recovery",
+        &FixedClock(Utc::now() + ChronoDuration::hours(25)),
+    )
+    .expect("sweep");
+    assert_eq!(report.refreshed, 1, "{report:?}");
+    assert_eq!(report.cancelled, 0);
+    assert_eq!(
+        transaction_count(&reopened),
+        imported,
+        "nothing imported twice"
+    );
+    assert_eq!(job_state(&reopened, connection), JobState::Succeeded);
 }
 
 #[test]

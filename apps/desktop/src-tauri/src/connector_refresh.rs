@@ -28,7 +28,9 @@ use finance_kernel::{
 };
 use uuid::Uuid;
 
-use crate::ipc::commands::{connector_sync_impl, with_kernel, ConnectorResolver};
+use crate::ipc::commands::{
+    connector_sync_scheduled_impl, with_kernel, ConnectorResolver, ScheduledRun, ScheduledSyncEnd,
+};
 use crate::ipc::dto::ConnectorSyncInput;
 use crate::ipc::IpcError;
 use crate::AppState;
@@ -146,6 +148,8 @@ pub struct RefreshSweepReport {
     /// Due jobs not run: refreshed too recently, or the connection or its
     /// provider is gone.
     pub skipped: u32,
+    /// Refreshes cancelled before anything was written (personal-cfo-pxi.25).
+    pub cancelled: u32,
     /// Refreshes that failed inside DohFlow.
     pub failed: u32,
 }
@@ -160,6 +164,23 @@ pub fn run_due_connector_refresh(
     resolve: ConnectorResolver,
     unlock_window: &str,
     clock: &dyn Clock,
+) -> Result<RefreshSweepReport, IpcError> {
+    run_due_connector_refresh_observed(state, resolve, unlock_window, clock, &|_| {})
+}
+
+/// [`run_due_connector_refresh`] with a seam between steps 2 and 3: `after_refresh` runs for each
+/// job once its refresh has returned and before its outcome is recorded, with the lock released.
+/// A test uses it to land a cancel exactly in that window (personal-cfo-pxi.25).
+///
+/// # Errors
+/// [`IpcError`] if the vault cannot be read to claim or record jobs.
+#[doc(hidden)]
+pub fn run_due_connector_refresh_observed(
+    state: &AppState,
+    resolve: ConnectorResolver,
+    unlock_window: &str,
+    clock: &dyn Clock,
+    after_refresh: &dyn Fn(Uuid),
 ) -> Result<RefreshSweepReport, IpcError> {
     let now = clock.now();
     // Step 1, under the lock: backfill missing jobs, then claim the due ones.
@@ -178,10 +199,12 @@ pub fn run_due_connector_refresh(
         // Step 2, lock released: decide, then refresh.
         let execution = refresh_one(state, resolve, job, &connections, now);
         match &execution {
-            JobExecution::Succeeded => report.refreshed += 1,
+            JobExecution::Succeeded | JobExecution::Committed => report.refreshed += 1,
             JobExecution::Failed(_) => report.failed += 1,
-            JobExecution::Skipped | JobExecution::Cancelled => report.skipped += 1,
+            JobExecution::Skipped => report.skipped += 1,
+            JobExecution::Cancelled => report.cancelled += 1,
         }
+        after_refresh(job.job.id);
         // Step 3, under the lock: record the outcome.
         with_kernel(state, |kernel| {
             kernel.finish_claimed_job(job, execution, clock)?;
@@ -192,6 +215,7 @@ pub fn run_due_connector_refresh(
         tracing::info!(
             refreshed = report.refreshed,
             skipped = report.skipped,
+            cancelled = report.cancelled,
             failed = report.failed,
             "connector refresh sweep"
         );
@@ -236,9 +260,22 @@ fn refresh_one(
         connection_id: connection.id.to_string(),
         idempotency_key: finance_kernel::new_idempotency_key(),
     };
-    match connector_sync_impl(state, adapter, input) {
-        // Every provider outcome is recorded by the refresh itself.
-        Ok(_) => JobExecution::Succeeded,
+    let run = ScheduledRun {
+        job_id: claimed.job.id,
+        adapter,
+    };
+    match connector_sync_scheduled_impl(state, run, input) {
+        // Cancelled before the first write: nothing changed, so the job says so.
+        Ok(ScheduledSyncEnd::Cancelled) => JobExecution::Cancelled,
+        // Every provider outcome is recorded by the refresh itself. Once it has written, a cancel
+        // that arrives afterwards is too late and must not rewrite the outcome (the runtime's
+        // "Cancellation and committed work" rule).
+        Ok(ScheduledSyncEnd::Finished {
+            committed: true, ..
+        }) => JobExecution::Committed,
+        Ok(ScheduledSyncEnd::Finished {
+            committed: false, ..
+        }) => JobExecution::Succeeded,
         Err(error) => execution_for_internal_error(&error),
     }
 }
