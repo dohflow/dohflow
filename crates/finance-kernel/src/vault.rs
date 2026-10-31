@@ -391,11 +391,36 @@ impl Kernel {
         created_at: String,
         backup_id: uuid::Uuid,
     ) -> Result<Vec<u8>, KernelError> {
+        self.assemble_unattended_backup_cancellable(app_version, created_at, backup_id, &|| false)?
+            .ok_or_else(|| KernelError::Vault("backup cancelled".to_owned()))
+    }
+
+    /// [`Kernel::assemble_unattended_backup`] that looks at `cancelled` between its steps (each
+    /// blob read, the snapshot, each manifest and frame step, the seal) and returns `None`,
+    /// having produced nothing, when it reads true (personal-cfo-g3m.29).
+    pub(crate) fn assemble_unattended_backup_cancellable(
+        &self,
+        app_version: &str,
+        created_at: String,
+        backup_id: uuid::Uuid,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<Vec<u8>>, KernelError> {
+        if cancelled() {
+            return Ok(None);
+        }
         let db_path = self.worker.db_path();
         let envelope_bytes = std::fs::read(sidecar_path(db_path))
             .map_err(|e| KernelError::Vault(format!("reading envelope: {e}")))?;
-        let blobs = read_blobs(&self.worker.blobs_dir())?;
+        let Some(blobs) = read_blobs_cancellable(&self.worker.blobs_dir(), cancelled)? else {
+            return Ok(None);
+        };
+        if cancelled() {
+            return Ok(None);
+        }
         let db_bytes = self.worker.snapshot_bytes()?;
+        if cancelled() {
+            return Ok(None);
+        }
 
         let inputs = crate::backup::BackupInputs {
             db_bytes,
@@ -408,8 +433,11 @@ impl Kernel {
             backup_id,
         };
         let package = self.worker.with_dek(|dek| {
-            crate::backup::assemble(dek, &inputs)
-                .map_err(|error| KernelError::Vault(format!("assembling backup: {error}")))
+            match crate::backup::assemble_cancellable(dek, &inputs, cancelled) {
+                Ok(package) => Ok(Some(package)),
+                Err(crate::backup::BackupError::Cancelled) => Ok(None),
+                Err(error) => Err(KernelError::Vault(format!("assembling backup: {error}"))),
+            }
         })??;
         Ok(package)
     }
@@ -576,14 +604,24 @@ fn write_sidecar_new(sidecar: &Path, bytes: &[u8]) -> Result<(), KernelError> {
 /// Read every attachment blob in `dir` as `(storage_id = filename, ciphertext)`
 /// in a deterministic order. A missing directory (no attachments yet) is an
 /// empty list; `.tmp` files (a crash-interrupted import) are skipped.
-fn read_blobs(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, KernelError> {
+/// The vault's attachment blobs as `(storage id, ciphertext)`, ordered by storage id.
+type BlobList = Vec<(String, Vec<u8>)>;
+
+/// [`read_blobs`] that looks at `cancelled` before each blob and returns `None` when it reads true.
+fn read_blobs_cancellable(
+    dir: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<BlobList>, KernelError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Some(Vec::new())),
         Err(error) => return Err(KernelError::Vault(format!("reading blobs dir: {error}"))),
     };
     let mut blobs = Vec::new();
     for entry in entries {
+        if cancelled() {
+            return Ok(None);
+        }
         let entry =
             entry.map_err(|error| KernelError::Vault(format!("reading blobs dir: {error}")))?;
         let path = entry.path();
@@ -597,7 +635,7 @@ fn read_blobs(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, KernelError> {
         }
     }
     blobs.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(blobs)
+    Ok(Some(blobs))
 }
 
 /// Write a restored backup's `vault.db` and attachment blobs into the vault

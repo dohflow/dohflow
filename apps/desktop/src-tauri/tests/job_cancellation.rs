@@ -446,7 +446,6 @@ fn backup_cancel_path_latency_is_under_the_sla_at_p99() {
 /// The contract for a cancel that lands while the backup export is running: the runner returns
 /// within the SLA and, if it recorded the running job as cancelled, nothing was committed.
 #[test]
-#[ignore = "personal-cfo-g3m.29: the backup export has no cancellation checkpoints, so a cancel that lands mid-export lets it finish and commit, then records the job as cancelled"]
 fn a_backup_cancelled_mid_export_stops_within_the_sla_and_commits_nothing() {
     for (index, offset) in RACE_OFFSETS_MS.iter().enumerate() {
         let outcome = race_one_backup(Duration::from_millis(*offset), &format!("mid-{index}"));

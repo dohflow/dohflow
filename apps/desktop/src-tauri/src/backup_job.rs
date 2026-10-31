@@ -1,8 +1,8 @@
 //! The desktop adapter for the scheduled backup job.
 
 use finance_kernel::{
-    BackupCadence, JobExecution, JobFailure, JobHandler, JobRecord, Kernel, BACKUP_JOB_ID,
-    BACKUP_JOB_KIND,
+    BackupCadence, BackupRun, JobExecution, JobFailure, JobHandler, JobRecord, Kernel,
+    BACKUP_JOB_ID, BACKUP_JOB_KIND,
 };
 use job_runtime::CancellationToken;
 
@@ -37,8 +37,13 @@ impl JobHandler<Kernel> for BackupJobHandler {
             ));
         }
 
-        match context.run_scheduled_backup(env!("CARGO_PKG_VERSION")) {
-            Ok(_) => JobExecution::Succeeded,
+        // The export reads the token at its checkpoints, so a cancel stops it within the budget and
+        // leaves the destination as it was (personal-cfo-g3m.29).
+        match context.run_scheduled_backup_cancellable(env!("CARGO_PKG_VERSION"), &|| {
+            cancellation.is_cancelled()
+        }) {
+            Ok(BackupRun::Cancelled) => JobExecution::Cancelled,
+            Ok(BackupRun::Done(_)) => JobExecution::Succeeded,
             Err(_) => {
                 // Kernel errors may contain a local path. Keep the durable
                 // failure, Money Inbox copy, and logs path-free.
