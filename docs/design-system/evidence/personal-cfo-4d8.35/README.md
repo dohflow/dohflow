@@ -2,7 +2,9 @@
 
 Fake data only. Produced by the committed audit page, `apps/desktop/src/dev/contrast-audit.tsx` (how to run
 it: `apps/desktop/src/dev/README.md`) and the status-fit page `apps/desktop/src/dev/status-fit.tsx`.
-Source: `main` at `1ab8a84` (merged into this branch) plus this PR. **Values are the owner's decision**:
+Source: `main` at `ac12a91` (merged into this branch) plus this PR. The raw results below were captured from the clean
+source commit `bfe7e074e9df9cbc9f743ccd72c1ad4fe024d414` (the commit before the one that adds them; each file's `meta.sourceSha`
+says so). **Values are the owner's decision**:
 `--input` option A+ (Light `#90877f`, Dark `#607065`) and the foreground-words-plus-mark badge (Studio decision
 bead `personal-cfo-4d8.46`, 2026-10-30).
 
@@ -13,7 +15,8 @@ Two engines ran the same committed audit page against this head:
 - **Chromium 152.0.7977.167** in the Claude desktop app's built-in browser pane (macOS, device pixel ratio 2,
   app build `Claude/3.6556.2`).
 - **WebKit**: Safari in the iOS 27.0 Simulator (`AppleWebKit/605.1.15 ... Version/27.0`, device pixel ratio 3),
-  opened at `http://localhost:5199/contrast-audit.html`. `webkit-contrast-audit-summary.jpg` shows its summary line.
+  opened at `http://localhost:5192/contrast-audit.html` (the simulator reports its OS as `iPhone OS 18_7` and Safari as
+  `Version/27.0`; the UA's OS token is frozen). `webkit-contrast-audit-summary.jpg` shows its summary line.
 
 Both report the same summary. **Neither is the macOS app's WKWebView**, and the iOS WebKit is not a certification
 of it: `HEADROOM = 0.1` is a project buffer. A run in a packaged build's webview remains open; nothing here claims
@@ -23,11 +26,48 @@ the WKWebView numbers. The status-fit page was also opened in the WebKit simulat
 
 ## Result of the committed audit on this PR
 
-`PASS 316 · FAIL 0 · info 124` (440 rows: 2 themes x 2 surfaces x every badge, shared control, state tile and
-discovered consumer), on Chromium 152 **and** on iOS 27 WebKit, at `--input` option A+ and with `main` at `1ab8a84`
-merged in (the earlier option-A run had the same counts).
+`PASS 324 · FAIL 0 · info 116` (440 rows: 2 themes x 2 surfaces x every badge, shared control, state tile and
+discovered consumer), on Chromium 152 **and** on iOS 27 WebKit, at `--input` option A+ and with `main` at `ac12a91`
+merged in.
 
-## F1: NativeSelect hover, measured before and after
+**Why the counts moved (Studio F1).** The earlier `316 / 0 / 124` was wrong about eight rows: the audit parsed
+`badge-long-narrow` and `badge-long-narrow-gain` as the variant "long", which is not semantic, and reported both (in both
+themes on both surfaces, eight rows) as `info` whatever they measured. Badges are now declared in
+`apps/desktop/src/dev/badge-verdict.ts` (variant, whether the mark is the status cue, whether the row is required) and the
+page renders from that list; an undeclared or unrendered badge FAILS. The eight rows are now **required and pass**, on
+both engines:
+
+| Row | Light page | Light card | Dark page | Dark card |
+|---|---|---|---|---|
+| `badge-long-narrow` (warning), label / mark | 14.78 / 3.14 | 15.69 / 3.33 | 14.18 / 7.49 | 12.90 / 6.81 |
+| `badge-long-narrow-gain`, label / mark | 14.40 / 4.36 | 15.30 / 4.63 | 14.51 / 6.14 | 13.23 / 5.60 |
+
+(Chromium. Across all 440 rows the two engines agree on every verdict, and no measured ratio differs by more than 0.16, e.g. 14.90 / 3.17 for the first cell on WebKit.) Floors: label 4.5, mark 3.0, plus the
+0.1 headroom. The tightest margin is the Light-page warning mark (3.14 against a required 3.1): it clears, thinly, which a
+reviewer should know. `badge-verdict.test.ts` proves the verdict FAILS every declared badge, the long ones included, on a
+broken measurement (label 1:1, mark 1:1, overflowing), and it was shown to fail when the old id-parsing is put back.
+
+## Raw results (Studio F2)
+
+The complete results, one JSON file per engine and capture, are in `raw/`. Each file is the page's own
+`window.__contrastAudit` / `window.__statusFit` envelope, posted by the page to a local collector
+(`?post=http://127.0.0.1:PORT/save&name=...`, loopback only), never hand-copied. `meta` carries the source commit, the
+capture time, the user agent, the locale (`en-US`), the time zone (`America/Los_Angeles`), the viewport, the device pixel
+ratio and, for status fit, the component width and theme. Every contrast row carries `theme`, `surface`, `section`, `id`,
+`state`, `verdict`, `required`, the `thresholds` it was held to (floors plus 0.1 headroom) and its raw measurements.
+
+| File | Engine | Rows |
+|---|---|---|
+| `raw/contrast-audit.chromium-152.json` | Chromium 152.0.7977.167, 1024x768 @2x | 440 (324 pass, 0 FAIL, 116 info) |
+| `raw/contrast-audit.webkit-ios27-sim.json` | iOS 27 Simulator Safari, 402 wide @3x | 440 (324 pass, 0 FAIL, 116 info) |
+| `raw/status-fit-368-light.*.json`, `raw/status-fit-368-dark.*.json` | both | 13 rows each, all fit |
+| `raw/status-fit-672-light.*.json`, `raw/status-fit-672-dark.*.json` | both | 13 rows each, all fit |
+
+(`*` is `chromium-152` or `webkit-ios27-sim`.) Reproduce a file: `pnpm -C apps/desktop exec vite --port 5192 --strictPort`
+from a clean tree, start any collector that writes the POST body, and open the page with `post` and `name` set; open it
+after a hard reload, because a hot update re-renders without re-measuring.
+
+## F1 (earlier round): NativeSelect hover, measured before and after
 
 The audit **reproduced the Studio's finding** against the unfixed `hover:border-ring/60` and now passes
 against `hover:border-ring`. Borders are painted over the control's own `--background` fill and compared
@@ -161,11 +201,23 @@ overlapping controls and sideways scroll.
 ellipsis ("clipped" on every row) and, for "Out of date · refreshed {stamp}", **Refresh now was pushed past the card's
 edge** on all four stale rows. That is a real defect the approved longer label exposed.
 
-**After** (this PR): the header wraps (`flex-wrap`), the identity wraps instead of truncating (`break-words`, `basis-40`),
-the status lane drops below the identity when they do not fit side by side, inside the lane the badge may wrap its
-complete label (`whitespace-normal`) while **Refresh now keeps its 36px size**, and the card strip's payment-due date and
-badge wrap (`gap-x-3 gap-y-1`). Result: **13 of 13 rows fit at 368px and at 672px, in Light and Dark** (Chromium; also at a 300px stress width in Dark), and
-at 330px in WebKit.
+**After** (this PR), in the reviewed composition (Paper SF-1r2 SF03/SF04, Studio F3): the connection row is a container
+(`@container`). At a narrow component width (under the `@lg` container breakpoint, 512px of content) the identity sits
+**above one status lane**, and in the lane the badge wraps its complete label (`whitespace-normal`) **beside a right-aligned,
+non-shrinking 36px Refresh now**; at a wide width the identity and the lane share a row. The identity wraps instead of
+truncating (`break-words`), and the card strip's payment-due date and badge wrap (`gap-x-3 gap-y-1`). The first version
+let the lane wrap, which put Refresh now under the badge, left-aligned, at 368px; the Studio rejected that.
+
+The status-fit page now **asserts the composition**, not only that nothing is clipped: Refresh now is 36px high; its right
+edge is the row's right content edge, the pending spinner included; the badge is beside it (their vertical ranges overlap and
+the badge does not run into it); the identity is above the lane at a narrow width and beside it at a wide one; and the
+component does not scroll sideways (`scrollWidth <= clientWidth`, which the first version only recorded). Shown to bite: putting
+the action back under the badge makes all 13 rows report problems. The card strip fixture is now a typed
+`credit_facility` account, as the account page identifies cards (Studio F4): $2,500 owed on a $10,000 limit shows **25% used,
+$7,500 available** (the previous `cashflow_role` string `credit_card`, cast through `never`, showed 0% and $12,500).
+
+Result: **13 of 13 rows fit at 368px and at 672px, in Light and Dark, on Chromium 152 and on iOS 27 WebKit** (raw files above),
+and at 330px in WebKit (`webkit-status-fit-330.jpg`, retaken for this composition).
 
 | File | What it shows |
 |---|---|
@@ -177,8 +229,7 @@ Logic tests (`ConnectionsCard.test.tsx`, `AccountDetailView.test.tsx`): 72 hours
 reads "Out of date"; the year appears only for a prior-year stamp and the label stays whole across a year rollover; a null
 or unparseable stamp reads "Never refreshed"; a last error or an attention item takes precedence over an old stamp; a
 pending refresh keeps the action's name and shows the spinner; the due badge at 0, 1 (singular), 5, 6, far, past and with no
-cycle. A source guard (`src/dev/status-fit-geometry.test.ts`) pins the wrapping classes, and was shown to fail when the old
-non-shrinking lane is restored. Not covered: zoom beyond the 368px width (a 200% zoom of a 672px pane is about 336px,
+cycle. A source guard (`src/dev/status-fit-geometry.test.ts`) pins the container composition and fails if the lane may wrap. Not covered: zoom beyond the 368px width (a 200% zoom of a 672px pane is about 336px,
 inside the range measured), longer locales (the formatter uses the runtime locale; a longer string wraps by the same
 rule), and a VoiceOver pass.
 
@@ -191,10 +242,12 @@ rule), and a VoiceOver pass.
 | `states-light.jpg`, `states-dark.jpg` | default / hover / focus tiles for the shared controls and the discovered consumers |
 | `narrow-light.jpg`, `narrow-dark.jpg` | the same at a **375px** viewport: long labels wrap, nothing overflows |
 
-All eight were retaken at option A+ on this head (Chromium 152). The status-fit screenshots are listed with their section above.
+The eight contrast and control screenshots above were retaken at option A+ on `598873d` (Chromium 152); the audit page's
+rendering has not changed since (its badges now come from the declarations, in the same order), so they still show it. The four
+`status-fit-*` screenshots and `webkit-status-fit-330.jpg` / `webkit-contrast-audit-summary.jpg` were retaken on this head.
 The two narrow shots also show the `NativeSelect` fix: the long option ("Statement balance carried o…") is clipped
-clear of the chevron, with no text under the arrow, in both themes. The audit (PASS 316 · FAIL 0 · info 124) and all 13
-status-fit rows were re-run on the head that merged `main` (including the shared disclosure, `personal-cfo-4d8.38`).
+clear of the chevron, with no text under the arrow, in both themes. The audit and the status-fit rows
+were re-run on the head that merged `main` (including the shared disclosure, `personal-cfo-4d8.38`) and again on this head (counts above).
 
 ## What this evidence does not show
 
