@@ -320,7 +320,11 @@ constants for every page.
    and is stated; **no orphan** cell and no auto-placement filling a gap.
 4. **Priority order is source order.** The DOM order is the reading order and the focus order at
    **every** width. **No dense packing** (`grid-flow-dense`) and no visual reordering (`order-*`)
-   to make a layout fit.
+   to make a layout fit. The source order itself is chosen by priority: frequent and important
+   work comes first; rarer or riskier work sits lower, or is collapsed behind a disclosure
+   (section 7.5) where the page has them, with destructive actions last and behind their
+   guards. Current errors, their remedies and their actions stay visible: they are never
+   collapsed away.
 5. **Collapsed siblings are as tall as the tallest in their actual row, at their natural height.**
    Equalize within the row the browser lays out, not across the page. **Never** a global height,
    a fixed height or a line clamp to force equality, and nothing is clipped. An **expanded**

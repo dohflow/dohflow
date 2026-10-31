@@ -24,6 +24,24 @@ owner_bead = "personal-cfo-klr.2"
 note = "Canonical user account identity, links, and user metadata; replicated through the command bus."
 
 [[table]]
+table = "households"
+class = "1"
+owner_bead = "personal-cfo-339"
+note = "The one household row of a vault (name, household timezone, optional platform household link). Seeded at genesis with an id derived from the vault id; written only by commands. The local id is never sent to the platform service."
+
+[[table]]
+table = "household_members"
+class = "1"
+owner_bead = "personal-cfo-339"
+note = "Household members (seats). role is display and ownership metadata, not access control. Removal is a tombstone (deleted_at). Exactly one live primary, enforced by a partial unique index behind explicit validation in apply."
+
+[[table]]
+table = "profiles"
+class = "1"
+owner_bead = "personal-cfo-339"
+note = "Per-member non-secret display preferences (initials, color). A secret-bearing column never belongs here; a test scans the column names."
+
+[[table]]
 table = "ledger_transactions"
 class = "1"
 owner_bead = "personal-cfo-klr.2"

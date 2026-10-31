@@ -99,6 +99,24 @@ bead = "personal-cfo-0g528"
 note = "Class 1b import provenance; reshaped by SYNC-2c."
 
 [[site]]
+module = "households.rs"
+table = "household_members"
+class = "1"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-339"
+note = "seed: the genesis seed of the first member (called by ensure_vault_metadata at vault creation and by migration 61 for an existing vault); id derived from the vault id and every column a pure function of the vault, so independent devices agree and a replica inherits the row through bootstrap. Not a command: no device ever creates a second household or a second seed."
+
+[[site]]
+module = "households.rs"
+table = "households"
+class = "1"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-339"
+note = "seed: the genesis seed of the household row (see household_members); the timezone and name change only through commands."
+
+[[site]]
 module = "lib.rs"
 table = "categories"
 class = "1"

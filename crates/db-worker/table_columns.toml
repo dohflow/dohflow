@@ -242,6 +242,20 @@ primary_key = ["id"]
 columns = ["id:uuid", "household_id:uuid", "generated_at:text", "horizon_days:int", "starting_cash_minor:int", "model_version:text", "model_registry_json:text", "input_snapshot_id:uuid", "assumptions_hash:text", "assumptions_version:int", "scenario_overlay_ids_json:text", "random_seed:int", "deterministic_run:int", "p10_min_cash_minor:int", "p50_min_cash_minor:int", "p90_min_cash_minor:int", "summary_json:text"]
 
 [[table]]
+name = "household_members"
+class = "1"
+write_set = "full"
+primary_key = ["id"]
+columns = ["id:uuid", "household_id:uuid", "display_name:text", "role:text", "platform_member_id:text", "created_at:text", "deleted_at:text"]
+
+[[table]]
+name = "households"
+class = "1"
+write_set = "full"
+primary_key = ["id"]
+columns = ["id:uuid", "name:text", "household_timezone:text", "platform_household_id:text", "created_at:text", "updated_at:text"]
+
+[[table]]
 name = "income_sources"
 class = "1"
 write_set = "full"
@@ -320,6 +334,13 @@ class = "1b"
 write_set = "none"
 primary_key = ["id"]
 columns = ["id:uuid", "source_batch_id:uuid", "parser_name:text", "parser_version:text", "bytes_in:int", "records_out:int", "status:text", "limit_hit:text", "started_at:text", "finished_at:text"]
+
+[[table]]
+name = "profiles"
+class = "1"
+write_set = "full"
+primary_key = ["member_id"]
+columns = ["member_id:uuid", "initials:text", "color:text", "updated_at:text"]
 
 [[table]]
 name = "projection_cursors"
@@ -520,9 +541,9 @@ columns = ["node_id:uuid"]
 [[table]]
 name = "vault_metadata"
 class = "3"
-write_set = "projection"
+write_set = "none"
 primary_key = ["singleton"]
-columns = ["singleton:int", "vault_id:uuid", "schema_version:int", "envelope_version:int", "kdf_algorithm:text", "kdf_memory_kib:int", "kdf_time_cost:int", "kdf_parallelism:int", "household_timezone:text", "manifest_pointer:text", "created_at:text"]
+columns = ["singleton:int", "vault_id:uuid", "schema_version:int", "envelope_version:int", "kdf_algorithm:text", "kdf_memory_kib:int", "kdf_time_cost:int", "kdf_parallelism:int", "manifest_pointer:text", "created_at:text"]
 
 [[key_bound]]
 table = "merchant_aliases"
@@ -561,10 +582,3 @@ columns = ["key", "value"]
 key = ["key"]
 key_prefixes = ["user."]
 legacy_key_names = ["locale", "reporting_currency", "minimum_cash_floor_minor", "comfort_band_upper_minor", "auto_categorize_on_import", "future_cash_series_selection"]
-
-[[projection]]
-source = "vault_metadata"
-logical_table = "household"
-columns = ["household_timezone"]
-key = []
-constant_key_int = 1
