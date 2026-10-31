@@ -5,6 +5,34 @@
 //! [`JobExecutor`] supplies the actual work.  This keeps the scheduler
 //! testable with an in-memory store while [`db-worker`] remains the only crate
 //! that owns the encrypted database connection.
+//!
+//! # Cancellation and committed work
+//!
+//! A job's recorded outcome must be true. The rule, which every handler and every
+//! [`JobStore`] follows (personal-cfo-pxi.25):
+//!
+//! 1. **`Cancelled` is recorded only when nothing durable was committed.** A handler that sees a
+//!    cancellation request before its commit stops, commits nothing and returns
+//!    [`JobExecution::Cancelled`]. The runtime also records `Cancelled` when a request is pending
+//!    at the terminal write of a [`JobExecution::Succeeded`], [`JobExecution::Failed`] or
+//!    [`JobExecution::Skipped`] result: those results make no commit claim, so the request wins.
+//! 2. **After the commit, the outcome is the truth.** A handler whose work is durably committed
+//!    returns [`JobExecution::Committed`]. A cancel that arrives after the commit is too late: the
+//!    job is recorded as succeeded (a later failure in the handler's own bookkeeping is
+//!    [`JobExecution::Failed`], never `Cancelled`), through [`JobStore::finish_committed`], which
+//!    has no cancellation guard. Neither the store's terminal write nor the runner's watcher
+//!    override may turn a `Committed` execution into `Cancelled`.
+//! 3. **The commit is the linearization point.** A handler that can be cancelled concurrently
+//!    checks for a request in the same critical section that performs its commit, so a request
+//!    either lands before the check (nothing is committed) or after the commit (too late). It
+//!    never commits after observing a request.
+//! 4. **Cancelling stops the work within [`CANCELLATION_SLA`].** A handler polls
+//!    [`CancellationToken`] (or the store's request flag, for a lock-releasing kind) at its
+//!    checkpoints, including around any call it cannot interrupt, which it abandons instead.
+//!
+//! A crash between the commit and the terminal write leaves the row `running`; recovery requeues
+//! it, so a committed handler must be idempotent when re-run (the connector refresh is, through
+//! its import dedupe).
 
 use std::collections::BTreeMap;
 use std::fmt;
