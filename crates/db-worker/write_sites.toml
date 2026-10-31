@@ -199,6 +199,15 @@ note = "Scenario create, status, rename, expiry, delete and clone outside the bu
 
 [[site]]
 module = "lib.rs"
+table = "system_ledger_accounts"
+class = "1"
+statements = 1
+status = "pending"
+bead = "personal-cfo-32fmp.3"
+note = "ensure_system_ledger_account inserts the (role, currency) map row; the table is class 1 (ADR 0074 Addendum G). The insert is reached from apply and from the vault-creating transaction, and the code commit of this change marks it bus_internal."
+
+[[site]]
+module = "lib.rs"
 table = "transaction_details"
 class = "1"
 statements = 1
