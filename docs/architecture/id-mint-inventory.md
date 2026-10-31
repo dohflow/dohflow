@@ -60,6 +60,8 @@ deliberate row here, in the same change.
 | `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (reads class-3 staging; see below) | keyed | `txn.commit-staged` | staged transaction id |
 | `apply/ingestion_cmds.rs` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
 | `apply/balance_cmds.rs` connector balance observation (insert branch of the upsert) | content | `balance-obs.connector` | account id, day (independent of the command: later commands update the row in place) |
+| `ensure_system_ledger_account` (`lib.rs`; from `apply` and the vault-creating transaction), only on a miss in the class-1 map | content | `system-ledger-account` | role, currency code (independent of the command; looked up first, so a legacy vault keeps its random ids; `personal-cfo-32fmp.3`) |
+| `seed_default_categories` (`lib.rs`), in the vault-creating transaction only, never reached from `apply` | content | `category.seed` | group name, or group name and leaf name (never recomputed to find a row: users rename and move seeded categories) |
 | `apply/ingestion_cmds.rs` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
 | `apply/household.rs` `SetHouseholdTimezone` audit row (class 3, written once per command: `INSERT OR IGNORE`) | keyed | `audit.household-timezone` | none (the command id is in every keyed id) |
 | `apply/recurring.rs` `apply_dismiss_recurring_suggestion` | none | | the suppression row has a natural key; the affected entity recorded with the command is the command id |

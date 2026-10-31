@@ -193,6 +193,48 @@ fn opening_an_existing_vault_writes_no_row_whether_its_ids_are_derived_or_legacy
     assert_eq!(categories(&worker), derived.2, "an open changed the seeds");
 }
 
+const CLASSES: &str = include_str!("../table_classes.toml");
+
+/// The tables a genesis snapshot does not carry: class 3, except the two the vault cannot open
+/// without (its own identity row, which a replica installs from the origin, and the migration
+/// tracker).
+fn device_local_tables() -> Vec<String> {
+    let mut out = Vec::new();
+    for block in CLASSES.split("[[table]]").skip(1) {
+        let field = |key: &str| -> Option<String> {
+            block.lines().find_map(|l| {
+                let (k, v) = l.split_once('=')?;
+                (k.trim() == key).then(|| v.trim().trim_matches('"').to_owned())
+            })
+        };
+        if matches!(field("kind").as_deref(), Some("pseudo") | Some("planned")) {
+            continue;
+        }
+        let table = field("table").unwrap();
+        if field("class").as_deref() == Some("3")
+            && !matches!(table.as_str(), "vault_metadata" | "schema_migrations")
+        {
+            out.push(table);
+        }
+    }
+    out
+}
+
+/// A copy of `base` with every device-local row removed, opened.
+fn genesis_copy_of(dir: &Path, base: &Path, name: &str) -> DbWorker {
+    let path = dir.join(name);
+    std::fs::copy(base, &path).unwrap();
+    {
+        let worker = DbWorker::open(&path, KEY).unwrap();
+        let conn = worker.read_connection().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        for table in device_local_tables() {
+            conn.execute_batch(&format!("DELETE FROM {table}")).unwrap();
+        }
+    }
+    DbWorker::open(&path, KEY).unwrap()
+}
+
 fn copy_of(dir: &Path, base: &Path, name: &str) -> DbWorker {
     let path = dir.join(name);
     std::fs::copy(base, &path).unwrap();
@@ -237,8 +279,11 @@ fn a_replica_of_a_legacy_origin_posts_to_the_origins_ids_with_an_identical_write
         worker.checkpoint_truncate().unwrap();
     }
     let origin = copy_of(dir.path(), &base, "a.vault");
-    // The replica starts from the origin's genesis: the class-1 rows, including the map.
-    let replica = copy_of(dir.path(), &base, "b.vault");
+    // The replica starts from the origin's GENESIS, which carries the replicated tables only: the
+    // copy has every device-local (class 3) row stripped, so the system-account map is present
+    // only because it is class 1. Under the old class-3 classification this replica would hold the
+    // origin's ledger accounts but not the map.
+    let replica = genesis_copy_of(dir.path(), &base, "b.vault");
     let ledgers_before = count(&replica, "ledger_accounts");
     assert_eq!(
         ledgers_before,
