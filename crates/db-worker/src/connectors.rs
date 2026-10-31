@@ -152,7 +152,7 @@ pub(crate) fn scrub_local_rows(tx: &rusqlite::Transaction<'_>, id: Uuid) -> Resu
 
 /// The metadata of a command this device issues for the connector's class-1 writes: a fresh
 /// command and idempotency key, `issued_at` read once here at the command boundary.
-fn local_meta(actor: ActorType, actor_id: &str) -> CommandMeta {
+pub(crate) fn local_meta(actor: ActorType, actor_id: &str) -> CommandMeta {
     CommandMeta {
         command_id: Uuid::now_v7(),
         correlation_id: Uuid::now_v7(),

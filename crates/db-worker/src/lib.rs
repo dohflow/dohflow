@@ -891,6 +891,31 @@ pub enum WriteCommand {
         /// The IANA zone name, for example `America/Chicago`.
         timezone: String,
     },
+    /// Record a manual balance assertion (personal-cfo-5ymg8.3; ADR 0027): "account = `amount`
+    /// as of `as_of`", stored as a `manual` observation. Never last-wins: two assertions for one
+    /// account and day are both kept. The id is minted by the caller. Not a ledger posting.
+    RecordBalanceAssertion {
+        /// The observation's id, minted by the caller.
+        id: Uuid,
+        /// The account.
+        account_id: AccountId,
+        /// The asserted balance; its currency is the account's.
+        amount: Money,
+        /// The day it is asserted for.
+        as_of: NaiveDate,
+    },
+    /// Record the balance a connector reported (personal-cfo-5ymg8.3; ADR 0027 addendum): an
+    /// UPSERT on (account, day, connector) that updates the row in place and only when this
+    /// command is newer than the stored one. `observed_at` is already clamped to the household's
+    /// today by the producer; the row carries no source record (that is device-local).
+    RecordConnectorBalance {
+        /// The account the provider balance belongs to.
+        account_id: AccountId,
+        /// The day observed.
+        observed_at: NaiveDate,
+        /// The provider's balance; its currency is the account's.
+        amount: Money,
+    },
 }
 
 impl WriteCommand {
@@ -947,6 +972,8 @@ impl WriteCommand {
             WriteCommand::UpdateCategory { .. } => "update_category",
             WriteCommand::MoveCategory { .. } => "move_category",
             WriteCommand::SetHouseholdTimezone { .. } => "set_household_timezone",
+            WriteCommand::RecordBalanceAssertion { .. } => "record_balance_assertion",
+            WriteCommand::RecordConnectorBalance { .. } => "record_connector_balance",
             WriteCommand::ArchiveCategory(_) => "archive_category",
             WriteCommand::ReinstateCategory(_) => "reinstate_category",
             WriteCommand::RecategorizeTransaction { .. } => "recategorize_transaction",
@@ -1843,37 +1870,14 @@ impl DbWorker {
         amount: Money,
         as_of: NaiveDate,
     ) -> Result<(), DbError> {
-        let guard = self.lock();
-        let account_currency: Option<String> = guard
-            .conn
-            .query_row(
-                "SELECT currency FROM accounts WHERE id = ?1",
-                [account_id.as_uuid()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(account_currency) = account_currency else {
-            return Err(DbError::InvalidCommand("no such account".to_owned()));
-        };
-        if amount.currency() != currency_from_code(&account_currency)? {
-            return Err(DbError::InvalidCommand(
-                "assertion currency must match the account currency".to_owned(),
-            ));
-        }
-        let now = Utc::now().to_rfc3339();
-        guard.conn.execute(
-            "INSERT INTO balance_observations
-                (id, account_id, observed_at, balance_amount_minor, balance_currency,
-                 source, source_record_id, reconciliation_session_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'manual', NULL, NULL, ?6)",
-            params![
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::RecordBalanceAssertion {
                 id,
-                account_id.as_uuid(),
-                as_of.to_string(),
-                amount.minor_units(),
-                amount.currency().code(),
-                now,
-            ],
+                account_id,
+                amount,
+                as_of,
+            },
         )?;
         Ok(())
     }
@@ -3395,6 +3399,7 @@ impl DbWorker {
         }
         let mut staged = Vec::new();
         let mut skipped_unmapped = 0_usize;
+        let mut promotions: Vec<(Uuid, Uuid, NaiveDate, Money)> = Vec::new();
         for rec in &batch.records {
             // Resolve the record's account up front: a record with no mapped
             // account cannot be staged (the commit path requires one).
@@ -3466,7 +3471,7 @@ impl DbWorker {
                 let local_today = forecast::read_household_tz(&tx)
                     .map(|tz| Utc::now().with_timezone(&tz).date_naive())
                     .unwrap_or_else(|_| Utc::now().date_naive());
-                let observed = bal.observed_at.min(local_today).to_string();
+                let observed = bal.observed_at.min(local_today);
                 let staged_bal_id = ingestion::stage_balance(
                     &tx,
                     &ingestion::NewStagedBalance {
@@ -3490,35 +3495,30 @@ impl DbWorker {
                 if account_currency.as_deref() != Some(bal.amount.currency().code()) {
                     continue;
                 }
-                tx.execute(
-                    "DELETE FROM balance_observations
-                      WHERE account_id = ?1 AND observed_at = ?2
-                        AND source = 'connector_sync'",
-                    params![account, observed],
-                )?;
-                tx.execute(
-                    "INSERT INTO balance_observations
-                        (id, account_id, observed_at, balance_amount_minor,
-                         balance_currency, source, source_record_id,
-                         reconciliation_session_id, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'connector_sync', ?6, NULL, ?7)",
-                    params![
-                        Uuid::now_v7(),
-                        account,
-                        observed,
-                        bal.amount.minor_units(),
-                        bal.amount.currency().code(),
-                        record_id,
-                        Utc::now().to_rfc3339(),
-                    ],
-                )?;
-                tx.execute(
-                    "DELETE FROM staged_balances WHERE id = ?1",
-                    params![staged_bal_id],
-                )?;
+                // The promotion is a COMMAND on the bus (RecordConnectorBalance), which opens its
+                // own transaction, so it runs after this staging transaction commits.
+                promotions.push((staged_bal_id, account, observed, bal.amount));
             }
         }
         tx.commit()?;
+        drop(guard);
+        // Promote each staged balance, then consume its staged row (class 3). A crash in between
+        // leaves the balance staged and un-promoted, the same state as the currency guard's
+        // "stays staged"; the next sync promotes it again, and the upsert is idempotent.
+        for (staged_bal_id, account, observed, amount) in promotions {
+            self.dispatch(
+                connectors::local_meta(ActorType::Importer, "connector"),
+                WriteCommand::RecordConnectorBalance {
+                    account_id: AccountId::from_uuid(account),
+                    observed_at: observed,
+                    amount,
+                },
+            )?;
+            self.lock().conn.execute(
+                "DELETE FROM staged_balances WHERE id = ?1",
+                params![staged_bal_id],
+            )?;
+        }
         Ok((staged, skipped_unmapped))
     }
 
@@ -5592,7 +5592,7 @@ pub(crate) fn assertion_anchored_balance(
         .query_row(
             "SELECT balance_amount_minor, observed_at FROM balance_observations
              WHERE account_id = ?1 AND source IN ('manual', 'connector_sync')
-             ORDER BY observed_at DESC, created_at DESC LIMIT 1",
+             ORDER BY observed_at DESC, created_at DESC, id DESC LIMIT 1",
             [account_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -5632,7 +5632,7 @@ pub(crate) fn unexplained_adjustment(
         .query_row(
             "SELECT balance_amount_minor, observed_at, source FROM balance_observations
              WHERE account_id = ?1 AND source IN ('manual', 'connector_sync')
-             ORDER BY observed_at DESC, created_at DESC LIMIT 1",
+             ORDER BY observed_at DESC, created_at DESC, id DESC LIMIT 1",
             [account_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -5649,7 +5649,7 @@ pub(crate) fn unexplained_adjustment(
             "SELECT balance_amount_minor, observed_at FROM balance_observations
              WHERE account_id = ?1 AND source IN ('manual', 'connector_sync')
                AND observed_at < ?2
-             ORDER BY observed_at DESC, created_at DESC LIMIT 1",
+             ORDER BY observed_at DESC, created_at DESC, id DESC LIMIT 1",
             params![account_id, observed_at],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -5853,7 +5853,7 @@ fn cash_tier_rollups(conn: &Connection) -> Result<CashTiers, DbError> {
             "SELECT account_id, balance_amount_minor
              FROM (SELECT account_id, balance_amount_minor,
                           ROW_NUMBER() OVER (PARTITION BY account_id
-                                             ORDER BY observed_at DESC, created_at DESC) AS rn
+                                             ORDER BY observed_at DESC, created_at DESC, id DESC) AS rn
                      FROM balance_observations WHERE source IN ('manual', 'connector_sync'))
              WHERE rn = 1",
         )?;
@@ -5873,7 +5873,7 @@ fn cash_tier_rollups(conn: &Connection) -> Result<CashTiers, DbError> {
                  SELECT account_id, observed_at
                  FROM (SELECT account_id, observed_at,
                               ROW_NUMBER() OVER (PARTITION BY account_id
-                                                 ORDER BY observed_at DESC, created_at DESC) AS rn
+                                                 ORDER BY observed_at DESC, created_at DESC, id DESC) AS rn
                          FROM balance_observations WHERE source IN ('manual', 'connector_sync'))
                  WHERE rn = 1
              )
@@ -7369,6 +7369,26 @@ fn apply_command(
         WriteCommand::MoveCategory { id, new_parent_id } => {
             apply::categorization_cmds::apply_move_category(&tx, meta, id, new_parent_id)?
         }
+        WriteCommand::RecordBalanceAssertion {
+            id,
+            account_id,
+            amount,
+            as_of,
+        } => apply::balance_cmds::apply_record_balance_assertion(
+            &tx, meta, id, account_id, amount, as_of,
+        )?,
+        WriteCommand::RecordConnectorBalance {
+            account_id,
+            observed_at,
+            amount,
+        } => apply::balance_cmds::apply_record_connector_balance(
+            &tx,
+            meta,
+            &ids,
+            account_id,
+            observed_at,
+            amount,
+        )?,
         WriteCommand::SetHouseholdTimezone { timezone } => {
             apply::household::apply_set_household_timezone(&tx, meta, &ids, timezone)?
         }
@@ -7489,6 +7509,8 @@ fn apply_command(
         // The household timezone lives on the singleton vault_metadata row; its entity id
         // is the vault id (personal-cfo-g3m.8).
         WriteCommand::SetHouseholdTimezone { .. } => "vault_metadata",
+        WriteCommand::RecordBalanceAssertion { .. }
+        | WriteCommand::RecordConnectorBalance { .. } => "balance_observations",
         WriteCommand::CreateCategory { .. }
         | WriteCommand::UpdateCategory { .. }
         | WriteCommand::MoveCategory { .. }

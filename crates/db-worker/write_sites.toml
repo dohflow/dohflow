@@ -100,15 +100,6 @@ note = "Class 1b import provenance; reshaped by SYNC-2c."
 
 [[site]]
 module = "lib.rs"
-table = "balance_observations"
-class = "4"
-statements = 3
-status = "pending"
-bead = "personal-cfo-5ymg8.3"
-note = "Manual assertions (record_balance_assertion) and the connector staging path (stage_sync_batch DELETE + INSERT) write observations outside the bus."
-
-[[site]]
-module = "lib.rs"
 table = "categories"
 class = "1"
 statements = 1

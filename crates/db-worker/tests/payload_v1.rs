@@ -87,7 +87,7 @@ fn every_write_command_variant_has_exactly_one_sample() {
     expected.sort();
     let mut actual: Vec<String> = samples().iter().map(|(n, _)| (*n).to_owned()).collect();
     actual.sort();
-    assert_eq!(expected.len(), 60, "the enum has 60 variants");
+    assert_eq!(expected.len(), 62, "the enum has 62 variants");
     assert_eq!(
         actual, expected,
         "a variant without a sample, or a sample without a variant"
@@ -343,8 +343,10 @@ fn fixture_digest(files: &[(String, Vec<u8>)]) -> String {
 /// and three files were added (planning's rule: new additive v1 payloads, no field added to any
 /// existing payload). So did `CreateConnectorConnection`, `UpsertConnectorLink`,
 /// `SetConnectorLinkAccount` and `DeleteConnectorConnection` of personal-cfo-5ymg8.2: the 56
-/// existing fixtures are byte-identical and four files were added.
-const PAYLOAD_V1_DIGEST: &str = "7efd7112d0c7c74b02c8e763412a3bbad7209be63d6e9dfb45eb78618db877c0";
+/// existing fixtures are byte-identical and four files were added. So did
+/// `RecordBalanceAssertion` and `RecordConnectorBalance` of personal-cfo-5ymg8.3: the 60 existing
+/// fixtures are byte-identical and two files were added.
+const PAYLOAD_V1_DIGEST: &str = "1e57fd81576d1a680b680283747cafdf1bad8094d4868dc29b1e6d41becca56f";
 
 #[test]
 fn the_frozen_version_1_fixtures_match_the_samples_and_the_pinned_digest() {
@@ -415,7 +417,7 @@ fn every_frozen_fixture_decodes_under_its_version() {
             count += 1;
         }
         assert_eq!(
-            count, 60,
+            count, 62,
             "version {version} has a fixture for every variant"
         );
     }

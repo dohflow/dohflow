@@ -37,6 +37,9 @@ use crate::IssuedAt;
 /// The label hashed with the vault id to form the per-vault identifier key.
 pub const ID_KEY_LABEL: &[u8] = b"dohflow/derived-id-key/v1";
 
+/// The domain label of [`DerivedIdKey::content_id`].
+const CONTENT_ID_LABEL: &[u8] = b"dohflow/content-id/v1";
+
 /// The domain label of [`DerivedIdKey::keyed_id`].
 const KEYED_ID_LABEL: &[u8] = b"dohflow/keyed-id/v1";
 
@@ -145,6 +148,43 @@ impl DerivedIdKey {
             .expect("HMAC accepts a key of any length");
         mac.update(KEYED_ID_LABEL);
         mac.update(command_id.as_bytes());
+        mac.update(&[u8::try_from(tag.len()).expect("tag length at most 255")]);
+        mac.update(tag);
+        for part in natural_key {
+            let length = u32::try_from(part.len())
+                .map_err(|_| DerivedIdError::TagTooLong { len: part.len() })?;
+            mac.update(&length.to_be_bytes());
+            mac.update(part);
+        }
+        let out: [u8; 32] = mac.finalize().into_bytes().into();
+        let mut bytes: [u8; 16] = out[..16].try_into().expect("sixteen bytes");
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Ok(Uuid::from_bytes(bytes))
+    }
+
+    /// A CONTENT id: the id of a row whose identity is its natural key and nothing about the
+    /// command that wrote it (a connector balance observation per account and day, an upserted
+    /// row that later commands update in place). The same natural key gives the same id on every
+    /// device and under every command, so an update by a later command keeps one row.
+    ///
+    /// ```text
+    /// mac = HMAC-SHA256(id_key, "dohflow/content-id/v1" || u8(tag_len) || tag
+    ///                           || for each part: u32_be(len) || part)
+    /// id  = mac[0..16] with the version nibble set to 8 and the variant bits to 10
+    /// ```
+    ///
+    /// Domain-separated from [`Self::keyed_id`] (which includes the command id) and from the
+    /// UUIDv7 ordinal ids. For local use only, like every id derived from the vault id.
+    ///
+    /// # Errors
+    /// [`DerivedIdError`] for an invalid tag, or a part longer than `u32::MAX` bytes.
+    pub fn content_id(&self, tag: &str, natural_key: &[&[u8]]) -> Result<Uuid, DerivedIdError> {
+        let tag = tag.as_bytes();
+        validate_tag(tag)?;
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.0)
+            .expect("HMAC accepts a key of any length");
+        mac.update(CONTENT_ID_LABEL);
         mac.update(&[u8::try_from(tag.len()).expect("tag length at most 255")]);
         mac.update(tag);
         for part in natural_key {
@@ -344,6 +384,15 @@ impl DerivedIds {
     /// See [`DerivedIdKey::keyed_id`].
     pub fn keyed(&self, tag: &str, natural_key: &[&[u8]]) -> Result<Uuid, DerivedIdError> {
         self.key.keyed_id(&self.command_id, tag, natural_key)
+    }
+
+    /// A content id (see [`DerivedIdKey::content_id`]): independent of the command and consuming
+    /// no ordinal.
+    ///
+    /// # Errors
+    /// See [`DerivedIdKey::content_id`].
+    pub fn content(&self, tag: &str, natural_key: &[&[u8]]) -> Result<Uuid, DerivedIdError> {
+        self.key.content_id(tag, natural_key)
     }
 
     /// How many identifiers this command has minted so far.

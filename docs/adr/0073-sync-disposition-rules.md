@@ -262,6 +262,8 @@ receives semantic auto-merge treatment.
 | `UpsertConnectorLink` | Set | auto (an idempotent upsert; applies as a no-op on a deleted connection) |
 | `SetConnectorLinkAccount` | Set | queue-choose if the mapping changed on both sides (applies as a no-op on a deleted connection) |
 | `DeleteConnectorConnection` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate) |
+| `RecordBalanceAssertion` | Create | auto; two assertions for one account and day are both kept and queue-choose (never LWW) |
+| `RecordConnectorBalance` | Set | auto, newest issued_at wins (monotone upsert); an older command applies as a no-op |
 | `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -439,6 +441,28 @@ row (`connector.token_removed_connection_deleted`, keyed by the command id) reco
 that a rebase never undoes, so it is a **stable** event type for the rebase of the mixed
 `audit_events` table (`personal-cfo-bxsbz`), never dropped or re-planned with the replayed
 commands. `SetConnectorLinkAccount`'s cursor clearing is the same kind of effect.
+
+## Addendum F — Balance observations are commands (2026-10-31, `personal-cfo-5ymg8.3`)
+
+The two raw writers of `balance_observations` become `WriteCommand`s: `RecordBalanceAssertion`
+(Create; a manual observation with a caller-minted id) and `RecordConnectorBalance` (Set). That
+makes **Create 10**, **Set 24** and 62 appendix rows.
+
+**Manual assertions are never last-wins.** Two assertions for one account and day are both kept
+(the latest by `created_at`, then by `id`, anchors the balance) and a rebase that finds two
+queues a choice with both values (ADR 0027; ADR 0074 decision 5).
+
+**Connector readings are an upsert, newest wins.** `RecordConnectorBalance` updates the one
+`connector_sync` row of an (account, day) IN PLACE, and only when the command's `issued_at` is
+newer than the row's `created_at`; an older command applies as a no-op, so a stale refresh from an
+offline device cannot overwrite a newer same-day reading, and the rebase disposition is auto. The
+row is never hard-deleted (the old staging DELETE and INSERT are gone), and its id is a content id
+of (account, day), identical on every device. It carries **no source record**: a staged source
+record is device-local (the table is class 1b and not yet routed through the bus,
+`personal-cfo-0g528`), and writing it on one device would fork the row's digest, so provenance
+returns when connector source records go through the bus. The producer clamps `observed_at` to the
+household's today at its impure boundary; apply refuses a reading dated after the household-local
+date of `issued_at`.
 
 ## Linked beads
 
