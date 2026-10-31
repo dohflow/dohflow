@@ -26,6 +26,7 @@ deliberate row here, in the same change.
 | File | Function | Mints | Class | Why it is not a derived id |
 | --- | --- | --- | --- | --- |
 | `connectors.rs` | `scrub_tombstoned_connector_secrets` | 2 | keep-class-3 | The post-rebase device-local cleanup writes a class-3 audit row for a system event; not reached from `apply_command`. |
+| `connectors.rs` | `local_meta` | 2 | keep-caller | The producer's command metadata (a command id and a correlation id) for the connector writes, built at the `DbWorker` method; not a row `apply` writes and not reached from `apply_command`. |
 | `forecast_persist.rs` | `capture_snapshot` | 1 | keep-class-2 | A rebuilt forecast input snapshot (class 2). |
 | `forecast_persist.rs` | `persist_run_and_rows` | 1 | keep-class-2 | A rebuilt forecast run (class 2). |
 | `forecast_persist.rs` | `insert_row` | 1 | keep-class-2 | A rebuilt forecast row (class 2). |
