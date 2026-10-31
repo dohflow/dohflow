@@ -48,3 +48,19 @@ export const ratio = (a: Rgb, b: Rgb): number => Math.round(contrastRatio(a, b) 
 export function engine(): string {
   return `${navigator.userAgent} | dpr ${window.devicePixelRatio}`;
 }
+
+/// Where and how a result was captured, so a saved file speaks for itself (personal-cfo-4d8.35, Studio F2):
+/// the exact source commit, when, the engine, the locale and zone the status stamps were formatted in, and
+/// the viewport and pixel ratio.
+export function captureMeta() {
+  return {
+    sourceSha: __SOURCE_SHA__,
+    capturedAt: new Date().toISOString(),
+    userAgent: navigator.userAgent,
+    locale: navigator.language,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+  };
+}

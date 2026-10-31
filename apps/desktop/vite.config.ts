@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
@@ -63,12 +64,26 @@ function sourceTree(): Plugin {
   };
 }
 
+/// The commit the page is served from, for the dev audit pages' captured results (`src/dev`,
+/// personal-cfo-4d8.35): a result file says exactly which source it measured. `+uncommitted` marks a tree
+/// with local changes, which a committed capture must not have. Not used by the app.
+function sourceSha(): string {
+  try {
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: fileURLToPath(new URL(".", import.meta.url)), encoding: "utf8" }).trim();
+    return git("rev-parse", "HEAD") + (git("status", "--porcelain", "--", ".") === "" ? "" : "+uncommitted");
+  } catch {
+    return "unknown";
+  }
+}
+
 // Frontend build + test config for the Tauri desktop app.
 // Tauri-specific hardening (capabilities, fixed dev port wiring, no remote
 // navigation) is layered on in bead personal-cfo-rhci. The design system
 // (Tailwind v4 + shadcn/ui tokens) lands in personal-cfo-x99h.
 export default defineConfig({
   plugins: [react(), tailwindcss(), globalsCssRaw(), sourceTree()],
+  define: { __SOURCE_SHA__: JSON.stringify(sourceSha()) },
   resolve: {
     // `@/…` resolves to `src/…` — the shadcn/ui import convention.
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },

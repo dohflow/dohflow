@@ -138,8 +138,9 @@ semantic token: the words carry the status, the mark is a redundant cue, and no 
 Evidence and the rerunnable audit: `docs/design-system/evidence/personal-cfo-4d8.35/`.
 
 **Still open, not waived.** `--border` (cards and dividers) is deliberately below 3:1 because it is
-not what identifies a control. Small text in `text-warning` is below 4.5:1 (about 3.74 Light, 3.53
-Dark; a separate bead). Text in a semantic color on its own 10% tint is no longer used by `Badge`,
+not what identifies a control. Small text in `text-warning` is below 4.5:1 **in Light only** (3.74 on
+`--card`, 3.53 on `--background`); Dark clears it (about 8.10 on `--card`, 8.71 on `--background`).
+A separate bead (`personal-cfo-4d8.43`) owns the Light treatment. Text in a semantic color on its own 10% tint is no longer used by `Badge`,
 but a hand-rolled one would repeat the old gap. No document here claims production accessibility
 acceptance until the change is merged and reviewed.
 

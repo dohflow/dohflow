@@ -251,19 +251,24 @@ export function ConnectionRow({
   const [confirmingForget, setConfirmingForget] = useState(false);
   const cadenceId = `refresh-cadence-${connection.id}`;
   return (
-    <div className="rounded-md border p-3">
+    <div className="@container rounded-md border p-3">
       {/* The status words and the action must both stay whole (the owner's status-fit condition,
-          personal-cfo-4d8.35): the identity wraps instead of truncating, the lane drops below it
-          when they do not fit side by side, and inside the lane the badge wraps its complete label
-          while Refresh now keeps its size. */}
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-        <div className="min-w-0 flex-1 basis-40">
+          personal-cfo-4d8.35), in the reviewed composition (Paper SF-1r2 SF03/SF04): at a narrow
+          component width the identity sits above ONE status lane, in which the badge wraps its
+          complete label beside a right-aligned, non-shrinking 36px Refresh now; at a wide width the
+          identity and the lane share a row. The switch follows the row's own width (a container
+          query), not the window's. */}
+      <div className="flex flex-col gap-2 @lg:flex-row @lg:items-start @lg:justify-between @lg:gap-3">
+        <div data-part="identity" className="min-w-0 @lg:flex-1 @lg:basis-40">
           <p className="break-words text-sm font-medium">
             {connection.display_hint ?? `${providerName} connection`}
           </p>
           <p className="text-xs text-muted-foreground">{providerName}</p>
         </div>
-        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+        <div
+          data-part="status-lane"
+          className="flex min-w-0 items-center justify-between gap-3 @lg:justify-end"
+        >
           <HealthBadge connection={connection} />
           <Button
             size="sm"

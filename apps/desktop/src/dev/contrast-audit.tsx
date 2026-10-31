@@ -30,12 +30,12 @@ import { AppearanceCard } from "@/settings/AppearanceCard";
 import { ThemeProvider } from "@/theme/ThemeProvider";
 import { ThemeToggle } from "@/theme/ThemeToggle";
 
+import { BADGE_CASES, badgeVerdict, type Verdict } from "./badge-verdict";
 import { clears, HEADROOM, NON_TEXT_FLOOR, solidRings, TEXT_FLOOR, toHex } from "./contrast-math";
-import { backgroundChain, composite, engine, ratio } from "./measure";
+import { backgroundChain, captureMeta, composite, engine, ratio } from "./measure";
 
 type Theme = "light" | "dark";
 type Surface = "page" | "card";
-type Verdict = "pass" | "FAIL" | "info";
 
 type Row = {
   theme: Theme;
@@ -44,9 +44,16 @@ type Row = {
   id: string;
   state: string;
   verdict: Verdict;
+  /// The floors this row was held to, headroom included (`label`, `mark`, `boundary`, `ring`). An `info`
+  /// row carries the floors it would have been held to, and `required` says whether it was.
+  thresholds: Record<string, number>;
+  required: boolean;
   detail: string;
   raw: Record<string, string | number | boolean>;
 };
+
+const TEXT_NEED = TEXT_FLOOR + HEADROOM;
+const NON_TEXT_NEED = NON_TEXT_FLOOR + HEADROOM;
 
 // ── the consumers: every `border-input` class string in the source, discovered, not hand-listed ──
 const SOURCES = import.meta.glob(["/src/**/*.tsx", "!/src/**/*.test.tsx", "!/src/dev/**"], {
@@ -202,8 +209,6 @@ function measureBadge(el: HTMLElement) {
 }
 
 // ── fixture ─────────────────────────────────────────────────────────────────────────────────────
-const VARIANTS = ["default", "secondary", "outline", "gain", "warning", "info", "loss"] as const;
-const SEMANTIC = new Set(["gain", "warning", "info", "loss"]);
 const LONG = "Statement balance carried over from the previous billing period";
 
 function Pager() {
@@ -214,30 +219,49 @@ function Pager() {
   return <PaginationControls pagination={pagination} noun="rows" />;
 }
 
+/// One declared badge (`badge-verdict.ts`) rendered the way the app renders it.
+function FixtureBadge({ spec }: { spec: (typeof BADGE_CASES)[number] }) {
+  switch (spec.body) {
+    case "autopay":
+      return (
+        <Badge variant={spec.variant} className="text-[10px] uppercase tracking-wide" data-case={spec.id}>
+          Autopay
+        </Badge>
+      );
+    case "resurfaced":
+      return (
+        <Badge variant={spec.variant} className="gap-1 before:hidden" data-case={spec.id}>
+          <RotateCcw className="size-3 text-warning" aria-hidden /> Resurfaced
+        </Badge>
+      );
+    case "long":
+      return (
+        <Badge variant={spec.variant} data-case={spec.id}>
+          {LONG}
+        </Badge>
+      );
+    default:
+      return (
+        <Badge variant={spec.variant} data-case={spec.id}>
+          {spec.variant} label
+        </Badge>
+      );
+  }
+}
+
 function Fixture({ theme, surface }: { theme: Theme; surface: Surface }) {
   const id = (name: string) => ({ "data-case": `${name}` });
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap gap-2" data-group="badge">
-        {VARIANTS.map((v) => (
-          <Badge key={v} variant={v} data-case={`badge-${v}`}>
-            {v} label
-          </Badge>
+        {BADGE_CASES.filter((c) => !c.narrow).map((c) => (
+          <FixtureBadge key={c.id} spec={c} />
         ))}
-        <Badge variant="gain" className="text-[10px] uppercase tracking-wide" data-case="badge-autopay">
-          Autopay
-        </Badge>
-        <Badge variant="warning" className="gap-1 before:hidden" data-case="badge-resurfaced">
-          <RotateCcw className="size-3 text-warning" aria-hidden /> Resurfaced
-        </Badge>
       </div>
       <div className="flex w-[220px] flex-col gap-2" data-group="badge-narrow">
-        <Badge variant="warning" data-case="badge-long-narrow">
-          {LONG}
-        </Badge>
-        <Badge variant="gain" data-case="badge-long-narrow-gain">
-          {LONG}
-        </Badge>
+        {BADGE_CASES.filter((c) => c.narrow).map((c) => (
+          <FixtureBadge key={c.id} spec={c} />
+        ))}
       </div>
       <div className="flex flex-wrap items-center gap-2" data-group="controls">
         <Input placeholder="Input" aria-label={`input ${theme} ${surface}`} {...id("input")} />
@@ -356,19 +380,31 @@ function runAudit(consumers: Consumer[]): Row[] {
     for (const surface of ["page", "card"] as const) {
       const root = document.querySelector<HTMLElement>(`[data-surface="${theme}.${surface}"]`);
       if (!root) continue;
-      // Badges: neutral label at 4.5, mark at 3 (both plus headroom).
+      // Badges: the declared label floor at 4.5 and the mark at 3 (both plus headroom). Every rendered
+      // badge must be declared in `BADGE_CASES` (an undeclared one FAILS), and every declared badge must
+      // be rendered here (a missing one FAILS), so a row can neither read `info` by accident nor vanish.
+      const declared = new Map(BADGE_CASES.map((c) => [c.id, c]));
+      const seen = new Set<string>();
       for (const el of root.querySelectorAll<HTMLElement>("[data-case^='badge-']")) {
         const id = el.dataset.case!;
-        const variant = id.replace("badge-", "").split("-")[0]!;
+        seen.add(id);
+        const spec = declared.get(id);
         const m = measureBadge(el);
-        const semantic = SEMANTIC.has(variant) || id === "badge-autopay" || id === "badge-resurfaced";
-        const labelOk = clears(m.label, TEXT_FLOOR);
-        const markOk = m.markOnFill === null ? !semantic : clears(m.markOnFill, NON_TEXT_FLOOR);
         push({
           theme, surface, section: "badge", id, state: "default",
-          verdict: !semantic && variant !== "default" && variant !== "secondary" && variant !== "outline" ? "info" : labelOk && markOk && !m.overflows ? "pass" : "FAIL",
-          detail: `label ${m.label}:1 (need ${TEXT_FLOOR + HEADROOM}), mark ${m.markKind} ${m.markOnFill ?? "-"}:1 (need ${NON_TEXT_FLOOR + HEADROOM}), ${m.fontPx}, ${m.lines} line(s)${m.overflows ? ", OVERFLOWS" : ""}`,
-          raw: { fill: toHex(m.fill), text: toHex(m.text), mark: m.mark ? toHex(m.mark) : "none", markKind: m.markKind, label: m.label, markOnFill: m.markOnFill ?? -1, lines: m.lines, overflows: m.overflows },
+          verdict: badgeVerdict(spec, { label: m.label, markOnFill: m.markOnFill, overflows: m.overflows }),
+          thresholds: { label: TEXT_NEED, mark: NON_TEXT_NEED },
+          required: spec?.required ?? true,
+          detail: `${spec ? `variant ${spec.variant}${spec.semantic ? ", semantic" : ""}` : "NOT DECLARED in BADGE_CASES"}; label ${m.label}:1 (need ${TEXT_NEED}), mark ${m.markKind} ${m.markOnFill ?? "-"}:1 (need ${NON_TEXT_NEED}), ${m.fontPx}, ${m.lines} line(s)${m.overflows ? ", OVERFLOWS" : ""}`,
+          raw: { variant: spec?.variant ?? "undeclared", semantic: spec?.semantic ?? false, fill: toHex(m.fill), text: toHex(m.text), mark: m.mark ? toHex(m.mark) : "none", markKind: m.markKind, label: m.label, markOnFill: m.markOnFill ?? -1, lines: m.lines, overflows: m.overflows },
+        });
+      }
+      for (const spec of BADGE_CASES) {
+        if (seen.has(spec.id)) continue;
+        push({
+          theme, surface, section: "badge", id: spec.id, state: "default", verdict: "FAIL",
+          thresholds: { label: TEXT_NEED, mark: NON_TEXT_NEED }, required: spec.required,
+          detail: "declared in BADGE_CASES but not rendered", raw: { variant: spec.variant },
         });
       }
       // Shared controls: default state on the real element.
@@ -383,6 +419,7 @@ function runAudit(consumers: Consumer[]): Row[] {
         push({
           theme, surface, section: "shared control", id, state: "default",
           verdict: required ? (ok ? "pass" : "FAIL") : "info",
+          thresholds: { boundary: NON_TEXT_NEED }, required,
           detail: `border ${toHex(m.border)} on outside ${m.onOutside}:1, on fill ${m.onFill}:1 (need ${NON_TEXT_FLOOR + HEADROOM})${required ? "" : " [labelled button: reported, not required]"}`,
           raw: { outside: toHex(m.outside), fill: toHex(m.fill), border: toHex(m.border), onOutside: m.onOutside, onFill: m.onFill, className: target.className.slice(0, 160) },
         });
@@ -393,6 +430,7 @@ function runAudit(consumers: Consumer[]): Row[] {
         const m = measureField(pager);
         push({ theme, surface, section: "shared control", id: "pagination-select", state: "default",
           verdict: clears(Math.min(m.onOutside, m.onFill), NON_TEXT_FLOOR) ? "pass" : "FAIL",
+          thresholds: { boundary: NON_TEXT_NEED }, required: true,
           detail: `border ${toHex(m.border)} on outside ${m.onOutside}:1, on fill ${m.onFill}:1`,
           raw: { border: toHex(m.border), onOutside: m.onOutside, onFill: m.onFill } });
       }
@@ -400,6 +438,7 @@ function runAudit(consumers: Consumer[]): Row[] {
       if (seg) {
         const m = measureField(seg);
         push({ theme, surface, section: "shared control", id: "segmented-appearance", state: "default", verdict: "info",
+          thresholds: { boundary: NON_TEXT_NEED }, required: false,
           detail: `group border ${m.onOutside}:1 on outside [segments are identified by their labels: reported, not required]`,
           raw: { onOutside: m.onOutside } });
       }
@@ -421,6 +460,8 @@ function runAudit(consumers: Consumer[]): Row[] {
           push({
             theme, surface, section: "consumer", id: c.where[0]!, state,
             verdict: ruleless ? "FAIL" : required ? (boundaryOk && ringOk ? "pass" : "FAIL") : "info",
+            thresholds: state === "focus" ? { boundary: NON_TEXT_NEED, ring: NON_TEXT_NEED } : { boundary: NON_TEXT_NEED },
+            required,
             detail: `${ruleless ? "NO STATE RULE FOUND IN THE STYLESHEET (the audit could not apply this state); " : ""}border on outside ${m.onOutside}:1, on fill ${m.onFill}:1${state === "focus" ? `, ring ${m.ringOnOutside ?? "none"}:1` : ""}${required ? "" : ` [exempt: ${c.exemption}]`}`,
             raw: { stateRules: Number(el.dataset.rules ?? 0), border: toHex(m.border), onOutside: m.onOutside, onFill: m.onFill, ringOnOutside: m.ringOnOutside ?? -1, exempt: c.exemption ?? "", classes: c.classes.slice(0, 160), where: c.where.join(", ") },
           });
@@ -460,7 +501,7 @@ function Audit() {
     const t = setTimeout(() => {
       const result = runAudit(all);
       setRows(result);
-      (window as unknown as { __contrastAudit: unknown }).__contrastAudit = { engine: engine(), rows: result };
+      (window as unknown as { __contrastAudit: unknown }).__contrastAudit = { engine: engine(), meta: captureMeta(), rows: result };
     }, 250);
     return () => clearTimeout(t);
   }, [shared, all]);
@@ -492,7 +533,7 @@ function Audit() {
             ))}
           </ul>
           <h2 className="mt-4 text-sm font-semibold">All rows (JSON also in window.__contrastAudit)</h2>
-          <pre id="audit-json" className="max-h-96 overflow-auto text-[10px]">{JSON.stringify({ engine: engine(), rows }, null, 1)}</pre>
+          <pre id="audit-json" className="max-h-96 overflow-auto text-[10px]">{JSON.stringify({ engine: engine(), meta: captureMeta(), rows }, null, 1)}</pre>
         </div>
       )}
     </div>

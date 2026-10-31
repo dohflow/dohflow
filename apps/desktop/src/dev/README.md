@@ -18,7 +18,15 @@ pnpm -C apps/desktop exec vite --port 5199 --strictPort
 ```
 
 The summary line, the failure list and the full row table are on the page; the same data is in
-`window.__contrastAudit` (`{ engine, rows }`). **Open it in Safari as well**: Safari's WebKit is the closest
+`window.__contrastAudit` (`{ engine, meta, rows }`). `meta` says where the result came from (the exact source commit the
+dev server serves, with `+uncommitted` for a dirty tree, the capture time, engine, locale, time zone, viewport and pixel
+ratio); every row carries the floors it was held to (`thresholds`, headroom included) and whether it was `required`.
+A committed capture must come from a clean tree and be taken after a hard reload (a hot update re-renders the DOM but
+not the measurement).
+
+Badges are declared in `badge-verdict.ts` (`BADGE_CASES`: variant, whether the mark is the status cue, whether the row is
+required); the page renders from that list, an undeclared or unrendered badge FAILS, and `badge-verdict.test.ts` shows
+the verdict fails on a broken measurement for every declared badge, the long ones included. **Open it in Safari as well**: Safari's WebKit is the closest
 engine to the app's WKWebView, and the page needs nothing else. If its numbers differ from the committed
 evidence by more than the 0.1 headroom, that is a finding.
 
@@ -47,7 +55,14 @@ pnpm -C apps/desktop exec vite --port 5199 --strictPort
 ```
 
 `w` is the component width in px (the evidence uses 368 and 672), `theme=dark` selects Dark, and `set=stale` keeps only
-the rows that stress the fit. Each row's label says "fits" or lists its problems; `window.__statusFit` carries the same.
+the rows that stress the fit. Each row's label says "fits" or lists its problems; `window.__statusFit` carries the same as
+`{ meta, rows }` (`meta` as above plus the component width and theme).
+
+What a row asserts: nothing clipped, overlapping, past the component or scrolling sideways, and, for a connection, the
+reviewed lane (Paper SF-1r2 SF03/SF04): identity above the lane at a narrow width and beside it at a wide one, the
+badge beside Refresh now, Refresh now 36px high with its right edge on the row's right content edge (the pending
+spinner included). The card strip uses a typed `credit_facility` account, as the account page does, so it shows the
+utilization the product shows (25% used, $7,500 available on a $10,000 limit).
 Open it in Safari as well (and a narrow `w`) if the engine matters.
 
 ## Disclosure example (`personal-cfo-4d8.38`)
