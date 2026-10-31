@@ -250,6 +250,7 @@ pub(crate) fn apply_set_debt_terms(
 pub(crate) fn apply_set_card_statement_balance(
     tx: &Connection,
     meta: &crate::CommandMeta,
+    ids: &core_ids::DerivedIds,
     account_id: AccountId,
     cycle_close: chrono::NaiveDate,
     statement_balance_minor: Option<i64>,
@@ -300,7 +301,15 @@ pub(crate) fn apply_set_card_statement_balance(
          ON CONFLICT (account_id, cycle_close)
          DO UPDATE SET statement_balance_minor = excluded.statement_balance_minor",
         params![
-            uuid::Uuid::now_v7(),
+            // Used only on the insert branch of the upsert (base-dependent), so a KEYED id of
+            // the statement's natural key.
+            ids.keyed(
+                "card-statement",
+                &[
+                    account_id.as_uuid().as_bytes(),
+                    cycle_close.to_string().as_bytes()
+                ],
+            )?,
             account_id.as_uuid(),
             cycle_close.to_string(),
             balance,

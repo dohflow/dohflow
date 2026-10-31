@@ -206,6 +206,7 @@ Paths are under `apps/desktop/src/`. "Shared" means it lives in `components/ui/`
 | `EmojiPicker` | `components/ui/emoji-picker.tsx` | Curated, dependency-free emoji grid with filtering. |
 | Notices | `components/ui/notice.tsx`, `notice-context.ts`, `notice-stack.ts` | `NoticeProvider`, `NotificationsRegion`, `useNotices()`; the Undo notice and the stack rule ([`FRONTEND.md`](../agent/FRONTEND.md) section 6.2). |
 | `RemoveConfirm` | `components/ui/remove-confirm.tsx` | The inline confirm for a reversible remove (section 6.2). |
+| `Disclosure`, `usePinDisclosures` | `components/ui/disclosure.tsx` | The shared independent disclosure (Paper A2): a card whose heading holds one trigger button; a hidden, inert body that keeps drafts; a `persistent` slot for the error, remedy and action; ancestor pinning for destructive confirmations. No screen uses it yet (`FRONTEND.md` section 7.5). |
 | `PageHeader` | `components/PageHeader.tsx` | One title scale for a page: title, optional muted subtitle, a right-aligned actions slot. Used by Dashboard, Accounts and Settings. |
 | Brand mark and wordmark | `brand/Brand.tsx` | The mark and the wordmark (outlines, not live text). |
 
@@ -221,11 +222,12 @@ Naming these so a mock is not drawn from a component that does not exist:
 - **Tabs.** There is no tabs component. The section switcher is the sidebar
   (`vault/screens/Sidebar.tsx`).
 - **Checkbox and Switch.** Native inputs, styled per use; there is no shared component.
-- **Disclosure / accordion.** There is **no shared disclosure**. Several screens implement their
+- **Disclosure / accordion.** `Disclosure` (above) is the shared one, built to the A2 contract
+  (`personal-cfo-4d8.38`). **No screen has adopted it yet.** Several screens still implement their
   own (`accounts/AccountsView.tsx`, `accounts/CreditCardsView.tsx`,
   `future-cash/NeedsConfirmation.tsx`, `future-cash/ProjectedActivityTable.tsx`,
-  `transactions/TransactionFilterBar.tsx`, among others). A shared one is proposed as
-  `personal-cfo-4d8.38`; until it merges, nothing here describes it as built.
+  `transactions/TransactionFilterBar.tsx`, among others); `FRONTEND.md` section 7.5 says which
+  differences a migration must reconcile.
 - **Toast.** Use a notice (above); there is no separate toast.
 
 ### Conventions (shadcn)
@@ -373,7 +375,7 @@ exists, nothing is built), **Not shipped** (drawn in Paper, and no code or bead 
 
 | Paper pattern | Paper page and freeze | Code | Status |
 |---------------|-----------------------|------|--------|
-| Shared independent disclosure ("A2"): a heading button that opens and closes a section, with the error, remedy and action outside the hidden body and nested destructive guards | page `p-7-0`, frozen 2026-10-26 05:24:16 UTC | none shared. Screens implement their own today (section 5, "Not shared yet"). Proposed as a shared component by `personal-cfo-4d8.38`; the specification is [`settings-layout-review.md`](./settings-layout-review.md) | **Proposed** |
+| Shared independent disclosure ("A2"): a heading button that opens and closes a section, with the error, remedy and action outside the hidden body and nested destructive guards | page `p-7-0`, frozen 2026-10-26 05:24:16 UTC | `components/ui/disclosure.tsx` (`personal-cfo-4d8.38`), built to the specification [`settings-layout-review.md`](./settings-layout-review.md). Unadopted: the existing screens keep their own until each is migrated | **Shipped** (component), adoption pending |
 | Layout contract ("LCR-1 v1"): priority-ordered, container-aware 3, 2 or 1 spans; collapsed siblings at the tallest natural height; parallel control tops aligned | page `p-8-0`, frozen 2026-10-27 15:21:48 UTC, hash `0afec932` | the written convention in [`FRONTEND.md`](../agent/FRONTEND.md) section 7.4. No layout component: a page composes it with Tailwind grid and subgrid | **Convention** |
 | Settings page, selected composition "A" | the Settings design page, v3, frozen 2026-10-27 15:36:39 UTC | `apps/desktop/src/settings/SettingsView.tsx` composes the existing cards today as **one column of always-open cards** (no disclosure, no grid). The target composition is `personal-cfo-4d8.39` | **Proposed** |
 | Collapsed-section summaries (frequency and verified backup status, the formatted Comfort range, the active vault name, the connection count, the application version) | within the Settings design page above | none; they depend on the shared disclosure (`personal-cfo-4d8.38`) and belong to the Settings composition (`personal-cfo-4d8.39`) | **Proposed** |

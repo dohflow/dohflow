@@ -47,6 +47,7 @@ fn household_id(tx: &Connection) -> Result<Uuid, DbError> {
 pub(crate) fn apply_set_household_timezone(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &core_ids::DerivedIds,
     timezone: &str,
 ) -> Result<Uuid, DbError> {
     timezone.parse::<Tz>().map_err(|e| {
@@ -58,11 +59,14 @@ pub(crate) fn apply_set_household_timezone(
           WHERE id = ?3 AND household_timezone <> ?1",
         params![timezone, issued_at_rfc3339(meta)?, household],
     )?;
+    // The audit row is device-local (class 3) and written once per command: its id is KEYED by
+    // the command and the event type, and the insert ignores a repeat, so a rebase replay of the
+    // same command leaves exactly one row (ADR 0073 Addendum D, rule (i)).
     tx.execute(
-        "INSERT INTO audit_events (id, event_type, command_id, correlation_id, created_at)
+        "INSERT OR IGNORE INTO audit_events (id, event_type, command_id, correlation_id, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
-            Uuid::now_v7(),
+            ids.keyed("audit.household-timezone", &[])?,
             HOUSEHOLD_TIMEZONE_CHANGED,
             meta.command_id,
             meta.correlation_id,
