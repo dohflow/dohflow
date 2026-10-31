@@ -484,8 +484,8 @@ columns = ["id:uuid", "source_record_id:uuid", "proposed_account_id:uuid", "post
 
 [[table]]
 name = "system_ledger_accounts"
-class = "3"
-write_set = "none"
+class = "1"
+write_set = "full"
 primary_key = ["role", "currency"]
 columns = ["role:text", "currency:text", "ledger_account_id:uuid"]
 
@@ -568,6 +568,18 @@ table = "connector_account_links"
 column = "external_id"
 max_bytes = 234
 mechanism = "writer"
+
+[[key_bound]]
+table = "system_ledger_accounts"
+column = "role"
+max_bytes = 32
+mechanism = "construction"
+
+[[key_bound]]
+table = "system_ledger_accounts"
+column = "currency"
+max_bytes = 8
+mechanism = "construction"
 
 [[projection]]
 source = "attachments"

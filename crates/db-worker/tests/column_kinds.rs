@@ -58,6 +58,11 @@ const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
     // `upsert_connector_link` rejects a longer provider account id (connector_link_key_width.rs);
     // the primary key is (connection_id uuid, external_id text): 256 - 17 - 5 = 234.
     ("connector_account_links", "external_id", 234, "writer"),
+    // The role is one of the system-account constants (`opening_balance_equity`,
+    // `unmatched_expense`, `unmatched_income`: at most 22 bytes) and the currency an ISO code
+    // from the `Currency` enum (3 bytes); no caller passes free text.
+    ("system_ledger_accounts", "role", 32, "construction"),
+    ("system_ledger_accounts", "currency", 8, "construction"),
 ];
 
 /// BLOB columns that hold a 16-byte identifier although their name does not say so.
@@ -1137,6 +1142,9 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("forecast_dependency_edges", &["bi", "bu", "bd"]),
     ("household_members", &["bd"]),
     ("households", &["bi", "bd"]),
+    // Written only where a command meets a (role, currency) pair no seed created, so no sample
+    // of a fresh vault reaches it; the rebase test of personal-cfo-32fmp.3 does.
+    ("system_ledger_accounts", &["bi", "bu", "bd"]),
     ("income_sources", &["bd"]),
     ("ledger_accounts", &["bu", "bd"]),
     ("ledger_transactions", &["bd"]),
