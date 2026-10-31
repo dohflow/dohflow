@@ -614,7 +614,10 @@ fn set_account_subtype_sets_clears_and_rejects_role_mismatch() {
                 subtype: Some(AccountSubtype::CreditCard),
             },
         ),
-        Err(DbError::InvalidCommand(_)),
+        Err(DbError::Rejected {
+            code: RejectCode::StateConflict,
+            ..
+        }),
     ));
     // …and the rejected write left the account unchanged.
     assert_eq!(worker.account_view(id).unwrap().unwrap().subtype, None);
@@ -1340,7 +1343,10 @@ fn hsa_and_crypto_investment_subtypes_persist_and_gate_by_role() {
                 subtype: Some(AccountSubtype::Hsa),
             },
         ),
-        Err(DbError::InvalidCommand(_)),
+        Err(DbError::Rejected {
+            code: RejectCode::StateConflict,
+            ..
+        }),
     ));
 }
 

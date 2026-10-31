@@ -1,0 +1,32 @@
+# Deterministic rejection sites (personal-cfo-g3m.26; vault-format.md C.10 "Apply failures").
+#
+# A command is a deterministic apply failure (it stops a Sync replica and a void can name it) only
+# when it is rejected by a validator AUDITED as reading nothing but the command's payload and
+# metadata and the class-1 base state. Such a validator raises `DbError::Rejected` through
+# `DbError::reject(...)`; any other error, including `DbError::InvalidCommand`, is NOT a verdict.
+#
+# This manifest is the audit's ledger: one entry per module with the number of `DbError::reject(`
+# calls. `tests/deterministic_sites.rs` fails on a module that is not listed, a stale entry and a
+# changed count, so a new deterministic site has to be listed (and reviewed) in the same change.
+# `tests/apply_rejections.rs` proves the listed behavior: each rejection gives the same code and
+# the same write set under two device time zones and two class-3 states.
+#
+# `bead` names the change that audited the module.
+
+[[site]]
+module = "apply/accounts.rs"
+statements = 8
+bead = "personal-cfo-g3m.26"
+note = "Payload-domain and class-1 reference checks of the account commands."
+
+[[site]]
+module = "apply/categorization_cmds.rs"
+statements = 10
+bead = "personal-cfo-g3m.26"
+note = "Payload-domain and class-1 reference checks of the category and recategorization commands."
+
+[[site]]
+module = "apply/mod.rs"
+statements = 1
+bead = "personal-cfo-g3m.26"
+note = "require_issued_at: a pure function of the command's metadata, sharing the C.4 receiver bound (1970-01-01 to 9999-12-31)."

@@ -259,7 +259,9 @@ pub(crate) fn derive_id_traced(
         });
     }
     let unix_ms = issued_at.as_unix_millis();
-    if !(0..=MAX_UNIX_MILLIS).contains(&unix_ms) {
+    // The supported range is the receiver's, so a received command never reaches this error; the
+    // 48-bit check stays as defense in depth for a caller that builds an `IssuedAt` itself.
+    if !issued_at.is_supported() || !(0..=MAX_UNIX_MILLIS).contains(&unix_ms) {
         return Err(DerivedIdError::IssuedAtOutOfRange);
     }
     // Both conversions are in range: the ordinal is below 4096 and the tag length is at

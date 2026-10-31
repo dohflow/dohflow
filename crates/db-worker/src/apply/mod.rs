@@ -18,16 +18,23 @@ pub(crate) mod transactions;
 
 use chrono::{DateTime, Utc};
 
-use crate::{CommandMeta, DbError};
+use crate::{CommandMeta, DbError, RejectCode};
 
 /// Refuse a command whose `issued_at` has no calendar date. `apply_command` calls this FIRST,
 /// before it touches the connection, so a command from another device (whose `issued_at` is any
 /// `i64` of microseconds) fails with a deterministic `InvalidCommand` and never reaches
 /// [`issued_at`], which would panic.
 pub(crate) fn require_issued_at(meta: &CommandMeta) -> Result<(), DbError> {
-    if DateTime::from_timestamp_micros(meta.issued_at.as_unix_micros()).is_none() {
-        return Err(DbError::InvalidCommand(
-            "issued_at is outside the supported date range".to_owned(),
+    // One bound with the C.4 receiver check and the derived-id mint (`core_ids::IssuedAt`): 1970
+    // to 9999, so every stored `*_at` text orders as text and every accepted instant mints ids.
+    // The chrono check stays as a guard against a conversion panic.
+    let micros = meta.issued_at.as_unix_micros();
+    if !sync_core::envelope::issued_at_in_range(micros)
+        || DateTime::from_timestamp_micros(micros).is_none()
+    {
+        return Err(DbError::reject(
+            RejectCode::IssuedAtOutOfRange,
+            "issued_at is outside the supported date range",
         ));
     }
     Ok(())

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     default_forecast_behavior, require_user_category, would_create_category_cycle, CommandMeta,
-    DbError,
+    DbError, RejectCode,
 };
 
 /// Applies [`WriteCommand::CreateCategory`].
@@ -25,7 +25,8 @@ pub(crate) fn apply_create_category(
     let entity_id = {
         let trimmed = name.trim();
         if trimmed.is_empty() {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::PayloadInvalid,
                 "category name must not be empty".to_owned(),
             ));
         }
@@ -36,7 +37,8 @@ pub(crate) fn apply_create_category(
                 |r| r.get(0),
             )?;
             if !exists {
-                return Err(DbError::InvalidCommand(
+                return Err(DbError::reject(
+                    RejectCode::ReferenceMissing,
                     "parent category does not exist".to_owned(),
                 ));
             }
@@ -77,7 +79,8 @@ pub(crate) fn apply_update_category(
     let entity_id = {
         let trimmed = name.trim();
         if trimmed.is_empty() {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::PayloadInvalid,
                 "category name must not be empty".to_owned(),
             ));
         }
@@ -95,7 +98,8 @@ pub(crate) fn apply_update_category(
         let now = crate::apply::issued_at_text(meta);
         match is_system {
             None => {
-                return Err(DbError::InvalidCommand(
+                return Err(DbError::reject(
+                    RejectCode::ReferenceMissing,
                     "category does not exist".to_owned(),
                 ));
             }
@@ -135,12 +139,14 @@ pub(crate) fn apply_move_category(
                 |r| r.get(0),
             )?;
             if !exists {
-                return Err(DbError::InvalidCommand(
+                return Err(DbError::reject(
+                    RejectCode::ReferenceMissing,
                     "parent category does not exist".to_owned(),
                 ));
             }
             if would_create_category_cycle(tx, parent.as_uuid(), id.as_uuid())? {
-                return Err(DbError::InvalidCommand(
+                return Err(DbError::reject(
+                    RejectCode::StateConflict,
                     "re-parenting would create a category cycle".to_owned(),
                 ));
             }
@@ -168,7 +174,8 @@ pub(crate) fn apply_archive_category(
             params![id.as_uuid(), now],
         )?;
         if n == 0 {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::ReferenceMissing,
                 "category does not exist".to_owned(),
             ));
         }
@@ -190,7 +197,8 @@ pub(crate) fn apply_reinstate_category(
             params![id.as_uuid(), now],
         )?;
         if n == 0 {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::ReferenceMissing,
                 "category does not exist".to_owned(),
             ));
         }
@@ -213,7 +221,8 @@ pub(crate) fn apply_recategorize_transaction(
             |r| r.get(0),
         )?;
         if !exists {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::ReferenceMissing,
                 "transaction does not exist".to_owned(),
             ));
         }
@@ -225,7 +234,8 @@ pub(crate) fn apply_recategorize_transaction(
                     |r| r.get(0),
                 )?;
                 if !known {
-                    return Err(DbError::InvalidCommand(
+                    return Err(DbError::reject(
+                        RejectCode::ReferenceMissing,
                         "category does not exist".to_owned(),
                     ));
                 }

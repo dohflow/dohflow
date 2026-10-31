@@ -340,18 +340,21 @@ pub fn canonical_envelope_digest(
     Ok(hasher.finalize().into())
 }
 
-/// The earliest `issued_at` a command may carry: 0000-01-01T00:00:00Z, in microseconds since the
-/// Unix epoch. Bounding `issued_at` to the years 0000 to 9999 keeps every stored `*_at` column an
-/// RFC 3339 text that orders as text (chrono would write `+10000-...` beyond it).
-pub const ISSUED_AT_MIN_MICROS: i64 = -62_167_219_200_000_000;
-/// The latest `issued_at` a command may carry: 9999-12-31T23:59:59.999999Z.
-pub const ISSUED_AT_MAX_MICROS: i64 = 253_402_300_799_999_999;
+/// The earliest `issued_at` a command may carry: 1970-01-01T00:00:00Z, in microseconds since the
+/// Unix epoch. Nothing legitimate predates the epoch, so an earlier stamp is a broken device
+/// clock and is refused here with a typed reason rather than reaching apply. This is the one bound
+/// the receiver check, the apply check and the derived-id mint share ([`core_ids::IssuedAt`]).
+pub const ISSUED_AT_MIN_MICROS: i64 = core_ids::IssuedAt::MIN_SUPPORTED_MICROS;
+/// The latest `issued_at` a command may carry: 9999-12-31T23:59:59.999999Z. Bounding `issued_at`
+/// to the years 1970 to 9999 keeps every stored `*_at` column an RFC 3339 text that orders as text
+/// (chrono would write `+10000-...` beyond it).
+pub const ISSUED_AT_MAX_MICROS: i64 = core_ids::IssuedAt::MAX_SUPPORTED_MICROS;
 
-/// Whether `micros` lies within the years 0000 to 9999 ([`ISSUED_AT_MIN_MICROS`] to
+/// Whether `micros` lies within the supported range ([`ISSUED_AT_MIN_MICROS`] to
 /// [`ISSUED_AT_MAX_MICROS`]).
 #[must_use]
 pub const fn issued_at_in_range(micros: i64) -> bool {
-    micros >= ISSUED_AT_MIN_MICROS && micros <= ISSUED_AT_MAX_MICROS
+    core_ids::IssuedAt::micros_supported(micros)
 }
 
 /// Why a decrypted envelope failed the receiver's checks (C.4). Every variant fails closed:
@@ -386,7 +389,7 @@ pub enum ReceiverError {
     /// actor id).
     #[error("the plaintext metadata is not encodable")]
     UnencodableMetadata,
-    /// The plaintext's `issued_at` is outside the years 0000 to 9999
+    /// The plaintext's `issued_at` is outside 1970-01-01T00:00:00Z to 9999-12-31
     /// ([`ISSUED_AT_MIN_MICROS`], [`ISSUED_AT_MAX_MICROS`]).
     #[error("issued_at is outside the supported date range")]
     IssuedAtOutOfRange,
