@@ -110,6 +110,11 @@ impl AppState {
     }
 
     /// Register or replace one process-local durable-job consumer.
+    ///
+    /// A new kind needs cancellation cases in `tests/job_cancellation.rs`
+    /// (personal-cfo-gdsz). Its registry guard sees the production dispatcher and the
+    /// lock-releasing kinds, but not a kind registered here later, so add the case when you
+    /// add the consumer.
     pub fn register_job_handler(
         &self,
         handler: Arc<dyn JobHandler<Kernel>>,

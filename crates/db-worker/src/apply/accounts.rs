@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     ensure_system_ledger_account, insert_ledger_account, persist_transaction, CommandMeta, DbError,
+    RejectCode,
 };
 
 /// Applies [`WriteCommand::CreateAccount`].
@@ -25,7 +26,8 @@ pub(crate) fn apply_create_account(
     let entity_id = {
         if let Some(ob) = opening_balance {
             if ob.currency() != account.currency() {
-                return Err(DbError::InvalidCommand(
+                return Err(DbError::reject(
+                    RejectCode::PayloadInvalid,
                     "opening balance currency does not match account currency".to_owned(),
                 ));
             }
@@ -80,6 +82,9 @@ pub(crate) fn apply_create_account(
                         Posting::new(equity_id, ob.checked_neg()?),
                     ],
                 )
+                // The postings are the opening amount and its negation in one currency (checked
+                // above), so double entry cannot fail here: this arm is unreachable, and it stays
+                // unclassified rather than carrying a classification no scenario can reach.
                 .map_err(|e| DbError::InvalidCommand(e.to_string()))?;
                 persist_transaction(tx, &txn)?;
             }
@@ -152,14 +157,20 @@ pub(crate) fn apply_set_account_subtype(
             )
             .optional()?;
         let Some(role) = role else {
-            return Err(DbError::InvalidCommand("account does not exist".to_owned()));
+            return Err(DbError::reject(
+                RejectCode::ReferenceMissing,
+                "account does not exist".to_owned(),
+            ));
         };
         if let Some(subtype) = subtype {
             if subtype.role().as_str() != role {
-                return Err(DbError::InvalidCommand(format!(
-                    "account subtype '{}' does not belong to this account type",
-                    subtype.as_str()
-                )));
+                return Err(DbError::reject(
+                    RejectCode::StateConflict,
+                    format!(
+                        "account subtype '{}' does not belong to this account type",
+                        subtype.as_str()
+                    ),
+                ));
             }
         }
         tx.execute(
@@ -204,23 +215,31 @@ pub(crate) fn apply_set_account_link(
             |r| r.get::<_, String>(0),
         )
         .optional()?
-        .ok_or_else(|| DbError::InvalidCommand("account does not exist".to_owned()))
+        .ok_or_else(|| {
+            DbError::reject(
+                RejectCode::ReferenceMissing,
+                "account does not exist".to_owned(),
+            )
+        })
     };
 
     if role_of(asset_id)? != "real_asset" {
-        return Err(DbError::InvalidCommand(
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
             "only a property or vehicle account can be linked to a loan".to_owned(),
         ));
     }
 
     if let Some(liability_id) = liability_id {
         if liability_id == asset_id {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::PayloadInvalid,
                 "an account cannot be linked to itself".to_owned(),
             ));
         }
         if role_of(liability_id)? != "loan_liability" {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::StateConflict,
                 "an asset can only be linked to a loan or mortgage".to_owned(),
             ));
         }
@@ -235,7 +254,8 @@ pub(crate) fn apply_set_account_link(
             )
             .optional()?;
         if already_linked.is_some() {
-            return Err(DbError::InvalidCommand(
+            return Err(DbError::reject(
+                RejectCode::StateConflict,
                 "that loan is already linked to another asset".to_owned(),
             ));
         }

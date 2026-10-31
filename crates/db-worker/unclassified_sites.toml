@@ -1,0 +1,136 @@
+# Unclassified rejection sites (personal-cfo-g3m.26 part 2, 03a-escalation's M1).
+#
+# `DbError::InvalidCommand` is NOT a deterministic verdict (see `deterministic_sites.toml`): a
+# replica that meets one cannot apply the command and also cannot skip it, because no void can name
+# a failure that is not classified. With a sound producer (compare-and-swap, deterministic apply) a
+# replica meets an apply rejection only from a faulty or malicious producer, so every site left
+# here is a place where such a producer could stall every replica for good. The count is therefore
+# an UPPER BOUND on that exposure (it also counts paths that apply does not reach, such as the
+# forecast and backup modules), and it may only SHRINK: `tests/unclassified_sites.rs` fails when a
+# module's count rises, and when it falls without this ledger being lowered with it.
+#
+# Baseline reconciliation: `apply/connector_cmds.rs` and the household commands in
+# `apply/household.rs` landed on main after this ledger was first written; their existing sites are
+# baselined here, not newly added by the change that brought the ledger.
+#
+# `lib.rs` rose from 32 to 33 with personal-cfo-32fmp.2 (#205): `From<DerivedIdError> for DbError`
+# maps a derived-id failure to `InvalidCommand`. Its variants are tag errors (every tag in apply is
+# a constant, so these are programming errors, not verdicts), `IssuedAtOutOfRange` (unreachable
+# from apply: the receiver check, `require_issued_at` and the mint share one bound, 1970 to 9999,
+# so an instant the receiver accepts always mints; pinned by a test) and `OrdinalOverflow` (a
+# function of the payload's element count, but no current command mints near 4,096 ids, so there is
+# no apply-level behavior to prove). Classifying it needs that proof, so it waits for
+# personal-cfo-g3m.28 rather than adding a verdict this ledger cannot back with a test.
+#
+# The follow-up bead's AC is zero unclassified rejections reachable from `apply_command`
+# (constraint codes included) before Sync ships to users. Moving a site to `Rejected` later changes
+# only whether a void can name it, never what the command writes (both outcomes apply nothing), so
+# it is not an engine_version change.
+
+[[site]]
+module = "apply/accounts.rs"
+statements = 1
+
+[[site]]
+module = "apply/connector_cmds.rs"
+statements = 7
+
+[[site]]
+module = "apply/household.rs"
+statements = 12
+
+[[site]]
+module = "apply/ingestion_cmds.rs"
+statements = 6
+
+[[site]]
+module = "apply/recurring.rs"
+statements = 47
+
+[[site]]
+module = "apply/scenario_apply.rs"
+statements = 5
+
+[[site]]
+module = "apply/transactions.rs"
+statements = 38
+
+[[site]]
+module = "assumptions.rs"
+statements = 7
+
+[[site]]
+module = "backup_history.rs"
+statements = 6
+
+[[site]]
+module = "connectors.rs"
+statements = 2
+
+[[site]]
+module = "debt.rs"
+statements = 12
+
+[[site]]
+module = "forecast/account_series.rs"
+statements = 3
+
+[[site]]
+module = "forecast/aggregate.rs"
+statements = 2
+
+[[site]]
+module = "forecast/availability.rs"
+statements = 2
+
+[[site]]
+module = "forecast/events.rs"
+statements = 6
+
+[[site]]
+module = "forecast/mod.rs"
+statements = 2
+
+[[site]]
+module = "forecast_overrides.rs"
+statements = 3
+
+[[site]]
+module = "forecast_persist.rs"
+statements = 1
+
+[[site]]
+module = "ingestion.rs"
+statements = 2
+
+[[site]]
+module = "jobs.rs"
+statements = 3
+
+[[site]]
+module = "lib.rs"
+statements = 33
+
+[[site]]
+module = "manual_entry.rs"
+statements = 5
+
+[[site]]
+module = "projection.rs"
+statements = 3
+
+[[site]]
+module = "recurring_debt.rs"
+statements = 5
+
+[[site]]
+module = "rekey.rs"
+statements = 7
+
+[[site]]
+module = "scenarios.rs"
+statements = 1
+
+[[site]]
+module = "write_set.rs"
+statements = 5

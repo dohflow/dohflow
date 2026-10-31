@@ -23,7 +23,30 @@ pub struct IssuedAt(i64);
 static LAST_ISSUED: AtomicI64 = AtomicI64::new(i64::MIN);
 
 impl IssuedAt {
-    /// The instant `micros` microseconds after the Unix epoch (negative before it).
+    /// The earliest `issued_at` a command may carry: 1970-01-01T00:00:00Z. Nothing legitimate
+    /// predates the epoch (a stamp before it means a broken device clock), and a derived id's
+    /// UUIDv7 timestamp cannot hold a negative count, so the receiver check (C.4), the apply
+    /// check and the id mint all read this one bound (`vault-format.md` C.4 check 6).
+    pub const MIN_SUPPORTED_MICROS: i64 = 0;
+
+    /// The latest `issued_at` a command may carry: 9999-12-31T23:59:59.999999Z. Beyond it chrono
+    /// would write `+10000-...` and a stored `*_at` text would stop ordering as text.
+    pub const MAX_SUPPORTED_MICROS: i64 = 253_402_300_799_999_999;
+
+    /// Whether `micros` lies within [`Self::MIN_SUPPORTED_MICROS`] to
+    /// [`Self::MAX_SUPPORTED_MICROS`].
+    #[must_use]
+    pub const fn micros_supported(micros: i64) -> bool {
+        micros >= Self::MIN_SUPPORTED_MICROS && micros <= Self::MAX_SUPPORTED_MICROS
+    }
+
+    /// Whether this instant is within the supported range.
+    #[must_use]
+    pub const fn is_supported(self) -> bool {
+        Self::micros_supported(self.0)
+    }
+
+    /// The instant `micros microseconds after the Unix epoch (negative before it).
     #[must_use]
     pub const fn from_unix_micros(micros: i64) -> Self {
         Self(micros)

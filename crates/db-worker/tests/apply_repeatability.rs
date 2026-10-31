@@ -492,7 +492,13 @@ fn an_issued_at_outside_the_calendar_is_refused_before_anything_is_written() {
         )
         .unwrap_err();
     assert!(
-        matches!(err, db_worker::DbError::InvalidCommand(_)),
+        matches!(
+            err,
+            db_worker::DbError::Rejected {
+                code: db_worker::RejectCode::IssuedAtOutOfRange,
+                ..
+            }
+        ),
         "{err:?}"
     );
 }
