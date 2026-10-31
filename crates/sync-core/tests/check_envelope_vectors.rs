@@ -248,6 +248,27 @@ fn all_cases() -> Vec<Case> {
         },
     ));
 
+    for (name, description, micros) in [
+        (
+            "valid_issued_at_first_instant_of_year_0000",
+            "issued_at 0000-01-01T00:00:00Z, the earliest accepted instant, commitment recomputed",
+            -62_167_219_200_000_000_i64,
+        ),
+        (
+            "valid_issued_at_last_microsecond_of_year_9999",
+            "issued_at 9999-12-31T23:59:59.999999Z, the latest accepted instant, commitment recomputed",
+            253_402_300_799_999_999_i64,
+        ),
+    ] {
+        cases.push(single(name, description, "ok", &|h, p| {
+            p.meta.issued_at = micros;
+            // A causation id keeps these cases apart from the sample's byte pattern (and out of
+            // the secret scanner's card-number shape, which a long digit run in hex can match).
+            p.meta.causation_id = Some([0x5a; 16]);
+            set_commitment(h, p);
+        }));
+    }
+
     // ---- invalid: one defect each ----
     cases.push(single(
         "invalid_snapshot_header",
@@ -407,6 +428,39 @@ fn all_cases() -> Vec<Case> {
             );
         },
     ));
+
+    for (name, description, micros) in [
+        (
+            "invalid_issued_at_one_microsecond_before_year_0000",
+            "issued_at one microsecond before 0000-01-01T00:00:00Z, commitment recomputed",
+            -62_167_219_200_000_001_i64,
+        ),
+        (
+            "invalid_issued_at_first_instant_of_year_10000",
+            "issued_at 10000-01-01T00:00:00Z, one microsecond past the latest accepted instant, commitment recomputed",
+            253_402_300_800_000_000_i64,
+        ),
+        (
+            "invalid_issued_at_i64_max",
+            "issued_at i64::MAX microseconds, commitment recomputed",
+            i64::MAX,
+        ),
+        (
+            // Ten above i64::MIN: the minimum itself is eight followed by fifteen zeros in hex,
+            // a sixteen-digit run that the secret scanner reads as a card number.
+            "invalid_issued_at_near_i64_min",
+            "issued_at ten microseconds above i64::MIN, commitment recomputed",
+            i64::MIN + 10,
+        ),
+    ] {
+        cases.push(single(name, description, "IssuedAtOutOfRange", &|h, p| {
+            p.meta.issued_at = micros;
+            // A causation id keeps these cases apart from the sample's byte pattern (and out of
+            // the secret scanner's card-number shape, which a long digit run in hex can match).
+            p.meta.causation_id = Some([0x5a; 16]);
+            set_commitment(h, p);
+        }));
+    }
 
     // ---- invalid: several defects pin the order of the checks ----
     cases.push(multi(
@@ -593,7 +647,7 @@ fn document() -> Value {
         "spec": "docs/architecture/vault-format.md C.4 \"Receiver checks\" and C.14",
         "synthetic": "Every case is built from the public C.14 sample envelope. No key, secret or real value is in this file.",
         "how_to_read": "Each case gives a clear header and an envelope plaintext (hex of their canonical bytes), 'tagger_output' (the idempotency-key tag that the receiver's own tagger returns for the plaintext's key: an input, because the tag secret is not in this file), and 'expect'. An implementation decodes the header, then the plaintext; if either does not decode the outcome is 'MalformedHeader' or 'MalformedPlaintext'. Otherwise it runs the receiver checks in the order below and the outcome is 'ok' or the name of the first failing check. Every outcome other than 'ok' means the envelope is INVALID, and that class is the contract: a decode failure counts (a MalformedPlaintext after a successful open is a producer fault; a MalformedHeader at an accepted position means the service let through what its own checks should have refused; both are deterministic from the bytes and voidable). For a case with 'error_normative' true the specific outcome is also normative; for a multi-defect case it is informative (the reference order): a second implementation must agree the envelope is invalid but may report a different first error. Internal error names are never part of the contract. 'tagger_output' is HMAC-SHA256 under the C.14 sample tag key over the CBE1 label 'dohflow/sync-idem-tag/v1' and the plaintext's canonical 16-byte idempotency key.",
-        "check_order": ["NotAnEnvelope", "ObjectIdMismatch", "DeviceMismatch", "TagMismatch", "MetadataCommitmentMismatch", "NonceDomainMismatch", "ManifestCommitmentMismatch"],
+        "check_order": ["NotAnEnvelope", "ObjectIdMismatch", "DeviceMismatch", "TagMismatch", "MetadataCommitmentMismatch", "NonceDomainMismatch", "ManifestCommitmentMismatch", "IssuedAtOutOfRange"],
         "single_defect": "A case with 'multi_defect' false has exactly one defect and its error is normative. A case with 'multi_defect' true has several: it documents the reference order of check_order, and its error is informative.",
         "not_checked_here": "The checks that need the membership chain or the AEAD key (the sealing device belongs to a member of the object's epoch; the AEAD key was derived from the expected vault, epoch and chain fingerprint) are the caller's, as in C.4, and are not in this file.",
         "unreachable_from_bytes": [

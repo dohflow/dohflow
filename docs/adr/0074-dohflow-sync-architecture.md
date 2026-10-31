@@ -1052,9 +1052,11 @@ trust comes from rule 3. It makes the decision attributable (nothing is skipped 
 replicas a trigger to roll back, and keeps non-members from filling the log with voids.
 
 **3. A replica honors a void only after rejecting `N` itself.** It must have evaluated position
-`seq` in log order, found it invalid (as `vault-format.md` C.4 defines it: only with a verified
-key for the epoch and the device a member of it, so a missing key or a chain that is behind is
-never "invalid"; for any deterministic reason; the void's `reason` byte is for audit), and see the same `command_id` and `envelope_digest` in the void. Anything else is
+`seq` in log order, found it invalid (as `vault-format.md` C.4 defines it, in stages: a
+position it has reached by processing the log in order, a verified key for the epoch in force
+there, and the device a member **at that position**, so a missing key or a position not yet
+reached is never "invalid"; for any deterministic reason; the void's `reason` byte is for audit),
+and see the same `command_id` and `envelope_digest` in the void. Anything else is
 inert: kept for diagnosis, skipping nothing. The service cannot make this decision (it cannot read
 the plaintext), so it never refuses a void because an earlier void's range would cover it; it
 dedupes only an identical void or a second void for the exact same position. Otherwise a member
@@ -1141,6 +1143,41 @@ still never reads a payload. (d) A void is a tool for a rare, serious state; the
 `sync-core`), `personal-cfo-v98vd` (the service checks, ordering and index marking),
 `personal-cfo-elciw` (the client: honoring, rollback, re-issue, the status and its persistence),
 `personal-cfo-g3m.22` (the receiver-path opener) and `personal-cfo-g3m.23` (the vectors).
+
+## Addendum E — Honoring a void: rulings (2026-10-27, `personal-cfo-g3m.17` part C)
+
+Clarifications to Addendum D, ruled by planning from owner decision 915.19 rules 1 and 10 (not new
+owner decisions), recorded with the sync-core honor rule (spec-version 14):
+
+- **Honor only the in-order stop.** A replica honors a void only while it is stopped at exactly the
+  void's `seq` with every earlier position applied or skipped; a position verified out of order
+  is not yet evaluated in log order. This keeps every replica's ledger, snapshot metadata and
+  pushes identical regardless of arrival order.
+- **A different digest is a fork.** A void naming another envelope digest than the replica holds
+  at its stop, or the same void honored at two different positions, means the log forked: the
+  replica halts (the `SeqConflict` class or its own evidence), it does not stay quietly stopped.
+  The second is detected only against a void this replica honored (the ledger records only
+  honored voids), so replicas can differ on whether they halt when a misbehaving service re-serves
+  a void that one of them found inert; that needs a misbehaving service and is accepted.
+- **A reason-2 void is version-scoped.** An apply failure is deterministic only at one
+  `engine_version`: a reason-2 void names its `engine_version` and is honored only at an equal
+  version where the replica reproduces the failure itself. Across versions the replica never
+  applies the position (R40). The apply-failure stop and the body field are
+  `personal-cfo-g3m.26`.
+- **A snapshot-bootstrapped replica** does not honor a void for a position at or below its root
+  (it never evaluated it); the root is treated as suspect.
+- **Snapshot exits are best-effort under void spam (2026-10-30).** Every exit from a stop needs a
+  snapshot of the running build's `engine_version` rooted outside every void range the replica
+  holds, honored or not; a member can append voids for early positions to deny that exit to an
+  update-required replica. Running a build of the envelope's version always remains.
+- **Reason 2 needs no new void field (2026-10-30, `personal-cfo-g3m.26`).** The earlier ruling
+  that a reason-2 void "names its engine_version" is satisfied by the envelope digest the void
+  already names (it binds the envelope's `engine_version`) together with R40 (a replica of
+  another `engine_version` never evaluates the position). So reason 2 is accepted with no body
+  field; a replica of another version is update-required, not stranded by a void, and exits by
+  running an equal build or re-bootstrapping from a snapshot of its own version rooted past the
+  position (past the voided range when a void covers it). A successful apply with another
+  write-set hash is a fork and halts; it is never an apply failure.
 
 ## Linked beads
 

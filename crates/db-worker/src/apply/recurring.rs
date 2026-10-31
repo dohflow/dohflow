@@ -1,7 +1,7 @@
 //! `apply_command` arms for income sources, recurring bills, and recurring
 //! transfers (moved verbatim from `lib.rs`).
 
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use core_ledger::{
     AccountId, BillContractId, CategoryId, IncomeSourceId, RecurringEventId, RecurringTransferId,
     TagId,
@@ -15,8 +15,10 @@ use crate::apply::household::issued_at_rfc3339;
 use crate::{commitments, currency_from_code, CommandMeta, DbError};
 
 /// Applies [`WriteCommand::CreateRecurringTransfer`].
+#[allow(clippy::too_many_arguments)] // the command's fields plus its metadata
 pub(crate) fn apply_create_recurring_transfer(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &RecurringTransferId,
     source_account_id: &AccountId,
     dest_account_id: &AccountId,
@@ -83,7 +85,7 @@ pub(crate) fn apply_create_recurring_transfer(
                 amount.currency().code(),
                 frequency.token(),
                 anchor.to_string(),
-                Utc::now().to_rfc3339(),
+                crate::apply::issued_at_text(meta),
             ],
         )?;
         id.as_uuid()
@@ -157,8 +159,10 @@ pub(crate) fn apply_reinstate_recurring_transfer(
 }
 
 /// Applies [`WriteCommand::CreateIncomeSource`].
+#[allow(clippy::too_many_arguments)] // the command's fields plus its metadata
 pub(crate) fn apply_create_income_source(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &IncomeSourceId,
     name: &str,
     net_amount: &Money,
@@ -221,7 +225,7 @@ pub(crate) fn apply_create_income_source(
                 frequency.token(),
                 anchor.to_string(),
                 deposit_account_id.map(|a| a.as_uuid()),
-                Utc::now().to_rfc3339(),
+                crate::apply::issued_at_text(meta),
             ],
         )?;
 
@@ -354,12 +358,13 @@ pub(crate) fn apply_reinstate_income_source(
 /// Applies [`WriteCommand::ArchiveIncomeSource`].
 pub(crate) fn apply_archive_income_source(
     tx: &Connection,
+    meta: &CommandMeta,
     id: &IncomeSourceId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
         let updated = tx.execute(
             "UPDATE income_sources SET active = 0, archived_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-            params![id.as_uuid(), Utc::now().to_rfc3339()],
+            params![id.as_uuid(), crate::apply::issued_at_text(meta)],
         )?;
         if updated == 0 {
             return Err(DbError::InvalidCommand(
@@ -395,6 +400,7 @@ pub(crate) fn apply_restore_income_source(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_create_recurring_bill(
     tx: &Connection,
+    meta: &CommandMeta,
     event_id: &RecurringEventId,
     contract_id: &BillContractId,
     name: &str,
@@ -443,7 +449,7 @@ pub(crate) fn apply_create_recurring_bill(
             }
         }
 
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         let anchor_str = anchor.to_string();
         // The schedule is stored on recurring_events; the contract also carries
         // it as an opaque due rule so the commitments projection (and 164u) can
@@ -521,7 +527,7 @@ pub(crate) fn apply_create_recurring_bill(
 
         // Refresh the forecast-facing commitments projection atomically with
         // the bill write (personal-cfo-esmy / -rxw).
-        commitments::rebuild_in(tx)?;
+        commitments::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
 
         event_id.as_uuid()
     };
@@ -531,6 +537,7 @@ pub(crate) fn apply_create_recurring_bill(
 /// Applies [`WriteCommand::SetBillAutopay`].
 pub(crate) fn apply_set_bill_autopay(
     tx: &Connection,
+    meta: &CommandMeta,
     event_id: &RecurringEventId,
     autopay: &bool,
 ) -> Result<Uuid, DbError> {
@@ -539,7 +546,7 @@ pub(crate) fn apply_set_bill_autopay(
         // mirrored to bill_contracts so the commitments projection reflects intent. Does not
         // touch the forecast projection.
         let flag = i64::from(*autopay);
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         let updated = tx.execute(
             "UPDATE recurring_events SET autopay_enabled = ?2, updated_at = ?3
                  WHERE id = ?1 AND deleted_at IS NULL",
@@ -555,7 +562,7 @@ pub(crate) fn apply_set_bill_autopay(
                  WHERE recurring_event_id = ?1 AND deleted_at IS NULL",
             params![event_id.as_uuid(), flag, now],
         )?;
-        commitments::rebuild_in(tx)?;
+        commitments::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
         event_id.as_uuid()
     };
     Ok(entity_id)
@@ -566,6 +573,7 @@ pub(crate) fn apply_set_bill_autopay(
 /// latest-dismiss-wins. Returns a fresh op-log id (the suppression is keyless).
 pub(crate) fn apply_dismiss_recurring_suggestion(
     tx: &Connection,
+    meta: &CommandMeta,
     merchant_key: &str,
     currency: &str,
     amount_minor: i64,
@@ -587,7 +595,7 @@ pub(crate) fn apply_dismiss_recurring_suggestion(
             amount_minor,
             frequency.trim(),
             reason.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            Utc::now().to_rfc3339(),
+            crate::apply::issued_at_text(meta),
         ],
     )?;
     Ok(Uuid::now_v7())
@@ -597,6 +605,7 @@ pub(crate) fn apply_dismiss_recurring_suggestion(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_update_recurring_bill(
     tx: &Connection,
+    meta: &CommandMeta,
     event_id: &RecurringEventId,
     name: &str,
     amount: &Money,
@@ -641,7 +650,7 @@ pub(crate) fn apply_update_recurring_bill(
             }
         }
 
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         let anchor_str = anchor.to_string();
         let due_rule_json = format!(
             "{{\"frequency\":\"{}\",\"anchor\":\"{}\"}}",
@@ -697,7 +706,7 @@ pub(crate) fn apply_update_recurring_bill(
         )?;
 
         // Refresh the forecast-facing commitments projection atomically.
-        commitments::rebuild_in(tx)?;
+        commitments::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
 
         event_id.as_uuid()
     };
@@ -711,6 +720,7 @@ pub(crate) fn apply_update_recurring_bill(
 /// the requested state is an accepted, logged no-op; a bill that does not exist is an error.
 fn set_bill_tombstone(
     tx: &Connection,
+    meta: &CommandMeta,
     event_id: &RecurringEventId,
     at: Option<String>,
 ) -> Result<Uuid, DbError> {
@@ -738,7 +748,7 @@ fn set_bill_tombstone(
     } else {
         tx.execute(contract_sql, params![id, at])?;
         // Refresh the forecast-facing commitments projection atomically.
-        commitments::rebuild_in(tx)?;
+        commitments::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
     }
     Ok(id)
 }
@@ -752,7 +762,7 @@ pub(crate) fn apply_delete_recurring_bill(
     meta: &CommandMeta,
     event_id: &RecurringEventId,
 ) -> Result<Uuid, DbError> {
-    let id = set_bill_tombstone(tx, event_id, Some(issued_at_rfc3339(meta)?))?;
+    let id = set_bill_tombstone(tx, meta, event_id, Some(issued_at_rfc3339(meta)?))?;
     // A link only ever sits on an active bill (personal-cfo-6wk.22): deleting the bill returns
     // the loan's own payment to the forecast, and a reinstated bill comes back unlinked.
     clear_bill_link(tx, event_id)?;
@@ -764,18 +774,20 @@ pub(crate) fn apply_delete_recurring_bill(
 /// projection. A bill that is not deleted is an accepted, logged no-op.
 pub(crate) fn apply_reinstate_recurring_bill(
     tx: &Connection,
+    meta: &CommandMeta,
     event_id: &RecurringEventId,
 ) -> Result<Uuid, DbError> {
-    set_bill_tombstone(tx, event_id, None)
+    set_bill_tombstone(tx, meta, event_id, None)
 }
 
 /// Applies [`WriteCommand::ArchiveRecurringBill`].
 pub(crate) fn apply_archive_recurring_bill(
     tx: &Connection,
+    meta: &CommandMeta,
     event_id: &RecurringEventId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         let updated = tx.execute(
             "UPDATE recurring_events
                  SET is_active = 0, archived_at = ?2, updated_at = ?2
@@ -788,7 +800,7 @@ pub(crate) fn apply_archive_recurring_bill(
             ));
         }
         // Archiving drops it from the commitments projection (is_active = 0).
-        commitments::rebuild_in(tx)?;
+        commitments::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
         // A link only ever sits on an active bill (personal-cfo-6wk.22): archiving the bill
         // returns the loan's own payment to the forecast, and a restored bill comes back unlinked.
         clear_bill_link(tx, event_id)?;
@@ -800,10 +812,11 @@ pub(crate) fn apply_archive_recurring_bill(
 /// Applies [`WriteCommand::RestoreRecurringBill`].
 pub(crate) fn apply_restore_recurring_bill(
     tx: &Connection,
+    meta: &CommandMeta,
     event_id: &RecurringEventId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
-        let now = Utc::now().to_rfc3339();
+        let now = crate::apply::issued_at_text(meta);
         let updated = tx.execute(
             "UPDATE recurring_events
                  SET is_active = 1, archived_at = NULL, updated_at = ?2
@@ -816,7 +829,7 @@ pub(crate) fn apply_restore_recurring_bill(
             ));
         }
         // Restoring returns it to the commitments projection / forecast.
-        commitments::rebuild_in(tx)?;
+        commitments::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
         event_id.as_uuid()
     };
     Ok(entity_id)

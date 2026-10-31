@@ -93,9 +93,14 @@ leaves an allowance stale, can turn the scan red with no code change. Owner deci
   finding, or on a stale allowance (an exception in `scripts/cargo-audit.py` that
   matches nothing), it opens, or comments on, **one** open issue labeled
   `security-advisory` that names the advisory IDs and includes the tool output. A
-  clean run only comments on an open issue; it never closes one. A manual dispatch
-  with `simulate` set exercises the issue path with a made-up finding (close the
-  issue afterwards).
+  clean run **closes** every open `security-advisory` issue with a comment linking that
+  run (`scripts/alert-close.sh`, `personal-cfo-md8h2.21`), so a fixed advisory stops
+  looking like an open problem. It leaves an issue open if it carries the `keep-open`
+  label or a person reopened it in the last 24 hours. A manual dispatch with `simulate`
+  set exercises the issue path with a made-up finding (a clean run then closes it).
+  The `ci-main-red` alert of a red `main` closes the same way: the next push run of
+  `main` in which every gate succeeded closes it with a link to that run (a skipped or
+  cancelled gate is not green).
 
 **Response to the daily alert.** The agent on duty, who sees the issue first:
 
@@ -105,7 +110,9 @@ leaves an allowance stale, can turn the scan red with no code change. Owner deci
 3. Fixes it (bump the dependency, or for a stale allowance remove it from
    `scripts/cargo-audit.py`), as the dependency-changing pull request that this
    split deliberately makes the one place the advisory scans are required.
-4. Closes the issue once `main`'s audit is clean again.
+4. Confirms the issue closed itself on the next clean run (or closes it, with the fix's
+   link, if it was held open); the P0 bead keeps "close the alert issue with a link to
+   the fix" as its backstop.
 
 While `main` is red on an advisory, a pull request that fails only on it may use the
 red-main fast path (`docs/agent/WORKFLOW_ROLES.md`), except where an exclusion

@@ -74,7 +74,7 @@ fn commitment_type_for(contract_type: Option<&str>) -> &'static str {
 /// Returns [`DbError`] if a SQLite operation fails.
 pub(crate) fn rebuild(conn: &mut Connection) -> Result<u64, DbError> {
     let tx = conn.transaction()?;
-    let count = rebuild_in(&tx)?;
+    let count = rebuild_in(&tx, &Utc::now().to_rfc3339())?;
     tx.commit()?;
     Ok(count)
 }
@@ -86,7 +86,7 @@ pub(crate) fn rebuild(conn: &mut Connection) -> Result<u64, DbError> {
 ///
 /// # Errors
 /// Returns [`DbError`] if a SQLite operation fails.
-pub(crate) fn rebuild_in(conn: &Connection) -> Result<u64, DbError> {
+pub(crate) fn rebuild_in(conn: &Connection, at: &str) -> Result<u64, DbError> {
     conn.execute("DELETE FROM commitments", [])?;
 
     let mut stmt = conn.prepare(
@@ -112,7 +112,7 @@ pub(crate) fn rebuild_in(conn: &Connection) -> Result<u64, DbError> {
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
 
-    let now = Utc::now().to_rfc3339();
+    let now = at;
     for (event_id, name, amount, autopay, contract_type, due_rule, autopay_enabled) in &derived {
         let commitment_type = commitment_type_for(contract_type.as_deref());
         // Autopay status reflects explicit intent (ADR 0041), not account presence.
@@ -141,7 +141,7 @@ pub(crate) fn rebuild_in(conn: &Connection) -> Result<u64, DbError> {
         )?;
     }
 
-    set_cursor(conn, op_log_head(conn)?, checksum(conn)?)?;
+    set_commitments_cursor(conn, op_log_head(conn)?, checksum(conn)?, at)?;
     Ok(derived.len() as u64)
 }
 
@@ -209,8 +209,13 @@ fn op_log_head(conn: &Connection) -> Result<i64, DbError> {
 /// Advance the commitments projection cursor and record the content checksum +
 /// rebuild time, plus the authoritative drift-detection checksum in
 /// `read_model_checksums` (mirrors `projection::set_cursor`).
-fn set_cursor(conn: &Connection, op_seq: i64, content_checksum: u64) -> Result<(), DbError> {
-    let now = Utc::now().to_rfc3339();
+fn set_commitments_cursor(
+    conn: &Connection,
+    op_seq: i64,
+    content_checksum: u64,
+    at: &str,
+) -> Result<(), DbError> {
+    let now = at;
     let checksum = content_checksum as i64;
     conn.execute(
         "INSERT OR REPLACE INTO projection_cursors

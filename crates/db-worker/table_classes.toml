@@ -24,6 +24,24 @@ owner_bead = "personal-cfo-klr.2"
 note = "Canonical user account identity, links, and user metadata; replicated through the command bus."
 
 [[table]]
+table = "households"
+class = "1"
+owner_bead = "personal-cfo-339"
+note = "The one household row of a vault (name, household timezone, optional platform household link). Seeded at genesis with an id derived from the vault id; written only by commands. The local id is never sent to the platform service."
+
+[[table]]
+table = "household_members"
+class = "1"
+owner_bead = "personal-cfo-339"
+note = "Household members (seats). role is display and ownership metadata, not access control. Removal is a tombstone (deleted_at). Exactly one live primary, enforced by a partial unique index behind explicit validation in apply."
+
+[[table]]
+table = "profiles"
+class = "1"
+owner_bead = "personal-cfo-339"
+note = "Per-member non-secret display preferences (initials, color). A secret-bearing column never belongs here; a test scans the column names."
+
+[[table]]
 table = "ledger_transactions"
 class = "1"
 owner_bead = "personal-cfo-klr.2"
@@ -382,12 +400,27 @@ new_setting_keys = ""
 
 [[table]]
 table = "connector_connections"
+class = "1"
+owner_bead = "personal-cfo-07u"
+note = "Connection identity (id, adapter, display hint, created/updated, deleted_at tombstone); no credential, watermark or error. The credential and refresh state live in the class-3 connector_connection_secrets. Deleting a connection is a tombstone (the fourth, after SYNC-2b's three), never a hard delete. Writes are raw until personal-cfo-5ymg8 routes them through the command bus, so 'replicated' is the classification and schema only until then."
+
+[[table]]
+table = "connector_connection_secrets"
 class = "3"
 owner_bead = "personal-cfo-07u"
-note = "Current table contains provider credentials; SYNC-2a splits replicated identity from device-local secrets."
+note = "Device-local provider credential, last refresh time and last error for one connection; never replicated, exported or snapshotted. A connection whose identity exists but has no row here shows 'enter your token on this device' and never refreshes."
 rebase_phase = "stable"
-rebase_preservation = "preserve the local credential and refresh state; never overlay a remote credential"
-reference_validation = "adapter identity and local secret material must remain paired with the local connection"
+rebase_preservation = "preserve credential, last_synced_at, last_error and updated_at byte for byte across the swap; never overlay a remote value; never read by apply"
+reference_validation = "connection_id must name a connector_connections row in the rebuilt class-1 state (a tombstoned one counts as present); an absent identity enters RebaseBlockedLocalState with no swap"
+
+[[table]]
+table = "connector_link_cursors"
+class = "3"
+owner_bead = "personal-cfo-07u"
+note = "Device-local per-account refresh watermark (last_synced_on). external_id is data, not a foreign key to the links: a mapping a remote command removed leaves a harmless cursor that refresh ignores and local cleanup removes."
+rebase_phase = "stable"
+rebase_preservation = "preserve each cursor byte for byte across the swap; never overlay a remote value"
+reference_validation = "connection_id must name a connector_connections row in the rebuilt class-1 state (a tombstoned one counts as present); an absent identity enters RebaseBlockedLocalState with no swap; external_id is not validated against the links"
 
 [[table]]
 table = "connector_attention"
@@ -400,12 +433,9 @@ reference_validation = "connection_id must resolve to a local connector_connecti
 
 [[table]]
 table = "connector_account_links"
-class = "3"
+class = "1"
 owner_bead = "personal-cfo-07u"
-note = "Current mapping includes local sync watermarks; SYNC-2a decides the identity/secret split before replication."
-rebase_phase = "stable"
-rebase_preservation = "preserve the local watermark and mapping while validating the referenced class-1 account"
-reference_validation = "account references must resolve; a stale provider mapping blocks the rebase swap"
+note = "External-account to ledger-account mapping and currency, per connection. The per-account refresh watermark is device-local and lives in connector_link_cursors. The adapter's account-key function is part of the identity (ADR 0074 Addendum B): external_id is copied as is and never re-derived. Writes are raw until personal-cfo-5ymg8 routes them through the command bus."
 
 [[table]]
 table = "staged_accounts"

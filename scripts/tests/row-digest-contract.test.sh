@@ -67,8 +67,8 @@ require_text "class-4 groups routed to class 1 are covered" "each class-4 group 
 require_text "field-split tables are projections" "a **projection**: only the replicated"
 require_text "attachments projection excludes device-local columns" "never \`storage_id\`, wrapped keys or nonces"
 require_text "settings projection excludes device keys" "never \`device.*\`"
-require_text "household record digest" "digest uses the table name \`household\`"
-require_text "household write set is never empty" "never empty for"
+require_text "household write set is the households row" "SetHouseholdTimezone\` writes the \`households\` entry"
+require_text "vault_metadata has no replicated field" "has no replicated field"
 require_text "values outside every projection are named" "A value that lives in a class-3 table and is not part of a B.2 projection"
 require_text "apply writes the payload value" "never something derived from local state"
 require_text "declared-kind validation is mandatory" "**Declared-kind validation is mandatory before Sync.**"
@@ -94,7 +94,7 @@ require_text "a moved child touches both parents" "both parents are write-set en
 require_text "every replicated table has a key or is folded" "declares a supplied primary key or is listed as a folded child with its"
 require_text "digests are bound to the schema version" "The digests are bound to the schema version"
 require_text "C.4 points at C.1.5" "is defined in C.1.5, as is the \`primary_key\` encoding"
-require_text "spec-version 11" "<!-- vault-format: spec-version=11 -->"
+require_text "spec-version 16" "<!-- vault-format: spec-version=16 -->"
 require_text "change-control note" '`spec-version = 4` adds C.1.5'
 
 CASES=$((CASES + 1))

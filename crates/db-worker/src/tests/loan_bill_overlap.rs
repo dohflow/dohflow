@@ -778,6 +778,7 @@ fn mortgage_with_a_paired_payee(worker: &DbWorker) -> AccountId {
         None,
         Some("ACME HOME LOANS"),
         None,
+        &Utc::now().to_rfc3339(),
     )
     .unwrap();
     savings

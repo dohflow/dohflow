@@ -1939,7 +1939,213 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Connection identity / device-local secret split (personal-cfo-07u, SYNC-2a; ADR 0074
+    // decision 5 and Addendum B; ADR 0073 item 1). `connector_connections` held, in one row, what
+    // every device agrees on (which provider, what it is called) and what only THIS device may
+    // hold (the provider credential, when it last refreshed, its last error). Sync must replicate
+    // the first and never the second, so the table is split by class:
+    //   * `connector_connections` (CLASS 1) keeps id, adapter_id, display_hint, created_at,
+    //     updated_at and gains `deleted_at`: deleting a connection is a tombstone (the fourth hard
+    //     delete after egn67's three), because a hard delete replicated to another device would
+    //     leave that device's class-3 rows pointing at a vanished identity and wedge its rebase.
+    //   * `connector_account_links` (CLASS 1) keeps the external-account -> ledger-account mapping
+    //     and currency; its per-account watermark `last_synced_on` is this device's fetch cursor.
+    //   * `connector_connection_secrets` (CLASS 3, NEW): credential, last_synced_at, last_error.
+    //   * `connector_link_cursors` (CLASS 3, NEW): the per-account `last_synced_on` watermark.
+    // The class-3 tables reference the identity (RESTRICT, class 3 -> class 1 only, never the
+    // reverse); the cursor's `external_id` is DATA, not a foreign key to the links, so a mapping a
+    // remote command removed never wedges a rebase. Existing rows move across unchanged. The old
+    // credential column is overwritten with the empty string before it is dropped, so the free
+    // pages the rebuild leaves behind do not keep the secret (the file stays SQLCipher-encrypted
+    // either way). Nothing here logs a row value.
+    Migration {
+        version: 60,
+        name: "connection_identity_secret_split",
+        up: "CREATE TABLE connector_connection_secrets (
+                 connection_id  BLOB PRIMARY KEY REFERENCES connector_connections(id) ON DELETE RESTRICT,
+                 credential     TEXT NOT NULL,
+                 last_synced_at TEXT,
+                 last_error     TEXT,
+                 updated_at     TEXT NOT NULL
+             );
+             INSERT INTO connector_connection_secrets
+                    (connection_id, credential, last_synced_at, last_error, updated_at)
+                 SELECT id, credential, last_synced_at, last_error, updated_at
+                   FROM connector_connections;
+             CREATE TABLE connector_link_cursors (
+                 connection_id  BLOB NOT NULL REFERENCES connector_connections(id) ON DELETE RESTRICT,
+                 external_id    TEXT NOT NULL,
+                 last_synced_on TEXT NOT NULL,
+                 updated_at     TEXT NOT NULL,
+                 PRIMARY KEY (connection_id, external_id)
+             );
+             INSERT INTO connector_link_cursors (connection_id, external_id, last_synced_on, updated_at)
+                 SELECT connection_id, external_id, last_synced_on, updated_at
+                   FROM connector_account_links
+                  WHERE last_synced_on IS NOT NULL;
+             UPDATE connector_connections SET credential = '';
+             ALTER TABLE connector_connections DROP COLUMN credential;
+             ALTER TABLE connector_connections DROP COLUMN last_synced_at;
+             ALTER TABLE connector_connections DROP COLUMN last_error;
+             ALTER TABLE connector_connections ADD COLUMN deleted_at TEXT;
+             ALTER TABLE connector_account_links DROP COLUMN last_synced_on;",
+        // Reverse: refuses (atomically, like 57 and 59) in two cases where merging the tables
+        // back would lose or invent something. A connection with NO secret row on this device (it
+        // was created on another device) has no credential to put back into the old NOT NULL
+        // column, and one is never invented; a tombstoned connection would be silently
+        // resurrected. Otherwise the old shape is rebuilt exactly (the old `credential` column
+        // is NOT NULL, so the table is rebuilt rather than altered) and the cursors go back onto
+        // their links. What it cannot restore is harmless: the connection's `updated_at` is taken
+        // from the identity (equal to the secret's for every pre-split row), and the cursors'
+        // own `updated_at` is dropped (the old shape never had one).
+        down: Some(
+            "CREATE TEMP TABLE connector_split_down_needs_a_secret_for_every_connection
+                 (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO connector_split_down_needs_a_secret_for_every_connection
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM connector_connections c
+                                           WHERE NOT EXISTS (SELECT 1 FROM connector_connection_secrets s
+                                                              WHERE s.connection_id = c.id))
+                        THEN 0 ELSE 1 END;
+             DROP TABLE connector_split_down_needs_a_secret_for_every_connection;
+             CREATE TEMP TABLE connector_split_down_refuses_a_tombstone (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO connector_split_down_refuses_a_tombstone
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM connector_connections WHERE deleted_at IS NOT NULL)
+                        THEN 0 ELSE 1 END;
+             DROP TABLE connector_split_down_refuses_a_tombstone;
+             ALTER TABLE connector_account_links ADD COLUMN last_synced_on TEXT;
+             UPDATE connector_account_links
+                SET last_synced_on = (SELECT k.last_synced_on FROM connector_link_cursors k
+                                       WHERE k.connection_id = connector_account_links.connection_id
+                                         AND k.external_id = connector_account_links.external_id);
+             CREATE TABLE connector_connections_v48 (
+                 id BLOB PRIMARY KEY,
+                 adapter_id TEXT NOT NULL,
+                 credential TEXT NOT NULL,
+                 display_hint TEXT,
+                 last_synced_at TEXT,
+                 last_error TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             INSERT INTO connector_connections_v48
+                    (id, adapter_id, credential, display_hint, last_synced_at, last_error, created_at, updated_at)
+                 SELECT c.id, c.adapter_id, s.credential, c.display_hint, s.last_synced_at, s.last_error,
+                        c.created_at, c.updated_at
+                   FROM connector_connections c
+                   JOIN connector_connection_secrets s ON s.connection_id = c.id;
+             DROP TABLE connector_link_cursors;
+             DROP TABLE connector_connection_secrets;
+             DROP TABLE connector_connections;
+             ALTER TABLE connector_connections_v48 RENAME TO connector_connections;",
+        ),
+        rebuilds_read_models: false,
+        // The down rebuilds a table other tables reference (the links and the attention notice),
+        // SQLite's documented rebuild procedure; both directions run with enforcement off and
+        // require an empty foreign_key_check before COMMIT.
+        foreign_keys_off: true,
+    },
+    // The household record (personal-cfo-339): `households`, `household_members` and `profiles`,
+    // all class 1. The timezone moves from `vault_metadata` onto the household row; the
+    // post-step in `POST_UP` seeds an existing vault's household and member (ids derived from the
+    // vault id, every column from the vault's own creation time, never this migration's clock)
+    // and then drops the old column. Schema-only for a fresh vault, whose household is seeded
+    // when its `vault_metadata` row is created.
+    Migration {
+        version: 61,
+        name: "households",
+        up: "CREATE TABLE households (
+                 id                    BLOB PRIMARY KEY,
+                 name                  TEXT NOT NULL,
+                 household_timezone    TEXT NOT NULL,
+                 platform_household_id TEXT,
+                 created_at            TEXT NOT NULL,
+                 updated_at            TEXT NOT NULL
+             );
+             CREATE TRIGGER households_single_row BEFORE INSERT ON households
+             WHEN (SELECT COUNT(*) FROM households) >= 1
+             BEGIN
+                 SELECT RAISE(ABORT, 'a vault has exactly one household');
+             END;
+             CREATE TABLE household_members (
+                 id                 BLOB PRIMARY KEY,
+                 household_id       BLOB NOT NULL REFERENCES households(id) ON DELETE RESTRICT,
+                 display_name       TEXT NOT NULL,
+                 role               TEXT NOT NULL CHECK (role IN ('primary', 'partner')),
+                 platform_member_id TEXT,
+                 created_at         TEXT NOT NULL,
+                 deleted_at         TEXT
+             );
+             CREATE INDEX idx_household_members_household ON household_members (household_id);
+             CREATE UNIQUE INDEX idx_household_members_one_live_primary
+                 ON household_members (household_id)
+                 WHERE role = 'primary' AND deleted_at IS NULL;
+             CREATE TABLE profiles (
+                 member_id  BLOB PRIMARY KEY REFERENCES household_members(id) ON DELETE RESTRICT,
+                 initials   TEXT,
+                 color      TEXT,
+                 updated_at TEXT NOT NULL
+             );",
+        // Reverse: refuses (atomically, like 57, 59 and 60) unless the three tables are EXACTLY
+        // the backfill state, because dropping them would lose the household name, a renamed
+        // primary, every other member, every profile and the platform ids. In that state the
+        // timezone goes back onto `vault_metadata`, which is rebuilt in its old shape (the old
+        // column was NOT NULL without a default).
+        down: Some(
+            "CREATE TEMP TABLE households_down_needs_the_backfill_state (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO households_down_needs_the_backfill_state
+                 SELECT CASE WHEN
+                        ((SELECT COUNT(*) FROM households) = 0
+                         AND (SELECT COUNT(*) FROM household_members) = 0
+                         AND (SELECT COUNT(*) FROM profiles) = 0)
+                     OR ((SELECT COUNT(*) FROM households) = 1
+                         AND EXISTS (SELECT 1 FROM households
+                                      WHERE name = 'My household' AND platform_household_id IS NULL)
+                         AND (SELECT COUNT(*) FROM household_members) = 1
+                         AND EXISTS (SELECT 1 FROM household_members
+                                      WHERE role = 'primary' AND display_name = 'Me'
+                                        AND platform_member_id IS NULL AND deleted_at IS NULL)
+                         AND (SELECT COUNT(*) FROM profiles) = 0)
+                    THEN 1 ELSE 0 END;
+             DROP TABLE households_down_needs_the_backfill_state;
+             CREATE TABLE vault_metadata_v60 (
+                 singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 vault_id           BLOB    NOT NULL,
+                 schema_version     INTEGER NOT NULL,
+                 envelope_version   INTEGER NOT NULL,
+                 kdf_algorithm      TEXT    NOT NULL,
+                 kdf_memory_kib     INTEGER NOT NULL,
+                 kdf_time_cost      INTEGER NOT NULL,
+                 kdf_parallelism    INTEGER NOT NULL,
+                 household_timezone TEXT    NOT NULL,
+                 manifest_pointer   TEXT,
+                 created_at         TEXT    NOT NULL
+             );
+             INSERT INTO vault_metadata_v60
+                    (singleton, vault_id, schema_version, envelope_version, kdf_algorithm,
+                     kdf_memory_kib, kdf_time_cost, kdf_parallelism, household_timezone,
+                     manifest_pointer, created_at)
+                 SELECT v.singleton, v.vault_id, v.schema_version, v.envelope_version,
+                        v.kdf_algorithm, v.kdf_memory_kib, v.kdf_time_cost, v.kdf_parallelism,
+                        COALESCE((SELECT h.household_timezone FROM households h), 'UTC'), v.manifest_pointer,
+                        v.created_at
+                   FROM vault_metadata v;
+             DROP TABLE vault_metadata;
+             ALTER TABLE vault_metadata_v60 RENAME TO vault_metadata;
+             DROP TABLE profiles;
+             DROP TABLE household_members;
+             DROP TRIGGER households_single_row;
+             DROP TABLE households;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
+
+/// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
+/// cannot do (hashing). Keyed by migration version. They run only on the way up.
+type PostUp = fn(&rusqlite::Connection) -> rusqlite::Result<()>;
+
+const POST_UP: &[(i64, PostUp)] = &[(61, crate::households::migrate_up)];
 
 const fn max_version() -> i64 {
     let mut max = 0;
@@ -2102,6 +2308,11 @@ pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u
             continue;
         }
         run_step(conn, m, m.up, |tx| {
+            for (version, step) in POST_UP {
+                if *version == m.version {
+                    step(tx)?;
+                }
+            }
             tx.execute(
                 "INSERT INTO schema_migrations (version, name, content_hash, applied_at)
                  VALUES (?1, ?2, ?3, ?4)",
@@ -2654,6 +2865,231 @@ mod tests {
         }
     }
 
+    /// The connection identity / secret split (v60, personal-cfo-07u): existing rows move across
+    /// unchanged, the credential never lands in a class-1 column, the old credential bytes do
+    /// not survive in the file, and the schema matches the manifest's shape.
+    const CANARY: &str = "https://canary-user:canary-pass@bridge.invalid/simplefin";
+
+    fn seed_v59_connection(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO connector_connections
+                (id, adapter_id, credential, display_hint, last_synced_at, last_error,
+                 created_at, updated_at)
+             VALUES (?1, 'simplefin', ?2, 'Primary bank', '2026-10-20T10:00:00Z',
+                     'a past error', '2026-09-01T00:00:00Z', '2026-10-20T10:00:00Z')",
+            rusqlite::params![&[7u8; 16][..], CANARY],
+        )
+        .unwrap();
+        for (external, synced) in [("acct-1", Some("2026-10-19")), ("acct-2", None)] {
+            conn.execute(
+                "INSERT INTO connector_account_links
+                    (connection_id, external_id, external_name, account_id, last_synced_on,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, ?2, NULL, ?3, '2026-09-01T00:00:00Z', '2026-10-19T00:00:00Z')",
+                rusqlite::params![&[7u8; 16][..], external, synced],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn v60_moves_the_credential_and_state_to_the_device_local_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v60.db");
+        let mut conn = Connection::open(&path).unwrap();
+        apply(&mut conn, &MIGRATIONS[..59]).unwrap(); // schema through v59
+        seed_v59_connection(&conn);
+
+        apply(&mut conn, &MIGRATIONS[59..60]).unwrap(); // v60
+
+        // The secret table holds exactly what the connection row held.
+        let secret: (String, Option<String>, Option<String>, String) = conn
+            .query_row(
+                "SELECT credential, last_synced_at, last_error, updated_at
+                   FROM connector_connection_secrets WHERE connection_id = ?1",
+                rusqlite::params![&[7u8; 16][..]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            secret,
+            (
+                CANARY.to_owned(),
+                Some("2026-10-20T10:00:00Z".to_owned()),
+                Some("a past error".to_owned()),
+                "2026-10-20T10:00:00Z".to_owned()
+            )
+        );
+        // The cursors hold only the links that had a watermark.
+        let cursors: Vec<(String, String)> = conn
+            .prepare("SELECT external_id, last_synced_on FROM connector_link_cursors ORDER BY 1")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            cursors,
+            vec![("acct-1".to_owned(), "2026-10-19".to_owned())]
+        );
+        // The class-1 identity keeps its identity columns and gained the tombstone.
+        let identity: (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT adapter_id, display_hint, deleted_at FROM connector_connections",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            identity,
+            (
+                "simplefin".to_owned(),
+                Some("Primary bank".to_owned()),
+                None
+            )
+        );
+        // No class-1 column mentions the credential, and the class-1 tables lost the moved columns.
+        for (table, gone) in [
+            (
+                "connector_connections",
+                ["credential", "last_synced_at", "last_error"],
+            ),
+            ("connector_account_links", ["last_synced_on", "", ""]),
+        ] {
+            let columns: Vec<String> = conn
+                .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for column in gone.iter().filter(|c| !c.is_empty()) {
+                assert!(
+                    !columns.iter().any(|c| c == column),
+                    "{table}.{column} remains"
+                );
+            }
+        }
+        for table in ["connector_connections", "connector_account_links"] {
+            let dump: String = conn
+                .query_row(
+                    &format!("SELECT group_concat(quote(t.rowid) || quote(t.*)) FROM {table} t"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            assert!(!dump.contains("canary"), "{table} holds the credential");
+        }
+        assert!(
+            conn.query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+                .is_err(),
+            "no foreign-key violation"
+        );
+        drop(conn);
+        // The old credential bytes do not survive in the database file.
+        let bytes = std::fs::read(&path).unwrap();
+        let occurrences = bytes
+            .windows(CANARY.len())
+            .filter(|w| *w == CANARY.as_bytes())
+            .count();
+        // One copy remains: the secret row itself, in the class-3 table.
+        assert_eq!(
+            occurrences, 1,
+            "the credential survives only in the secret row"
+        );
+    }
+
+    #[test]
+    fn v60_down_restores_the_old_shape_and_refuses_when_it_would_lose_or_invent_a_secret() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..59]).unwrap();
+        seed_v59_connection(&conn);
+        apply(&mut conn, &MIGRATIONS[59..60]).unwrap();
+
+        // An identity with no secret row (it came from another device) refuses the down, atomically.
+        conn.execute(
+            "INSERT INTO connector_connections (id, adapter_id, created_at, updated_at)
+             VALUES (?1, 'simplefin', '2026-10-21T00:00:00Z', '2026-10-21T00:00:00Z')",
+            rusqlite::params![&[8u8; 16][..]],
+        )
+        .unwrap();
+        assert!(
+            migrate_down(&mut conn, 59).is_err(),
+            "must refuse: no credential to restore"
+        );
+        let still_split: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM connector_connection_secrets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_split, 1, "a refused down changes nothing");
+        conn.execute(
+            "DELETE FROM connector_connections WHERE id = ?1",
+            rusqlite::params![&[8u8; 16][..]],
+        )
+        .unwrap();
+
+        // A tombstone refuses the down (it would be silently resurrected).
+        conn.execute(
+            "UPDATE connector_connections SET deleted_at = '2026-10-22T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            migrate_down(&mut conn, 59).is_err(),
+            "must refuse: a tombstone"
+        );
+        conn.execute("UPDATE connector_connections SET deleted_at = NULL", [])
+            .unwrap();
+
+        // Otherwise the old shape comes back with its data.
+        migrate_down(&mut conn, 59).unwrap();
+        let restored: (String, String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT adapter_id, credential, last_synced_at, last_error FROM connector_connections",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            restored,
+            (
+                "simplefin".to_owned(),
+                CANARY.to_owned(),
+                Some("2026-10-20T10:00:00Z".to_owned()),
+                Some("a past error".to_owned())
+            )
+        );
+        let watermark: Option<String> = conn
+            .query_row(
+                "SELECT last_synced_on FROM connector_account_links WHERE external_id = 'acct-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(watermark.as_deref(), Some("2026-10-19"));
+        let secrets_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'connector_connection_secrets'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(secrets_table, 0);
+        // And it composes: up again gives the split back.
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let again: String = conn
+            .query_row(
+                "SELECT credential FROM connector_connection_secrets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(again, CANARY);
+    }
+
     /// A full round-trip — CURRENT → baseline → CURRENT — restores the schema and
     /// preserves data, proving down and up compose without drift.
     #[test]
@@ -2677,5 +3113,227 @@ mod tests {
             before,
             "accounts lost across a down→up round-trip"
         );
+    }
+
+    /// A vault at schema version 60 with a `vault_metadata` row, as an older build left it.
+    fn v60_vault_with_metadata(created_at: &str, timezone: &str) -> (Connection, uuid::Uuid) {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..60]).unwrap();
+        let vault_id = uuid::Uuid::from_u128(0x0123_4567_89ab_7def_8123_4567_89ab_cdef);
+        conn.execute(
+            "INSERT INTO vault_metadata (singleton, vault_id, schema_version, envelope_version,
+                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                household_timezone, manifest_pointer, created_at)
+             VALUES (1, ?1, 60, 1, 'argon2id', 65536, 3, 1, ?2, NULL, ?3)",
+            rusqlite::params![vault_id, timezone, created_at],
+        )
+        .unwrap();
+        (conn, vault_id)
+    }
+
+    /// Every class-1 household row of a vault as comparable text.
+    fn household_rows(conn: &Connection) -> Vec<String> {
+        let mut rows = Vec::new();
+        for sql in [
+            "SELECT hex(id) || '|' || name || '|' || household_timezone || '|' ||
+                    COALESCE(platform_household_id, '~') || '|' || created_at || '|' || updated_at
+               FROM households",
+            "SELECT hex(id) || '|' || hex(household_id) || '|' || display_name || '|' || role || '|' ||
+                    COALESCE(platform_member_id, '~') || '|' || created_at || '|' ||
+                    COALESCE(deleted_at, '~')
+               FROM household_members",
+            "SELECT hex(member_id) || '|' || COALESCE(initials, '~') FROM profiles",
+        ] {
+            let mut stmt = conn.prepare(sql).unwrap();
+            rows.extend(
+                stmt.query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .map(Result::unwrap),
+            );
+        }
+        rows
+    }
+
+    /// The migration backfills one household and ONE primary member from the vault's own id and
+    /// creation time, moves the timezone, and drops the old column. Two copies of one vault
+    /// migrated at different wall-clock times hold byte-identical class-1 rows.
+    #[test]
+    fn v61_backfills_one_household_and_one_primary_deterministically() {
+        let created = "2026-03-01T09:30:00+00:00";
+        let (mut a, vault_id) = v60_vault_with_metadata(created, "America/Denver");
+        let (mut b, _) = v60_vault_with_metadata(created, "America/Denver");
+        apply(&mut a, &MIGRATIONS[60..61]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        apply(&mut b, &MIGRATIONS[60..61]).unwrap();
+
+        let rows = household_rows(&a);
+        assert_eq!(
+            rows,
+            household_rows(&b),
+            "independent migrations agree on every column"
+        );
+        assert_eq!(rows.len(), 2, "one household and one member: {rows:?}");
+        let household = crate::households::household_id(&vault_id);
+        let member = crate::households::primary_member_id(&vault_id);
+        assert_eq!(
+            rows[0],
+            format!(
+                "{}|My household|America/Denver|~|{created}|{created}",
+                hex_upper(household.as_bytes())
+            )
+        );
+        assert_eq!(
+            rows[1],
+            format!(
+                "{}|{}|Me|primary|~|{created}|~",
+                hex_upper(member.as_bytes()),
+                hex_upper(household.as_bytes())
+            )
+        );
+        let old_column: i64 = a
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('vault_metadata') WHERE name = 'household_timezone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_column, 0, "the timezone moved");
+    }
+
+    /// The down migration restores the column from the household row in the backfill state and
+    /// refuses (atomically) in every state that dropping the tables would lose data from.
+    #[test]
+    fn v61_down_restores_the_timezone_and_refuses_when_it_would_lose_data() {
+        let created = "2026-03-01T09:30:00+00:00";
+        let (mut conn, vault_id) = v60_vault_with_metadata(created, "Asia/Tokyo");
+        apply(&mut conn, &MIGRATIONS[60..61]).unwrap();
+        let member = crate::households::primary_member_id(&vault_id);
+        let household = crate::households::household_id(&vault_id);
+
+        // Each of these is data the down would lose, so it refuses and changes nothing.
+        let edits: [(&str, &str); 6] = [
+            (
+                "a renamed household",
+                "UPDATE households SET name = 'Garcias'",
+            ),
+            (
+                "a renamed primary",
+                "UPDATE household_members SET display_name = 'Pat'",
+            ),
+            (
+                "a platform household link",
+                "UPDATE households SET platform_household_id = 'h-1'",
+            ),
+            (
+                "a platform member link",
+                "UPDATE household_members SET platform_member_id = 'm-1'",
+            ),
+            (
+                "a second member",
+                "INSERT INTO household_members (id, household_id, display_name, role, created_at)
+                 VALUES (x'00000000000000000000000000000001', (SELECT id FROM households),
+                         'Sam', 'partner', '2026-03-02T00:00:00+00:00')",
+            ),
+            (
+                "a profile",
+                "INSERT INTO profiles (member_id, initials, color, updated_at)
+                 SELECT id, 'ME', NULL, '2026-03-02T00:00:00+00:00' FROM household_members",
+            ),
+        ];
+        for (label, edit) in edits {
+            let tx = conn.unchecked_transaction().unwrap();
+            tx.execute_batch(edit).unwrap();
+            tx.commit().unwrap();
+            let rows_before = household_rows(&conn);
+            assert!(
+                migrate_down(&mut conn, 60).is_err(),
+                "down must refuse with {label}"
+            );
+            assert_eq!(user_version_of(&conn), 61, "{label}: still at 61");
+            assert_eq!(
+                household_rows(&conn),
+                rows_before,
+                "{label}: nothing changed"
+            );
+            // Undo the edit for the next case.
+            let undo = match label {
+                "a renamed household" => "UPDATE households SET name = 'My household'",
+                "a renamed primary" => "UPDATE household_members SET display_name = 'Me'",
+                "a platform household link" => "UPDATE households SET platform_household_id = NULL",
+                "a platform member link" => {
+                    "UPDATE household_members SET platform_member_id = NULL"
+                }
+                "a second member" => "DELETE FROM household_members WHERE role = 'partner'",
+                _ => "DELETE FROM profiles",
+            };
+            conn.execute_batch(undo).unwrap();
+        }
+        let _ = (member, household);
+
+        // The pristine backfill state goes back, with the timezone on the old column.
+        assert_eq!(migrate_down(&mut conn, 60).unwrap(), 1);
+        let timezone: String = conn
+            .query_row("SELECT household_timezone FROM vault_metadata", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(timezone, "Asia/Tokyo");
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('households', 'household_members', 'profiles')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0);
+        // And up again yields the same rows.
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(household_rows(&conn).len(), 2);
+    }
+
+    fn hex_upper(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02X}")).collect()
+    }
+
+    fn user_version_of(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A fresh vault has no `vault_metadata` row when migrations run: nothing is backfilled and
+    /// the column still goes.
+    #[test]
+    fn v61_on_a_fresh_vault_creates_empty_tables() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert!(household_rows(&conn).is_empty());
+    }
+
+    /// A vault has exactly one household, however a row is inserted.
+    #[test]
+    fn a_second_household_is_refused_by_the_schema() {
+        let (mut conn, _) = v60_vault_with_metadata("2026-03-01T09:30:00+00:00", "UTC");
+        apply(&mut conn, &MIGRATIONS[60..61]).unwrap();
+        let second = conn.execute(
+            "INSERT INTO households (id, name, household_timezone, created_at, updated_at)
+             VALUES (x'00000000000000000000000000000002', 'x', 'UTC', 't', 't')",
+            [],
+        );
+        assert!(second.is_err());
+    }
+
+    /// At most one live primary exists, and a tombstoned primary does not count.
+    #[test]
+    fn the_schema_allows_at_most_one_live_primary() {
+        let (mut conn, _) = v60_vault_with_metadata("2026-03-01T09:30:00+00:00", "UTC");
+        apply(&mut conn, &MIGRATIONS[60..61]).unwrap();
+        let insert =
+            "INSERT INTO household_members (id, household_id, display_name, role, created_at)
+                      VALUES (x'00000000000000000000000000000009', (SELECT id FROM households),
+                              'Second', 'primary', 't')";
+        assert!(conn.execute(insert, []).is_err());
+        conn.execute_batch("UPDATE household_members SET deleted_at = 't'")
+            .unwrap();
+        conn.execute(insert, []).unwrap();
     }
 }

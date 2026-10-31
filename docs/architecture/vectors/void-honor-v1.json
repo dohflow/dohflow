@@ -1,0 +1,1269 @@
+{
+  "cases": [
+    {
+      "description": "Stopped at 5 in log order, the void for 5 at position 9 is honored: positions 5 to 8 are skipped; the void itself (9) applies as a log object.",
+      "name": "honored_for_the_range_before_the_void",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A void immediately after the poisoned position skips exactly that position.",
+      "name": "honored_for_a_one_position_range",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:5"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 6,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "Range arithmetic at the extremes: the first position, and the last two.",
+      "name": "honored_at_the_edges_of_the_position_space",
+      "steps": [
+        {
+          "expect": [
+            "honored:0:0"
+          ],
+          "replica": {
+            "next_to_apply": 0,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 0,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "5bbb7be1ba3a35b2e82258f665c8cd5c77af8e7e06b38d268c8b78d88118342f",
+              "position": 1,
+              "reason": 1,
+              "seq": 0
+            }
+          ]
+        },
+        {
+          "expect": [
+            "honored:18446744073709551614:18446744073709551614"
+          ],
+          "replica": {
+            "next_to_apply": 18446744073709551614,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 18446744073709551614,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "6edb79607118cca009fb00661e8dec17098efdecdbca22db246df62c9e1d1eaf",
+              "position": 18446744073709551615,
+              "reason": 1,
+              "seq": 18446744073709551614
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "After a restart or a re-pull the identical void at the identical position is reported as already honored, so rollback and re-issue (driven off the first honor only) run exactly once. The replica's cursor has moved past the range by then.",
+      "name": "the_same_void_offered_again_at_the_same_position_is_already_honored",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "already_honored"
+          ],
+          "replica": {
+            "next_to_apply": 9,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A void at the same position as its target, or before it, is not a void for it.",
+      "name": "inert_when_the_void_is_not_after_the_position_it_names",
+      "steps": [
+        {
+          "expect": [
+            "inert:VoidNotAfterTarget"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 5,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:VoidNotAfterTarget"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 4,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "Every later condition also fails here (below the root, already applied); the first failing condition in the pinned order decides.",
+      "name": "not_after_target_is_checked_before_everything_else",
+      "steps": [
+        {
+          "expect": [
+            "inert:VoidNotAfterTarget"
+          ],
+          "replica": {
+            "next_to_apply": 9,
+            "snapshot_root": 8,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 5,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "Coverage comes only from honored voids. After 5..=19 is honored (the cursor is now 20), a void naming 8 is inert.",
+      "name": "inert_when_an_honored_void_already_covers_the_position",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:19"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 20,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:AlreadyCovered"
+          ],
+          "replica": {
+            "next_to_apply": 20,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "be7380c40efc4eca6f4e186c2c3a1d947b5b3371c66f717ebcdec1b9f8bc68ea",
+              "position": 21,
+              "reason": 1,
+              "seq": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A replica bootstrapped from a snapshot at root 8 starts its cursor at 9 and never evaluated position 5 or 8; the void is not honored and the engine must treat the root as suspect.",
+      "name": "inert_when_the_position_is_at_or_below_the_snapshot_root",
+      "steps": [
+        {
+          "expect": [
+            "inert:PrecedesRoot"
+          ],
+          "replica": {
+            "next_to_apply": 9,
+            "snapshot_root": 8,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 12,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:PrecedesRoot"
+          ],
+          "replica": {
+            "next_to_apply": 9,
+            "snapshot_root": 8,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "be7380c40efc4eca6f4e186c2c3a1d947b5b3371c66f717ebcdec1b9f8bc68ea",
+              "position": 12,
+              "reason": 1,
+              "seq": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "The replica found position 5 valid and applied it (the frontier is past it).",
+      "name": "inert_when_the_replica_applied_the_position",
+      "steps": [
+        {
+          "expect": [
+            "inert:FoundValid"
+          ],
+          "replica": {
+            "next_to_apply": 6,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "Out of order: the replica verified a poisoned 30 before 10..=29 were processed. Honoring would clear a stop early and let it apply past 30 on unreleased state; it must wait for the frontier.",
+      "name": "inert_while_the_frontier_is_behind_the_position",
+      "steps": [
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 10,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 30,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "e608582087daa54af3e29e77781c8051cbff25249d54af7d6380f5c4c0959d3d",
+              "position": 40,
+              "reason": 1,
+              "seq": 30
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "At the frontier but healthy (not yet pulled or evaluated), halted, or stopped at a later position: nothing to honor yet.",
+      "name": "inert_when_the_replica_is_at_the_position_but_not_stopped_there",
+      "steps": [
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "kind": "halted"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 9,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "At the position with no verified key yet: NotDeterminable is never a basis to honor. It is reported whenever the replica is at the position, cannot judge it and is not stopped there, including with an out-of-order stop at a later position; a halted replica judges nothing.",
+      "name": "inert_when_the_replica_cannot_judge_the_position",
+      "steps": [
+        {
+          "expect": [
+            "inert:NotDeterminable"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": true
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:NotDeterminable"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 9,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": true
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "kind": "halted"
+            },
+            "target_not_determinable": true
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "The digest binds the command id, so equal digests with different command ids is a signer fault: inert.",
+      "name": "inert_when_the_command_differs_but_the_digest_matches",
+      "steps": [
+        {
+          "expect": [
+            "inert:CommandMismatch"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "99999999999999999999999999999999",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "4ec8d32688de80a93cef66faf473c61d86a69f7f6b9e2869471c3a8e51caf266",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "An authorized member saw another envelope at the stop's position than this replica did. An honest service refuses such a void; the engine halts (a log fork).",
+      "name": "a_different_digest_at_the_stop_is_a_suspected_fork",
+      "steps": [
+        {
+          "expect": [
+            "fork:DigestAtStop"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+              "id": "51bd960c6db10e538db4e2488ae6b6556da1f5d1d4ba8011b94657de2d22b36b",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A void already honored at position 9 offered again at 12: the log forked, not an idempotent repeat.",
+      "name": "the_same_void_at_another_position_is_a_suspected_fork",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "fork:VoidAtTwoPositions"
+          ],
+          "replica": {
+            "next_to_apply": 9,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 12,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "Offered while the frontier is behind (inert, transient), then again at the frontier: honored. The same void gives the same ledger on a replica that stopped at 10 first and reached 30 later.",
+      "name": "a_transient_inert_void_is_honored_when_the_replica_catches_up",
+      "steps": [
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 10,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 30,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "e608582087daa54af3e29e77781c8051cbff25249d54af7d6380f5c4c0959d3d",
+              "position": 40,
+              "reason": 1,
+              "seq": 30
+            }
+          ]
+        },
+        {
+          "expect": [
+            "honored:30:39"
+          ],
+          "replica": {
+            "next_to_apply": 30,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 30,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "e608582087daa54af3e29e77781c8051cbff25249d54af7d6380f5c4c0959d3d",
+              "position": 40,
+              "reason": 1,
+              "seq": 30
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A void naming 3 arrives after 3 was applied: inert, it covers nothing. A genuinely poisoned 6 is reached later and voided at 12: still honored.",
+      "name": "an_inert_void_over_an_applied_range_never_blocks_a_later_genuine_void",
+      "steps": [
+        {
+          "expect": [
+            "inert:FoundValid"
+          ],
+          "replica": {
+            "next_to_apply": 7,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "e951cf108020cb200ae17ad6e3655f7c30fb7a7f9abe33c85574e628810ec688",
+              "position": 10,
+              "reason": 1,
+              "seq": 3
+            }
+          ]
+        },
+        {
+          "expect": [
+            "honored:6:11"
+          ],
+          "replica": {
+            "next_to_apply": 6,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 6,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "e3d8af43348fe8b4d92f74a4ab46e8287eec24c2bcf3158ef9125b864698478d",
+              "position": 12,
+              "reason": 1,
+              "seq": 6
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A service that skips its same-seq dedupe serves two different voids for 10 at positions 12 and 15 (they differ in issued_at). Offered ascending, the earlier is honored for 10..=11 and the offer stops there (the context is stale); out of order, or at equal positions, the offer is refused. After the cursor moves past the range the later void is covered.",
+      "name": "two_voids_for_one_position_are_offered_in_position_order_and_the_earlier_wins",
+      "steps": [
+        {
+          "expect": [
+            "error:VoidsNotAscending"
+          ],
+          "replica": {
+            "next_to_apply": 10,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 10,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
+              "position": 15,
+              "reason": 1,
+              "seq": 10
+            },
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "4de9da3b02048fdeee8290e19f2f81ced950de186b06210bffb6b2020af055a5",
+              "position": 12,
+              "reason": 1,
+              "seq": 10
+            }
+          ]
+        },
+        {
+          "expect": [
+            "honored:10:11"
+          ],
+          "replica": {
+            "next_to_apply": 10,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 10,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "4de9da3b02048fdeee8290e19f2f81ced950de186b06210bffb6b2020af055a5",
+              "position": 12,
+              "reason": 1,
+              "seq": 10
+            },
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
+              "position": 15,
+              "reason": 1,
+              "seq": 10
+            }
+          ]
+        },
+        {
+          "expect": [
+            "inert:AlreadyCovered"
+          ],
+          "replica": {
+            "next_to_apply": 12,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
+              "position": 15,
+              "reason": 1,
+              "seq": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "Voids that change nothing are all reported, in order.",
+      "name": "a_batch_of_inert_voids_is_reported_in_full",
+      "steps": [
+        {
+          "expect": [
+            "inert:NotYetEvaluated",
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 3,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "4de9da3b02048fdeee8290e19f2f81ced950de186b06210bffb6b2020af055a5",
+              "position": 12,
+              "reason": 1,
+              "seq": 10
+            },
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "448dd3ee906edc1ff9032ee4ec050b65d3c436cab0376f7b12e0cadf89f1e3b5",
+              "position": 15,
+              "reason": 1,
+              "seq": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A deterministic apply failure stops the replica at 5 like an invalid envelope; the reason-2 void for it is honored for the range before the void.",
+      "name": "honored_at_an_apply_failure_stop_by_a_reason_2_void",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "apply"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "9b501ea84444cc1f001cf763e0c7895d2c39626e1670d801bac7b8bc602027e7",
+              "position": 9,
+              "reason": 2,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A reason-1 void at an apply stop and a reason-2 void at a receiver-check stop are honored just the same.",
+      "name": "the_reason_byte_plays_no_part_in_honoring",
+      "steps": [
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "apply"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "honored:20:23"
+          ],
+          "replica": {
+            "next_to_apply": 20,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 20,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "39844b20de3fe5ffd3614744fac7c117bb9ad1295f97567228e00c753e6712aa",
+              "position": 24,
+              "reason": 2,
+              "seq": 20
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "The same fork rule holds at an apply stop.",
+      "name": "a_different_digest_at_an_apply_stop_is_a_suspected_fork",
+      "steps": [
+        {
+          "expect": [
+            "fork:DigestAtStop"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "apply"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+              "id": "b62ac792070c17fdcd55a878e2db9894ba643e91292eccff64251936fdadd8d1",
+              "position": 9,
+              "reason": 2,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "The envelope at 5 carries another engine_version than this build: the replica is update-required there (R40), has formed no verdict and is not stopped on the envelope, so the void is inert and transient. Its exits (a build of the envelope's version, or a snapshot past the void) are status transitions, not honoring.",
+      "name": "a_replica_of_another_engine_version_cannot_judge_a_reason_2_void",
+      "steps": [
+        {
+          "expect": [
+            "inert:NotYetEvaluated"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "update_required",
+              "seq": 5
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "9b501ea84444cc1f001cf763e0c7895d2c39626e1670d801bac7b8bc602027e7",
+              "position": 9,
+              "reason": 2,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "A cursor that passed the stop (chain records verified past the stop must not advance it), a snapshot root at or above the cursor, and a cursor inside a range an honored void skipped are refused with an error, checked before any void: answering FoundValid would be permanent and split the vault.",
+      "name": "an_inconsistent_replica_state_is_refused_never_a_permanent_found_valid",
+      "steps": [
+        {
+          "expect": [
+            "error:StopBehindFrontier"
+          ],
+          "replica": {
+            "next_to_apply": 7,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "error:RootNotBelowFrontier"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": 5,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "honored:5:8"
+          ],
+          "replica": {
+            "next_to_apply": 5,
+            "snapshot_root": null,
+            "status": {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "kind": "stopped_at_invalid_envelope",
+              "seq": 5,
+              "stop_reason": "receiver_check"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        },
+        {
+          "expect": [
+            "error:FrontierInsideHonoredRange"
+          ],
+          "replica": {
+            "next_to_apply": 8,
+            "snapshot_root": null,
+            "status": {
+              "kind": "healthy"
+            },
+            "target_not_determinable": false
+          },
+          "voids": [
+            {
+              "command_id": "11111111111111111111111111111111",
+              "envelope_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+              "id": "f2a28019ca5bed9e58724b035b878b74fc5d0487f36cec8edb75cad7c84b5b3f",
+              "position": 9,
+              "reason": 1,
+              "seq": 5
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "how_to_read": "Each case is a sequence of steps against ONE replica, sharing one ledger of honored voids that starts empty. In each step the replica is offered a list of verified voids, in the order given ('voids': each with its id, the log 'seq' it names, the log 'position' V it occupies, and the 'command_id' and 'envelope_digest' it names) in the replica's state ('replica': its 'status' (healthy, halted, or stopped at an invalid envelope at a position with a digest and a command id), 'next_to_apply' (the lowest position not yet applied or skipped; every position below it is done; it never passes the stop), the 'snapshot_root' it bootstrapped from or null, and whether it is at the position but 'target_not_determinable'). 'expect' has one outcome per void offered, up to and including the first that changes the replica (the rest are not offered), or a single 'error:KIND' when the offer is refused. An outcome is 'honored:FIRST:LAST' (positions FIRST..=LAST are skipped and added to the ledger; rollback and re-issue are driven off this outcome only), 'already_honored' (the same void at the same position again: nothing changes and nothing is re-issued), 'inert:REASON' (nothing changes) or 'fork:KIND' (nothing changes and the replica halts as a log fork).",
+  "reasons": "A void states reason 1 (the envelope fails the receiver checks) or 2 (it passes them and fails to apply deterministically). The reason is audit only: a replica stopped at the position honors the void whichever reason the void or the stop states. A replica of another engine_version is update-required at the position (R40), is not stopped there and cannot judge the void: the outcome is the transient NotYetEvaluated.",
+  "refused_before_any_void": [
+    "StopBehindFrontier: the status is a stop at a position below next_to_apply",
+    "RootNotBelowFrontier: snapshot_root is set and snapshot_root >= next_to_apply",
+    "FrontierInsideHonoredRange: an honored range ends at or after next_to_apply",
+    "VoidsNotAscending: the voids' positions are not strictly ascending"
+  ],
+  "rule_order": [
+    "same void id already honored: same position is already_honored, another position is fork:VoidAtTwoPositions",
+    "VoidNotAfterTarget: position <= seq",
+    "AlreadyCovered: an honored range contains seq",
+    "PrecedesRoot: snapshot_root is set and seq <= snapshot_root",
+    "FoundValid: seq < next_to_apply",
+    "NotYetEvaluated: next_to_apply < seq",
+    "here next_to_apply == seq. Stopped at an invalid envelope at seq: continue below. Halted: NotYetEvaluated. Otherwise (healthy, or stopped at another position): NotDeterminable when target_not_determinable, else NotYetEvaluated",
+    "stopped here with a different envelope_digest: fork:DigestAtStop",
+    "stopped here with a different command_id: CommandMismatch",
+    "otherwise honored: FIRST = seq, LAST = position - 1"
+  ],
+  "spec": "docs/architecture/vault-format.md C.10 \"Void records\" and C.14; ADR 0074 Addendum D and E",
+  "synthetic": "Every value is a repeated byte or a small integer. No key, signature or real value is in this file: the void's signature and signer are checked before the rule runs (membership vectors), and this file pins the rule alone.",
+  "transient_note": "A transient void is offered again, in position order, when the frontier or the key state changes. Every other inert reason is permanent for that void.",
+  "transient_reasons": [
+    "NotYetEvaluated",
+    "NotDeterminable"
+  ],
+  "vectors_version": 1
+}

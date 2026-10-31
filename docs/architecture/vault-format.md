@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=11 -->
-<!-- vault-format: schema-version=59 -->
+<!-- vault-format: spec-version=16 -->
+<!-- vault-format: schema-version=61 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -270,6 +270,47 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 16` (personal-cfo-339) moves the household timezone off `vault_metadata` onto
+  a new class-1 `households` table, with `household_members` and `profiles` beside it (schema
+  version 61). The logical `household` record (table name `household`, key `int 1`, one column)
+  is RETIRED: `SetHouseholdTimezone` keeps its payload and meaning, and its write set is now the
+  `households` row (table name `households`, key the row's uuid, all columns), a change of the
+  frozen write-set vectors that is legal because no envelope has shipped. `data/household.jsonl`
+  becomes `data/households.jsonl` in the logical bundle, and `vault_metadata` becomes wholly
+  device-local (`exclude`). The household and its first member are seeded, not created by a
+  command, with ids derived from the vault id and every column a pure function of the vault, so
+  independent devices agree.
+  Household seats are `primary` and `partner` only (the viewer role was dropped before anything
+  shipped), and `AddHouseholdMember` has no role field.
+- `spec-version = 15` (personal-cfo-g3m.26) adds, in one change: the apply-failure stop (C.10:
+  a deterministic apply failure stops the replica as an invalid envelope does, with an audit
+  code; a successful apply with another write-set hash is a fork and halts), reason-`2` voids
+  (accepted with no body field: the envelope digest already binds the `engine_version`, and R40
+  gates every evaluation), the update-required state of a replica facing another
+  `engine_version` and its exits (C.10, C.13), and the bound on `issued_at` to the years 0000 to
+  9999 as a sixth receiver check (C.4, `IssuedAtOutOfRange`). The `void_body` and `void_id`
+  vectors are unchanged. New cases are added to `check-envelope-v1.json` and
+  `void-honor-v1.json`.
+- `spec-version = 14` tightens the rule by which a replica honors a void (C.10 "Void records",
+  "When a replica honors it"): only against the stop it reached in log order (every position below
+  `seq` applied or skipped), with the pinned order of checks, the inert reasons split into
+  transient and permanent, `PrecedesRoot` for a snapshot-bootstrapped replica, a different digest
+  at the stop or the same void honored at two positions surfaced as a suspected fork, and `V` taken only
+  from the replica's own in-order pull; and adds the public honor-rule vectors
+  (`docs/architecture/vectors/void-honor-v1.json`, C.14). No wire layout or existing vector
+  changes.
+- `spec-version = 13` changes the portable-export and Sync inventory (Part B.5, the CLASS-0 table
+  inventory) for the connector tables (personal-cfo-07u): `connector_connections` and
+  `connector_account_links` become class 1 (identity and mapping travel; the credential, refresh
+  time, last error and per-account watermark do not) and the new class-3 tables
+  `connector_connection_secrets` and `connector_link_cursors` never leave the device. No wire
+  layout or vector changes.
+- `spec-version = 12` fixes the sequence of stages by which a replica finds an envelope invalid or
+  cannot yet judge it (C.4 "When an envelope is found invalid"): the epoch and membership are those
+  in force **at the log position**, so the verdict does not depend on how far past it a replica has
+  verified; and adds the public pipeline vectors
+  (`docs/architecture/vectors/envelope-invalid-v1.json`, C.14). No wire layout or existing vector
+  changes.
 - `spec-version = 11` adds the public `check_envelope` conformance vectors
   (`docs/architecture/vectors/check-envelope-v1.json`, C.14), which pin the receiver checks of C.4
   that ADR 0074 Addendum D makes consensus-critical. No wire layout or existing vector changes.
@@ -349,6 +390,9 @@ therefore requires reviewing this inventory.
 | `provenance_links` | 1 | history | exclude | Travels with the history it indexes, on the same terms as `operation_log`. |
 | `categories` | 1 | include | include | Canonical user intent. |
 | `category_aliases` | 1 | include | include | Canonical user intent. |
+| `households` | 1 | include | include | The vault's one household row: name, household timezone (the field `SetHouseholdTimezone` changes), an optional platform household link (null with no account). Its id is derived from the vault id and is for local use only: it is never sent to the platform service. |
+| `household_members` | 1 | include | include | Household seats: display name, role (primary or partner; display and ownership metadata, NOT access control; no viewer role in v1), an optional platform member link, and a `deleted_at` tombstone. Exactly one live primary. |
+| `profiles` | 1 | include | include | Per-member non-secret display preferences (initials, color). No secret-bearing column. |
 | `income_sources` | 1 | include | include | Canonical user intent. |
 | `recurring_events` | 1 | include | include | Canonical user intent. |
 | `recurring_event_instances` | 1 | include | include | Canonical user intent. |
@@ -389,12 +433,14 @@ therefore requires reviewing this inventory.
 | `recurring_suggestion_suppressions` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `command_idempotency_keys` | 3 | exclude | exclude | Device-local state. |
 | `vault_meta` | 3 | exclude | exclude | Device-local state. |
-| `vault_metadata` | 3 | fields | fields | Only `household_timezone` travels, as the logical class-1 field of the `household` record (B.3); it is stored here today and may move to the households row (`personal-cfo-339`) without a format change. `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. |
+| `vault_metadata` | 3 | exclude | exclude | Device-local state: `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. The household timezone lives on the class-1 `households` row since schema version 61. |
 | `schema_migrations` | 3 | exclude | exclude | Device-local state. |
 | `audit_events` | 3 | exclude | exclude | Device-local security evidence and replay-owned planned-command rows; not a user-owned financial record. |
 | `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
-| `connector_connections` | 3 | exclude | exclude | Holds provider credentials. Excluded whole until the identity/secret split in `personal-cfo-07u` yields a replicable identity table. |
-| `connector_account_links` | 3 | exclude | exclude | Holds local refresh watermarks. Excluded whole until the split in `personal-cfo-07u`. |
+| `connector_connections` | 1 | include | include | Connection identity only: id, provider (`adapter_id`), display hint, created and updated times, and the `deleted_at` tombstone. No credential, refresh time or error: those are in `connector_connection_secrets`. |
+| `connector_account_links` | 1 | include | include | The external-account to ledger-account mapping and currency, per connection. The per-account refresh watermark is device-local (`connector_link_cursors`). |
+| `connector_connection_secrets` | 3 | exclude | exclude | Device-local provider credential, last refresh time and last error; never leaves the device. |
+| `connector_link_cursors` | 3 | exclude | exclude | Device-local per-account refresh watermark. |
 | `connector_attention` | 3 | exclude | exclude | Device-local re-authentication notices (personal-cfo-pxi.22); rebuilt by the next refresh. |
 | `staged_accounts` | 3 | exclude | exclude | Device-local state. |
 | `staged_balances` | 3 | exclude | exclude | Device-local state. |
@@ -420,7 +466,7 @@ Rules that apply to the whole inventory:
 
 1. **Credentials, device keys, endpoint overrides, caches and runtime queues
    never travel in either format.** Provider credentials and refresh watermarks
-   (`connector_connections`, `connector_account_links`), idempotency memos,
+   (`connector_connection_secrets`, `connector_link_cursors`), idempotency memos,
    durable jobs, staged import rows, backup receipts and the vault's
    key-derivation parameters are excluded by the rows above.
 2. **No raw database image and no recovery key or packet** is part of the
@@ -440,11 +486,12 @@ Rules that apply to the whole inventory:
    **not** limit what a Sync device can see: the genesis carries every class-1
    ledger row of every age (C.8).
 6. **The household timezone is user data, not a header.** `household_timezone`
-   changes the forecast horizon boundary, so it is a class-1 logical field and is
+   changes the forecast horizon boundary, so it is a class-1 field and is
    changed only through a logged command (`SetHouseholdTimezone`, a
    `WriteCommand` with an operation-log row and an audit event; the value is
-   stored on the `vault_metadata` row today). It is never a manifest-only or
-   genesis-header-only value, because a header would not propagate later changes.
+   stored on the class-1 `households` row, where it moved from `vault_metadata` in
+   schema version 61). It is never a manifest-only or genesis-header-only value,
+   because a header would not propagate later changes.
 
 ## B.3 Portable logical model
 
@@ -458,7 +505,6 @@ container.
 | --- | --- |
 | `manifest.json` | format identity and version, producer versions, the vault profile, per-table row counts and hashes, the artifact list, and the inventory version |
 | `data/<table>.jsonl` | one file per table with disposition `include`, `fields` or `history`; one canonical JSON object per line, in primary-key order |
-| `data/household.jsonl` | the logical `household` record: one row holding `household_timezone` (B.2 rule 6) |
 | `artifacts/<artifact_id>` | the plaintext bytes of one document, addressed by the attachment's logical `id` |
 | `exports/transactions.csv` | the existing plaintext transaction export (`personal-cfo-hbd8`), included unchanged |
 | `RECOVERY.txt` | plain-language instructions for opening the bundle without DohFlow (B.6) |
@@ -793,11 +839,10 @@ encoding). It uses CBE1 (C.1.1).
   enters a digest. These are `attachments` (`id`, `plaintext_size`, `mime_type`,
   `original_filename`, `created_at`; never `storage_id`, wrapped keys or nonces, and not
   the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys and the
-  six legacy user keys, never `device.*`), and `vault_metadata`, whose
-  `household_timezone` is the single field of the logical `household` record (B.3): its
-  digest uses the table name `household`, the one column `household_timezone`, and the
-  key `int 1`. The projection a command's apply writes is therefore never empty for
-  `SetHouseholdTimezone`.
+  six legacy user keys, never `device.*`). The household timezone is NOT a projection since
+  schema version 61: it is a column of the fully captured class-1 `households` row, so
+  `SetHouseholdTimezone` writes the `households` entry (and its `updated_at`, which moves only
+  when the zone does), and `vault_metadata` has no replicated field.
 
 **Folded children.** A replicated table that declares no primary key cannot be a write-set
 entry of its own, because a rowid is not the same on two devices. Such a table is **folded
@@ -1073,7 +1118,12 @@ index reconciliation, a receiver:
    with a different `canonical_envelope_digest`;
 5. checks that the header's `object_id` is the plaintext's `command_id`, that its
    `device_id` is the plaintext's `device_id`, and that its `nonce_domain` is the one
-   derived (C.3) for its epoch, device fingerprint and object type.
+   derived (C.3) for its epoch, device fingerprint and object type;
+6. for an envelope, requires `issued_at` to lie within the years 0000 to 9999: from
+   `-62_167_219_200_000_000` (0000-01-01T00:00:00Z) to `253_402_300_799_999_999`
+   (9999-12-31T23:59:59.999999Z) microseconds, inclusive. Outside it the envelope is invalid
+   (`IssuedAtOutOfRange`): every stored `*_at` column then stays an RFC 3339 text that orders as
+   text, and `apply` never meets an instant it cannot represent.
 
 ### Envelope plaintext (`EnvelopePlaintextV1`)
 
@@ -1155,29 +1205,57 @@ position is identified by `(seq, canonical_envelope_digest)`: the same position 
 digest is a fork of the log (`ProtocolFork`).
 
 **When an envelope is *found invalid*.** The void rules (ADR 0074 Addendum D) depend on a
-replica's own verdict, so the verdict must be the same everywhere. A replica finds the envelope at
-position `N` invalid in exactly two ways.
+replica's own verdict, so the verdict must be the same on every replica, however far each has
+verified beyond the position being judged. A replica finds the envelope at position `N` invalid,
+or cannot yet judge it, by this sequence of stages, in this order:
 
-1. **The container or header does not parse.** This is invalid with no key or chain condition: it
-   is deterministic from the bytes alone, every replica at one `engine_version` parses
-   identically, and there is no `key_epoch` or device to gate on.
-2. **Everything after a successful header parse**, and only when the replica holds the evidence:
-   it has a **verified key** for the header's `key_epoch` (the key matched that epoch's verified
-   `key_commitment_ke`) and the chain it has verified places the header's device among the members
-   of that epoch (C.7 gives the epoch in force at `N`). Then any of these holds: the ciphertext
-   does not open under the key derived for that epoch, vault and device (a flipped ciphertext or
-   tag byte, a truncated ciphertext); the opened plaintext does not decode; or a receiver check of
-   this section fails. Equally invalid, once the chain is verified through that epoch: a
-   `key_epoch` that is not the epoch in force at `N`, and a device that is not a member of the
-   epoch it claims.
+1. **The container or header does not parse: invalid.** No key or chain condition: it is
+   deterministic from the bytes alone, every replica at one `engine_version` parses identically,
+   and there is no `key_epoch` or device to gate on.
+1b. **The header names another vault than the replica's own: invalid.** No key or position
+   condition: the replica knows its vault from its chain.
+1c. **The header's `engine_version` is not the replica's own: update required, no verdict.**
+   The receiver checks and the apply semantics are bound to the engine version (C.13), so a
+   replica never judges an envelope of another version: not valid, not invalid, not determinable
+   in the sense of waiting for a key or a position, but update-required (R40). This precedes every
+   later stage (the position, the key, the membership, the AEAD, the decode, the checks), so a
+   replica of version E' cannot find invalid what version E finds valid, and a void can never
+   split a vault by version. It applies equally to a failed apply: an outcome formed at a foreign
+   version is not a verdict.
+2. **The position is not yet known: not determinable.** The replica judges position `N` only
+   after it has processed the log in order up to `N` and verified the newest epoch record
+   positioned before it (C.7: epoch records are positioned log objects). **"Before" is strict:**
+   a record installed at log head `h` covers envelopes with `seq > h`, and an envelope at
+   `seq = h` is still in the previous epoch, so the record to use is the newest with `h < seq`.
+   That record fixes the
+   *epoch in force at `N`* and the *membership version in force at `N`* (the head it names), and
+   they are the same on every replica. If that record is not yet verified, the replica waits.
+3. **A `key_epoch` other than the epoch in force at `N`, past or future: invalid.** Decided by
+   position alone; it needs no key, and it does not matter whether a later epoch exists in the
+   replica's chain.
+4. **No verified key for that epoch: not determinable.** The key must have matched the epoch
+   record's `key_commitment_ke` (C.3). Without it the replica cannot tell a bad envelope from a
+   good one.
+5. **The device is not a member at `N`, or the header restates another identity or nonce
+   domain: invalid.** Membership is judged **at the position**: authorized as of the membership
+   version in force at `N`, not as of the last head of the epoch and not as of the replica's
+   newest verified head. A device granted after `N` is not a member at `N`, however far the
+   replica has verified, and one revoked after `N` still is, so its earlier envelopes open for a
+   replica catching up. (The producer's own seal-then-verify check judges against the head it
+   seals at.)
+6. **The ciphertext does not open under the key derived for that epoch, vault and device:
+   invalid** (a flipped ciphertext or tag byte, a truncated ciphertext).
+7. **The opened plaintext does not decode: invalid** (a producer fault).
+8. **A receiver check of this section fails: invalid.**
 
-**Never invalid** (for the second way): a replica without a verified key for that epoch, whose chain is behind (the epoch or
-membership record is not yet verified), or that cannot construct the key is in a local or
-retryable state and keeps waiting. If those states counted, a replica with a missing key would
-honor a void for a valid envelope that every other replica applied, and the vault would split.
-Decode failures count as invalid: a plaintext that does not decode after a successful open is a
-producer fault, and a header that does not parse at an accepted position means the service let
-through what its own checks should have refused; both are deterministic from the bytes.
+Otherwise the envelope is valid. **A not-determinable envelope is never a basis to honor a void.**
+If it counted, a replica with a missing key or one that is behind would honor a void for a valid
+envelope that every other replica applied, and the vault would split. A header that does not
+parse at an accepted position means the service let through what its own checks should have
+refused, which is equally deterministic from the bytes. The verdict class (valid, invalid, not
+determinable) is the contract; the reason is informative. The public vectors of C.14
+(`docs/architecture/vectors/envelope-invalid-v1.json`) pin every stage, including the version gate
+taking precedence over each later defect.
 
 ### Counter register and nonce state
 
@@ -1592,9 +1670,9 @@ files are the `data/<table>.jsonl` files in ascending path order. The manifest
 the header's `artifact_manifest_commitment`. The set of files must equal the set
 the manifest names, with none missing and none extra.
 
-The household timezone travels as the logical class-1 field `household_timezone`
-of the `household` record in `data/household.jsonl` (Part B), never as a header
-field, so later changes to it propagate by command.
+The household timezone travels as the `household_timezone` column of the class-1 `households`
+row in `data/households.jsonl` (Part B), never as a header field, so later changes to it
+propagate by command.
 
 A snapshot's plaintext is at most `2^30` bytes (1 GiB). A larger vault fails with
 the typed error `SnapshotTooLarge` until a chunked framing is specified.
@@ -1726,14 +1804,81 @@ log position `V` the service assigns when it appends the void is not in the body
   cover it**: whether a void is honored, and so what a range covers, is decided only by replicas.
   A malicious member can append a void for a *valid* envelope; replicas ignore it, and a later
   genuine void for a poisoned position inside that range must still be accepted and honored.
-- **When a replica honors it.** Only if the replica has itself evaluated position `seq`, in log
-  order, found it invalid, and the void's `command_id` and `envelope_digest` equal what it saw
-  there. The `reason` byte is for audit and diagnosis: a replica that found `seq` invalid for any
-  deterministic reason honors the void, because it cannot apply `seq` either way. Otherwise the
-  void is inert (retained for diagnosis, nothing skipped). So a malicious member cannot void a
-  valid envelope, and spam does nothing. A replica stopped at `N` has evaluated `N` before it can
-  read a void positioned after it. The signer must be an authorized member at the membership head
-  in force at the void's position `V` (C.7 gives each position its epoch).
+- **When a replica honors it.** Only against **the stop it reached in log order**. A replica
+  honors a void only if, in this order of checks (the first that fails decides the outcome, so it
+  is the same on every replica): `V > seq`; no honored void already covers `seq`; `seq` is above
+  the root of the snapshot the replica bootstrapped from (a position at or below the root was
+  never evaluated: the void is inert as `PrecedesRoot`, and the replica treats the root as
+  suspect: it checks the snapshot's recorded voids, evaluates the position from retained
+  evidence, or re-bootstraps from a snapshot at or after `V`); the replica has not applied `seq`
+  (one it applied it found valid); **every position below `seq` is already applied or skipped**
+  (a position verified out of order is not yet "evaluated in log order", and honoring early would
+  let two replicas build different ledgers and push on unreleased state); the replica is stopped
+  at an invalid envelope at exactly `seq` and can judge it; the void's `envelope_digest` equals
+  the digest the replica holds there; and the `command_id` is equal. A void whose digest differs
+  from the replica's at its stop is a **suspected fork**, never a silent inert: an authorized
+  member saw another envelope at `seq` than this replica did, which an honest service (it checks
+  the digest against its index) cannot serve. The replica **halts as a log fork** (the
+  `SeqConflict` class of C.4; ruled 2026-10-27 from owner decision 915.19 rules 1 and 10): the
+  rule returns `ForkSuspected` and the engine halts; the same void honored at two different
+  positions is the same kind of fork and halts the same way. A void with an equal digest and another `command_id` is a signer fault and is
+  inert. The `reason` byte is for audit and diagnosis only. Otherwise the void is inert (retained for diagnosis, nothing
+  skipped). The inert reasons `NotYetEvaluated` (the frontier is behind `seq`, or the replica is
+  not stopped there yet) and `NotDeterminable` (at `seq` without a verified key) are transient: a
+  replica offers the void again, in log order, when the frontier or its key state changes; every
+  other reason is permanent for that void. So a malicious member cannot void a valid envelope, and
+  spam does nothing. The signer must be an authorized member at the membership head in force at
+  the void's position `V` (C.7 gives each position its epoch), by the same function the service
+  uses, so a member revoked after `V` still signs a valid void for it. A replica stopped or
+  halted keeps verifying membership and epoch records past its stop, or it could not judge a void
+  that follows. `issued_at` is for audit only and is never compared with a clock. `V` comes only
+  from the replica's own in-order pull of the void, never from an index-replay "void claimed by"
+  response, and the same void honored at two different positions is a suspected fork, not an idempotent repeat.
+  **Apply failures.** An envelope that passes the receiver checks and then fails to apply for a
+  deterministic reason (the classification below) stops the replica at its position exactly as an
+  invalid envelope does: nothing at or past it is applied, the outbox is untouched, and the apply
+  is one transaction that leaves no partial write. The stop is the same state with a different
+  audit reason (an apply-failure code), so every rule above (first stop wins, another digest at
+  the position is a fork, the honor order of checks) covers both. A reason-`2` void is honored
+  at a stop of either kind with an equal digest and command id; the `reason` byte and the stop's
+  code are audit only. **Version scope falls out of the digest:** the void names the envelope
+  digest, which binds the envelope's `engine_version`, and a replica of another `engine_version`
+  never evaluates the position (R40): it is update-required there (C.13), forms no verdict, is
+  not stopped on the envelope, and can neither find it invalid nor honor the void (the void is
+  inert and transient for it; voids for positions BELOW its update-required stop are judged
+  normally, because those envelopes were of its own version). The exits of an update-required replica are a build whose
+  `engine_version` equals the envelope's, or a re-bootstrap from a snapshot rooted past the
+  position of this build's `engine_version` and not inside any void range the replica holds; for
+  a stop covered by an honored void, a snapshot rooted past the void that records it. A snapshot
+  rooted inside a voided range is never an exit, and EVERY exit (for every kind of stop) requires a
+  snapshot of this build's `engine_version` that is not rooted inside any void range the replica
+  holds. The ranges counted are those of every verified void, honored or not (an update-required
+  replica cannot judge them), and the service dedupes only a second void for the same position,
+  so a member can keep appending voids for early positions and keep recent roots inside some
+  range: the snapshot exit is best-effort under such spam. The other exit, a build whose
+  `engine_version` equals the envelope's, is unaffected; until one of them is available the
+  replica shows "update required" at that position and applies nothing past it. A snapshot is installed only against a permit
+  the status machine itself issues for the current stop after the engine verified the snapshot, so
+  a stop cannot be cleared with an unverified one. A re-bootstrap whose root reaches the position
+  also ends a write-set mismatch and an applied position found invalid (the recovery ADR 0074
+  names), and never a fork, an equivocation, a position conflict or a void honored at two
+  positions (key quarantine and re-enrollment). After a stop ends, the engine observes again from
+  its cursor: the machine discards later stops while an earlier one stands. **Not an apply failure:** a replica whose apply SUCCEEDS with a write-set hash other than
+  the envelope's has forked from the apply semantics (ADR 0074): it halts, with its own
+  evidence, and no void answers it. Transient errors (I/O, lock, resource exhaustion,
+  cancellation) never produce an apply failure. An `issued_at` outside the years 0000 to 9999
+  is invalid at the receiver checks (C.4), so it never reaches apply as a failure.
+  **What the engine supplies.** The replica's cursor `next_to_apply` (the lowest position neither
+  applied nor skipped) never passes the stop (chain records verified past a stop do not advance
+  it), starts at `root + 1` for a bootstrapped replica, and moves past a range once a void for it
+  is honored; an offer whose state contradicts this is refused, never answered with a permanent
+  "found valid". Voids are offered in ascending position order, and the offer stops at the first
+  that is honored (or is a suspected fork), because the context is then stale. The same void
+  offered again at the same position is `AlreadyHonored` and must not drive rollback and re-issue
+  a second time. A position that an honored void skips, or that lies below the cursor, is not
+  evaluated again when re-verified. A snapshot-bootstrapped replica seeds its ledger from the
+  voided ranges the snapshot records. The ledger's canonical encoding lists ranges in strictly
+  ascending order, so it is unique.
 - **Range.** An honored void at position `V` skips every command envelope at positions `seq`
   through `V - 1`: later objects were built on a base that included `seq`. Membership and epoch
   records are never skipped (C.6 verifies them independently); an epoch record inside the range
@@ -1863,7 +2008,12 @@ typed outcomes of Part B apply unchanged.
   positive integer N, and increments N, in the same change, whenever a change to `apply`
   alters what it writes for an unchanged payload and base. A replica that receives an
   envelope or snapshot whose `engine_version` it does not equal is in the update-required
-  state; it never guesses compatibility. (A vault reading back its own operation-log rows
+  state; it never guesses compatibility. For an envelope that state is a stop at its position
+  (nothing at or past it is evaluated or applied; no verdict is formed), recomputed on every
+  start and so not persisted; its exits are in C.10. A change to what the receiver checks accept
+  (such as the `issued_at` bound of spec-version 15) is a change of `engine_version` under this
+  rule; it is made before `dohflow-engine-1` is pinned, so no envelope of the first value exists
+  without it. (A vault reading back its own operation-log rows
   is not gated by this.) The value
   an operation-log row stores is the one the producing build wrote, unchanged. (The first
   value is `dohflow-engine-1`.)
@@ -1883,14 +2033,37 @@ implementation's own error names. The file holds only public data; the seeds tha
 only in the Rust generator (`crates/sync-core/tests/membership_vectors.rs`), which fails if the file
 drifts. A change to the file is a change to this part and follows C.13.
 
+`docs/architecture/vectors/void-honor-v1.json` (`vectors_version` 1) pins the honor rule of C.10
+"Void records" as semantic inputs only: each case is a sequence of offers of a void (its position
+`V`, the `seq`, command id and digest it names) to one replica in a stated state (its status, the
+lowest position it has not applied or skipped, the root of the snapshot it bootstrapped from, and
+whether it can judge the position), with the outcome: honored for the range `seq` to `V - 1`,
+inert for a named reason, or a suspected fork. It includes the in-order requirement, a transient
+void honored once the replica catches up, an inert void that never blocks a later genuine one, and
+the precedence of the checks. A change to the file follows C.13.
+
+`docs/architecture/vectors/envelope-invalid-v1.json` (`vectors_version` 1) pins the pipeline-level
+verdict of C.4 "When an envelope is found invalid": sealed envelope containers built from
+synthetic keys over a sample membership chain (device A adds device B in epoch 1, then revokes it
+in a cutover into epoch 2), each with the state of the replica (its verified chain, which epoch
+keys it holds, and the newest epoch record positioned before the envelope) and the expected
+verdict: valid, invalid, or not determinable. Flipped ciphertext and tag bytes, a truncated
+ciphertext, an undecodable plaintext, a rejected receiver check, a device revoked before the
+position, a device granted after it (identical on a short and a long chain), a past and a future
+epoch at the position, and an unparseable container (invalid even with nothing else known) are
+invalid; no verified key, a position the replica has not reached, and a bad envelope while either
+is missing are not determinable. The epoch keys are not in the file: they derive from a labeled
+formula the file states. A change to the file follows C.13.
+
 `docs/architecture/vectors/check-envelope-v1.json` (`vectors_version` 1) pins the receiver checks
 of C.4 for every implementation that decrypts: a header and a plaintext as bytes, the idempotency
 tag the receiver's own tagger returns for the plaintext's key (an input, because the tag secret is
 not in the file), and the expected outcome, which is `ok`, `MalformedHeader` or
 `MalformedPlaintext` (the bytes do not decode), or the name of the **first** failing check in the
 order `NotAnEnvelope`, `ObjectIdMismatch`, `DeviceMismatch`, `TagMismatch`,
-`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`. What is
-normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
+`MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`,
+`IssuedAtOutOfRange` (the last also pins the exact bounds, with cases at 0000-01-01T00:00:00Z,
+9999-12-31T23:59:59.999999Z and one microsecond outside each). What is normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
 failures included); the specific error is normative for every single-defect case and informative
 (the reference order) for the multi-defect cases, where another implementation must agree the
 envelope is invalid but may report a different first error. The tagger answer in each case is

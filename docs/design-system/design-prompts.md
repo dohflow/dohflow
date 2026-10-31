@@ -1,5 +1,11 @@
 # Claude Design prompts — the `4d8.27` wave's lane-3 surfaces
 
+> **Historical (2026-10-27).** These prompts were written for the Claude Design loop. Under the
+> [ADR 0031 addendum](../adr/0031-ui-quality-and-design-workflow.md) a lane-3 screen is now designed in
+> **Paper** by the Desktop Studio, and Claude Design is used only for simple mockups and small in-app
+> tweaks. The list of surfaces below is still a useful inventory of what shipped; do not treat the
+> prompts as the current workflow.
+
 **Bead:** `personal-cfo-4d8.27.4.6` · **Governed by:** ADR 0031 §2 (three lanes) and §3
 (the loop, and why the agent can't drive it)
 

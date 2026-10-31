@@ -9,8 +9,9 @@
 #   failed  the audit found something (an advisory, or an allowance that matches
 #           nothing). Opens an issue labeled `security-advisory` naming the advisory
 #           IDs found in the report, or adds a comment to the one already open.
-#   clean   the audit passed. If an issue is open, adds a comment saying so. It never
-#           closes an issue: a person closes it once the fix is confirmed.
+#   clean   the audit passed. Closes every open security-advisory issue with a comment linking
+#           the run (scripts/alert-close.sh), unless it carries `keep-open` or a human
+#           reopened it in the last 24 hours.
 #
 # The report text is untrusted tool output; it is only ever placed in an issue body
 # inside a code fence, never in a shell. The agent on duty turns the issue into a P0
@@ -48,13 +49,10 @@ run_line=""
 [ -n "$RUN_URL" ] && run_line="Run: $RUN_URL"
 
 if [ "$STATUS" = clean ]; then
-  if [ -n "$existing" ]; then
-    gh issue comment "$existing" --repo "$REPO" --body "The daily audit of main is clean again. ${run_line}
-This issue is not closed automatically: close it once the fix is confirmed and the P0 bead is done."
-    echo "Commented on #$existing: audit clean again."
-  else
-    echo "Audit clean and no open $LABEL issue: nothing to do."
-  fi
+  # A clean run closes the alert (personal-cfo-md8h2.21), with a comment linking this run, unless
+  # the issue carries `keep-open` or a human reopened it in the last 24 hours (alert-close.sh).
+  "$(dirname "${BASH_SOURCE[0]}")/alert-close.sh" --label "$LABEL" --repo "$REPO" \
+    --run-url "$RUN_URL" --what "the daily audit of main is clean again (no advisory, no stale allowance)"
   exit 0
 fi
 
