@@ -64,3 +64,18 @@ export function captureMeta() {
     devicePixelRatio: window.devicePixelRatio,
   };
 }
+
+/// Save a result to a local collector, when asked: `?post=http://127.0.0.1:PORT/save&name=file.json`. This is how a
+/// capture from an engine with no console (the iOS simulator's Safari) leaves the page, and how a committed raw
+/// result is taken from a clean source without hand-copying. Only a loopback address is accepted, so a dev page can
+/// never send a result anywhere else.
+export function postResultIfAsked(payload: unknown): void {
+  const params = new URLSearchParams(window.location.search);
+  const target = params.get("post");
+  const name = params.get("name");
+  if (!target || !name) return;
+  const url = new URL(target);
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname)) return;
+  url.searchParams.set("name", name);
+  void fetch(url, { method: "POST", body: JSON.stringify(payload) });
+}

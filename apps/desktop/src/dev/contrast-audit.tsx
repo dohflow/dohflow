@@ -32,7 +32,7 @@ import { ThemeToggle } from "@/theme/ThemeToggle";
 
 import { BADGE_CASES, badgeVerdict, type Verdict } from "./badge-verdict";
 import { clears, HEADROOM, NON_TEXT_FLOOR, solidRings, TEXT_FLOOR, toHex } from "./contrast-math";
-import { backgroundChain, captureMeta, composite, engine, ratio } from "./measure";
+import { backgroundChain, captureMeta, composite, engine, postResultIfAsked, ratio } from "./measure";
 
 type Theme = "light" | "dark";
 type Surface = "page" | "card";
@@ -501,7 +501,9 @@ function Audit() {
     const t = setTimeout(() => {
       const result = runAudit(all);
       setRows(result);
-      (window as unknown as { __contrastAudit: unknown }).__contrastAudit = { engine: engine(), meta: captureMeta(), rows: result };
+      const envelope = { engine: engine(), meta: captureMeta(), rows: result };
+      (window as unknown as { __contrastAudit: unknown }).__contrastAudit = envelope;
+      postResultIfAsked(envelope);
     }, 250);
     return () => clearTimeout(t);
   }, [shared, all]);

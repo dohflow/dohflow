@@ -21,7 +21,7 @@ import type {
 } from "@/bindings";
 import { ConnectionRow } from "@/settings/ConnectionsCard";
 
-import { captureMeta } from "./measure";
+import { captureMeta, postResultIfAsked } from "./measure";
 
 const params = new URLSearchParams(window.location.search);
 const width = Number(params.get("w") ?? 672);
@@ -228,6 +228,8 @@ function Probe({ label, children }: { label: string; children: React.ReactNode }
           meta: { ...captureMeta(), componentWidth: width, theme: params.get("theme") === "dark" ? "dark" : "light" },
           rows: { ...(w.__statusFit?.rows ?? {}), [label]: { ...r, verdict: r.problems.length === 0 ? "fits" : "PROBLEMS" } },
         };
+        // The collector gets the whole set once every row has reported.
+        if (Object.keys(w.__statusFit.rows).length === TOTAL_ROWS) postResultIfAsked(w.__statusFit);
       }, 50);
     });
     return () => {
@@ -249,6 +251,9 @@ function Probe({ label, children }: { label: string; children: React.ReactNode }
     </section>
   );
 }
+
+/// The rows the page renders, so the collector is sent the complete set and never a partial one.
+const TOTAL_ROWS = CONNECTIONS.filter(([label]) => keep(label)).length + DUE.filter(([label]) => keep(label)).length;
 
 const noop = () => undefined;
 
