@@ -598,7 +598,9 @@ pub(crate) fn apply_dismiss_recurring_suggestion(
             crate::apply::issued_at_text(meta),
         ],
     )?;
-    Ok(Uuid::now_v7())
+    // The suppression row is keyed by its natural key, not an id; the affected entity recorded
+    // with the command is the command itself.
+    Ok(meta.command_id)
 }
 
 /// Applies [`WriteCommand::UpdateRecurringBill`].

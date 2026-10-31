@@ -2,8 +2,8 @@
 //! with the same metadata, applied to two identical copies of one vault, writes the same rows and
 //! the same write-set hash, and every instant it stamps is the command's `issued_at`.
 //!
-//! Commands whose ids are minted inside `apply` are not in this set: their ids differ until the
-//! derived-id pass (the next slice of 32fmp) lands, and that pass extends this test to them.
+//! Commands whose ids are minted inside `apply` are proven separately in
+//! `derived_ids_in_apply.rs`, where the ids themselves are compared across two vaults.
 
 mod common;
 
@@ -193,8 +193,9 @@ fn commands() -> Vec<(&'static str, WriteCommand)> {
     ]
 }
 
-/// Commands whose rows get ids minted inside `apply` today (`Uuid::now_v7()`), so two vaults
-/// cannot agree on the write set until the derived-id pass. They still stamp `issued_at`.
+/// Commands whose rows get ids minted inside `apply`. Those ids are derived (personal-cfo-32fmp.2),
+/// so two vaults agree on them: `derived_ids_in_apply.rs` proves the ids and write sets across
+/// two copies of a base. Here they are only checked to stamp `issued_at`.
 fn minting_commands() -> Vec<(&'static str, WriteCommand)> {
     vec![
         (

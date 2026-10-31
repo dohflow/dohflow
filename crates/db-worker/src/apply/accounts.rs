@@ -1,6 +1,7 @@
 //! `apply_command` arms for account lifecycle commands (moved verbatim
 //! from `lib.rs`).
 
+use core_ids::DerivedIds;
 use core_ledger::{
     Account, AccountId, AccountKind, AccountSubtype, LedgerTransaction, OperationId, Posting,
     TransactionId,
@@ -18,6 +19,7 @@ use crate::{
 pub(crate) fn apply_create_account(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &mut DerivedIds,
     account: &Account,
     opening_balance: &Option<Money>,
 ) -> Result<Uuid, DbError> {
@@ -72,7 +74,7 @@ pub(crate) fn apply_create_account(
                     AccountKind::Equity,
                 )?;
                 let txn = LedgerTransaction::new(
-                    TransactionId::new(),
+                    TransactionId::from_uuid(ids.next("txn.opening-balance")?),
                     OperationId::from_uuid(meta.command_id),
                     crate::apply::issued_at(meta),
                     vec![

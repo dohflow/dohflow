@@ -13,6 +13,14 @@
 # `apply/household.rs` landed on main after this ledger was first written; their existing sites are
 # baselined here, not newly added by the change that brought the ledger.
 #
+# `lib.rs` rose from 32 to 33 with personal-cfo-32fmp.2 (#205): `From<DerivedIdError> for DbError`
+# maps a derived-id failure to `InvalidCommand`. Its variants are tag errors (every tag in apply is
+# a constant, so these are programming errors, not verdicts), `IssuedAtOutOfRange` (already a
+# classified rejection earlier, in `apply/mod.rs`'s `require_issued_at`) and `OrdinalOverflow` (a
+# function of the payload's element count, but no current command mints near 4,096 ids, so there is
+# no apply-level behavior to prove). Classifying it needs that proof, so it waits for
+# personal-cfo-g3m.28 rather than adding a verdict this ledger cannot back with a test.
+#
 # The follow-up bead's AC is zero unclassified rejections reachable from `apply_command`
 # (constraint codes included) before Sync ships to users. Moving a site to `Rejected` later changes
 # only whether a void can name it, never what the command writes (both outcomes apply nothing), so
@@ -100,7 +108,7 @@ statements = 3
 
 [[site]]
 module = "lib.rs"
-statements = 32
+statements = 33
 
 [[site]]
 module = "manual_entry.rs"

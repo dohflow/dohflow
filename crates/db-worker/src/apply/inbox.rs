@@ -2,6 +2,7 @@
 //! `lib.rs`).
 
 use chrono::NaiveDate;
+use core_ids::DerivedIds;
 use rusqlite::Connection;
 use uuid::Uuid;
 
@@ -11,12 +12,14 @@ use crate::{money_inbox, CommandMeta, DbError};
 pub(crate) fn apply_snooze_inbox_item(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &mut DerivedIds,
     item_id: &Uuid,
     until: &NaiveDate,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
         money_inbox::record_snooze(
             tx,
+            ids.next("change-journal")?,
             *item_id,
             &until.to_string(),
             &crate::apply::issued_at_text(meta),
@@ -32,11 +35,18 @@ pub(crate) fn apply_snooze_inbox_item(
 pub(crate) fn apply_dismiss_inbox_item(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &mut DerivedIds,
     item_id: &Uuid,
     reason: &str,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
-        money_inbox::record_dismiss(tx, *item_id, reason, &crate::apply::issued_at_text(meta))?;
+        money_inbox::record_dismiss(
+            tx,
+            ids.next("change-journal")?,
+            *item_id,
+            reason,
+            &crate::apply::issued_at_text(meta),
+        )?;
         money_inbox::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
         *item_id
     };

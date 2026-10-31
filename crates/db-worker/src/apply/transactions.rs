@@ -2,6 +2,7 @@
 //! (moved verbatim from `lib.rs`).
 
 use chrono::{DateTime, NaiveDate, Utc};
+use core_ids::DerivedIds;
 use core_ledger::{
     AccountId, AccountKind, LedgerAccountId, LedgerTransaction, OperationId, Posting,
     RecurringEventId, SplitLineId, TagId, TransactionId,
@@ -79,9 +80,11 @@ pub(crate) fn apply_record_transaction(
 }
 
 /// Applies [`WriteCommand::ConfirmObligationEarly`].
+#[allow(clippy::too_many_arguments)] // the command's fields plus the transaction, metadata and allocator
 pub(crate) fn apply_confirm_obligation_early(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &DerivedIds,
     recurring_event_id: &RecurringEventId,
     scheduled_date: &NaiveDate,
     actual_amount: &Money,
@@ -209,7 +212,12 @@ pub(crate) fn apply_confirm_obligation_early(
                 actual_amount.currency(),
                 AccountKind::Expense,
             )?;
-            let txn_id = TransactionId::new();
+            // Under the "not already confirmed" branch (base-dependent), so a KEYED id of the
+            // occurrence, which consumes no ordinal.
+            let txn_id = TransactionId::from_uuid(ids.keyed(
+                "txn.confirm-obligation",
+                &[event_uuid.as_bytes(), sched.as_bytes()],
+            )?);
             let txn = LedgerTransaction::new(
                 txn_id,
                 OperationId::from_uuid(meta.command_id),
@@ -256,6 +264,7 @@ pub(crate) fn apply_confirm_obligation_early(
 pub(crate) fn apply_unconfirm_obligation(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &DerivedIds,
     recurring_event_id: &RecurringEventId,
     scheduled_date: &NaiveDate,
 ) -> Result<Uuid, DbError> {
@@ -293,6 +302,7 @@ pub(crate) fn apply_unconfirm_obligation(
                         currency,
                         occurred_at,
                         meta.command_id,
+                        ids,
                         &crate::apply::issued_at_text(meta),
                     )?;
                 }
@@ -314,6 +324,7 @@ pub(crate) fn apply_unconfirm_obligation(
 pub(crate) fn apply_convert_unexplained_to_transaction(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &mut DerivedIds,
     account_id: &AccountId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
@@ -364,7 +375,7 @@ pub(crate) fn apply_convert_unexplained_to_transaction(
         };
         let counter_id = ensure_system_ledger_account(tx, role, currency, kind)?;
         let txn = LedgerTransaction::new(
-            TransactionId::new(),
+            TransactionId::from_uuid(ids.next("txn.convert-unexplained")?),
             OperationId::from_uuid(meta.command_id),
             occurred_at,
             vec![
@@ -384,6 +395,7 @@ pub(crate) fn apply_convert_unexplained_to_transaction(
 pub(crate) fn apply_transfer(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &mut DerivedIds,
     source_account_id: &AccountId,
     dest_account_id: &AccountId,
     amount: &Money,
@@ -463,7 +475,7 @@ pub(crate) fn apply_transfer(
         // to zero; to a liability the +amount reduces the owed balance (a real outflow of liquid
         // cash). No system counter-account.
         let txn = LedgerTransaction::new(
-            TransactionId::new(),
+            TransactionId::from_uuid(ids.next("txn.transfer")?),
             OperationId::from_uuid(meta.command_id),
             *occurred_at,
             vec![
@@ -486,6 +498,7 @@ pub(crate) fn apply_transfer(
 pub(crate) fn apply_void_transaction(
     tx: &Connection,
     meta: &CommandMeta,
+    ids: &DerivedIds,
     transaction_id: &TransactionId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
@@ -522,6 +535,7 @@ pub(crate) fn apply_void_transaction(
             currency,
             occurred_at,
             meta.command_id,
+            ids,
             &crate::apply::issued_at_text(meta),
         )?;
 
@@ -674,6 +688,7 @@ pub(crate) fn apply_set_note(
 /// Applies [`WriteCommand::SetSplits`].
 pub(crate) fn apply_set_splits(
     tx: &Connection,
+    ids: &mut DerivedIds,
     transaction_id: &TransactionId,
     lines: &[SplitLineInput],
 ) -> Result<Uuid, DbError> {
@@ -740,7 +755,7 @@ pub(crate) fn apply_set_splits(
                     ));
                 }
             }
-            let line_id = SplitLineId::new();
+            let line_id = SplitLineId::from_uuid(ids.next("split-line")?);
             tx.execute(
                 "INSERT INTO split_lines
                         (id, transaction_id, amount_minor, currency, category_id, note, sort_order)
