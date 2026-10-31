@@ -1,21 +1,31 @@
-# Evidence: `personal-cfo-4d8.35` (semantic badge text and control boundaries)
+# Evidence: `personal-cfo-4d8.35` (semantic badge text, control boundaries and status fit)
 
 Fake data only. Produced by the committed audit page, `apps/desktop/src/dev/contrast-audit.tsx` (how to run
-it: `apps/desktop/src/dev/README.md`). Source: `main` at `093dbb3` plus this PR.
+it: `apps/desktop/src/dev/README.md`) and the status-fit page `apps/desktop/src/dev/status-fit.tsx`.
+Source: `main` at `1ab8a84` (merged into this branch) plus this PR. **Values are the owner's decision**:
+`--input` option A+ (Light `#90877f`, Dark `#607065`) and the foreground-words-plus-mark badge (Studio decision
+bead `personal-cfo-4d8.46`, 2026-10-30).
 
 ## Engine
 
-Measured in the Claude desktop app's built-in browser pane: **Chromium 152.0.7977.167** (macOS, Intel
-emulation string `Macintosh; Intel Mac OS X 10_15_7`, device pixel ratio 2, app build `Claude/3.6556.2`).
-This is **not the app's WKWebView**. `HEADROOM = 0.1` is a project buffer, not a certification of equivalence.
-**Remaining validation, bounded:** open `contrast-audit.html` in Safari (macOS, WebKit) and in a packaged
-build's webview if one is available, and compare the summary line and any row that differs by more than 0.1.
-Nothing in this PR claims the WKWebView numbers.
+Two engines ran the same committed audit page against this head:
+
+- **Chromium 152.0.7977.167** in the Claude desktop app's built-in browser pane (macOS, device pixel ratio 2,
+  app build `Claude/3.6556.2`).
+- **WebKit**: Safari in the iOS 27.0 Simulator (`AppleWebKit/605.1.15 ... Version/27.0`, device pixel ratio 3),
+  opened at `http://localhost:5199/contrast-audit.html`. `webkit-contrast-audit-summary.jpg` shows its summary line.
+
+Both report the same summary. **Neither is the macOS app's WKWebView**, and the iOS WebKit is not a certification
+of it: `HEADROOM = 0.1` is a project buffer. A run in a packaged build's webview remains open; nothing here claims
+the WKWebView numbers. The status-fit page was also opened in the WebKit simulator at a 330px component width
+(`webkit-status-fit-330.jpg`); every row reported "fits". WebKit formats the prior-year stamp as
+"Jan 5, 2025 at 04:35 PM" where Chromium prints "Jan 5, 2025, 04:35 PM": same length, so the fit holds.
 
 ## Result of the committed audit on this PR
 
 `PASS 316 · FAIL 0 · info 124` (440 rows: 2 themes x 2 surfaces x every badge, shared control, state tile and
-discovered consumer).
+discovered consumer), on Chromium 152 **and** on iOS 27 WebKit, at `--input` option A+ and with `main` at `1ab8a84`
+merged in (the earlier option-A run had the same counts).
 
 ## F1: NativeSelect hover, measured before and after
 
@@ -45,17 +55,18 @@ the focus ring `rgb(250, 248, 246) 0 0 0 2px, rgb(46, 148, 112) 0 0 0 4px` on an
 
 ## Raw pairs (rendered, Chromium 152)
 
-**Control boundary, resting** (`--input`, painted over the control's `--background` fill):
+**Control boundary, resting** (`--input` A+, painted over the control's `--background` fill):
 
 | | border | on outside | on fill |
 |---|---|---|---|
-| Light / `--background` | `#948c84` | 3.12 | 3.12 |
-| Light / `--card` | `#948c84` | 3.31 | 3.12 |
-| Dark / `--background` | `#5f6b63` | 3.35 | 3.35 |
-| Dark / `--card` | `#5f6b63` | 3.11 | 3.35 |
+| Light / `--background` | `#90877f` | 3.33 | 3.33 |
+| Light / `--card` | `#90877f` | 3.52 | 3.33 |
+| Dark / `--background` | `#607065` | 3.55 | 3.55 |
+| Dark / `--card` | `#607065` | 3.31 | 3.55 |
 
-Identical for Input, NativeSelect (both sizes), Combobox trigger, EmojiPicker trigger and the pagination
-select. **Focus ring** (unchanged): `#2e9470` 3.55 / 3.76 Light, `#12a06b` 5.56 / 5.17 Dark.
+The tightest pair is Dark `--card` at **3.31**, 0.21 over the 3.1 the audit requires. Identical for Input,
+NativeSelect (both sizes), Combobox trigger, EmojiPicker trigger and the pagination select. **Focus ring** (unchanged):
+`#2e9470` 3.55 / 3.76 Light, `#12a06b` 5.56 / 5.17 Dark.
 
 **Badge**, fill is the composited 10% tint, label is `--foreground`, mark is the token:
 
@@ -77,7 +88,8 @@ a 62-character label in a 220px column wraps to **2 lines**, the mark stays vert
 `border-input` matches in non-test source at `093dbb3`: **39 matches in 29 files** by
 `git grep -n border-input -- apps/desktop/src ':!*.test.*'` less the one comment in `globals.css`. The earlier
 **38/28** came from `grep -rn border-input . --include='*.tsx' | grep -v test`, where `grep -v test` drops any
-*line* containing "test"; the Studio's count was right.
+*line* containing "test"; the Studio's count was right. 04b-review counts **40 in 30** at an earlier head of this PR,
+which includes the one comment in `globals.css`.
 
 Classified (the audit discovers these from the source and reports each, three states, four surfaces):
 
@@ -87,7 +99,7 @@ Classified (the audit discovers these from the source and reports each, three st
 | Hand-rolled `<select>` class strings (18 matches) | 18 | yes | pass |
 | Shared NativeSelect, Combobox, EmojiPicker trigger, pagination select | 4 | yes | pass (hover and focus included) |
 | Custom checkbox box (`SeriesPicker:162`: an `aria-hidden` span whose border is the unchecked state) | 1 | **yes**: the box is the visible state of the control | pass |
-| Outline `Button` (`button.tsx:16`) | 1 | **no**: identified by its text | reported: boundary 3.12 to 3.35; hovered fill 2.58 to 2.80 |
+| Outline `Button` (`button.tsx:16`) | 1 | **no**: identified by its text | reported: boundary 3.31 to 3.55; hovered fill 2.58 to 2.80 |
 | `ThemeToggle` icon button | 1 | **no**: identified by its icon and accessible name | reported |
 | Segmented Appearance group and divider (`AppearanceCard:32,45`) | 2 | **no**: segments identified by their labels | reported |
 | Chips (`BillsView:912`, `TransactionDetailDrawer:283`) | 2 | **no**: identified by their labels | reported |
@@ -99,39 +111,34 @@ Classified (the audit discovers these from the source and reports each, three st
 there is no separate invalid border to measure. **Open/selected:** the Combobox trigger's border does not change
 when open; selected chips are exempt as above.
 
-## For the Studio's decision
+## Decisions applied
 
-**1. Every outline `Button` border darkens too.** `button.tsx` outline is `border border-input`, so it
-follows the token. Rendered, its border goes from 1.27 / 1.35:1 (Light) and 1.46 / 1.36:1 (Dark) to
-**3.12 / 3.31** (Light) and **3.35 / 3.11** (Dark). It is **reported, not required**: a labelled button is
-identified by its text. It is visible in every screenshot below (the `outline` button beside `secondary`). The
-alternative is to give the outline `Button` its own lighter border token, which keeps today's quiet buttons and
-adds one more token; this PR does not.
+The owner decided on 2026-10-30 (Studio bead `personal-cfo-4d8.46`, quoted on `personal-cfo-4d8.35`): **A+** for the
+input border, **B** for the badge, and the two exact status labels with a condition that the timestamp not make the
+status look wonky.
 
-**2. The Dark-card boundary has almost no spare headroom.** With the 0.1 rule the requirement is 3.1:1, and
-`#5f6b63` on `--card` measures **3.11** (Light `#948c84` on `--background` is 3.12), so 0.01 to 0.02 to spare.
-The borders are opaque, so these static ratios equal the rendered ones. **Offered alternatives**, same hue
-family, only lightness moves:
+**1. Outline `Button` border.** `button.tsx` outline is `border border-input`, so it follows the token: from 1.27 / 1.35
+(Light) and 1.46 / 1.36 (Dark) to **3.33 / 3.52** (Light) and **3.55 / 3.31** (Dark). It is reported, not required (a
+labelled button is identified by its text) and the owner accepted the shared impact. Pagination and every other
+`border-input` consumer follow too.
+
+**2. Options that were offered**, for the record (same hue family, only lightness moves):
 
 | | Light `--input` | on `--background` / `--card` | Dark `--input` | on `--background` / `--card` |
 |---|---|---|---|---|
-| **A (this PR)** | `#948c84` | 3.12 / 3.31 | `#5f6b63` | 3.35 / **3.11** |
-| **A+ (3.3 target)** | `#90877f` | 3.33 / 3.52 | `#607065` | 3.55 / 3.31 |
-| A++ (3.5 target) | `#8c837b` | 3.51 / 3.72 | `#637569` | 3.80 / 3.53 |
+| A | `#948c84` | 3.12 / 3.31 | `#5f6b63` | 3.35 / 3.11 |
+| **A+ (chosen)** | `#90877f` | 3.33 / 3.52 | `#607065` | 3.55 / 3.31 |
+| A++ | `#8c837b` | 3.51 / 3.72 | `#637569` | 3.80 / 3.53 |
 
-The PR stays on A until the Studio chooses; switching is a two-token edit in `globals.css` and
-`design-tokens.json`, with the contrast tests unchanged.
-
-**3. B: the text must carry the status, and the mark is only a redundant cue.** Audit of every non-test
-`<Badge>` call site (15) against that rule. The mark is generated content (`::before` with no text), so it adds
-nothing to the accessible name; the label's words are the signal.
+**3. B: the text carries the status; the mark is a redundant cue.** Audit of every non-test `<Badge>` call site (15)
+against that rule. The mark is generated content (`::before` with no text), so it adds nothing to the accessible name.
 
 | Call site | Wording | Names the status in words? |
 |---|---|---|
 | `ConnectionsCard` warning | "Needs attention" | yes |
 | `ConnectionsCard` outline | "Never refreshed" | yes |
-| `ConnectionsCard` warning / gain | "Refreshed {stamp}" under **both** variants | **no**: stale (3 days or more) and fresh differ only by tint and dot |
-| `AccountDetailView:583` | "in {n} days" under `warning` (5 days or fewer) or `secondary` | **no**: urgency is carried by the variant alone |
+| `ConnectionsCard` warning / gain | "Out of date · refreshed {stamp}" / "Refreshed {stamp}" | yes (was one wording under both variants) |
+| `AccountDetailView` | "Due soon · in {n} days" (0 to 5 days) / "in {n} days" | yes (was one element with a conditional variant) |
 | `FutureCashEntries` gain | "Matched" | yes |
 | `CreditCardsView` gain x2 | "Actual" | yes |
 | `CreditCardsView` warning | "Not yet closed — ignored" | yes |
@@ -139,23 +146,41 @@ nothing to the accessible name; the label's words are the signal.
 | `CardReviewModal` warning | "Resurfaced" (own icon) | yes |
 | `AccountDetailView` outline / secondary, `CardReviewModal` tag, `ProviderPicker` chip | neutral tags | n/a (not semantic) |
 
-Two sites rested on color alone and now have **planning-approved wording**, implemented in this PR:
+A **source-scan guard** (`components/ui/badge-wording.test.ts`) fails if a semantic Badge picks its variant by a
+condition on one element, uses the same words under two variants, or has no literal words; each rule was shown to trip by
+mutating a real call site.
 
-- `ConnectionsCard`: a connection refreshed 3 whole days ago or more reads **"Out of date · refreshed {stamp}"**
-  (fresh stays "Refreshed {stamp}"). "Stale" was rejected as jargon.
-- `AccountDetailView`: a card payment 0 to 5 days away reads **"Due soon · in {n} days"** (otherwise "in {n} days").
-  It was one `<Badge>` with a conditional variant; it is now one element per variant, each with its own words.
+## Status fit: the owner's timestamp condition
 
-Tests: the due badge at 0, 1, 5 and 6 days, far away, and past; the connection age at 1 day 23 h 59 m (fresh), exactly
-3 days (out of date), and a month; and a **source-scan guard** (`components/ui/badge-wording.test.ts`) that reads every
-`<Badge>` call site and fails if a semantic Badge picks its variant by a condition on one element, uses the same
-words under two variants, or has no literal words. Each of those rules was shown to trip by mutating a real call site
-(the old stale wording, the old conditional variant, a value-only label, the same words under two variants).
-One existing test only passed because its fixture's stamp was old enough to be the *stale* branch today; it now
-pins the clock.
+The owner's condition: the stamp must not "drift too long where the button looks wonky". The status-fit page renders the
+**real** `ConnectionRow` and `CardStatsStrip` with the real words, short, same-year, prior-year and long-name stamps, a
+pending refresh and each due state, at a chosen component width, and reports clipped text, anything past the component,
+overlapping controls and sideways scroll.
 
-**4. Counts.** 04b-review counts **40 uses in 30 files** at this PR's head; that includes the one comment in
-`globals.css` (and my dev files' own mentions are excluded from the audit). At `093dbb3` it is **39 in 29**.
+**Before**, at a 368px component: the connection's status lane could not shrink, so the identity collapsed to an
+ellipsis ("clipped" on every row) and, for "Out of date · refreshed {stamp}", **Refresh now was pushed past the card's
+edge** on all four stale rows. That is a real defect the approved longer label exposed.
+
+**After** (this PR): the header wraps (`flex-wrap`), the identity wraps instead of truncating (`break-words`, `basis-40`),
+the status lane drops below the identity when they do not fit side by side, inside the lane the badge may wrap its
+complete label (`whitespace-normal`) while **Refresh now keeps its 36px size**, and the card strip's payment-due date and
+badge wrap (`gap-x-3 gap-y-1`). Result: **13 of 13 rows fit at 368px and at 672px, in Light and Dark** (Chromium; also at a 300px stress width in Dark), and
+at 330px in WebKit.
+
+| File | What it shows |
+|---|---|
+| `status-fit-368-light.jpg`, `status-fit-368-dark.jpg` | 368px: an old prior-year stamp, a long connection name, a pending refresh, the card strip due soon and in 34 days |
+| `status-fit-672-light.jpg`, `status-fit-672-dark.jpg` | 672px: the lane sits beside the identity; the same rows |
+| `webkit-status-fit-330.jpg` | iOS WebKit at 330px |
+
+Logic tests (`ConnectionsCard.test.tsx`, `AccountDetailView.test.tsx`): 72 hours minus 30 s reads "Refreshed", exactly 72 hours
+reads "Out of date"; the year appears only for a prior-year stamp and the label stays whole across a year rollover; a null
+or unparseable stamp reads "Never refreshed"; a last error or an attention item takes precedence over an old stamp; a
+pending refresh keeps the action's name and shows the spinner; the due badge at 0, 1 (singular), 5, 6, far, past and with no
+cycle. A source guard (`src/dev/status-fit-geometry.test.ts`) pins the wrapping classes, and was shown to fail when the old
+non-shrinking lane is restored. Not covered: zoom beyond the 368px width (a 200% zoom of a 672px pane is about 336px,
+inside the range measured), longer locales (the formatter uses the runtime locale; a longer string wraps by the same
+rule), and a VoiceOver pass.
 
 ## Screenshots (fake data)
 
@@ -166,13 +191,14 @@ pins the clock.
 | `states-light.jpg`, `states-dark.jpg` | default / hover / focus tiles for the shared controls and the discovered consumers |
 | `narrow-light.jpg`, `narrow-dark.jpg` | the same at a **375px** viewport: long labels wrap, nothing overflows |
 
-(In `light-background.jpg` the first Select shows its real hover border because the pointer was parked on it.)
+All eight were retaken at option A+ on this head (Chromium 152). The status-fit screenshots are listed with their section above.
 
 ## What this evidence does not show
 
-- The app's own WKWebView (bounded above), and a VoiceOver pass (not asked for by this bead).
-- The marketing site: `design-tokens.json`'s `input` also feeds the site's generated `tokens.css`; the site
-  picks the new value up on its next sync (ADR 0061 section 7). That needs the Website Studio's scope check
-  before the sync, and is not done here.
-- Kit and gallery convergence with #190 (the kit docs, the gallery's badge rendering): a follow-up once #190
-  merges.
+- The macOS app's own WKWebView (bounded in the Engine section), a longer-locale run, and a VoiceOver pass.
+- **The marketing site.** `design-tokens.json`'s `input` also feeds the site's generated `tokens.css` (ADR 0061 section 7).
+  Read-only check of the site checkout: `src/styles/tokens.css` defines `--input` in three places and **no site source
+  references the token** (`src` and `public` hold only third-party CMS code that mentions "input" as a word), so a sync
+  would change a variable nothing renders. This PR does not sync, and the Website Studio's own scope approval is still
+  needed before any sync.
+- Paper's baseline: the Studio updates it after the merge.

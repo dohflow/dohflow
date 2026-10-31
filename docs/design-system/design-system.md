@@ -105,7 +105,7 @@ Every color is a CSS variable, exposed to Tailwind as a theme color (so
 | `destructive`           | `#c23b2e` | `#e06a5e` |
 | `destructive-foreground`| `#ffffff` | `#2a0e0b` |
 | `border`                | `#e3ddd5` | `#26302a` |
-| `input`                 | `#e3ddd5` | `#2a352e` |
+| `input`                 | `#90877f` | `#607065` |
 | `ring`                  | `#2e9470` | `#12a06b` |
 
 ### Finance + chart semantics
@@ -127,11 +127,21 @@ they sit on does not: `--on-brand-fill` (`#1c1815`) is the text color on a brand
 terracotta build badge, and `--brand-white` (`#ffffff`) is the white band of the brand mark. They
 exist so that "no raw hex in components" stays true: the exceptions are named.
 
-**Known contrast gaps (open, not waived; `personal-cfo-4d8.35`).** Text in a semantic color on a 10%
-tint of that color over the Light background (the `Badge` treatment) is below 4.5:1 for 12px text
-(measured: gain 4.40, warning 3.17, info 4.36, loss 4.34), and the `Input` boundary against its background is 1.27:1 Light and 1.46:1 Dark, below the
-3:1 expected of a boundary that identifies a control. Neither is remediated yet, and no document
-here treats them as accepted. Do not copy these treatments into new work as if they were settled.
+**Contrast, measured (`personal-cfo-4d8.35`).** `--input` is the boundary of a form control
+(`Input`, `NativeSelect`, `Combobox`, and every `border-input` field), moved only in lightness to
+`#90877f` Light and `#607065` Dark (owner decision, option A+): 3.33 and 3.52 against `--background`
+and `--card` Light, 3.55 and 3.31 Dark, measured on the rendered controls, so every one clears
+the 3:1 WCAG 1.4.11 asks of a boundary that identifies a control, plus the project's 0.1 headroom.
+The shared outline `Button` follows the token (its border is not required, a labelled button is
+identified by its text). A semantic `Badge` is a neutral `--foreground` label with a 6px mark in the
+semantic token: the words carry the status, the mark is a redundant cue, and no new color exists.
+Evidence and the rerunnable audit: `docs/design-system/evidence/personal-cfo-4d8.35/`.
+
+**Still open, not waived.** `--border` (cards and dividers) is deliberately below 3:1 because it is
+not what identifies a control. Small text in `text-warning` is below 4.5:1 (about 3.74 Light, 3.53
+Dark; a separate bead). Text in a semantic color on its own 10% tint is no longer used by `Badge`,
+but a hand-rolled one would repeat the old gap. No document here claims production accessibility
+acceptance until the change is merged and reviewed.
 
 **Chart slots are four, fixed-order, and never cycled — [ADR 0054](../adr/0054-categorical-chart-palette.md).**
 These are not free choices: the four steps are picked so every *adjacent* pair stays
@@ -185,7 +195,7 @@ Paths are under `apps/desktop/src/`. "Shared" means it lives in `components/ui/`
 | `Label` | `components/ui/label.tsx` | `text-sm font-medium`, above its control. |
 | `NativeSelect` | `components/ui/native-select.tsx` | The platform `<select>` with one shared skin (h-10; `size="sm"` is h-8 `text-xs`). Kept native on purpose: reliable keyboard and assistive-technology behavior. |
 | `Combobox` | `components/ui/combobox.tsx` | Searchable single select (`items` with `label`, optional `hint` and `searchText`; a `clearLabel` and a persistent `footerAction`). Portal-rendered. |
-| `Badge` | `components/ui/badge.tsx` | Variants `default` · `secondary` · `outline` · `gain` · `warning` · `info` · `loss` (the four semantic ones are a 10% tint with a 25% border, `warning` 30%). |
+| `Badge` | `components/ui/badge.tsx` | Variants `default` · `secondary` · `outline` · `gain` · `warning` · `info` · `loss` (the four semantic ones are a 10% tint with a 25% border, `warning` 30%, a neutral `text-foreground` label, and a 6px mark in the semantic token; the words carry the status). |
 | `Skeleton` | `components/ui/skeleton.tsx` | Pulsing placeholder block for loading states. |
 | `EmptyState` | `components/ui/empty-state.tsx` | Icon medallion, one-line title, "what to do next" description. |
 | `Table` family | `components/ui/table.tsx` | `Table` (wraps an `overflow-x-auto` container), `TableHeader`, `TableBody`, `TableFooter`, `TableHead`, `TableRow`, `TableCell`, `TableCaption`. |
@@ -225,8 +235,8 @@ focus ring `ring-2 ring-ring ring-offset-2`, disabled `opacity-50`, icons `size-
 `rounded-lg border bg-card text-card-foreground shadow-sm`.
 
 **Badge.** `inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium`. The semantic variants are
-`border-<token>/25 bg-<token>/10 text-<token>` (warning uses `/30` on the border); see the known
-contrast gap in section 3.
+`border-<token>/25 bg-<token>/10 text-foreground before:size-1.5 before:rounded-full before:bg-<token>`
+(warning uses `/30` on the border): a neutral label and a 6px mark, with the status in the words (section 3).
 
 **Table.** Header row `text-xs text-muted-foreground`, rows separated by `border`, money columns
 right-aligned with `tabular-nums`.
@@ -367,7 +377,7 @@ exists, nothing is built), **Not shipped** (drawn in Paper, and no code or bead 
 | Layout contract ("LCR-1 v1"): priority-ordered, container-aware 3, 2 or 1 spans; collapsed siblings at the tallest natural height; parallel control tops aligned | page `p-8-0`, frozen 2026-10-27 15:21:48 UTC, hash `0afec932` | the written convention in [`FRONTEND.md`](../agent/FRONTEND.md) section 7.4. No layout component: a page composes it with Tailwind grid and subgrid | **Convention** |
 | Settings page, selected composition "A" | the Settings design page, v3, frozen 2026-10-27 15:36:39 UTC | `apps/desktop/src/settings/SettingsView.tsx` composes the existing cards today as **one column of always-open cards** (no disclosure, no grid). The target composition is `personal-cfo-4d8.39` | **Proposed** |
 | Collapsed-section summaries (frequency and verified backup status, the formatted Comfort range, the active vault name, the connection count, the application version) | within the Settings design page above | none; they depend on the shared disclosure (`personal-cfo-4d8.38`) and belong to the Settings composition (`personal-cfo-4d8.39`) | **Proposed** |
-| Neutral-foreground status text with a semantic mark | owner decision recorded on the Studio's bead | none. It depends on the contrast remediation `personal-cfo-4d8.35`, and **no palette change is made or implied here** | **Proposed** |
+| Neutral-foreground status text with a semantic mark | owner decision recorded on the Studio's bead (`personal-cfo-4d8.46`) | `components/ui/badge.tsx` (`personal-cfo-4d8.35`); the wording rule is `FRONTEND.md` section 7.3 | **Shipped** on merge of `personal-cfo-4d8.35` |
 | Every component in the section 5 inventory | **no Paper comparison has been made yet** | the section 5 table | **Shipped**, Paper counterpart to be recorded by the Studio on its first comparison |
 
 **Adding a row.** When a build implements a Paper design, add or update its row in the same change:

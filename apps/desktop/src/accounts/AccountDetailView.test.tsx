@@ -259,6 +259,15 @@ describe("AccountDetailView", () => {
       expect(screen.queryByText(/Due soon/)).toBeNull();
     });
 
+    it("shows no payment-due block, and no badge, when the card has no cycle", async () => {
+      mocks.cardStatementForecast.mockResolvedValue(ok([{ ...CARD_FORECAST, cycles: [] }]));
+      renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);
+      await screen.findByText(/Credit limit/);
+      expect(screen.queryByText(/Payment due/)).toBeNull();
+      expect(screen.queryByText(/Due soon/)).toBeNull();
+      expect(screen.queryByText(/^in \d+ days?$/)).toBeNull();
+    });
+
     it("shows no badge for a past due date", async () => {
       withDue("2026-07-10");
       renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);

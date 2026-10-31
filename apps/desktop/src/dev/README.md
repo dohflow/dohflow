@@ -34,3 +34,23 @@ How it measures, and what it does **not** do:
 - Disabled controls are exempt (WCAG 1.4.11 exempts inactive components), and a consumer whose boundary is not
   what identifies it (a labelled button, a chip, a divider, a native checkbox) is **reported but not
   required**, with the reason shown. Everything else is a field and must clear 3:1 plus headroom.
+
+## Status fit (`personal-cfo-4d8.35`, the owner's timestamp condition)
+
+Renders the **real** `ConnectionRow` and `CardStatsStrip` with the real status words (short, same-year and prior-year
+stamps, a long name, a pending refresh, each due state) in a component of a chosen width, and reports whether anything
+is clipped, extends past the component, overlaps a control, or scrolls sideways.
+
+```bash
+pnpm -C apps/desktop exec vite --port 5199 --strictPort
+# http://127.0.0.1:5199/status-fit.html?w=368&theme=dark&set=stale
+```
+
+`w` is the component width in px (the evidence uses 368 and 672), `theme=dark` selects Dark, and `set=stale` keeps only
+the rows that stress the fit. Each row's label says "fits" or lists its problems; `window.__statusFit` carries the same.
+Open it in Safari as well (and a narrow `w`) if the engine matters.
+
+## Disclosure example (`personal-cfo-4d8.38`)
+
+`disclosure-example.html` shows the shared `Disclosure` with a long title, a persistent error and retry, a collapsed
+summary and a nested delete guard. `?theme=dark` and `?open=0` change the state.

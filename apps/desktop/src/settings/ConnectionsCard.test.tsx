@@ -139,6 +139,74 @@ describe("ConnectionsCard", () => {
       expect(queryByText(/^Refreshed /)).toBeNull();
     });
 
+    it("reads 'Refreshed' just before 72 hours and 'Out of date' at exactly 72 hours", async () => {
+      // 30 seconds of margin: the pinned clock still advances with real time while the test runs.
+      at("2026-08-25T09:59:30Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const before = renderWithClient(<ConnectionsCard />);
+      expect(await before.findByText(/^Refreshed /)).toBeInTheDocument();
+      expect(before.queryByText(/Out of date/)).toBeNull();
+      before.unmount();
+      at("2026-08-25T10:00:00Z");
+      const exact = renderWithClient(<ConnectionsCard />);
+      expect(await exact.findByText(/^Out of date · refreshed /)).toBeInTheDocument();
+    });
+
+    it("includes the year only for a prior-year stamp, and the words stay whole across a year rollover", async () => {
+      at("2026-08-25T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const sameYear = renderWithClient(<ConnectionsCard />);
+      const sameText = (await sameYear.findByText(/^Out of date · refreshed /)).textContent ?? "";
+      expect(sameText).not.toContain("2026");
+      sameYear.unmount();
+      // Now is January 2027, the refresh was in December 2026: the stamp carries its year.
+      at("2027-01-02T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(
+        ok([connection({ last_synced_at: "2026-12-28T10:00:00Z" })]),
+      );
+      const rolled = renderWithClient(<ConnectionsCard />);
+      const rolledText = (await rolled.findByText(/^Out of date · refreshed /)).textContent ?? "";
+      expect(rolledText).toContain("2026");
+      expect(rolledText.startsWith("Out of date · refreshed ")).toBe(true);
+    });
+
+    it.each([
+      ["no stamp", null],
+      ["an unparseable stamp", "not-a-date"],
+    ])("reads 'Never refreshed' for %s, never 'Out of date'", async (_name, stamp) => {
+      at("2026-08-25T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection({ last_synced_at: stamp })]));
+      const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+      expect(await findByText("Never refreshed")).toBeInTheDocument();
+      expect(queryByText(/Out of date/)).toBeNull();
+    });
+
+    it.each([
+      ["a last error", { last_error: "access revoked" }],
+      ["an attention item", { attention: [{ kind: "reauth_institution", institution: "First Bank" }] }],
+    ])("lets %s take precedence over an old stamp: 'Needs attention', not 'Out of date'", async (_n, over) => {
+      at("2026-09-30T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection(over)]));
+      const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+      expect(await findByText("Needs attention")).toBeInTheDocument();
+      expect(queryByText(/Out of date/)).toBeNull();
+    });
+
+    it("keeps the action's name and shows a spinner while a refresh is pending", async () => {
+      at("2026-09-30T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      mocks.connectorSync.mockReturnValue(new Promise(() => undefined));
+      const { findByRole, getByText } = renderWithClient(<ConnectionsCard />);
+      const button = await findByRole("button", { name: "Refresh now" });
+      expect(button.querySelector("svg.animate-spin")).toBeNull();
+      fireEvent.click(button);
+      await waitFor(() => expect(button).toBeDisabled());
+      expect(button).toHaveAccessibleName("Refresh now");
+      expect(button.querySelector("svg.animate-spin")).not.toBeNull();
+      // The status words are unchanged by the pending state.
+      expect(getByText(/^Out of date · refreshed /)).toBeInTheDocument();
+    });
+
     it("keeps the fresh and the out-of-date wording different under their two variants", async () => {
       at("2026-08-23T10:00:00Z");
       mocks.connectorConnections.mockResolvedValue(ok([connection()]));

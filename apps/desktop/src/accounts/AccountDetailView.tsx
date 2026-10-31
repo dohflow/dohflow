@@ -543,7 +543,7 @@ function SectionRow({
 
 /// The card stats strip: statement balance, payment due (with a days-away badge), and the
 /// credit-limit utilization bar — from the same projection the chart draws.
-function CardStatsStrip({
+export function CardStatsStrip({
   account,
   card,
   todayIso,
@@ -580,7 +580,7 @@ function CardStatsStrip({
       {cycle && (
         <div>
           <p className="text-[11px] text-muted-foreground">Payment due</p>
-          <p className="flex items-center gap-2 text-sm font-semibold">
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold">
             {formatIsoDate(cycle.due_date)}
             {/* Two elements, not one with a conditional variant: the words must say "due soon" when it is
                 (a Badge's tint and mark are only a redundant cue; personal-cfo-4d8.35). */}
