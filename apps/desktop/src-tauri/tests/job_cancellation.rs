@@ -20,8 +20,11 @@
 //!   sync slot is held until the fetch ends. A cancel that lands as the fetch returns, or after
 //!   the commit, is decided at the commit: before it, nothing is written; after it, the job stays
 //!   succeeded (personal-cfo-pxi.25).
-//! * A crash between the commit and the terminal write recovers to a truthful outcome, never
-//!   cancelled, and the re-run imports nothing twice.
+//! * A crash between the commit and the terminal write, with NO cancel request pending, recovers to
+//!   a truthful outcome and the re-run imports nothing twice. **With a cancel request also pending,
+//!   recovery still records the job as cancelled although the batch is imported**, and a failure
+//!   after the writes began, with a cancel pending, can be recorded as cancelled too: both need the
+//!   durable commit marker of personal-cfo-g3m.31 and are the `#[ignore]`d cases of that bead below.
 //! * The terminal state is durable: after the vault is closed and reopened the job is still
 //!   cancelled and is not claimed again.
 //! * Queued cancels are terminal at once and their P99 is under the 500 ms SLA (live: one indexed
@@ -527,8 +530,14 @@ impl ConnectorAdapter for BlockingProvider {
         self.entered.store(true, Ordering::SeqCst);
         let (lock, released) = &self.gate;
         let mut open = lock.lock().unwrap();
+        // A deadline, so a fix that never lets the test release the provider (a mutated fetch that is
+        // never polled) fails the suite instead of hanging it.
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !*open {
-            open = released.wait(open).unwrap();
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            open = released.wait_timeout(open, left).unwrap().0;
         }
         drop(open);
         self.inner.sync(conn, since)
@@ -572,6 +581,40 @@ fn resolve_healthy(_: &str) -> Option<&'static dyn ConnectorAdapter> {
 /// A provider that runs a hook inside its fetch, which a test uses to cancel at that instant.
 type OnSync = Box<dyn Fn() + Send>;
 static ON_SYNC: Mutex<Option<OnSync>> = Mutex::new(None);
+/// When set, the cancelling provider answers its fetch with a provider error (after the hook).
+static FAIL_FETCH: AtomicBool = AtomicBool::new(false);
+static HOOK_SERIAL: Mutex<()> = Mutex::new(());
+
+/// Holds the cancelling provider's hook and failure mode for one test and clears them after, so the
+/// tests that use it run one at a time.
+struct HookGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+fn hook_guard(hook: impl Fn() + Send + 'static, fail: bool) -> HookGuard {
+    let guard = HOOK_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *ON_SYNC.lock().unwrap() = Some(Box::new(hook));
+    FAIL_FETCH.store(fail, Ordering::SeqCst);
+    HookGuard(guard)
+}
+
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        *ON_SYNC.lock().unwrap() = None;
+        FAIL_FETCH.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The hook, then the failure when asked: what the cancelling provider does at either fetch.
+fn fetch_hook() -> Result<(), ConnectorError> {
+    if let Some(hook) = ON_SYNC.lock().unwrap().as_ref() {
+        hook();
+    }
+    if FAIL_FETCH.load(Ordering::SeqCst) {
+        return Err(ConnectorError::Provider("test failure".to_owned()));
+    }
+    Ok(())
+}
 
 struct CancellingProvider(MockConnector);
 
@@ -592,6 +635,7 @@ impl ConnectorAdapter for CancellingProvider {
         self.0.link(input)
     }
     fn fetch_accounts(&self, conn: &Connection) -> Result<Vec<ParsedAccount>, ConnectorError> {
+        fetch_hook()?;
         self.0.fetch_accounts(conn)
     }
     fn fetch_transactions(
@@ -617,9 +661,7 @@ impl ConnectorAdapter for CancellingProvider {
         conn: &Connection,
         since: Option<chrono::NaiveDate>,
     ) -> Result<SyncBatch, ConnectorError> {
-        if let Some(hook) = ON_SYNC.lock().unwrap().as_ref() {
-            hook();
-        }
+        fetch_hook()?;
         self.0.sync(conn, since)
     }
 }
@@ -737,6 +779,7 @@ fn a_queued_connector_refresh_cancelled_before_the_sweep_never_fetches() {
 #[derive(Debug, PartialEq, Eq)]
 struct ConnectionSnapshot {
     last_synced_at: Option<String>,
+    last_error: Option<String>,
     attention: Option<String>,
     watermarks: Vec<Option<String>>,
 }
@@ -752,6 +795,7 @@ fn snapshot(state: &AppState, connection: Uuid) -> ConnectionSnapshot {
         .expect("the connection");
     ConnectionSnapshot {
         last_synced_at: row.last_synced_at,
+        last_error: row.last_error,
         attention: row.attention,
         watermarks: kernel
             .connector_links(connection)
@@ -998,16 +1042,113 @@ fn a_cancel_that_lands_as_the_fetch_returns_commits_nothing() {
     let connection = linked(app);
     set_notice(app, connection);
     let before = snapshot(app, connection);
-    *ON_SYNC.lock().unwrap() = Some(Box::new(move || {
-        assert!(cancel(app, connection).0);
-    }));
+    let _hook = hook_guard(move || assert!(cancel(app, connection).0), false);
     let report = sweep(app, resolve_cancelling, "as-it-returns");
-    *ON_SYNC.lock().unwrap() = None;
 
     assert_eq!(report.cancelled, 1, "{report:?}");
     assert_eq!(job_state(app, connection), JobState::Cancelled);
     assert_eq!(transaction_count(app), 0);
     assert_eq!(snapshot(app, connection), before);
+}
+
+/// Link a connection and leave every account unmapped, so a refresh takes the discovery path.
+fn linked_unmapped(state: &AppState) -> Uuid {
+    let id = connector_link_impl(
+        state,
+        healthy(),
+        ConnectorLinkInput {
+            adapter_id: "other".to_owned(),
+            setup_token: "mock-setup-token".to_owned(),
+        },
+    )
+    .expect("link")
+    .connection_id;
+    Uuid::parse_str(&id).unwrap()
+}
+
+/// The discovery path (a connection with nothing mapped yet) has its own commit: it upserts the
+/// provider's accounts as links and clears the connection's error and re-authentication notice. A
+/// cancel that lands as the discovery fetch returns must stop it there, inside the commit section,
+/// exactly as the main sync does. (Linking already discovered the accounts, so the notice, which a
+/// discovery clears, is what shows a write.)
+#[test]
+fn a_cancel_that_lands_as_the_discovery_fetch_returns_writes_nothing() {
+    let (_dir, app) = open_state();
+    let app: &'static AppState = Box::leak(Box::new(app));
+    let connection = linked_unmapped(app);
+    set_notice(app, connection);
+    let before = snapshot(app, connection);
+    assert!(before.attention.is_some());
+    {
+        let _hook = hook_guard(move || assert!(cancel(app, connection).0), false);
+        let report = sweep(app, resolve_cancelling, "discovery-cancel");
+        assert_eq!(report.cancelled, 1, "{report:?}");
+    }
+    assert_eq!(job_state(app, connection), JobState::Cancelled);
+    assert_eq!(
+        snapshot(app, connection),
+        before,
+        "discovery wrote (cleared the notice) after the cancel"
+    );
+
+    // The control: the same discovery, never cancelled, clears the notice.
+    let (_control_dir, control) = open_state();
+    let control_connection = linked_unmapped(&control);
+    set_notice(&control, control_connection);
+    let _hook = hook_guard(|| {}, false);
+    let report = sweep(&control, resolve_cancelling, "discovery-control");
+    assert_eq!(report.refreshed, 1, "{report:?}");
+    assert_eq!(snapshot(&control, control_connection).attention, None);
+}
+
+/// A provider that fails after the cancel: nothing may be recorded (no error on the connection, no
+/// change to the notice), because the job is cancelled. Run for both fetch sites, with a control
+/// that shows the same failure IS recorded when nobody cancelled.
+fn a_cancel_before_a_provider_failure_is_recorded(unmapped: bool) {
+    let (_dir, app) = open_state();
+    let app: &'static AppState = Box::leak(Box::new(app));
+    let connection = if unmapped {
+        linked_unmapped(app)
+    } else {
+        linked(app)
+    };
+    set_notice(app, connection);
+    let before = snapshot(app, connection);
+    {
+        let _hook = hook_guard(move || assert!(cancel(app, connection).0), true);
+        let report = sweep(app, resolve_cancelling, "error-cancel");
+        assert_eq!(report.cancelled, 1, "unmapped={unmapped}: {report:?}");
+    }
+    assert_eq!(job_state(app, connection), JobState::Cancelled);
+    assert_eq!(
+        snapshot(app, connection),
+        before,
+        "unmapped={unmapped}: the failure was recorded on a cancelled run"
+    );
+    assert_eq!(before.last_error, None);
+
+    let (_control_dir, control) = open_state();
+    let control_connection = if unmapped {
+        linked_unmapped(&control)
+    } else {
+        linked(&control)
+    };
+    let _hook = hook_guard(|| {}, true);
+    sweep(&control, resolve_cancelling, "error-control");
+    assert!(
+        snapshot(&control, control_connection).last_error.is_some(),
+        "unmapped={unmapped}: the control's failure was not recorded"
+    );
+}
+
+#[test]
+fn a_cancel_before_a_sync_failure_is_recorded_leaves_health_and_notice_untouched() {
+    a_cancel_before_a_provider_failure_is_recorded(false);
+}
+
+#[test]
+fn a_cancel_before_a_discovery_failure_is_recorded_leaves_health_and_notice_untouched() {
+    a_cancel_before_a_provider_failure_is_recorded(true);
 }
 
 /// A cancel that lands after the commit and before the job's outcome is recorded is too late: the
@@ -1051,6 +1192,63 @@ fn job_cancel_pending(state: &AppState, connection: Uuid) -> bool {
         .unwrap()
         .job_cancellation_requested(refresh_job_id(connection))
         .unwrap()
+}
+
+/// Known gap, personal-cfo-g3m.31: a crash after the commit WITH a cancel request pending. Recovery
+/// terminalizes any running row that has a cancel request as `Cancelled`, although the batch is
+/// imported, because nothing durable says the commit happened. The correct outcome (what this
+/// asserts) is that the job is not recorded as cancelled once its rows are in; g3m.31's durable
+/// commit marker delivers it and un-ignores this case.
+#[test]
+#[ignore = "personal-cfo-g3m.31: needs the durable commit marker; today recovery records this job as cancelled with the batch imported"]
+fn a_crash_after_the_commit_with_a_cancel_pending_is_not_recorded_as_cancelled() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("vault.db");
+    let mut controller = VaultController::open(&path);
+    controller
+        .create(PASSWORD.as_bytes())
+        .expect("create vault");
+    let app = AppState::new(controller);
+    let connection = linked(&app);
+
+    // The refresh commits, a cancel request arrives, and the process dies before the outcome.
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        run_due_connector_refresh_observed(
+            &app,
+            resolve_healthy,
+            "crashes-with-cancel",
+            &FixedClock(Utc::now()),
+            &|_| {
+                assert!(cancel(&app, connection).0);
+                panic!("the process died here");
+            },
+        )
+    }));
+    assert!(crashed.is_err());
+    let imported = transaction_count(&app);
+    assert!(imported > 0, "the refresh committed before the crash");
+    drop(app);
+
+    let reopened = AppState::new(VaultController::open(&path));
+    unlock_vault_impl(&reopened, PASSWORD.to_owned()).expect("unlock reopened vault");
+    {
+        let guard = reopened.lock_controller().unwrap();
+        run_due(
+            guard.kernel().unwrap(),
+            reopened.job_dispatcher().as_ref(),
+            "recover-with-cancel",
+        );
+    }
+    assert_eq!(
+        transaction_count(&reopened),
+        imported,
+        "the rows are still there"
+    );
+    assert_ne!(
+        job_state(&reopened, connection),
+        JobState::Cancelled,
+        "recovery recorded a cancelled job whose batch is imported"
+    );
 }
 
 /// A crash between the commit and the terminal write leaves the job `running`. Recovery requeues

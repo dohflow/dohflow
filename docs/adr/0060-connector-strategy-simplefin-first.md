@@ -287,8 +287,20 @@ addendum records how the connector refresh meets it.
    so a request either lands before the check (nothing is written, the connection's health, last-refreshed stamp,
    cursors and re-authentication notice are untouched, and the job is `Cancelled`) or after the commit (too late, and
    the job is recorded as succeeded through `JobExecution::Committed`).
-5. **A crash between the commit and the terminal write** leaves the job `running`; recovery requeues it and the next
-   run is idempotent through the import dedupe (ADR 0060 section 5), never a second import and never `Cancelled`.
+5. **A crash between the commit and the terminal write** leaves the job `running`. With no cancel request
+   pending, recovery requeues it and the next run is idempotent through the import dedupe (ADR 0060 section 5):
+   never a second import, never `Cancelled`. **Known gap, not delivered here (`personal-cfo-g3m.31`):** if a
+   cancel request is also pending, the runtime's recovery terminalizes the running row as `Cancelled` although
+   the batch is imported, because nothing durable records that the commit happened. A durable commit marker
+   written in the same transaction as the effect closes it; until then the false record is possible in that
+   narrow window (a crash and a cancel both inside the gap between the commit and the terminal write).
+6. **A failure after the first write** is the same gap. The commit section is several separate writes (the
+   account links, the import, the watermarks, the refresh stamp, the notice), so an internal failure after the
+   import, with a cancel pending, is returned as a failure and the runtime still rewrites it to `Cancelled`.
+   `personal-cfo-g3m.31` adds a committed failure path; until then the crate documentation says so.
+7. **The cancel checks in the provider-error path** (a failed fetch, before the failure is recorded) read the
+   request outside the vault lock: a cancel that lands in the instant between that read and the health write
+   leaves a recorded health row, which the job then reports truthfully as having written.
 
 **Not changed.** Manual refresh (the Refresh now button) has no job and cannot be cancelled. A cancel IPC command is
 `personal-cfo-g3m.30`'s.

@@ -16,12 +16,16 @@
 //!    [`JobExecution::Cancelled`]. The runtime also records `Cancelled` when a request is pending
 //!    at the terminal write of a [`JobExecution::Succeeded`], [`JobExecution::Failed`] or
 //!    [`JobExecution::Skipped`] result: those results make no commit claim, so the request wins.
-//! 2. **After the commit, the outcome is the truth.** A handler whose work is durably committed
+//! 2. **After the commit, a SUCCESS is the truth.** A handler whose work is durably committed
 //!    returns [`JobExecution::Committed`]. A cancel that arrives after the commit is too late: the
-//!    job is recorded as succeeded (a later failure in the handler's own bookkeeping is
-//!    [`JobExecution::Failed`], never `Cancelled`), through [`JobStore::finish_committed`], which
-//!    has no cancellation guard. Neither the store's terminal write nor the runner's watcher
-//!    override may turn a `Committed` execution into `Cancelled`.
+//!    job is recorded as succeeded, through [`JobStore::finish_committed`], which has no
+//!    cancellation guard. Neither the store's terminal write nor the runner's watcher override may
+//!    turn a `Committed` execution into `Cancelled`. **Not yet delivered (personal-cfo-g3m.31):** a
+//!    FAILURE after the work began committing. [`JobExecution::Failed`] still passes the
+//!    cancellation guards (the runner's override and `finish_failure`), so a handler that wrote and
+//!    then failed, with a cancel pending, is recorded `Cancelled`. A handler must not rely on the
+//!    runtime to keep a late failure from becoming `Cancelled` until that bead adds a committed
+//!    failure path.
 //! 3. **The commit is the linearization point.** A handler that can be cancelled concurrently
 //!    checks for a request in the same critical section that performs its commit, so a request
 //!    either lands before the check (nothing is committed) or after the commit (too late). It
@@ -30,9 +34,12 @@
 //!    [`CancellationToken`] (or the store's request flag, for a lock-releasing kind) at its
 //!    checkpoints, including around any call it cannot interrupt, which it abandons instead.
 //!
-//! A crash between the commit and the terminal write leaves the row `running`; recovery requeues
-//! it, so a committed handler must be idempotent when re-run (the connector refresh is, through
-//! its import dedupe).
+//! A crash between the commit and the terminal write leaves the row `running`. With no cancel
+//! request pending, recovery requeues it, so a committed handler must be idempotent when re-run
+//! (the connector refresh is, through its import dedupe). **Not yet delivered
+//! (personal-cfo-g3m.31):** with a cancel request ALSO pending, `recover_running` terminalizes the
+//! row as `Cancelled` even though the work committed, because nothing durable records that the
+//! commit happened. The fix is a durable commit marker written with the effect.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -1606,6 +1613,47 @@ mod tests {
         assert_eq!(row.last_outcome, Some(JobOutcome::Succeeded));
         assert!(!row.cancel_requested, "the late request is cleared");
         assert_eq!(row.next_due_at, Some(now + Duration::seconds(3600)));
+    }
+
+    /// Known gap, personal-cfo-g3m.31: a handler whose work already committed and that then fails,
+    /// with a cancel request pending, is recorded `Cancelled` today, because `Failed` passes both the
+    /// runner's override and `finish_failure`'s guard and a `Failed` carries no "committed" fact. The
+    /// correct outcome (asserted here) is `Failed`; g3m.31 adds the committed failure path, changes
+    /// this executor to use it, and un-ignores the case.
+    #[test]
+    #[ignore = "personal-cfo-g3m.31: needs a committed failure path; today a failure after the work committed is recorded as cancelled when a cancel is pending"]
+    fn a_failure_after_the_work_committed_is_recorded_failed_even_with_a_cancel_pending() {
+        struct CommitThenFailWithCancel;
+        impl JobExecutor<()> for CommitThenFailWithCancel {
+            fn execute(
+                &self,
+                _job: &JobRecord,
+                cancellation: &CancellationToken,
+                _context: &(),
+            ) -> JobExecution {
+                // The work has committed; the cancel arrives; the handler's own bookkeeping fails.
+                cancellation.cancel();
+                JobExecution::Failed(JobFailure::permanent("bookkeeping failed after the commit"))
+            }
+        }
+        let store = FakeStore::default();
+        let first = job(Schedule::Once);
+        let id = first.id;
+        store.jobs.lock().unwrap().insert(id, first);
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        JobRunner::new(&store)
+            .run_due_with_clock(
+                now,
+                "unlock-1",
+                &(),
+                &CommitThenFailWithCancel,
+                &CancellationToken::new(),
+                &FixedClock(now),
+            )
+            .unwrap();
+
+        assert_eq!(store.jobs.lock().unwrap()[&id].state, JobState::Failed);
     }
 
     #[test]
