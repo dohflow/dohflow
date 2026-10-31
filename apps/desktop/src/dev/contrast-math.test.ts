@@ -48,7 +48,13 @@ describe("contrast math (personal-cfo-4d8.35)", () => {
     expect(contrastRatio([0x2e, 0x94, 0x70], WHITE)).toBeCloseTo(3.76, 2);
     expect(contrastRatio([0x12, 0xa0, 0x6b], [0x0e, 0x14, 0x11])).toBeCloseTo(5.56, 2);
     expect(contrastRatio([0x12, 0xa0, 0x6b], [0x15, 0x1c, 0x18])).toBeCloseTo(5.17, 2);
-    // Light `--input` on `--background` (3.12) and `--card` (3.31).
+    // The shipped `--input` (option A+): Light `#90877f` on `--background` (3.33) and `--card` (3.52),
+    // Dark `#607065` on `--background` (3.55) and `--card` (3.31).
+    expect(contrastRatio([0x90, 0x87, 0x7f], [0xfa, 0xf8, 0xf6])).toBeCloseTo(3.33, 2);
+    expect(contrastRatio([0x90, 0x87, 0x7f], WHITE)).toBeCloseTo(3.52, 2);
+    expect(contrastRatio([0x60, 0x70, 0x65], [0x0e, 0x14, 0x11])).toBeCloseTo(3.55, 2);
+    expect(contrastRatio([0x60, 0x70, 0x65], [0x15, 0x1c, 0x18])).toBeCloseTo(3.31, 2);
+    // Option A, offered earlier and NOT shipped: Light `#948c84` (3.12 / 3.31), Dark `#5f6b63` (3.35 / 3.11).
     expect(contrastRatio([0x94, 0x8c, 0x84], [0xfa, 0xf8, 0xf6])).toBeCloseTo(3.12, 2);
     expect(contrastRatio([0x94, 0x8c, 0x84], WHITE)).toBeCloseTo(3.31, 2);
   });

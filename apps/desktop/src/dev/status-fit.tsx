@@ -121,14 +121,24 @@ function Probe({ label, children }: { label: string; children: React.ReactNode }
   const ref = React.useRef<HTMLDivElement>(null);
   const [res, setRes] = useState<ReturnType<typeof audit> | null>(null);
   useEffect(() => {
-    const id = setTimeout(() => {
-      if (!ref.current) return;
-      const r = audit(ref.current);
-      setRes(r);
-      const w = window as unknown as { __statusFit?: Record<string, unknown> };
-      w.__statusFit = { ...(w.__statusFit ?? {}), [label]: r };
-    }, 150);
-    return () => clearTimeout(id);
+    // Measure only after the web font has loaded: before it, a fallback font has different widths and
+    // a row could read as fitting (or not) for the wrong reason.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    void document.fonts.ready.then(() => {
+      if (cancelled) return;
+      timer = setTimeout(() => {
+        if (!ref.current) return;
+        const r = audit(ref.current);
+        setRes(r);
+        const w = window as unknown as { __statusFit?: Record<string, unknown> };
+        w.__statusFit = { ...(w.__statusFit ?? {}), [label]: r };
+      }, 50);
+    });
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [label]);
   return (
     <section className="flex flex-col gap-1">
