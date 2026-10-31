@@ -275,6 +275,13 @@ handled; hard-code a hex and you've silently opted out of dark mode for that one
   also holds the WCAG contrast floors (4.5:1 for text pairs, 3:1 for the
   chart/semantic tokens against `--card`) in both modes — extend its allowlists
   there, not by skipping the test.
+- **Badge text and control boundaries are guarded too** (`personal-cfo-4d8.35`): the same file
+  pins that a semantic `Badge` label is neutral `--foreground` text with a 3:1 mark on its 10%
+  tint (colored text on its own tint measured below 4.5:1 as rendered), and that `--input`, the
+  boundary of every form control, and `--ring`, the focus ring, clear 3:1 against both `--background`
+  and `--card` in both themes. The tests read the real `badge.tsx` and `globals.css`, but they are
+  **source math**: the browser mixes the tint in oklab and the audit measured about 0.04 of
+  difference, so give a new pair headroom and **measure it rendered** before relying on it.
 - **Charts need no dark-mode code at all**: every chart color is a live
   `var(--chart-N)` (or `var(--gain)`/`var(--loss)`/etc.) string, never a value read
   once via `getComputedStyle` and cached — confirmed across every chart component as

@@ -66,6 +66,9 @@ function isHeld(link: ConnectorAccountLinkDto): boolean {
   );
 }
 
+/// The status badge may wrap its complete label when the lane is narrower than the stamp is long.
+const STATUS_BADGE = "h-auto min-w-0 max-w-full whitespace-normal text-left";
+
 function HealthBadge({ connection }: { connection: ConnectorConnectionDto }) {
   if (
     connection.last_error ||
@@ -82,10 +85,16 @@ function HealthBadge({ connection }: { connection: ConnectorConnectionDto }) {
     (Date.now() - new Date(connection.last_synced_at ?? "").getTime()) /
       86_400_000,
   );
+  // The words, not the tint, say it is out of date (a Badge's mark is only a redundant cue;
+  // docs/agent/FRONTEND.md 7.3, personal-cfo-4d8.35). Fresh and stale must not read the same.
   if (ageDays >= STALE_AFTER_DAYS) {
-    return <Badge variant="warning">Refreshed {stamp}</Badge>;
+    return <Badge variant="warning" className={STATUS_BADGE}>
+        Out of date · refreshed {stamp}
+      </Badge>;
   }
-  return <Badge variant="gain">Refreshed {stamp}</Badge>;
+  return <Badge variant="gain" className={STATUS_BADGE}>
+      Refreshed {stamp}
+    </Badge>;
 }
 
 /// Sentinel select value that opens the create-new-account dialog instead
@@ -208,7 +217,7 @@ const CADENCE_OPTIONS: { value: string; label: string }[] = [
   { value: "manual", label: "Only when I press Refresh now" },
 ];
 
-function ConnectionRow({
+export function ConnectionRow({
   connection,
   providerName,
   credentialNoun,
@@ -243,18 +252,23 @@ function ConnectionRow({
   const cadenceId = `refresh-cadence-${connection.id}`;
   return (
     <div className="rounded-md border p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">
+      {/* The status words and the action must both stay whole (the owner's status-fit condition,
+          personal-cfo-4d8.35): the identity wraps instead of truncating, the lane drops below it
+          when they do not fit side by side, and inside the lane the badge wraps its complete label
+          while Refresh now keeps its size. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="min-w-0 flex-1 basis-40">
+          <p className="break-words text-sm font-medium">
             {connection.display_hint ?? `${providerName} connection`}
           </p>
           <p className="text-xs text-muted-foreground">{providerName}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
           <HealthBadge connection={connection} />
           <Button
             size="sm"
             variant="secondary"
+            className="shrink-0"
             disabled={syncPending}
             onClick={onSync}
           >

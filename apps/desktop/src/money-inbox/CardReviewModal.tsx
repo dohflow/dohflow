@@ -348,8 +348,8 @@ export function CardReviewModal({
                 <p className="flex items-center gap-2 text-sm font-semibold">
                   {position + 1} of {queue.length} to review
                   {resurfaced && (
-                    <Badge variant="warning" className="gap-1">
-                      <RotateCcw className="size-3" aria-hidden /> Resurfaced
+                    <Badge variant="warning" className="gap-1 before:hidden">
+                      <RotateCcw className="size-3 text-warning" aria-hidden /> Resurfaced
                     </Badge>
                   )}
                 </p>

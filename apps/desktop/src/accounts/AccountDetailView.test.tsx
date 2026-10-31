@@ -229,6 +229,54 @@ describe("AccountDetailView", () => {
     expect(screen.getByText("$8,456.42")).toBeInTheDocument();
   });
 
+  // personal-cfo-4d8.35: the words say "Due soon", not only the tint. Today in this fixture is 2026-07-14.
+  describe("the payment-due badge (the words carry the urgency)", () => {
+    const withDue = (due_date: string) =>
+      mocks.cardStatementForecast.mockResolvedValue(
+        ok([{ ...CARD_FORECAST, cycles: [{ ...CARD_FORECAST.cycles[0]!, due_date }] }]),
+      );
+
+    it.each([
+      ["2026-07-14", "Due soon · in 0 days"],
+      ["2026-07-15", "Due soon · in 1 day"],
+      ["2026-07-19", "Due soon · in 5 days"],
+    ])("a payment due %s reads %s", async (due, words) => {
+      withDue(due);
+      renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);
+      expect(await screen.findByText(words)).toBeInTheDocument();
+    });
+
+    it("a payment 6 days away reads only 'in 6 days', without 'Due soon'", async () => {
+      withDue("2026-07-20");
+      renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);
+      expect(await screen.findByText("in 6 days")).toBeInTheDocument();
+      expect(screen.queryByText(/Due soon/)).toBeNull();
+    });
+
+    it("a payment far away reads 'in <n> days'", async () => {
+      renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);
+      expect(await screen.findByText("in 34 days")).toBeInTheDocument();
+      expect(screen.queryByText(/Due soon/)).toBeNull();
+    });
+
+    it("shows no payment-due block, and no badge, when the card has no cycle", async () => {
+      mocks.cardStatementForecast.mockResolvedValue(ok([{ ...CARD_FORECAST, cycles: [] }]));
+      renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);
+      await screen.findByText(/Credit limit/);
+      expect(screen.queryByText(/Payment due/)).toBeNull();
+      expect(screen.queryByText(/Due soon/)).toBeNull();
+      expect(screen.queryByText(/^in \d+ days?$/)).toBeNull();
+    });
+
+    it("shows no badge for a past due date", async () => {
+      withDue("2026-07-10");
+      renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);
+      await screen.findByText(/Payment due/);
+      expect(screen.queryByText(/^in \d+ days?$/)).toBeNull();
+      expect(screen.queryByText(/Due soon/)).toBeNull();
+    });
+  });
+
   it("renders a card: positive owed headline, stats strip, and upcoming statement + payment", async () => {
     renderWithClient(<AccountDetailView accountId={CARD.id} onBack={vi.fn()} />);
     expect(
