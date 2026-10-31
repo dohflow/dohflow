@@ -112,6 +112,7 @@ pub(crate) fn rebuild_in(conn: &Connection, at: &str) -> Result<u64, DbError> {
 /// the user; the kind-specific detail is `payload_json`.
 fn record_change_journal(
     conn: &Connection,
+    id: Uuid,
     item_id: Uuid,
     entry_kind: &str,
     payload_json: &str,
@@ -121,7 +122,7 @@ fn record_change_journal(
         "INSERT INTO change_journal_entries
             (id, item_id, entry_kind, actor, payload_json, created_at)
          VALUES (?1, ?2, ?3, 'user', ?4, ?5)",
-        params![Uuid::now_v7(), item_id, entry_kind, payload_json, at],
+        params![id, item_id, entry_kind, payload_json, at],
     )?;
     Ok(())
 }
@@ -129,12 +130,14 @@ fn record_change_journal(
 /// Record a **snooze** — hide the item until `until` (`YYYY-MM-DD`).
 pub(crate) fn record_snooze(
     conn: &Connection,
+    id: Uuid,
     item_id: Uuid,
     until: &str,
     at: &str,
 ) -> Result<(), DbError> {
     record_change_journal(
         conn,
+        id,
         item_id,
         "snooze",
         &format!("{{\"until\":{}}}", json_str(until)),
@@ -145,12 +148,14 @@ pub(crate) fn record_snooze(
 /// Record a **dismiss** with a typed `reason`.
 pub(crate) fn record_dismiss(
     conn: &Connection,
+    id: Uuid,
     item_id: Uuid,
     reason: &str,
     at: &str,
 ) -> Result<(), DbError> {
     record_change_journal(
         conn,
+        id,
         item_id,
         "dismiss",
         &format!("{{\"reason\":{}}}", json_str(reason)),
