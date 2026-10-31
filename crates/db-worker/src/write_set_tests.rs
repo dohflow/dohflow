@@ -267,13 +267,14 @@ fn a_replace_conflict_is_seen_as_a_change_of_the_replaced_row() {
 #[test]
 fn a_projected_table_enters_the_set_only_through_its_replicated_fields() {
     let (_dir, worker) = worker();
-    // The household record: the SetHouseholdTimezone command's write set is an entry named
-    // "household", keyed by the constant int 1, and never empty.
+    // The household record: since schema version 61 the SetHouseholdTimezone command's write set
+    // is the class-1 `households` row itself, keyed by its uuid, and never empty.
     let changed = dispatch_timezone(&worker, "America/Chicago");
-    assert_eq!(tables(&changed), ["household"]);
+    assert_eq!(tables(&changed), ["households"]);
+    let household = crate::households::household_id(&worker.vault_metadata().unwrap().vault_id);
     assert_eq!(
         changed.rows[0].1,
-        primary_key(&[(Kind::Int, Value::Int(1))]).unwrap()
+        primary_key(&[(Kind::Uuid, Value::Blob(household.as_bytes()))]).unwrap()
     );
     // Setting the same timezone again is an accepted no-op: no row changed.
     let again = dispatch_timezone(&worker, "America/Chicago");

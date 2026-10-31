@@ -36,24 +36,6 @@ bead = "personal-cfo-5ymg8.6"
 note = "Attachment metadata writer outside the bus (blobs are class 1b); AttachDocument / DetachDocument."
 
 [[site]]
-module = "connectors.rs"
-table = "connector_account_links"
-class = "1"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.2"
-note = "Connector mapping writes (upsert link, set account, remap): AC9 of 5ymg8; the cursor and secret tables are class 3."
-
-[[site]]
-module = "connectors.rs"
-table = "connector_connections"
-class = "1"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.2"
-note = "Connector identity create and tombstone: AC9 of 5ymg8 (ADR 0073 Addendum C)."
-
-[[site]]
 module = "debt.rs"
 table = "credit_card_statements"
 class = "1"
@@ -124,6 +106,24 @@ statements = 3
 status = "pending"
 bead = "personal-cfo-5ymg8.3"
 note = "Manual assertions (record_balance_assertion) and the connector staging path (stage_sync_batch DELETE + INSERT) write observations outside the bus."
+
+[[site]]
+module = "households.rs"
+table = "household_members"
+class = "1"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-339"
+note = "seed: the genesis seed of the first member (called by ensure_vault_metadata at vault creation and by migration 61 for an existing vault); id derived from the vault id and every column a pure function of the vault, so independent devices agree and a replica inherits the row through bootstrap. Not a command: no device ever creates a second household or a second seed."
+
+[[site]]
+module = "households.rs"
+table = "households"
+class = "1"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-339"
+note = "seed: the genesis seed of the household row (see household_members); the timezone and name change only through commands."
 
 [[site]]
 module = "lib.rs"

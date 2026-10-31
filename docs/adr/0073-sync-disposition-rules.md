@@ -84,7 +84,7 @@ the shape counts (8 Create, 18 Set, 12 Toggle, 4 Base-dependent), and prints
 the table used below. A new variant without a row fails the test before a
 SYNC-2 implementation can ship it.
 
-#### Create (8)
+#### Create (10)
 
 Create commands append an entity or balanced posting. They auto-apply only
 when the strict predicate holds and all referenced rows are still valid on the
@@ -258,6 +258,17 @@ receives semantic auto-merge treatment.
 | `LinkBillToLoan` | Set | auto iff strict predicate; a loan that is archived or no longer a loan on the new base applies as no link; a second bill for the same loan queue-choose |
 | `UnlinkBillFromLoan` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SetBillNotLoanPayment` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `CreateConnectorConnection` | Create | auto; the same id and adapter again applies as a no-op; queue-edit if the id belongs to another adapter |
+| `UpsertConnectorLink` | Set | auto (an idempotent upsert; applies as a no-op on a deleted connection) |
+| `SetConnectorLinkAccount` | Set | queue-choose if the mapping changed on both sides (applies as a no-op on a deleted connection) |
+| `DeleteConnectorConnection` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate) |
+| `SetHouseholdName` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `AddHouseholdMember` | Create | auto; queue-edit if the member id is already in use |
+| `RenameHouseholdMember` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
+| `SetMemberProfile` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
+| `TransferPrimary` | Base-dependent | queue-choose; re-validated against the new base (the from member must still be the live primary, the to member live), never auto |
+| `RemoveHouseholdMember` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed; queue-edit if the member became the primary |
+| `RestoreHouseholdMember` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -404,6 +415,74 @@ every other tombstone, except that there is no `Reinstate`. Nothing in the gener
 its tally changes in this change, because the connector writes are still raw: the tombstone and
 the classification are in force, and replication of the identity and mapping starts when
 `personal-cfo-5ymg8` lands.
+
+## Addendum D — The connector identity and mapping are commands (2026-10-30, `personal-cfo-5ymg8.2`)
+
+The four writes Addendum C left raw become `WriteCommand`s, so the identity and the mapping
+replicate and survive a rebase: `CreateConnectorConnection` (Create), `UpsertConnectorLink` and
+`SetConnectorLinkAccount` (Set), and `DeleteConnectorConnection` (Toggle with no `Reinstate`, the
+tombstone of Addendum C). That makes **Create 9**, **Set 23**, **Toggle 19** and 60 appendix rows;
+the payloads are additive version 1 payloads. The credential, the refresh watermark and the notice
+are class 3 and never in a payload, a log or a write set: this device stores its credential after
+the create command, and a delete command also scrubs and removes this device's secret, cursors and
+notice (writing the "token removed" audit row keyed by the command) on every device that applies it.
+
+**A race with a delete is an accepted no-op, never a rejection.** A link discovered or a mapping
+changed on one device while another device deleted the connection reaches a replica after the
+tombstone. Refusing it would be a deterministic apply failure that stops every replica over an
+ordinary race, so every command on a tombstoned connection applies as a logged no-op with an empty
+write set. An unknown connection is a producer fault (the create precedes it in the log) and is
+rejected. A discovery that would change nothing is not issued at all, so a refresh does not log or
+sync a no-op.
+
+**Class-3 side effects inside apply: the rule.** Applying a command may touch class-3 (device-local)
+state only when all of these hold: (i) it is **idempotent under replay**, because a rebase replays
+the command and catch-up can apply it again; (ii) it is **monotone**: it clears or destroys, and
+never creates anything a rollback would have to undo; (iii) it **never reads class-3 state to
+decide a class-1 write**, so every device writes the same class-1 rows whatever it holds locally.
+`DeleteConnectorConnection` follows it: the secret, cursor and notice removals are idempotent and
+destroy only, and `had_secret` decides only whether the class-3 audit row is written. That audit
+row (`connector.token_removed_connection_deleted`, keyed by the command id) records a destruction
+that a rebase never undoes, so it is a **stable** event type for the rebase of the mixed
+`audit_events` table (`personal-cfo-bxsbz`), never dropped or re-planned with the replayed
+commands. `SetConnectorLinkAccount`'s cursor clearing is the same kind of effect.
+
+## Addendum E — The household record (2026-10-30, `personal-cfo-339`)
+
+Schema version 61 adds three class-1 tables, `households` (one row per vault), `household_members`
+and `profiles`, written only by seven additive version 1 commands: `SetHouseholdName`,
+`AddHouseholdMember`, `RenameHouseholdMember`, `SetMemberProfile` (Sets, and one Create),
+`TransferPrimary` (Base-dependent) and `RemoveHouseholdMember` / `RestoreHouseholdMember` (Toggles
+over a `deleted_at` tombstone, never a hard delete). That makes **Create 10**, **Set 26**,
+**Toggle 21**, **Base-dependent 5** and 67 appendix rows. **Two roles only: primary and partner.**
+The viewer role was dropped by the owner before anything shipped (`personal-cfo-2bxkg.14`, option
+C), so `household_members.role` is `CHECK (role IN ('primary', 'partner'))`, `AddHouseholdMember`
+always adds a partner and its payload has no role field, and there is no `SetMemberRole` (with one
+non-primary role there is nothing to change); no read-only flag is added, and a future advisor seat
+is `personal-cfo-2bxkg.17`. `SetHouseholdTimezone` keeps its
+payload and its meaning; its write set is now the `households` row instead of the logical
+`household` record (vault-format C.13, spec-version 16).
+
+**State-validated commands.** The primary seat has exactly one live holder. `TransferPrimary`
+names both members and is validated against STATE (`from` must be the live primary, `to` live and
+not primary), so after a rebase a stale `from` is a deterministic rejection at the producer and
+never a second primary. `AddHouseholdMember` never touches the primary seat, and
+the live primary cannot be removed. Apply validates explicitly first; the partial unique index
+`one live primary` is a backstop, and the transfer demotes before it promotes because SQLite checks
+a unique index per statement.
+
+**A role is not access control.** `household_members.role` is display and ownership metadata.
+Every device in the membership chain holds the epoch key and can issue any command, so Sync does
+not enforce a role; nothing may rely on a role for security until an ADR says how it is enforced.
+
+**Seeded rows, deterministic in every column.** The household and the first member are not created
+by a command. They are seeded at vault creation, or by the migration for an existing vault, with
+ids derived from the vault id and every column a pure function of the vault (its own creation
+time, fixed default texts), so two devices that create or migrate the same vault independently
+hold byte-identical class-1 rows. The local ids are for local use: they derive from the sync-visible
+`vault_id` and must never be sent to the platform service (the platform link is
+`platform_household_id` / `platform_member_id`, both null with no account, and no command writes
+them yet).
 
 ## Linked beads
 

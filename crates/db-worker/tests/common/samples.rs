@@ -309,6 +309,35 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "create_connector_connection",
+            WriteCommand::CreateConnectorConnection {
+                id: u(40),
+                adapter_id: "simplefin".into(),
+                display_hint: Some("Primary bank \u{e9}".into()),
+            },
+        ),
+        (
+            "upsert_connector_link",
+            WriteCommand::UpsertConnectorLink {
+                connection_id: u(40),
+                external_id: "ACT-1".into(),
+                external_name: Some("Checking".into()),
+                currency: Some("USD".into()),
+            },
+        ),
+        (
+            "set_connector_link_account",
+            WriteCommand::SetConnectorLinkAccount {
+                connection_id: u(40),
+                external_id: "ACT-1".into(),
+                account_id: Some(account(1)),
+            },
+        ),
+        (
+            "delete_connector_connection",
+            WriteCommand::DeleteConnectorConnection { id: u(40) },
+        ),
+        (
             "create_source_batch",
             WriteCommand::CreateSourceBatch {
                 id: SourceBatchId::from_uuid(u(19)),
@@ -487,6 +516,50 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             WriteCommand::SetHouseholdTimezone {
                 timezone: "America/Chicago".into(),
             },
+        ),
+        (
+            "set_household_name",
+            WriteCommand::SetHouseholdName {
+                name: "The Garcia household".into(),
+            },
+        ),
+        (
+            "add_household_member",
+            WriteCommand::AddHouseholdMember {
+                member_id: u(60),
+                display_name: "Sam".into(),
+            },
+        ),
+        (
+            "rename_household_member",
+            WriteCommand::RenameHouseholdMember {
+                member_id: u(60),
+                display_name: "Samuel".into(),
+            },
+        ),
+        (
+            "set_member_profile",
+            WriteCommand::SetMemberProfile {
+                member_id: u(60),
+                initials: Some("SG".into()),
+                color: Some("#3366CC".into()),
+            },
+        ),
+        // The primary's id is derived from the vault; the oracle fills it in.
+        (
+            "transfer_primary",
+            WriteCommand::TransferPrimary {
+                from_member_id: u(0),
+                to_member_id: u(60),
+            },
+        ),
+        (
+            "remove_household_member",
+            WriteCommand::RemoveHouseholdMember { member_id: u(0) },
+        ),
+        (
+            "restore_household_member",
+            WriteCommand::RestoreHouseholdMember { member_id: u(0) },
         ),
     ]
 }

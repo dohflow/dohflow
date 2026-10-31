@@ -210,13 +210,17 @@ now needs the owner's merge must be unmistakable. The procedure
    exact head they reviewed, and then it passes. In the merge queue each entry is gated on
    its own and gates only the pull request named in its
    `gh-readonly-queue/<base>/pr-<N>-<sha>` ref (the `<sha>` there is the entry's base): that
-   pull request must carry the label **and** its current head must be an ancestor of the
-   commit the queue is testing, so a head pushed after the review cannot be the one that
-   merges. It fails closed (an unreadable ref, a lookup error, a missing label) and uses
-   only the read-only token. **It is a guardrail, not a security boundary**: labels are not
-   permission-restricted on GitHub and a pull request can edit the workflow (ADR 0071).
-   **Limitation:** removing the label after a queue entry's run has passed does not eject
-   the entry; only a new commit does. The check is added to the `main` ruleset by
+   pull request must carry the label **and** its current head must **equal the SHA in the
+   newest `<!-- review-verdict: PASS <full-sha> -->` marker** in the reviewer's comments, with
+   no later marker for another verdict (the queue squash-merges, so ancestry cannot bind the
+   head). **Every verdict comment ends with that hidden marker.** The gate fails closed (an
+   unreadable ref, a lookup error, no marker, a malformed marker, a SHA mismatch, a missing
+   label) and uses only the read-only token. **It is a guardrail against mistakes, not
+   malice**: labels are not permission-restricted on GitHub, any commenter can write a marker,
+   and a pull request can edit the workflow (ADR 0071). **Limitations:** the head binding
+   relies on GitHub dequeuing an entry when the pull request gets a new commit plus the label
+   removal, and removing the label after a queue entry's run has passed does not eject the
+   entry; only a new commit does. The check is added to the `main` ruleset by
    `00-overseer` once it has run green on a real pull request and a merge-group run (it is
    not required before that, or every open pull request would stall); its job name,
    `Review gate`, must stay stable.

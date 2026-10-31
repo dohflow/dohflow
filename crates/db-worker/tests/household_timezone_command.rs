@@ -55,13 +55,10 @@ fn a_change_goes_through_the_bus_and_logs_an_operation_and_an_audit_event() {
     assert_eq!(actor_id, m.actor_id);
     assert_eq!(key, m.idempotency_key);
     let entities = String::from_utf8(entities).unwrap();
+    assert!(entities.contains("\"table\":\"households\""), "{entities}");
     assert!(
-        entities.contains("\"table\":\"vault_metadata\""),
-        "{entities}"
-    );
-    assert!(
-        entities.contains(&metadata.vault_id.to_string()),
-        "the entity is the vault: {entities}"
+        entities.contains(&db_worker::households::household_id(&metadata.vault_id).to_string()),
+        "the entity is the household: {entities}"
     );
 
     // The audit event is tied to the same command and correlation ids.
@@ -217,9 +214,10 @@ fn string_literals(source: &str) -> Vec<String> {
 }
 
 /// The only raw write of `household_timezone` is inside `apply/`, in the one function
-/// the command runs. The vault bootstrap `INSERT` that seeds the singleton row with the
-/// `UTC` default is the sole other site: it runs before any command exists, and every
-/// later change is this command.
+/// the command runs. The genesis seed of the household row (`households::seed`, schema version
+/// 61 and later) and the bootstrap `INSERT` into `vault_metadata` for a database caught at a
+/// pre-61 prefix are the other sites: they run before any command exists, and every later change
+/// is this command.
 #[test]
 fn no_other_code_path_writes_household_timezone() {
     let root = repo_root();
@@ -238,7 +236,10 @@ fn no_other_code_path_writes_household_timezone() {
         writers,
         vec![
             "crates/db-worker/src/apply/household.rs".to_owned(),
-            "crates/db-worker/src/lib.rs".to_owned(), // the bootstrap INSERT, see above
+            "crates/db-worker/src/households.rs".to_owned(), // the genesis seed, see above
+            "crates/db-worker/src/lib.rs".to_owned(),        // the pre-61 prefix INSERT, see above
+            "crates/db-worker/src/migrations.rs".to_owned(), // migration 61's up and down SQL
+            "crates/db-worker/src/migrations.rs".to_owned(),
         ],
         "household_timezone must be written only by the SetHouseholdTimezone apply function \
          (and the bootstrap seed row)"

@@ -72,7 +72,8 @@ struct Projection {
     logical_table: &'static str,
     columns: &'static [&'static str],
     key: &'static [&'static str],
-    /// A constant key for a singleton source row (the household record), as `int`.
+    /// A constant key for a singleton source row, as `int` (none today; the household record is
+    /// the class-1 `households` table since schema version 61).
     constant_key: Option<i64>,
     /// `settings` only: the row filter, a key prefix and the legacy unprefixed key names.
     key_prefixes: &'static [&'static str],
@@ -100,14 +101,6 @@ const PROJECTIONS: &[Projection] = &[
         key: &["key"],
         constant_key: None,
         key_prefixes: &["user."],
-    },
-    Projection {
-        source: "vault_metadata",
-        logical_table: "household",
-        columns: &["household_timezone"],
-        key: &[],
-        constant_key: Some(1),
-        key_prefixes: &[],
     },
 ];
 
@@ -1117,8 +1110,7 @@ fn full_capture_tables() -> Vec<String> {
 ///
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
-/// * the rows of `balance_observations`, `category_aliases`, `connector_account_links`,
-///   `connector_connections`, `credit_card_cycles`,
+/// * the rows of `balance_observations`, `category_aliases`, `credit_card_cycles`,
 ///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
 ///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
 ///   reach the command bus with `personal-cfo-5ymg8`;
@@ -1135,20 +1127,23 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("category_aliases", &["bi", "bu", "bd"]),
     ("change_journal_entries", &["bu", "bd"]),
     ("confirmed_obligations", &["bu"]),
-    ("connector_account_links", &["bi", "bu", "bd"]),
-    ("connector_connections", &["bi", "bu", "bd"]),
+    ("connector_account_links", &["bd"]),
+    ("connector_connections", &["bd"]),
     ("credit_card_cycles", &["bi", "bu", "bd"]),
     ("credit_card_statements", &["bu", "bd"]),
     ("debt_terms", &["bu", "bd"]),
     ("dedupe_decisions", &["bu", "bd"]),
     ("forecast_assumption_events", &["bd"]),
     ("forecast_dependency_edges", &["bi", "bu", "bd"]),
+    ("household_members", &["bd"]),
+    ("households", &["bi", "bd"]),
     ("income_sources", &["bd"]),
     ("ledger_accounts", &["bu", "bd"]),
     ("ledger_transactions", &["bd"]),
     ("manual_entry_links", &["bi", "bu", "bd"]),
     ("merchant_aliases", &["bi", "bu", "bd"]),
     ("merchant_identities", &["bi", "bu", "bd"]),
+    ("profiles", &["bu", "bd"]),
     ("recurring_event_instances", &["bi", "bu", "bd"]),
     ("recurring_event_tags", &["bu", "bd"]),
     ("recurring_events", &["bd"]),
@@ -1229,6 +1224,10 @@ mod all_variants {
         "link_bill_to_loan",
         "unlink_bill_from_loan",
         "set_bill_not_loan_payment",
+        "create_connector_connection",
+        "upsert_connector_link",
+        "set_connector_link_account",
+        "delete_connector_connection",
         "create_source_batch",
         "attach_source_record",
         "update_batch_state",
@@ -1241,12 +1240,21 @@ mod all_variants {
         "revert_scenario_apply",
         "void_transaction",
         "set_household_timezone",
+        "set_household_name",
+        "add_household_member",
+        "rename_household_member",
+        "set_member_profile",
+        "transfer_primary",
+        "remove_household_member",
+        "restore_household_member",
     ];
 
     /// Ids the setup learns at run time (staging mints its own).
     #[derive(Default)]
     struct Runtime {
         staged: Vec<Uuid>,
+        /// The vault's first member, whose id derives from the vault id.
+        primary: Option<Uuid>,
     }
 
     fn account_cmd(n: u128, name: &str, role: CashflowRole) -> WriteCommand {
@@ -1469,7 +1477,20 @@ mod all_variants {
     }
 
     fn command_for_inner(name: &str, sample: WriteCommand, rt: &Runtime) -> WriteCommand {
+        let primary = rt.primary.expect("the primary member's id");
         match (name, sample) {
+            ("transfer_primary", WriteCommand::TransferPrimary { to_member_id, .. }) => {
+                WriteCommand::TransferPrimary {
+                    from_member_id: primary,
+                    to_member_id,
+                }
+            }
+            ("remove_household_member", _) => {
+                WriteCommand::RemoveHouseholdMember { member_id: primary }
+            }
+            ("restore_household_member", _) => {
+                WriteCommand::RestoreHouseholdMember { member_id: primary }
+            }
             (
                 "confirm_obligation_early",
                 WriteCommand::ConfirmObligationEarly {
@@ -1663,7 +1684,12 @@ mod all_variants {
         );
 
         let (_dir, worker) = worker();
-        let mut rt = Runtime::default();
+        let mut rt = Runtime {
+            primary: Some(db_worker::households::primary_member_id(
+                &worker.vault_metadata().unwrap().vault_id,
+            )),
+            ..Runtime::default()
+        };
         let mut by_name: std::collections::BTreeMap<&str, WriteCommand> =
             samples().into_iter().collect();
         let mut exercised = std::collections::BTreeSet::new();
@@ -1678,7 +1704,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 56, "every variant ran");
+        assert_eq!(checked, 67, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

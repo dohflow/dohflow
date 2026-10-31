@@ -390,3 +390,31 @@ fn two_allocators_for_the_same_command_agree_without_sharing_state() {
         assert_eq!(original.next("x").unwrap(), replay.next("x").unwrap());
     }
 }
+
+#[test]
+fn a_singleton_id_is_a_pure_function_of_the_vault_and_the_label_with_known_answers() {
+    // Computed independently with Python's hmac/hashlib from the construction in the doc.
+    let key = sample_key();
+    assert_eq!(
+        key.singleton_id("household").unwrap().to_string(),
+        "d2d7ffd9-0631-8846-9da0-3c77affb2a3d"
+    );
+    assert_eq!(
+        key.singleton_id("primary-member").unwrap().to_string(),
+        "dacd5f62-1557-8e88-af8f-a201f33526b0"
+    );
+    // Version 8, variant 10.
+    let id = key.singleton_id("household").unwrap();
+    assert_eq!(id.get_version_num(), 8);
+    assert_eq!(id.as_bytes()[8] >> 6, 0b10);
+    // Another vault or another label is another id.
+    let other = DerivedIdKey::for_vault(&Uuid::from_u128(1));
+    assert_ne!(other.singleton_id("household").unwrap(), id);
+    assert_ne!(key.singleton_id("primary-member").unwrap(), id);
+    // The label rules are the tag rules.
+    assert_eq!(key.singleton_id("").unwrap_err(), DerivedIdError::EmptyTag);
+    assert_eq!(
+        key.singleton_id("has space").unwrap_err(),
+        DerivedIdError::TagNotPrintableAscii
+    );
+}

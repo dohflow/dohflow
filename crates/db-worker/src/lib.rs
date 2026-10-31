@@ -53,6 +53,7 @@ mod band_drift;
 mod categories;
 mod column_manifest;
 mod connectors;
+pub mod households;
 pub mod payload;
 pub mod reject;
 pub use reject::RejectCode;
@@ -622,6 +623,48 @@ pub enum WriteCommand {
         /// The loan the bill is not the payment of, or `None` to clear the answer.
         loan_account_id: Option<AccountId>,
     },
+    /// Create a connector connection's IDENTITY (personal-cfo-5ymg8.2; ADR 0074 Addendum B): which
+    /// provider and what it is called. Class 1: it replicates. The credential is class 3 and is
+    /// never in a payload; it is stored on this device afterwards. The same id and adapter again
+    /// is an accepted no-op.
+    CreateConnectorConnection {
+        /// The connection id, minted by the caller.
+        id: Uuid,
+        /// The provider's registry token (for example `simplefin`).
+        adapter_id: String,
+        /// A name to recognize the connection by, if the provider gave one.
+        display_hint: Option<String>,
+    },
+    /// Record an external account a connection exposes, or refresh it (personal-cfo-5ymg8.2): the
+    /// name, and the currency when the provider states one. Never clobbers the user's mapping or
+    /// a known currency. On a deleted connection it is an accepted no-op.
+    UpsertConnectorLink {
+        /// The connection.
+        connection_id: Uuid,
+        /// The provider's stable account key.
+        external_id: String,
+        /// The provider's name for the account.
+        external_name: Option<String>,
+        /// An uppercase three-letter ISO code, when the provider states one.
+        currency: Option<String>,
+    },
+    /// Map an external account onto a DohFlow account, or unmap it with `None`
+    /// (personal-cfo-5ymg8.2). Also clears this device's refresh watermark for the account.
+    SetConnectorLinkAccount {
+        /// The connection.
+        connection_id: Uuid,
+        /// The provider's account key.
+        external_id: String,
+        /// The DohFlow account to feed, or `None` to unmap.
+        account_id: Option<AccountId>,
+    },
+    /// Forget a connection (personal-cfo-5ymg8.2; ADR 0073 Addendum C and D): tombstone its
+    /// identity (never a hard delete) and remove this device's credential, watermarks and notice
+    /// for it. There is no reinstate: a new connection needs a new setup token and a new id.
+    DeleteConnectorConnection {
+        /// The connection.
+        id: Uuid,
+    },
     /// Open an ingestion source batch (ADR 0008, personal-cfo-3bb). Status starts
     /// at `parsing`; importers stage records under it, then advance its state.
     CreateSourceBatch {
@@ -851,6 +894,59 @@ pub enum WriteCommand {
         /// The IANA zone name, for example `America/Chicago`.
         timezone: String,
     },
+    /// Rename the household (personal-cfo-339). A name that is already set is an accepted no-op.
+    SetHouseholdName {
+        /// The new name: 1 to 100 characters after trimming.
+        name: String,
+    },
+    /// Add a household member as a PARTNER (personal-cfo-339). The id is minted by the caller,
+    /// never in apply. The primary seat exists from the start and moves only through
+    /// [`WriteCommand::TransferPrimary`]. A role is DISPLAY and ownership metadata, not access
+    /// control: every device holds the vault key and can issue any command. There is no viewer
+    /// role in v1 (owner decision 2026-10-30), so the payload has no role field.
+    AddHouseholdMember {
+        /// The new member's id.
+        member_id: Uuid,
+        /// The display name: 1 to 100 characters after trimming.
+        display_name: String,
+    },
+    /// Rename a live member (personal-cfo-339).
+    RenameHouseholdMember {
+        /// The member.
+        member_id: Uuid,
+        /// The new display name.
+        display_name: String,
+    },
+    /// Move the primary seat from the live primary to another live member in one atomic step,
+    /// so exactly one live primary exists at every point (personal-cfo-339). The old primary
+    /// becomes a partner. Validated against STATE: `from_member_id` must be the live primary.
+    TransferPrimary {
+        /// The current live primary.
+        from_member_id: Uuid,
+        /// The live partner who becomes primary.
+        to_member_id: Uuid,
+    },
+    /// Remove a member by tombstone (`deleted_at` = the command's `issued_at`), never a hard
+    /// delete (personal-cfo-339). The live primary cannot be removed.
+    RemoveHouseholdMember {
+        /// The member.
+        member_id: Uuid,
+    },
+    /// Restore a tombstoned member (personal-cfo-339).
+    RestoreHouseholdMember {
+        /// The member.
+        member_id: Uuid,
+    },
+    /// Set a live member's non-secret display preferences (personal-cfo-339). Clearing both
+    /// fields keeps the row with empty values (a replicated row is never deleted).
+    SetMemberProfile {
+        /// The member.
+        member_id: Uuid,
+        /// One to four characters, or none.
+        initials: Option<String>,
+        /// A `#RRGGBB` color, or none.
+        color: Option<String>,
+    },
 }
 
 impl WriteCommand {
@@ -890,6 +986,10 @@ impl WriteCommand {
             WriteCommand::LinkBillToLoan { .. } => "link_bill_to_loan",
             WriteCommand::UnlinkBillFromLoan { .. } => "unlink_bill_from_loan",
             WriteCommand::SetBillNotLoanPayment { .. } => "set_bill_not_loan_payment",
+            WriteCommand::CreateConnectorConnection { .. } => "create_connector_connection",
+            WriteCommand::UpsertConnectorLink { .. } => "upsert_connector_link",
+            WriteCommand::SetConnectorLinkAccount { .. } => "set_connector_link_account",
+            WriteCommand::DeleteConnectorConnection { .. } => "delete_connector_connection",
             WriteCommand::RestoreRecurringBill(_) => "restore_recurring_bill",
             WriteCommand::CreateSourceBatch { .. } => "create_source_batch",
             WriteCommand::AttachSourceRecord { .. } => "attach_source_record",
@@ -903,6 +1003,13 @@ impl WriteCommand {
             WriteCommand::UpdateCategory { .. } => "update_category",
             WriteCommand::MoveCategory { .. } => "move_category",
             WriteCommand::SetHouseholdTimezone { .. } => "set_household_timezone",
+            WriteCommand::SetHouseholdName { .. } => "set_household_name",
+            WriteCommand::AddHouseholdMember { .. } => "add_household_member",
+            WriteCommand::RenameHouseholdMember { .. } => "rename_household_member",
+            WriteCommand::TransferPrimary { .. } => "transfer_primary",
+            WriteCommand::RemoveHouseholdMember { .. } => "remove_household_member",
+            WriteCommand::RestoreHouseholdMember { .. } => "restore_household_member",
+            WriteCommand::SetMemberProfile { .. } => "set_member_profile",
             WriteCommand::ArchiveCategory(_) => "archive_category",
             WriteCommand::ReinstateCategory(_) => "reinstate_category",
             WriteCommand::RecategorizeTransaction { .. } => "recategorize_transaction",
@@ -5018,24 +5125,58 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
         )?;
         return Ok(());
     }
-    conn.execute(
-        "INSERT INTO vault_metadata (
-            singleton, vault_id, schema_version, envelope_version,
-            kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
-            household_timezone, manifest_pointer, created_at
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
-        params![
-            Uuid::now_v7(),
-            schema_version,
-            VAULT_ENVELOPE_VERSION,
-            DEFAULT_KDF_ALGORITHM,
-            DEFAULT_KDF_MEMORY_KIB,
-            DEFAULT_KDF_TIME_COST,
-            DEFAULT_KDF_PARALLELISM,
-            DEFAULT_HOUSEHOLD_TIMEZONE,
-            Utc::now().to_rfc3339(),
-        ],
+    let vault_id = Uuid::now_v7();
+    let created_at = Utc::now().to_rfc3339();
+    // Schema version 61 moved the household timezone off this row onto `households`. A
+    // database caught between migrations (a crash, or a test that stops at a prefix) still has
+    // the old column and no household table, so its row keeps the old shape and nothing is
+    // seeded; the migration seeds it when it runs.
+    let has_households: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'households')",
+        [],
+        |r| r.get(0),
     )?;
+    if has_households {
+        conn.execute(
+            "INSERT INTO vault_metadata (
+                singleton, vault_id, schema_version, envelope_version,
+                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                manifest_pointer, created_at
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+            params![
+                vault_id,
+                schema_version,
+                VAULT_ENVELOPE_VERSION,
+                DEFAULT_KDF_ALGORITHM,
+                DEFAULT_KDF_MEMORY_KIB,
+                DEFAULT_KDF_TIME_COST,
+                DEFAULT_KDF_PARALLELISM,
+                created_at,
+            ],
+        )?;
+        // The genesis seed of the household and its first member, from the vault's own id and
+        // creation time (personal-cfo-339).
+        households::seed(conn, &vault_id, DEFAULT_HOUSEHOLD_TIMEZONE, &created_at)?;
+    } else {
+        conn.execute(
+            "INSERT INTO vault_metadata (
+                singleton, vault_id, schema_version, envelope_version,
+                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                household_timezone, manifest_pointer, created_at
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+            params![
+                vault_id,
+                schema_version,
+                VAULT_ENVELOPE_VERSION,
+                DEFAULT_KDF_ALGORITHM,
+                DEFAULT_KDF_MEMORY_KIB,
+                DEFAULT_KDF_TIME_COST,
+                DEFAULT_KDF_PARALLELISM,
+                DEFAULT_HOUSEHOLD_TIMEZONE,
+                created_at,
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -6883,11 +7024,25 @@ pub(crate) fn read_recurring_transfer_views(
 }
 
 fn read_vault_metadata(conn: &Connection) -> Result<VaultMetadata, DbError> {
+    // This also runs on a vault still at an older schema (the pre-migration inspection), where
+    // the timezone is the `vault_metadata` column; from schema version 61 it is the households row.
+    let on_households: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'households')",
+        [],
+        |r| r.get(0),
+    )?;
+    let timezone = if on_households {
+        "(SELECT household_timezone FROM households LIMIT 1)"
+    } else {
+        "household_timezone"
+    };
     conn.query_row(
-        "SELECT vault_id, schema_version, envelope_version, kdf_algorithm,
-                kdf_memory_kib, kdf_time_cost, kdf_parallelism, household_timezone,
-                manifest_pointer
-         FROM vault_metadata WHERE singleton = 1",
+        &format!(
+            "SELECT vault_id, schema_version, envelope_version, kdf_algorithm,
+                    kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+                    {timezone}, manifest_pointer
+             FROM vault_metadata WHERE singleton = 1"
+        ),
         [],
         |r| {
             Ok(VaultMetadata {
@@ -6898,11 +7053,18 @@ fn read_vault_metadata(conn: &Connection) -> Result<VaultMetadata, DbError> {
                 kdf_memory_kib: r.get(4)?,
                 kdf_time_cost: r.get(5)?,
                 kdf_parallelism: r.get(6)?,
-                household_timezone: r.get(7)?,
+                // NULL only when the households table is empty (a transient, unexpected state).
+                household_timezone: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
                 manifest_pointer: r.get(8)?,
             })
         },
     )
+    .and_then(|metadata| {
+        if on_households && metadata.household_timezone.is_empty() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(metadata)
+    })
     .map_err(|error| match error {
         rusqlite::Error::QueryReturnedNoRows => {
             DbError::SelfTestFailed("vault_metadata row is missing".to_owned())
@@ -7184,6 +7346,44 @@ fn apply_command(
             event_id,
             loan_account_id,
         } => apply::recurring::apply_set_bill_not_loan_payment(&tx, event_id, loan_account_id)?,
+        WriteCommand::CreateConnectorConnection {
+            id,
+            adapter_id,
+            display_hint,
+        } => apply::connector_cmds::apply_create_connector_connection(
+            &tx,
+            meta,
+            id,
+            adapter_id,
+            display_hint.as_deref(),
+        )?,
+        WriteCommand::UpsertConnectorLink {
+            connection_id,
+            external_id,
+            external_name,
+            currency,
+        } => apply::connector_cmds::apply_upsert_connector_link(
+            &tx,
+            meta,
+            connection_id,
+            external_id,
+            external_name.as_deref(),
+            currency.as_deref(),
+        )?,
+        WriteCommand::SetConnectorLinkAccount {
+            connection_id,
+            external_id,
+            account_id,
+        } => apply::connector_cmds::apply_set_connector_link_account(
+            &tx,
+            meta,
+            connection_id,
+            external_id,
+            account_id.map(|a| a.as_uuid()),
+        )?,
+        WriteCommand::DeleteConnectorConnection { id } => {
+            apply::connector_cmds::apply_delete_connector_connection(&tx, meta, id)?
+        }
         WriteCommand::CreateSourceBatch {
             id,
             source_type,
@@ -7292,6 +7492,38 @@ fn apply_command(
         WriteCommand::SetHouseholdTimezone { timezone } => {
             apply::household::apply_set_household_timezone(&tx, meta, timezone)?
         }
+        WriteCommand::SetHouseholdName { name } => {
+            apply::household::apply_set_household_name(&tx, meta, name)?
+        }
+        WriteCommand::AddHouseholdMember {
+            member_id,
+            display_name,
+        } => apply::household::apply_add_member(&tx, meta, member_id, display_name)?,
+        WriteCommand::RenameHouseholdMember {
+            member_id,
+            display_name,
+        } => apply::household::apply_rename_member(&tx, member_id, display_name)?,
+        WriteCommand::TransferPrimary {
+            from_member_id,
+            to_member_id,
+        } => apply::household::apply_transfer_primary(&tx, from_member_id, to_member_id)?,
+        WriteCommand::RemoveHouseholdMember { member_id } => {
+            apply::household::apply_remove_member(&tx, meta, member_id)?
+        }
+        WriteCommand::RestoreHouseholdMember { member_id } => {
+            apply::household::apply_restore_member(&tx, member_id)?
+        }
+        WriteCommand::SetMemberProfile {
+            member_id,
+            initials,
+            color,
+        } => apply::household::apply_set_member_profile(
+            &tx,
+            meta,
+            member_id,
+            initials.as_deref(),
+            color.as_deref(),
+        )?,
         WriteCommand::ArchiveCategory(id) => {
             apply::categorization_cmds::apply_archive_category(&tx, meta, id)?
         }
@@ -7371,6 +7603,11 @@ fn apply_command(
         | WriteCommand::LinkBillToLoan { .. }
         | WriteCommand::UnlinkBillFromLoan { .. }
         | WriteCommand::SetBillNotLoanPayment { .. } => "recurring_events",
+        WriteCommand::CreateConnectorConnection { .. }
+        | WriteCommand::DeleteConnectorConnection { .. } => "connector_connections",
+        WriteCommand::UpsertConnectorLink { .. } | WriteCommand::SetConnectorLinkAccount { .. } => {
+            "connector_account_links"
+        }
         WriteCommand::CreateSourceBatch { .. } | WriteCommand::UpdateBatchState { .. } => {
             "source_batches"
         }
@@ -7400,9 +7637,17 @@ fn apply_command(
         }
         WriteCommand::DismissRecurringSuggestion { .. } => "recurring_suggestion_suppressions",
         WriteCommand::SetCardStatementBalance { .. } => "credit_card_statements",
-        // The household timezone lives on the singleton vault_metadata row; its entity id
-        // is the vault id (personal-cfo-g3m.8).
-        WriteCommand::SetHouseholdTimezone { .. } => "vault_metadata",
+        // The household timezone lives on the singleton households row (personal-cfo-339;
+        // it was on vault_metadata before schema version 61).
+        WriteCommand::SetHouseholdTimezone { .. } | WriteCommand::SetHouseholdName { .. } => {
+            "households"
+        }
+        WriteCommand::AddHouseholdMember { .. }
+        | WriteCommand::RenameHouseholdMember { .. }
+        | WriteCommand::TransferPrimary { .. }
+        | WriteCommand::RemoveHouseholdMember { .. }
+        | WriteCommand::RestoreHouseholdMember { .. } => "household_members",
+        WriteCommand::SetMemberProfile { .. } => "profiles",
         WriteCommand::CreateCategory { .. }
         | WriteCommand::UpdateCategory { .. }
         | WriteCommand::MoveCategory { .. }

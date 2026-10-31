@@ -9,6 +9,10 @@
 # forecast and backup modules), and it may only SHRINK: `tests/unclassified_sites.rs` fails when a
 # module's count rises, and when it falls without this ledger being lowered with it.
 #
+# Baseline reconciliation: `apply/connector_cmds.rs` and the household commands in
+# `apply/household.rs` landed on main after this ledger was first written; their existing sites are
+# baselined here, not newly added by the change that brought the ledger.
+#
 # The follow-up bead's AC is zero unclassified rejections reachable from `apply_command`
 # (constraint codes included) before Sync ships to users. Moving a site to `Rejected` later changes
 # only whether a void can name it, never what the command writes (both outcomes apply nothing), so
@@ -19,8 +23,12 @@ module = "apply/accounts.rs"
 statements = 1
 
 [[site]]
+module = "apply/connector_cmds.rs"
+statements = 7
+
+[[site]]
 module = "apply/household.rs"
-statements = 2
+statements = 12
 
 [[site]]
 module = "apply/ingestion_cmds.rs"

@@ -3982,7 +3982,7 @@ fn household_today_at_resolves_the_local_date_not_utc() {
     let (_dir, worker) = worker();
     let conn = worker.read_connection().unwrap();
     conn.execute(
-        "UPDATE vault_metadata SET household_timezone = ?1 WHERE singleton = 1",
+        "UPDATE households SET household_timezone = ?1",
         ["America/Los_Angeles"],
     )
     .unwrap();
@@ -4019,7 +4019,7 @@ fn a_bill_due_today_local_is_not_past_due_at_2330_local() {
     let (_dir, worker) = worker();
     let conn = worker.read_connection().unwrap();
     conn.execute(
-        "UPDATE vault_metadata SET household_timezone = ?1 WHERE singleton = 1",
+        "UPDATE households SET household_timezone = ?1",
         ["America/Los_Angeles"],
     )
     .unwrap();

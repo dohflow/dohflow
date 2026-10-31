@@ -85,6 +85,12 @@ The comment contains, in order:
   required verification
 - Verdict
 - Confirmation that the PR head still equalled the reviewed SHA at verdict time
+- As the last line, the hidden verdict marker the Review gate reads, written
+  exactly once: `<!-- review-verdict: <PASS|CHANGES_REQUIRED|HUMAN_DECISION_REQUIRED> <full-40-char-sha> -->`
+  with the full 40-character SHA you reviewed. Post it on every verdict, not only
+  `PASS`: a later non-`PASS` marker withdraws an earlier `PASS`. Never quote its
+  opening text anywhere else in a PR comment; a stray or malformed marker makes
+  the gate fail closed.
 
 ## Verdict — exactly one
 

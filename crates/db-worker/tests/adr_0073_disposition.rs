@@ -2,7 +2,7 @@
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
 //! silently going stale as `WriteCommand` grows. It deliberately parses the
-//! enum declaration rather than constructing all 56 payloads, so a new variant
+//! enum declaration rather than constructing all 67 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
 //! can ship a command with no rebase rule. It also compares every checked-in
 //! ADR cell against this table and proves that a one-cell outcome drift fails.
@@ -231,6 +231,63 @@ const DISPOSITIONS: &[Disposition] = &[
         Shape::Set,
         "queue-choose (scalar; idempotent no-op is auto)",
     ),
+    // The connector identity and mapping (personal-cfo-5ymg8.2; ADR 0073 Addendum D).
+    d(
+        "CreateConnectorConnection",
+        Shape::Create,
+        "auto; the same id and adapter again applies as a no-op; queue-edit if the id belongs to another adapter",
+    ),
+    d(
+        "UpsertConnectorLink",
+        Shape::Set,
+        "auto (an idempotent upsert; applies as a no-op on a deleted connection)",
+    ),
+    d(
+        "SetConnectorLinkAccount",
+        Shape::Set,
+        "queue-choose if the mapping changed on both sides (applies as a no-op on a deleted connection)",
+    ),
+    d(
+        "DeleteConnectorConnection",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate)",
+    ),
+    // The household record (personal-cfo-339; ADR 0073 Addendum E).
+    d(
+        "SetHouseholdName",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto)",
+    ),
+    d(
+        "AddHouseholdMember",
+        Shape::Create,
+        "auto; queue-edit if the member id is already in use",
+    ),
+    d(
+        "RenameHouseholdMember",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed",
+    ),
+    d(
+        "SetMemberProfile",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed",
+    ),
+    d(
+        "TransferPrimary",
+        Shape::BaseDependent,
+        "queue-choose; re-validated against the new base (the from member must still be the live primary, the to member live), never auto",
+    ),
+    d(
+        "RemoveHouseholdMember",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed; queue-edit if the member became the primary",
+    ),
+    d(
+        "RestoreHouseholdMember",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
+    ),
     d(
         "SnoozeInboxItem",
         Shape::Toggle,
@@ -440,7 +497,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        56,
+        67,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -468,10 +525,10 @@ fn disposition_appendix_covers_every_write_command_variant() {
     }
 
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
-    assert_eq!(shape_count(Shape::Create), 8);
-    assert_eq!(shape_count(Shape::Set), 21);
-    assert_eq!(shape_count(Shape::Toggle), 18);
-    assert_eq!(shape_count(Shape::BaseDependent), 4);
+    assert_eq!(shape_count(Shape::Create), 10);
+    assert_eq!(shape_count(Shape::Set), 26);
+    assert_eq!(shape_count(Shape::Toggle), 21);
+    assert_eq!(shape_count(Shape::BaseDependent), 5);
     assert_eq!(shape_count(Shape::TombstoneFirst), 0);
     assert_eq!(shape_count(Shape::ReshapeFirst), 4);
     assert_eq!(shape_count(Shape::NeverShips), 1);
