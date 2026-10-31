@@ -32,7 +32,8 @@ macro_rules! token_enum {
         $vis:vis enum $name:ident { $($variant:ident => $token:literal),+ $(,)? }
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
         $vis enum $name { $($variant),+ }
 
         impl $name {
@@ -108,8 +109,9 @@ token_enum! {
 }
 
 /// The fields needed to record a new assumption event. On write the status is
-/// set `Active` and both timestamps to "now".
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// set `Active` and both timestamps to the command's `issued_at`. The event carries no run:
+/// a run is class 2 and never replicates, and no producer ever set one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NewAssumptionEvent {
     /// Caller-supplied id (time-ordered `Uuid::now_v7`).
     pub id: Uuid,
@@ -124,9 +126,6 @@ pub struct NewAssumptionEvent {
     pub source: AssumptionSource,
     /// `Some` = scenario-specific; `None` = a base assumption.
     pub scenario_id: Option<Uuid>,
-    /// The run during which the event was authored (provenance only — the
-    /// event is not tied to that run's lifecycle).
-    pub origin_run_id: Option<Uuid>,
 }
 
 /// A stored assumption event (the read model over `forecast_assumption_events`).

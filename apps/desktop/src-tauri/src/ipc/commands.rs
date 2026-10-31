@@ -4878,8 +4878,7 @@ pub fn update_manual_future_entry_impl(
     let account_id = parse_optional_account(&input.account_id)?;
     let id = Uuid::now_v7();
     with_kernel(state, |kernel| {
-        kernel.record_manual_entry(id, amount, occurs_on, &input.label, account_id)?;
-        kernel.supersede_assumption_event(prior, id)?;
+        kernel.supersede_manual_entry(prior, id, amount, occurs_on, &input.label, account_id)?;
         Ok(ManualFutureEntryDto {
             id: id.to_string(),
             amount: MoneyDto::from(amount),

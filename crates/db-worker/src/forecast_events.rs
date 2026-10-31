@@ -221,7 +221,6 @@ impl ForecastAssumptionSpec {
             params_json: self.params.params_json(),
             source: AssumptionSource::UserOverride,
             scenario_id: self.scenario_id,
-            origin_run_id: None,
         }
     }
 }

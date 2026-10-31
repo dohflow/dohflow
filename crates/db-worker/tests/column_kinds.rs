@@ -1246,6 +1246,9 @@ mod all_variants {
         "transfer_primary",
         "remove_household_member",
         "restore_household_member",
+        "record_assumption_event",
+        "supersede_assumption_event",
+        "clear_assumption_event",
     ];
 
     /// Ids the setup learns at run time (staging mints its own).
@@ -1451,7 +1454,6 @@ mod all_variants {
                         params_json: r#"{"annual_bps":400}"#.to_owned(),
                         source: AssumptionSource::UserOverride,
                         scenario_id: Some(scenario),
-                        origin_run_id: None,
                     })
                     .expect("setup: assumption event");
                 vec![]
@@ -1703,7 +1705,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 67, "every variant ran");
+        assert_eq!(checked, 70, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

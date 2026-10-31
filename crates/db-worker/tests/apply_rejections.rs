@@ -19,7 +19,10 @@ use core_ledger::{
     TransactionId,
 };
 use core_money::{Currency, Money};
-use db_worker::{ActorType, CommandMeta, DbError, DbWorker, IssuedAt, RejectCode, WriteCommand};
+use db_worker::{
+    ActorType, AssumptionKind, AssumptionSource, CommandMeta, DbError, DbWorker, IssuedAt,
+    NewAssumptionEvent, RejectCode, WriteCommand,
+};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -59,6 +62,35 @@ fn create_account(n: u128, role: CashflowRole, currency: Currency) -> WriteComma
         )),
         opening_balance: None,
     }
+}
+
+fn event(n: u128, scenario: Option<u128>, params_json: &str) -> NewAssumptionEvent {
+    NewAssumptionEvent {
+        id: u(n),
+        kind: AssumptionKind::OneTimeEvent,
+        target_entity_type: None,
+        target_entity_id: None,
+        params_json: params_json.to_owned(),
+        source: AssumptionSource::UserOverride,
+        scenario_id: scenario.map(u),
+    }
+}
+
+fn record_event(n: u128, scenario: Option<u128>, params_json: &str) -> WriteCommand {
+    WriteCommand::RecordAssumptionEvent {
+        event: event(n, scenario, params_json),
+    }
+}
+
+fn supersede_event(old: u128, new: u128) -> WriteCommand {
+    WriteCommand::SupersedeAssumptionEvent {
+        id: u(old),
+        replacement: event(new, None, "{}"),
+    }
+}
+
+fn clear_event(n: u128) -> WriteCommand {
+    WriteCommand::ClearAssumptionEvent { id: u(n) }
 }
 
 fn create_category(n: u128, parent: Option<u128>, name: &str) -> WriteCommand {
@@ -293,6 +325,48 @@ fn scenarios() -> Vec<Step> {
             },
             Reject(ReferenceMissing),
         ),
+        step(
+            "recording an assumption event",
+            record_event(70, None, "{}"),
+            Fine,
+        ),
+        step(
+            "an assumption event whose parameters are not a JSON object",
+            record_event(71, None, "[1]"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "an assumption event in an unknown scenario",
+            record_event(72, Some(97), "{}"),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "an assumption event id that is already in use",
+            record_event(70, None, "{}"),
+            Reject(StateConflict),
+        ),
+        step(
+            "an assumption event superseding itself",
+            supersede_event(70, 70),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "superseding an unknown assumption event",
+            supersede_event(98, 73),
+            Reject(ReferenceMissing),
+        ),
+        step("superseding an active event", supersede_event(70, 74), Fine),
+        step(
+            "superseding an event that is no longer active",
+            supersede_event(70, 75),
+            Reject(StateConflict),
+        ),
+        step("clearing an active event", clear_event(74), Fine),
+        step(
+            "clearing an event that is no longer active",
+            clear_event(74),
+            Reject(StateConflict),
+        ),
     ]
 }
 
@@ -412,6 +486,7 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
     let mut sites = std::collections::BTreeSet::new();
     for module in [
         "apply/accounts.rs",
+        "apply/assumption_cmds.rs",
         "apply/categorization_cmds.rs",
         "apply/mod.rs",
     ] {

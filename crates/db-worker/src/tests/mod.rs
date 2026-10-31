@@ -2222,16 +2222,14 @@ fn manual_entry_folds_into_forecast_and_survives_rerun() {
     // Editing supersedes (no silent mutation): the old entry leaves, the new one lands.
     let replacement = Uuid::now_v7();
     worker
-        .record_manual_entry(
+        .supersede_manual_entry(
+            entry,
             replacement,
             Money::new(700_000, Currency::Usd),
             date,
             "Bigger bonus",
             None,
         )
-        .unwrap();
-    worker
-        .supersede_assumption_event(entry, replacement)
         .unwrap();
     let after = forecast::compute(&worker.read_connection().unwrap(), as_of, 90, &[]).unwrap();
     let day = after.days.iter().find(|d| d.date == date).unwrap();
@@ -2306,7 +2304,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
                     .to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
     worker
@@ -2318,7 +2315,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
             params_json: r#"{"new_amount_minor":250000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -2362,7 +2358,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
             params_json: "{}".to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: None,
-            origin_run_id: None,
         })
         .unwrap();
     let excluded = forecast::compute(&conn(), as_of, 90, &[]).unwrap();
@@ -2403,7 +2398,6 @@ fn zero_income_override_zeroes_that_income_under_the_scenario() {
             params_json: r#"{"new_amount_minor":0}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -8088,7 +8082,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             params_json: r#"{"new_amount_minor":100000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: None,
-            origin_run_id: None,
         })
         .unwrap();
     let before = base_fingerprint(&worker);
@@ -8115,7 +8108,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             params_json: r#"{"new_amount_minor":250000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
     worker
@@ -8127,7 +8119,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             params_json: r#"{"annual_bps":400}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -8238,7 +8229,6 @@ fn a_reverted_scenario_can_be_applied_again() {
             params_json: r#"{"annual_bps":400}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -8326,7 +8316,6 @@ fn a_promoted_base_event_carries_the_scenario_it_came_from() {
             params_json: r#"{"new_amount_minor":250000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
     // A base override the user set directly, on a different bill.
@@ -8340,7 +8329,6 @@ fn a_promoted_base_event_carries_the_scenario_it_came_from() {
             params_json: r#"{"new_amount_minor":9900}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: None,
-            origin_run_id: None,
         })
         .unwrap();
 
