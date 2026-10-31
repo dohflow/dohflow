@@ -265,7 +265,6 @@ receives semantic auto-merge treatment.
 | `SetHouseholdName` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `AddHouseholdMember` | Create | auto; queue-edit if the member id is already in use |
 | `RenameHouseholdMember` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
-| `SetMemberRole` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member became the primary |
 | `SetMemberProfile` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the member was removed |
 | `TransferPrimary` | Base-dependent | queue-choose; re-validated against the new base (the from member must still be the live primary, the to member live), never auto |
 | `RemoveHouseholdMember` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed; queue-edit if the member became the primary |
@@ -451,25 +450,30 @@ commands. `SetConnectorLinkAccount`'s cursor clearing is the same kind of effect
 ## Addendum E — The household record (2026-10-30, `personal-cfo-339`)
 
 Schema version 61 adds three class-1 tables, `households` (one row per vault), `household_members`
-and `profiles`, written only by eight additive version 1 commands: `SetHouseholdName`,
-`AddHouseholdMember`, `RenameHouseholdMember`, `SetMemberRole`, `SetMemberProfile` (Sets, and one
-Create), `TransferPrimary` (Base-dependent) and `RemoveHouseholdMember` / `RestoreHouseholdMember`
-(Toggles over a `deleted_at` tombstone, never a hard delete). That makes **Create 10**, **Set 27**,
-**Toggle 21**, **Base-dependent 5** and 68 appendix rows. `SetHouseholdTimezone` keeps its
+and `profiles`, written only by seven additive version 1 commands: `SetHouseholdName`,
+`AddHouseholdMember`, `RenameHouseholdMember`, `SetMemberProfile` (Sets, and one Create),
+`TransferPrimary` (Base-dependent) and `RemoveHouseholdMember` / `RestoreHouseholdMember` (Toggles
+over a `deleted_at` tombstone, never a hard delete). That makes **Create 10**, **Set 26**,
+**Toggle 21**, **Base-dependent 5** and 67 appendix rows. **Two roles only: primary and partner.**
+The viewer role was dropped by the owner before anything shipped (`personal-cfo-2bxkg.14`, option
+C), so `household_members.role` is `CHECK (role IN ('primary', 'partner'))`, `AddHouseholdMember`
+always adds a partner and its payload has no role field, and there is no `SetMemberRole` (with one
+non-primary role there is nothing to change); no read-only flag is added, and a future advisor seat
+is `personal-cfo-2bxkg.17`. `SetHouseholdTimezone` keeps its
 payload and its meaning; its write set is now the `households` row instead of the logical
 `household` record (vault-format C.13, spec-version 16).
 
 **State-validated commands.** The primary seat has exactly one live holder. `TransferPrimary`
 names both members and is validated against STATE (`from` must be the live primary, `to` live and
 not primary), so after a rebase a stale `from` is a deterministic rejection at the producer and
-never a second primary. `SetMemberRole` and `AddHouseholdMember` never touch the primary seat, and
+never a second primary. `AddHouseholdMember` never touches the primary seat, and
 the live primary cannot be removed. Apply validates explicitly first; the partial unique index
 `one live primary` is a backstop, and the transfer demotes before it promotes because SQLite checks
 a unique index per statement.
 
 **A role is not access control.** `household_members.role` is display and ownership metadata.
 Every device in the membership chain holds the epoch key and can issue any command, so Sync does
-not enforce `viewer`; nothing may rely on a role for security until an ADR says how it is enforced.
+not enforce a role; nothing may rely on a role for security until an ADR says how it is enforced.
 
 **Seeded rows, deterministic in every column.** The household and the first member are not created
 by a command. They are seeded at vault creation, or by the migration for an existing vault, with

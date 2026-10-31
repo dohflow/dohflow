@@ -14,7 +14,7 @@
 //!
 //! **`household_members.role` is display and ownership metadata, not access control.** Every
 //! device in the membership chain holds the epoch key and can issue any command, so Sync does
-//! not enforce `viewer`; nothing may rely on a role for security until an ADR says how.
+//! not enforce a role; nothing may rely on a role for security until an ADR says how.
 
 use core_ids::DerivedIdKey;
 
@@ -110,25 +110,9 @@ pub(crate) fn migrate_up(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("ALTER TABLE vault_metadata DROP COLUMN household_timezone;")
 }
 
-/// The role of a household member. Display and ownership metadata only, never access control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum HouseholdRole {
-    /// The one live seat that owns the household; moves only by `TransferPrimary`.
-    Primary,
-    /// A full participant.
-    Partner,
-    /// A participant shown as read-only. Not enforced: Sync gives every device every command.
-    Viewer,
-}
-
-impl HouseholdRole {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Primary => "primary",
-            Self::Partner => "partner",
-            Self::Viewer => "viewer",
-        }
-    }
-}
+/// The seat that owns the household; moves only by `TransferPrimary`.
+pub(crate) const ROLE_PRIMARY: &str = "primary";
+/// A full participant. The only other role in v1: the viewer role was dropped by the owner's
+/// decision of 2026-10-30 (`personal-cfo-2bxkg.14`, option C), so there is no role to change and
+/// no read-only flag; a future advisor seat is `personal-cfo-2bxkg.17`.
+pub(crate) const ROLE_PARTNER: &str = "partner";

@@ -54,7 +54,6 @@ mod categories;
 mod column_manifest;
 mod connectors;
 pub mod households;
-pub use households::HouseholdRole;
 pub mod payload;
 pub mod write_set;
 #[cfg(test)]
@@ -898,17 +897,16 @@ pub enum WriteCommand {
         /// The new name: 1 to 100 characters after trimming.
         name: String,
     },
-    /// Add a household member (personal-cfo-339). The id is minted by the caller, never in
-    /// apply. The role is `partner` or `viewer`; the primary seat exists from the start and
-    /// moves only through [`WriteCommand::TransferPrimary`]. The role is DISPLAY and ownership
-    /// metadata, not access control: every device holds the vault key and can issue any command.
+    /// Add a household member as a PARTNER (personal-cfo-339). The id is minted by the caller,
+    /// never in apply. The primary seat exists from the start and moves only through
+    /// [`WriteCommand::TransferPrimary`]. A role is DISPLAY and ownership metadata, not access
+    /// control: every device holds the vault key and can issue any command. There is no viewer
+    /// role in v1 (owner decision 2026-10-30), so the payload has no role field.
     AddHouseholdMember {
         /// The new member's id.
         member_id: Uuid,
         /// The display name: 1 to 100 characters after trimming.
         display_name: String,
-        /// `partner` or `viewer`.
-        role: HouseholdRole,
     },
     /// Rename a live member (personal-cfo-339).
     RenameHouseholdMember {
@@ -917,21 +915,13 @@ pub enum WriteCommand {
         /// The new display name.
         display_name: String,
     },
-    /// Change a live partner or viewer between those two roles (personal-cfo-339). Never
-    /// touches the primary seat.
-    SetMemberRole {
-        /// The member (not the primary).
-        member_id: Uuid,
-        /// `partner` or `viewer`.
-        role: HouseholdRole,
-    },
     /// Move the primary seat from the live primary to another live member in one atomic step,
     /// so exactly one live primary exists at every point (personal-cfo-339). The old primary
     /// becomes a partner. Validated against STATE: `from_member_id` must be the live primary.
     TransferPrimary {
         /// The current live primary.
         from_member_id: Uuid,
-        /// The live partner or viewer who becomes primary.
+        /// The live partner who becomes primary.
         to_member_id: Uuid,
     },
     /// Remove a member by tombstone (`deleted_at` = the command's `issued_at`), never a hard
@@ -1014,7 +1004,6 @@ impl WriteCommand {
             WriteCommand::SetHouseholdName { .. } => "set_household_name",
             WriteCommand::AddHouseholdMember { .. } => "add_household_member",
             WriteCommand::RenameHouseholdMember { .. } => "rename_household_member",
-            WriteCommand::SetMemberRole { .. } => "set_member_role",
             WriteCommand::TransferPrimary { .. } => "transfer_primary",
             WriteCommand::RemoveHouseholdMember { .. } => "remove_household_member",
             WriteCommand::RestoreHouseholdMember { .. } => "restore_household_member",
@@ -7466,15 +7455,11 @@ fn apply_command(
         WriteCommand::AddHouseholdMember {
             member_id,
             display_name,
-            role,
-        } => apply::household::apply_add_member(&tx, meta, member_id, display_name, *role)?,
+        } => apply::household::apply_add_member(&tx, meta, member_id, display_name)?,
         WriteCommand::RenameHouseholdMember {
             member_id,
             display_name,
         } => apply::household::apply_rename_member(&tx, member_id, display_name)?,
-        WriteCommand::SetMemberRole { member_id, role } => {
-            apply::household::apply_set_member_role(&tx, member_id, *role)?
-        }
         WriteCommand::TransferPrimary {
             from_member_id,
             to_member_id,
@@ -7616,7 +7601,6 @@ fn apply_command(
         }
         WriteCommand::AddHouseholdMember { .. }
         | WriteCommand::RenameHouseholdMember { .. }
-        | WriteCommand::SetMemberRole { .. }
         | WriteCommand::TransferPrimary { .. }
         | WriteCommand::RemoveHouseholdMember { .. }
         | WriteCommand::RestoreHouseholdMember { .. } => "household_members",

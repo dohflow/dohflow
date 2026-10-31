@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use db_worker::households::{household_id, primary_member_id};
-use db_worker::{DbError, DbWorker, HouseholdRole, WriteCommand};
+use db_worker::{DbError, DbWorker, WriteCommand};
 use uuid::Uuid;
 
 fn count(worker: &DbWorker, sql: &str) -> i64 {
@@ -40,14 +40,13 @@ fn member(n: u128) -> Uuid {
     Uuid::from_u128(0xA000_0000_0000_4000_8000_0000_0000_0000 + n)
 }
 
-fn add(worker: &DbWorker, id: Uuid, name: &str, role: HouseholdRole) {
+fn add(worker: &DbWorker, id: Uuid, name: &str) {
     worker
         .dispatch(
             meta(),
             WriteCommand::AddHouseholdMember {
                 member_id: id,
                 display_name: name.to_owned(),
-                role,
             },
         )
         .unwrap();
@@ -159,20 +158,13 @@ fn naming_the_household_writes_the_households_row_and_validates_the_name() {
 fn members_are_added_renamed_re_roled_and_given_a_profile_by_command() {
     let (_dir, worker) = worker();
     let sam = member(1);
-    add(&worker, sam, "Sam", HouseholdRole::Partner);
+    add(&worker, sam, "Sam");
     assert_eq!(tables(&worker), ["household_members"]);
     dispatch(
         &worker,
         WriteCommand::RenameHouseholdMember {
             member_id: sam,
             display_name: "Samuel".to_owned(),
-        },
-    );
-    dispatch(
-        &worker,
-        WriteCommand::SetMemberRole {
-            member_id: sam,
-            role: HouseholdRole::Viewer,
         },
     );
     assert_eq!(
@@ -183,7 +175,7 @@ fn members_are_added_renamed_re_roled_and_given_a_profile_by_command() {
                 sam.simple()
             )
         ),
-        "Samuel/viewer"
+        "Samuel/partner"
     );
     dispatch(
         &worker,
@@ -231,32 +223,11 @@ fn the_primary_seat_moves_only_by_an_atomic_state_validated_transfer() {
     let (_dir, worker) = worker();
     let primary = primary_member_id(&worker.vault_metadata().unwrap().vault_id);
     let (sam, kim) = (member(1), member(2));
-    add(&worker, sam, "Sam", HouseholdRole::Partner);
-    add(&worker, kim, "Kim", HouseholdRole::Viewer);
+    add(&worker, sam, "Sam");
+    add(&worker, kim, "Kim");
 
-    // The primary seat is never added, re-roled or removed.
-    rejected(
-        &worker,
-        WriteCommand::AddHouseholdMember {
-            member_id: member(3),
-            display_name: "X".to_owned(),
-            role: HouseholdRole::Primary,
-        },
-    );
-    rejected(
-        &worker,
-        WriteCommand::SetMemberRole {
-            member_id: sam,
-            role: HouseholdRole::Primary,
-        },
-    );
-    rejected(
-        &worker,
-        WriteCommand::SetMemberRole {
-            member_id: primary,
-            role: HouseholdRole::Viewer,
-        },
-    );
+    // The primary seat is never removed (it is not added either: AddHouseholdMember always adds a
+    // partner and has no role field).
     rejected(
         &worker,
         WriteCommand::RemoveHouseholdMember { member_id: primary },
@@ -339,7 +310,7 @@ fn the_primary_seat_moves_only_by_an_atomic_state_validated_transfer() {
 fn removal_is_a_tombstone_with_a_restore_and_never_a_hard_delete() {
     let (_dir, worker) = worker();
     let sam = member(1);
-    add(&worker, sam, "Sam", HouseholdRole::Partner);
+    add(&worker, sam, "Sam");
     dispatch(
         &worker,
         WriteCommand::RemoveHouseholdMember { member_id: sam },
@@ -367,13 +338,6 @@ fn removal_is_a_tombstone_with_a_restore_and_never_a_hard_delete() {
         WriteCommand::RenameHouseholdMember {
             member_id: sam,
             display_name: "S".to_owned(),
-        },
-    );
-    rejected(
-        &worker,
-        WriteCommand::SetMemberRole {
-            member_id: sam,
-            role: HouseholdRole::Viewer,
         },
     );
     rejected(
@@ -416,7 +380,7 @@ fn removal_is_a_tombstone_with_a_restore_and_never_a_hard_delete() {
 fn bad_input_is_rejected_before_any_write() {
     let (_dir, worker) = worker();
     let sam = member(1);
-    add(&worker, sam, "Sam", HouseholdRole::Partner);
+    add(&worker, sam, "Sam");
     let logged = count(&worker, "SELECT COUNT(*) FROM operation_log");
     // A reused id, an unknown member, bad names, bad initials and colors.
     rejected(
@@ -424,7 +388,6 @@ fn bad_input_is_rejected_before_any_write() {
         WriteCommand::AddHouseholdMember {
             member_id: sam,
             display_name: "Again".to_owned(),
-            role: HouseholdRole::Viewer,
         },
     );
     rejected(
@@ -508,7 +471,7 @@ fn no_column_of_the_three_tables_can_hold_a_secret_and_the_platform_links_stay_n
     }
     // With no account, no command writes the platform links.
     let sam = member(1);
-    add(&worker, sam, "Sam", HouseholdRole::Partner);
+    add(&worker, sam, "Sam");
     dispatch(
         &worker,
         WriteCommand::SetMemberProfile {

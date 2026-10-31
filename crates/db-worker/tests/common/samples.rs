@@ -528,7 +528,6 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             WriteCommand::AddHouseholdMember {
                 member_id: u(60),
                 display_name: "Sam".into(),
-                role: db_worker::HouseholdRole::Partner,
             },
         ),
         (
@@ -536,13 +535,6 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             WriteCommand::RenameHouseholdMember {
                 member_id: u(60),
                 display_name: "Samuel".into(),
-            },
-        ),
-        (
-            "set_member_role",
-            WriteCommand::SetMemberRole {
-                member_id: u(60),
-                role: db_worker::HouseholdRole::Viewer,
             },
         ),
         (

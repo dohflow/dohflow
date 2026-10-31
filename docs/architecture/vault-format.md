@@ -280,6 +280,8 @@ synthetic no-app recovery test before any such public claim.
   device-local (`exclude`). The household and its first member are seeded, not created by a
   command, with ids derived from the vault id and every column a pure function of the vault, so
   independent devices agree.
+  Household seats are `primary` and `partner` only (the viewer role was dropped before anything
+  shipped), and `AddHouseholdMember` has no role field.
 - `spec-version = 15` (personal-cfo-g3m.26) adds, in one change: the apply-failure stop (C.10:
   a deterministic apply failure stops the replica as an invalid envelope does, with an audit
   code; a successful apply with another write-set hash is a fork and halts), reason-`2` voids
@@ -389,7 +391,7 @@ therefore requires reviewing this inventory.
 | `categories` | 1 | include | include | Canonical user intent. |
 | `category_aliases` | 1 | include | include | Canonical user intent. |
 | `households` | 1 | include | include | The vault's one household row: name, household timezone (the field `SetHouseholdTimezone` changes), an optional platform household link (null with no account). Its id is derived from the vault id and is for local use only: it is never sent to the platform service. |
-| `household_members` | 1 | include | include | Household seats: display name, role (primary, partner, viewer; display and ownership metadata, NOT access control), an optional platform member link, and a `deleted_at` tombstone. Exactly one live primary. |
+| `household_members` | 1 | include | include | Household seats: display name, role (primary or partner; display and ownership metadata, NOT access control; no viewer role in v1), an optional platform member link, and a `deleted_at` tombstone. Exactly one live primary. |
 | `profiles` | 1 | include | include | Per-member non-secret display preferences (initials, color). No secret-bearing column. |
 | `income_sources` | 1 | include | include | Canonical user intent. |
 | `recurring_events` | 1 | include | include | Canonical user intent. |

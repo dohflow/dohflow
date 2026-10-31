@@ -2070,7 +2070,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                  id                 BLOB PRIMARY KEY,
                  household_id       BLOB NOT NULL REFERENCES households(id) ON DELETE RESTRICT,
                  display_name       TEXT NOT NULL,
-                 role               TEXT NOT NULL CHECK (role IN ('primary', 'partner', 'viewer')),
+                 role               TEXT NOT NULL CHECK (role IN ('primary', 'partner')),
                  platform_member_id TEXT,
                  created_at         TEXT NOT NULL,
                  deleted_at         TEXT

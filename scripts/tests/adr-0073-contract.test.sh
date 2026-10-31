@@ -92,7 +92,7 @@ require_text "connector addendum is present" "$ADR" "## Addendum D — The conne
 require_text "connector counts" "$ADR" "**Create 9**, **Set 23**, **Toggle 19** and 60 appendix rows"
 require_text "link commands are Sets" "$ADR" "That makes **Set 21** and 56 appendix rows"
 require_text "household addendum is present" "$ADR" "## Addendum E — The household record"
-require_text "household counts" "$ADR" "**Create 10**, **Set 27**,"
+require_text "household counts" "$ADR" "**Create 10**, **Set 26**,"
 require_text "dangling link applies as no link" "$ADR" "the command **applies as no link**"
 require_text "loan archive clears links in the same command" "$ADR" "\`ArchiveAccount\` clears every link to the archived loan"
 require_text "bill archive and delete clear the link" "$ADR" "\`ArchiveRecurringBill\` and \`DeleteRecurringBill\` clear the bill's own link"
@@ -143,7 +143,7 @@ variants=(
   SetSplits ReinstateRecurringTransfer ReinstateIncomeSource ReinstateRecurringBill
   LinkBillToLoan UnlinkBillFromLoan SetBillNotLoanPayment
   CreateConnectorConnection UpsertConnectorLink SetConnectorLinkAccount DeleteConnectorConnection
-  SetHouseholdName AddHouseholdMember RenameHouseholdMember SetMemberRole SetMemberProfile
+  SetHouseholdName AddHouseholdMember RenameHouseholdMember SetMemberProfile
   TransferPrimary RemoveHouseholdMember RestoreHouseholdMember
 )
 for variant in "${variants[@]}"; do
@@ -155,7 +155,7 @@ require_text "test parses the ADR table" "$TEST" "fn parse_adr_appendix"
 require_text "test compares every ADR cell" "$TEST" "fn compare_adr_appendix"
 require_text "test proves one-cell drift fails" "$TEST" "adr_appendix_comparison_rejects_one_cell_outcome_drift"
 require_text "test asserts live enum count" "$TEST" "variants.len(),"
-require_text "test pins the current enum count" "$TEST" "        68,"
+require_text "test pins the current enum count" "$TEST" "        67,"
 require_text "test asserts shape counts" "$TEST" "assert_eq!(shape_count(Shape::Create), 10"
 require_text "test rejects unmapped variants" "$TEST" "exactly one disposition row"
 require_text "two-vault toggle strict test" "$TEST" "two_vault_strict_rebase_queues_equal_end_state_toggle_when_touched"

@@ -16,7 +16,8 @@ use forecast_engine::Tz;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::{CommandMeta, DbError, HouseholdRole};
+use crate::households::{ROLE_PARTNER, ROLE_PRIMARY};
+use crate::{CommandMeta, DbError};
 
 /// The `audit_events.event_type` recorded for every household timezone change.
 pub(crate) const HOUSEHOLD_TIMEZONE_CHANGED: &str = "household_timezone_changed";
@@ -134,21 +135,14 @@ pub(crate) fn apply_set_household_name(
     Ok(household)
 }
 
-/// Applies [`WriteCommand::AddHouseholdMember`](crate::WriteCommand): a partner or viewer with
-/// the caller-minted id.
+/// Applies [`WriteCommand::AddHouseholdMember`](crate::WriteCommand): a partner with the
+/// caller-minted id.
 pub(crate) fn apply_add_member(
     tx: &Connection,
     meta: &CommandMeta,
     member_id: &Uuid,
     display_name: &str,
-    role: HouseholdRole,
 ) -> Result<Uuid, DbError> {
-    if role == HouseholdRole::Primary {
-        return Err(DbError::InvalidCommand(
-            "a member is added as a partner or a viewer; the primary seat moves by transfer"
-                .to_owned(),
-        ));
-    }
     let name = clean_name("a member name", display_name)?;
     let household = household_id(tx)?;
     let exists: bool = tx.query_row(
@@ -169,7 +163,7 @@ pub(crate) fn apply_add_member(
             member_id,
             household,
             name,
-            role.as_str(),
+            ROLE_PARTNER,
             issued_at_rfc3339(meta)?
         ],
     )?;
@@ -191,30 +185,6 @@ pub(crate) fn apply_rename_member(
     Ok(*member_id)
 }
 
-/// Applies [`WriteCommand::SetMemberRole`](crate::WriteCommand): partner and viewer only.
-pub(crate) fn apply_set_member_role(
-    tx: &Connection,
-    member_id: &Uuid,
-    role: HouseholdRole,
-) -> Result<Uuid, DbError> {
-    if role == HouseholdRole::Primary {
-        return Err(DbError::InvalidCommand(
-            "the primary seat moves only by transfer".to_owned(),
-        ));
-    }
-    let found = live_member(tx, member_id)?;
-    if found.role == HouseholdRole::Primary.as_str() {
-        return Err(DbError::InvalidCommand(
-            "the primary's role changes only by transfer".to_owned(),
-        ));
-    }
-    tx.execute(
-        "UPDATE household_members SET role = ?1 WHERE id = ?2 AND role <> ?1",
-        params![role.as_str(), member_id],
-    )?;
-    Ok(*member_id)
-}
-
 /// Applies [`WriteCommand::TransferPrimary`](crate::WriteCommand): validated against STATE (the
 /// `from` member must be the live primary, the `to` member live and not primary), then the old
 /// primary is demoted BEFORE the new one is promoted, because SQLite checks the one-live-primary
@@ -230,13 +200,13 @@ pub(crate) fn apply_transfer_primary(
         ));
     }
     let current = live_member(tx, from)?;
-    if current.role != HouseholdRole::Primary.as_str() {
+    if current.role != ROLE_PRIMARY {
         return Err(DbError::InvalidCommand(
             "that member is not the primary".to_owned(),
         ));
     }
     let target = live_member(tx, to)?;
-    if target.role == HouseholdRole::Primary.as_str() {
+    if target.role == ROLE_PRIMARY {
         return Err(DbError::InvalidCommand(
             "the target member already holds the primary seat".to_owned(),
         ));
@@ -264,7 +234,7 @@ pub(crate) fn apply_remove_member(
     if found.deleted {
         return Ok(*member_id);
     }
-    if found.role == HouseholdRole::Primary.as_str() {
+    if found.role == ROLE_PRIMARY {
         return Err(DbError::InvalidCommand(
             "the primary cannot be removed; transfer the seat first".to_owned(),
         ));

@@ -1243,7 +1243,6 @@ mod all_variants {
         "set_household_name",
         "add_household_member",
         "rename_household_member",
-        "set_member_role",
         "set_member_profile",
         "transfer_primary",
         "remove_household_member",
@@ -1705,7 +1704,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 68, "every variant ran");
+        assert_eq!(checked, 67, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

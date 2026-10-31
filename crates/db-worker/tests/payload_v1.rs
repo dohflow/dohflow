@@ -87,7 +87,7 @@ fn every_write_command_variant_has_exactly_one_sample() {
     expected.sort();
     let mut actual: Vec<String> = samples().iter().map(|(n, _)| (*n).to_owned()).collect();
     actual.sort();
-    assert_eq!(expected.len(), 68, "the enum has 68 variants");
+    assert_eq!(expected.len(), 67, "the enum has 67 variants");
     assert_eq!(
         actual, expected,
         "a variant without a sample, or a sample without a variant"
@@ -343,11 +343,12 @@ fn fixture_digest(files: &[(String, Vec<u8>)]) -> String {
 /// and three files were added (planning's rule: new additive v1 payloads, no field added to any
 /// existing payload). So did `CreateConnectorConnection`, `UpsertConnectorLink`,
 /// `SetConnectorLinkAccount` and `DeleteConnectorConnection` of personal-cfo-5ymg8.2: the 56
-/// existing fixtures are byte-identical and four files were added. So did the eight household
+/// existing fixtures are byte-identical and four files were added. So did the seven household
 /// commands of personal-cfo-339 (`SetHouseholdName`, `AddHouseholdMember`, `RenameHouseholdMember`,
-/// `SetMemberRole`, `TransferPrimary`, `RemoveHouseholdMember`, `RestoreHouseholdMember`,
-/// `SetMemberProfile`): the 60 existing fixtures are byte-identical and eight files were added.
-const PAYLOAD_V1_DIGEST: &str = "76fb30452a4f6fefa2fe0b3b95818679b7a3e734b1d4df23514d91b2e8d43224";
+/// `TransferPrimary`, `RemoveHouseholdMember`, `RestoreHouseholdMember`, `SetMemberProfile`; the
+/// viewer role and `SetMemberRole` were dropped before anything shipped): the 60 existing fixtures
+/// are byte-identical and seven files were added.
+const PAYLOAD_V1_DIGEST: &str = "57cf64cc3d54e096ba2380c490318c900495baf13135621e40bf7f7efc51a2ff";
 
 #[test]
 fn the_frozen_version_1_fixtures_match_the_samples_and_the_pinned_digest() {
@@ -418,7 +419,7 @@ fn every_frozen_fixture_decodes_under_its_version() {
             count += 1;
         }
         assert_eq!(
-            count, 68,
+            count, 67,
             "version {version} has a fixture for every variant"
         );
     }
