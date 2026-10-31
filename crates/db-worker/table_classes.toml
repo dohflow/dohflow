@@ -490,9 +490,9 @@ note = "Current import decision writer is outside the bus, so this is a class-4 
 
 [[table]]
 table = "balance_observations"
-class = "4"
+class = "1"
 owner_bead = "personal-cfo-5ymg8"
-note = "Manual and connector balance assertions currently cross the staging boundary outside the bus; ADR 0074 and SYNC-2 decide the class-1 promotion and conflict disposition."
+note = "An account's balance as of a day, manual or reported by a connector. Written only by RecordBalanceAssertion (appended, never last-wins) and RecordConnectorBalance (an upsert on account, day and connector, monotone in issued_at, with a content-derived id). Rows are updated in place and never hard-deleted. source_record_id is NULL by design on every command-written row, with no foreign key, because a staged source record is device-local; legacy rows keep their values."
 
 [[table]]
 table = "scenarios"

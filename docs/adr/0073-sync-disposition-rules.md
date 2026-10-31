@@ -262,7 +262,7 @@ receives semantic auto-merge treatment.
 | `UpsertConnectorLink` | Set | auto (an idempotent upsert; applies as a no-op on a deleted connection) |
 | `SetConnectorLinkAccount` | Set | queue-choose if the mapping changed on both sides (applies as a no-op on a deleted connection) |
 | `DeleteConnectorConnection` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate) |
-| `RecordBalanceAssertion` | Create | auto; two assertions for one account and day are both kept and queue-choose (never LWW) |
+| `RecordBalanceAssertion` | Create | auto; queue-choose only when the base already holds a manual assertion for the same account and day (both are kept, never LWW) |
 | `RecordConnectorBalance` | Set | auto, newest issued_at wins (monotone upsert); an older command applies as a no-op |
 | `SetHouseholdName` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `AddHouseholdMember` | Create | auto; queue-edit if the member id is already in use |
@@ -507,6 +507,12 @@ record is device-local (the table is class 1b and not yet routed through the bus
 returns when connector source records go through the bus. The producer clamps `observed_at` to the
 household's today at its impure boundary; apply refuses a reading dated after the household-local
 date of `issued_at`.
+
+**A manual assertion keeps the behavior it had: no future-date bound.** Only the connector path is
+bounded, because a provider reading of a day that has not happened is a clock fault. Whether a
+person's assertion may be dated ahead is a product question this change does not settle; it is
+recorded on `personal-cfo-5ymg8.3` for planning, and adding the bound later is one more
+classified site with no format change.
 
 ## Linked beads
 

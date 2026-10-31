@@ -3503,7 +3503,7 @@ impl DbWorker {
         }
         let mut staged = Vec::new();
         let mut skipped_unmapped = 0_usize;
-        let mut promotions: Vec<(Uuid, Uuid, NaiveDate, Money)> = Vec::new();
+        let mut promotions: Vec<(Uuid, Uuid, NaiveDate, Money, CommandMeta)> = Vec::new();
         for rec in &batch.records {
             // Resolve the record's account up front: a record with no mapped
             // account cannot be staged (the commit path requires one).
@@ -3571,10 +3571,12 @@ impl DbWorker {
                 // evening sync west of UTC lands "tomorrow". A balance cannot
                 // be observed in the household's future, so clamp to the
                 // local today — keeping the same-day tie honest (a manual
-                // assertion recorded later still wins on created_at).
-                let local_today = forecast::read_household_tz(&tx)
-                    .map(|tz| Utc::now().with_timezone(&tz).date_naive())
-                    .unwrap_or_else(|_| Utc::now().date_naive());
+                // assertion recorded later still wins on created_at). The
+                // command's metadata is built here and the clamp reads ITS
+                // instant, so the producer and apply judge the same day.
+                let meta = connectors::local_meta(ActorType::Importer, "connector");
+                let local_today = forecast::household_today_at(&tx, apply::issued_at(&meta))
+                    .unwrap_or_else(|_| apply::issued_at(&meta).date_naive());
                 let observed = bal.observed_at.min(local_today);
                 let staged_bal_id = ingestion::stage_balance(
                     &tx,
@@ -3601,23 +3603,32 @@ impl DbWorker {
                 }
                 // The promotion is a COMMAND on the bus (RecordConnectorBalance), which opens its
                 // own transaction, so it runs after this staging transaction commits.
-                promotions.push((staged_bal_id, account, observed, bal.amount));
+                promotions.push((staged_bal_id, account, observed, bal.amount, meta));
             }
         }
         tx.commit()?;
         drop(guard);
-        // Promote each staged balance, then consume its staged row (class 3). A crash in between
-        // leaves the balance staged and un-promoted, the same state as the currency guard's
-        // "stays staged"; the next sync promotes it again, and the upsert is idempotent.
-        for (staged_bal_id, account, observed, amount) in promotions {
-            self.dispatch(
-                connectors::local_meta(ActorType::Importer, "connector"),
+        // Promote each staged balance, then consume its staged row (class 3). A refused command
+        // (`DbError::Rejected`) leaves the balance staged and un-promoted, the same state as the
+        // currency guard's, and the loop goes on: staging has already committed, so one refusal
+        // must not strand the rest of the batch. Only a promotion that never ran (a refusal, or a
+        // crash between the command and the delete) leaves a staged row behind, and nothing
+        // revisits it: promotions come only from the current batch and `stage_balance` does not
+        // dedupe, so a later sync stages its own rows. Sweeping such rows is a follow-up
+        // (personal-cfo-0g528 reshapes the import family).
+        for (staged_bal_id, account, observed, amount, meta) in promotions {
+            match self.dispatch(
+                meta,
                 WriteCommand::RecordConnectorBalance {
                     account_id: AccountId::from_uuid(account),
                     observed_at: observed,
                     amount,
                 },
-            )?;
+            ) {
+                Ok(_) => {}
+                Err(DbError::Rejected { .. }) => continue,
+                Err(other) => return Err(other),
+            }
             self.lock().conn.execute(
                 "DELETE FROM staged_balances WHERE id = ?1",
                 params![staged_bal_id],

@@ -256,7 +256,7 @@ const DISPOSITIONS: &[Disposition] = &[
     d(
         "RecordBalanceAssertion",
         Shape::Create,
-        "auto; two assertions for one account and day are both kept and queue-choose (never LWW)",
+        "auto; queue-choose only when the base already holds a manual assertion for the same account and day (both are kept, never LWW)",
     ),
     d(
         "RecordConnectorBalance",
