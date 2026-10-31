@@ -73,7 +73,15 @@ Two rules that apply to every row, on every platform, now and in later implement
 - Measured on macOS 27 (scratch program, throwaway service name): the login keychain silently drops the device-only
   class and the synchronizable flag; the data-protection keychain needs the keychain entitlement and answers
   `errSecMissingEntitlement` (-34018) without it.
-- Not yet verified: a provisioning-profile-bearing, notarized Developer ID build (including whether a missing or
-  expired profile stops the app launching), and the Touch ID paths. Both are scheduled on a signed release
-  candidate on a Mac with Touch ID: the signing change is `personal-cfo-md8h2.17`, the entitled-test harness
-  (a separate throwaway signed bundle) is `personal-cfo-md8h2.18`, then the Touch ID bead.
+- Measured in the signed harness (`scripts/keychain-smoke.sh`, `personal-cfo-md8h2.18`, first passing run
+  2026-10-31, macOS 27.0.1 on a Mac with no enrolled biometrics, Developer ID identity, the real app id and
+  profile): a device-only item round-trips in the data-protection keychain; its attributes read back
+  `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` (`akpu`), synchronizable `false` and the team-prefixed
+  access group; the same binary without the entitlement fails with `MissingEntitlement`.
+- Measured in the same run: with no enrolled biometrics the OS refuses to STORE a biometric-class item
+  (`AuthFailed`), although `MacSecretStore::capabilities()` advertises `biometry_current_set`. The Touch ID
+  bead (`personal-cfo-xuu`) must treat "biometrics unavailable" as a state before it stores such an item.
+- Not yet verified: a notarized Developer ID build of the app itself (including whether a missing or expired
+  profile stops it launching), and the Touch ID paths (a fresh match, a cancelled prompt, the conformance
+  suite's biometric store). They need a Mac with Touch ID: run the harness with `KEYCHAIN_SMOKE_TOUCH_ID=1`
+  and the manual `--ignored` tests from the signed bundle, then the Touch ID bead.

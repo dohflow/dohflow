@@ -10,8 +10,10 @@
 //!   binary cannot have it, even if signed. They therefore run only from a harness inside such a
 //!   bundle: a separate throwaway signed bundle with the real app id and profile (never shipped, never
 //!   notarized for distribution; there is deliberately no smoke mode in the shipped app). That harness
-//!   is `personal-cfo-md8h2.18`; the access group is supplied as
-//!   `DOHFLOW_KEYCHAIN_ACCESS_GROUP`. They never run in CI.
+//!   is `personal-cfo-md8h2.18` (`scripts/keychain-smoke.sh`); the access group is supplied as
+//!   `DOHFLOW_KEYCHAIN_ACCESS_GROUP`. They never run in CI. The conformance suite stores a biometric
+//!   item, which the OS refuses (`AuthFailed`) on a Mac with no enrolled biometrics, so the harness
+//!   runs it only on request (`KEYCHAIN_SMOKE_TOUCH_ID=1`).
 #![cfg(target_os = "macos")]
 
 use platform_macos::{MacBiometricAuth, MacSecretStore};
@@ -117,6 +119,30 @@ fn entitled_store() -> MacSecretStore {
 
 #[test]
 #[ignore = "needs a signed build with the keychain entitlement"]
+fn entitled_a_device_only_item_round_trips() {
+    // The always-possible entitled round trip: a device-only item needs no biometrics, so this runs on
+    // a Mac without Touch ID too (the signed harness runs it everywhere).
+    let store = entitled_store();
+    let k = SecretKey::new(
+        "app.dohflow.keychain-test",
+        &format!("round-trip-{}", std::process::id()),
+    )
+    .unwrap();
+    store
+        .store_secret(&k, &value(), AccessPolicy::DeviceOnly)
+        .expect("store");
+    let loaded = store.load_secret(&k, &prompt());
+    store.delete_secret(&k).expect("cleanup");
+    assert_eq!(loaded.expect("load"), value());
+    assert_eq!(
+        store.load_secret(&k, &prompt()).unwrap_err(),
+        SecretError::NotFound,
+        "deleted means gone"
+    );
+}
+
+#[test]
+#[ignore = "needs a signed build with the keychain entitlement and a Mac with enrolled biometrics"]
 fn entitled_the_store_passes_the_conformance_suite() {
     conformance::run(&entitled_store(), &format!("mac-{}", std::process::id()));
 }
