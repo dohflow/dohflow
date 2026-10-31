@@ -34,6 +34,14 @@ fn assumption_events_round_trip_and_survive_rerun() {
     let scenario = Uuid::now_v7();
     let scoped = Uuid::now_v7();
     worker
+        .create_scenario(&NewScenario {
+            id: scenario,
+            name: "Overlay".to_owned(),
+            description: None,
+            base_run_id: None,
+        })
+        .unwrap();
+    worker
         .record_assumption_event(&new_event(
             scoped,
             AssumptionKind::OneTimeEvent,
@@ -48,10 +56,10 @@ fn assumption_events_round_trip_and_survive_rerun() {
     // Superseding swaps which event is active but retains the old row.
     let replacement = Uuid::now_v7();
     worker
-        .record_assumption_event(&new_event(replacement, AssumptionKind::IncomeAmount, None))
-        .unwrap();
-    worker
-        .supersede_assumption_event(base, replacement)
+        .supersede_assumption_event(
+            base,
+            &new_event(replacement, AssumptionKind::IncomeAmount, None),
+        )
         .unwrap();
     let after = worker.active_assumption_events(None).unwrap();
     assert_eq!(after.len(), 1, "superseded event must leave the active set");
@@ -300,7 +308,6 @@ fn scenario_events_are_scenario_scoped_assumption_events() {
             params_json: r#"{"amount_minor":500000,"date":"2026-08-01"}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 

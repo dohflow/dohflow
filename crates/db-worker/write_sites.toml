@@ -129,19 +129,10 @@ note = "insert_system_category: ensure_default_categories seeds the system categ
 module = "lib.rs"
 table = "forecast_assumption_events"
 class = "4"
-statements = 5
-status = "pending"
-bead = "personal-cfo-5ymg8.4"
-note = "Assumption events recorded, superseded, cleared, deleted and cloned outside the bus (ADR 0055)."
-
-[[site]]
-module = "lib.rs"
-table = "forecast_dependency_edges"
-class = "4"
 statements = 2
 status = "pending"
 bead = "personal-cfo-5ymg8.4"
-note = "Dependency edges recorded and deleted outside the bus."
+note = "A scenario's events are deleted by delete_scenario and copied by clone_scenario outside the bus; the scenario commands of the second slice route both (ADR 0055)."
 
 [[site]]
 module = "lib.rs"

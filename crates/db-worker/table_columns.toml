@@ -194,8 +194,8 @@ columns = ["id:uuid", "model_id:text", "as_of_date:text", "horizon_days:int", "m
 
 [[table]]
 name = "forecast_dependency_edges"
-class = "4"
-write_set = "full"
+class = "2"
+write_set = "none"
 primary_key = ["id"]
 columns = ["id:uuid", "forecast_run_id:uuid", "from_event_id:uuid", "to_row_id:uuid", "edge_type:text", "created_at:text"]
 

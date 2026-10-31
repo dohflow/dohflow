@@ -271,6 +271,9 @@ receives semantic auto-merge treatment.
 | `TransferPrimary` | Base-dependent | queue-choose; re-validated against the new base (the from member must still be the live primary, the to member live), never auto |
 | `RemoveHouseholdMember` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed; queue-edit if the member became the primary |
 | `RestoreHouseholdMember` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `RecordAssumptionEvent` | Create | auto; queue-edit if the event id is already in use |
+| `SupersedeAssumptionEvent` | Toggle | auto iff strict predicate and end state is equal; queue-choose if the old event was touched or is no longer active (the replacement is created in the same command) |
+| `ClearAssumptionEvent` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -513,6 +516,25 @@ bounded, because a provider reading of a day that has not happened is a clock fa
 person's assertion may be dated ahead is a product question this change does not settle; it is
 recorded on `personal-cfo-5ymg8.3` for planning, and adding the bound later is one more
 classified site with no format change.
+
+## Addendum G — Assumption events are commands (2026-10-31, `personal-cfo-5ymg8.4`)
+
+`forecast_assumption_events` is written only by three additive version 1 commands:
+`RecordAssumptionEvent` (Create, a caller-minted id), `SupersedeAssumptionEvent` (Toggle) and
+`ClearAssumptionEvent` (Toggle). That makes **Create 12**, **Set 27**, **Toggle 23**,
+**Base-dependent 5** and 72 appendix rows.
+
+**An edit is one command.** Editing a manual entry used to be a record of the new entry followed by
+a supersession of the old one, two writes that a replica could apply apart and so leave two active
+entries, doubling a cash event. `SupersedeAssumptionEvent` carries the replacement's whole payload
+and does both in one transaction. Supersede and clear require the old event to exist and still be
+`active` (classified `ReferenceMissing` and `StateConflict`), so two devices that concurrently
+supersede one event cannot leave two active replacements: the later one is refused and queued by
+its disposition. A clear of an event that is already `cleared` is an accepted no-op that writes
+nothing (the same end state, so two devices clearing one event auto-apply); a clear of a
+superseded event is refused. A supersede keeps the event's scope (a base event is never replaced by a scenario overlay, nor the reverse; `StateConflict`). An event carries no forecast run: `origin_run_id` is written NULL by
+every command (a run is class 2 and never replicates), and `created_at` and `updated_at` are the
+command's `issued_at`.
 
 ## Linked beads
 

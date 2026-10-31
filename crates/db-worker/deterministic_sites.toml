@@ -20,6 +20,12 @@ bead = "personal-cfo-g3m.26"
 note = "Payload-domain and class-1 reference checks of the account commands."
 
 [[site]]
+module = "apply/assumption_cmds.rs"
+statements = 7
+bead = "personal-cfo-5ymg8.4"
+note = "Assumption events: the parameters are a JSON object, the scenario (class 1) exists, the caller-minted id is unused in the base, an event cannot supersede itself, a replacement keeps the scope of the event it supersedes, and the event being superseded or cleared exists and is still active in the base."
+
+[[site]]
 module = "apply/balance_cmds.rs"
 statements = 4
 bead = "personal-cfo-5ymg8.3"
