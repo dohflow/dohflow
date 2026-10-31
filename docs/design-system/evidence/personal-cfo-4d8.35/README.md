@@ -192,6 +192,9 @@ rule), and a VoiceOver pass.
 | `narrow-light.jpg`, `narrow-dark.jpg` | the same at a **375px** viewport: long labels wrap, nothing overflows |
 
 All eight were retaken at option A+ on this head (Chromium 152). The status-fit screenshots are listed with their section above.
+The two narrow shots also show the `NativeSelect` fix: the long option ("Statement balance carried o…") is clipped
+clear of the chevron, with no text under the arrow, in both themes. The audit (PASS 316 · FAIL 0 · info 124) and all 13
+status-fit rows were re-run on the head that merged `main` (including the shared disclosure, `personal-cfo-4d8.38`).
 
 ## What this evidence does not show
 
