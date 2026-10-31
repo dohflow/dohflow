@@ -29,4 +29,4 @@ note = "Payload-domain and class-1 reference checks of the category and recatego
 module = "apply/mod.rs"
 statements = 1
 bead = "personal-cfo-g3m.26"
-note = "require_issued_at: a pure function of the command's metadata, sharing the C.4 receiver bound (years 0000 to 9999)."
+note = "require_issued_at: a pure function of the command's metadata, sharing the C.4 receiver bound (1970-01-01 to 9999-12-31)."

@@ -266,6 +266,25 @@ fn tags_are_validated() {
 }
 
 #[test]
+fn the_mint_accepts_exactly_the_supported_issued_at_range() {
+    let key = sample_key();
+    let c = sample_command();
+    let at = IssuedAt::from_unix_micros;
+    assert!(derive_id(&key, at(IssuedAt::MIN_SUPPORTED_MICROS), &c, "x", 0).is_ok());
+    assert!(derive_id(&key, at(IssuedAt::MAX_SUPPORTED_MICROS), &c, "x", 0).is_ok());
+    for micros in [
+        IssuedAt::MIN_SUPPORTED_MICROS - 1,
+        IssuedAt::MAX_SUPPORTED_MICROS + 1,
+    ] {
+        assert!(!at(micros).is_supported());
+        assert_eq!(
+            derive_id(&key, at(micros), &c, "x", 0).unwrap_err(),
+            DerivedIdError::IssuedAtOutOfRange
+        );
+    }
+}
+
+#[test]
 fn issued_at_must_fit_a_uuid_v7_timestamp() {
     let key = sample_key();
     let c = sample_command();
@@ -275,7 +294,9 @@ fn issued_at_must_fit_a_uuid_v7_timestamp() {
         DerivedIdError::IssuedAtOutOfRange
     );
     assert!(derive_id(&key, micros(0), &c, "x", 0).is_ok());
-    assert!(derive_id(&key, micros((1_i64 << 48) - 1), &c, "x", 0).is_ok());
+    // The 48-bit ceiling is far past the supported range (year 10889 against 9999), so the
+    // supported range, not the timestamp width, is what the mint enforces.
+    assert!(derive_id(&key, micros((1_i64 << 48) - 1), &c, "x", 0).is_err());
     assert_eq!(
         derive_id(&key, micros(1_i64 << 48), &c, "x", 0).unwrap_err(),
         DerivedIdError::IssuedAtOutOfRange

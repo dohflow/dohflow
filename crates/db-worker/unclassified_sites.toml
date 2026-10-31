@@ -15,8 +15,9 @@
 #
 # `lib.rs` rose from 32 to 33 with personal-cfo-32fmp.2 (#205): `From<DerivedIdError> for DbError`
 # maps a derived-id failure to `InvalidCommand`. Its variants are tag errors (every tag in apply is
-# a constant, so these are programming errors, not verdicts), `IssuedAtOutOfRange` (already a
-# classified rejection earlier, in `apply/mod.rs`'s `require_issued_at`) and `OrdinalOverflow` (a
+# a constant, so these are programming errors, not verdicts), `IssuedAtOutOfRange` (unreachable
+# from apply: the receiver check, `require_issued_at` and the mint share one bound, 1970 to 9999,
+# so an instant the receiver accepts always mints; pinned by a test) and `OrdinalOverflow` (a
 # function of the payload's element count, but no current command mints near 4,096 ids, so there is
 # no apply-level behavior to prove). Classifying it needs that proof, so it waits for
 # personal-cfo-g3m.28 rather than adding a verdict this ledger cannot back with a test.

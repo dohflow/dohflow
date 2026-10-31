@@ -154,7 +154,12 @@ done
 #     double. Every integer above 2^53 has 16 or more digits, so any probe value of
 #     that kind is card-number-shaped by construction. It is a power-of-two
 #     neighbor, not an account number (personal-cfo-t2s4b part 3b).
-value_fixture_exceptions='crates/observability/src/lib.rs|crates/finance-kernel/tests/log_redaction.rs|crates/finance-kernel/tests/side_file_leak.rs|crates/db-worker/tests/payload_v1.rs|crates/db-worker/tests/fixtures/payload_v1/set_debt_terms.json'
+#   - docs/architecture/vectors/check-envelope-v1.json — the `issued_at` lower-bound vector is
+#     1970-01-01T00:00:00Z, which is the integer 0, and an 8-byte zero is sixteen hex zeros in the
+#     case's plaintext bytes. The file is synthetic (built from the public C.14 sample envelope; no
+#     real value is in it) and is regenerated from `crates/sync-core/tests/check_envelope_vectors.rs`,
+#     which fails if the committed file drifts (personal-cfo-g3m.26 part 2).
+value_fixture_exceptions='docs/architecture/vectors/check-envelope-v1.json|crates/observability/src/lib.rs|crates/finance-kernel/tests/log_redaction.rs|crates/finance-kernel/tests/side_file_leak.rs|crates/db-worker/tests/payload_v1.rs|crates/db-worker/tests/fixtures/payload_v1/set_debt_terms.json'
 
 check "SSN-shaped string" "$SSN_RE" "$value_fixture_exceptions"
 check "card-number-shaped string" "$CARD_RE" "$value_fixture_exceptions"

@@ -271,8 +271,13 @@ synthetic no-app recovery test before any such public claim.
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
 - `spec-version = 17` (personal-cfo-g3m.26 part 2) lists the deterministic rejection codes in C.10
-  and states the site-level classification rule; no wire layout or vector changes. (16 is
-  personal-cfo-339's household record.)
+  and states the site-level classification rule, and narrows the `issued_at` bound of check 6 in
+  C.4 from the years 0000 to 9999 to 1970-01-01T00:00:00Z to 9999-12-31T23:59:59.999999Z: nothing
+  legitimate predates the epoch, a stamp before it means a broken device clock, and the derived-id
+  mint cannot hold a negative timestamp, so the receiver, apply and the mint now share one bound.
+  `check-envelope-v1.json` changes its two lower-bound cases and moves to `vectors_version` 2 (the
+  other vector files are unchanged); C.14 states what `vectors_version` and the `-vN` in a file
+  name mean. No wire layout changes. (16 is personal-cfo-339's household record.)
 - `spec-version = 16` (personal-cfo-339) moves the household timezone off `vault_metadata` onto
   a new class-1 `households` table, with `household_members` and `profiles` beside it (schema
   version 61). The logical `household` record (table name `household`, key `int 1`, one column)
@@ -1122,11 +1127,14 @@ index reconciliation, a receiver:
 5. checks that the header's `object_id` is the plaintext's `command_id`, that its
    `device_id` is the plaintext's `device_id`, and that its `nonce_domain` is the one
    derived (C.3) for its epoch, device fingerprint and object type;
-6. for an envelope, requires `issued_at` to lie within the years 0000 to 9999: from
-   `-62_167_219_200_000_000` (0000-01-01T00:00:00Z) to `253_402_300_799_999_999`
-   (9999-12-31T23:59:59.999999Z) microseconds, inclusive. Outside it the envelope is invalid
-   (`IssuedAtOutOfRange`): every stored `*_at` column then stays an RFC 3339 text that orders as
-   text, and `apply` never meets an instant it cannot represent.
+6. for an envelope, requires `issued_at` to lie within 1970-01-01T00:00:00Z and
+   9999-12-31T23:59:59.999999Z: from `0` to `253_402_300_799_999_999` microseconds since the Unix
+   epoch, inclusive. Outside it the envelope is invalid (`IssuedAtOutOfRange`): nothing
+   legitimate predates the epoch (an earlier stamp is a broken device clock, and refusing it here
+   with a typed reason beats an unclassified stall), every stored `*_at` column then stays an
+   RFC 3339 text that orders as text, and `apply` and the derived-id mint (whose UUIDv7 timestamp
+   holds no negative count) never meet an instant they cannot represent. The receiver check, the
+   apply check and the id mint read one bound.
 
 ### Envelope plaintext (`EnvelopePlaintextV1`)
 
@@ -1869,7 +1877,7 @@ log position `V` the service assigns when it appends the void is not in the body
   its cursor: the machine discards later stops while an earlier one stands. **Not an apply failure:** a replica whose apply SUCCEEDS with a write-set hash other than
   the envelope's has forked from the apply semantics (ADR 0074): it halts, with its own
   evidence, and no void answers it. Transient errors (I/O, lock, resource exhaustion,
-  cancellation) never produce an apply failure. An `issued_at` outside the years 0000 to 9999
+  cancellation) never produce an apply failure. An `issued_at` outside 1970 to 9999
   is invalid at the receiver checks (C.4), so on a conforming log it never reaches apply; the
   engine's own metadata check shares the same bound and rejects it as `IssuedAtOutOfRange`.
 
@@ -1887,7 +1895,7 @@ log position `V` the service assigns when it appends the void is not in the body
 
   | Code | Name | Meaning |
   | --- | --- | --- |
-  | `1` | `IssuedAtOutOfRange` | The command's `issued_at` is outside the years 0000 to 9999. |
+  | `1` | `IssuedAtOutOfRange` | The command's `issued_at` is outside 1970-01-01T00:00:00Z to 9999-12-31T23:59:59.999999Z. |
   | `2` | `PayloadInvalid` | A payload field is outside its domain. |
   | `3` | `ReferenceMissing` | A row the command references does not exist on the base. |
   | `4` | `StateConflict` | The base state forbids the command. |
@@ -2058,6 +2066,13 @@ typed outcomes of Part B apply unchanged.
 
 ## C.14 Conformance tests and vectors
 
+**Vector file versions.** Each JSON vector file carries two version numbers, and a consumer pins
+both. The `-vN` in the file name is the **schema** (layout) version of the file: it changes only
+when the layout of the file changes, so a parser written for `-v1` keeps reading `-v1`. The
+`vectors_version` field inside is the **content** version: it bumps whenever any case's input or
+expected outcome changes, so a consumer that pinned an older content version knows its cases are
+stale. Adding a case is a content change too.
+
 The membership chain and its epoch records have their own **public conformance vectors**,
 `docs/architecture/vectors/membership-chain-v1.json` (`vectors_version` 1): valid chains
 (genesis only, add with a grant, revoke with a cutover, forced rotation, incremental extension,
@@ -2093,14 +2108,14 @@ invalid; no verified key, a position the replica has not reached, and a bad enve
 is missing are not determinable. The epoch keys are not in the file: they derive from a labeled
 formula the file states. A change to the file follows C.13.
 
-`docs/architecture/vectors/check-envelope-v1.json` (`vectors_version` 1) pins the receiver checks
+`docs/architecture/vectors/check-envelope-v1.json` (`vectors_version` 2) pins the receiver checks
 of C.4 for every implementation that decrypts: a header and a plaintext as bytes, the idempotency
 tag the receiver's own tagger returns for the plaintext's key (an input, because the tag secret is
 not in the file), and the expected outcome, which is `ok`, `MalformedHeader` or
 `MalformedPlaintext` (the bytes do not decode), or the name of the **first** failing check in the
 order `NotAnEnvelope`, `ObjectIdMismatch`, `DeviceMismatch`, `TagMismatch`,
 `MetadataCommitmentMismatch`, `NonceDomainMismatch`, `ManifestCommitmentMismatch`,
-`IssuedAtOutOfRange` (the last also pins the exact bounds, with cases at 0000-01-01T00:00:00Z,
+`IssuedAtOutOfRange` (the last also pins the exact bounds, with cases at 1970-01-01T00:00:00Z,
 9999-12-31T23:59:59.999999Z and one microsecond outside each). What is normative is that the envelope is valid or invalid (any outcome but `ok` is invalid, decode
 failures included); the specific error is normative for every single-defect case and informative
 (the reference order) for the multi-defect cases, where another implementation must agree the

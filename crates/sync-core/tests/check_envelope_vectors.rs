@@ -250,9 +250,9 @@ fn all_cases() -> Vec<Case> {
 
     for (name, description, micros) in [
         (
-            "valid_issued_at_first_instant_of_year_0000",
-            "issued_at 0000-01-01T00:00:00Z, the earliest accepted instant, commitment recomputed",
-            -62_167_219_200_000_000_i64,
+            "valid_issued_at_first_instant_of_year_1970",
+            "issued_at 1970-01-01T00:00:00Z, the earliest accepted instant, commitment recomputed",
+            0_i64,
         ),
         (
             "valid_issued_at_last_microsecond_of_year_9999",
@@ -431,9 +431,9 @@ fn all_cases() -> Vec<Case> {
 
     for (name, description, micros) in [
         (
-            "invalid_issued_at_one_microsecond_before_year_0000",
-            "issued_at one microsecond before 0000-01-01T00:00:00Z, commitment recomputed",
-            -62_167_219_200_000_001_i64,
+            "invalid_issued_at_one_microsecond_before_year_1970",
+            "issued_at one microsecond before 1970-01-01T00:00:00Z, commitment recomputed",
+            -1_i64,
         ),
         (
             "invalid_issued_at_first_instant_of_year_10000",
@@ -643,7 +643,7 @@ fn document() -> Value {
         })
         .collect();
     json!({
-        "vectors_version": 1,
+        "vectors_version": 2,
         "spec": "docs/architecture/vault-format.md C.4 \"Receiver checks\" and C.14",
         "synthetic": "Every case is built from the public C.14 sample envelope. No key, secret or real value is in this file.",
         "how_to_read": "Each case gives a clear header and an envelope plaintext (hex of their canonical bytes), 'tagger_output' (the idempotency-key tag that the receiver's own tagger returns for the plaintext's key: an input, because the tag secret is not in this file), and 'expect'. An implementation decodes the header, then the plaintext; if either does not decode the outcome is 'MalformedHeader' or 'MalformedPlaintext'. Otherwise it runs the receiver checks in the order below and the outcome is 'ok' or the name of the first failing check. Every outcome other than 'ok' means the envelope is INVALID, and that class is the contract: a decode failure counts (a MalformedPlaintext after a successful open is a producer fault; a MalformedHeader at an accepted position means the service let through what its own checks should have refused; both are deterministic from the bytes and voidable). For a case with 'error_normative' true the specific outcome is also normative; for a multi-defect case it is informative (the reference order): a second implementation must agree the envelope is invalid but may report a different first error. Internal error names are never part of the contract. 'tagger_output' is HMAC-SHA256 under the C.14 sample tag key over the CBE1 label 'dohflow/sync-idem-tag/v1' and the plaintext's canonical 16-byte idempotency key.",
@@ -700,7 +700,7 @@ fn the_tagger_output_is_the_hmac_of_the_plaintexts_canonical_key() {
 #[test]
 fn check_envelope_agrees_with_every_committed_case() {
     let doc: Value = serde_json::from_str(VECTORS).unwrap();
-    assert_eq!(doc["vectors_version"], 1);
+    assert_eq!(doc["vectors_version"], 2);
     let cases = doc["cases"].as_array().unwrap();
     assert!(cases.len() >= 35, "{} cases", cases.len());
     for case in cases {

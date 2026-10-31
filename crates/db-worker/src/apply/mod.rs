@@ -25,8 +25,9 @@ use crate::{CommandMeta, DbError, RejectCode};
 /// `i64` of microseconds) fails with a deterministic `InvalidCommand` and never reaches
 /// [`issued_at`], which would panic.
 pub(crate) fn require_issued_at(meta: &CommandMeta) -> Result<(), DbError> {
-    // One bound with the C.4 receiver check: the years 0000 to 9999, so every stored `*_at` text
-    // orders as text. The chrono check stays as a guard against a conversion panic.
+    // One bound with the C.4 receiver check and the derived-id mint (`core_ids::IssuedAt`): 1970
+    // to 9999, so every stored `*_at` text orders as text and every accepted instant mints ids.
+    // The chrono check stays as a guard against a conversion panic.
     let micros = meta.issued_at.as_unix_micros();
     if !sync_core::envelope::issued_at_in_range(micros)
         || DateTime::from_timestamp_micros(micros).is_none()

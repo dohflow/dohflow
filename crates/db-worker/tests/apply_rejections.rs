@@ -467,7 +467,7 @@ fn every_listed_site_is_reached_by_a_scenario() {
 }
 
 #[test]
-fn the_issued_at_bound_is_the_years_0000_to_9999_and_a_refusal_writes_nothing() {
+fn the_issued_at_bound_is_the_years_1970_to_9999_and_a_refusal_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let worker = open(&dir.path().join("v.vault"));
     let command = |tz: &str| WriteCommand::SetHouseholdTimezone {
@@ -480,7 +480,7 @@ fn the_issued_at_bound_is_the_years_0000_to_9999_and_a_refusal_writes_nothing() 
     };
     // The earliest and latest accepted instants.
     worker
-        .dispatch(at(-62_167_219_200_000_000, 1), command("America/Chicago"))
+        .dispatch(at(0, 1), command("America/Chicago"))
         .unwrap();
     worker
         .dispatch(at(253_402_300_799_999_999, 2), command("Asia/Tokyo"))
@@ -495,7 +495,8 @@ fn the_issued_at_bound_is_the_years_0000_to_9999_and_a_refusal_writes_nothing() 
     };
     let before = logged();
     for (n, micros) in [
-        -62_167_219_200_000_001_i64,
+        -1_i64,
+        -62_167_219_200_000_000,
         253_402_300_800_000_000,
         i64::MAX,
         i64::MIN,
@@ -519,6 +520,62 @@ fn the_issued_at_bound_is_the_years_0000_to_9999_and_a_refusal_writes_nothing() 
         assert_eq!(error.apply_failure_code().map(|c| c.get()), Some(1));
     }
     assert_eq!(logged(), before, "a refused command writes nothing");
+}
+
+/// The receiver's bound, the apply check and the id mint are one bound: every instant the receiver
+/// accepts mints ids (a command that mints, at both ends), and the mint's own range error is
+/// unreachable from apply (personal-cfo-g3m.26 part 2).
+#[test]
+fn every_issued_at_the_receiver_accepts_mints_ids_and_one_outside_is_refused_before_the_mint() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.vault"));
+    let minting = |n: u128| WriteCommand::CreateAccount {
+        account: Box::new(Account::new(
+            account(n),
+            LedgerAccountId::from_uuid(u(500 + n)),
+            format!("Account {n}"),
+            CashflowRole::LiquidCash,
+            Currency::Usd,
+            AccountFlags::default(),
+        )),
+        opening_balance: Some(Money::new(500_000, Currency::Usd)),
+    };
+    let at = |micros: i64, n: u128| {
+        let mut m = meta(n);
+        m.issued_at = IssuedAt::from_unix_micros(micros);
+        m
+    };
+    let key = core_ids::DerivedIdKey::for_vault(&Uuid::from_u128(1));
+    for (n, micros) in [
+        (1_u128, sync_core::envelope::ISSUED_AT_MIN_MICROS),
+        (2, 1_000),
+        (3, sync_core::envelope::ISSUED_AT_MAX_MICROS),
+    ] {
+        assert!(sync_core::envelope::issued_at_in_range(micros));
+        // The id mint accepts it, and so does a command that mints.
+        core_ids::DerivedIds::new(key, IssuedAt::from_unix_micros(micros), Uuid::from_u128(n))
+            .next("x")
+            .unwrap();
+        worker.dispatch(at(micros, n), minting(n)).unwrap();
+    }
+    for (n, micros) in [
+        (10_u128, sync_core::envelope::ISSUED_AT_MIN_MICROS - 1),
+        (11, sync_core::envelope::ISSUED_AT_MAX_MICROS + 1),
+    ] {
+        assert!(!sync_core::envelope::issued_at_in_range(micros));
+        // Refused as a deterministic rejection, never as the mint's unclassified range error.
+        let error = worker.dispatch(at(micros, n), minting(n)).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                DbError::Rejected {
+                    code: RejectCode::IssuedAtOutOfRange,
+                    ..
+                }
+            ),
+            "{micros}: {error:?}"
+        );
+    }
 }
 
 // Unused imports kept honest for the next scenario that needs them.

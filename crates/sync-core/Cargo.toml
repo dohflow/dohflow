@@ -9,6 +9,8 @@ repository.workspace = true
 description = "Pure format-level building blocks for DohFlow Sync: the strict canonical JSON codec (restricted RFC 8785) shared by command payloads, manifests and logical metadata. No database, no runtime, no UI: a Sync server can build this crate without SQLCipher."
 
 [dependencies]
+# The one `issued_at` bound the receiver, apply and the id mint share (vault-format.md C.4).
+core-ids = { path = "../core-ids" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_json_canonicalizer = { workspace = true }

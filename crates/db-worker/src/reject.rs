@@ -25,7 +25,7 @@ use sync_core::status::ApplyFailureCode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RejectCode {
-    /// The command's `issued_at` is outside the years 0000 to 9999 (`1`).
+    /// The command's `issued_at` is outside 1970-01-01T00:00:00Z to 9999-12-31 (`1`).
     IssuedAtOutOfRange,
     /// A payload field is outside its domain (`2`).
     PayloadInvalid,
