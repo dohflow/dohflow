@@ -484,8 +484,15 @@ impl JobFailure {
 /// Result of one executor invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobExecution {
-    /// Work committed successfully.
+    /// Work succeeded. A cancellation request that is already pending, or that arrives before the
+    /// terminal write, wins and the job is recorded as cancelled: use this only for work that has
+    /// not committed anything a cancel could contradict.
     Succeeded,
+    /// Work succeeded and is durably committed. A cancellation request that arrives after the
+    /// commit is too late: the outcome is the truth, so the job is recorded as succeeded, never
+    /// cancelled (personal-cfo-pxi.25). A handler returns this only once its commit has happened;
+    /// before it, a handler that sees a cancel returns [`Self::Cancelled`] and commits nothing.
+    Committed,
     /// Work failed with a durable reason.
     Failed(JobFailure),
     /// Work observed cancellation and committed nothing.
@@ -604,6 +611,15 @@ pub trait JobStore {
         completed_at: DateTime<Utc>,
         next_due_at: Option<DateTime<Utc>>,
     ) -> Result<JobFinishResult, Self::Error>;
+    /// Record a successful invocation whose work is already committed. Unlike
+    /// [`Self::finish_success`], a pending cancellation request does not win: the request is
+    /// cleared and the job is recorded as succeeded.
+    fn finish_committed(
+        &self,
+        job: &JobRecord,
+        completed_at: DateTime<Utc>,
+        next_due_at: Option<DateTime<Utc>>,
+    ) -> Result<(), Self::Error>;
     /// Record a failure. `retry_at` is `Some` only when another attempt is due.
     fn finish_failure(
         &self,
@@ -931,6 +947,13 @@ where
                 report.succeeded += 1;
                 Ok("succeeded")
             }
+            JobExecution::Committed => {
+                self.store
+                    .finish_committed(job, completed_at, job.schedule.next_due_after(completed_at))
+                    .map_err(JobRunnerError::Store)?;
+                report.succeeded += 1;
+                Ok("succeeded")
+            }
             JobExecution::Failed(failure) => {
                 let retry_at = (failure.retryable && attempt < job.max_attempts)
                     .then(|| completed_at + job.backoff.delay_for_attempt(attempt));
@@ -1105,10 +1128,12 @@ where
                 watcher_stop.cancel();
                 (execution, job_cancellation.is_cancelled())
             });
-            let execution = if was_cancelled {
+            let execution = if was_cancelled && execution != JobExecution::Committed {
                 // Cancellation wins even if a handler races with the watcher
                 // and returns a late success/failure result. This is the
-                // no-partial-commit boundary for cooperative consumers.
+                // no-partial-commit boundary for cooperative consumers. A
+                // handler that reports `Committed` has already written, so
+                // the request came too late and the outcome stands.
                 JobExecution::Cancelled
             } else {
                 execution
@@ -1227,6 +1252,23 @@ mod tests {
             row.last_run_at = Some(completed_at);
             row.next_due_at = next_due_at;
             Ok(JobFinishResult::Applied)
+        }
+
+        fn finish_committed(
+            &self,
+            job: &JobRecord,
+            completed_at: DateTime<Utc>,
+            next_due_at: Option<DateTime<Utc>>,
+        ) -> Result<(), Self::Error> {
+            let mut jobs = self.jobs.lock().unwrap();
+            let row = jobs.get_mut(&job.id).unwrap();
+            row.state = JobState::Succeeded;
+            row.attempts = 0;
+            row.cancel_requested = false;
+            row.last_outcome = Some(JobOutcome::Succeeded);
+            row.last_run_at = Some(completed_at);
+            row.next_due_at = next_due_at;
+            Ok(())
         }
 
         fn finish_failure(
@@ -1530,6 +1572,106 @@ mod tests {
         let row = store.jobs.lock().unwrap()[&refresh_id].clone();
         assert_eq!(row.state, JobState::Succeeded);
         assert_eq!(row.next_due_at, Some(now + Duration::seconds(3600)));
+    }
+
+    #[test]
+    fn a_cancel_after_the_commit_does_not_rewrite_a_committed_outcome() {
+        let store = FakeStore::default();
+        let mut refresh = job(Schedule::Interval { seconds: 3600 });
+        refresh.kind = "lock_releasing".to_owned();
+        let id = refresh.id;
+        store.jobs.lock().unwrap().insert(id, refresh);
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = FixedClock(now);
+        let runner = JobRunner::new(&store);
+        let (claimed, _) = runner
+            .claim_due_of_kind(now, "window-1", "lock_releasing", &clock)
+            .unwrap();
+
+        // The work committed, then the cancel request landed before the terminal write.
+        store
+            .jobs
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .cancel_requested = true;
+        let finished = runner
+            .finish_claimed(&claimed[0], JobExecution::Committed, &clock)
+            .unwrap();
+
+        assert_eq!((finished.succeeded, finished.cancelled), (1, 0));
+        let row = store.jobs.lock().unwrap()[&id].clone();
+        assert_eq!(row.state, JobState::Succeeded);
+        assert_eq!(row.last_outcome, Some(JobOutcome::Succeeded));
+        assert!(!row.cancel_requested, "the late request is cleared");
+        assert_eq!(row.next_due_at, Some(now + Duration::seconds(3600)));
+    }
+
+    #[test]
+    fn a_plain_success_still_loses_to_a_pending_cancel() {
+        // The cooperative contract is unchanged: `Succeeded` makes no commit claim.
+        let store = FakeStore::default();
+        let mut refresh = job(Schedule::Interval { seconds: 3600 });
+        refresh.kind = "lock_releasing".to_owned();
+        let id = refresh.id;
+        store.jobs.lock().unwrap().insert(id, refresh);
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = FixedClock(now);
+        let runner = JobRunner::new(&store);
+        let (claimed, _) = runner
+            .claim_due_of_kind(now, "window-1", "lock_releasing", &clock)
+            .unwrap();
+        store
+            .jobs
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .cancel_requested = true;
+
+        let finished = runner
+            .finish_claimed(&claimed[0], JobExecution::Succeeded, &clock)
+            .unwrap();
+
+        assert_eq!((finished.succeeded, finished.cancelled), (0, 1));
+        assert_eq!(store.jobs.lock().unwrap()[&id].state, JobState::Cancelled);
+    }
+
+    #[test]
+    fn a_handler_that_commits_then_sees_the_cancel_is_still_recorded_as_succeeded() {
+        struct CommitThenCancel;
+        impl JobExecutor<()> for CommitThenCancel {
+            fn execute(
+                &self,
+                _job: &JobRecord,
+                cancellation: &CancellationToken,
+                _context: &(),
+            ) -> JobExecution {
+                // The work is done; the request arrives afterwards and the watcher sees it.
+                cancellation.cancel();
+                JobExecution::Committed
+            }
+        }
+        let store = FakeStore::default();
+        let first = job(Schedule::Once);
+        let id = first.id;
+        store.jobs.lock().unwrap().insert(id, first);
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let report = JobRunner::new(&store)
+            .run_due_with_clock(
+                now,
+                "unlock-1",
+                &(),
+                &CommitThenCancel,
+                &CancellationToken::new(),
+                &FixedClock(now),
+            )
+            .unwrap();
+
+        assert_eq!((report.succeeded, report.cancelled), (1, 0));
+        assert_eq!(store.jobs.lock().unwrap()[&id].state, JobState::Succeeded);
     }
 
     #[test]
