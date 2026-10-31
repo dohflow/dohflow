@@ -900,6 +900,7 @@ version = "0.1.0"
 dependencies = [
  "categorization",
  "chrono",
+ "core-ids",
  "core-ledger",
  "core-money",
  "forecast-engine",

@@ -37,6 +37,9 @@ use crate::IssuedAt;
 /// The label hashed with the vault id to form the per-vault identifier key.
 pub const ID_KEY_LABEL: &[u8] = b"dohflow/derived-id-key/v1";
 
+/// The domain label of [`DerivedIdKey::singleton_id`].
+const SINGLETON_ID_LABEL: &[u8] = b"dohflow/singleton-id/v1";
+
 /// How many ids one command may mint: ordinals `0..MAX_ORDINALS` fit `rand_a`'s 12 bits.
 pub const MAX_ORDINALS: u32 = 4096;
 
@@ -111,6 +114,37 @@ impl DerivedIdKey {
         } else {
             Err(DerivedIdError::GenesisKeyMismatch)
         }
+    }
+
+    /// The id of a per-vault SINGLETON row (one household, one primary member, a system
+    /// account): a pure function of the vault and a fixed label, so two devices that create
+    /// or migrate the same vault independently agree, and a replica inherits it through
+    /// bootstrap instead of seeding its own.
+    ///
+    /// ```text
+    /// mac = HMAC-SHA256(id_key, "dohflow/singleton-id/v1" || u8(label_len) || label)
+    /// id  = mac[0..16] with the version nibble set to 8 and the variant bits to 10
+    /// ```
+    ///
+    /// A UUIDv8 (custom) layout, distinct from the UUIDv7 command-derived ids. The id is for
+    /// LOCAL use: it is derived from the sync-visible `vault_id` and so must never be sent to
+    /// the platform service, which would otherwise be able to link records by recomputing it.
+    ///
+    /// # Errors
+    /// [`DerivedIdError`] for an empty, over-long or non-printable label.
+    pub fn singleton_id(&self, label: &str) -> Result<Uuid, DerivedIdError> {
+        let label = label.as_bytes();
+        validate_tag(label)?;
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.0)
+            .expect("HMAC accepts a key of any length");
+        mac.update(SINGLETON_ID_LABEL);
+        mac.update(&[u8::try_from(label.len()).expect("label length at most 255")]);
+        mac.update(label);
+        let out: [u8; 32] = mac.finalize().into_bytes().into();
+        let mut bytes: [u8; 16] = out[..16].try_into().expect("sixteen bytes");
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Ok(Uuid::from_bytes(bytes))
     }
 
     /// The 32 key bytes.

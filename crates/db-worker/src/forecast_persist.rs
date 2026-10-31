@@ -134,11 +134,9 @@ pub(crate) fn gather_inputs(conn: &Connection) -> Result<GatheredInputs, DbError
         [],
         |r| r.get(0),
     )?;
-    let tz: String = conn.query_row(
-        "SELECT household_timezone FROM vault_metadata WHERE singleton = 1",
-        [],
-        |r| r.get(0),
-    )?;
+    let tz: String = conn.query_row("SELECT household_timezone FROM households", [], |r| {
+        r.get(0)
+    })?;
     let recurring = canonical_recurring_events(conn)?;
     let income = canonical_income_sources(conn)?;
     let assumptions = canonical_active_assumptions(conn)?;
