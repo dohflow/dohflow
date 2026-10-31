@@ -20,7 +20,9 @@ semibold, card radius 8px. Matches the A2 numbers in `settings-layout-review.md`
 - The collapsed body is `hidden` and `inert`; the Tab list excludes it.
 - The error and exactly one Refresh now stay visible and reachable while collapsed.
 - While a delete confirmation is open both ancestor triggers report `aria-disabled="true"`, keep
-  `tabindex` 0 and ignore a click; after Cancel both are enabled and still open.
+  `tabindex` 0 and ignore a click; after Cancel both are enabled and still open, and focus is on
+  the start button (which is unmounted while confirming; focus is set from a layout effect after
+  the re-render, found by 04b's review).
 
 04b's automated accessibility-tree check on the built page is the runtime gate for this bead; the
 owner's VoiceOver run is part of `personal-cfo-4d8.39`. No production-AA claim is made: the dark

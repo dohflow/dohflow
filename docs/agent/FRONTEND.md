@@ -416,7 +416,9 @@ How to use it:
 - A component that owns a destructive confirmation calls `usePinDisclosures(active)` with `active`
   true while the confirmation is open, armed, or busy past the point of no return. Every enclosing
   disclosure stays open and its trigger turns `aria-disabled` (still focusable). The component's
-  own Cancel clears its state and returns focus to the control that opened it.
+  own Cancel clears its state and returns focus to the control that opened it. That control must
+  exist after the state change: when the confirmation replaces it, focus it from a layout effect
+  that runs after the re-render, not from the Cancel handler (the ref is still null there).
 - No expansion state is persisted by the component.
 
 | A2 contract | On `main` today |

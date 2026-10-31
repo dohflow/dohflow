@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Disclosure, usePinDisclosures } from "@/components/ui/disclosure";
@@ -266,7 +266,55 @@ function DeleteSection({ busy = false }: { busy?: boolean }) {
   );
 }
 
+/// The other real shape: the start control is REPLACED by the confirmation, so it is not mounted
+/// while confirming and focus can only go back to it after the re-render.
+function ReplacingDeleteSection() {
+  const [confirming, setConfirming] = useState(false);
+  const [returnFocus, setReturnFocus] = useState(false);
+  const startRef = useRef<HTMLButtonElement>(null);
+  usePinDisclosures(confirming);
+  useLayoutEffect(() => {
+    if (returnFocus && !confirming) {
+      startRef.current?.focus();
+      setReturnFocus(false);
+    }
+  }, [returnFocus, confirming]);
+  return confirming ? (
+    <div role="group" aria-label="Confirm delete">
+      <button
+        type="button"
+        onClick={() => {
+          setConfirming(false);
+          setReturnFocus(true);
+        }}
+      >
+        Cancel
+      </button>
+    </div>
+  ) : (
+    <button ref={startRef} type="button" onClick={() => setConfirming(true)}>
+      Delete vault
+    </button>
+  );
+}
+
 describe("Disclosure pinning", () => {
+  it("returns focus to a start control that was unmounted while confirming", () => {
+    render(
+      <Disclosure title="Section" defaultOpen>
+        <ReplacingDeleteSection />
+      </Disclosure>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete vault" }));
+    expect(screen.queryByRole("button", { name: "Delete vault" })).toBeNull();
+    screen.getByRole("button", { name: "Cancel" }).focus();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByRole("button", { name: "Delete vault" })).toHaveFocus();
+    expect(trigger("Section")).toHaveAttribute("aria-expanded", "true");
+    expect(trigger("Section")).not.toHaveAttribute("aria-disabled");
+  });
+
   it("does not request a collapse while pinned", () => {
     const onOpenChange = vi.fn();
     render(

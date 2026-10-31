@@ -2,7 +2,7 @@
 import "@fontsource-variable/ibm-plex-sans/index.css";
 import "../styles/globals.css";
 
-import React, { useRef, useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,16 @@ function DeleteConfirm() {
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState("");
   const startRef = useRef<HTMLButtonElement>(null);
+  const [returnFocus, setReturnFocus] = useState(false);
   usePinDisclosures(confirming);
+  // The start button is not mounted while confirming, so focus can only go back to it AFTER the
+  // re-render that brings it back; focusing inside the Cancel handler would find a null ref.
+  useLayoutEffect(() => {
+    if (returnFocus && !confirming) {
+      startRef.current?.focus();
+      setReturnFocus(false);
+    }
+  }, [returnFocus, confirming]);
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">
@@ -36,14 +45,14 @@ function DeleteConfirm() {
           />
           <div className="flex gap-2">
             <Button variant="destructive" disabled={typed !== "Example vault"}>
-              Delete this vault
+              Delete permanently
             </Button>
             <Button
               variant="outline"
               onClick={() => {
                 setConfirming(false);
                 setTyped("");
-                startRef.current?.focus();
+                setReturnFocus(true);
               }}
             >
               Cancel
