@@ -3029,6 +3029,7 @@ impl From<DbError> for KernelError {
             DbError::WorkerUnavailable(state) => KernelError::Unavailable(state),
             DbError::WriterPanicked => KernelError::WriterPanicked,
             DbError::InvalidCommand(message) => KernelError::Validation(message),
+            DbError::Rejected { message, .. } => KernelError::Validation(message),
             DbError::LoanAlreadyLinked { bill_id, bill_name } => KernelError::LoanAlreadyLinked {
                 bill_id: bill_id.to_string(),
                 bill_name,
