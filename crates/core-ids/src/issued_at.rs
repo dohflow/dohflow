@@ -46,7 +46,7 @@ impl IssuedAt {
         Self::micros_supported(self.0)
     }
 
-    /// The instant `micros microseconds after the Unix epoch (negative before it).
+    /// The instant `micros` microseconds after the Unix epoch (negative before it).
     #[must_use]
     pub const fn from_unix_micros(micros: i64) -> Self {
         Self(micros)

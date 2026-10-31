@@ -184,10 +184,7 @@ fn a_manual_assertion_is_never_last_wins_and_the_later_one_anchors() {
     assert!(both.iter().all(|r| r.2 == "manual" && r.3.is_none()));
     // A reused id is refused.
     let again = worker.record_balance_assertion(u(70), account, usd(1), day(2026, 10, 19));
-    assert!(
-        matches!(again, Err(DbError::InvalidCommand(_))),
-        "{again:?}"
-    );
+    assert!(matches!(again, Err(DbError::Rejected { .. })), "{again:?}");
 }
 
 #[test]
@@ -219,7 +216,7 @@ fn refusals_are_a_function_of_the_command_and_the_base() {
         connector(AccountId::from_uuid(u(99)), day(2026, 10, 19), 1),
     );
     assert!(
-        matches!(unknown, Err(DbError::InvalidCommand(_))),
+        matches!(unknown, Err(DbError::Rejected { .. })),
         "{unknown:?}"
     );
     let euro = worker.dispatch(
@@ -230,11 +227,11 @@ fn refusals_are_a_function_of_the_command_and_the_base() {
             amount: Money::new(1, Currency::Eur),
         },
     );
-    assert!(matches!(euro, Err(DbError::InvalidCommand(_))), "{euro:?}");
+    assert!(matches!(euro, Err(DbError::Rejected { .. })), "{euro:?}");
     // A reading dated after the household-local date of the command's issued_at.
     let future = worker.dispatch(meta(3, at(0)), connector(account, day(2026, 10, 25), 1));
     assert!(
-        matches!(future, Err(DbError::InvalidCommand(_))),
+        matches!(future, Err(DbError::Rejected { .. })),
         "{future:?}"
     );
     // The same date is fine under a LATER issued_at: the verdict reads the command, not the clock.

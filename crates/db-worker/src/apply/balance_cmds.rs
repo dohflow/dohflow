@@ -20,7 +20,7 @@ use core_money::Money;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::{currency_from_code, CommandMeta, DbError};
+use crate::{currency_from_code, CommandMeta, DbError, RejectCode};
 
 /// The account's currency, or the refusal.
 fn account_currency(tx: &Connection, account: &AccountId, amount: &Money) -> Result<(), DbError> {
@@ -32,10 +32,14 @@ fn account_currency(tx: &Connection, account: &AccountId, amount: &Money) -> Res
         )
         .optional()?;
     let Some(currency) = currency else {
-        return Err(DbError::InvalidCommand("no such account".to_owned()));
+        return Err(DbError::reject(
+            RejectCode::ReferenceMissing,
+            "no such account".to_owned(),
+        ));
     };
     if amount.currency() != currency_from_code(&currency)? {
-        return Err(DbError::InvalidCommand(
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
             "assertion currency must match the account currency".to_owned(),
         ));
     }
@@ -58,7 +62,8 @@ pub(crate) fn apply_record_balance_assertion(
         |r| r.get(0),
     )?;
     if taken {
-        return Err(DbError::InvalidCommand(
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
             "that balance observation id is already in use".to_owned(),
         ));
     }
@@ -92,7 +97,8 @@ pub(crate) fn apply_record_connector_balance(
     // A balance cannot be observed in the household's future: "today" is the household-local date
     // of the command's `issued_at`, never the wall clock, so a replica reaches the same verdict.
     if *observed_at > crate::forecast::household_today_at(tx, crate::apply::issued_at(meta))? {
-        return Err(DbError::InvalidCommand(
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
             "a balance cannot be observed in the future".to_owned(),
         ));
     }
