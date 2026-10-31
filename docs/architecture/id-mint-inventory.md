@@ -42,8 +42,6 @@ deliberate row here, in the same change.
 | `lib.rs` | `clone_scenario` | 1 | keep-pending | A direct writer outside the bus; `personal-cfo-5ymg8.5` routes it as a command with a derived id. |
 | `lib.rs` | `ensure_node_id` | 1 | keep-class-3 | The device's own node id. |
 | `lib.rs` | `ensure_vault_metadata` | 1 | keep-seeder | The vault id, minted once at creation (genesis). |
-| `lib.rs` | `ensure_default_categories` | 2 | keep-seeder | Genesis seeder; `personal-cfo-32fmp.3` makes it genesis-only with content-derived ids. |
-| `lib.rs` | `ensure_system_ledger_account` | 1 | keep-singleton | The create-if-missing system account, reached from `apply`; `personal-cfo-32fmp.3` derives it from its content and it consumes no ordinal. The one allowed random mint reachable from apply, until then. |
 | `merchant_identity.rs` | `create_identity` | 1 | keep-caller | Reached from a direct writer outside the bus (`lib.rs`), not from `apply`; `personal-cfo-5ymg8.5` routes it. |
 
 ## Derived mints (inside `apply` and its helpers)

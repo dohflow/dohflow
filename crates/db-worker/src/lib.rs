@@ -1711,9 +1711,15 @@ impl DbWorker {
         )?)
     }
 
-    /// Shared post-keying bootstrap: migrate, seed singletons, self-test. Run
+    /// Shared post-keying bootstrap: migrate, seed a NEW vault, self-test. Run
     /// before the worker is usable so no domain query ever touches a
     /// half-migrated vault (personal-cfo-wkn).
+    ///
+    /// The vault's seed rows (household, system ledger accounts, default categories, seed
+    /// merchants) are written ONLY in the transaction that creates the `vault_metadata` row,
+    /// together with that row, so a crash cannot leave a vault that is never seeded, and no
+    /// later open writes a class-1 row (personal-cfo-32fmp.3; ADR 0074 Addendum G). A seed change
+    /// after a vault exists ships as a migration, never as a new check on open.
     fn bootstrap(
         path: PathBuf,
         mut conn: Connection,
@@ -1722,10 +1728,7 @@ impl DbWorker {
     ) -> Result<Self, DbError> {
         migrations::run_migrations(&mut conn)?;
         let node_id = ensure_node_id(&conn)?;
-        ensure_vault_metadata(&conn, migrations::CURRENT_VERSION)?;
-        ensure_system_accounts(&conn)?;
-        ensure_default_categories(&conn)?;
-        merchant_identity::ensure_seed_merchants(&conn)?;
+        create_vault_rows_if_new(&mut conn)?;
         // The write-set capture (vault-format.md C.1.5): temp triggers on the writer
         // connection, installed after the migrations and the seed writes so neither is captured.
         write_set::install(&conn)?;
@@ -5125,8 +5128,12 @@ const DEFAULT_KDF_PARALLELISM: i64 = 1;
 /// `schema_migrations` tracker but never re-stamp this row, so without this
 /// update a vault created under an older build reports schema-incoherent on
 /// every open even after migrating cleanly (personal-cfo-4d8.27.1.3).
-/// Idempotent across re-opens.
-fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), DbError> {
+/// Idempotent across re-opens. Returns the new vault's id and creation time when THIS call
+/// created the row, and `None` for an existing vault: the caller seeds only on `Some`.
+fn ensure_vault_metadata(
+    conn: &Connection,
+    schema_version: i64,
+) -> Result<Option<(Uuid, String)>, DbError> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM vault_metadata WHERE singleton = 1)",
         [],
@@ -5142,7 +5149,7 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
              WHERE singleton = 1 AND schema_version < ?1",
             params![schema_version],
         )?;
-        return Ok(());
+        return Ok(None);
     }
     let vault_id = Uuid::now_v7();
     let created_at = Utc::now().to_rfc3339();
@@ -5196,6 +5203,31 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
             ],
         )?;
     }
+    Ok(Some((vault_id, created_at)))
+}
+
+/// Create the vault's `vault_metadata` row and seed rows in ONE transaction when the vault is new,
+/// and only stamp the schema version when it exists. A failure anywhere rolls back the metadata
+/// row too, so a vault is never half-created (a row but no seeds, which creation-only seeding
+/// would never repair).
+fn create_vault_rows_if_new(conn: &mut Connection) -> Result<(), DbError> {
+    let tx = conn.transaction()?;
+    if let Some((vault_id, created_at)) = ensure_vault_metadata(&tx, migrations::CURRENT_VERSION)? {
+        seed_new_vault(&tx, &vault_id, &created_at)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Write the seed rows of a NEW vault, in the transaction that created its `vault_metadata` row.
+/// Every id and timestamp is a function of the vault (its id and creation time), so two vaults
+/// with the same id and creation time seed identical rows. A seed row is never looked up by
+/// recomputing its id: users rename and move seeded categories, and legacy vaults hold random
+/// ids, so rows are always found by state.
+fn seed_new_vault(conn: &Connection, vault_id: &Uuid, created_at: &str) -> Result<(), DbError> {
+    ensure_system_accounts(conn)?;
+    seed_default_categories(conn, vault_id, created_at)?;
+    merchant_identity::seed_merchants(conn, created_at)?;
     Ok(())
 }
 
@@ -5470,18 +5502,22 @@ fn would_create_category_cycle(
     Ok(count > 0)
 }
 
-fn ensure_default_categories(conn: &Connection) -> Result<(), DbError> {
-    let already_seeded: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM categories WHERE is_system = 1)",
-        [],
-        |r| r.get(0),
-    )?;
-    if already_seeded {
-        return Ok(());
-    }
-    let now = Utc::now().to_rfc3339();
+/// Seed the default category taxonomy of a NEW vault (called only from [`seed_new_vault`]).
+///
+/// Ids are content ids of the seed's names under the vault's derivation key (the group, or the
+/// group and the leaf: leaf names are unique within a group, and the parent's id is not needed in
+/// the parts), and both timestamps are the vault's creation time, so two vaults with the same id
+/// and creation time seed identical rows. The ids are for seeding only: a seeded category is
+/// renamed and moved by users, and a legacy vault holds random ids, so a seed row is never found
+/// by recomputing its id.
+fn seed_default_categories(
+    conn: &Connection,
+    vault_id: &Uuid,
+    created_at: &str,
+) -> Result<(), DbError> {
+    let key = core_ids::DerivedIdKey::for_vault(vault_id);
     for group in DEFAULT_TAXONOMY {
-        let group_id = Uuid::now_v7();
+        let group_id = key.content_id(CATEGORY_SEED_TAG, &[group.name.as_bytes()])?;
         insert_system_category(
             conn,
             group_id,
@@ -5489,22 +5525,32 @@ fn ensure_default_categories(conn: &Connection) -> Result<(), DbError> {
             group.name,
             group.category_type,
             group.forecast_behavior,
-            &now,
+            created_at,
         )?;
         for (leaf_name, leaf_behavior) in group.leaves {
+            let leaf_id = key.content_id(
+                CATEGORY_SEED_TAG,
+                &[group.name.as_bytes(), leaf_name.as_bytes()],
+            )?;
             insert_system_category(
                 conn,
-                Uuid::now_v7(),
+                leaf_id,
                 Some(group_id),
                 leaf_name,
                 group.category_type,
                 leaf_behavior,
-                &now,
+                created_at,
             )?;
         }
     }
     Ok(())
 }
+
+/// The content-id tag of a seeded category (`[group]` or `[group, leaf]`).
+const CATEGORY_SEED_TAG: &str = "category.seed";
+
+/// The content-id tag of a system ledger account (`[role, currency code]`).
+const SYSTEM_LEDGER_ACCOUNT_TAG: &str = "system-ledger-account";
 
 fn insert_system_category(
     conn: &Connection,
@@ -5525,7 +5571,8 @@ fn insert_system_category(
     Ok(())
 }
 
-/// Find (or create) the system ledger account for `(role, currency)`.
+/// Find (or create) the system ledger account for `(role, currency)`: the class-1 map first, then a
+/// content-derived id on a miss.
 fn ensure_system_ledger_account(
     conn: &Connection,
     role: &str,
@@ -5542,7 +5589,20 @@ fn ensure_system_ledger_account(
     if let Some(uuid) = existing {
         return Ok(LedgerAccountId::from_uuid(uuid));
     }
-    let ledger_account_id = LedgerAccountId::new();
+    // Not found: derive the id from the pair and the vault (a content id, independent of any
+    // command), so two devices that create the same pair independently converge on one row. The
+    // map is class 1 (ADR 0074 Addendum G): a replica holds the origin's rows from genesis, legacy
+    // random ids included, and finds them here before it derives anything.
+    let vault_id: Uuid = conn.query_row(
+        "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    let ledger_account_id =
+        LedgerAccountId::from_uuid(core_ids::DerivedIdKey::for_vault(&vault_id).content_id(
+            SYSTEM_LEDGER_ACCOUNT_TAG,
+            &[role.as_bytes(), currency.code().as_bytes()],
+        )?);
     insert_ledger_account(conn, ledger_account_id, kind, currency)?;
     conn.execute(
         "INSERT INTO system_ledger_accounts (role, currency, ledger_account_id) VALUES (?1, ?2, ?3)",

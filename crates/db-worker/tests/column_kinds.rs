@@ -1142,9 +1142,9 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("forecast_dependency_edges", &["bi", "bu", "bd"]),
     ("household_members", &["bd"]),
     ("households", &["bi", "bd"]),
-    // Written only where a command meets a (role, currency) pair no seed created, so no sample
-    // of a fresh vault reaches it; the rebase test of personal-cfo-32fmp.3 does.
-    ("system_ledger_accounts", &["bi", "bu", "bd"]),
+    // The map is insert-only: a command meets a (role, currency) pair no seed created (a euro
+    // account with an opening balance) and inserts it; nothing updates or deletes a row.
+    ("system_ledger_accounts", &["bu", "bd"]),
     ("income_sources", &["bd"]),
     ("ledger_accounts", &["bu", "bd"]),
     ("ledger_transactions", &["bd"]),
@@ -1292,6 +1292,21 @@ mod all_variants {
         rt: &mut Runtime,
     ) -> Vec<(&'static str, WriteCommand)> {
         match name {
+            "create_account" => vec![(
+                "setup: a euro account with an opening balance, so the system account for the new \
+                 currency is created (a map row)",
+                WriteCommand::CreateAccount {
+                    account: Box::new(Account::new(
+                        account(90),
+                        LedgerAccountId::from_uuid(u(190)),
+                        "Euro checking",
+                        CashflowRole::LiquidCash,
+                        Currency::Eur,
+                        AccountFlags::default(),
+                    )),
+                    opening_balance: Some(Money::new(10_000, Currency::Eur)),
+                },
+            )],
             "set_account_link" => vec![
                 (
                     "setup: asset account",
