@@ -20,6 +20,12 @@ bead = "personal-cfo-g3m.26"
 note = "Payload-domain and class-1 reference checks of the account commands."
 
 [[site]]
+module = "apply/balance_cmds.rs"
+statements = 4
+bead = "personal-cfo-5ymg8.3"
+note = "The balance commands: the account (class 1) exists and holds the amount's currency, the caller-minted assertion id is unused in the base, and a reading is not dated after the command's household-local day (the household time zone is class 1, the instant is metadata)."
+
+[[site]]
 module = "apply/categorization_cmds.rs"
 statements = 10
 bead = "personal-cfo-g3m.26"

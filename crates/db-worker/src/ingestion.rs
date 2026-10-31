@@ -108,8 +108,9 @@ pub(crate) struct NewStagedAccount<'a> {
 }
 
 /// An observed ending balance. The connector sync path promotes it into
-/// `balance_observations` immediately, in the staging transaction (ADR 0027
-/// addendum 2026-09-02, yl53); the file-import commit path remains deferred
+/// `balance_observations` right after the staging transaction commits, through the
+/// `RecordConnectorBalance` command (ADR 0027 addendum 2026-09-02, yl53; personal-cfo-5ymg8.3);
+/// the file-import commit path remains deferred
 /// (imports flow through review gates, and an old export's balance needs an
 /// age-cutoff decision first).
 #[derive(Debug, Clone)]

@@ -1110,7 +1110,7 @@ fn full_capture_tables() -> Vec<String> {
 ///
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
-/// * the rows of `balance_observations`, `category_aliases`, `credit_card_cycles`,
+/// * the rows of `category_aliases`, `credit_card_cycles`,
 ///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
 ///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
 ///   reach the command bus with `personal-cfo-5ymg8`;
@@ -1121,7 +1121,7 @@ fn full_capture_tables() -> Vec<String> {
 /// changes nothing observable.
 const UNEXERCISED: &[(&str, &[&str])] = &[
     ("accounts", &["bd"]),
-    ("balance_observations", &["bi", "bu", "bd"]),
+    ("balance_observations", &["bd"]),
     ("bill_contracts", &["bd"]),
     ("categories", &["bd"]),
     ("category_aliases", &["bi", "bu", "bd"]),
@@ -1240,6 +1240,8 @@ mod all_variants {
         "revert_scenario_apply",
         "void_transaction",
         "set_household_timezone",
+        "record_balance_assertion",
+        "record_connector_balance",
         "set_household_name",
         "add_household_member",
         "rename_household_member",
@@ -1305,6 +1307,14 @@ mod all_variants {
                     },
                 ),
             ],
+            "record_connector_balance" => vec![(
+                "setup: an earlier connector reading of the same day, so the sample updates it",
+                WriteCommand::RecordConnectorBalance {
+                    account_id: account(1),
+                    observed_at: date(2026, 10, 1),
+                    amount: usd(100_000),
+                },
+            )],
             "link_bill_to_loan" => vec![
                 (
                     "setup: a loan paid monthly",
@@ -1704,7 +1714,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 67, "every variant ran");
+        assert_eq!(checked, 69, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,
