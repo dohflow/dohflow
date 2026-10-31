@@ -601,13 +601,13 @@ fn write_sidecar_new(sidecar: &Path, bytes: &[u8]) -> Result<(), KernelError> {
         .map_err(|error| KernelError::Vault(error.to_string()))
 }
 
-/// Read every attachment blob in `dir` as `(storage_id = filename, ciphertext)`
-/// in a deterministic order. A missing directory (no attachments yet) is an
-/// empty list; `.tmp` files (a crash-interrupted import) are skipped.
 /// The vault's attachment blobs as `(storage id, ciphertext)`, ordered by storage id.
 type BlobList = Vec<(String, Vec<u8>)>;
 
-/// [`read_blobs`] that looks at `cancelled` before each blob and returns `None` when it reads true.
+/// Read every attachment blob in `dir` as `(storage_id = filename, ciphertext)`
+/// in a deterministic order. A missing directory (no attachments yet) is an
+/// empty list; `.tmp` files (a crash-interrupted import) are skipped. Looks at
+/// `cancelled` before each blob and returns `None` when it reads true.
 fn read_blobs_cancellable(
     dir: &Path,
     cancelled: &dyn Fn() -> bool,
