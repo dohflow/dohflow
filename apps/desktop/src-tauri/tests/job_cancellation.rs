@@ -18,9 +18,12 @@
 //!   or nothing against an uncancelled control.
 //! * The terminal state is durable: after the vault is closed and reopened the job is still
 //!   cancelled and is not claimed again.
-//! * The latency of the cancel path stays well under the 500 ms SLA (the wall-clock assertion
-//!   lives in the `#[ignore]`d perf cases, like the db-worker's, because absolute timings fail
-//!   under load on shared runners).
+//! * Queued cancels are terminal at once and their P99 is under the 500 ms SLA (live: one indexed
+//!   write, about a hundred times under the bound). The latency of the cancel path around a RACE
+//!   is the two `#[ignore]`d perf cases, because absolute timings fail under load. Nothing in CI
+//!   runs them (the perf-budget job builds only db-worker and job-runtime): run them by hand, one
+//!   at a time, `cargo test --test job_cancellation -- --ignored --exact --test-threads=1 <name>`;
+//!   in parallel they contend for the vault and can miss the bound.
 //!
 //! It does NOT prove that a running export or fetch stops early, and it does not assert the
 //! "cancelled means nothing was committed" rule, because neither holds today: the backup handler
@@ -410,7 +413,7 @@ fn queued_cancels_are_terminal_when_the_call_returns_and_p99_is_under_the_sla() 
 }
 
 #[test]
-#[ignore = "absolute latency SLA; run by the non-required perf job (cargo test ... -- --ignored)"]
+#[ignore = "absolute latency SLA; run by hand, one at a time: cargo test --test job_cancellation -- --ignored --exact --test-threads=1 <name> (parallel runs contend for the vault and miss the bound)"]
 fn backup_cancel_path_latency_is_under_the_sla_at_p99() {
     let mut calls = Vec::new();
     let mut to_terminal = Vec::new();
@@ -759,7 +762,7 @@ fn a_connector_refresh_cancelled_mid_fetch_is_accepted_all_or_nothing_and_durabl
 }
 
 #[test]
-#[ignore = "absolute latency SLA; run by the non-required perf job (cargo test ... -- --ignored)"]
+#[ignore = "absolute latency SLA; run by hand, one at a time: cargo test --test job_cancellation -- --ignored --exact --test-threads=1 <name> (parallel runs contend for the vault and miss the bound)"]
 fn connector_refresh_cancel_request_is_under_the_sla() {
     let cancelled = cancel_during_fetch("perf", Duration::from_millis(50));
     assert!(
