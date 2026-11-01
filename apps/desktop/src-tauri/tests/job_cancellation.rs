@@ -34,20 +34,24 @@
 //!   at a time, `cargo test --test job_cancellation -- --ignored --exact --test-threads=1 <name>`;
 //!   in parallel they contend for the vault and can miss the bound.
 //!
-//! It does NOT prove that a running backup export stops early, and it does not assert the
-//! "cancelled means nothing was committed" rule for it, because neither holds today: the backup
-//! handler checks its token once, before the export starts, so an export in flight runs to
-//! completion and the job is then recorded as cancelled. That gap is the `#[ignore]`d case below,
-//! naming the bead that fixes it (personal-cfo-g3m.29), which un-ignores it.
+//! The backup export reads the job's cancellation at its checkpoints (personal-cfo-g3m.29): between
+//! blob reads, after the snapshot, between the manifest and frame steps, around the seal, each
+//! megabyte written, and before the read-back, the verification and the receipt. The race case below
+//! cancels a real run at many offsets, but a small vault finishes inside a few milliseconds, so the
+//! proof that EVERY checkpoint leaves the destination untouched is
+//! `finance-kernel/tests/backup_cancel.rs`, which cancels at each one in turn. A backup that has
+//! completed (written, verified, receipted) is reported as `Committed`, so a cancel that arrives after
+//! it is too late and the job stays succeeded (the case below that lands the cancel in that window).
 
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use app_lib::backup_job::backup_job_execution_observed;
 use app_lib::connector_attention::{encode, AttentionEntry, AttentionKind};
 use app_lib::connector_refresh::{
     refresh_job_id, run_due_connector_refresh, run_due_connector_refresh_observed,
@@ -69,9 +73,10 @@ use connector_core::{
     LinkSession, SyncBatch,
 };
 use finance_kernel::{
-    BackoffPolicy, BackupCadence, CancellationToken, Clock, JobExecutor, JobSpec, JobState, Kernel,
-    ParsedAccount, ParsedBalance, ParsedRecord, Schedule, VaultController, BACKUP_JOB_ID,
-    BACKUP_JOB_KIND, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
+    BackoffPolicy, BackupCadence, CancellationToken, Clock, JobDispatcher, JobExecution,
+    JobExecutor, JobHandler, JobRecord, JobSpec, JobState, Kernel, ParsedAccount, ParsedBalance,
+    ParsedRecord, Schedule, VaultController, BACKUP_JOB_ID, BACKUP_JOB_KIND,
+    CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
 };
 use semver::Version;
 use tempfile::TempDir;
@@ -457,8 +462,170 @@ fn backup_cancel_path_latency_is_under_the_sla_at_p99() {
 
 /// The contract for a cancel that lands while the backup export is running: the runner returns
 /// within the SLA and, if it recorded the running job as cancelled, nothing was committed.
+/// A handler for the real backup kind that lands a cancel request exactly after the export has
+/// completed and before its result is reported, then waits until the runner's watcher has raised the
+/// job's token (so the runner's cancellation override would fire for anything but a committed result).
+struct CancelsAfterTheExport;
+
+impl JobHandler<Kernel> for CancelsAfterTheExport {
+    fn kind(&self) -> &'static str {
+        BACKUP_JOB_KIND
+    }
+
+    fn should_run(&self, job: &JobRecord, _context: &Kernel) -> bool {
+        job.id == BACKUP_JOB_ID
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        kernel: &Kernel,
+    ) -> JobExecution {
+        backup_job_execution_observed(job, cancellation, kernel, &|| {
+            assert!(
+                kernel.cancel_job(BACKUP_JOB_ID).unwrap(),
+                "a running job accepts the request"
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cancellation.is_cancelled() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the watcher never raised the token"
+                );
+                thread::sleep(Duration::from_millis(2));
+            }
+        })
+    }
+}
+
+/// A cancel that arrives after the backup completed is too late: the bundle and its receipt exist, so
+/// the job is recorded as succeeded, never as cancelled (personal-cfo-g3m.29, the "committed outcome is
+/// the truth" rule of the job runtime).
 #[test]
-#[ignore = "personal-cfo-g3m.29: the backup export has no cancellation checkpoints, so a cancel that lands mid-export lets it finish and commit, then records the job as cancelled"]
+fn a_backup_cancelled_after_it_completed_is_recorded_succeeded_with_its_bundle_and_receipt() {
+    let fixture = backup_fixture();
+    let dispatcher = JobDispatcher::<Kernel>::new();
+    dispatcher
+        .register(Arc::new(CancelsAfterTheExport))
+        .unwrap();
+    let guard = fixture.state.lock_controller().unwrap();
+    let kernel = guard.kernel().unwrap();
+
+    let report = run_due(kernel, &dispatcher, "cancel-after-export");
+
+    assert_eq!((report.succeeded, report.cancelled), (1, 0), "{report:?}");
+    let row = kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Succeeded);
+    assert_eq!(
+        row.last_outcome,
+        Some(finance_kernel::JobOutcome::Succeeded)
+    );
+    assert_eq!(
+        assert_whole_or_nothing(kernel, &fixture.destination),
+        1,
+        "the completed bundle and its receipt are there"
+    );
+    assert!(
+        !kernel.job_cancellation_requested(BACKUP_JOB_ID).unwrap(),
+        "the late request is cleared, not left pending"
+    );
+}
+
+/// A handler for the real backup kind whose process dies right after the export completed, with a
+/// cancel request already raised: the backup's bundle and receipt exist, the job is still `running`.
+struct CrashesAfterTheExportWithACancelPending;
+
+impl JobHandler<Kernel> for CrashesAfterTheExportWithACancelPending {
+    fn kind(&self) -> &'static str {
+        BACKUP_JOB_KIND
+    }
+
+    fn should_run(&self, job: &JobRecord, _context: &Kernel) -> bool {
+        job.id == BACKUP_JOB_ID
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        kernel: &Kernel,
+    ) -> JobExecution {
+        backup_job_execution_observed(job, cancellation, kernel, &|| {
+            assert!(kernel.cancel_job(BACKUP_JOB_ID).unwrap());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cancellation.is_cancelled() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the watcher never raised the token"
+                );
+                thread::sleep(Duration::from_millis(2));
+            }
+            panic!("the process died here");
+        })
+    }
+}
+
+/// Known gap, personal-cfo-g3m.31 (the same case as the connector refresh's, for the backup): a crash
+/// after the bundle and its receipt exist, WITH a cancel request pending. Recovery terminalizes any
+/// running row that has a cancel request as `Cancelled`, because nothing durable says the export
+/// completed. The correct outcome (what this asserts) is that a job whose bundle and receipt exist is not
+/// recorded as cancelled; g3m.31's durable commit marker delivers it and un-ignores this case.
+#[test]
+#[ignore = "personal-cfo-g3m.31: needs the durable commit marker; today recovery records this job as cancelled with its bundle and receipt in place"]
+fn a_crash_after_the_backup_completed_with_a_cancel_pending_is_not_recorded_as_cancelled() {
+    let BackupFixture {
+        dir,
+        destination,
+        state,
+    } = backup_fixture();
+    let path = dir.path().join("vault.db");
+    {
+        let dispatcher = JobDispatcher::<Kernel>::new();
+        dispatcher
+            .register(Arc::new(CrashesAfterTheExportWithACancelPending))
+            .unwrap();
+        let guard = state.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        let crashed = catch_unwind(AssertUnwindSafe(|| {
+            run_due(kernel, &dispatcher, "crashes-with-cancel")
+        }));
+        assert!(crashed.is_err(), "the handler panicked");
+        assert_eq!(
+            assert_whole_or_nothing(kernel, &destination),
+            1,
+            "the bundle and its receipt exist before the crash"
+        );
+        assert_eq!(
+            kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap().state,
+            JobState::Running
+        );
+    }
+    drop(state);
+
+    let reopened = AppState::new(VaultController::open(&path));
+    unlock_vault_impl(&reopened, PASSWORD.to_owned()).expect("unlock reopened vault");
+    let guard = reopened.lock_controller().unwrap();
+    let kernel = guard.kernel().unwrap();
+    run_due(
+        kernel,
+        reopened.job_dispatcher().as_ref(),
+        "recover-with-cancel",
+    );
+
+    assert_eq!(
+        assert_whole_or_nothing(kernel, &destination),
+        1,
+        "the bundle and its receipt are still there"
+    );
+    assert_ne!(
+        kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap().state,
+        JobState::Cancelled,
+        "recovery recorded a cancelled job whose bundle and receipt exist"
+    );
+}
+
+#[test]
 fn a_backup_cancelled_mid_export_stops_within_the_sla_and_commits_nothing() {
     for (index, offset) in RACE_OFFSETS_MS.iter().enumerate() {
         let outcome = race_one_backup(Duration::from_millis(*offset), &format!("mid-{index}"));
