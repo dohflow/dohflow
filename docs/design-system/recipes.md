@@ -13,7 +13,7 @@ badge), the conventions in [`design-system.md`](./design-system.md) §5 + the
 > which would break our palette.
 
 > **Repo status:** only `button`, `card`, `input`, `label` exist in
-> `apps/desktop/src/components/ui/` today. The `chart`, `dialog`, `table`, and
+> `apps/desktop/src/components/ui/` today, plus `dialog` (shipped, personal-cfo-4d8.6.1). The `chart`, `table`, and
 > `form` primitives below are standard shadcn components we adopt when first needed
 > (`npx shadcn@latest add chart dialog table form`). These recipes are how they
 > should look in our system. Forms target **RHF + Zod** per ADR 0020 / bead
@@ -194,8 +194,15 @@ export function DeleteAccountDialog({ name, count, onConfirm }: {
 }
 ```
 
-`DialogContent` is a `popover`-surface card on a dimmed `foreground/50` overlay;
+`DialogContent` is a `popover`-surface card on a dimmed `foreground/40` overlay;
 footer actions right-aligned, destructive action last.
+
+Shipped additions (`components/ui/dialog.tsx`, personal-cfo-4d8.6.1): the content is bounded to the
+window and only `DialogBody` scrolls, so the title, error and actions stay reachable; data text wraps
+anywhere. Put a failed attempt in the persistent alert, `<DialogError error={message} />`, which stays
+until you clear it and never closes the dialog. Pass `initialFocusRef` (the safe action for a
+confirm), and `restoreFocusTo` and `fallbackFocusTo` where the opener may not take focus on click or
+may be removed by the action.
 
 ---
 

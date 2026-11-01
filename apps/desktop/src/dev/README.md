@@ -69,3 +69,15 @@ Open it in Safari as well (and a narrow `w`) if the engine matters.
 
 `disclosure-example.html` shows the shared `Disclosure` with a long title, a persistent error and retry, a collapsed
 summary and a nested delete guard. `?theme=dark` and `?open=0` change the state.
+
+## Shared dialog example (`personal-cfo-4d8.6.1`)
+
+`dialog-example.html` shows the shared `Dialog` with fake data, loading the app's own IBM Plex Sans. `?case=` is `plain`,
+`long-name` (a 100-character unbroken name in the title and the body), `many-lines` (30 lines, so the body scrolls and the
+actions stay reachable), `error` (the persistent alert slot) or `all`; `&theme=dark` selects Dark. Shrink the window to see
+the bounded height.
+
+```bash
+pnpm -C apps/desktop exec vite --port 5199 --strictPort
+# http://localhost:5199/dialog-example.html?case=all&theme=dark
+```
