@@ -17,6 +17,13 @@ import {
   type VaultSummaryDto,
 } from "@/bindings";
 
+/// How a Touch ID unlock attempt ended (personal-cfo-xuu). `password` carries the stable reason code the
+/// unlock screen explains; `error` is a failure the password path would also report.
+export type TouchIdUnlockResult =
+  | { kind: "unlocked" }
+  | { kind: "password"; reason: string }
+  | { kind: "error"; error: IpcError };
+
 type VaultResult =
   | { status: "ok"; data: VaultStatusDto }
   | { status: "error"; error: IpcError };
@@ -33,6 +40,9 @@ type VaultContextValue = {
     baseCurrency?: string,
   ) => Promise<IpcError | null>;
   unlockVault: (password: string) => Promise<IpcError | null>;
+  /// Unlock with Touch ID (personal-cfo-xuu). On success the status flips to Unlocked, exactly as a
+  /// password unlock does. Anything else leaves the vault locked for the password field.
+  unlockWithTouchId: () => Promise<TouchIdUnlockResult>;
   lockVault: () => Promise<IpcError | null>;
   /// Permanently delete the vault and all its data (j0cg.5); on success the status
   /// flips to NoVault and the app returns to the create-vault screen. Recoverable
@@ -175,6 +185,16 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     (password: string) => run(commands.unlockVault(password)),
     [run],
   );
+  const unlockWithTouchId = useCallback(async (): Promise<TouchIdUnlockResult> => {
+    const result = await commands.touchIdUnlock();
+    if (result.status !== "ok") return { kind: "error", error: result.error };
+    const { unlocked, vault, reason } = result.data;
+    if (unlocked && vault) {
+      setStatus(vault);
+      return { kind: "unlocked" };
+    }
+    return { kind: "password", reason: reason ?? "unlock_unavailable" };
+  }, []);
   const lockVault = useCallback(async () => {
     const error = await run(commands.lockVault());
     // No financial read-model data may linger in the cache after lock (ADR 0003).
@@ -272,6 +292,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         loadError,
         createVault,
         unlockVault,
+        unlockWithTouchId,
         lockVault,
         deleteVault,
         rotateVaultKey,
