@@ -21,8 +21,9 @@ import { cn } from "@/lib/utils";
 ///   never closes because of it. It is capped at a quarter of the window height (and scrolls) so a
 ///   long error cannot push the body out of a short window.
 /// - **Focus.** `initialFocusRef` picks what is focused on open (put the safe action there for a
-///   confirmation). On close, focus returns to `restoreFocusTo` if given, else to the element that
-///   had focus when the dialog opened, else to `fallbackFocusTo` when that element is gone.
+///   confirmation). On close, focus returns to `restoreFocusTo` when given (the caller decides, and
+///   an empty or removed target means `fallbackFocusTo`), else to the element that had focus when
+///   the dialog opened, else to `fallbackFocusTo` when that element is gone.
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
 const DialogClose = DialogPrimitive.Close;
@@ -53,8 +54,10 @@ interface DialogContentProps
   extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   /// Focused when the dialog opens. For a confirmation, the safe action (Cancel).
   initialFocusRef?: React.RefObject<HTMLElement | null>;
-  /// Focused when the dialog closes, when it is still on the page. Needed where the opener does not
-  /// take focus on click (Safari and the macOS web view do not focus a clicked button).
+  /// Focused when the dialog closes, when it is still on the page. The caller decides: pass it where
+  /// the opener does not take focus on click (Safari and the macOS web view do not focus a clicked
+  /// button), or to send focus elsewhere because the opener is about to go (an empty or removed
+  /// target then means `fallbackFocusTo`).
   restoreFocusTo?: React.RefObject<HTMLElement | null>;
   /// Focused when the dialog closes and the opener is gone (its row was removed by the action).
   fallbackFocusTo?: React.RefObject<HTMLElement | null>;
@@ -96,9 +99,11 @@ const DialogContent = React.forwardRef<
           onCloseAutoFocus={(event) => {
             onCloseAutoFocus?.(event);
             if (event.defaultPrevented) return;
-            const target = [restoreFocusTo?.current, opener.current, fallbackFocusTo?.current].find(
-              focusable,
-            );
+            // A caller that passes `restoreFocusTo` decides: its target if it is still there, else
+            // the fallback (never the element that happened to have focus, which the action may be
+            // about to remove). Without it, the element that had focus on open, then the fallback.
+            const first = restoreFocusTo !== undefined ? restoreFocusTo.current : opener.current;
+            const target = [first, fallbackFocusTo?.current].find(focusable);
             if (target) {
               event.preventDefault();
               target.focus();

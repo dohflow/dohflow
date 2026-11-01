@@ -266,30 +266,39 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
         ok([scenario({ applied_at: "2026-08-02T10:00:00Z" })]),
       );
     const rate = (bps: number) => `{"annual_bps":${bps}}`;
+    const line = (after: string | null, change: "edited" | "cleared" = "edited") => ({
+      change,
+      kind: "inflation_rate",
+      target_entity_id: null,
+      before_params_json: rate(400),
+      after_params_json: after,
+    });
+    const CONFIRM_TITLE = /^Undo “Maternity leave”\?$/;
+    const INTRO =
+      "Undoing removes the changes this scenario added to your forecast, including later edits to them. If applying replaced earlier assumptions, they return unless a newer assumption is kept instead. Review what happens below:";
 
-    it("lists each change it will undo, and sends back the ids it showed", async () => {
+    async function openConfirmation(
+      previewValue = preview({ lines: [line(rate(450))], confirmed_descendants: ["evt-2"] }),
+    ) {
       applied();
-      mocks.revertScenarioApply.mockResolvedValue(ok(null));
-      mocks.scenarioRevertPreview.mockResolvedValue(
-        ok(
-          preview({
-            lines: [
-              {
-                change: "cleared",
-                kind: "inflation_rate",
-                target_entity_id: null,
-                before_params_json: rate(400),
-                after_params_json: null,
-              },
-            ],
-            confirmed_descendants: ["evt-2"],
-          }),
-        ),
-      );
+      mocks.scenarioRevertPreview.mockResolvedValue(ok(previewValue));
       renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      const opener = await screen.findByRole("button", { name: /undo applying/i });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole("dialog", { name: CONFIRM_TITLE });
+      return { opener, dialog };
+    }
 
-      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
-      const dialog = await screen.findByRole("dialog", { name: "Undo scenario" });
+    it("lists each change it will undo, with Studio's intro, and sends back the ids it showed", async () => {
+      mocks.revertScenarioApply.mockResolvedValue(ok(null));
+      const { dialog } = await openConfirmation(
+        preview({
+          lines: [line(null, "cleared")],
+          confirmed_descendants: ["evt-2"],
+        }),
+      );
+      expect(dialog).toHaveTextContent(INTRO);
       expect(dialog).toHaveTextContent(/you removed/i);
       // Nothing is written until the person confirms.
       expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
@@ -298,44 +307,79 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       await vi.waitFor(() =>
         expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1", ["evt-2"]),
       );
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("starts on Cancel, the safe action", async () => {
+      const { dialog } = await openConfirmation();
+      expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+    });
+
+    it("keeps Tab inside the dialog", async () => {
+      const { dialog } = await openConfirmation();
+      const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+      const confirm = within(dialog).getByRole("button", { name: "Undo scenario" });
+      confirm.focus();
+      fireEvent.keyDown(confirm, { key: "Tab" });
+      expect(document.activeElement).toBe(cancel);
+      fireEvent.keyDown(cancel, { key: "Tab", shiftKey: true });
+      expect(document.activeElement).toBe(confirm);
+    });
+
+    it("cancels on Escape before anything is sent, and focus returns to the Undo button", async () => {
+      const { opener, dialog } = await openConfirmation();
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(document.activeElement).toBe(opener));
     });
 
     it("writes nothing when the person cancels", async () => {
-      applied();
-      mocks.scenarioRevertPreview.mockResolvedValue(
-        ok(
-          preview({
-            lines: [
-              {
-                change: "edited",
-                kind: "inflation_rate",
-                target_entity_id: null,
-                before_params_json: rate(400),
-                after_params_json: rate(450),
-              },
-            ],
-            confirmed_descendants: ["evt-2"],
-          }),
-        ),
-      );
-      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
-      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
-      const dialog = await screen.findByRole("dialog", { name: "Undo scenario" });
+      const { dialog } = await openConfirmation();
       expect(dialog).toHaveTextContent(/you changed/i);
       fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
       expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+    });
+
+    it("sends focus to the Scenarios heading once the undo succeeds and the Undo button is gone", async () => {
+      mocks.revertScenarioApply.mockImplementation(async () => {
+        // The scenario stops being applied, so its row stops showing Undo.
+        mocks.scenarioList.mockResolvedValue(ok([scenario()]));
+        return ok(null);
+      });
+      const { dialog } = await openConfirmation();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      await vi.waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByText("Scenarios")),
+      );
+    });
+
+    it("shows a failed undo inside the dialog, which stays open until the next attempt", async () => {
+      mocks.revertScenarioApply.mockResolvedValueOnce({
+        status: "error",
+        error: { Validation: "the database is busy" },
+      });
+      // The list did not move, so this is a real failure and not a stale confirmation.
+      const { dialog } = await openConfirmation();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+
+      const alert = await within(dialog).findByRole("alert");
+      await vi.waitFor(() => expect(alert).toHaveTextContent(/nothing was undone/i));
+      expect(alert).toHaveTextContent("the database is busy");
+      expect(screen.getByRole("dialog", { name: CONFIRM_TITLE })).toBeInTheDocument();
+      // Not the page-level banner, and not an automatic close.
+      expect(screen.queryByText(/couldn.t load your scenarios/i)).not.toBeInTheDocument();
+
+      // The next attempt clears it and, on success, closes.
+      mocks.revertScenarioApply.mockResolvedValueOnce(ok(null));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     });
 
     it("shows the fresh list to confirm again when the changes moved, and writes nothing", async () => {
       applied();
-      const line = (after: string) => ({
-        change: "edited" as const,
-        kind: "inflation_rate",
-        target_entity_id: null,
-        before_params_json: rate(400),
-        after_params_json: after,
-      });
       mocks.scenarioRevertPreview
         .mockResolvedValueOnce(
           ok(preview({ lines: [line(rate(450))], confirmed_descendants: ["evt-2"] })),
@@ -351,14 +395,16 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
 
       fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
-      const first = await screen.findByRole("dialog", { name: "Undo scenario" });
+      const first = await screen.findByRole("dialog", { name: CONFIRM_TITLE });
       fireEvent.click(within(first).getByRole("button", { name: "Undo scenario" }));
 
       await vi.waitFor(() =>
         expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1", ["evt-2"]),
       );
-      const again = await screen.findByRole("dialog", { name: "Undo scenario" });
-      expect(again).toHaveTextContent(/changed while you were looking/i);
+      const again = await screen.findByRole("dialog", { name: CONFIRM_TITLE });
+      await vi.waitFor(() =>
+        expect(again).toHaveTextContent(/changed while you were looking/i),
+      );
       // The fresh list is what the next confirm sends.
       mocks.revertScenarioApply.mockResolvedValue(ok(null));
       fireEvent.click(within(again).getByRole("button", { name: "Undo scenario" }));
@@ -369,22 +415,15 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
 
     it("explains a later apply that appeared meanwhile instead of a generic error", async () => {
       applied();
-      const line = {
-        change: "edited" as const,
-        kind: "inflation_rate",
-        target_entity_id: null,
-        before_params_json: rate(400),
-        after_params_json: rate(450),
-      };
       mocks.scenarioRevertPreview
         .mockResolvedValueOnce(
-          ok(preview({ lines: [line], confirmed_descendants: ["evt-2"] })),
+          ok(preview({ lines: [line(rate(450))], confirmed_descendants: ["evt-2"] })),
         )
         // The same changes, but another scenario was applied on top in the meantime.
         .mockResolvedValueOnce(
           ok(
             preview({
-              lines: [line],
+              lines: [line(rate(450))],
               confirmed_descendants: ["evt-2"],
               blocker_name: "Second plan",
             }),
@@ -397,14 +436,12 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
 
       fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
-      const first = await screen.findByRole("dialog", { name: "Undo scenario" });
+      const first = await screen.findByRole("dialog", { name: CONFIRM_TITLE });
       fireEvent.click(within(first).getByRole("button", { name: "Undo scenario" }));
 
-      const blocked = await screen.findByRole("dialog", {
-        name: "Undo another scenario first",
-      });
+      const blocked = await screen.findByRole("dialog", { name: /Undo “Second plan” first/ });
       expect(blocked).toHaveTextContent(/Second plan/);
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText(/couldn.t load your scenarios/i)).not.toBeInTheDocument();
     });
 
     it("says a later scenario has to be undone first, and offers no undo", async () => {
@@ -413,19 +450,24 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
         ok(preview({ blocker_name: "Second plan" })),
       );
       renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
-      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
-      const dialog = await screen.findByRole("dialog", {
-        name: "Undo another scenario first",
-      });
-      expect(dialog).toHaveTextContent(/Second plan/);
+      const opener = await screen.findByRole("button", { name: /undo applying/i });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole("dialog", { name: /Undo “Second plan” first/ });
+      expect(dialog).toHaveTextContent(
+        "“Second plan” was applied after “Maternity leave” and builds on it, so it has to be undone first. Then you can undo “Maternity leave”.",
+      );
       expect(
         within(dialog).queryByRole("button", { name: "Undo scenario" }),
       ).not.toBeInTheDocument();
       expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+      // OK closes it and focus goes back to the Undo button.
+      fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      await vi.waitFor(() => expect(document.activeElement).toBe(opener));
     });
 
     it("keeps a deleted but applied scenario reachable, and undoes it from there", async () => {
-      mocks.scenarioList.mockResolvedValue(ok([]));
       mocks.scenarioList.mockResolvedValue(ok([scenario({ id: "sce-9", name: "Other" })]));
       mocks.scenarioDeletedAppliedList.mockResolvedValue(
         ok([
