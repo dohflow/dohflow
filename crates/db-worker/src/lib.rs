@@ -176,7 +176,10 @@ pub use projection::{
 };
 pub use recurring_detection::{CandidateObservation, RecurringCandidateView};
 pub use recurring_instances::{RecurringInstanceRow, UnconfirmedOccurrence};
-pub use scenarios::{NewScenario, ScenarioStatus, ScenarioView};
+pub use scenarios::{
+    NewScenario, RevertBlocker, RevertChange, RevertLine, RevertPreview, ScenarioStatus,
+    ScenarioView,
+};
 pub use spend_by_category::{CategorySpend, SpendBreakdown, SpendFilters};
 
 /// 64 MiB cap on the WAL so it cannot grow without bound (plan §3.2).
@@ -851,9 +854,25 @@ pub enum WriteCommand {
         scenario_id: Uuid,
     },
     /// Undo an [`WriteCommand::ApplyScenario`] (ADR 0055 §5).
+    ///
+    /// Retired (personal-cfo-5ie.12): it leaves an edit made after the apply active next to the
+    /// restored base event. It stays decodable so an operation log written before the fix replays
+    /// as it did, and no producer builds it any more; [`WriteCommand::RevertScenarioApplyConfirmed`]
+    /// replaces it.
     RevertScenarioApply {
         /// The applied scenario to roll back.
         scenario_id: Uuid,
+    },
+    /// Undo an [`WriteCommand::ApplyScenario`] and everything done to its promoted items since
+    /// (ADR 0055 §5 as amended by personal-cfo-5ie.12).
+    ///
+    /// The person confirmed a list of changes; the command clears exactly those and refuses, with
+    /// no write, if the active changes on the base are no longer that list.
+    RevertScenarioApplyConfirmed {
+        /// The applied scenario to roll back.
+        scenario_id: Uuid,
+        /// The active changes made to the promoted items since the apply, strictly ascending.
+        confirmed_descendants: Vec<Uuid>,
     },
     /// Create a user-defined tag (ADR 0033, personal-cfo-2ryf).
     CreateTag {
@@ -1125,6 +1144,7 @@ impl WriteCommand {
             WriteCommand::MarkReviewed { .. } => "mark_reviewed",
             WriteCommand::ApplyScenario { .. } => "apply_scenario",
             WriteCommand::RevertScenarioApply { .. } => "revert_scenario_apply",
+            WriteCommand::RevertScenarioApplyConfirmed { .. } => "revert_scenario_apply_confirmed",
             WriteCommand::CreateTag { .. } => "create_tag",
             WriteCommand::SetTags { .. } => "set_tags",
             WriteCommand::SetNote { .. } => "set_note",
@@ -4182,6 +4202,81 @@ impl DbWorker {
             out.push(ScenarioView::from_row(row)?);
         }
         Ok(out)
+    }
+
+    /// The applied scenarios that were deleted afterwards, oldest first. Deleting hides a scenario
+    /// but leaves its apply in the real forecast, so these stay listed (marked deleted) for as
+    /// long as there is an apply to undo (personal-cfo-5ie.12).
+    ///
+    /// # Errors
+    /// [`DbError`] on a read failure or an unrecognized stored token.
+    pub fn deleted_applied_scenarios(&self) -> Result<Vec<ScenarioView>, DbError> {
+        let conn = self.read_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.name, s.description, s.status, s.base_run_id, s.created_at,
+                    s.updated_at, s.expires_on,
+                    (SELECT COUNT(*) FROM forecast_assumption_events e
+                      WHERE e.scenario_id = s.id AND e.status = 'active'),
+                    s.applied_at
+             FROM scenarios s
+             WHERE s.deleted_at IS NOT NULL AND s.applied_at IS NOT NULL
+             ORDER BY s.created_at, s.id",
+        )?;
+        let mut out = Vec::new();
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            out.push(ScenarioView::from_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// What undoing an applied scenario would do: the changes made to its promoted items since
+    /// (to list in the confirmation), a later apply that has to be undone first, and the ids the
+    /// confirmation must send back (personal-cfo-5ie.12).
+    ///
+    /// A scenario that is missing or not applied has nothing to list: the preview is empty and the
+    /// revert command refuses it.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a read failure.
+    pub fn revert_preview(&self, scenario_id: Uuid) -> Result<RevertPreview, DbError> {
+        let conn = self.read_connection()?;
+        let applied: Option<Option<String>> = conn
+            .query_row(
+                "SELECT applied_at FROM scenarios WHERE id = ?1",
+                params![scenario_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // A preview is advice: a scenario that is missing or not applied has nothing to list, and
+        // the revert command itself refuses it with the typed reason.
+        if !matches!(applied, Some(Some(_))) {
+            return Ok(RevertPreview {
+                lines: Vec::new(),
+                blocker: None,
+                confirmed_descendants: Vec::new(),
+            });
+        }
+        let plan = apply::scenario_revert::plan_revert(&conn, scenario_id)?;
+        let blocker = match plan.blocker {
+            Some(id) => Some(RevertBlocker {
+                scenario_id: id,
+                scenario_name: conn
+                    .query_row(
+                        "SELECT name FROM scenarios WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or_default(),
+            }),
+            None => None,
+        };
+        Ok(RevertPreview {
+            lines: plan.lines,
+            blocker,
+            confirmed_descendants: plan.descendants.into_iter().collect(),
+        })
     }
 
     /// Update a scenario's lifecycle status (draft → active → archived) through
@@ -7793,6 +7888,15 @@ fn apply_command(
                 &apply::issued_at_text(meta),
             )?
         }
+        WriteCommand::RevertScenarioApplyConfirmed {
+            scenario_id,
+            confirmed_descendants,
+        } => apply::scenario_revert::revert_scenario_apply_confirmed(
+            &tx,
+            *scenario_id,
+            confirmed_descendants,
+            &apply::issued_at_text(meta),
+        )?,
         WriteCommand::CreateTag { id, name, color } => {
             apply::transactions::apply_create_tag(&tx, meta, id, name, color)?
         }
@@ -7848,6 +7952,7 @@ fn apply_command(
         // are recoverable from it via `promoted_from_scenario_id` (ADR 0055).
         WriteCommand::ApplyScenario { .. }
         | WriteCommand::RevertScenarioApply { .. }
+        | WriteCommand::RevertScenarioApplyConfirmed { .. }
         | WriteCommand::CreateScenario { .. }
         | WriteCommand::SetScenarioStatus { .. }
         | WriteCommand::RenameScenario { .. }

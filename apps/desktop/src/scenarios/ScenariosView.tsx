@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Archive, Check, Copy, FolderPlus, LineChart, RotateCcw, Trash2, Undo2 } from "lucide-react";
 
-import type { IpcError, ScenarioDto } from "@/bindings";
+import type { IpcError, RevertPreviewDto, ScenarioDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { ApplyConflictNotice } from "@/future-cash/ApplyConflictNotice";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/data-table";
 import { formatIsoDate, todayInTimezone } from "@/lib/format";
 import { appliedRowProps } from "./appliedRow";
+import { RevertScenarioDialog } from "./RevertScenarioDialog";
 import { cn } from "@/lib/utils";
 import { SCENARIO_NAME_MAX, useScenarios } from "@/future-cash/useScenarios";
 import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
@@ -130,7 +131,9 @@ export function ScenariosView({
     cloneScenario,
     setScenarioExpiry,
     updateScenario,
+    deletedApplied,
     applyScenario,
+    previewRevert,
     revertScenarioApply,
   } = useScenarios();
   const { timezone } = useHouseholdTimezone();
@@ -144,6 +147,15 @@ export function ScenariosView({
   // Applying changes the household's real forecast, so it is confirmed and the dialog
   // says exactly what will and will not change (ADR 0055).
   const [confirmApply, setConfirmApply] = useState<ScenarioDto | null>(null);
+  // Undoing an apply is confirmed when the person changed the scenario's items after applying
+  // it (undoing removes those changes too), and explained when a later apply has to go first.
+  const [confirmRevert, setConfirmRevert] = useState<{
+    scenario: ScenarioDto;
+    preview: RevertPreviewDto;
+    /// True when the undo was refused because the changes moved after the person looked: the
+    /// list shown is the fresh one, to confirm again.
+    moved?: boolean;
+  } | null>(null);
 
   const all = scenarios ?? [];
   const visible = showArchived ? all : all.filter((s) => s.status !== "archived");
@@ -183,6 +195,56 @@ export function ScenariosView({
       if (result && typeof result === "object" && "kind" in result) {
         setFormError(describeIpcError(result as unknown as IpcError));
       }
+    } catch {
+      setFormError("That didn't work. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /// Undo an apply. With nothing changed since applying it goes straight through; otherwise the
+  /// confirmation lists what else is undone (personal-cfo-5ie.12). The ids the preview named are
+  /// sent back unchanged, so the backend can tell if they moved in the meantime.
+  async function startRevert(target: ScenarioDto) {
+    setFormError(null);
+    let result: Awaited<ReturnType<typeof previewRevert>>;
+    try {
+      result = await previewRevert(target.id);
+    } catch {
+      setFormError("That didn't work. Please try again.");
+      return;
+    }
+    if (result.status === "error") {
+      setFormError(describeIpcError(result.error));
+      return;
+    }
+    const preview = result.data;
+    if (preview.blocker_name !== null || preview.lines.length > 0) {
+      setConfirmRevert({ scenario: target, preview });
+      return;
+    }
+    await run(() => revertScenarioApply(target.id, preview.confirmed_descendants));
+  }
+
+  /// Send the undo with the list the person confirmed. If the backend refuses because the changes
+  /// moved meanwhile (another device edited an item), read the list again: a different list is
+  /// shown to confirm again, and nothing was written.
+  async function confirmUndo(target: ScenarioDto, shown: RevertPreviewDto) {
+    setBusy(true);
+    setFormError(null);
+    try {
+      const error = await revertScenarioApply(target.id, shown.confirmed_descendants);
+      if (error === null) return;
+      const fresh = await previewRevert(target.id);
+      const moved =
+        fresh.status === "ok" &&
+        fresh.data.confirmed_descendants.join(",") !==
+          shown.confirmed_descendants.join(",");
+      if (fresh.status === "ok" && moved) {
+        setConfirmRevert({ scenario: target, preview: fresh.data, moved: true });
+        return;
+      }
+      setFormError(describeIpcError(error));
     } catch {
       setFormError("That didn't work. Please try again.");
     } finally {
@@ -338,7 +400,7 @@ export function ScenariosView({
                 size="sm"
                 disabled={busy}
                 aria-label={`Undo applying ${scenario.name}`}
-                onClick={() => void run(() => revertScenarioApply(scenario.id))}
+                onClick={() => void startRevert(scenario)}
               >
                 <Undo2 aria-hidden className="size-4" />
               </Button>
@@ -464,6 +526,36 @@ export function ScenariosView({
                 rowProps={appliedRowProps}
                 minWidth="min-w-[640px]"
               />
+              {deletedApplied.length > 0 && (
+                // Deleting hides a scenario but leaves its apply in the forecast, so the
+                // way back stays here rather than needing a reinstate first.
+                <div className="flex flex-col gap-2 border-t pt-3">
+                  <h3 className="text-sm font-medium">Deleted, but still applied</h3>
+                  <p className="text-xs text-muted-foreground">
+                    You deleted these after applying them, so their changes are still in your
+                    forecast. Undo to take them out.
+                  </p>
+                  <ul className="flex flex-col gap-1">
+                    {deletedApplied.map((deleted) => (
+                      <li
+                        key={deleted.id}
+                        className="flex items-center justify-between gap-2 text-sm"
+                      >
+                        <span>{deleted.name}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          aria-label={`Undo applying deleted scenario ${deleted.name}`}
+                          onClick={() => void startRevert(deleted)}
+                        >
+                          <Undo2 aria-hidden className="size-4" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {archivedCount > 0 && (
                 <button
                   type="button"
@@ -489,6 +581,20 @@ export function ScenariosView({
             const target = confirmApply;
             setConfirmApply(null);
             await run(() => applyScenario(target.id));
+          }}
+        />
+      )}
+      {confirmRevert && (
+        <RevertScenarioDialog
+          scenario={confirmRevert.scenario}
+          preview={confirmRevert.preview}
+          busy={busy}
+          onCancel={() => setConfirmRevert(null)}
+          moved={confirmRevert.moved === true}
+          onConfirm={async () => {
+            const { scenario: target, preview } = confirmRevert;
+            setConfirmRevert(null);
+            await confirmUndo(target, preview);
           }}
         />
       )}

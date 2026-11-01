@@ -1244,6 +1244,7 @@ mod all_variants {
         "dismiss_inbox_item",
         "dismiss_recurring_suggestion",
         "apply_scenario",
+        "revert_scenario_apply_confirmed",
         "revert_scenario_apply",
         "void_transaction",
         "set_household_timezone",
@@ -1520,6 +1521,11 @@ mod all_variants {
                     .expect("setup: assumption event");
                 vec![]
             }
+            // The confirmed undo just unapplied the scenario; apply it again for the retired one.
+            "revert_scenario_apply" => vec![(
+                "setup: apply the scenario again",
+                WriteCommand::ApplyScenario { scenario_id: u(25) },
+            )],
             _ => vec![],
         }
     }
@@ -1548,6 +1554,10 @@ mod all_variants {
                     to_member_id,
                 }
             }
+            ("revert_scenario_apply_confirmed", _) => WriteCommand::RevertScenarioApplyConfirmed {
+                scenario_id: u(25),
+                confirmed_descendants: Vec::new(),
+            },
             ("remove_household_member", _) => {
                 WriteCommand::RemoveHouseholdMember { member_id: primary }
             }
@@ -1767,7 +1777,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 79, "every variant ran");
+        assert_eq!(checked, 80, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

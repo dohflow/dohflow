@@ -168,6 +168,8 @@ describe("generated IPC bindings", () => {
         "archiveScenario",
         "applyScenario",
         "revertScenarioApply",
+        "scenarioRevertPreview",
+        "scenarioDeletedAppliedList",
         "cloneScenario",
         "setScenarioExpiry",
         "buildInfo",

@@ -2,7 +2,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
-import type { ScenarioDto } from "@/bindings";
+import type { RevertPreviewDto, ScenarioDto } from "@/bindings";
 import { ScenariosView } from "./ScenariosView";
 
 const mocks = vi.hoisted(() => ({
@@ -15,6 +15,12 @@ const mocks = vi.hoisted(() => ({
   setScenarioExpiry: vi.fn(),
   applyScenario: vi.fn(),
   revertScenarioApply: vi.fn(),
+  scenarioRevertPreview: vi.fn(),
+  scenarioDeletedAppliedList: vi.fn(),
+  recurringBillList: vi.fn(),
+  incomeSourceList: vi.fn(),
+  categoryList: vi.fn(),
+  baseCurrency: vi.fn(),
   householdTimezone: vi.fn(),
 }));
 vi.mock("@/bindings", () => ({ commands: mocks }));
@@ -36,6 +42,10 @@ function scenario(over: Partial<ScenarioDto> = {}): ScenarioDto {
   };
 }
 
+function preview(over: Partial<RevertPreviewDto> = {}): RevertPreviewDto {
+  return { lines: [], blocker_name: null, confirmed_descendants: [], ...over };
+}
+
 beforeEach(() => {
   for (const fn of Object.values(mocks)) fn.mockReset();
   mocks.scenarioList.mockResolvedValue(ok([scenario()]));
@@ -44,6 +54,12 @@ beforeEach(() => {
   mocks.cloneScenario.mockResolvedValue(ok("sce-2"));
   mocks.setScenarioExpiry.mockResolvedValue(ok(null));
   mocks.updateScenario.mockResolvedValue(ok(null));
+  mocks.scenarioDeletedAppliedList.mockResolvedValue(ok([]));
+  mocks.scenarioRevertPreview.mockResolvedValue(ok(preview()));
+  mocks.recurringBillList.mockResolvedValue(ok([]));
+  mocks.incomeSourceList.mockResolvedValue(ok([]));
+  mocks.categoryList.mockResolvedValue(ok([]));
+  mocks.baseCurrency.mockResolvedValue(ok("USD"));
   // The backend default (personal-cfo-q329); no test here needs a specific household
   // zone — the two boundary-testing expires_on fixtures (2020-01-01, 2026-12-31) are far
   // enough from "now" that any real-world date/zone resolves the same expired/not-expired
@@ -237,9 +253,160 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
     ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /undo applying/i }));
+    // Nothing was changed after applying, so undoing needs no confirmation.
     await vi.waitFor(() =>
-      expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1"),
+      expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1", []),
     );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  describe("undoing an apply that was changed afterwards (personal-cfo-5ie.12)", () => {
+    const applied = () =>
+      mocks.scenarioList.mockResolvedValue(
+        ok([scenario({ applied_at: "2026-08-02T10:00:00Z" })]),
+      );
+    const rate = (bps: number) => `{"annual_bps":${bps}}`;
+
+    it("lists each change it will undo, and sends back the ids it showed", async () => {
+      applied();
+      mocks.revertScenarioApply.mockResolvedValue(ok(null));
+      mocks.scenarioRevertPreview.mockResolvedValue(
+        ok(
+          preview({
+            lines: [
+              {
+                change: "cleared",
+                kind: "inflation_rate",
+                target_entity_id: null,
+                before_params_json: rate(400),
+                after_params_json: null,
+              },
+            ],
+            confirmed_descendants: ["evt-2"],
+          }),
+        ),
+      );
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
+      const dialog = await screen.findByRole("dialog", { name: "Undo scenario" });
+      expect(dialog).toHaveTextContent(/you removed/i);
+      // Nothing is written until the person confirms.
+      expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+      await vi.waitFor(() =>
+        expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1", ["evt-2"]),
+      );
+    });
+
+    it("writes nothing when the person cancels", async () => {
+      applied();
+      mocks.scenarioRevertPreview.mockResolvedValue(
+        ok(
+          preview({
+            lines: [
+              {
+                change: "edited",
+                kind: "inflation_rate",
+                target_entity_id: null,
+                before_params_json: rate(400),
+                after_params_json: rate(450),
+              },
+            ],
+            confirmed_descendants: ["evt-2"],
+          }),
+        ),
+      );
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
+      const dialog = await screen.findByRole("dialog", { name: "Undo scenario" });
+      expect(dialog).toHaveTextContent(/you changed/i);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+    });
+
+    it("shows the fresh list to confirm again when the changes moved, and writes nothing", async () => {
+      applied();
+      const line = (after: string) => ({
+        change: "edited" as const,
+        kind: "inflation_rate",
+        target_entity_id: null,
+        before_params_json: rate(400),
+        after_params_json: after,
+      });
+      mocks.scenarioRevertPreview
+        .mockResolvedValueOnce(
+          ok(preview({ lines: [line(rate(450))], confirmed_descendants: ["evt-2"] })),
+        )
+        .mockResolvedValueOnce(
+          ok(preview({ lines: [line(rate(500))], confirmed_descendants: ["evt-3"] })),
+        );
+      // The backend refuses the stale list.
+      mocks.revertScenarioApply.mockResolvedValue({
+        status: "error",
+        error: { Validation: "the changes are not the ones confirmed" },
+      });
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
+      const first = await screen.findByRole("dialog", { name: "Undo scenario" });
+      fireEvent.click(within(first).getByRole("button", { name: "Undo scenario" }));
+
+      await vi.waitFor(() =>
+        expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1", ["evt-2"]),
+      );
+      const again = await screen.findByRole("dialog", { name: "Undo scenario" });
+      expect(again).toHaveTextContent(/changed while you were looking/i);
+      // The fresh list is what the next confirm sends.
+      mocks.revertScenarioApply.mockResolvedValue(ok(null));
+      fireEvent.click(within(again).getByRole("button", { name: "Undo scenario" }));
+      await vi.waitFor(() =>
+        expect(mocks.revertScenarioApply).toHaveBeenLastCalledWith("sce-1", ["evt-3"]),
+      );
+    });
+
+    it("says a later scenario has to be undone first, and offers no undo", async () => {
+      applied();
+      mocks.scenarioRevertPreview.mockResolvedValue(
+        ok(preview({ blocker_name: "Second plan" })),
+      );
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
+      const dialog = await screen.findByRole("dialog", {
+        name: "Undo another scenario first",
+      });
+      expect(dialog).toHaveTextContent(/Second plan/);
+      expect(
+        within(dialog).queryByRole("button", { name: "Undo scenario" }),
+      ).not.toBeInTheDocument();
+      expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+    });
+
+    it("keeps a deleted but applied scenario reachable, and undoes it from there", async () => {
+      mocks.scenarioList.mockResolvedValue(ok([]));
+      mocks.scenarioList.mockResolvedValue(ok([scenario({ id: "sce-9", name: "Other" })]));
+      mocks.scenarioDeletedAppliedList.mockResolvedValue(
+        ok([
+          scenario({
+            id: "sce-gone",
+            name: "Old plan",
+            applied_at: "2026-08-02T10:00:00Z",
+          }),
+        ]),
+      );
+      mocks.revertScenarioApply.mockResolvedValue(ok(null));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+
+      expect(await screen.findByText("Deleted, but still applied")).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", { name: /undo applying deleted scenario old plan/i }),
+      );
+      await vi.waitFor(() =>
+        expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-gone", []),
+      );
+    });
   });
 
   it("does not offer apply for a scenario with no changes", async () => {

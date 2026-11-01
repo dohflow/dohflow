@@ -630,7 +630,94 @@ fn scenarios() -> Vec<Step> {
             WriteCommand::ReinstateScenario { id: u(110) },
             Fine,
         ),
+        // ---- undoing an apply (personal-cfo-5ie.12) ----
+        step(
+            "undoing with the confirmed changes out of order",
+            revert_confirmed(110, &[902, 901]),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "undoing an unknown scenario",
+            revert_confirmed(114, &[]),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "undoing a scenario that is not applied",
+            revert_confirmed(110, &[]),
+            Reject(StateConflict),
+        ),
+        step(
+            "creating the first of two stacked scenarios",
+            create_scenario(130, "First"),
+            Fine,
+        ),
+        step(
+            "creating the second of two stacked scenarios",
+            create_scenario(131, "Second"),
+            Fine,
+        ),
+        step("recording a base rate", record_rate(140, None, 300), Fine),
+        step(
+            "recording the first scenario's rate",
+            record_rate(141, Some(130), 400),
+            Fine,
+        ),
+        step(
+            "recording the second scenario's rate",
+            record_rate(142, Some(131), 500),
+            Fine,
+        ),
+        step(
+            "applying the first scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(130),
+            },
+            Fine,
+        ),
+        step(
+            "applying the second scenario over it",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(131),
+            },
+            Fine,
+        ),
+        step(
+            "undoing the first scenario while the second sits on top",
+            revert_confirmed(130, &[]),
+            Reject(StateConflict),
+        ),
+        step(
+            "undoing with a change that was never made",
+            revert_confirmed(131, &[901]),
+            Reject(StateConflict),
+        ),
+        step(
+            "undoing the second scenario",
+            revert_confirmed(131, &[]),
+            Fine,
+        ),
+        step(
+            "undoing the first scenario",
+            revert_confirmed(130, &[]),
+            Fine,
+        ),
     ]
+}
+
+fn revert_confirmed(scenario: u128, confirmed: &[u128]) -> WriteCommand {
+    WriteCommand::RevertScenarioApplyConfirmed {
+        scenario_id: u(scenario),
+        confirmed_descendants: confirmed.iter().copied().map(u).collect(),
+    }
+}
+
+fn record_rate(n: u128, scenario: Option<u128>, bps: u32) -> WriteCommand {
+    WriteCommand::RecordAssumptionEvent {
+        event: NewAssumptionEvent {
+            kind: AssumptionKind::InflationRate,
+            ..event(n, scenario, &format!(r#"{{"annual_bps":{bps}}}"#))
+        },
+    }
 }
 
 fn open(path: &Path) -> DbWorker {
@@ -773,6 +860,7 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/mod.rs",
         "apply/scenario_apply.rs",
         "apply/scenario_cmds.rs",
+        "apply/scenario_revert.rs",
     ] {
         let path = root.join("src").join(module);
         let source = std::fs::read_to_string(&path).unwrap();

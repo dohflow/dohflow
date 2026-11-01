@@ -140,6 +140,8 @@ commands.allow = [
   "archive_scenario",
   "apply_scenario",
   "revert_scenario_apply",
+  "scenario_revert_preview",
+  "scenario_deleted_applied_list",
   "spend_by_category",
   "clone_scenario",
   "set_scenario_expiry",

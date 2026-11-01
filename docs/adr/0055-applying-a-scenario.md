@@ -160,6 +160,36 @@ Reverting is only defined for a scenario that is currently applied; on one that 
 is an error rather than a silent no-op, because "revert" succeeding when nothing was
 reverted is how a user comes to believe a change was undone.
 
+#### Amendment to §5 (2026-11-01, `personal-cfo-5ie.12`): an undo follows what was done since
+
+§5 assumed the promoted rows were not touched after the apply. If the person EDITED a promoted
+item (a supersede from the promoted row P to P', where P' is not marked promoted), the undo
+restored the base event P had superseded and left P' active beside it: the item counted twice.
+For an adding kind (§2 amendment) the edit simply outlived the undo. The owner chose to **follow the
+chain**: undoing an apply undoes the whole apply, including later edits to its items.
+
+`RevertScenarioApplyConfirmed { scenario_id, confirmed_descendants }` replaces `RevertScenarioApply`
+(retired, still decodable, never produced). Apply, in one transaction:
+
+1. Walk each promoted row's `superseded_by` chain. A row promoted from the same scenario is part of
+   the apply and is passed through. Any other row is a *descendant*; the active ones are the
+   changes to undo. The walk stops, and the undo is refused (`StateConflict`, nothing written), at a
+   row promoted from another scenario: applies are undone last first.
+2. Compare the active descendants with `confirmed_descendants` by set equality. A difference is
+   `StateConflict` with no write: another device changed an item after the person confirmed.
+3. Clear exactly those descendants; restore the base events the apply superseded; clear the
+   promoted rows; unmark the scenario.
+
+A restore has two guards. If the restored event's kind collides and another active base event now
+holds its key: when that event came from a later apply the undo is refused (the same rule as 1);
+when it is a plain base row the person recorded since, the older event stays superseded and the
+confirmation says the newer value stays. A promoted item cleared after the apply has no active
+descendant, but the undo still restores what it replaced, so it is listed too.
+
+The confirmation lists every changed item and is shown whenever the preview has a line; with none,
+the undo is one step. An applied scenario that was deleted stays listed (marked deleted) so its
+undo never needs a reinstate first. Nothing here reads the clock or mints an id.
+
 ## Schema (migration v47 — additive and nullable)
 
 - `scenarios.applied_at TEXT`

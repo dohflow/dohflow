@@ -55,10 +55,10 @@ use crate::ipc::dto::{
     MoneyDto, MoneyInboxItemDto, MoveCategoryInput, MultiSeriesForecastDto, MutationResult,
     RecordTransactionInput, RecordTransactionResult, RecordTransferInput, RecurringBillDto,
     RecurringBillOccurrenceDto, RecurringCandidateDto, RecurringTransferDto,
-    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto,
-    SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
-    SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
-    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
+    ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, RevertPreviewDto, RotateVaultKeyInput,
+    ScenarioDto, SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput,
+    SetScenarioExpiryInput, SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto,
+    SplitLineInputDto, TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
     UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
     UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
     UpdateRecurringBillInput, UpdateScenarioInput, VaultHealthDto, VaultListDto, VaultStatusDto,
@@ -5101,17 +5101,71 @@ pub fn apply_scenario(state: tauri::State<'_, AppState>, id: String) -> Result<(
     apply_scenario_impl(state.inner(), id)
 }
 
-/// Undo an apply (ADR 0055 §5): clear the promoted base events and restore whatever they
-/// superseded. An error on a scenario that is not applied, deliberately.
-pub fn revert_scenario_apply_impl(state: &AppState, id: String) -> Result<(), IpcError> {
+/// What undoing an apply would do, for the confirmation (ADR 0055 §5, personal-cfo-5ie.12): the
+/// changes made to the promoted items since, a later apply that has to be undone first, and the
+/// ids to send back with the undo.
+pub fn scenario_revert_preview_impl(
+    state: &AppState,
+    id: String,
+) -> Result<RevertPreviewDto, IpcError> {
     let id = parse_uuid(&id)?;
+    with_kernel(state, |kernel| {
+        Ok(RevertPreviewDto::from(kernel.revert_preview(id)?))
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn scenario_revert_preview(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<RevertPreviewDto, IpcError> {
+    scenario_revert_preview_impl(state.inner(), id)
+}
+
+/// The applied scenarios that were deleted afterwards, so the apply can still be undone
+/// (personal-cfo-5ie.12).
+pub fn scenario_deleted_applied_list_impl(state: &AppState) -> Result<Vec<ScenarioDto>, IpcError> {
+    with_kernel(state, |kernel| {
+        Ok(kernel
+            .deleted_applied_scenarios()?
+            .into_iter()
+            .map(ScenarioDto::from)
+            .collect())
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn scenario_deleted_applied_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ScenarioDto>, IpcError> {
+    scenario_deleted_applied_list_impl(state.inner())
+}
+
+/// Undo an apply and the changes made to its promoted items since (ADR 0055 §5, personal-cfo-5ie.12):
+/// clear the promoted base events and those changes, and restore whatever they superseded. An
+/// error on a scenario that is not applied, deliberately.
+///
+/// `confirmed_descendants` is the list the confirmation showed, sent back unchanged: the command
+/// compares it with the changes on the base and refuses, writing nothing, if they differ.
+pub fn revert_scenario_apply_impl(
+    state: &AppState,
+    id: String,
+    confirmed_descendants: Vec<String>,
+) -> Result<(), IpcError> {
+    let id = parse_uuid(&id)?;
+    let confirmed = confirmed_descendants
+        .iter()
+        .map(|raw| parse_uuid(raw))
+        .collect::<Result<Vec<_>, _>>()?;
     with_kernel(state, |kernel| {
         kernel.dispatch(CommandEnvelope::new(
             // Fresh per invocation, for the same reason as apply above: revert → apply →
             // revert must work, and the "not applied" guard is what makes a double-revert
             // safe.
             user_meta(""),
-            RevertScenarioApply::new(id),
+            RevertScenarioApply::new(id, confirmed),
         ))?;
         Ok(())
     })
@@ -5122,8 +5176,9 @@ pub fn revert_scenario_apply_impl(state: &AppState, id: String) -> Result<(), Ip
 pub fn revert_scenario_apply(
     state: tauri::State<'_, AppState>,
     id: String,
+    confirmed_descendants: Vec<String>,
 ) -> Result<(), IpcError> {
-    revert_scenario_apply_impl(state.inner(), id)
+    revert_scenario_apply_impl(state.inner(), id, confirmed_descendants)
 }
 
 /// Clone a scenario into a new draft with a copy of its events (ADR 0051 §2).

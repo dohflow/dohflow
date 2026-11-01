@@ -69,3 +69,15 @@ Open it in Safari as well (and a narrow `w`) if the engine matters.
 
 `disclosure-example.html` shows the shared `Disclosure` with a long title, a persistent error and retry, a collapsed
 summary and a nested delete guard. `?theme=dark` and `?open=0` change the state.
+
+## Undoing an applied scenario (`personal-cfo-5ie.12`)
+
+`scenarios-revert.html` renders the **real** `ScenariosView` over a faked Tauri bridge, so every string is the
+product's. `?state=` is one of `list` (the one-click undo), `lines` (the confirmation), `blocker` (a later scenario
+has to be undone first), `changed` (the changes moved while the person looked) and `deleted` ("Deleted, but still
+applied"); `&open=1` clicks Undo on load and `&theme=dark` selects Dark.
+
+```bash
+pnpm -C apps/desktop exec vite --port 5199 --strictPort
+# http://localhost:5199/scenarios-revert.html?state=lines&open=1&theme=dark
+```

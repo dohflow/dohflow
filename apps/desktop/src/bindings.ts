@@ -246,7 +246,9 @@ export const commands = {
 	deleteScenario: (id: string) => typedError<null, IpcError>(__TAURI_INVOKE("delete_scenario", { id })),
 	archiveScenario: (id: string) => typedError<null, IpcError>(__TAURI_INVOKE("archive_scenario", { id })),
 	applyScenario: (id: string) => typedError<null, IpcError>(__TAURI_INVOKE("apply_scenario", { id })),
-	revertScenarioApply: (id: string) => typedError<null, IpcError>(__TAURI_INVOKE("revert_scenario_apply", { id })),
+	revertScenarioApply: (id: string, confirmedDescendants: string[]) => typedError<null, IpcError>(__TAURI_INVOKE("revert_scenario_apply", { id, confirmedDescendants })),
+	scenarioRevertPreview: (id: string) => typedError<RevertPreviewDto, IpcError>(__TAURI_INVOKE("scenario_revert_preview", { id })),
+	scenarioDeletedAppliedList: () => typedError<ScenarioDto[], IpcError>(__TAURI_INVOKE("scenario_deleted_applied_list")),
 	spendByCategory: (input: SpendByCategoryInput) => typedError<SpendBreakdownDto, IpcError>(__TAURI_INVOKE("spend_by_category", { input })),
 	cloneScenario: (input: CloneScenarioInput) => typedError<string, IpcError>(__TAURI_INVOKE("clone_scenario", { input })),
 	setScenarioExpiry: (input: SetScenarioExpiryInput) => typedError<null, IpcError>(__TAURI_INVOKE("set_scenario_expiry", { input })),
@@ -2373,6 +2375,42 @@ export type RepaymentPhilosophyDto =
 
 /**  Whether the app found a restore slot that was never committed to the registry. */
 export type RestoreRecoveryStatusDto = "clear" | "interrupted" | "unavailable";
+
+/**  One item the confirmation before undoing an applied scenario lists (personal-cfo-5ie.12). */
+export type RevertLineDto = {
+	/**
+	 *  `edited` (changed after the apply), `cleared` (removed after the apply) or `kept_newer`
+	 *  (a newer value was recorded, so the undo keeps it).
+	 */
+	change: string,
+	/**  The assumption-kind token of the item. */
+	kind: string,
+	/**  The base income source, bill or category the item targets, when it has one. */
+	target_entity_id: string | null,
+	/**  The value the apply put in; for `kept_newer`, the earlier value the undo would restore. */
+	before_params_json: string,
+	/**
+	 *  The value the person changed it to; for `kept_newer`, the newer value that stays;
+	 *  `None` for a cleared item.
+	 */
+	after_params_json: string | null,
+};
+
+/**  What undoing an applied scenario would do (personal-cfo-5ie.12). */
+export type RevertPreviewDto = {
+	/**
+	 *  One line per changed item. Empty means nothing was touched since the apply: the undo
+	 *  needs no confirmation.
+	 */
+	lines: RevertLineDto[],
+	/**  Set when a scenario applied later sits on top: its name, to be undone first. */
+	blocker_name: string | null,
+	/**
+	 *  The changes the undo will clear. Send them back unchanged with the undo: the command
+	 *  refuses if they are no longer the changes on the base.
+	 */
+	confirmed_descendants: string[],
+};
 
 /**
  *  Input to rotate the vault's encryption key (personal-cfo-2y8, ADR 0083). The
