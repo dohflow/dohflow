@@ -28,30 +28,47 @@ impl JobHandler<Kernel> for BackupJobHandler {
         cancellation: &CancellationToken,
         context: &Kernel,
     ) -> JobExecution {
-        if cancellation.is_cancelled() {
-            return JobExecution::Cancelled;
-        }
-        if job.id != BACKUP_JOB_ID {
-            return JobExecution::Failed(JobFailure::permanent(
-                "Invalid scheduled backup job configuration.",
-            ));
-        }
+        backup_job_execution_observed(job, cancellation, context, &|| {})
+    }
+}
 
-        // The export reads the token at its checkpoints, so a cancel stops it within the budget and
-        // leaves the destination as it was (personal-cfo-g3m.29).
-        match context.run_scheduled_backup_cancellable(env!("CARGO_PKG_VERSION"), &|| {
-            cancellation.is_cancelled()
-        }) {
-            Ok(BackupRun::Cancelled) => JobExecution::Cancelled,
-            Ok(BackupRun::Done(_)) => JobExecution::Succeeded,
-            Err(_) => {
-                // Kernel errors may contain a local path. Keep the durable
-                // failure, Money Inbox copy, and logs path-free.
-                tracing::warn!(outcome = "failed", "scheduled backup export failed");
-                JobExecution::Failed(JobFailure::retryable(
-                    "Could not create or verify the scheduled backup. Check the destination folder in Settings.",
-                ))
-            }
+/// The scheduled backup's execution, with a seam after the export has finished and before the result is
+/// reported: `after_export` runs once the backup is written, verified and receipted (personal-cfo-g3m.29).
+/// A test uses it to land a cancel exactly in that window. A completed export is reported as
+/// `Committed`, so a cancel that arrives after it can no longer turn it into `Cancelled`.
+#[doc(hidden)]
+pub fn backup_job_execution_observed(
+    job: &JobRecord,
+    cancellation: &CancellationToken,
+    context: &Kernel,
+    after_export: &dyn Fn(),
+) -> JobExecution {
+    if cancellation.is_cancelled() {
+        return JobExecution::Cancelled;
+    }
+    if job.id != BACKUP_JOB_ID {
+        return JobExecution::Failed(JobFailure::permanent(
+            "Invalid scheduled backup job configuration.",
+        ));
+    }
+
+    // The export reads the token at its checkpoints, so a cancel stops it within the budget and
+    // leaves the destination as it was.
+    match context.run_scheduled_backup_cancellable(env!("CARGO_PKG_VERSION"), &|| {
+        cancellation.is_cancelled()
+    }) {
+        Ok(BackupRun::Cancelled) => JobExecution::Cancelled,
+        Ok(BackupRun::Done(_)) => {
+            after_export();
+            JobExecution::Committed
+        }
+        Err(_) => {
+            // Kernel errors may contain a local path. Keep the durable
+            // failure, Money Inbox copy, and logs path-free.
+            tracing::warn!(outcome = "failed", "scheduled backup export failed");
+            JobExecution::Failed(JobFailure::retryable(
+                "Could not create or verify the scheduled backup. Check the destination folder in Settings.",
+            ))
         }
     }
 }
