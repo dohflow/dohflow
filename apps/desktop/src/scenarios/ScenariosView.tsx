@@ -14,9 +14,19 @@ import {
 import { formatIsoDate, todayInTimezone } from "@/lib/format";
 import { appliedRowProps } from "./appliedRow";
 import { cn } from "@/lib/utils";
-import { useScenarios } from "@/future-cash/useScenarios";
+import { SCENARIO_NAME_MAX, useScenarios } from "@/future-cash/useScenarios";
 import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
+
+const COPY_SUFFIX = " (copy)";
+
+/// The name of a duplicate: the original plus " (copy)", cut to fit the name limit. A name
+/// written before the limit existed can be longer than it, so the base is shortened and the
+/// suffix always survives.
+function duplicateName(name: string): string {
+  const room = SCENARIO_NAME_MAX - COPY_SUFFIX.length;
+  return `${Array.from(name.trim()).slice(0, room).join("").trimEnd()}${COPY_SUFFIX}`;
+}
 
 function isExpired(scenario: ScenarioDto, today: string): boolean {
   return scenario.expires_on !== null && scenario.expires_on < today;
@@ -295,7 +305,7 @@ export function ScenariosView({
               aria-label={`Duplicate ${scenario.name}`}
               onClick={() =>
                 void run(() =>
-                  cloneScenario(scenario.id, `${scenario.name} (copy)`),
+                  cloneScenario(scenario.id, duplicateName(scenario.name)),
                 )
               }
             >
@@ -403,6 +413,7 @@ export function ScenariosView({
                   id="scenario-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  maxLength={SCENARIO_NAME_MAX}
                   placeholder="Maternity leave"
                   className="w-64"
                 />
@@ -565,9 +576,10 @@ function ApplyScenarioDialog({
   );
 }
 
-/// Deleting is the one irreversible scenario action (ADR 0051 §1), so it is confirmed
-/// and says exactly what goes — including the change count, so "archive instead" is an
-/// informed choice rather than a guess.
+/// Deleting takes a scenario out of every view and the app offers no way back (ADR 0051 §1;
+/// underneath it is a tombstone, ADR 0074 Addendum H), so it is confirmed and says exactly
+/// what goes — including the change count, so "archive instead" is an informed choice
+/// rather than a guess. It does not claim permanence: the rows stay in the vault.
 function DeleteScenarioDialog({
   scenario,
   busy,
@@ -594,7 +606,7 @@ function DeleteScenarioDialog({
       >
         <h2 className="text-base font-semibold">Delete “{scenario.name}”?</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          This permanently removes the scenario and its {scenario.event_count}{" "}
+          This deletes the scenario and its {scenario.event_count}{" "}
           {scenario.event_count === 1 ? "change" : "changes"}. Your real forecast is not
           affected. To keep the plan but stop seeing it, archive it instead.
         </p>
@@ -606,7 +618,7 @@ function DeleteScenarioDialog({
             Cancel
           </Button>
           <Button variant="destructive" disabled={busy} onClick={onConfirm}>
-            Delete permanently
+            Delete scenario
           </Button>
         </div>
       </div>

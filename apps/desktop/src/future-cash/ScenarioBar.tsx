@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { describeIpcError } from "@/vault/useVault";
-import { useScenarios } from "./useScenarios";
+import { SCENARIO_NAME_MAX, useScenarios } from "./useScenarios";
 
 /// Whether a scenario has passed its expiry — mirrors the backend gate, which compares
 /// `expires_on` against the household-local date (ADR 0051 §3).
@@ -25,7 +25,7 @@ const STATUS_CLASS = "h-9 rounded-md border bg-background px-3 text-sm";
 /// user's scenarios, create a new scenario, or archive the selected one. The parent
 /// owns the selection (the forecast queries key on it); this bar drives it via
 /// `onSelect`. Archiving keeps every change and falls the selection back to base
-/// (ADR 0051 §1); permanent deletion lives in the Scenarios tab.
+/// (ADR 0051 §1); deleting lives in the Scenarios tab.
 export function ScenarioBar({
   selectedId,
   onSelect,
@@ -148,10 +148,10 @@ export function ScenarioBar({
         )}
         {selected && (
           // ARCHIVE, not delete (ADR 0051 §1/§5). This bar has no confirmation step,
-          // and since ADR 0051 `delete` permanently destroys the scenario and its
-          // changes — an unconfirmed one-click destroy would be a trap, and it used to
-          // be recoverable. Permanent deletion lives in the Scenarios tab, behind a
-          // confirmation that says what is lost.
+          // and since ADR 0051 `delete` removes the scenario and its changes from every
+          // view with no way back in the app — an unconfirmed one-click delete would be a
+          // trap, and it used to be recoverable. Deleting lives in the Scenarios tab,
+          // behind a confirmation that says what is lost.
           <Button
             variant="ghost"
             size="icon"
@@ -175,6 +175,7 @@ export function ScenarioBar({
               id="scenario-edit-name"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
+              maxLength={SCENARIO_NAME_MAX}
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -213,6 +214,7 @@ export function ScenarioBar({
               id="scenario-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              maxLength={SCENARIO_NAME_MAX}
               placeholder="e.g. Raise + rent hike"
             />
           </div>
