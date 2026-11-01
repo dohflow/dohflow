@@ -8,12 +8,41 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use platform_traits::{
-    AccessPolicy, AuthPrompt, BiometricAuth, PreflightResult, Roaming, SecretError, SecretKey,
-    SecretStore, SecretValue, StoreCapabilities, UnavailableReason,
+    AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, PreflightResult, PublicTag,
+    Roaming, SecretError, SecretKey, SecretStore, SecretValue, StoreCapabilities,
+    UnavailableReason,
 };
+
+/// The simulated device's biometric state, SHARED by a [`MockSecretStore`] and a [`MockBiometricAuth`]
+/// so a test changes it once and both agree, as one real device does (enrolling a fingerprint, or the
+/// sensor locking out, changes what the store can create and what availability reports).
+#[derive(Clone)]
+pub struct BiometryDevice(Arc<Mutex<BiometricAvailability>>);
+
+impl BiometryDevice {
+    #[must_use]
+    pub fn new(state: BiometricAvailability) -> Self {
+        Self(Arc::new(Mutex::new(state)))
+    }
+
+    /// A device with an enrolled, usable biometric.
+    #[must_use]
+    pub fn available() -> Self {
+        Self::new(BiometricAvailability::Available)
+    }
+
+    pub fn set(&self, state: BiometricAvailability) {
+        *self.0.lock().unwrap() = state;
+    }
+
+    #[must_use]
+    pub fn get(&self) -> BiometricAvailability {
+        *self.0.lock().unwrap()
+    }
+}
 
 /// What the (simulated) platform access control does when a biometric-gated item is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +63,7 @@ pub enum BiometryScript {
 struct Item {
     value: SecretValue,
     policy: AccessPolicy,
+    tag: Option<PublicTag>,
 }
 
 /// An in-memory [`SecretStore`].
@@ -42,17 +72,26 @@ pub struct MockSecretStore {
     script: Mutex<BiometryScript>,
     biometry_supported: bool,
     unavailable: Option<UnavailableReason>,
+    device: BiometryDevice,
 }
 
 impl MockSecretStore {
     /// A store that supports both policies; biometric reads `Match` until scripted otherwise.
     #[must_use]
     pub fn new() -> Self {
+        Self::on_device(BiometryDevice::available())
+    }
+
+    /// A store on a device whose biometric state the test controls (and shares with a
+    /// [`MockBiometricAuth::on`]).
+    #[must_use]
+    pub fn on_device(device: BiometryDevice) -> Self {
         Self {
             items: Mutex::new(HashMap::new()),
             script: Mutex::new(BiometryScript::Match),
             biometry_supported: true,
             unavailable: None,
+            device,
         }
     }
 
@@ -105,24 +144,42 @@ impl Default for MockSecretStore {
 }
 
 impl SecretStore for MockSecretStore {
-    fn store_secret(
+    fn store_secret_tagged(
         &self,
         key: &SecretKey,
         value: &SecretValue,
         policy: AccessPolicy,
+        tag: Option<&PublicTag>,
     ) -> Result<(), SecretError> {
         self.check_available()?;
-        if policy == AccessPolicy::DeviceOnlyBiometryCurrentSet && !self.biometry_supported {
-            return Err(SecretError::Unavailable(UnavailableReason::Unsupported));
+        if policy == AccessPolicy::DeviceOnlyBiometryCurrentSet {
+            if !self.biometry_supported {
+                return Err(SecretError::Unavailable(UnavailableReason::Unsupported));
+            }
+            // Refused for the device's CURRENT biometric state, before anything is replaced.
+            if let Some(refusal) = self.device.get().store_refusal() {
+                return Err(refusal);
+            }
         }
         self.items.lock().unwrap().insert(
             key.clone(),
             Item {
                 value: value.duplicate(),
                 policy,
+                tag: tag.cloned(),
             },
         );
         Ok(())
+    }
+
+    fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
+        self.check_available()?;
+        self.items
+            .lock()
+            .unwrap()
+            .get(key)
+            .map(|item| item.tag.clone())
+            .ok_or(SecretError::NotFound)
     }
 
     fn load_secret(
@@ -169,7 +226,7 @@ impl SecretStore for MockSecretStore {
 
 /// A scriptable pre-flight prompt. Its answer never reaches [`MockSecretStore`].
 pub struct MockBiometricAuth {
-    available: bool,
+    device: BiometryDevice,
     outcome: Mutex<Result<PreflightResult, SecretError>>,
     prompts: Mutex<u32>,
 }
@@ -177,22 +234,28 @@ pub struct MockBiometricAuth {
 impl MockBiometricAuth {
     #[must_use]
     pub fn matching() -> Self {
+        Self::on(BiometryDevice::available())
+    }
+
+    /// Prompt behavior on a device whose state the test controls (shared with a
+    /// [`MockSecretStore::on_device`]).
+    #[must_use]
+    pub fn on(device: BiometryDevice) -> Self {
         Self {
-            available: true,
+            device,
             outcome: Mutex::new(Ok(PreflightResult::Matched)),
             prompts: Mutex::new(0),
         }
     }
 
+    /// A device with no biometric hardware.
     #[must_use]
     pub fn unavailable() -> Self {
-        Self {
-            available: false,
-            outcome: Mutex::new(Err(SecretError::Unavailable(
-                UnavailableReason::Unsupported,
-            ))),
-            prompts: Mutex::new(0),
-        }
+        let auth = Self::on(BiometryDevice::new(BiometricAvailability::NotPresent));
+        auth.script(Err(SecretError::Unavailable(
+            UnavailableReason::Unsupported,
+        )));
+        auth
     }
 
     pub fn script(&self, outcome: Result<PreflightResult, SecretError>) {
@@ -207,8 +270,8 @@ impl MockBiometricAuth {
 }
 
 impl BiometricAuth for MockBiometricAuth {
-    fn is_available(&self) -> bool {
-        self.available
+    fn availability(&self) -> BiometricAvailability {
+        self.device.get()
     }
 
     fn preflight_prompt(&self, _prompt: &AuthPrompt) -> Result<PreflightResult, SecretError> {

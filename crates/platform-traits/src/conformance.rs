@@ -5,16 +5,19 @@
 //! Panics (assert) on a violation, as a test helper.
 
 use crate::{
-    AccessPolicy, AuthPrompt, Roaming, SecretError, SecretKey, SecretStore, SecretValue,
-    UnavailableReason,
+    AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, PublicTag, Roaming,
+    SecretError, SecretKey, SecretStore, SecretValue, UnavailableReason,
 };
 
-/// Runs the suite against `store`. `namespace` makes the keys unique to this run (callers pass a
-/// per-run token) so a leftover item from an earlier run can never satisfy an assertion.
+/// Runs the suite against `store`. `biometry` answers whether THIS device can create a biometric-gated
+/// item right now: the biometric step stores one only when it says `Available`, and otherwise requires
+/// the matching typed refusal with nothing stored (xuu, AC A). `namespace` makes the keys unique to this
+/// run (callers pass a per-run token) so a leftover item from an earlier run can never satisfy an
+/// assertion.
 ///
 /// # Panics
 /// On any violation of the contract.
-pub fn run(store: &dyn SecretStore, namespace: &str) {
+pub fn run(store: &dyn SecretStore, biometry: &dyn BiometricAuth, namespace: &str) {
     let prompt = AuthPrompt::new("DohFlow conformance test").expect("prompt");
     let key = |name: &str| {
         SecretKey::new("app.dohflow.conformance", &format!("{namespace}-{name}")).expect("key")
@@ -64,6 +67,48 @@ pub fn run(store: &dyn SecretStore, namespace: &str) {
     assert_eq!(
         store.load_secret(&k, &prompt).expect("load after replace"),
         value(b"second, longer secret")
+    );
+
+    // a public tag round-trips WITHOUT authentication, is replaced by the next store, and is removed
+    // by a store with no tag; an item with no tag reads as Ok(None); an absent item is NotFound
+    let tagged = key("tagged");
+    let tag_a = PublicTag::new(b"fingerprint-a").expect("tag");
+    let tag_b = PublicTag::new(b"fingerprint-b").expect("tag");
+    store
+        .store_secret_tagged(
+            &tagged,
+            &value(b"tagged"),
+            AccessPolicy::DeviceOnly,
+            Some(&tag_a),
+        )
+        .expect("store with a tag");
+    assert_eq!(store.public_tag(&tagged).expect("tag"), Some(tag_a.clone()));
+    assert_eq!(
+        store.load_secret(&tagged, &prompt).expect("load"),
+        value(b"tagged"),
+        "a tag does not change the secret"
+    );
+    store
+        .store_secret_tagged(
+            &tagged,
+            &value(b"retagged"),
+            AccessPolicy::DeviceOnly,
+            Some(&tag_b),
+        )
+        .expect("replace with a new tag");
+    assert_eq!(store.public_tag(&tagged).expect("tag"), Some(tag_b));
+    store
+        .store_secret(&tagged, &value(b"untagged"), AccessPolicy::DeviceOnly)
+        .expect("replace without a tag");
+    assert_eq!(
+        store.public_tag(&tagged).expect("tag"),
+        None,
+        "a store with no tag removes the old one: a tag never describes another value"
+    );
+    assert_eq!(
+        store.public_tag(&absent).unwrap_err(),
+        SecretError::NotFound,
+        "no item, no tag"
     );
 
     // A REFUSED store leaves the previous secret intact: asking for a protection this store cannot
@@ -129,15 +174,13 @@ pub fn run(store: &dyn SecretStore, namespace: &str) {
 
     // the biometric policy is either provided or refused with the typed reason, never weakened
     let bio = key("biometric");
+    let availability = biometry.availability();
     let result = store.store_secret(
         &bio,
         &value(b"bio"),
         AccessPolicy::DeviceOnlyBiometryCurrentSet,
     );
-    if caps.biometry_current_set {
-        // Storing under a biometric access control needs no prompt; reading it would.
-        result.expect("a store that advertises biometric access control stores it");
-    } else {
+    if !caps.biometry_current_set {
         assert_eq!(
             result.unwrap_err(),
             SecretError::Unavailable(UnavailableReason::Unsupported),
@@ -148,6 +191,23 @@ pub fn run(store: &dyn SecretStore, namespace: &str) {
             SecretError::NotFound,
             "and nothing was stored"
         );
+    } else if availability == BiometricAvailability::Available {
+        // Storing under a biometric access control needs no prompt; reading it would.
+        result.expect(
+            "a store that implements biometric access control stores it when the device can",
+        );
+    } else if let Some(refusal) = availability.store_refusal() {
+        // The device cannot create one right now: the typed reason for THIS state, and nothing stored.
+        assert_eq!(
+            result.unwrap_err(),
+            refusal,
+            "with biometrics {availability:?} the store refuses with the typed reason"
+        );
+        assert_eq!(
+            store.load_secret(&bio, &prompt).unwrap_err(),
+            SecretError::NotFound,
+            "a refused biometric store leaves nothing behind"
+        );
     }
 
     // an item that must never roam says so honestly
@@ -156,7 +216,7 @@ pub fn run(store: &dyn SecretStore, namespace: &str) {
         Roaming::Never | Roaming::Unknown | Roaming::May
     ));
 
-    for name in ["other", "binary", "biometric"] {
+    for name in ["other", "binary", "biometric", "tagged"] {
         let _ = store.delete_secret(&key(name));
     }
 }

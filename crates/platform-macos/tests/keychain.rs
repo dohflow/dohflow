@@ -10,17 +10,20 @@
 //!   binary cannot have it, even if signed. They therefore run only from a harness inside such a
 //!   bundle: a separate throwaway signed bundle with the real app id and profile (never shipped, never
 //!   notarized for distribution; there is deliberately no smoke mode in the shipped app). That harness
-//!   is `personal-cfo-md8h2.18` (`scripts/keychain-smoke.sh`); the access group is supplied as
-//!   `DOHFLOW_KEYCHAIN_ACCESS_GROUP`. They never run in CI. The conformance suite stores a biometric
-//!   item, which the OS refuses (`AuthFailed`) on a Mac with no enrolled biometrics, so the harness
-//!   runs it only on request (`KEYCHAIN_SMOKE_TOUCH_ID=1`).
+//!   is `personal-cfo-md8h2.18` (`scripts/keychain-smoke.sh`); the expected access group is supplied as
+//!   `DOHFLOW_KEYCHAIN_ACCESS_GROUP`. They never run in CI. The conformance suite adapts to the
+//!   machine's runtime biometric state (xuu), so it runs on every Mac; the tests that need a person at
+//!   the sensor stay manual.
 #![cfg(target_os = "macos")]
 
-use platform_macos::{MacBiometricAuth, MacSecretStore};
+use platform_macos::{own_access_group, MacBiometricAuth, MacSecretStore};
 use platform_traits::{
-    conformance, AccessGroup, AccessPolicy, AuthPrompt, BiometricAuth, SecretError, SecretKey,
-    SecretStore, SecretValue, UnavailableReason,
+    conformance, AccessGroup, AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability,
+    PublicTag, SecretError, SecretKey, SecretStore, SecretValue, UnavailableReason,
 };
+
+/// The app's bundle id, which the entitlement's access group must end with.
+const BUNDLE_ID: &str = "ai.personalcfo.desktop";
 
 const MISSING: SecretError = SecretError::Unavailable(UnavailableReason::MissingEntitlement);
 
@@ -60,6 +63,21 @@ fn an_unentitled_build_fails_every_call_with_the_typed_error() {
     assert_eq!(store.load_secret(&key(), &prompt()).unwrap_err(), MISSING);
     assert_eq!(store.delete_secret(&key()).unwrap_err(), MISSING);
     assert_eq!(store.stored_attributes(&key()).unwrap_err(), MISSING);
+    assert_eq!(store.public_tag(&key()).unwrap_err(), MISSING);
+    let tag = PublicTag::new(b"fingerprint").unwrap();
+    assert_eq!(
+        store
+            .store_secret_tagged(&key(), &value(), AccessPolicy::DeviceOnly, Some(&tag))
+            .unwrap_err(),
+        MISSING
+    );
+}
+
+#[test]
+fn an_unentitled_build_has_no_access_group() {
+    // A `cargo test` binary is unsigned: no `keychain-access-groups` entitlement, so the group is
+    // absent and the app takes the typed MissingEntitlement path for every keychain call (xuu, AC D).
+    assert_eq!(own_access_group(BUNDLE_ID), None);
 }
 
 #[test]
@@ -99,10 +117,18 @@ fn the_capabilities_are_honest() {
 }
 
 #[test]
-fn biometric_availability_is_a_bool_and_needs_no_user_interaction() {
-    // True on a Touch ID Mac with a finger enrolled, false elsewhere (this runs on both, and must
-    // never show UI). Not asserting the value: only that asking is safe.
-    let _ = MacBiometricAuth::new().is_available();
+fn biometric_availability_is_a_typed_state_and_needs_no_user_interaction() {
+    // `Available` on a Touch ID Mac with a finger enrolled, a typed reason elsewhere (this runs on both,
+    // and must never show UI). The value depends on the machine; what is asserted is that asking is safe,
+    // that `is_available` agrees with it, and that asking twice does not change the answer (not cached
+    // state of ours: the system's current answer).
+    let auth = MacBiometricAuth::new();
+    let state = auth.availability();
+    assert_eq!(
+        auth.is_available(),
+        state == BiometricAvailability::Available
+    );
+    assert_eq!(auth.availability(), state);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -115,6 +141,51 @@ fn entitled_store() -> MacSecretStore {
         "set DOHFLOW_KEYCHAIN_ACCESS_GROUP to <TEAMID>.<bundle id> in a signed, entitled build",
     );
     MacSecretStore::new(AccessGroup::new(&group).expect("a team-prefixed access group"))
+}
+
+#[test]
+#[ignore = "run by the signed harness with --nocapture; needs no entitlement but states what the harness ran"]
+fn entitled_report_the_biometric_availability() {
+    // The harness greps this line so its PASS block says which conformance branch this Mac took
+    // (a typed refusal where biometrics are unavailable, a stored item where they are available), and
+    // names the raw LAError code when the state is one this build does not map (`Unknown`).
+    let (state, code) = MacBiometricAuth::new().availability_with_code();
+    let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
+    println!("BIOMETRIC_AVAILABILITY={state:?} LA_CODE={code}");
+}
+
+#[test]
+#[ignore = "needs a signed build with the keychain entitlement"]
+fn entitled_the_access_group_is_the_signed_entitlement() {
+    // The signed harness bundle carries `<TeamID>.<bundle id>`; the app reads it from itself.
+    let group = own_access_group(BUNDLE_ID).expect("a signed, entitled build has an access group");
+    assert_eq!(
+        Some(group.as_str().to_owned()),
+        std::env::var("DOHFLOW_KEYCHAIN_ACCESS_GROUP").ok(),
+        "the group read from the entitlement is the one the harness signed with"
+    );
+    // A different bundle id is not this app's group: absent, not guessed.
+    assert_eq!(own_access_group("ai.someone.else"), None);
+}
+
+#[test]
+#[ignore = "needs a signed build with the keychain entitlement"]
+fn entitled_a_public_tag_is_stored_and_read_back_without_authentication() {
+    let store = entitled_store();
+    let k = SecretKey::new(
+        "app.dohflow.keychain-test",
+        &format!("tag-{}", std::process::id()),
+    )
+    .unwrap();
+    let tag = PublicTag::new(&[0x5A; 32]).unwrap();
+    store
+        .store_secret_tagged(&k, &value(), AccessPolicy::DeviceOnly, Some(&tag))
+        .expect("store");
+    let read = store.public_tag(&k);
+    let attrs = store.stored_attributes(&k);
+    store.delete_secret(&k).expect("cleanup");
+    assert_eq!(read.expect("tag"), Some(tag.clone()));
+    assert_eq!(attrs.expect("attributes").public_tag, Some(tag));
 }
 
 #[test]
@@ -142,9 +213,15 @@ fn entitled_a_device_only_item_round_trips() {
 }
 
 #[test]
-#[ignore = "needs a signed build with the keychain entitlement and a Mac with enrolled biometrics"]
+#[ignore = "needs a signed build with the keychain entitlement"]
 fn entitled_the_store_passes_the_conformance_suite() {
-    conformance::run(&entitled_store(), &format!("mac-{}", std::process::id()));
+    // On a Mac with no enrolled biometrics (the build Mac) the suite requires the typed refusal for a
+    // biometric item and nothing stored; on a Touch ID Mac it requires the store to succeed.
+    conformance::run(
+        &entitled_store(),
+        &MacBiometricAuth::new(),
+        &format!("mac-{}", std::process::id()),
+    );
 }
 
 #[test]

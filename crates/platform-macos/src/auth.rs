@@ -13,7 +13,32 @@ use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_foundation::{NSError, NSString};
 use objc2_local_authentication::{LAContext, LAPolicy};
-use platform_traits::{AuthPrompt, BiometricAuth, PreflightResult, SecretError, UnavailableReason};
+use platform_traits::{
+    AuthPrompt, BiometricAuth, BiometricAvailability, PreflightResult, SecretError,
+    UnavailableReason,
+};
+
+use crate::availability::availability_from_la_code;
+
+/// Whether a biometric can be used on this Mac right now, asked of the system each time (never
+/// cached: a fingerprint can be enrolled or removed while the app runs).
+pub(crate) fn current_availability() -> BiometricAvailability {
+    current_availability_with_code().0
+}
+
+/// [`current_availability`] with the raw `LAError` code that produced it (`None` when a biometric can be
+/// used), so a harness or a log line can say WHICH unmapped code a Mac answered.
+pub(crate) fn current_availability_with_code() -> (BiometricAvailability, Option<i64>) {
+    // SAFETY: a fresh context and a valid policy constant; the context is invalidated before it drops.
+    let context = unsafe { LAContext::new() };
+    let outcome = unsafe {
+        context.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthenticationWithBiometrics)
+    };
+    // SAFETY: invalidating a context we own and no longer use.
+    unsafe { context.invalidate() };
+    let code = outcome.err().map(|error| error.code() as i64);
+    (availability_from_la_code(code), code)
+}
 
 /// `LAError` codes we map (stable public values).
 const LA_AUTHENTICATION_FAILED: i64 = -1;
@@ -48,6 +73,17 @@ pub(crate) fn authentication_context(prompt: &AuthPrompt) -> CFType {
     unsafe { CFType::wrap_under_create_rule(pointer as CFTypeRef) }
 }
 
+/// Invalidates a borrowed `LAContext` when dropped.
+struct InvalidateOnDrop<'a>(&'a Retained<LAContext>);
+
+impl Drop for InvalidateOnDrop<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `invalidate` is safe to call on a live context, and on one whose evaluation has
+        // already finished it does nothing.
+        unsafe { self.0.invalidate() };
+    }
+}
+
 /// [`BiometricAuth`] on `LocalAuthentication` (biometrics only, no passcode fallback).
 pub struct MacBiometricAuth;
 
@@ -55,6 +91,12 @@ impl MacBiometricAuth {
     #[must_use]
     pub fn new() -> Self {
         Self
+    }
+
+    /// The availability and the raw `LAError` code behind it (`None` when a biometric can be used).
+    #[must_use]
+    pub fn availability_with_code(&self) -> (BiometricAvailability, Option<i64>) {
+        current_availability_with_code()
     }
 }
 
@@ -65,19 +107,17 @@ impl Default for MacBiometricAuth {
 }
 
 impl BiometricAuth for MacBiometricAuth {
-    fn is_available(&self) -> bool {
-        // SAFETY: a fresh context.
-        let context = unsafe { LAContext::new() };
-        // SAFETY: a fresh context and a valid policy constant.
-        unsafe {
-            context.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthenticationWithBiometrics)
-        }
-        .is_ok()
+    fn availability(&self) -> BiometricAvailability {
+        current_availability()
     }
 
     fn preflight_prompt(&self, prompt: &AuthPrompt) -> Result<PreflightResult, SecretError> {
         // SAFETY: a fresh context.
         let context = unsafe { LAContext::new() };
+        // However this call ends (a match, a cancel, a failure, a timeout or an early return), the
+        // context is invalidated, so an abandoned prompt is torn down and no authenticated context
+        // lingers for the system to reuse (xuu N2).
+        let _invalidate = InvalidateOnDrop(&context);
         // SAFETY: as above.
         if let Err(error) = unsafe {
             context.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthenticationWithBiometrics)

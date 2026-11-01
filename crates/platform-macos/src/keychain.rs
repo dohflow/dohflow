@@ -7,6 +7,7 @@
 //! release signing change itself is `personal-cfo-md8h2.17`). The unentitled path (a typed failure) runs in every test.
 #![allow(unsafe_code)]
 
+use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::data::CFData;
@@ -14,7 +15,7 @@ use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::CFString;
 use core_foundation_sys::base::{kCFAllocatorDefault, CFRelease, CFTypeRef};
 use platform_traits::{
-    AccessGroup, AccessPolicy, AuthPrompt, Roaming, SecretError, SecretKey, SecretStore,
+    AccessGroup, AccessPolicy, AuthPrompt, PublicTag, Roaming, SecretError, SecretKey, SecretStore,
     SecretValue, StoreCapabilities,
 };
 use security_framework_sys::access_control::{
@@ -34,7 +35,18 @@ use crate::auth;
 use crate::status::{map_os_status, ERR_SEC_ITEM_NOT_FOUND};
 
 // Two constants the sys crate does not export; both are CFString constants of the Security framework.
+// `SecTask` reads the entitlements of a running process; the app asks about itself.
 extern "C" {
+    /// The attribute key `kSecAttrGeneric` (a small caller-defined, unprotected data attribute).
+    static kSecAttrGeneric: core_foundation_sys::string::CFStringRef;
+    fn SecTaskCreateFromSelf(
+        allocator: core_foundation_sys::base::CFAllocatorRef,
+    ) -> *const std::ffi::c_void;
+    fn SecTaskCopyValueForEntitlement(
+        task: *const std::ffi::c_void,
+        entitlement: core_foundation_sys::string::CFStringRef,
+        error: *mut core_foundation_sys::error::CFErrorRef,
+    ) -> CFTypeRef;
     /// The attribute key `kSecAttrAccessible` (the accessibility class).
     static kSecAttrAccessible: core_foundation_sys::string::CFStringRef;
     /// The `kSecMatchLimit` value "return one item".
@@ -51,6 +63,8 @@ pub struct StoredAttributes {
     pub synchronizable: Option<bool>,
     /// `kSecAttrAccessGroup` as reported.
     pub access_group: Option<String>,
+    /// The item's [`PublicTag`] (`kSecAttrGeneric`), if it was stored with one.
+    pub public_tag: Option<PublicTag>,
 }
 
 /// A [`SecretStore`] on the data-protection keychain, with every item in `group`.
@@ -146,10 +160,15 @@ impl MacSecretStore {
             })
         });
         let access_group = text(get(group_key));
+        // SAFETY: reading the address of a Security framework CFString constant.
+        let public_tag = get(unsafe { kSecAttrGeneric })
+            .and_then(|v| v.downcast::<CFData>())
+            .and_then(|data| PublicTag::new(data.bytes()).ok());
         Ok(StoredAttributes {
             accessible,
             synchronizable,
             access_group,
+            public_tag,
         })
     }
 }
@@ -172,11 +191,12 @@ fn copy_matching(query: &[(CFString, CFType)]) -> Result<CFTypeRef, SecretError>
 }
 
 impl SecretStore for MacSecretStore {
-    fn store_secret(
+    fn store_secret_tagged(
         &self,
         key: &SecretKey,
         value: &SecretValue,
         policy: AccessPolicy,
+        tag: Option<&PublicTag>,
     ) -> Result<(), SecretError> {
         // Everything that can be refused is validated and built BEFORE the existing item is touched,
         // so a refused store (an unknown policy, an access control the framework will not create)
@@ -194,6 +214,26 @@ impl SecretStore for MacSecretStore {
             }
         };
 
+        // A biometric item is refused up front, with the typed reason for the device's CURRENT state,
+        // when this Mac cannot create one (measured: with nothing enrolled the OS answers AuthFailed
+        // at the add, which a caller cannot tell from a wrong finger). Nothing is replaced.
+        if biometric {
+            // The entitlement comes first: an unentitled build must answer MissingEntitlement for every
+            // call (the app stays password-only and says why), whatever this Mac's sensor reports. A
+            // read of the item is the cheapest call that shows it; "not found" is the expected answer.
+            if let Err(
+                error @ SecretError::Unavailable(
+                    platform_traits::UnavailableReason::MissingEntitlement,
+                ),
+            ) = self.stored_attributes(key)
+            {
+                return Err(error);
+            }
+            if let Some(refusal) = auth::current_availability().store_refusal() {
+                return Err(refusal);
+            }
+        }
+
         let mut attrs = self.base_query(key);
         // SAFETY: constants as above; the access control object is created and owned here.
         unsafe {
@@ -201,6 +241,13 @@ impl SecretStore for MacSecretStore {
                 CFString::wrap_under_get_rule(kSecValueData),
                 CFData::from_buffer(value.expose()).as_CFType(),
             ));
+            if let Some(tag) = tag {
+                // Not protected by the item's access control: readable without a prompt (`public_tag`).
+                attrs.push((
+                    CFString::wrap_under_get_rule(kSecAttrGeneric),
+                    CFData::from_buffer(tag.as_bytes()).as_CFType(),
+                ));
+            }
             if biometric {
                 // The access control carries both the device-only class and the biometric constraint
                 // (`kSecAttrAccessible` and `kSecAttrAccessControl` cannot be given together).
@@ -293,6 +340,10 @@ impl SecretStore for MacSecretStore {
         }
     }
 
+    fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
+        self.stored_attributes(key).map(|attrs| attrs.public_tag)
+    }
+
     fn capabilities(&self) -> StoreCapabilities {
         StoreCapabilities {
             device_only_class: true,
@@ -303,4 +354,67 @@ impl SecretStore for MacSecretStore {
             rollback_resistant: false,
         }
     }
+}
+
+/// The keychain access group this app is entitled to use, read from its OWN code signature, or `None`
+/// when it has none that is valid for `bundle_id` (an unsigned or ad-hoc build, a missing or malformed
+/// entitlement, another app's group). `None` is the typed `Unavailable(MissingEntitlement)` path for
+/// every keychain call: no team id lives in the source and nothing is guessed (xuu, AC D).
+#[must_use]
+pub fn own_access_group(bundle_id: &str) -> Option<AccessGroup> {
+    let values = own_keychain_access_groups()?;
+    crate::group::access_group_from_entitlement(&values, bundle_id)
+}
+
+/// The values of this process's `keychain-access-groups` entitlement, if it has the entitlement.
+fn own_keychain_access_groups() -> Option<Vec<String>> {
+    // SAFETY: `SecTaskCreateFromSelf` returns a +1 SecTask or null; it is released below.
+    let task = unsafe { SecTaskCreateFromSelf(kCFAllocatorDefault) };
+    if task.is_null() {
+        return None;
+    }
+    let entitlement = CFString::new("keychain-access-groups");
+    let mut error: core_foundation_sys::error::CFErrorRef = std::ptr::null_mut();
+    // SAFETY: `task` is a live SecTask, the entitlement name is a live CFString, `error` is a valid
+    // out-pointer; the result (if any) is a +1 CFType and a non-null error is a +1 CFError.
+    let value = unsafe {
+        SecTaskCopyValueForEntitlement(task, entitlement.as_concrete_TypeRef(), &mut error)
+    };
+    // SAFETY: both were returned at +1 (or null) by the calls above.
+    unsafe {
+        CFRelease(task as CFTypeRef);
+        if !error.is_null() {
+            CFRelease(error as CFTypeRef);
+        }
+    }
+    if value.is_null() {
+        return None;
+    }
+    // SAFETY: `value` is a +1 CFType we now own.
+    let value = unsafe { CFType::wrap_under_create_rule(value) };
+    let array = value.downcast_into::<CFArray<*const std::ffi::c_void>>()?;
+    Some(
+        array
+            .iter()
+            .map(|item| {
+                let pointer = *item;
+                // SAFETY: the array's items are CF objects; the type id is checked before the pointer is
+                // treated as a CFString, and `wrap_under_get_rule` retains it.
+                let is_string = unsafe { core_foundation_sys::base::CFGetTypeID(pointer) }
+                    == CFString::type_id();
+                // A non-string item keeps its POSITION as an empty value, which fails validation, so a
+                // malformed array can never promote its second item to "first".
+                if is_string {
+                    unsafe {
+                        CFString::wrap_under_get_rule(
+                            pointer as core_foundation_sys::string::CFStringRef,
+                        )
+                    }
+                    .to_string()
+                } else {
+                    String::new()
+                }
+            })
+            .collect(),
+    )
 }

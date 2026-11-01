@@ -23,6 +23,7 @@ fn errors_and_keys_never_carry_a_value() {
     for error in [
         SecretError::NotFound,
         SecretError::InvalidKey,
+        SecretError::InvalidPrompt,
         SecretError::TooLarge,
         SecretError::Empty,
         SecretError::AuthCancelled,
@@ -112,7 +113,12 @@ fn prompts_are_bounded_text() {
         "tab\t",
         &"x".repeat(MAX_PROMPT_CHARS + 1),
     ] {
-        assert!(AuthPrompt::new(bad).is_err(), "{bad:?}");
+        // A prompt problem is its own typed kind, not a key problem (xuu N1).
+        assert_eq!(
+            AuthPrompt::new(bad).unwrap_err(),
+            SecretError::InvalidPrompt,
+            "{bad:?}"
+        );
     }
     assert_eq!(AccessPolicy::DeviceOnly, AccessPolicy::DeviceOnly);
 }

@@ -32,7 +32,7 @@ Two rules that apply to every row, on every platform, now and in later implement
 
 | Platform | Support | Note |
 |---|---|---|
-| macOS | Partial | SecAccessControl .biometryCurrentSet on the data-protection keychain; needs the same entitlement; verified only on a Touch ID Mac with a signed build. |
+| macOS | Partial | SecAccessControl .biometryCurrentSet on the data-protection keychain; needs the same entitlement. Whether this Mac can create one right now is a RUNTIME fact (BiometricAuth::availability: available, not enrolled, not present, locked out), asked before storing and typed in the refusal; sensor paths verified only on a Touch ID Mac with a signed build. |
 | iOS | Planned | Same access control; Secure Enclave capable devices. |
 | Linux | No | BiometricAuth reports unavailable in v1. |
 | Windows | Planned | Windows Hello; not designed. |
@@ -79,8 +79,11 @@ Two rules that apply to every row, on every platform, now and in later implement
   `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` (`akpu`), synchronizable `false` and the team-prefixed
   access group; the same binary without the entitlement fails with `MissingEntitlement`.
 - Measured in the same run: with no enrolled biometrics the OS refuses to STORE a biometric-class item
-  (`AuthFailed`), although `MacSecretStore::capabilities()` advertises `biometry_current_set`. The Touch ID
-  bead (`personal-cfo-xuu`) must treat "biometrics unavailable" as a state before it stores such an item.
+  (`AuthFailed`, indistinguishable from a wrong finger). `personal-cfo-xuu` therefore treats "biometrics
+  unavailable" as a runtime state: `BiometricAuth::availability` (available, not enrolled, not present, locked
+  out) is asked before a biometric item is stored, the store refuses with the typed reason for that state
+  before replacing anything, and `capabilities().biometry_current_set` only says the store implements the
+  class.
 - Not yet verified: a notarized Developer ID build of the app itself (including whether a missing or expired
   profile stops it launching), and the Touch ID paths (a fresh match, a cancelled prompt, the conformance
   suite's biometric store). They need a Mac with Touch ID: run the harness with `KEYCHAIN_SMOKE_TOUCH_ID=1`
