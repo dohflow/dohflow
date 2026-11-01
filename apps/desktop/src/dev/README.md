@@ -69,3 +69,15 @@ Open it in Safari as well (and a narrow `w`) if the engine matters.
 
 `disclosure-example.html` shows the shared `Disclosure` with a long title, a persistent error and retry, a collapsed
 summary and a nested delete guard. `?theme=dark` and `?open=0` change the state.
+
+## Apply conflict notice (`personal-cfo-5ie.15`)
+
+`scenarios-apply-notice.html` renders the **real** `ScenariosView` over a faked Tauri bridge and opens the Apply dialog, so the
+conflict notice shows the product's own strings. `?state=` is `overlap` (an amount window inside an existing amount),
+`windows` (a partial overlap, from-only, no existing amount left outside), `open-ends` (to-only and every-date), `mixed` (an overlap plus a replaced date)
+or `replace` (a replaced date alone); `&open=1` clicks Apply on load and `&theme=dark` selects Dark.
+
+```bash
+pnpm -C apps/desktop exec vite --port 5199 --strictPort
+# http://localhost:5199/scenarios-apply-notice.html?state=windows&open=1&theme=dark
+```
