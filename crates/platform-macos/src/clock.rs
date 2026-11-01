@@ -55,7 +55,7 @@ impl BootClock for MacBootClock {
             return Err(BootClockError);
         }
         let mut bytes = [0_u8; 16];
-        bytes[..8].copy_from_slice(&i64::from(boot.tv_sec).to_le_bytes());
+        bytes[..8].copy_from_slice(&boot.tv_sec.to_le_bytes());
         bytes[8..].copy_from_slice(&i64::from(boot.tv_usec).to_le_bytes());
         Ok(BootId::new(bytes))
     }
