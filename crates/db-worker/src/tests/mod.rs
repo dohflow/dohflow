@@ -495,7 +495,6 @@ fn a_category_spend_override_raises_the_projected_balance() {
             id: scenario,
             name: "Spend less".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -603,7 +602,6 @@ fn a_category_spend_override_is_apportioned_across_accounts() {
             id: scenario,
             name: "Spend less".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -1981,7 +1979,6 @@ fn a_scenario_recurring_debt_payment_reduces_projected_liquid_cash() {
             id: scenario,
             name: "Snowball".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2058,7 +2055,6 @@ fn a_foreign_currency_recurring_debt_payment_is_skipped() {
             id: scenario,
             name: "Snowball".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2247,6 +2243,74 @@ fn manual_entry_folds_into_forecast_and_survives_rerun() {
     );
 }
 
+/// A deleted scenario is a tombstone (ADR 0074 Addendum H): a stale selection that still names it
+/// selects nothing, so the overlay stack `[live, deleted]` forecasts exactly as `[live]`, and
+/// reinstating it brings its events back.
+#[test]
+fn a_deleted_scenario_in_a_selection_is_skipped_and_reinstating_restores_it() {
+    use chrono::TimeZone;
+
+    let (_dir, worker) = worker();
+    worker
+        .dispatch(
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 1_000_000),
+        )
+        .unwrap();
+    let as_of = Utc.with_ymd_and_hms(2026, 6, 20, 12, 0, 0).unwrap();
+    let forecast_of = |selection: &[Uuid]| {
+        forecast::compute(&worker.read_connection().unwrap(), as_of, 90, selection).unwrap()
+    };
+    let scenario_with_one_off = |name: &str, minor: i64, date: &str| {
+        let scenario = Uuid::now_v7();
+        worker
+            .create_scenario(&NewScenario {
+                id: scenario,
+                name: name.to_owned(),
+                description: None,
+            })
+            .unwrap();
+        worker
+            .record_assumption_event(&NewAssumptionEvent {
+                id: Uuid::now_v7(),
+                kind: AssumptionKind::OneTimeEvent,
+                target_entity_type: None,
+                target_entity_id: None,
+                params_json: format!(
+                    r#"{{"amount_minor":{minor},"currency":"USD","date":"{date}","label":"One-off"}}"#
+                ),
+                source: AssumptionSource::UserOverride,
+                scenario_id: Some(scenario),
+            })
+            .unwrap();
+        scenario
+    };
+    let live = scenario_with_one_off("Live", 10_000, "2026-07-05");
+    let doomed = scenario_with_one_off("Doomed", 500_000, "2026-08-01");
+
+    let live_only = forecast_of(&[live]);
+    assert_ne!(
+        forecast_of(&[live, doomed]),
+        live_only,
+        "before the delete the second scenario stacks"
+    );
+
+    worker.delete_scenario(doomed).unwrap();
+    assert_eq!(
+        forecast_of(&[live, doomed]),
+        live_only,
+        "a deleted scenario in the selection is skipped, the live one keeps its place"
+    );
+    assert_eq!(forecast_of(&[doomed]), forecast_of(&[]));
+
+    worker.reinstate_scenario(doomed).unwrap();
+    assert_ne!(
+        forecast_of(&[live, doomed]),
+        live_only,
+        "a reinstated scenario applies again with its events"
+    );
+}
+
 #[test]
 fn scenario_overlay_applies_additions_overrides_and_exclusions() {
     use chrono::TimeZone;
@@ -2290,7 +2354,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
             id: scenario,
             name: "Raise + rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2386,7 +2449,6 @@ fn zero_income_override_zeroes_that_income_under_the_scenario() {
             id: scenario,
             name: "Unpaid leave".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2465,7 +2527,6 @@ fn record_forecast_assumption_drives_the_scenario_forecast() {
             id: scenario,
             name: "Raise + rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
 
@@ -2602,7 +2663,6 @@ fn archive_and_expiry_stop_a_scenario_without_destroying_it() {
             id: scenario,
             name: "What if".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -8093,7 +8153,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             id: scenario,
             name: "Rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     // One colliding event (same kind + target as base) and one untargeted, so the
@@ -8217,7 +8276,6 @@ fn a_reverted_scenario_can_be_applied_again() {
             id: scenario,
             name: "Re-appliable".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -8269,7 +8327,6 @@ fn apply_scenario_rejects_a_scenario_with_no_active_events() {
             id: scenario,
             name: "Empty".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     assert!(worker
@@ -8304,7 +8361,6 @@ fn a_promoted_base_event_carries_the_scenario_it_came_from() {
             id: scenario,
             name: "Rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -8420,7 +8476,6 @@ fn several_scenarios_compose_with_selection_order_as_precedence() {
                 id,
                 name: name.to_owned(),
                 description: None,
-                base_run_id: None,
             })
             .unwrap();
     };

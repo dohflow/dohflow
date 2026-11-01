@@ -52,10 +52,6 @@ module = "apply/recurring.rs"
 statements = 47
 
 [[site]]
-module = "apply/scenario_apply.rs"
-statements = 5
-
-[[site]]
 module = "apply/transactions.rs"
 statements = 38
 
@@ -113,7 +109,7 @@ statements = 3
 
 [[site]]
 module = "lib.rs"
-statements = 31
+statements = 26
 
 [[site]]
 module = "manual_entry.rs"

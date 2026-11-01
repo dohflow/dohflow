@@ -38,7 +38,6 @@ fn assumption_events_round_trip_and_survive_rerun() {
             id: scenario,
             name: "Overlay".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -244,7 +243,6 @@ fn scenarios_round_trip_and_lifecycle() {
             id,
             name: "New job".to_owned(),
             description: Some("+$1k/mo take-home".to_owned()),
-            base_run_id: None,
         })
         .unwrap();
 
@@ -294,7 +292,6 @@ fn scenario_events_are_scenario_scoped_assumption_events() {
             id: scenario,
             name: "Bonus".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
 
@@ -423,7 +420,7 @@ fn manual_entries_list_round_trips() {
 /// removes the scenario and cascades to its overlay. Before ADR 0051 these were the
 /// same call and archiving silently cleared the user's work.
 #[test]
-fn archive_keeps_events_and_delete_cascades() {
+fn archive_keeps_events_and_delete_is_a_tombstone() {
     let (_dir, worker) = worker();
     let scenario = Uuid::now_v7();
     worker
@@ -431,7 +428,6 @@ fn archive_keeps_events_and_delete_cascades() {
             id: scenario,
             name: "Maternity leave".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     let base_event = Uuid::now_v7();
@@ -475,7 +471,8 @@ fn archive_keeps_events_and_delete_cascades() {
         "a restored scenario is whole"
     );
 
-    // Delete: the scenario and its overlay are gone; the BASE event is untouched.
+    // Delete is a tombstone: the scenario and its overlay leave every reader; the BASE event is
+    // untouched.
     worker.delete_scenario(scenario).unwrap();
     assert!(worker.scenario(scenario).unwrap().is_none());
     assert!(worker
@@ -486,8 +483,22 @@ fn archive_keeps_events_and_delete_cascades() {
     assert_eq!(base.len(), 1, "a scenario delete never touches base events");
     assert_eq!(base[0].id, base_event);
 
-    // Deleting a scenario that is not there is an error, not a silent no-op.
-    assert!(worker.delete_scenario(scenario).is_err());
+    // Deleting a deleted scenario is an accepted no-op; one that never existed is an error.
+    worker.delete_scenario(scenario).unwrap();
+    assert!(worker.delete_scenario(Uuid::now_v7()).is_err());
+
+    // Reinstating restores the scenario whole: its events and its prior status.
+    worker.reinstate_scenario(scenario).unwrap();
+    let back = worker.scenario(scenario).unwrap().unwrap();
+    assert_eq!(back.status, ScenarioStatus::Draft);
+    assert_eq!(back.event_count, 1, "the overlay came back with it");
+    assert_eq!(
+        worker
+            .active_assumption_events(Some(scenario))
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 /// ADR 0051 §2: a clone is a fresh DRAFT carrying its own copy of every active event.
@@ -500,7 +511,6 @@ fn clone_copies_the_overlay_into_a_new_draft() {
             id: source,
             name: "New job".to_owned(),
             description: Some("+$1k/mo".to_owned()),
-            base_run_id: None,
         })
         .unwrap();
     let kept = Uuid::now_v7();
@@ -553,7 +563,6 @@ fn expiry_round_trips_without_touching_status() {
             id,
             name: "Summer trip".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     assert!(worker.scenario(id).unwrap().unwrap().expires_on.is_none());

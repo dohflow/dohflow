@@ -127,15 +127,6 @@ note = "insert_system_category: ensure_default_categories seeds the system categ
 
 [[site]]
 module = "lib.rs"
-table = "forecast_assumption_events"
-class = "1"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.4"
-note = "A scenario's events are deleted by delete_scenario and copied by clone_scenario outside the bus; the scenario commands of the second slice route both (ADR 0055)."
-
-[[site]]
-module = "lib.rs"
 table = "ledger_accounts"
 class = "1"
 statements = 1
@@ -178,15 +169,6 @@ statements = 1
 status = "bus_internal"
 bead = "personal-cfo-0s0"
 note = "apply_command: the bus itself writes provenance links."
-
-[[site]]
-module = "lib.rs"
-table = "scenarios"
-class = "1"
-statements = 6
-status = "pending"
-bead = "personal-cfo-5ymg8.4"
-note = "Scenario create, status, rename, expiry, delete and clone outside the bus."
 
 [[site]]
 module = "lib.rs"

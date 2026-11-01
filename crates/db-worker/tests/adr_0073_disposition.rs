@@ -2,7 +2,7 @@
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
 //! silently going stale as `WriteCommand` grows. It deliberately parses the
-//! enum declaration rather than constructing all 72 payloads, so a new variant
+//! enum declaration rather than constructing all 79 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
 //! can ship a command with no rebase rule. It also compares every checked-in
 //! ADR cell against this table and proves that a one-cell outcome drift fails.
@@ -315,6 +315,41 @@ const DISPOSITIONS: &[Disposition] = &[
         "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
     d(
+        "CreateScenario",
+        Shape::Create,
+        "auto; queue-edit if the scenario id is already in use",
+    ),
+    d(
+        "SetScenarioStatus",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto); queue-edit if the scenario was deleted",
+    ),
+    d(
+        "RenameScenario",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto); queue-edit if the scenario was deleted",
+    ),
+    d(
+        "SetScenarioExpiry",
+        Shape::Set,
+        "queue-choose (scalar; idempotent no-op is auto); queue-edit if the scenario was deleted",
+    ),
+    d(
+        "CloneScenario",
+        Shape::Create,
+        "auto; queue-edit if the new scenario id is already in use or the source was deleted",
+    ),
+    d(
+        "DeleteScenario",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
+    ),
+    d(
+        "ReinstateScenario",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
+    ),
+    d(
         "SnoozeInboxItem",
         Shape::Toggle,
         "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
@@ -523,7 +558,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        72,
+        79,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -551,9 +586,9 @@ fn disposition_appendix_covers_every_write_command_variant() {
     }
 
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
-    assert_eq!(shape_count(Shape::Create), 12);
-    assert_eq!(shape_count(Shape::Set), 27);
-    assert_eq!(shape_count(Shape::Toggle), 23);
+    assert_eq!(shape_count(Shape::Create), 14);
+    assert_eq!(shape_count(Shape::Set), 30);
+    assert_eq!(shape_count(Shape::Toggle), 25);
     assert_eq!(shape_count(Shape::BaseDependent), 5);
     assert_eq!(shape_count(Shape::TombstoneFirst), 0);
     assert_eq!(shape_count(Shape::ReshapeFirst), 4);
