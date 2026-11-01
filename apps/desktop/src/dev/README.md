@@ -80,4 +80,14 @@ applied"); `&open=1` clicks Undo on load and `&theme=dark` selects Dark.
 ```bash
 pnpm -C apps/desktop exec vite --port 5199 --strictPort
 # http://localhost:5199/scenarios-revert.html?state=lines&open=1&theme=dark
+## Shared dialog example (`personal-cfo-4d8.6.1`)
+
+`dialog-example.html` shows the shared `Dialog` with fake data, loading the app's own IBM Plex Sans. `?case=` is `plain`,
+`long-name` (a 100-character unbroken name in the title and the body), `many-lines` (30 lines, so the body scrolls and the
+actions stay reachable), `error` (the persistent alert slot) or `all`; `&theme=dark` selects Dark. Shrink the window to see
+the bounded height.
+
+```bash
+pnpm -C apps/desktop exec vite --port 5199 --strictPort
+# http://localhost:5199/dialog-example.html?case=all&theme=dark
 ```
