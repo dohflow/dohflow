@@ -84,7 +84,9 @@ use uuid::Uuid;
 mod rekey;
 pub use rekey::RekeyRecovery;
 mod vault;
-pub use vault::{classify_vault, UnlockOptions, VaultController, VaultHealth, VaultState};
+pub use vault::{
+    classify_vault, PasswordVerified, UnlockOptions, VaultController, VaultHealth, VaultState,
+};
 
 pub mod backup;
 mod backup_jobs;
