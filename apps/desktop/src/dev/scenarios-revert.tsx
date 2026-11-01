@@ -20,19 +20,23 @@ import { writeStoredThemePreference } from "@/theme/themePreference";
 /// - `lines`: the confirmation with an edit, a removal and a kept newer value.
 /// - `blocker`: a scenario applied later has to be undone first.
 /// - `changed`: the confirmation shown again because the changes moved while the person looked.
+/// - `failed`: the confirmation after an undo failed, with the error shown inside the dialog.
 /// - `deleted`: the "Deleted, but still applied" section.
 ///
-/// `&open=1` clicks Undo on load (the confirmation or the blocker); `changed` also clicks its
-/// confirm button.
+/// `&open=1` clicks Undo on load (the confirmation or the blocker); `changed` and `failed` also click
+/// the confirm button. `&long=1` uses 100-character unbroken scenario and item names and 32 lines.
+/// For a narrow or short window, load the page through `frame.html` (see its README section).
 
 const params = new URLSearchParams(window.location.search);
 const state = params.get("state") ?? "list";
 // The provider resolves the theme from the stored preference, so set that.
 writeStoredThemePreference(params.get("theme") === "dark" ? "dark" : "light");
 
+const LONG = params.get("long") === "1";
+const longName = (seed: string) => `${seed}-Household-budget-plan-`.repeat(6).slice(0, 100);
 const scenario = (over: Record<string, unknown>) => ({
   id: "scenario-1",
-  name: "Maternity leave",
+  name: LONG ? longName("Scenario") : "Maternity leave",
   description: null,
   status: "active",
   created_at: "2026-09-01T00:00:00Z",
@@ -45,7 +49,17 @@ const scenario = (over: Record<string, unknown>) => ({
 const applied = scenario({ applied_at: "2026-10-12T15:00:00Z" });
 
 const RENT = "bill-rent";
-const lines = (second: boolean) => [
+const BILL_COUNT = 32;
+/// 32 edited items, each on a bill with its own 100-character unbroken name (`long=1`).
+const longLines = (second: boolean) =>
+  Array.from({ length: BILL_COUNT }, (_, i) => ({
+    change: "edited",
+    kind: "bill_amount",
+    target_entity_id: `bill-${i}`,
+    before_params_json: '{"new_amount_minor":250000,"effective_date":"2027-01-01"}',
+    after_params_json: `{"new_amount_minor":${second ? 235000 : 240000},"effective_date":"2027-01-01"}`,
+  }));
+const lines = (second: boolean) => LONG ? longLines(second) : [
   {
     change: "edited",
     kind: "bill_amount",
@@ -89,8 +103,12 @@ function fake(cmd: string): unknown {
         : [];
     case "scenario_revert_preview": {
       previews += 1;
-      if (state === "lines") return preview({ lines: lines(false), confirmed_descendants: ["a"] });
-      if (state === "blocker") return preview({ blocker_name: "Second plan" });
+      if (state === "lines" || state === "failed") {
+        return preview({ lines: lines(false), confirmed_descendants: ["a"] });
+      }
+      if (state === "blocker") {
+        return preview({ blocker_name: LONG ? longName("Later") : "Second plan" });
+      }
       if (state === "changed") {
         return previews === 1
           ? preview({ lines: lines(false), confirmed_descendants: ["a"] })
@@ -99,9 +117,20 @@ function fake(cmd: string): unknown {
       return preview({});
     }
     case "revert_scenario_apply":
-      throw { Validation: "the changes made since this scenario was applied are not the ones confirmed" };
+      throw {
+        Validation:
+          state === "failed"
+            ? "The database is busy."
+            : "the changes made since this scenario was applied are not the ones confirmed",
+      };
     case "recurring_bill_list":
-      return [{ id: RENT, name: "Rent", active: true }];
+      return LONG
+        ? Array.from({ length: BILL_COUNT }, (_, i) => ({
+            id: `bill-${i}`,
+            name: longName(`Bill${i}`),
+            active: true,
+          }))
+        : [{ id: RENT, name: "Rent", active: true }];
     case "income_source_list":
     case "category_list":
       return [];
@@ -156,6 +185,8 @@ function click(name: RegExp, next?: () => void) {
 }
 if (params.get("open") === "1") {
   click(/undo applying/i, () => {
-    if (state === "changed") window.setTimeout(() => click(/^undo scenario$/i), 400);
+    if (state === "changed" || state === "failed") {
+      window.setTimeout(() => click(/^undo scenario$/i), 400);
+    }
   });
 }
