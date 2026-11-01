@@ -96,13 +96,17 @@ export function RevertScenarioDialog({
       >
         {plan !== null && plan.preview.blocker_name !== null ? (
           <>
+            {/* Only the wrapping title stays pinned; the explanation scrolls with the body so the
+                action is never pushed out of a short window. */}
             <DialogHeader>
               <DialogTitle>Undo “{plan.preview.blocker_name}” first</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
               <DialogDescription>
                 “{plan.preview.blocker_name}” was applied after “{plan.scenario.name}” and builds
                 on it, so it has to be undone first. Then you can undo “{plan.scenario.name}”.
               </DialogDescription>
-            </DialogHeader>
+            </DialogBody>
             <DialogFooter>
               <Button ref={safeActionRef} onClick={onCancel}>
                 OK
@@ -113,8 +117,12 @@ export function RevertScenarioDialog({
           <>
             <DialogHeader>
               <DialogTitle>Undo “{plan.scenario.name}”?</DialogTitle>
+            </DialogHeader>
+            {/* The status, the intro, the lines and the note all scroll together: a long scenario
+                name or a long intro wraps and scrolls, and Cancel and Undo stay in view. */}
+            <DialogBody className="flex flex-col gap-3">
               {plan.moved && (
-                <p role="status" className="text-sm text-foreground [overflow-wrap:anywhere]">
+                <p role="status" className="text-foreground">
                   This changed while you were looking, and nothing was undone. Check the list
                   below, then confirm again.
                 </p>
@@ -124,8 +132,6 @@ export function RevertScenarioDialog({
                 edits to them. If applying replaced earlier assumptions, they return unless a
                 newer assumption is kept instead. Review what happens below:
               </DialogDescription>
-            </DialogHeader>
-            <DialogBody>
               <ul className="flex flex-col gap-2">
                 {plan.preview.lines.map((line, index) => (
                   <li key={`${line.kind}-${index}`}>
@@ -148,7 +154,7 @@ export function RevertScenarioDialog({
                   </li>
                 ))}
               </ul>
-              <p className="mt-3 text-muted-foreground">
+              <p className="text-muted-foreground">
                 Your bills, income and transactions are not edited.
               </p>
             </DialogBody>

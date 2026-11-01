@@ -19,6 +19,18 @@ import { SCENARIO_NAME_MAX, useScenarios } from "@/future-cash/useScenarios";
 import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
 
+/// What a failed undo says. A typed refusal means the command ran and wrote nothing, so the dialog
+/// says so; a thrown error (the call itself failed) leaves the outcome unknown, so it does not claim
+/// either way and points at the forecast (personal-cfo-5ie.12, Studio's F2).
+const UNDO_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the scenario was undone. Check the forecast before trying again.";
+
+function refusedUndo(error: IpcError): string {
+  const detail = describeIpcError(error).trim();
+  const sentence = detail === "" ? "" : `${detail.charAt(0).toUpperCase()}${detail.slice(1)}${/[.!?]$/.test(detail) ? "" : "."} `;
+  return `That didn’t work, and nothing was undone. ${sentence}Please try again.`;
+}
+
 const COPY_SUFFIX = " (copy)";
 
 /// The name of a duplicate: the original plus " (copy)", cut to fit the name limit. A name
@@ -231,7 +243,7 @@ export function ScenariosView({
       if (error === null) headingRef.current?.focus();
       else setFormError(describeIpcError(error));
     } catch {
-      setFormError("That didn't work. Please try again.");
+      setFormError(UNDO_OUTCOME_UNKNOWN);
     } finally {
       setBusy(false);
     }
@@ -245,35 +257,39 @@ export function ScenariosView({
     setBusy(true);
     setRevertPlan({ ...plan, error: null });
     try {
-      const error = await revertScenarioApply(
-        plan.scenario.id,
-        plan.preview.confirmed_descendants,
-      );
+      let error: IpcError | null;
+      try {
+        error = await revertScenarioApply(plan.scenario.id, plan.preview.confirmed_descendants);
+      } catch {
+        // The call itself failed, so the outcome is not known: do not say nothing was undone.
+        setRevertPlan({ ...plan, error: UNDO_OUTCOME_UNKNOWN });
+        return;
+      }
       if (error === null) {
         // The row stops being applied, so its Undo button is going away: focus goes to the heading.
         revertOpener.current = null;
         setRevertPlan(null);
         return;
       }
-      const fresh = await previewRevert(plan.scenario.id);
+      // A typed refusal wrote nothing. Read the list again: if the changes moved, or a later apply
+      // appeared, show the fresh preview to confirm again; otherwise show the reason.
+      let fresh: Awaited<ReturnType<typeof previewRevert>> | null = null;
+      try {
+        fresh = await previewRevert(plan.scenario.id);
+      } catch {
+        fresh = null;
+      }
       const moved =
+        fresh !== null &&
         fresh.status === "ok" &&
         (fresh.data.blocker_name !== null ||
           fresh.data.confirmed_descendants.join(",") !==
             plan.preview.confirmed_descendants.join(","));
-      if (fresh.status === "ok" && moved) {
+      if (fresh !== null && fresh.status === "ok" && moved) {
         setRevertPlan({ scenario: plan.scenario, preview: fresh.data, moved: true, error: null });
         return;
       }
-      setRevertPlan({
-        ...plan,
-        error: `That didn’t work, and nothing was undone. ${describeIpcError(error)}`,
-      });
-    } catch {
-      setRevertPlan({
-        ...plan,
-        error: "That didn’t work, and nothing was undone. Please try again.",
-      });
+      setRevertPlan({ ...plan, error: refusedUndo(error) });
     } finally {
       setBusy(false);
     }

@@ -420,8 +420,11 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
 
       const alert = await within(dialog).findByRole("alert");
-      await vi.waitFor(() => expect(alert).toHaveTextContent(/nothing was undone/i));
-      expect(alert).toHaveTextContent("the database is busy");
+      await vi.waitFor(() =>
+        expect(alert).toHaveTextContent(
+          "That didn’t work, and nothing was undone. The database is busy. Please try again.",
+        ),
+      );
       expect(screen.getByRole("dialog", { name: CONFIRM_TITLE })).toBeInTheDocument();
       // Not the page-level banner, and not an automatic close.
       expect(screen.queryByText(/couldn.t load your scenarios/i)).not.toBeInTheDocument();
@@ -432,7 +435,80 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     });
 
-    it("shows the fresh list to confirm again when the changes moved, and writes nothing", async () => {
+    it("does not claim nothing was undone when the call itself failed", async () => {
+      mocks.revertScenarioApply.mockRejectedValueOnce(new Error("connection lost"));
+      const { dialog } = await openConfirmation();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+      const alert = await within(dialog).findByRole("alert");
+      await vi.waitFor(() =>
+        expect(alert).toHaveTextContent(
+          "Couldn’t confirm whether the scenario was undone. Check the forecast before trying again.",
+        ),
+      );
+      expect(alert).not.toHaveTextContent(/nothing was undone/i);
+      // Still open, and retryable.
+      expect(screen.getByRole("dialog", { name: CONFIRM_TITLE })).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Undo scenario" })).toBeEnabled();
+    });
+
+    it("still reports a typed refusal as nothing undone when re-reading the list fails", async () => {
+      mocks.revertScenarioApply.mockResolvedValueOnce({
+        status: "error",
+        error: { Validation: "The database is busy." },
+      });
+      const { dialog } = await openConfirmation();
+      mocks.scenarioRevertPreview.mockRejectedValueOnce(new Error("offline"));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+      const alert = await within(dialog).findByRole("alert");
+      await vi.waitFor(() =>
+        expect(alert).toHaveTextContent(
+          "That didn’t work, and nothing was undone. The database is busy. Please try again.",
+        ),
+      );
+      expect(alert).not.toHaveTextContent(/couldn.t confirm/i);
+    });
+
+    it("keeps the intro, the status and the lines in the scrolling body, with only the title pinned", async () => {
+      const { dialog } = await openConfirmation(
+        preview({ lines: [line(rate(450))], confirmed_descendants: ["evt-2"] }),
+      );
+      const body = dialog.querySelector<HTMLElement>(".overflow-y-auto");
+      expect(body).not.toBeNull();
+      expect(body).toHaveTextContent(INTRO);
+      expect(body).toHaveTextContent(/you changed/i);
+      expect(body).toHaveTextContent("Your bills, income and transactions are not edited.");
+      // The header holds only the title; the actions are outside the scrolling region.
+      const heading = within(dialog).getByRole("heading", { name: CONFIRM_TITLE });
+      expect(body).not.toContainElement(heading);
+      expect(heading.parentElement).not.toHaveTextContent(INTRO);
+      expect(body).not.toContainElement(
+        within(dialog).getByRole("button", { name: "Undo scenario" }),
+      );
+    });
+
+    it("keeps the refreshed-list status in the scrolling body too", async () => {
+      applied();
+      mocks.scenarioRevertPreview
+        .mockResolvedValueOnce(
+          ok(preview({ lines: [line(rate(450))], confirmed_descendants: ["evt-2"] })),
+        )
+        .mockResolvedValueOnce(
+          ok(preview({ lines: [line(rate(500))], confirmed_descendants: ["evt-3"] })),
+        );
+      mocks.revertScenarioApply.mockResolvedValue({
+        status: "error",
+        error: { Validation: "the changes are not the ones confirmed" },
+      });
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
+      const first = await screen.findByRole("dialog", { name: CONFIRM_TITLE });
+      fireEvent.click(within(first).getByRole("button", { name: "Undo scenario" }));
+      const status = await screen.findByRole("status");
+      expect(status).toHaveTextContent(/changed while you were looking/i);
+      expect(status.closest(".overflow-y-auto")).not.toBeNull();
+    });
+
+    it("shows a fresh list to confirm again when the changes moved, and writes nothing", async () => {
       applied();
       mocks.scenarioRevertPreview
         .mockResolvedValueOnce(
@@ -515,6 +591,10 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
         within(dialog).queryByRole("button", { name: "Undo scenario" }),
       ).not.toBeInTheDocument();
       expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+      // The explanation scrolls with the body, and OK stays outside it.
+      const body = dialog.querySelector<HTMLElement>(".overflow-y-auto");
+      expect(body).toHaveTextContent(/builds on it/);
+      expect(body).not.toContainElement(within(dialog).getByRole("button", { name: "OK" }));
       // OK closes it and focus goes back to the Undo button.
       fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
       await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
