@@ -188,7 +188,8 @@ cat "$entitled_log"
 grep -q "test result: ok. ${#entitled_tests[@]} passed; 0 failed" "$entitled_log" \
   || fail "FAIL: expected exactly the ${#entitled_tests[@]} entitled tests to pass."
 
-availability_line="$(grep -E '^BIOMETRIC_AVAILABILITY=' "$entitled_log" | head -1 || true)"
+# The test harness prints "test <name> ... " before the test's own output, so the line is not anchored.
+availability_line="$(grep -Eo 'BIOMETRIC_AVAILABILITY=[A-Za-z]+ LA_CODE=(-?[0-9]+|none)' "$entitled_log" | head -1 || true)"
 [[ -n "$availability_line" ]] || fail "FAIL: the run did not report this Mac's biometric availability."
 availability_state="$(sed -E 's/^BIOMETRIC_AVAILABILITY=([A-Za-z]+) LA_CODE=.*$/\1/' <<<"$availability_line")"
 availability_code="$(sed -E 's/^.* LA_CODE=(-?[0-9]+|none)$/\1/' <<<"$availability_line")"
