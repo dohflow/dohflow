@@ -406,6 +406,25 @@ impl Kernel {
         Ok(VaultEnvelope::from_bytes(&bytes)?)
     }
 
+    /// The fingerprint of the wrapped DEK in the vault's envelope sidecar at `path`, read WITHOUT
+    /// unlocking anything (personal-cfo-xuu). It is not secret: it is the value stored in a Touch ID
+    /// item's public tag, so a host can compare the two while the vault is locked and delete an item
+    /// that no longer matches (a password change or a key rotation changes it).
+    ///
+    /// # Errors
+    /// [`KernelError::VaultNotFound`] when there is no envelope, [`KernelError::Vault`] when it is
+    /// unreadable or malformed.
+    pub fn envelope_fingerprint(path: impl AsRef<Path>) -> Result<[u8; 32], KernelError> {
+        let bytes = match std::fs::read(sidecar_path(path.as_ref())) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Err(KernelError::VaultNotFound)
+            }
+            Err(error) => return Err(KernelError::Vault(error.to_string())),
+        };
+        Ok(dek_fingerprint(&VaultEnvelope::from_bytes(&bytes)?.wrapped))
+    }
+
     /// Lock the vault by consuming the kernel: checkpoint the write-ahead log into the main
     /// file (`wal_checkpoint(TRUNCATE)`), then drop the db-worker, which closes its connection
     /// and zeroizes the raw key (the DEK) (ADR 0002, `personal-cfo-1t0`; personal-cfo-7ie.14).

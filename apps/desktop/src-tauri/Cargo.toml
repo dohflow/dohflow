@@ -55,6 +55,11 @@ export-bindings = []
 tauri-build = { version = "~2.7.3", features = [] }
 
 [dependencies]
+# Touch ID unlock (personal-cfo-xuu): the platform traits, the macOS implementation (the keychain and
+# LocalAuthentication, in the one crate that holds that `unsafe`) and the released-unlock-material
+# type. The key-bearing code lives in `src/touch_id`, never in `src/ipc` (tests/dek_boundary.rs).
+platform-traits = { path = "../../../crates/platform-traits" }
+vault-crypto = { path = "../../../crates/vault-crypto" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "~2.12.4", features = [] }
@@ -155,6 +160,11 @@ tauri-plugin-updater = { version = "=2.11.0", default-features = false, features
 # `tauri-plugin-dialog` above already uses.
 tauri-plugin-process = "~2.3.1"
 
+# The macOS keychain and LocalAuthentication, for Touch ID (personal-cfo-xuu). Other platforms take the
+# typed Unavailable path (no Touch ID) through `touch_id::TouchId::absent`.
+[target.'cfg(target_os = "macos")'.dependencies]
+platform-macos = { path = "../../../crates/platform-macos" }
+
 [dev-dependencies]
 # Tauri's mock runtime (`tauri::test`, a feature with no extra dependencies) drives
 # the window-isolation test through the real resolved ACL (personal-cfo-2no).
@@ -178,6 +188,9 @@ finance-kernel = { path = "../../../crates/finance-kernel" }
 # the kernel/db-worker boundary and no test adds a rusqlite dependency.
 db-worker = { path = "../../../crates/db-worker" }
 vault-crypto = { path = "../../../crates/vault-crypto" }
+# The scriptable in-memory store, prompt and boot clock the Touch ID rules are tested against; never linked
+# into the app (it keeps secrets in ordinary memory).
+platform-mock = { path = "../../../crates/platform-mock" }
 tempfile = "3"
 # Names the adapter version in a test-only blocking provider (personal-cfo-lqk);
 # already in the lock through connector-core.

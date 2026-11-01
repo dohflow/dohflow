@@ -1827,6 +1827,66 @@ pub struct VaultStatusDto {
     pub account_count: Option<u32>,
 }
 
+/// Whether Touch ID can be used for this vault (personal-cfo-xuu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchIdStateDto {
+    /// Not possible here; `reason` says why (a development build, no sensor, nothing enrolled, ...).
+    Unavailable,
+    /// Possible, and not turned on for this vault.
+    Off,
+    /// Turned on. `offered` says whether the unlock screen shows it right now.
+    On,
+}
+
+/// Touch ID's status for the active vault. Carries no key material and no secret: a state, a flag, a
+/// stable reason code and a count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct TouchIdStatusDto {
+    pub state: TouchIdStateDto,
+    /// `true` when the unlock screen should show Touch ID now (turned on, and no rule requires the
+    /// vault password).
+    pub offered: bool,
+    /// Why Touch ID is not offered, as a stable lowercase code (`after_restart`,
+    /// `too_many_failed_prompts`, `password_too_old`, `retired`, `biometry_not_enrolled`, ...), or
+    /// `None` when it is offered.
+    pub reason: Option<String>,
+    /// Touch ID prompts that failed or were cancelled since the vault password was last entered.
+    pub failed_prompts: u8,
+}
+
+/// Input to turn Touch ID on. The vault password is entered again; `Debug` is redacted (§6.6).
+#[derive(Clone, Deserialize, Type)]
+pub struct TouchIdEnableInput {
+    /// The vault password.
+    pub password: String,
+}
+
+impl std::fmt::Debug for TouchIdEnableInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TouchIdEnableInput([REDACTED])")
+    }
+}
+
+/// How turning Touch ID on ended when the password was right.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct TouchIdEnableDto {
+    pub enabled: bool,
+    /// When not enabled: the stable reason code. The vault stays password-only.
+    pub reason: Option<String>,
+}
+
+/// How a Touch ID unlock attempt ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct TouchIdUnlockDto {
+    /// `true` when the vault is now unlocked; `vault` is then its status.
+    pub unlocked: bool,
+    pub vault: Option<VaultStatusDto>,
+    /// When not unlocked: the stable reason code for the unlock screen to explain (it then shows the
+    /// password field). Never a key, a path or error text.
+    pub reason: Option<String>,
+}
+
 /// Input to rotate the vault's encryption key (personal-cfo-2y8, ADR 0083). The
 /// current password re-derives the KEK that wraps the new DEK; the command wraps
 /// it in `Zeroizing` on use. `Debug` is redacted so it can never reach a log
