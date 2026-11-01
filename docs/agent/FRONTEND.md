@@ -220,6 +220,9 @@ and its addendum. The short version:
 - **Shared primitives are the quality lever.** Compose what is in `@/components/ui` (inventory in
   `design-system.md` section 5); don't hand-roll a new table, chart or confirm per view. That
   inconsistency is what made the app stop "feeling like shadcn." Tracked by `personal-cfo-4d8.6`.
+  A new confirmation or modal goes on the shared `Dialog` (`components/ui/dialog.tsx`: contained
+  focus, inert background, Escape, focus return, bounded scroll, a persistent error slot), never a
+  new hand-rolled overlay; the older hand-rolled ones move over under `personal-cfo-4d8.6.2`.
 - **Three routing lanes:** *mechanical/correctness* (layout bug, wrong value) → just fix;
   *compose-from-primitives* (cards + the shared table/chart/form) → build directly against
   `design-system.md`; *net-new/complex screen* → **designed in Paper by the Desktop Studio**.
