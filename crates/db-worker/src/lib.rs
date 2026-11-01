@@ -3800,13 +3800,16 @@ impl DbWorker {
         Ok(out)
     }
 
-    /// The number of base events of an adding kind (a one-off, a recurring extra debt payment, a
-    /// category spend cut) that an earlier apply retired, still superseded by a row promoted from
-    /// an applied scenario (`personal-cfo-5ie.13`). Read-only; the count is all it returns.
+    /// For each adding kind (a one-off, a recurring extra debt payment, a category spend cut, an
+    /// amount override), the number of base events an earlier apply retired that are still
+    /// superseded by a row promoted from an applied scenario (`personal-cfo-5ie.13`). Read-only;
+    /// the counts are all it returns.
     ///
     /// # Errors
     /// [`DbError`] on a read failure.
-    pub fn count_events_wrongly_superseded_by_apply(&self) -> Result<u64, DbError> {
+    pub fn count_events_wrongly_superseded_by_apply(
+        &self,
+    ) -> Result<Vec<(AssumptionKind, u64)>, DbError> {
         assumptions::count_events_wrongly_superseded_by_apply(&self.read_connection()?)
     }
 

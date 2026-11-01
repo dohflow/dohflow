@@ -132,10 +132,15 @@ fn the_count_finds_exactly_the_adding_kind_events_an_applied_scenario_retired() 
             [u(1)],
         )
         .unwrap();
-    assert_eq!(
-        worker.count_events_wrongly_superseded_by_apply().unwrap(),
-        0
-    );
+    let total = |worker: &DbWorker| -> u64 {
+        worker
+            .count_events_wrongly_superseded_by_apply()
+            .unwrap()
+            .iter()
+            .map(|(_, n)| n)
+            .sum()
+    };
+    assert_eq!(total(&worker), 0);
 
     use AssumptionKind::{BillAmount, BillDate, OneTimeEvent, RecurringDebtPayment};
     // Counted: a base one-off and a base extra debt payment retired by rows promoted from the
@@ -168,8 +173,20 @@ fn the_count_finds_exactly_the_adding_kind_events_an_applied_scenario_retired() 
     insert_event(&worker, 28, BillAmount, Some(1));
     supersede(&worker, 27, 28);
 
+    assert_eq!(total(&worker), 4);
+    // One entry per adding kind, none for a collision kind, and the counts split by kind.
+    let by_kind = worker.count_events_wrongly_superseded_by_apply().unwrap();
+    let expected: Vec<AssumptionKind> = AssumptionKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| !kind.supersedes_on_promotion())
+        .collect();
     assert_eq!(
-        worker.count_events_wrongly_superseded_by_apply().unwrap(),
-        4
+        by_kind.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        expected
     );
+    let count_of = |kind| by_kind.iter().find(|(k, _)| *k == kind).unwrap().1;
+    assert_eq!(count_of(OneTimeEvent), 2);
+    assert_eq!(count_of(RecurringDebtPayment), 1);
+    assert_eq!(count_of(BillAmount), 1);
 }

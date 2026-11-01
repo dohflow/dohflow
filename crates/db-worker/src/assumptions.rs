@@ -101,40 +101,39 @@ impl AssumptionKind {
     }
 }
 
-/// How many base events of an ADDING kind an earlier apply superseded (personal-cfo-5ie.13). A base
-/// amount override that a promoted window did not overlap counts too: the amended rule keeps it.
+/// How many base events of each ADDING kind an earlier apply superseded (personal-cfo-5ie.13). A
+/// base amount override that a promoted window did not overlap counts too: the amended rule keeps
+/// it.
 ///
 /// Read-only. Before the amendment, apply retired every base event matching a promoted event's
 /// `(kind, NULL, NULL)` key, so one scenario one-off retired all the user's base one-offs. This
 /// counts the rows still in that state: events of an adding kind that are `superseded` by a row
 /// promoted from a scenario that is currently applied. A reverted scenario restored its rows, so
-/// it contributes none. Only the count is returned; no amount, name or id.
+/// it contributes none. Only counts are returned, one per adding kind (zero included), in the
+/// kinds' declaration order; no amount, name or id.
 ///
 /// # Errors
 /// [`crate::DbError::Sqlite`] on a read failure.
 pub(crate) fn count_events_wrongly_superseded_by_apply(
     conn: &rusqlite::Connection,
-) -> Result<u64, crate::DbError> {
-    let adding: Vec<&str> = AssumptionKind::ALL
+) -> Result<Vec<(AssumptionKind, u64)>, crate::DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT COUNT(*)
+           FROM forecast_assumption_events e
+           JOIN forecast_assumption_events p ON p.id = e.superseded_by
+           JOIN scenarios s ON s.id = p.promoted_from_scenario_id
+          WHERE e.status = 'superseded'
+            AND s.applied_at IS NOT NULL
+            AND e.kind = ?1",
+    )?;
+    AssumptionKind::ALL
         .iter()
         .filter(|kind| !kind.supersedes_on_promotion())
-        .map(|kind| kind.as_token())
-        .collect();
-    let placeholders = vec!["?"; adding.len()].join(", ");
-    let count: i64 = conn.query_row(
-        &format!(
-            "SELECT COUNT(*)
-               FROM forecast_assumption_events e
-               JOIN forecast_assumption_events p ON p.id = e.superseded_by
-               JOIN scenarios s ON s.id = p.promoted_from_scenario_id
-              WHERE e.status = 'superseded'
-                AND s.applied_at IS NOT NULL
-                AND e.kind IN ({placeholders})"
-        ),
-        rusqlite::params_from_iter(adding),
-        |row| row.get(0),
-    )?;
-    Ok(u64::try_from(count).unwrap_or(0))
+        .map(|kind| {
+            let count: i64 = stmt.query_row([kind.as_token()], |row| row.get(0))?;
+            Ok((*kind, u64::try_from(count).unwrap_or(0)))
+        })
+        .collect()
 }
 
 token_enum! {

@@ -4742,6 +4742,18 @@ impl Kernel {
         Ok(new_id)
     }
 
+    /// For each adding assumption kind, how many base events an earlier scenario apply retired
+    /// that are still superseded by a promoted row of an applied scenario
+    /// (personal-cfo-5ie.13). Read-only: counts only, no amounts, names or ids.
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a read failure.
+    pub fn count_events_wrongly_superseded_by_apply(
+        &self,
+    ) -> Result<Vec<(db_worker::AssumptionKind, u64)>, KernelError> {
+        Ok(self.worker.count_events_wrongly_superseded_by_apply()?)
+    }
+
     /// Set (or clear) a scenario's expiry date (ADR 0051 §3).
     ///
     /// # Errors
