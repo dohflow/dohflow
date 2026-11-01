@@ -422,6 +422,48 @@ fn an_edited_row_of_a_later_apply_still_blocks_the_earlier_undo() {
 }
 
 #[test]
+fn an_edit_left_by_the_retired_revert_is_a_newer_value_not_a_blocker() {
+    // A vault that used the retired command can hold the person's edit of a promoted row active
+    // after that scenario was undone. The scenario is no longer applied, so it cannot be named as
+    // something to undo first; the edit is a plain newer value.
+    let (_dir, worker, original, first) = rate_vault();
+    apply(&worker, first);
+    clear(&worker, promoted(&worker, first));
+    let second = scenario_with(&worker, &[(RATE, rate(500))]);
+    apply(&worker, second);
+    let edited = edit(&worker, promoted(&worker, second), RATE, &rate(550));
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::RevertScenarioApply {
+                scenario_id: second,
+            },
+        )
+        .unwrap();
+    assert!(worker
+        .scenario(second)
+        .unwrap()
+        .unwrap()
+        .applied_at
+        .is_none());
+    assert_eq!(
+        base_ids(&worker),
+        vec![edited],
+        "the old revert left the edit"
+    );
+
+    let preview = worker.revert_preview(first).unwrap();
+    assert!(preview.blocker.is_none(), "{preview:?}");
+    assert!(preview
+        .lines
+        .iter()
+        .any(|line| line.change == RevertChange::KeptNewer));
+    revert(&worker, first);
+    assert_eq!(base_ids(&worker), vec![edited], "the newer value stays");
+    assert!(!base_ids(&worker).contains(&original));
+}
+
+#[test]
 fn a_row_of_this_scenario_superseded_by_a_later_row_of_it_is_not_listed_as_kept() {
     // Two rates in one scenario collide with each other as they are promoted: the first promoted
     // row is superseded by the second. A plain newer base value then holds the key, and the undo

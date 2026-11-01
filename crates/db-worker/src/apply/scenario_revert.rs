@@ -82,7 +82,7 @@ fn later_apply_behind(
     scenario_id: Uuid,
 ) -> Result<Option<Uuid>, DbError> {
     if let Some(owner) = row.promoted_from {
-        return Ok((owner != scenario_id).then_some(owner));
+        return Ok((owner != scenario_id && still_applied(conn, owner)?).then_some(owner));
     }
     let mut seen: HashSet<Uuid> = HashSet::from([row.id]);
     let mut stack = vec![row.id];
@@ -99,12 +99,28 @@ fn later_apply_behind(
                 continue;
             }
             match parent.promoted_from {
-                Some(owner) if owner != scenario_id => return Ok(Some(owner)),
+                Some(owner) if owner != scenario_id && still_applied(conn, owner)? => {
+                    return Ok(Some(owner))
+                }
                 _ => stack.push(parent.id),
             }
         }
     }
     Ok(None)
+}
+
+/// Whether `scenario_id` is applied now. A scenario that was undone is no blocker: the retired
+/// revert could leave a person's edit of its promoted row active, and that edit is then a plain
+/// newer value, not a later apply that has to be undone first.
+fn still_applied(conn: &Connection, scenario_id: Uuid) -> Result<bool, DbError> {
+    Ok(conn
+        .query_row(
+            "SELECT applied_at IS NOT NULL FROM scenarios WHERE id = ?1",
+            params![scenario_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
 }
 
 /// What a revert of one applied scenario would do.
