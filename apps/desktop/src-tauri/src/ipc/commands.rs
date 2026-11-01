@@ -58,7 +58,8 @@ use crate::ipc::dto::{
     ReleaseUpdateFailureKind, RestoreRecoveryStatusDto, RotateVaultKeyInput, ScenarioDto,
     SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput, SetScenarioExpiryInput,
     SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto, SplitLineInputDto,
-    TagViewDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
+    TagViewDto, TouchIdEnableDto, TouchIdEnableInput, TouchIdStateDto, TouchIdStatusDto,
+    TouchIdUnlockDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
     UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
     UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
     UpdateRecurringBillInput, UpdateScenarioInput, VaultHealthDto, VaultListDto, VaultStatusDto,
@@ -313,6 +314,31 @@ pub fn unlock_vault_impl(state: &AppState, password: String) -> Result<VaultStat
     unlock_vault_with_options_impl(state, password, finance_kernel::UnlockOptions::default())
 }
 
+/// The work every successful unlock does once the vault is open, however it was unlocked (the password
+/// or Touch ID). Best-effort: nothing here may block the user from opening their vault.
+fn after_open_work(kernel: &finance_kernel::Kernel) {
+    // Daily-on-open: persist a forecast run so actualization (ADR 0026 §9/§15,
+    // personal-cfo-5ie.3) accrues a time-spanning history. Deduped on
+    // (input content_hash, day) inside the kernel, so repeated opens with
+    // unchanged inputs write nothing. Best-effort — a persistence failure must
+    // not block the user from opening their vault.
+    if let Err(err) = kernel.persist_daily_forecast() {
+        tracing::warn!(error = %err, "daily forecast persist on open failed");
+    }
+    // Score past persisted runs against realized transactions (ADR 0026 §9/§17,
+    // personal-cfo-46jq) so the actuals-backed-recurrence readiness factor (nxgx)
+    // reflects reality. Best-effort, like the persist above — never block the open.
+    if let Err(err) = kernel.actualize_forecasts() {
+        tracing::warn!(error = %err, "forecast actualization on open failed");
+    }
+    // Then backtest those actuals into a per-vault MAPE (ADR 0026 §18, personal-cfo-nxgx)
+    // for the "Forecast accuracy" readiness factor. Consumes the actualize above, so it
+    // runs after it; also best-effort.
+    if let Err(err) = kernel.backtest_forecasts() {
+        tracing::warn!(error = %err, "forecast backtest on open failed");
+    }
+}
+
 /// [`unlock_vault_impl`] with the host's [`finance_kernel::UnlockOptions`]
 /// (personal-cfo-i93n3.13). With `integrity_check` a damaged vault returns
 /// [`IpcError::VaultIntegrityCheckFailed`] before anything is opened or written.
@@ -322,33 +348,20 @@ pub fn unlock_vault_with_options_impl(
     options: finance_kernel::UnlockOptions,
 ) -> Result<VaultStatusDto, IpcError> {
     let password = Zeroizing::new(password);
-    let mut guard = state.lock_controller()?;
-    guard.unlock_with_options(password.as_bytes(), options)?;
-    // Daily-on-open: persist a forecast run so actualization (ADR 0026 §9/§15,
-    // personal-cfo-5ie.3) accrues a time-spanning history. Deduped on
-    // (input content_hash, day) inside the kernel, so repeated opens with
-    // unchanged inputs write nothing. Best-effort — a persistence failure must
-    // not block the user from opening their vault.
-    if let Some(kernel) = guard.kernel() {
-        if let Err(err) = kernel.persist_daily_forecast() {
-            tracing::warn!(error = %err, "daily forecast persist on open failed");
+    let status = {
+        let mut guard = state.lock_controller()?;
+        guard.unlock_with_options(password.as_bytes(), options)?;
+        if let Some(kernel) = guard.kernel() {
+            after_open_work(kernel);
         }
-        // Score past persisted runs against realized transactions (ADR 0026 §9/§17,
-        // personal-cfo-46jq) so the actuals-backed-recurrence readiness factor (nxgx)
-        // reflects reality. Best-effort, like the persist above — never block the open.
-        if let Err(err) = kernel.actualize_forecasts() {
-            tracing::warn!(error = %err, "forecast actualization on open failed");
-        }
-        // Then backtest those actuals into a per-vault MAPE (ADR 0026 §18, personal-cfo-nxgx)
-        // for the "Forecast accuracy" readiness factor. Consumes the actualize above, so it
-        // runs after it; also best-effort.
-        if let Err(err) = kernel.backtest_forecasts() {
-            tracing::warn!(error = %err, "forecast backtest on open failed");
-        }
-    }
-    vault_status_dto(&guard)
+        vault_status_dto(&guard)?
+    };
+    // The vault password was just entered: Touch ID's markers are re-stamped (this boot, now, no failed
+    // prompts), or its item is removed if it no longer matches the vault (personal-cfo-xuu). After the
+    // controller lock is released: the fingerprint read takes it.
+    crate::touch_id::app::note_password_unlock(state);
+    Ok(status)
 }
-
 /// Run registered local jobs for one unlocked-vault window.  This helper is
 /// intentionally separate from `unlock_vault_impl`: the unlock command returns
 /// synchronously, while its caller schedules this work after the response.
@@ -394,30 +407,14 @@ pub fn spawn_due_jobs_on_unlock_for_state(
     })
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn unlock_vault(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    host: tauri::State<'_, crate::HostOptions>,
-    password: String,
-) -> Result<VaultStatusDto, IpcError> {
-    // The host decides per unlock whether to run the pre-unlock integrity check
-    // (a restored install, for example); the desktop has no such host and passes none.
-    // The host decides per vault whether to run the pre-unlock integrity check (a restored install,
-    // for example), given the registry id of the vault being unlocked (personal-cfo-i93n3.18).
-    let options = host.unlock_options(active_vault_id(state.inner()).as_deref());
-    let outcome = unlock_vault_with_options_impl(state.inner(), password, options);
-    // The host's hook for every transition to Unlocked (personal-cfo-i93n3.13/.14/.18).
-    call_if_unlocked(host.on_unlocked, &app, &outcome, || {
-        active_vault_id(state.inner())
-    });
-    let status = outcome?;
+/// The work that follows every successful unlock, however it was done (the password or Touch ID):
+/// a one-shot post-unlock task, never blocking the unlock response.
+fn spawn_post_unlock_work(app: tauri::AppHandle, state: &AppState) {
     // Local durable jobs (personal-cfo-ati): the production dispatcher is
     // always installed in AppState, so every successful unlock runs one
     // post-unlock sweep. The blocking work is fire-and-forget and never delays
     // the successful unlock response.
-    let executor = state.inner().job_dispatcher();
+    let executor = state.job_dispatcher();
     let unlock_window = format!("unlock-{}", Uuid::now_v7());
     // One post-unlock task, never blocking the unlock: the durable-job sweep
     // first (its crash recovery must run before anything is claimed), then
@@ -442,6 +439,28 @@ pub fn unlock_vault(
         })
         .await;
     });
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn unlock_vault(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    host: tauri::State<'_, crate::HostOptions>,
+    password: String,
+) -> Result<VaultStatusDto, IpcError> {
+    // The host decides per unlock whether to run the pre-unlock integrity check
+    // (a restored install, for example); the desktop has no such host and passes none.
+    // The host decides per vault whether to run the pre-unlock integrity check (a restored install,
+    // for example), given the registry id of the vault being unlocked (personal-cfo-i93n3.18).
+    let options = host.unlock_options(active_vault_id(state.inner()).as_deref());
+    let outcome = unlock_vault_with_options_impl(state.inner(), password, options);
+    // The host's hook for every transition to Unlocked (personal-cfo-i93n3.13/.14/.18).
+    call_if_unlocked(host.on_unlocked, &app, &outcome, || {
+        active_vault_id(state.inner())
+    });
+    let status = outcome?;
+    spawn_post_unlock_work(app, state.inner());
     Ok(status)
 }
 
@@ -509,9 +528,15 @@ pub fn change_password_impl(
             "the new password must be at least {MIN_NEW_PASSWORD_CHARS} characters"
         )));
     }
+    // Touch ID's item is removed BEFORE the key material changes, and again after (personal-cfo-xuu). If
+    // it cannot be removed the change does not start: an item must not outlive the key it unwraps.
+    retire_touch_id_before_change(state)?;
     let mut guard = state.lock_controller()?;
     guard.change_password(old_password.as_bytes(), new_password.as_bytes())?;
-    vault_status_dto(&guard)
+    let status = vault_status_dto(&guard)?;
+    drop(guard);
+    crate::touch_id::app::retire_after_change(state);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -536,12 +561,18 @@ pub fn rotate_vault_key_impl(
     input: RotateVaultKeyInput,
 ) -> Result<VaultStatusDto, IpcError> {
     let password = Zeroizing::new(input.password);
+    // Removed before the rotation starts and again after it (personal-cfo-xuu): a rotation is aborted
+    // if the Touch ID item cannot be removed.
+    retire_touch_id_before_change(state)?;
     let mut guard = state.lock_controller()?;
     let result = guard.rotate_key(password.as_bytes());
     // Report the controller's real state either way (Unlocked, or Locked /
     // CorruptNeedsRecovery if the rotated vault could not be reopened).
     result?;
-    vault_status_dto(&guard)
+    let status = vault_status_dto(&guard)?;
+    drop(guard);
+    crate::touch_id::app::retire_after_change(state);
+    Ok(status)
 }
 
 // Async + `spawn_blocking`, like `connector_sync`: a rotation re-encrypts the
@@ -566,6 +597,9 @@ pub async fn rotate_vault_key(
 /// entry, and fall back to another registered vault (locked) if one remains, else the create
 /// screen. Recoverable only by restoring an encrypted backup. Requires the vault to be unlocked.
 pub fn delete_vault_impl(state: &AppState) -> Result<VaultStatusDto, IpcError> {
+    // The vault's Touch ID item goes with it (personal-cfo-xuu); if it cannot be removed the vault is
+    // not deleted, so no item is left unwrapping the key of a vault that no longer exists.
+    retire_touch_id_before_change(state)?;
     let mut controller = state.lock_controller()?;
     controller.delete()?;
 
@@ -7109,4 +7143,156 @@ mod provider_site_tests {
             Err(IpcError::Unavailable(_))
         ));
     }
+}
+
+// ---- Touch ID (personal-cfo-xuu) -------------------------------------------------------------------
+//
+// The commands take a password or nothing and return a status, a flag and a stable reason code. The
+// key-bearing work is in `crate::touch_id`; nothing here names key material.
+
+/// The fixed text of a refusal to start a change because Touch ID's item could not be removed first.
+fn retire_touch_id_before_change(state: &AppState) -> Result<(), IpcError> {
+    crate::touch_id::app::retire_before_change(state).map_err(|_| {
+        IpcError::Persistence(
+            "could not remove the Touch ID item first; nothing was changed".to_owned(),
+        )
+    })
+}
+
+fn touch_id_status_dto(status: crate::touch_id::Status) -> TouchIdStatusDto {
+    use crate::touch_id::State;
+    let (state, offered) = match status.state {
+        State::Unavailable(_) => (TouchIdStateDto::Unavailable, false),
+        State::Off => (TouchIdStateDto::Off, false),
+        State::On { offered } => (TouchIdStateDto::On, offered),
+    };
+    TouchIdStatusDto {
+        state,
+        offered,
+        reason: status.reason.map(|reason| reason.code().to_owned()),
+        failed_prompts: status.failed_prompts,
+    }
+}
+
+/// Touch ID's status for the active vault (no prompt, no unlock).
+#[must_use]
+pub fn touch_id_status_impl(state: &AppState) -> TouchIdStatusDto {
+    touch_id_status_dto(crate::touch_id::app::status(state))
+}
+
+/// Turn Touch ID on for the unlocked active vault. The password is checked again; a wrong one is
+/// [`IpcError::VaultUnlockFailed`] and changes nothing. If Touch ID cannot be enabled (no sensor, nothing
+/// enrolled, an unsigned build) the vault stays password-only and the reason says why.
+pub fn touch_id_enable_impl(
+    state: &AppState,
+    input: TouchIdEnableInput,
+) -> Result<TouchIdEnableDto, IpcError> {
+    use crate::touch_id::app::EnableOutcome;
+    let password = Zeroizing::new(input.password);
+    Ok(match crate::touch_id::app::enable(state, &password)? {
+        EnableOutcome::Enabled => TouchIdEnableDto {
+            enabled: true,
+            reason: None,
+        },
+        EnableOutcome::NotEnabled(reason) => TouchIdEnableDto {
+            enabled: false,
+            reason: Some(reason.code().to_owned()),
+        },
+    })
+}
+
+/// Turn Touch ID off for the active vault (idempotent).
+pub fn touch_id_disable_impl(state: &AppState) -> Result<TouchIdStatusDto, IpcError> {
+    crate::touch_id::app::disable(state)
+        .map_err(|_| IpcError::Persistence("could not remove the Touch ID item".to_owned()))?;
+    Ok(touch_id_status_impl(state))
+}
+
+/// One Touch ID unlock attempt for the locked active vault, with the host's per-vault options. Every
+/// way it can end short of an unlocked vault is a reason code and the password field, never an error
+/// loop; a damaged vault or a persistence failure is the same error the password path would report.
+pub fn touch_id_unlock_with_options_impl(
+    state: &AppState,
+    options: finance_kernel::UnlockOptions,
+) -> Result<TouchIdUnlockDto, IpcError> {
+    use crate::touch_id::Attempt;
+    match crate::touch_id::app::unlock(state, options) {
+        Attempt::Unlocked => {
+            {
+                let guard = state.lock_controller()?;
+                if let Some(kernel) = guard.kernel() {
+                    after_open_work(kernel);
+                }
+            }
+            let vault = vault_status_dto(&*state.lock_controller()?)?;
+            Ok(TouchIdUnlockDto {
+                unlocked: true,
+                vault: Some(vault),
+                reason: None,
+            })
+        }
+        Attempt::PasswordRequired(reason) => Ok(TouchIdUnlockDto {
+            unlocked: false,
+            vault: None,
+            reason: Some(reason.code().to_owned()),
+        }),
+        Attempt::Failed(error) => Err(error.into()),
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn touch_id_status(state: tauri::State<'_, AppState>) -> TouchIdStatusDto {
+    touch_id_status_impl(state.inner())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn touch_id_enable(
+    state: tauri::State<'_, AppState>,
+    input: TouchIdEnableInput,
+) -> Result<TouchIdEnableDto, IpcError> {
+    touch_id_enable_impl(state.inner(), input)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn touch_id_disable(state: tauri::State<'_, AppState>) -> Result<TouchIdStatusDto, IpcError> {
+    touch_id_disable_impl(state.inner())
+}
+
+// Async + `spawn_blocking`: the system's Touch ID prompt waits on a person, and a synchronous command
+// would hold the main thread (and the window) until they answer.
+#[tauri::command]
+#[specta::specta]
+pub async fn touch_id_unlock(
+    app: tauri::AppHandle,
+    host: tauri::State<'_, crate::HostOptions>,
+) -> Result<TouchIdUnlockDto, IpcError> {
+    let options = {
+        let state = app.state::<AppState>();
+        host.unlock_options(active_vault_id(state.inner()).as_deref())
+    };
+    let hook_app = app.clone();
+    let on_unlocked = host.on_unlocked;
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        touch_id_unlock_with_options_impl(&state, options)
+    })
+    .await
+    .map_err(|_| IpcError::Persistence("the Touch ID unlock task failed".to_owned()))?;
+    if let Ok(TouchIdUnlockDto {
+        unlocked: true,
+        vault: Some(vault),
+        ..
+    }) = &outcome
+    {
+        // The host's hook for every transition to Unlocked, then the post-unlock work, as for a password.
+        let state = hook_app.state::<AppState>();
+        call_if_unlocked(on_unlocked, &hook_app, &Ok(*vault), || {
+            active_vault_id(state.inner())
+        });
+        spawn_post_unlock_work(hook_app.clone(), state.inner());
+    }
+    outcome
 }

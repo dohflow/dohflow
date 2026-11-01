@@ -315,3 +315,42 @@ fn the_controller_refuses_a_released_unlock_unless_it_is_locked() {
     ));
     assert_eq!(controller.state(), VaultState::Unlocked);
 }
+
+#[test]
+fn the_envelope_fingerprint_is_readable_while_locked_matches_the_material_and_follows_a_password_change(
+) {
+    let (dir, mut controller) = unlocked();
+    let db = dir.path().join("vault.db");
+    let material = controller.enrollment_unlock_material(PASSWORD).unwrap();
+    let before = Kernel::envelope_fingerprint(&db).unwrap();
+    // The fingerprint sits at bytes 17..49 of the released plaintext (version, vault id, fingerprint, key).
+    assert_eq!(&before[..], &material.expose()[17..49]);
+
+    controller.lock().unwrap();
+    assert_eq!(
+        Kernel::envelope_fingerprint(&db).unwrap(),
+        before,
+        "no unlock needed"
+    );
+
+    controller.unlock(PASSWORD).unwrap();
+    controller
+        .change_password(PASSWORD, b"a different password")
+        .unwrap();
+    assert_ne!(Kernel::envelope_fingerprint(&db).unwrap(), before);
+}
+
+#[test]
+fn the_envelope_fingerprint_of_a_missing_or_damaged_envelope_is_a_typed_error() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("vault.db");
+    assert!(matches!(
+        Kernel::envelope_fingerprint(&db),
+        Err(KernelError::VaultNotFound)
+    ));
+    std::fs::write(sidecar(&db), b"not an envelope").unwrap();
+    assert!(matches!(
+        Kernel::envelope_fingerprint(&db),
+        Err(KernelError::Vault(_))
+    ));
+}

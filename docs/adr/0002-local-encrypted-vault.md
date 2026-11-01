@@ -276,3 +276,43 @@ and the macOS implementation only; nothing consumes them yet.
 
 The keychain is unavailable while the screen is locked (`Unavailable(Locked)`, `errSecInteractionNotAllowed`),
 which the signed harness runs into if started on a locked Mac; that is the typed behavior, not a failure.
+
+## Addendum (2026-11-01, `personal-cfo-xuu`, third change): when Touch ID is offered, and where the markers live
+
+The owner's decision of 2026-11-01 (xuu AC K1 to K6): Touch ID on the Mac matches the iPhone. **The vault
+password is required, and Touch ID is not offered, after a restart, after three failed or cancelled prompts, and
+30 days after the last password unlock.** macOS's own restart and lockout prompts protect the login, not the vault,
+so all of it is app-side and fails closed.
+
+1. **The markers are in the item's public tag** (58 of 64 bytes, readable and updatable with no prompt):
+   version, the fingerprint of the wrapped key in the envelope, the boot id and a monotonic stamp from the last
+   password unlock, and a failed-prompt count. `SecretStore::update_public_tag` rewrites it without touching the
+   secret; on macOS it is an attribute-only `SecItemUpdate`, run with a context that may not show UI so "never
+   prompts" does not depend on the item. Whether the OS prompts for this on a biometry-protected item is
+   unverified on a device (K6, the owner's Touch ID run); the fallback is a sibling non-secret item.
+2. **The boot id is `kern.bootsessionuuid`**, not `kern.boottime`: the kernel shifts the latter whenever the wall
+   clock is stepped, so a clock change would have looked like a restart. The 30 days are measured on
+   `mach_continuous_time`, which counts sleep and cannot be moved by changing the wall clock; it is comparable only
+   within one boot, which is enough because a restart already requires the password. A missing, unreadable or
+   inconsistent value (a clock earlier than the stamp, a tag that does not decode) requires the password.
+3. **The failed-prompt count is raised before the prompt is shown** (so a prompt that never returns still counts)
+   and **a successful Touch ID unlock restores the pre-prompt value**: it never resets to zero on a success, only a
+   password unlock does, so any number of successful unlocks never forces the password and three cancels in a row
+   do. Only one attempt runs at a time: a second request while a prompt is up is refused (`attempt_in_progress`)
+   with no prompt and no count, and each read-then-write of the markers is one locked step that is never held
+   across a prompt, so a password unlock is not held up behind the sheet. A restore after a prompt applies only
+   if the markers are still the ones that attempt wrote; a password unlock's reset is never undone by a late
+   restore.
+4. **A lockout counts as three at once.** A wrong finger keeps the item (anyone at the keyboard could otherwise
+   turn Touch ID off by failing it). A changed fingerprint set deletes it and offers enrollment again after the
+   password. An item the kernel reports stale, foreign or unreadable is deleted; one that matches the envelope but
+   cannot open the vault (a damaged database, a rotation that needs recovery) is kept.
+5. **The item never outlives the key it unwraps.** It is removed before and after a password change and a key
+   rotation (the change does not start if it cannot be removed), when the vault is deleted, and when Touch ID is
+   turned off; a launch sweep and every password unlock remove any item whose fingerprint no longer matches the
+   envelope, read with `Kernel::envelope_fingerprint` while the vault is still locked. Enabling asks for the vault
+   password again.
+6. **Where the code lives.** Key-bearing code is in the desktop crate's `touch_id` module, outside `src/ipc`; the
+   commands (`touch_id_status`, `touch_id_enable`, `touch_id_disable`, `touch_id_unlock`) take a password or nothing
+   and return a status, a flag and a stable reason code. `tests/dek_boundary.rs` is unchanged. A build with no
+   keychain entitlement is password-only and says a signed build is needed.

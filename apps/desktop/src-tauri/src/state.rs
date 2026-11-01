@@ -43,6 +43,9 @@ pub struct AppState {
     /// unlock runs the durable scheduler even before a feature bead registers
     /// its first handler.
     job_dispatcher: Arc<JobDispatcher<Kernel>>,
+    /// Touch ID unlock (personal-cfo-xuu): the platform pieces the rules run on. The production host
+    /// installs the macOS ones with [`AppState::with_touch_id`]; everything else is password-only.
+    touch_id: crate::touch_id::TouchId,
 }
 
 impl AppState {
@@ -56,6 +59,9 @@ impl AppState {
             vaults_root: None,
             connector_syncs_in_flight: Arc::default(),
             job_dispatcher: new_job_dispatcher(),
+            touch_id: crate::touch_id::TouchId::absent(
+                platform_traits::UnavailableReason::Unsupported,
+            ),
         }
     }
 
@@ -73,7 +79,23 @@ impl AppState {
             vaults_root: Some(vaults_root),
             connector_syncs_in_flight: Arc::default(),
             job_dispatcher: new_job_dispatcher(),
+            touch_id: crate::touch_id::TouchId::absent(
+                platform_traits::UnavailableReason::Unsupported,
+            ),
         }
+    }
+
+    /// Replace the Touch ID platform pieces (the production host's macOS ones, or a test's mock).
+    #[must_use]
+    pub fn with_touch_id(mut self, touch_id: crate::touch_id::TouchId) -> Self {
+        self.touch_id = touch_id;
+        self
+    }
+
+    /// The Touch ID service for this app.
+    #[must_use]
+    pub fn touch_id(&self) -> &crate::touch_id::TouchId {
+        &self.touch_id
     }
 
     /// Lock the controller mutex, mapping a poisoned lock to a typed error

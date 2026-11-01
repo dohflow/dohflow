@@ -16,6 +16,7 @@ pub mod ipc;
 mod isolation_probe;
 pub mod navigation_guard;
 pub mod state;
+pub mod touch_id;
 pub mod update;
 pub mod vault_registry;
 pub mod windows;
@@ -52,6 +53,10 @@ macro_rules! app_commands {
             ipc::commands::lock_vault,
             ipc::commands::change_password,
             ipc::commands::rotate_vault_key,
+            ipc::commands::touch_id_status,
+            ipc::commands::touch_id_enable,
+            ipc::commands::touch_id_disable,
+            ipc::commands::touch_id_unlock,
             ipc::commands::delete_vault,
             ipc::commands::list_vaults,
             ipc::commands::create_vault_named,
@@ -597,7 +602,16 @@ pub fn run_with(mut context: tauri::Context<tauri::Wry>, options: HostOptions) {
                 .unwrap_or_else(|| data_dir.join("vault.db"));
             let _ = registry.save(&data_dir);
             let controller = finance_kernel::VaultController::open(active_path);
-            app.manage(AppState::with_registry(controller, registry, data_dir));
+            app.manage(
+                AppState::with_registry(controller, registry, data_dir)
+                    .with_touch_id(touch_id::TouchId::production(&app.config().identifier)),
+            );
+            // Retire a Touch ID item whose markers are unreadable or no longer match the vault's
+            // envelope (a change made while the app was not running). No prompt, no unlock.
+            let sweep_handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                touch_id::app::sweep(&sweep_handle.state::<AppState>());
+            });
 
             // The trusted main window is `"create": false` in tauri.conf.json and built
             // here (personal-cfo-2no, ADR 0010 addendum 2026-09-27) so it gets the same
