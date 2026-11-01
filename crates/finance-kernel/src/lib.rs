@@ -84,7 +84,9 @@ use uuid::Uuid;
 mod rekey;
 pub use rekey::RekeyRecovery;
 mod vault;
-pub use vault::{classify_vault, UnlockOptions, VaultController, VaultHealth, VaultState};
+pub use vault::{
+    classify_vault, PasswordVerified, UnlockOptions, VaultController, VaultHealth, VaultState,
+};
 
 pub mod backup;
 mod backup_jobs;
@@ -4691,10 +4693,11 @@ impl Kernel {
         Ok(())
     }
 
-    /// Delete a scenario and its overlay events, permanently (ADR 0051 §1).
+    /// Delete a scenario (ADR 0051 §1): a tombstone, so the scenario and its overlay events leave
+    /// every reader but stay in the vault (ADR 0074 Addendum H).
     ///
-    /// Destructive by design and distinct from [`Self::archive_scenario`], which keeps
-    /// everything. Scoped to the scenario's own overlay — base events are never touched.
+    /// Distinct from [`Self::archive_scenario`], which keeps the scenario listed and selectable
+    /// by the user. Scoped to the scenario row — base events are never touched.
     ///
     /// # Errors
     /// Returns [`KernelError`] if no such scenario exists, or on a persistence failure.

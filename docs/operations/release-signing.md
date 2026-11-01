@@ -319,9 +319,11 @@ directory, is removed on exit, and is never shipped, uploaded or notarized.
 
 It needs only `APPLE_SIGNING_IDENTITY` and `APPLE_PROVISIONING_PROFILE` (defaults: the single installed
 Developer ID Application identity, and `~/.config/personal-cfo/DohFlow_Developer_ID.provisionprofile`),
-not `release.env`'s notarization credentials. On a Mac with enrolled biometrics, `KEYCHAIN_SMOKE_TOUCH_ID=1`
-adds the conformance suite, whose biometric store the OS refuses (`AuthFailed`) on a Mac with none. The
-sensor paths (a fresh match, a cancelled prompt) remain by hand from the same signed bundle.
+not `release.env`'s notarization credentials. The conformance suite runs on every Mac and adapts to its
+runtime biometric state (a Mac with nothing enrolled must refuse a biometric item with the typed reason and
+store nothing; a Touch ID Mac must store it). The sensor paths (a fresh match releasing a biometric item, the
+pre-flight prompt) remain by hand from the same signed bundle. The data-protection keychain is unavailable
+while the screen is locked (`Unavailable(Locked)`), so run the harness with the Mac unlocked.
 
 ## Part B — Repo wiring (867.1 — APPLIED 2026-07-05, PR #264)
 

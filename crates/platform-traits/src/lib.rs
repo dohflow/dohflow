@@ -28,11 +28,13 @@ mod key;
 pub mod matrix;
 mod policy;
 mod store;
+mod tag;
 mod value;
 
-pub use biometric::{BiometricAuth, PreflightResult};
+pub use biometric::{BiometricAuth, BiometricAvailability, PreflightResult};
 pub use error::{SecretError, UnavailableReason};
 pub use key::{AccessGroup, SecretKey, SERVICE_PREFIX};
 pub use policy::{AccessPolicy, AuthPrompt, MAX_PROMPT_CHARS};
 pub use store::{Roaming, SecretStore, StoreCapabilities};
+pub use tag::{PublicTag, MAX_TAG_BYTES};
 pub use value::{SecretValue, MAX_SECRET_BYTES};

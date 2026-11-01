@@ -39,11 +39,8 @@ deliberate row here, in the same change.
 | `lib.rs` | `record_audit_event` | 1 | keep-class-3 | A device-local security audit row. |
 | `lib.rs` | `stage_file_batch` | 1 | keep-class-3 | Device-local import staging. |
 | `lib.rs` | `stage_sync_batch` | 1 | keep-class-3 | Device-local import staging. |
-| `lib.rs` | `clone_scenario` | 1 | keep-pending | A direct writer outside the bus; `personal-cfo-5ymg8.5` routes it as a command with a derived id. |
 | `lib.rs` | `ensure_node_id` | 1 | keep-class-3 | The device's own node id. |
 | `lib.rs` | `ensure_vault_metadata` | 1 | keep-seeder | The vault id, minted once at creation (genesis). |
-| `lib.rs` | `ensure_default_categories` | 2 | keep-seeder | Genesis seeder; `personal-cfo-32fmp.3` makes it genesis-only with content-derived ids. |
-| `lib.rs` | `ensure_system_ledger_account` | 1 | keep-singleton | The create-if-missing system account, reached from `apply`; `personal-cfo-32fmp.3` derives it from its content and it consumes no ordinal. The one allowed random mint reachable from apply, until then. |
 | `merchant_identity.rs` | `create_identity` | 1 | keep-caller | Reached from a direct writer outside the bus (`lib.rs`), not from `apply`; `personal-cfo-5ymg8.5` routes it. |
 
 ## Derived mints (inside `apply` and its helpers)
@@ -58,10 +55,13 @@ deliberate row here, in the same change.
 | `apply/transactions.rs` `apply_confirm_obligation_early` (under "not already confirmed") | keyed | `txn.confirm-obligation` | recurring event id, scheduled date |
 | `lib.rs` `reverse_and_hide_transaction` (void and unconfirm; the original may already be voided) | keyed | `txn.reversal` | the original transaction id |
 | `apply/scenario_apply.rs` one promoted event per active scenario event (the count is base state) | keyed | `scenario-event` | scenario id, source event id |
+| `apply/scenario_cmds.rs` `apply_clone_scenario`, one per event id in the payload (the copied set is the payload's, not the base's) | ordinal | `scenario.clone-event` | |
 | `debt.rs` `apply_set_card_statement_balance` (upsert; the id is used only on insert) | keyed | `card-statement` | account id, cycle close |
 | `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (reads class-3 staging; see below) | keyed | `txn.commit-staged` | staged transaction id |
 | `apply/ingestion_cmds.rs` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
 | `apply/balance_cmds.rs` connector balance observation (insert branch of the upsert) | content | `balance-obs.connector` | account id, day (independent of the command: later commands update the row in place) |
+| `ensure_system_ledger_account` (`lib.rs`; from `apply` and the vault-creating transaction), only on a miss in the class-1 map | content | `system-ledger-account` | role, currency code (independent of the command; looked up first, so a legacy vault keeps its random ids; `personal-cfo-32fmp.3`) |
+| `seed_default_categories` (`lib.rs`), in the vault-creating transaction only, never reached from `apply` | content | `category.seed` | group name, or group name and leaf name (never recomputed to find a row: users rename and move seeded categories) |
 | `apply/ingestion_cmds.rs` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
 | `apply/household.rs` `SetHouseholdTimezone` audit row (class 3, written once per command: `INSERT OR IGNORE`) | keyed | `audit.household-timezone` | none (the command id is in every keyed id) |
 | `apply/recurring.rs` `apply_dismiss_recurring_suggestion` | none | | the suppression row has a natural key; the affected entity recorded with the command is the command id |
@@ -125,7 +125,7 @@ The split-line read orders by `(sort_order, id)`, so the line order never depend
 
 ## Measured
 
-The largest per-command mint count is a `SetSplits`, one ordinal id per payload line; every other
+The largest per-command mint count is a `SetSplits` or a `CloneScenario`, one ordinal id per payload line or event; every other
 command mints at most a handful of ordinal ids and a handful of keyed ids (a commit of one staged
 transaction mints its transaction, up to one decision row and one provenance row; a scenario apply
 mints one keyed id per active scenario event). The cap is 4,096 ordinals per command (`DerivedIds`),

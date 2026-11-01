@@ -74,9 +74,11 @@ describe("ScenariosView (personal-cfo-4d8.27.6.1 / .6.6)", () => {
     const dialog = await screen.findByRole("dialog", { name: /delete scenario/i });
     // The count makes "archive instead" an informed choice.
     expect(within(dialog).getByText(/3 changes/)).toBeInTheDocument();
+    // The rows stay in the vault under a tombstone, so the copy must not claim permanence.
+    expect(within(dialog).queryByText(/permanent/i)).not.toBeInTheDocument();
     expect(mocks.deleteScenario).not.toHaveBeenCalled();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: /delete permanently/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete scenario$/i }));
     await vi.waitFor(() => expect(mocks.deleteScenario).toHaveBeenCalledWith("sce-1"));
   });
 
@@ -98,6 +100,18 @@ describe("ScenariosView (personal-cfo-4d8.27.6.1 / .6.6)", () => {
         name: "Maternity leave (copy)",
       }),
     );
+  });
+
+  it("clones a scenario whose name already fills the limit, cutting the base so the suffix fits", async () => {
+    const full = "x".repeat(100);
+    mocks.scenarioList.mockResolvedValue(ok([scenario({ name: full })]));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /duplicate x+/i }));
+    await vi.waitFor(() => expect(mocks.cloneScenario).toHaveBeenCalled());
+    const [input] = mocks.cloneScenario.mock.calls[0] as [{ name: string }];
+    const { name } = input;
+    expect(name).toBe(`${"x".repeat(93)} (copy)`);
+    expect(Array.from(name)).toHaveLength(100);
   });
 
   it("sets an expiry date on blur, not on every keystroke", async () => {

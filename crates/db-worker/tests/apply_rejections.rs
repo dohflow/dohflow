@@ -22,7 +22,7 @@ use core_ledger::{
 use core_money::{Currency, Money};
 use db_worker::{
     ActorType, AssumptionKind, AssumptionSource, CommandMeta, DbError, DbWorker, IssuedAt,
-    NewAssumptionEvent, RejectCode, WriteCommand,
+    NewAssumptionEvent, NewScenario, RejectCode, ScenarioStatus, WriteCommand,
 };
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -92,6 +92,25 @@ fn supersede_event(old: u128, new: u128) -> WriteCommand {
 
 fn clear_event(n: u128) -> WriteCommand {
     WriteCommand::ClearAssumptionEvent { id: u(n) }
+}
+
+fn create_scenario(n: u128, name: &str) -> WriteCommand {
+    WriteCommand::CreateScenario {
+        scenario: NewScenario {
+            id: u(n),
+            name: name.to_owned(),
+            description: None,
+        },
+    }
+}
+
+fn clone_scenario(source: u128, new: u128, events: &[u128]) -> WriteCommand {
+    WriteCommand::CloneScenario {
+        source_id: u(source),
+        new_id: u(new),
+        name: "Copy".to_owned(),
+        event_ids: events.iter().copied().map(u).collect(),
+    }
 }
 
 fn assertion(id: u128, account_id: AccountId, amount: Money) -> WriteCommand {
@@ -424,6 +443,193 @@ fn scenarios() -> Vec<Step> {
             },
             Reject(StateConflict),
         ),
+        step("creating a scenario", create_scenario(110, " Move "), Fine),
+        step(
+            "a scenario with a blank name",
+            create_scenario(112, "  "),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "a scenario id that is already in use",
+            create_scenario(110, "Again"),
+            Reject(StateConflict),
+        ),
+        step(
+            "renaming an unknown scenario",
+            WriteCommand::RenameScenario {
+                id: u(114),
+                name: "Nope".to_owned(),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "renaming a scenario",
+            WriteCommand::RenameScenario {
+                id: u(110),
+                name: "Smaller place".to_owned(),
+            },
+            Fine,
+        ),
+        step(
+            "an expiry before the supported years",
+            WriteCommand::SetScenarioExpiry {
+                id: u(110),
+                expires_on: NaiveDate::from_ymd_opt(1899, 12, 31),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting an expiry",
+            WriteCommand::SetScenarioExpiry {
+                id: u(110),
+                expires_on: NaiveDate::from_ymd_opt(2030, 1, 1),
+            },
+            Fine,
+        ),
+        step(
+            "recording the first event of a scenario",
+            record_event(120, Some(110), "{}"),
+            Fine,
+        ),
+        step(
+            "recording the second event of a scenario",
+            record_event(121, Some(110), "{}"),
+            Fine,
+        ),
+        step(
+            "cloning events listed out of order",
+            clone_scenario(110, 111, &[121, 120]),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "cloning more events than one command can mint",
+            WriteCommand::CloneScenario {
+                source_id: u(110),
+                new_id: u(111),
+                name: "Copy".to_owned(),
+                event_ids: (0..=4096).map(|n| u(10_000 + n)).collect(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "cloning an unknown scenario",
+            clone_scenario(114, 111, &[]),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "cloning into an id that is already in use",
+            clone_scenario(110, 110, &[120]),
+            Reject(StateConflict),
+        ),
+        step(
+            "cloning an event that is not the source's",
+            clone_scenario(110, 111, &[70]),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "cloning a scenario",
+            clone_scenario(110, 111, &[120, 121]),
+            Fine,
+        ),
+        step(
+            "deleting an unknown scenario",
+            WriteCommand::DeleteScenario { id: u(114) },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "reinstating an unknown scenario",
+            WriteCommand::ReinstateScenario { id: u(114) },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying an unknown scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(114),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying a scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(110),
+            },
+            Fine,
+        ),
+        step(
+            "applying a scenario that is already applied",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(110),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "reverting an unknown scenario",
+            WriteCommand::RevertScenarioApply {
+                scenario_id: u(114),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "reverting an applied scenario",
+            WriteCommand::RevertScenarioApply {
+                scenario_id: u(110),
+            },
+            Fine,
+        ),
+        step(
+            "reverting a scenario that is not applied",
+            WriteCommand::RevertScenarioApply {
+                scenario_id: u(110),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "creating a scenario with nothing in it",
+            create_scenario(115, "Empty"),
+            Fine,
+        ),
+        step(
+            "applying a scenario with no active changes",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(115),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "deleting a scenario",
+            WriteCommand::DeleteScenario { id: u(110) },
+            Fine,
+        ),
+        step(
+            "setting the status of a deleted scenario",
+            WriteCommand::SetScenarioStatus {
+                id: u(110),
+                status: ScenarioStatus::Archived,
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "recording an event into a deleted scenario",
+            record_event(122, Some(110), "{}"),
+            Reject(StateConflict),
+        ),
+        step(
+            "applying a deleted scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(110),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "deleting a scenario that is already deleted",
+            WriteCommand::DeleteScenario { id: u(110) },
+            Fine,
+        ),
+        step(
+            "reinstating a deleted scenario",
+            WriteCommand::ReinstateScenario { id: u(110) },
+            Fine,
+        ),
     ]
 }
 
@@ -442,9 +648,11 @@ fn run(worker: &DbWorker) -> Vec<String> {
             let line = match (&outcome, s.expect) {
                 (Ok(_), Fine) => {
                     let set = worker.last_write_set().unwrap();
-                    // Setup steps only: their write sets can include a system account whose id is
-                    // random until personal-cfo-32fmp.3, so only the row count is compared.
-                    format!("{}: ok rows={}", s.label, set.rows.len())
+                    // The whole write set is compared, hash included: a system ledger account a
+                    // setup step creates has a content-derived id (personal-cfo-32fmp.3), the same
+                    // on every device and in every environment.
+                    let hash: String = set.hash.iter().map(|b| format!("{b:02x}")).collect();
+                    format!("{}: ok rows={} hash={hash}", s.label, set.rows.len())
                 }
                 (Err(DbError::Rejected { code, .. }), Reject(expected)) => {
                     assert_eq!(*code, expected, "{}", s.label);
@@ -473,7 +681,16 @@ fn add_class_3_noise(worker: &DbWorker) {
     .unwrap_or_else(|e| panic!("class-3 noise: {e}"));
 }
 
-fn lines_in_child(zone: &str) -> Vec<String> {
+/// A copy of `base` in `dir`, opened: every environment runs on the SAME vault (one vault id), as
+/// the replicas of one vault do. A derived id is a function of the vault id, so write sets are
+/// only comparable between copies of one vault.
+fn copy_of(dir: &Path, base: &Path, name: &str) -> DbWorker {
+    let path = dir.join(name);
+    std::fs::copy(base, &path).unwrap();
+    open(&path)
+}
+
+fn lines_in_child(zone: &str, base: &Path) -> Vec<String> {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--ignored",
@@ -483,6 +700,7 @@ fn lines_in_child(zone: &str) -> Vec<String> {
             "--test-threads=1",
         ])
         .env("TZ", zone)
+        .env("REJECTION_BASE_VAULT", base)
         .output()
         .unwrap();
     assert!(
@@ -503,7 +721,8 @@ fn lines_in_child(zone: &str) -> Vec<String> {
 #[ignore = "run by a_rejection_is_the_same_under_every_environment in a child process"]
 fn child_run_under_the_inherited_time_zone() {
     let dir = tempfile::tempdir().unwrap();
-    let worker = open(&dir.path().join("v.vault"));
+    let base = std::env::var_os("REJECTION_BASE_VAULT").expect("the parent names the base vault");
+    let worker = copy_of(dir.path(), Path::new(&base), "v.vault");
     for line in run(&worker) {
         println!("OUTCOME {line}");
     }
@@ -512,11 +731,16 @@ fn child_run_under_the_inherited_time_zone() {
 #[test]
 fn a_rejection_is_the_same_under_every_environment() {
     let dir = tempfile::tempdir().unwrap();
-    let plain = run(&open(&dir.path().join("plain.vault")));
+    let base = dir.path().join("base.vault");
+    {
+        let worker = open(&base);
+        worker.checkpoint_truncate().unwrap();
+    }
+    let plain = run(&copy_of(dir.path(), &base, "plain.vault"));
     assert_eq!(plain.len(), scenarios().len());
 
     // Class-3 state a device may hold.
-    let noisy_worker = open(&dir.path().join("noisy.vault"));
+    let noisy_worker = copy_of(dir.path(), &base, "noisy.vault");
     add_class_3_noise(&noisy_worker);
     assert_eq!(
         plain,
@@ -525,8 +749,8 @@ fn a_rejection_is_the_same_under_every_environment() {
     );
 
     // Two device time zones.
-    let chicago = lines_in_child("America/Chicago");
-    let auckland = lines_in_child("Pacific/Auckland");
+    let chicago = lines_in_child("America/Chicago", &base);
+    let auckland = lines_in_child("Pacific/Auckland", &base);
     assert_eq!(
         chicago, auckland,
         "the device time zone changed a verdict or a write set"
@@ -547,6 +771,8 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
         "apply/mod.rs",
+        "apply/scenario_apply.rs",
+        "apply/scenario_cmds.rs",
     ] {
         let path = root.join("src").join(module);
         let source = std::fs::read_to_string(&path).unwrap();

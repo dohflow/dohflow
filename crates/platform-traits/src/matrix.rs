@@ -72,7 +72,7 @@ pub const MATRIX: &[Row] = &[
     },
     Row {
         capability: "Biometric-gated secret (current biometric set, no passcode fallback)",
-        macos: cell(Partial, "SecAccessControl .biometryCurrentSet on the data-protection keychain; needs the same entitlement; verified only on a Touch ID Mac with a signed build."),
+        macos: cell(Partial, "SecAccessControl .biometryCurrentSet on the data-protection keychain; needs the same entitlement. Whether this Mac can create one right now is a RUNTIME fact (BiometricAuth::availability: available, not enrolled, not present, locked out), asked before storing and typed in the refusal; sensor paths verified only on a Touch ID Mac with a signed build."),
         ios: cell(Planned, "Same access control; Secure Enclave capable devices."),
         linux: cell(No, "BiometricAuth reports unavailable in v1."),
         windows: cell(Planned, "Windows Hello; not designed."),

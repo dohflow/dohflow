@@ -274,6 +274,13 @@ receives semantic auto-merge treatment.
 | `RecordAssumptionEvent` | Create | auto; queue-edit if the event id is already in use |
 | `SupersedeAssumptionEvent` | Toggle | auto iff strict predicate and end state is equal; queue-choose if the old event was touched or is no longer active (the replacement is created in the same command) |
 | `ClearAssumptionEvent` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `CreateScenario` | Create | auto; queue-edit if the scenario id is already in use |
+| `SetScenarioStatus` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the scenario was deleted |
+| `RenameScenario` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the scenario was deleted |
+| `SetScenarioExpiry` | Set | queue-choose (scalar; idempotent no-op is auto); queue-edit if the scenario was deleted |
+| `CloneScenario` | Create | auto; queue-edit if the new scenario id is already in use or the source was deleted |
+| `DeleteScenario` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
+| `ReinstateScenario` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `SnoozeInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DismissInboxItem` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ArchiveCategory` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -536,6 +543,39 @@ superseded event is refused. A supersede keeps the event's scope (a base event i
 every command (a run is class 2 and never replicates), and `created_at` and `updated_at` are the
 command's `issued_at`.
 
+## Addendum H — Scenarios are commands (2026-11-01, `personal-cfo-5ymg8.4`)
+
+`scenarios` is written only by seven additive version 1 commands, with `ApplyScenario` and
+`RevertScenarioApply` (unchanged) beside them: `CreateScenario` (Create, a caller-minted id),
+`SetScenarioStatus`, `RenameScenario` and `SetScenarioExpiry` (Set), `CloneScenario` (Create) and
+`DeleteScenario` and `ReinstateScenario` (Toggle over `deleted_at`). That makes **Create 14**,
+**Set 30**, **Toggle 25**, **Base-dependent 5** and 79 appendix rows.
+
+**A delete is a tombstone.** `DeleteScenario` sets `scenarios.deleted_at` to the command's
+`issued_at` and touches no other row: the scenario's events stay where they are and are ignored
+because their scenario is not live, so a delete writes one row and `ReinstateScenario` restores
+the scenario whole, with its events and its prior status. The user still sees "delete" (ADR 0051
+§1); a purge, if ever wanted, is a separate retention decision. Deleting a deleted scenario and
+reinstating a live one are accepted no-ops. Every reader hides a tombstoned scenario (the list, the
+single read, the event count, the overlay events and the selection), and the commands that need a
+live scenario (`SetScenarioStatus`, `RenameScenario`, `SetScenarioExpiry`, `CloneScenario`,
+recording an event into it and `ApplyScenario`) refuse a tombstoned one as `StateConflict`.
+`RevertScenarioApply` does not, so an applied scenario that was deleted can still be undone.
+
+**A clone is a function of its payload.** `CloneScenario` carries the source event ids the user
+cloned (read by the producer), in strictly ascending order, and mints one event id per element by
+ordinal. Apply copies exactly those events, whatever their status is by then, with `created_at`
+copied and `updated_at` the command's `issued_at`; an id that is not an event of the source is
+`ReferenceMissing`, a repeated id is `PayloadInvalid`, and a list longer than the ordinal cap is
+`PayloadInvalid`. The clone is a draft with no expiry and no run.
+
+**No run ids.** `scenarios.base_run_id` is written NULL by every command (a forecast run is class 2
+and never replicates; ADR 0074 Addendum H). **Validation moves into apply:** a scenario name is 1 to
+100 characters after trimming with no control characters, an expiry is a date from 1900 to 9999
+(`PayloadInvalid` for both), and the existing refusals of `ApplyScenario` and
+`RevertScenarioApply` (no such scenario, already applied, nothing to apply, not applied) are
+classified `ReferenceMissing` and `StateConflict` sites instead of `InvalidCommand`.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` — ADR 0074, the CAS/rebase premise
@@ -546,3 +586,4 @@ command's `issued_at`.
 - `personal-cfo-5ymg8` — five write classes and new command dispositions
 - `personal-cfo-g3m.12` — ADR 0074 Addendum B, which defines the `AlreadyPresent` exception
 - `personal-cfo-07u` — SYNC-2a connection identity/secret split (Addendum C)
+- `personal-cfo-32fmp.3` — ADR 0074 Addendum G: the system-account map is class 1 consensus state, so apply may read it

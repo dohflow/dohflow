@@ -87,7 +87,7 @@ fn every_write_command_variant_has_exactly_one_sample() {
     expected.sort();
     let mut actual: Vec<String> = samples().iter().map(|(n, _)| (*n).to_owned()).collect();
     actual.sort();
-    assert_eq!(expected.len(), 72, "the enum has 72 variants");
+    assert_eq!(expected.len(), 79, "the enum has 79 variants");
     assert_eq!(
         actual, expected,
         "a variant without a sample, or a sample without a variant"
@@ -351,8 +351,9 @@ fn fixture_digest(files: &[(String, Vec<u8>)]) -> String {
 /// `RecordConnectorBalance` of personal-cfo-5ymg8.3: the 67 existing fixtures are byte-identical
 /// and two files were added. So did `RecordAssumptionEvent`, `SupersedeAssumptionEvent` and
 /// `ClearAssumptionEvent` of personal-cfo-5ymg8.4: the 69 existing fixtures are byte-identical and
-/// three files were added.
-const PAYLOAD_V1_DIGEST: &str = "93252f69395be58fa85b105e68b27a9e3f21145525c0ca5077c5e26ede702496";
+/// three files were added. So did the seven scenario commands of personal-cfo-5ymg8.4 (slice 2):
+/// the 72 existing fixtures are byte-identical and seven files were added.
+const PAYLOAD_V1_DIGEST: &str = "713ea120f1008618f2e12b9a9c96737ead35972916aa94c3358a45ce01df30e9";
 
 #[test]
 fn the_frozen_version_1_fixtures_match_the_samples_and_the_pinned_digest() {
@@ -423,7 +424,7 @@ fn every_frozen_fixture_decodes_under_its_version() {
             count += 1;
         }
         assert_eq!(
-            count, 72,
+            count, 79,
             "version {version} has a fixture for every variant"
         );
     }

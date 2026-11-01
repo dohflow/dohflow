@@ -180,7 +180,7 @@ columns = ["id:uuid", "forecast_run_id:uuid", "forecast_row_id:uuid", "realized_
 
 [[table]]
 name = "forecast_assumption_events"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["id"]
 columns = ["id:uuid", "kind:text", "target_entity_type:text", "target_entity_id:uuid", "params_json:text", "source:text", "scenario_id:uuid", "status:text", "superseded_by:uuid", "origin_run_id:uuid", "created_at:text", "updated_at:text", "promoted_from_scenario_id:uuid"]
@@ -407,10 +407,10 @@ columns = ["id:uuid", "forecast_run_id:uuid", "flag_type:text", "severity:text",
 
 [[table]]
 name = "scenarios"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["id"]
-columns = ["id:uuid", "name:text", "description:text", "status:text", "base_run_id:uuid", "created_at:text", "updated_at:text", "expires_on:text", "applied_at:text", "applied_op_id:uuid"]
+columns = ["id:uuid", "name:text", "description:text", "status:text", "base_run_id:uuid", "created_at:text", "updated_at:text", "expires_on:text", "applied_at:text", "applied_op_id:uuid", "deleted_at:text"]
 
 [[table]]
 name = "schema_migrations"
@@ -484,8 +484,8 @@ columns = ["id:uuid", "source_record_id:uuid", "proposed_account_id:uuid", "post
 
 [[table]]
 name = "system_ledger_accounts"
-class = "3"
-write_set = "none"
+class = "1"
+write_set = "full"
 primary_key = ["role", "currency"]
 columns = ["role:text", "currency:text", "ledger_account_id:uuid"]
 
@@ -568,6 +568,18 @@ table = "connector_account_links"
 column = "external_id"
 max_bytes = 234
 mechanism = "writer"
+
+[[key_bound]]
+table = "system_ledger_accounts"
+column = "role"
+max_bytes = 32
+mechanism = "construction"
+
+[[key_bound]]
+table = "system_ledger_accounts"
+column = "currency"
+max_bytes = 8
+mechanism = "construction"
 
 [[projection]]
 source = "attachments"

@@ -93,7 +93,6 @@ fn base(dir: &Path) -> PathBuf {
             id: u(25),
             name: "What if".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     for (n, kind) in [

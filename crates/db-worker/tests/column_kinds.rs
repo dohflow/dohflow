@@ -58,6 +58,11 @@ const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
     // `upsert_connector_link` rejects a longer provider account id (connector_link_key_width.rs);
     // the primary key is (connection_id uuid, external_id text): 256 - 17 - 5 = 234.
     ("connector_account_links", "external_id", 234, "writer"),
+    // The role is one of the system-account constants (`opening_balance_equity`,
+    // `unmatched_expense`, `unmatched_income`: at most 22 bytes) and the currency an ISO code
+    // from the `Currency` enum (3 bytes); no caller passes free text.
+    ("system_ledger_accounts", "role", 32, "construction"),
+    ("system_ledger_accounts", "currency", 8, "construction"),
 ];
 
 /// BLOB columns that hold a 16-byte identifier although their name does not say so.
@@ -1111,9 +1116,9 @@ fn full_capture_tables() -> Vec<String> {
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
 /// * the rows of `category_aliases`, `credit_card_cycles`,
-///   `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
-///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
-///   reach the command bus with `personal-cfo-5ymg8`;
+///   `manual_entry_links`, `merchant_aliases`, `merchant_identities` and
+///   `recurring_event_instances` are written by raw (non-command) APIs today and reach the command
+///   bus with `personal-cfo-5ymg8`;
 /// * the rest need a second command on the same row (an update after a create).
 ///
 /// `ledger_transactions` insert IS exercised but its trigger is an equivalent mutant: the folded
@@ -1136,6 +1141,9 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("forecast_assumption_events", &["bd"]),
     ("household_members", &["bd"]),
     ("households", &["bi", "bd"]),
+    // The map is insert-only: a command meets a (role, currency) pair no seed created (a euro
+    // account with an opening balance) and inserts it; nothing updates or deletes a row.
+    ("system_ledger_accounts", &["bu", "bd"]),
     ("income_sources", &["bd"]),
     ("ledger_accounts", &["bu", "bd"]),
     ("ledger_transactions", &["bd"]),
@@ -1147,7 +1155,7 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("recurring_event_tags", &["bu", "bd"]),
     ("recurring_events", &["bd"]),
     ("recurring_transfers", &["bd"]),
-    ("scenarios", &["bi", "bd"]),
+    ("scenarios", &["bd"]),
     ("split_line_tags", &["bu", "bd"]),
     ("split_lines", &["bu", "bd"]),
     ("tags", &["bu", "bd"]),
@@ -1251,6 +1259,13 @@ mod all_variants {
         "record_assumption_event",
         "supersede_assumption_event",
         "clear_assumption_event",
+        "create_scenario",
+        "set_scenario_status",
+        "rename_scenario",
+        "set_scenario_expiry",
+        "clone_scenario",
+        "delete_scenario",
+        "reinstate_scenario",
     ];
 
     /// Ids the setup learns at run time (staging mints its own).
@@ -1286,6 +1301,21 @@ mod all_variants {
         rt: &mut Runtime,
     ) -> Vec<(&'static str, WriteCommand)> {
         match name {
+            "create_account" => vec![(
+                "setup: a euro account with an opening balance, so the system account for the new \
+                 currency is created (a map row)",
+                WriteCommand::CreateAccount {
+                    account: Box::new(Account::new(
+                        account(90),
+                        LedgerAccountId::from_uuid(u(190)),
+                        "Euro checking",
+                        CashflowRole::LiquidCash,
+                        Currency::Eur,
+                        AccountFlags::default(),
+                    )),
+                    opening_balance: Some(Money::new(10_000, Currency::Eur)),
+                },
+            )],
             "set_account_link" => vec![
                 (
                     "setup: asset account",
@@ -1445,6 +1475,29 @@ mod all_variants {
                 assert!(rt.staged.len() >= 2, "two staged transactions");
                 vec![]
             }
+            // The clone names two events of its source, so the source needs them first.
+            "clone_scenario" => [
+                (92, "setup: first event to clone"),
+                (93, "setup: second event to clone"),
+            ]
+            .into_iter()
+            .map(|(n, label)| {
+                (
+                    label,
+                    WriteCommand::RecordAssumptionEvent {
+                        event: NewAssumptionEvent {
+                            id: u(n),
+                            kind: AssumptionKind::InflationRate,
+                            target_entity_type: None,
+                            target_entity_id: None,
+                            params_json: r#"{"annual_bps":400}"#.to_owned(),
+                            source: AssumptionSource::UserOverride,
+                            scenario_id: Some(u(90)),
+                        },
+                    },
+                )
+            })
+            .collect(),
             "apply_scenario" => {
                 let scenario = u(25);
                 worker
@@ -1452,7 +1505,6 @@ mod all_variants {
                         id: scenario,
                         name: "Oracle".to_owned(),
                         description: None,
-                        base_run_id: None,
                     })
                     .expect("setup: scenario");
                 worker
@@ -1715,7 +1767,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 72, "every variant ran");
+        assert_eq!(checked, 79, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

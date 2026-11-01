@@ -21,9 +21,9 @@ note = "Payload-domain and class-1 reference checks of the account commands."
 
 [[site]]
 module = "apply/assumption_cmds.rs"
-statements = 7
+statements = 6
 bead = "personal-cfo-5ymg8.4"
-note = "Assumption events: the parameters are a JSON object, the scenario (class 1) exists, the caller-minted id is unused in the base, an event cannot supersede itself, a replacement keeps the scope of the event it supersedes, and the event being superseded or cleared exists and is still active in the base."
+note = "Assumption events: the parameters are a JSON object, the caller-minted id is unused in the base, an event cannot supersede itself, a replacement keeps the scope of the event it supersedes, and the event being superseded or cleared exists and is still active in the base. The scenario an event is recorded into must be live, which apply/scenario_cmds.rs checks."
 
 [[site]]
 module = "apply/balance_cmds.rs"
@@ -42,3 +42,15 @@ module = "apply/mod.rs"
 statements = 1
 bead = "personal-cfo-g3m.26"
 note = "require_issued_at: a pure function of the command's metadata, sharing the C.4 receiver bound (1970-01-01 to 9999-12-31)."
+
+[[site]]
+module = "apply/scenario_apply.rs"
+statements = 4
+bead = "personal-cfo-5ymg8.4"
+note = "ApplyScenario and RevertScenarioApply: the scenario is not already applied and has an active change to promote (apply), and it is applied (revert), all read from class-1 scenario and event state; a missing or deleted scenario is refused by apply/scenario_cmds.rs."
+
+[[site]]
+module = "apply/scenario_cmds.rs"
+statements = 11
+bead = "personal-cfo-5ymg8.4"
+note = "Scenario commands: the name and expiry domain, the scenario exists and is live, the caller-minted scenario id is unused, the events to clone are listed once each, in ascending order, within the ordinal cap and belong to the source, and a delete or reinstate names an existing scenario."

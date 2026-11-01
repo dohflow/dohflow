@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 pub use core_ledger::IssuedAt;
 use core_ledger::{
     Account, AccountId, AccountKind, AccountSubtype, BillContractId, CashTier, CategoryId,
@@ -992,6 +992,57 @@ pub enum WriteCommand {
         /// The event; it must still be `active`.
         id: Uuid,
     },
+    /// Create a `draft` scenario with a caller-minted id (personal-cfo-5ymg8.4; ADR 0051). It
+    /// carries no forecast run.
+    CreateScenario {
+        /// The scenario to create.
+        scenario: NewScenario,
+    },
+    /// Set a live scenario's lifecycle status (personal-cfo-5ymg8.4).
+    SetScenarioStatus {
+        /// The scenario.
+        id: Uuid,
+        /// The new status.
+        status: ScenarioStatus,
+    },
+    /// Rename a live scenario (personal-cfo-5ymg8.4).
+    RenameScenario {
+        /// The scenario.
+        id: Uuid,
+        /// The new name, 1 to 100 characters after trimming.
+        name: String,
+    },
+    /// Set or clear a live scenario's expiry date (personal-cfo-5ymg8.4; ADR 0051 section 3).
+    SetScenarioExpiry {
+        /// The scenario.
+        id: Uuid,
+        /// The last day the scenario applies, or none; a year from 1900 to 9999.
+        expires_on: Option<NaiveDate>,
+    },
+    /// Clone a live scenario into a new draft carrying a copy of the named events
+    /// (personal-cfo-5ymg8.4; ADR 0051 section 2). The producer reads the active events it shows
+    /// the user, so the copied set is a function of the payload and not of the base.
+    CloneScenario {
+        /// The scenario being cloned.
+        source_id: Uuid,
+        /// The clone's caller-minted id.
+        new_id: Uuid,
+        /// The clone's name, 1 to 100 characters after trimming.
+        name: String,
+        /// The source's events to copy, strictly ascending.
+        event_ids: Vec<Uuid>,
+    },
+    /// Delete a scenario by tombstone (personal-cfo-5ymg8.4; ADR 0074 Addendum H): its events stay
+    /// where they are and are ignored while it is deleted.
+    DeleteScenario {
+        /// The scenario.
+        id: Uuid,
+    },
+    /// Reinstate a deleted scenario with its events and prior status (personal-cfo-5ymg8.4).
+    ReinstateScenario {
+        /// The scenario.
+        id: Uuid,
+    },
 }
 
 impl WriteCommand {
@@ -1060,6 +1111,13 @@ impl WriteCommand {
             WriteCommand::RecordAssumptionEvent { .. } => "record_assumption_event",
             WriteCommand::SupersedeAssumptionEvent { .. } => "supersede_assumption_event",
             WriteCommand::ClearAssumptionEvent { .. } => "clear_assumption_event",
+            WriteCommand::CreateScenario { .. } => "create_scenario",
+            WriteCommand::SetScenarioStatus { .. } => "set_scenario_status",
+            WriteCommand::RenameScenario { .. } => "rename_scenario",
+            WriteCommand::SetScenarioExpiry { .. } => "set_scenario_expiry",
+            WriteCommand::CloneScenario { .. } => "clone_scenario",
+            WriteCommand::DeleteScenario { .. } => "delete_scenario",
+            WriteCommand::ReinstateScenario { .. } => "reinstate_scenario",
             WriteCommand::ArchiveCategory(_) => "archive_category",
             WriteCommand::ReinstateCategory(_) => "reinstate_category",
             WriteCommand::RecategorizeTransaction { .. } => "recategorize_transaction",
@@ -1734,9 +1792,15 @@ impl DbWorker {
         )?)
     }
 
-    /// Shared post-keying bootstrap: migrate, seed singletons, self-test. Run
+    /// Shared post-keying bootstrap: migrate, seed a NEW vault, self-test. Run
     /// before the worker is usable so no domain query ever touches a
     /// half-migrated vault (personal-cfo-wkn).
+    ///
+    /// The vault's seed rows (household, system ledger accounts, default categories, seed
+    /// merchants) are written ONLY in the transaction that creates the `vault_metadata` row,
+    /// together with that row, so a crash cannot leave a vault that is never seeded, and no
+    /// later open writes a class-1 row (personal-cfo-32fmp.3; ADR 0074 Addendum G). A seed change
+    /// after a vault exists ships as a migration, never as a new check on open.
     fn bootstrap(
         path: PathBuf,
         mut conn: Connection,
@@ -1745,10 +1809,7 @@ impl DbWorker {
     ) -> Result<Self, DbError> {
         migrations::run_migrations(&mut conn)?;
         let node_id = ensure_node_id(&conn)?;
-        ensure_vault_metadata(&conn, migrations::CURRENT_VERSION)?;
-        ensure_system_accounts(&conn)?;
-        ensure_default_categories(&conn)?;
-        merchant_identity::ensure_seed_merchants(&conn)?;
+        create_vault_rows_if_new(&mut conn)?;
         // The write-set capture (vault-format.md C.1.5): temp triggers on the writer
         // connection, installed after the migrations and the seed writes so neither is captured.
         write_set::install(&conn)?;
@@ -3789,7 +3850,10 @@ impl DbWorker {
                     created_at, updated_at, promoted_from_scenario_id
              FROM forecast_assumption_events
              WHERE status = 'active'
-               AND ((?1 IS NULL AND scenario_id IS NULL) OR scenario_id = ?1)
+               AND ((?1 IS NULL AND scenario_id IS NULL)
+                    OR (scenario_id = ?1
+                        AND EXISTS (SELECT 1 FROM scenarios s
+                                     WHERE s.id = scenario_id AND s.deleted_at IS NULL)))
              ORDER BY created_at, id",
         )?;
         let mut out = Vec::new();
@@ -4062,23 +4126,17 @@ impl DbWorker {
     // scenario-scoped assumption events (5u2 `scenario_id`), not a separate store —
     // run a scenario via `active_assumption_events(Some(id))`. See [`scenarios`].
 
-    /// Create a scenario (status `draft`, timestamps "now").
+    /// Create a scenario (status `draft`) through [`WriteCommand::CreateScenario`].
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError::Rejected`] when the name is blank or too long or the id is in use; other
+    /// [`DbError`]s from the command.
     pub fn create_scenario(&self, scenario: &NewScenario) -> Result<(), DbError> {
-        let now = Utc::now().to_rfc3339();
-        self.lock().conn.execute(
-            "INSERT INTO scenarios
-                (id, name, description, status, base_run_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)",
-            params![
-                scenario.id,
-                scenario.name,
-                scenario.description,
-                scenario.base_run_id,
-                now,
-            ],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::CreateScenario {
+                scenario: scenario.clone(),
+            },
         )?;
         Ok(())
     }
@@ -4095,7 +4153,7 @@ impl DbWorker {
                     (SELECT COUNT(*) FROM forecast_assumption_events e
                       WHERE e.scenario_id = s.id AND e.status = 'active'),
                     s.applied_at
-             FROM scenarios s WHERE s.id = ?1",
+             FROM scenarios s WHERE s.id = ?1 AND s.deleted_at IS NULL",
         )?;
         let mut rows = stmt.query(params![id])?;
         match rows.next()? {
@@ -4116,7 +4174,7 @@ impl DbWorker {
                     (SELECT COUNT(*) FROM forecast_assumption_events e
                       WHERE e.scenario_id = s.id AND e.status = 'active'),
                     s.applied_at
-             FROM scenarios s ORDER BY s.created_at, s.id",
+             FROM scenarios s WHERE s.deleted_at IS NULL ORDER BY s.created_at, s.id",
         )?;
         let mut out = Vec::new();
         let mut rows = stmt.query([])?;
@@ -4126,33 +4184,32 @@ impl DbWorker {
         Ok(out)
     }
 
-    /// Update a scenario's lifecycle status (draft → active → archived).
+    /// Update a scenario's lifecycle status (draft → active → archived) through
+    /// [`WriteCommand::SetScenarioStatus`].
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError::Rejected`] when the scenario is missing or deleted; other [`DbError`]s from the
+    /// command.
     pub fn set_scenario_status(&self, id: Uuid, status: ScenarioStatus) -> Result<(), DbError> {
-        self.lock().conn.execute(
-            "UPDATE scenarios SET status = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, status.as_token(), Utc::now().to_rfc3339()],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::SetScenarioStatus { id, status },
         )?;
         Ok(())
     }
 
-    /// Rename a scenario (personal-cfo-vru6).
+    /// Rename a scenario (personal-cfo-vru6) through [`WriteCommand::RenameScenario`].
     ///
     /// # Errors
-    /// [`DbError::InvalidCommand`] if the trimmed name is empty; [`DbError::Sqlite`] on a write
-    /// failure.
+    /// [`DbError::Rejected`] when the trimmed name is empty or too long or the scenario is
+    /// missing or deleted; other [`DbError`]s from the command.
     pub fn rename_scenario(&self, id: Uuid, name: &str) -> Result<(), DbError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(DbError::InvalidCommand(
-                "a scenario needs a name".to_owned(),
-            ));
-        }
-        self.lock().conn.execute(
-            "UPDATE scenarios SET name = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, name, Utc::now().to_rfc3339()],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::RenameScenario {
+                id,
+                name: name.to_owned(),
+            },
         )?;
         Ok(())
     }
@@ -4196,138 +4253,87 @@ impl DbWorker {
         self.set_scenario_status(id, ScenarioStatus::Archived)
     }
 
-    /// Delete a scenario **and its overlay events**, permanently (ADR 0051 §1).
+    /// Delete a scenario (ADR 0051 §1) through [`WriteCommand::DeleteScenario`]: a tombstone, so
+    /// the scenario and its events leave every reader but stay in the vault, and
+    /// [`Self::reinstate_scenario`] restores them whole.
     ///
-    /// Matches the house style for user-authored entities (recurring bills, income
-    /// sources both hard-delete, with archive as the separate soft path). The cascade
-    /// runs in one transaction so no event is ever left pointing at a scenario that no
-    /// longer exists.
-    ///
-    /// Scoped to this scenario's own overlay: the `scenario_id = ?1` predicate cannot
-    /// match a base event (`scenario_id IS NULL`), so a delete can never touch the
-    /// user's real forecast.
+    /// Scoped to the scenario row: its events are not touched, and a base event never is.
     ///
     /// # Errors
-    /// [`DbError::InvalidCommand`] if no such scenario exists; [`DbError::Sqlite`] on a
-    /// write failure.
+    /// [`DbError::Rejected`] when no such scenario exists; other [`DbError`]s from the command.
     pub fn delete_scenario(&self, id: Uuid) -> Result<(), DbError> {
-        let mut guard = self.lock();
-        let tx = guard.conn.transaction()?;
-        // Edges first: they reference the events by `from_event_id` with no FK, so
-        // removing events without them would strand per-row explanation edges pointing
-        // at rows that no longer exist (they are read back by `explanation_edges`).
-        tx.execute(
-            "DELETE FROM forecast_dependency_edges
-              WHERE from_event_id IN
-                (SELECT id FROM forecast_assumption_events WHERE scenario_id = ?1)",
-            params![id],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::DeleteScenario { id },
         )?;
-        tx.execute(
-            "DELETE FROM forecast_assumption_events WHERE scenario_id = ?1",
-            params![id],
-        )?;
-        let removed = tx.execute("DELETE FROM scenarios WHERE id = ?1", params![id])?;
-        if removed == 0 {
-            return Err(DbError::InvalidCommand(
-                "scenario does not exist".to_owned(),
-            ));
-        }
-        tx.commit()?;
         Ok(())
     }
 
-    /// Set (or clear, with `None`) a scenario's expiry date (ADR 0051 §3).
+    /// Reinstate a deleted scenario with its events and prior status
+    /// ([`WriteCommand::ReinstateScenario`]).
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError::Rejected`] when no such scenario exists; other [`DbError`]s from the command.
+    pub fn reinstate_scenario(&self, id: Uuid) -> Result<(), DbError> {
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::ReinstateScenario { id },
+        )?;
+        Ok(())
+    }
+
+    /// Set (or clear, with `None`) a scenario's expiry date (ADR 0051 §3) through
+    /// [`WriteCommand::SetScenarioExpiry`].
+    ///
+    /// # Errors
+    /// [`DbError::InvalidCommand`] when the text is not a `YYYY-MM-DD` date;
+    /// [`DbError::Rejected`] when the year is outside 1900 to 9999 or the scenario is missing or
+    /// deleted; other [`DbError`]s from the command.
     pub fn set_scenario_expiry(&self, id: Uuid, expires_on: Option<&str>) -> Result<(), DbError> {
-        // Validate rather than storing arbitrary text: `expires_on` silently controls
-        // whether the scenario applies, so a malformed or implausible date (a partially
-        // typed year like `0002-12-31`) would quietly disable someone's plan.
-        if let Some(date) = expires_on {
-            let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| {
-                DbError::InvalidCommand(format!("expiry must be YYYY-MM-DD: {date}"))
-            })?;
-            if parsed.year() < 1900 || parsed.year() > 9999 {
-                return Err(DbError::InvalidCommand(format!(
-                    "expiry year is out of range: {date}"
-                )));
-            }
-        }
-        self.lock().conn.execute(
-            "UPDATE scenarios SET expires_on = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, expires_on, Utc::now().to_rfc3339()],
+        let expires_on = expires_on
+            .map(|date| {
+                NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| {
+                    DbError::InvalidCommand(format!("expiry must be YYYY-MM-DD: {date}"))
+                })
+            })
+            .transpose()?;
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::SetScenarioExpiry { id, expires_on },
         )?;
         Ok(())
     }
 
     /// Clone a scenario into a new draft carrying a fresh copy of its active events
-    /// (ADR 0051 §2), returning the new scenario's id.
+    /// (ADR 0051 §2) through [`WriteCommand::CloneScenario`].
     ///
-    /// Copied: name (suffixed), description, and every ACTIVE event with a fresh id.
-    /// Deliberately not copied: status (a copy of an active plan is not itself active),
-    /// `base_run_id` (the clone forks from the current base, not the source's
-    /// historical run), expiry, and cleared/superseded events (undo history, not plan).
+    /// The active events are read here and carried in the command, so what is copied is what the
+    /// caller saw. Copied: name (as given), description, and every ACTIVE event with a fresh
+    /// derived id. Deliberately not copied: status (a copy of an active plan is not itself
+    /// active), `base_run_id`, expiry, and cleared or superseded events (undo history, not plan).
     ///
     /// # Errors
-    /// [`DbError::InvalidCommand`] if no such scenario exists; [`DbError::Sqlite`] on a
-    /// write failure.
+    /// [`DbError::Rejected`] when the source is missing or deleted, the name is blank or too long,
+    /// or the id is in use; other [`DbError`]s from the command.
     pub fn clone_scenario(&self, id: Uuid, new_id: Uuid, name: &str) -> Result<(), DbError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(DbError::InvalidCommand(
-                "a scenario needs a name".to_owned(),
-            ));
-        }
-        let now = Utc::now().to_rfc3339();
-        let mut guard = self.lock();
-        let tx = guard.conn.transaction()?;
-        let copied = tx.execute(
-            "INSERT INTO scenarios (id, name, description, status, base_run_id, created_at, updated_at)
-             SELECT ?2, ?3, description, 'draft', NULL, ?4, ?4 FROM scenarios WHERE id = ?1",
-            params![id, new_id, name, now],
-        )?;
-        if copied == 0 {
-            return Err(DbError::InvalidCommand(
-                "scenario does not exist".to_owned(),
-            ));
-        }
-        // Each copied event needs its OWN id; SQLite has no UUID generator, so the ids
-        // are minted here and the rows inserted one by one.
-        let sources: Vec<Uuid> = {
-            let mut stmt = tx.prepare(
+        let event_ids: Vec<Uuid> = {
+            let conn = self.read_connection()?;
+            let mut stmt = conn.prepare(
                 "SELECT id FROM forecast_assumption_events
-                  WHERE scenario_id = ?1 AND status = 'active' ORDER BY created_at, id",
+                  WHERE scenario_id = ?1 AND status = 'active' ORDER BY id",
             )?;
-            let mut rows = stmt.query(params![id])?;
-            let mut out = Vec::new();
-            while let Some(row) = rows.next()? {
-                out.push(row.get(0)?);
-            }
-            out
+            let rows = stmt.query_map(params![id], |row| row.get(0))?;
+            rows.collect::<Result<_, _>>()?
         };
-        for source in sources {
-            tx.execute(
-                // Every NOT NULL column must be carried: `source` and `kind` are
-                // CHECK-constrained and non-null, so copying them from the source row
-                // (rather than defaulting) keeps the clone a faithful overlay. The
-                // clone is a fresh plan, so `superseded_by`/`origin_run_id` are not
-                // copied — they describe the SOURCE's undo and run history.
-                // `created_at` is COPIED, not restamped: `entity_overrides` orders base
-                // and scenario events together by (created_at, id) and lets the later one
-                // win, so restamping would change how the copy resolves against a base
-                // override created in between — two supposedly-identical scenarios would
-                // project different amounts. The clone timestamp lives in `updated_at`.
-                "INSERT INTO forecast_assumption_events
-                    (id, kind, target_entity_type, target_entity_id, params_json,
-                     source, scenario_id, status, created_at, updated_at)
-                 SELECT ?2, kind, target_entity_type, target_entity_id, params_json,
-                        source, ?3, 'active', created_at, ?4
-                   FROM forecast_assumption_events WHERE id = ?1",
-                params![source, Uuid::now_v7(), new_id, now],
-            )?;
-        }
-        tx.commit()?;
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::CloneScenario {
+                source_id: id,
+                new_id,
+                name: name.to_owned(),
+                event_ids,
+            },
+        )?;
         Ok(())
     }
 
@@ -5168,8 +5174,12 @@ const DEFAULT_KDF_PARALLELISM: i64 = 1;
 /// `schema_migrations` tracker but never re-stamp this row, so without this
 /// update a vault created under an older build reports schema-incoherent on
 /// every open even after migrating cleanly (personal-cfo-4d8.27.1.3).
-/// Idempotent across re-opens.
-fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), DbError> {
+/// Idempotent across re-opens. Returns the new vault's id and creation time when THIS call
+/// created the row, and `None` for an existing vault: the caller seeds only on `Some`.
+fn ensure_vault_metadata(
+    conn: &Connection,
+    schema_version: i64,
+) -> Result<Option<(Uuid, String)>, DbError> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM vault_metadata WHERE singleton = 1)",
         [],
@@ -5185,7 +5195,7 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
              WHERE singleton = 1 AND schema_version < ?1",
             params![schema_version],
         )?;
-        return Ok(());
+        return Ok(None);
     }
     let vault_id = Uuid::now_v7();
     let created_at = Utc::now().to_rfc3339();
@@ -5239,6 +5249,31 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
             ],
         )?;
     }
+    Ok(Some((vault_id, created_at)))
+}
+
+/// Create the vault's `vault_metadata` row and seed rows in ONE transaction when the vault is new,
+/// and only stamp the schema version when it exists. A failure anywhere rolls back the metadata
+/// row too, so a vault is never half-created (a row but no seeds, which creation-only seeding
+/// would never repair).
+fn create_vault_rows_if_new(conn: &mut Connection) -> Result<(), DbError> {
+    let tx = conn.transaction()?;
+    if let Some((vault_id, created_at)) = ensure_vault_metadata(&tx, migrations::CURRENT_VERSION)? {
+        seed_new_vault(&tx, &vault_id, &created_at)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Write the seed rows of a NEW vault, in the transaction that created its `vault_metadata` row.
+/// Every id and timestamp is a function of the vault (its id and creation time), so two vaults
+/// with the same id and creation time seed identical rows. A seed row is never looked up by
+/// recomputing its id: users rename and move seeded categories, and legacy vaults hold random
+/// ids, so rows are always found by state.
+fn seed_new_vault(conn: &Connection, vault_id: &Uuid, created_at: &str) -> Result<(), DbError> {
+    ensure_system_accounts(conn)?;
+    seed_default_categories(conn, vault_id, created_at)?;
+    merchant_identity::seed_merchants(conn, created_at)?;
     Ok(())
 }
 
@@ -5533,18 +5568,22 @@ fn manual_entry_event(
     }
 }
 
-fn ensure_default_categories(conn: &Connection) -> Result<(), DbError> {
-    let already_seeded: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM categories WHERE is_system = 1)",
-        [],
-        |r| r.get(0),
-    )?;
-    if already_seeded {
-        return Ok(());
-    }
-    let now = Utc::now().to_rfc3339();
+/// Seed the default category taxonomy of a NEW vault (called only from [`seed_new_vault`]).
+///
+/// Ids are content ids of the seed's names under the vault's derivation key (the group, or the
+/// group and the leaf: leaf names are unique within a group, and the parent's id is not needed in
+/// the parts), and both timestamps are the vault's creation time, so two vaults with the same id
+/// and creation time seed identical rows. The ids are for seeding only: a seeded category is
+/// renamed and moved by users, and a legacy vault holds random ids, so a seed row is never found
+/// by recomputing its id.
+fn seed_default_categories(
+    conn: &Connection,
+    vault_id: &Uuid,
+    created_at: &str,
+) -> Result<(), DbError> {
+    let key = core_ids::DerivedIdKey::for_vault(vault_id);
     for group in DEFAULT_TAXONOMY {
-        let group_id = Uuid::now_v7();
+        let group_id = key.content_id(CATEGORY_SEED_TAG, &[group.name.as_bytes()])?;
         insert_system_category(
             conn,
             group_id,
@@ -5552,22 +5591,32 @@ fn ensure_default_categories(conn: &Connection) -> Result<(), DbError> {
             group.name,
             group.category_type,
             group.forecast_behavior,
-            &now,
+            created_at,
         )?;
         for (leaf_name, leaf_behavior) in group.leaves {
+            let leaf_id = key.content_id(
+                CATEGORY_SEED_TAG,
+                &[group.name.as_bytes(), leaf_name.as_bytes()],
+            )?;
             insert_system_category(
                 conn,
-                Uuid::now_v7(),
+                leaf_id,
                 Some(group_id),
                 leaf_name,
                 group.category_type,
                 leaf_behavior,
-                &now,
+                created_at,
             )?;
         }
     }
     Ok(())
 }
+
+/// The content-id tag of a seeded category (`[group]` or `[group, leaf]`).
+const CATEGORY_SEED_TAG: &str = "category.seed";
+
+/// The content-id tag of a system ledger account (`[role, currency code]`).
+const SYSTEM_LEDGER_ACCOUNT_TAG: &str = "system-ledger-account";
 
 fn insert_system_category(
     conn: &Connection,
@@ -5588,7 +5637,8 @@ fn insert_system_category(
     Ok(())
 }
 
-/// Find (or create) the system ledger account for `(role, currency)`.
+/// Find (or create) the system ledger account for `(role, currency)`: the class-1 map first, then a
+/// content-derived id on a miss.
 fn ensure_system_ledger_account(
     conn: &Connection,
     role: &str,
@@ -5605,7 +5655,20 @@ fn ensure_system_ledger_account(
     if let Some(uuid) = existing {
         return Ok(LedgerAccountId::from_uuid(uuid));
     }
-    let ledger_account_id = LedgerAccountId::new();
+    // Not found: derive the id from the pair and the vault (a content id, independent of any
+    // command), so two devices that create the same pair independently converge on one row. The
+    // map is class 1 (ADR 0074 Addendum G): a replica holds the origin's rows from genesis, legacy
+    // random ids included, and finds them here before it derives anything.
+    let vault_id: Uuid = conn.query_row(
+        "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    let ledger_account_id =
+        LedgerAccountId::from_uuid(core_ids::DerivedIdKey::for_vault(&vault_id).content_id(
+            SYSTEM_LEDGER_ACCOUNT_TAG,
+            &[role.as_bytes(), currency.code().as_bytes()],
+        )?);
     insert_ledger_account(conn, ledger_account_id, kind, currency)?;
     conn.execute(
         "INSERT INTO system_ledger_accounts (role, currency, ledger_account_id) VALUES (?1, ?2, ?3)",
@@ -7666,6 +7729,32 @@ fn apply_command(
         WriteCommand::ClearAssumptionEvent { id } => {
             apply::assumption_cmds::apply_clear_assumption_event(&tx, meta, id)?
         }
+        WriteCommand::CreateScenario { scenario } => {
+            apply::scenario_cmds::apply_create_scenario(&tx, meta, scenario)?
+        }
+        WriteCommand::SetScenarioStatus { id, status } => {
+            apply::scenario_cmds::apply_set_scenario_status(&tx, meta, id, *status)?
+        }
+        WriteCommand::RenameScenario { id, name } => {
+            apply::scenario_cmds::apply_rename_scenario(&tx, meta, id, name)?
+        }
+        WriteCommand::SetScenarioExpiry { id, expires_on } => {
+            apply::scenario_cmds::apply_set_scenario_expiry(&tx, meta, id, *expires_on)?
+        }
+        WriteCommand::CloneScenario {
+            source_id,
+            new_id,
+            name,
+            event_ids,
+        } => apply::scenario_cmds::apply_clone_scenario(
+            &tx, meta, &mut ids, source_id, new_id, name, event_ids,
+        )?,
+        WriteCommand::DeleteScenario { id } => {
+            apply::scenario_cmds::apply_delete_scenario(&tx, meta, id)?
+        }
+        WriteCommand::ReinstateScenario { id } => {
+            apply::scenario_cmds::apply_reinstate_scenario(&tx, meta, id)?
+        }
         WriteCommand::ArchiveCategory(id) => {
             apply::categorization_cmds::apply_archive_category(&tx, meta, id)?
         }
@@ -7757,9 +7846,15 @@ fn apply_command(
         WriteCommand::AttachSourceRecord { .. } => "source_records",
         // Apply/revert affect the scenario row itself — the promoted assumption events
         // are recoverable from it via `promoted_from_scenario_id` (ADR 0055).
-        WriteCommand::ApplyScenario { .. } | WriteCommand::RevertScenarioApply { .. } => {
-            "scenarios"
-        }
+        WriteCommand::ApplyScenario { .. }
+        | WriteCommand::RevertScenarioApply { .. }
+        | WriteCommand::CreateScenario { .. }
+        | WriteCommand::SetScenarioStatus { .. }
+        | WriteCommand::RenameScenario { .. }
+        | WriteCommand::SetScenarioExpiry { .. }
+        | WriteCommand::CloneScenario { .. }
+        | WriteCommand::DeleteScenario { .. }
+        | WriteCommand::ReinstateScenario { .. } => "scenarios",
         // The committed case affects a ledger_transaction; a flagged duplicate
         // (rare) affects only the staged row — the authoritative record there is
         // the dedupe_decisions entry, not this op-log hint.

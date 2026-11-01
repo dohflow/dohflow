@@ -495,7 +495,6 @@ fn a_category_spend_override_raises_the_projected_balance() {
             id: scenario,
             name: "Spend less".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -603,7 +602,6 @@ fn a_category_spend_override_is_apportioned_across_accounts() {
             id: scenario,
             name: "Spend less".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -1981,7 +1979,6 @@ fn a_scenario_recurring_debt_payment_reduces_projected_liquid_cash() {
             id: scenario,
             name: "Snowball".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2058,7 +2055,6 @@ fn a_foreign_currency_recurring_debt_payment_is_skipped() {
             id: scenario,
             name: "Snowball".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2247,6 +2243,74 @@ fn manual_entry_folds_into_forecast_and_survives_rerun() {
     );
 }
 
+/// A deleted scenario is a tombstone (ADR 0074 Addendum H): a stale selection that still names it
+/// selects nothing, so the overlay stack `[live, deleted]` forecasts exactly as `[live]`, and
+/// reinstating it brings its events back.
+#[test]
+fn a_deleted_scenario_in_a_selection_is_skipped_and_reinstating_restores_it() {
+    use chrono::TimeZone;
+
+    let (_dir, worker) = worker();
+    worker
+        .dispatch(
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 1_000_000),
+        )
+        .unwrap();
+    let as_of = Utc.with_ymd_and_hms(2026, 6, 20, 12, 0, 0).unwrap();
+    let forecast_of = |selection: &[Uuid]| {
+        forecast::compute(&worker.read_connection().unwrap(), as_of, 90, selection).unwrap()
+    };
+    let scenario_with_one_off = |name: &str, minor: i64, date: &str| {
+        let scenario = Uuid::now_v7();
+        worker
+            .create_scenario(&NewScenario {
+                id: scenario,
+                name: name.to_owned(),
+                description: None,
+            })
+            .unwrap();
+        worker
+            .record_assumption_event(&NewAssumptionEvent {
+                id: Uuid::now_v7(),
+                kind: AssumptionKind::OneTimeEvent,
+                target_entity_type: None,
+                target_entity_id: None,
+                params_json: format!(
+                    r#"{{"amount_minor":{minor},"currency":"USD","date":"{date}","label":"One-off"}}"#
+                ),
+                source: AssumptionSource::UserOverride,
+                scenario_id: Some(scenario),
+            })
+            .unwrap();
+        scenario
+    };
+    let live = scenario_with_one_off("Live", 10_000, "2026-07-05");
+    let doomed = scenario_with_one_off("Doomed", 500_000, "2026-08-01");
+
+    let live_only = forecast_of(&[live]);
+    assert_ne!(
+        forecast_of(&[live, doomed]),
+        live_only,
+        "before the delete the second scenario stacks"
+    );
+
+    worker.delete_scenario(doomed).unwrap();
+    assert_eq!(
+        forecast_of(&[live, doomed]),
+        live_only,
+        "a deleted scenario in the selection is skipped, the live one keeps its place"
+    );
+    assert_eq!(forecast_of(&[doomed]), forecast_of(&[]));
+
+    worker.reinstate_scenario(doomed).unwrap();
+    assert_ne!(
+        forecast_of(&[live, doomed]),
+        live_only,
+        "a reinstated scenario applies again with its events"
+    );
+}
+
 #[test]
 fn scenario_overlay_applies_additions_overrides_and_exclusions() {
     use chrono::TimeZone;
@@ -2290,7 +2354,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
             id: scenario,
             name: "Raise + rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2386,7 +2449,6 @@ fn zero_income_override_zeroes_that_income_under_the_scenario() {
             id: scenario,
             name: "Unpaid leave".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -2465,7 +2527,6 @@ fn record_forecast_assumption_drives_the_scenario_forecast() {
             id: scenario,
             name: "Raise + rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
 
@@ -2602,7 +2663,6 @@ fn archive_and_expiry_stop_a_scenario_without_destroying_it() {
             id: scenario,
             name: "What if".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -4962,19 +5022,101 @@ fn backtest_penalizes_forecasts_with_missed_events() {
     );
 }
 
-/// 6p6b: the canonical-merchant seed is idempotent — re-running it (as every vault open
-/// does) adds no duplicate identities or aliases.
+/// 6p6b: the canonical-merchant seed is idempotent — re-running it adds no duplicate identities
+/// or aliases (it runs only when a vault is created, but `INSERT OR IGNORE` keeps it safe).
 #[test]
 fn seed_merchants_is_idempotent() {
     let (_dir, worker) = worker();
     let count = worker.merchant_identity_count().unwrap();
     assert!(count >= 1, "at least Amazon is seeded");
-    merchant_identity::ensure_seed_merchants(&worker.read_connection().unwrap()).unwrap();
+    merchant_identity::seed_merchants(
+        &worker.read_connection().unwrap(),
+        "2026-10-20T00:00:00+00:00",
+    )
+    .unwrap();
     assert_eq!(
         worker.merchant_identity_count().unwrap(),
         count,
         "re-seeding adds nothing"
     );
+}
+
+/// personal-cfo-32fmp.3: a vault is created in ONE transaction. A seeder that fails rolls the
+/// `vault_metadata` row back with it, so a half-created vault (a row, no seeds) cannot exist: seeds
+/// are written only when the row is, and nothing would ever repair it.
+#[test]
+fn a_vault_is_never_half_created() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_keyed(&dir.path().join("half.vault"), KEY).unwrap();
+    migrations::run_migrations(&mut conn).unwrap();
+    // Break the last seeder: the merchant aliases have nowhere to go.
+    conn.execute_batch("DROP TABLE merchant_aliases").unwrap();
+    assert!(create_vault_rows_if_new(&mut conn).is_err());
+    for table in [
+        "vault_metadata",
+        "households",
+        "ledger_accounts",
+        "system_ledger_accounts",
+        "categories",
+        "merchant_identities",
+    ] {
+        let rows: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "{table} kept a row of the failed creation");
+    }
+}
+
+/// The seed rows as text, per table, in a stable order.
+fn seed_rows(conn: &Connection) -> Vec<String> {
+    let mut out = Vec::new();
+    for table in [
+        "ledger_accounts",
+        "system_ledger_accounts",
+        "categories",
+        "merchant_identities",
+        "merchant_aliases",
+    ] {
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {table} ORDER BY 1, 2"))
+            .unwrap();
+        let width = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            let cells: Vec<String> = (0..width)
+                .map(|i| format!("{:?}", row.get::<_, rusqlite::types::Value>(i).unwrap()))
+                .collect();
+            out.push(format!("{table}: {}", cells.join("|")));
+        }
+    }
+    out
+}
+
+/// personal-cfo-32fmp.3: two vaults with one vault id and creation time seed identical class-1 rows
+/// (system accounts, categories, merchants), because every id and timestamp is a function of them.
+#[test]
+fn two_vaults_with_one_id_and_creation_time_seed_identical_rows() {
+    let vault_id = Uuid::from_u128(0x0198_c2c1_5f0a_7c3d_8a4e_9b1d_0000_00aa);
+    let created_at = "2026-10-20T00:00:00+00:00";
+    let seeded = |name: &str| {
+        let dir = TempDir::new().unwrap();
+        let mut conn = open_keyed(&dir.path().join(name), KEY).unwrap();
+        migrations::run_migrations(&mut conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        ensure_vault_metadata(&tx, migrations::CURRENT_VERSION).unwrap();
+        // The vault's own identity, as a replica would install the origin's before any mint.
+        tx.execute(
+            "UPDATE vault_metadata SET vault_id = ?1, created_at = ?2",
+            params![vault_id, created_at],
+        )
+        .unwrap();
+        seed_new_vault(&tx, &vault_id, created_at).unwrap();
+        tx.commit().unwrap();
+        seed_rows(&conn)
+    };
+    let (a, b) = (seeded("a.vault"), seeded("b.vault"));
+    assert!(a.len() > 50, "the seeds were written");
+    assert_eq!(a, b);
 }
 
 #[test]
@@ -8093,7 +8235,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             id: scenario,
             name: "Rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     // One colliding event (same kind + target as base) and one untargeted, so the
@@ -8217,7 +8358,6 @@ fn a_reverted_scenario_can_be_applied_again() {
             id: scenario,
             name: "Re-appliable".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -8269,7 +8409,6 @@ fn apply_scenario_rejects_a_scenario_with_no_active_events() {
             id: scenario,
             name: "Empty".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     assert!(worker
@@ -8304,7 +8443,6 @@ fn a_promoted_base_event_carries_the_scenario_it_came_from() {
             id: scenario,
             name: "Rent hike".to_owned(),
             description: None,
-            base_run_id: None,
         })
         .unwrap();
     worker
@@ -8420,7 +8558,6 @@ fn several_scenarios_compose_with_selection_order_as_precedence() {
                 id,
                 name: name.to_owned(),
                 description: None,
-                base_run_id: None,
             })
             .unwrap();
     };
