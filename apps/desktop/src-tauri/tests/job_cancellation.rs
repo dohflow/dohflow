@@ -21,10 +21,11 @@
 //!   the commit, is decided at the commit: before it, nothing is written; after it, the job stays
 //!   succeeded (personal-cfo-pxi.25).
 //! * A crash between the commit and the terminal write, with NO cancel request pending, recovers to
-//!   a truthful outcome and the re-run imports nothing twice. **With a cancel request also pending,
-//!   recovery still records the job as cancelled although the batch is imported**, and a failure
-//!   after the writes began, with a cancel pending, can be recorded as cancelled too: both need the
-//!   durable commit marker of personal-cfo-g3m.31 and are the `#[ignore]`d cases of that bead below.
+//!   a truthful outcome and the re-run imports nothing twice. With a cancel request also pending,
+//!   recovery reads the durable commit marker (personal-cfo-g3m.31): a job whose batch is imported,
+//!   or whose bundle and receipt exist, is recorded as succeeded, never cancelled. The same marker
+//!   keeps a failure after the writes began, with a cancel pending, recorded as failed
+//!   (`crates/db-worker/tests/durable_jobs.rs` runs that against the real store).
 //! * The terminal state is durable: after the vault is closed and reopened the job is still
 //!   cancelled and is not claimed again.
 //! * Queued cancels are terminal at once and their P99 is under the 500 ms SLA (live: one indexed
@@ -566,13 +567,11 @@ impl JobHandler<Kernel> for CrashesAfterTheExportWithACancelPending {
     }
 }
 
-/// Known gap, personal-cfo-g3m.31 (the same case as the connector refresh's, for the backup): a crash
-/// after the bundle and its receipt exist, WITH a cancel request pending. Recovery terminalizes any
-/// running row that has a cancel request as `Cancelled`, because nothing durable says the export
-/// completed. The correct outcome (what this asserts) is that a job whose bundle and receipt exist is not
-/// recorded as cancelled; g3m.31's durable commit marker delivers it and un-ignores this case.
+/// personal-cfo-g3m.31 (the same case as the connector refresh's, for the backup): a crash after the
+/// bundle and its receipt exist, WITH a cancel request pending. The receipt's transaction carries the
+/// job's commit marker, so recovery records a success instead of `Cancelled`, and the next run is not
+/// due again.
 #[test]
-#[ignore = "personal-cfo-g3m.31: needs the durable commit marker; today recovery records this job as cancelled with its bundle and receipt in place"]
 fn a_crash_after_the_backup_completed_with_a_cancel_pending_is_not_recorded_as_cancelled() {
     let BackupFixture {
         dir,
@@ -1361,13 +1360,10 @@ fn job_cancel_pending(state: &AppState, connection: Uuid) -> bool {
         .unwrap()
 }
 
-/// Known gap, personal-cfo-g3m.31: a crash after the commit WITH a cancel request pending. Recovery
-/// terminalizes any running row that has a cancel request as `Cancelled`, although the batch is
-/// imported, because nothing durable says the commit happened. The correct outcome (what this
-/// asserts) is that the job is not recorded as cancelled once its rows are in; g3m.31's durable
-/// commit marker delivers it and un-ignores this case.
+/// personal-cfo-g3m.31: a crash after the commit WITH a cancel request pending. The import's first
+/// write carries the job's commit marker, so recovery records a success instead of `Cancelled`
+/// although the batch is imported.
 #[test]
-#[ignore = "personal-cfo-g3m.31: needs the durable commit marker; today recovery records this job as cancelled with the batch imported"]
 fn a_crash_after_the_commit_with_a_cancel_pending_is_not_recorded_as_cancelled() {
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join("vault.db");

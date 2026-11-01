@@ -4426,6 +4426,22 @@ impl DbWorker {
         self.dispatch_inner(meta, cmd, Fault::None)
     }
 
+    /// [`DbWorker::dispatch`] for a command that is the durable effect of a running job: the job's
+    /// commit marker is written in the SAME transaction as the command, so the vault either holds
+    /// both or neither (personal-cfo-g3m.31). The marker is only set on a row that is `running`; a
+    /// replayed command (an idempotency key seen before) writes nothing, marker included.
+    ///
+    /// # Errors
+    /// As [`DbWorker::dispatch`].
+    pub fn dispatch_marking_job(
+        &self,
+        meta: CommandMeta,
+        cmd: WriteCommand,
+        job_id: Uuid,
+    ) -> Result<Outcome, DbError> {
+        self.dispatch_inner_marking(meta, cmd, Fault::None, Some(job_id))
+    }
+
     /// Reap idempotency keys whose `expires_at` is strictly before `cutoff`
     /// (RFC 3339). Returns the number removed. Safe to run anytime: it only
     /// removes the memoization, never op-log or domain rows.
@@ -4462,6 +4478,16 @@ impl DbWorker {
         cmd: WriteCommand,
         fault: Fault,
     ) -> Result<Outcome, DbError> {
+        self.dispatch_inner_marking(meta, cmd, fault, None)
+    }
+
+    fn dispatch_inner_marking(
+        &self,
+        meta: CommandMeta,
+        cmd: WriteCommand,
+        fault: Fault,
+        mark_job: Option<Uuid>,
+    ) -> Result<Outcome, DbError> {
         meta.validate()?;
         let node_id = self.node_id;
         let schema_version = self.schema_version;
@@ -4482,7 +4508,15 @@ impl DbWorker {
         validate_idempotency_key(&meta.idempotency_key)?;
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            apply_command(&mut guard, &meta, &cmd, node_id, schema_version, fault)
+            apply_command(
+                &mut guard,
+                &meta,
+                &cmd,
+                node_id,
+                schema_version,
+                fault,
+                mark_job,
+            )
         }));
 
         match result {
@@ -7235,6 +7269,7 @@ fn apply_command(
     node_id: Uuid,
     schema_version: i64,
     fault: Fault,
+    mark_job: Option<Uuid>,
 ) -> Result<Outcome, DbError> {
     // Before anything else: `apply` converts `issued_at` to a calendar instant, and a command
     // from another device may carry any i64 (apply::require_issued_at).
@@ -7968,6 +8003,13 @@ fn apply_command(
             expires_at,
         ],
     )?;
+
+    // The running job's commit marker (personal-cfo-g3m.31), in this same transaction: a device-local
+    // class-3 row, written after the write set and the operation log are final, so it is never part of
+    // either.
+    if let Some(job_id) = mark_job {
+        jobs::mark_committed(&tx, job_id, &apply::issued_at_text(meta))?;
+    }
 
     fault.maybe_panic(FaultPoint::AfterOpLog);
 

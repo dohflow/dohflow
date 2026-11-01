@@ -126,3 +126,87 @@ fn history_accepts_a_non_path_destination_label() {
     let history = worker.backup_history(vault_id).unwrap();
     assert_eq!(history[0].destination, "memory://test/one.pcfobk");
 }
+
+/// personal-cfo-g3m.31: a scheduled receipt and its job's commit marker are one transaction. A fault
+/// between them (here a trigger that refuses the marker write) leaves neither; without it, both.
+#[test]
+fn a_receipt_and_its_jobs_commit_marker_are_atomic() {
+    let (_dir, worker) = worker();
+    let vault_id = worker.vault_metadata().unwrap().vault_id;
+    let job = Uuid::now_v7();
+    let conn = worker.read_connection().unwrap();
+    conn.execute(
+        "INSERT INTO durable_jobs (id, kind, cadence, state, attempt_count, max_attempts,
+                                   created_at, updated_at)
+         VALUES (?1, 'backup_export', 'weekly', 'running', 1, 3, 't', 't')",
+        [job],
+    )
+    .unwrap();
+    let marker = || -> Option<String> {
+        conn.query_row(
+            "SELECT committed_at FROM durable_jobs WHERE id = ?1",
+            [job],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let receipt = entry(
+        Uuid::now_v7(),
+        vault_id,
+        BackupHistoryKind::Scheduled,
+        "2026-11-01T12:00:00Z",
+    );
+
+    conn.execute_batch(
+        "CREATE TRIGGER refuse_marker BEFORE UPDATE OF committed_at ON durable_jobs
+         BEGIN SELECT RAISE(ABORT, 'injected fault between the receipt and the marker'); END;",
+    )
+    .unwrap();
+    assert!(worker
+        .record_backup_history_for_job(&receipt, Some(job))
+        .is_err());
+    assert!(
+        worker.backup_history(vault_id).unwrap().is_empty(),
+        "no receipt"
+    );
+    assert!(marker().is_none(), "no marker");
+
+    conn.execute_batch("DROP TRIGGER refuse_marker").unwrap();
+    worker
+        .record_backup_history_for_job(&receipt, Some(job))
+        .unwrap();
+    assert_eq!(worker.backup_history(vault_id).unwrap(), vec![receipt]);
+    assert!(marker().is_some(), "both");
+}
+
+/// A receipt with no job (a manual backup) writes no marker anywhere.
+#[test]
+fn a_manual_receipt_writes_no_marker() {
+    let (_dir, worker) = worker();
+    let vault_id = worker.vault_metadata().unwrap().vault_id;
+    let job = Uuid::now_v7();
+    let conn = worker.read_connection().unwrap();
+    conn.execute(
+        "INSERT INTO durable_jobs (id, kind, cadence, state, attempt_count, max_attempts,
+                                   created_at, updated_at)
+         VALUES (?1, 'backup_export', 'weekly', 'running', 1, 3, 't', 't')",
+        [job],
+    )
+    .unwrap();
+    worker
+        .record_backup_history(&entry(
+            Uuid::now_v7(),
+            vault_id,
+            BackupHistoryKind::Manual,
+            "2026-11-01T12:00:00Z",
+        ))
+        .unwrap();
+    let marked: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM durable_jobs WHERE committed_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marked, 0);
+}

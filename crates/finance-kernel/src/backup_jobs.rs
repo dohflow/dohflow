@@ -491,9 +491,14 @@ impl Kernel {
             verified: failure.is_none(),
             error: failure.map(str::to_owned),
         };
-        self.worker.record_backup_history(&entry).map_err(|_| {
-            KernelError::Persistence("backup history could not be saved".to_owned())
-        })?;
+        // A scheduled receipt is the scheduled job's durable effect: its commit marker goes in the same
+        // transaction as the receipt (personal-cfo-g3m.31).
+        let job = matches!(entry.kind, BackupHistoryKind::Scheduled).then_some(BACKUP_JOB_ID);
+        self.worker
+            .record_backup_history_for_job(&entry, job)
+            .map_err(|_| {
+                KernelError::Persistence("backup history could not be saved".to_owned())
+            })?;
         if let Some(error) = entry.error.as_deref() {
             return Err(KernelError::Vault(error.to_owned()));
         }

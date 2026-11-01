@@ -3123,6 +3123,28 @@ impl Kernel {
         &self,
         envelope: CommandEnvelope<C>,
     ) -> Result<Outcome, KernelError> {
+        self.dispatch_for_job(envelope, None)
+    }
+
+    /// [`Kernel::dispatch`] for a command that is the first durable effect of a running job: the job's
+    /// commit marker is written in the same transaction as the command, so recovery and every finish
+    /// path can tell "nothing committed" from "committed" (personal-cfo-g3m.31).
+    ///
+    /// # Errors
+    /// As [`Kernel::dispatch`].
+    pub fn dispatch_marking_job<C: KernelCommand>(
+        &self,
+        envelope: CommandEnvelope<C>,
+        job_id: uuid::Uuid,
+    ) -> Result<Outcome, KernelError> {
+        self.dispatch_for_job(envelope, Some(job_id))
+    }
+
+    fn dispatch_for_job<C: KernelCommand>(
+        &self,
+        envelope: CommandEnvelope<C>,
+        job_id: Option<uuid::Uuid>,
+    ) -> Result<Outcome, KernelError> {
         let CommandEnvelope { meta, command } = envelope;
         let kind = command.kind();
 
@@ -3140,7 +3162,10 @@ impl Kernel {
         tracing::info!(command.kind = kind, "dispatching kernel command");
 
         let write = command.lower();
-        let outcome = self.worker.dispatch(meta, write)?;
+        let outcome = match job_id {
+            Some(job_id) => self.worker.dispatch_marking_job(meta, write, job_id)?,
+            None => self.worker.dispatch(meta, write)?,
+        };
 
         tracing::info!(?outcome, "kernel command applied");
         Ok(outcome)
@@ -3495,6 +3520,36 @@ impl Kernel {
         account_map: &std::collections::BTreeMap<String, uuid::Uuid>,
         meta: &CommandMeta,
     ) -> Result<SyncBatchResult, KernelError> {
+        self.ingest_sync_batch_for_job(
+            adapter_id,
+            adapter_version,
+            source_name,
+            connection_id,
+            parsed,
+            account_map,
+            meta,
+            None,
+        )
+    }
+
+    /// [`Kernel::ingest_sync_batch`] for a refresh that runs as `job_id`: the job's commit marker is
+    /// written in the same transaction as the sync's first durable write (the source batch), so a crash
+    /// after the import began never reads as "nothing committed" (personal-cfo-g3m.31).
+    ///
+    /// # Errors
+    /// As [`Kernel::ingest_sync_batch`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn ingest_sync_batch_for_job(
+        &self,
+        adapter_id: &str,
+        adapter_version: &str,
+        source_name: &str,
+        connection_id: Option<uuid::Uuid>,
+        parsed: &ParsedBatch,
+        account_map: &std::collections::BTreeMap<String, uuid::Uuid>,
+        meta: &CommandMeta,
+        job_id: Option<uuid::Uuid>,
+    ) -> Result<SyncBatchResult, KernelError> {
         let batch_id = SourceBatchId::new();
         let create = CreateSourceBatch::new(
             batch_id,
@@ -3507,7 +3562,11 @@ impl Kernel {
             Some(connection) => create.with_connector_connection(connection),
             None => create,
         };
-        self.dispatch(CommandEnvelope::new(next_meta(meta), create))?;
+        let create = CommandEnvelope::new(next_meta(meta), create);
+        match job_id {
+            Some(job_id) => self.dispatch_marking_job(create, job_id)?,
+            None => self.dispatch(create)?,
+        };
         self.worker.record_connector_run(
             batch_id.as_uuid(),
             adapter_id,

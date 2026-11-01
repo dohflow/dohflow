@@ -20,12 +20,13 @@
 //!    returns [`JobExecution::Committed`]. A cancel that arrives after the commit is too late: the
 //!    job is recorded as succeeded, through [`JobStore::finish_committed`], which has no
 //!    cancellation guard. Neither the store's terminal write nor the runner's watcher override may
-//!    turn a `Committed` execution into `Cancelled`. **Not yet delivered (personal-cfo-g3m.31):** a
-//!    FAILURE after the work began committing. [`JobExecution::Failed`] still passes the
-//!    cancellation guards (the runner's override and `finish_failure`), so a handler that wrote and
-//!    then failed, with a cancel pending, is recorded `Cancelled`. A handler must not rely on the
-//!    runtime to keep a late failure from becoming `Cancelled` until that bead adds a committed
-//!    failure path.
+//!    turn a `Committed` execution into `Cancelled`. A FAILURE after the work began committing is
+//!    the truth too, and it is told apart by the durable **commit marker** (personal-cfo-g3m.31):
+//!    the store writes it in the same transaction as the job's durable effect, and
+//!    [`JobStore::committed`] reads it. With the marker set, neither the runner's override nor
+//!    [`JobStore::finish_failure`]'s guard turns a [`JobExecution::Failed`] into `Cancelled`, and a
+//!    [`JobExecution::Succeeded`] is recorded as a commit. `Cancelled` is recorded only when the
+//!    marker is absent.
 //! 3. **The commit is the linearization point.** A handler that can be cancelled concurrently
 //!    checks for a request in the same critical section that performs its commit, so a request
 //!    either lands before the check (nothing is committed) or after the commit (too late). It
@@ -36,10 +37,10 @@
 //!
 //! A crash between the commit and the terminal write leaves the row `running`. With no cancel
 //! request pending, recovery requeues it, so a committed handler must be idempotent when re-run
-//! (the connector refresh is, through its import dedupe). **Not yet delivered
-//! (personal-cfo-g3m.31):** with a cancel request ALSO pending, `recover_running` terminalizes the
-//! row as `Cancelled` even though the work committed, because nothing durable records that the
-//! commit happened. The fix is a durable commit marker written with the effect.
+//! (the connector refresh is, through its import dedupe). With a cancel request ALSO pending,
+//! recovery reads the commit marker: a row that carries it is recorded as succeeded (its work is
+//! in), and only a row without it is recorded `Cancelled` (personal-cfo-g3m.31). The marker lives
+//! while a run is in flight: a new claim and every terminal write clear it.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -611,6 +612,12 @@ pub trait JobStore {
     fn cancellation_requested(&self, _id: Uuid) -> Result<bool, Self::Error> {
         Ok(false)
     }
+    /// Whether the running row's durable effect has committed in this run: the store's commit marker,
+    /// written in the same transaction as the effect (personal-cfo-g3m.31). A store with no durable
+    /// marker reports `false`, which keeps the cancellation guards as they were.
+    fn committed(&self, _id: Uuid) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
     /// Record a successful invocation and its next schedule state.
     fn finish_success(
         &self,
@@ -627,7 +634,9 @@ pub trait JobStore {
         completed_at: DateTime<Utc>,
         next_due_at: Option<DateTime<Utc>>,
     ) -> Result<(), Self::Error>;
-    /// Record a failure. `retry_at` is `Some` only when another attempt is due.
+    /// Record a failure. `retry_at` is `Some` only when another attempt is due. A row that carries the
+    /// commit marker is recorded as failed even with a cancellation request pending: the work
+    /// committed, so the failure is the truth and `Cancelled` would hide it (personal-cfo-g3m.31).
     fn finish_failure(
         &self,
         job: &JobRecord,
@@ -1135,16 +1144,25 @@ where
                 watcher_stop.cancel();
                 (execution, job_cancellation.is_cancelled())
             });
-            let execution = if was_cancelled && execution != JobExecution::Committed {
-                // Cancellation wins even if a handler races with the watcher
-                // and returns a late success/failure result. This is the
-                // no-partial-commit boundary for cooperative consumers. A
-                // handler that reports `Committed` has already written, so
-                // the request came too late and the outcome stands.
-                JobExecution::Cancelled
-            } else {
-                execution
-            };
+            // The durable marker is the store's own record that the effect committed. A failed read is
+            // "not committed": it must not turn into an accidental success.
+            let marked_committed = self.store.committed(job.id).unwrap_or(false);
+            let execution =
+                if was_cancelled && execution != JobExecution::Committed && !marked_committed {
+                    // Cancellation wins even if a handler races with the watcher
+                    // and returns a late success/failure result. This is the
+                    // no-partial-commit boundary for cooperative consumers. A
+                    // handler that reports `Committed`, or whose store says the work
+                    // committed, has already written, so the request came too late and
+                    // the outcome stands.
+                    JobExecution::Cancelled
+                } else if marked_committed && execution == JobExecution::Succeeded {
+                    // A success that the store knows committed is a commit: the late request cannot
+                    // flip it at the terminal write.
+                    JobExecution::Committed
+                } else {
+                    execution
+                };
             let completed_at = clock.now();
             let outcome =
                 self.apply_execution(&job, attempt, execution, completed_at, &mut report)?;
@@ -1182,6 +1200,14 @@ mod tests {
     struct FakeStore {
         jobs: Mutex<HashMap<Uuid, JobRecord>>,
         cancel_on_skip: bool,
+        /// Rows whose durable effect has committed in the current run (the commit marker).
+        marked: Mutex<std::collections::HashSet<Uuid>>,
+    }
+
+    impl FakeStore {
+        fn mark_committed(&self, id: Uuid) {
+            self.marked.lock().unwrap().insert(id);
+        }
     }
 
     impl JobStore for FakeStore {
@@ -1242,6 +1268,10 @@ mod tests {
             Ok(self.jobs.lock().unwrap()[&id].cancel_requested)
         }
 
+        fn committed(&self, id: Uuid) -> Result<bool, Self::Error> {
+            Ok(self.marked.lock().unwrap().contains(&id))
+        }
+
         fn finish_success(
             &self,
             job: &JobRecord,
@@ -1287,9 +1317,10 @@ mod tests {
         ) -> Result<JobFinishResult, Self::Error> {
             let mut jobs = self.jobs.lock().unwrap();
             let row = jobs.get_mut(&job.id).unwrap();
-            if row.cancel_requested {
+            if row.cancel_requested && !self.marked.lock().unwrap().contains(&job.id) {
                 return Ok(JobFinishResult::Cancelled);
             }
+            row.cancel_requested = false;
             row.state = if retry_at.is_some() {
                 JobState::Queued
             } else {
@@ -1615,25 +1646,82 @@ mod tests {
         assert_eq!(row.next_due_at, Some(now + Duration::seconds(3600)));
     }
 
-    /// Known gap, personal-cfo-g3m.31: a handler whose work already committed and that then fails,
-    /// with a cancel request pending, is recorded `Cancelled` today, because `Failed` passes both the
-    /// runner's override and `finish_failure`'s guard and a `Failed` carries no "committed" fact. The
-    /// correct outcome (asserted here) is `Failed`; g3m.31 adds the committed failure path, changes
-    /// this executor to use it, and un-ignores the case.
+    /// A handler whose work already committed (the store's marker is set) and that then fails, with a
+    /// cancel request pending, is recorded `Failed`, never `Cancelled` (personal-cfo-g3m.31). Without
+    /// the marker the same sequence is still `Cancelled`.
     #[test]
-    #[ignore = "personal-cfo-g3m.31: needs a committed failure path; today a failure after the work committed is recorded as cancelled when a cancel is pending"]
     fn a_failure_after_the_work_committed_is_recorded_failed_even_with_a_cancel_pending() {
-        struct CommitThenFailWithCancel;
-        impl JobExecutor<()> for CommitThenFailWithCancel {
+        struct CommitThenFailWithCancel<'a> {
+            store: &'a FakeStore,
+            commits: bool,
+        }
+        impl JobExecutor<()> for CommitThenFailWithCancel<'_> {
             fn execute(
                 &self,
-                _job: &JobRecord,
+                job: &JobRecord,
                 cancellation: &CancellationToken,
                 _context: &(),
             ) -> JobExecution {
-                // The work has committed; the cancel arrives; the handler's own bookkeeping fails.
+                // The work has committed (the marker is written with it); the cancel arrives; the
+                // handler's own bookkeeping fails.
+                if self.commits {
+                    self.store.mark_committed(job.id);
+                }
+                self.store
+                    .jobs
+                    .lock()
+                    .unwrap()
+                    .get_mut(&job.id)
+                    .unwrap()
+                    .cancel_requested = true;
                 cancellation.cancel();
                 JobExecution::Failed(JobFailure::permanent("bookkeeping failed after the commit"))
+            }
+        }
+        for (commits, expected) in [(true, JobState::Failed), (false, JobState::Cancelled)] {
+            let store = FakeStore::default();
+            let first = job(Schedule::Once);
+            let id = first.id;
+            store.jobs.lock().unwrap().insert(id, first);
+            let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+            JobRunner::new(&store)
+                .run_due_with_clock(
+                    now,
+                    "unlock-1",
+                    &(),
+                    &CommitThenFailWithCancel {
+                        store: &store,
+                        commits,
+                    },
+                    &CancellationToken::new(),
+                    &FixedClock(now),
+                )
+                .unwrap();
+
+            assert_eq!(
+                store.jobs.lock().unwrap()[&id].state,
+                expected,
+                "marker set: {commits}"
+            );
+        }
+    }
+
+    /// A success the store knows committed is recorded as a success even if the handler said only
+    /// `Succeeded` and a cancel is pending.
+    #[test]
+    fn a_marked_success_with_a_cancel_pending_is_recorded_succeeded() {
+        struct CommitThenSucceed<'a>(&'a FakeStore);
+        impl JobExecutor<()> for CommitThenSucceed<'_> {
+            fn execute(
+                &self,
+                job: &JobRecord,
+                cancellation: &CancellationToken,
+                _context: &(),
+            ) -> JobExecution {
+                self.0.mark_committed(job.id);
+                cancellation.cancel();
+                JobExecution::Succeeded
             }
         }
         let store = FakeStore::default();
@@ -1641,19 +1729,17 @@ mod tests {
         let id = first.id;
         store.jobs.lock().unwrap().insert(id, first);
         let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-
         JobRunner::new(&store)
             .run_due_with_clock(
                 now,
                 "unlock-1",
                 &(),
-                &CommitThenFailWithCancel,
+                &CommitThenSucceed(&store),
                 &CancellationToken::new(),
                 &FixedClock(now),
             )
             .unwrap();
-
-        assert_eq!(store.jobs.lock().unwrap()[&id].state, JobState::Failed);
+        assert_eq!(store.jobs.lock().unwrap()[&id].state, JobState::Succeeded);
     }
 
     #[test]
