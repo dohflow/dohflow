@@ -207,6 +207,7 @@ Paths are under `apps/desktop/src/`. "Shared" means it lives in `components/ui/`
 | `EmojiPicker` | `components/ui/emoji-picker.tsx` | Curated, dependency-free emoji grid with filtering. |
 | Notices | `components/ui/notice.tsx`, `notice-context.ts`, `notice-stack.ts` | `NoticeProvider`, `NotificationsRegion`, `useNotices()`; the Undo notice and the stack rule ([`FRONTEND.md`](../agent/FRONTEND.md) section 6.2). |
 | `RemoveConfirm` | `components/ui/remove-confirm.tsx` | The inline confirm for a reversible remove (section 6.2). |
+| `Dialog`, `DialogContent`, `DialogHeader`, `DialogTitle`, `DialogDescription`, `DialogBody`, `DialogError`, `DialogFooter` | `components/ui/dialog.tsx` | The shared modal (shadcn on `@radix-ui/react-dialog`, personal-cfo-4d8.6.1). Tab stays inside, the background is `aria-hidden` and does not scroll, Escape closes without confirming, and focus returns to the opener (or a fallback). The content never exceeds the window: `DialogBody` scrolls, while the title, the error and the footer actions stay in view; data text wraps anywhere. `DialogError` is a persistent `role="alert"` slot that stays until the caller clears it. `initialFocusRef` picks the first focus (the safe action for a confirm). First consumer: the scenario Undo flow; the hand-rolled dialogs move over under personal-cfo-4d8.6.2. Dev example: `dialog-example.html`. |
 | `Disclosure`, `usePinDisclosures` | `components/ui/disclosure.tsx` | The shared independent disclosure (Paper A2): a card whose heading holds one trigger button; a hidden, inert body that keeps drafts; a `persistent` slot for the error, remedy and action; ancestor pinning for destructive confirmations. No screen uses it yet (`FRONTEND.md` section 7.5). |
 | `PageHeader` | `components/PageHeader.tsx` | One title scale for a page: title, optional muted subtitle, a right-aligned actions slot. Used by Dashboard, Accounts and Settings. |
 | Brand mark and wordmark | `brand/Brand.tsx` | The mark and the wordmark (outlines, not live text). |
@@ -215,11 +216,13 @@ Paths are under `apps/desktop/src/`. "Shared" means it lives in `components/ui/`
 
 Naming these so a mock is not drawn from a component that does not exist:
 
-- **Dialog / modal / drawer.** There is **no shared Dialog**. Modals and drawers are hand-rolled
-  per view (for example `settings/RotateKeyCard.tsx`, `settings/NewMappedAccountDialog.tsx`,
-  `accounts/ReconcileBalanceModal.tsx`, `search/GlobalSearch.tsx`,
-  `transactions/TransactionDetailDrawer.tsx`, `bills/BillDetailDrawer.tsx`). The dialog snippet
-  in [`recipes.md`](./recipes.md) is a recipe, not a component.
+- **Dialog / modal / drawer.** `Dialog` (above) is the shared modal. Most existing modals and drawers
+  are still hand-rolled per view (for example `settings/RotateKeyCard.tsx`,
+  `settings/NewMappedAccountDialog.tsx`, `accounts/ReconcileBalanceModal.tsx`,
+  `search/GlobalSearch.tsx`, `transactions/TransactionDetailDrawer.tsx`,
+  `bills/BillDetailDrawer.tsx`, and the scenario Apply and Delete confirms) and have no focus
+  containment, inert background, Escape or focus return; moving them over is
+  personal-cfo-4d8.6.2. A drawer is not covered by `Dialog`.
 - **Tabs.** There is no tabs component. The section switcher is the sidebar
   (`vault/screens/Sidebar.tsx`).
 - **Checkbox and Switch.** Native inputs, styled per use; there is no shared component.
