@@ -553,3 +553,67 @@ fn a_deleted_applied_scenario_can_still_be_undone() {
     assert!(worker.deleted_applied_scenarios().unwrap().is_empty());
     assert_eq!(base_params(&worker), vec![rate(300)]);
 }
+
+/// Every row of the tables an undo could touch, as text, so two dumps compare exactly.
+fn dump(worker: &DbWorker) -> Vec<String> {
+    let conn = worker.read_connection().unwrap();
+    let mut out = Vec::new();
+    for table in [
+        "forecast_assumption_events",
+        "scenarios",
+        "operation_log",
+        "command_idempotency_keys",
+        "provenance_links",
+    ] {
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .unwrap();
+        let columns = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            let cells: Vec<String> = (0..columns)
+                .map(|i| format!("{:?}", row.get_ref(i).unwrap()))
+                .collect();
+            out.push(format!("{table}: {}", cells.join("|")));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_refused_undo_leaves_the_vault_exactly_as_it_was() {
+    // The interface says "nothing was undone" for a refusal, which is only true if the whole command
+    // rolled back: the events, the scenarios, the operation log, the idempotency memo and the
+    // provenance links are all byte-for-byte as before, for each kind of refusal.
+    let (_dir, worker, _original, first) = rate_vault();
+    let second = scenario_with(&worker, &[(RATE, rate(500))]);
+    apply(&worker, first);
+    apply(&worker, second);
+    let edited = edit(&worker, promoted(&worker, second), RATE, &rate(550));
+    let before = dump(&worker);
+
+    // A stale list (the confirmation named nothing, but there is an edit to clear).
+    refused(
+        revert_with(&worker, second, Vec::new()),
+        RejectCode::StateConflict,
+    );
+    assert_eq!(dump(&worker), before, "stale confirmation");
+    // A later apply on top.
+    refused(
+        revert_with(&worker, first, Vec::new()),
+        RejectCode::StateConflict,
+    );
+    assert_eq!(dump(&worker), before, "blocked by a later apply");
+    // An unordered list.
+    refused(
+        revert_with(&worker, second, vec![edited, Uuid::from_u128(1)]),
+        RejectCode::PayloadInvalid,
+    );
+    assert_eq!(dump(&worker), before, "payload refused");
+    // A scenario that does not exist.
+    refused(
+        revert_with(&worker, Uuid::now_v7(), Vec::new()),
+        RejectCode::ReferenceMissing,
+    );
+    assert_eq!(dump(&worker), before, "unknown scenario");
+}

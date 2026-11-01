@@ -20,7 +20,11 @@ import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
 
 /// What a failed undo says. A typed refusal means the command ran and wrote nothing, so the dialog
-/// says so; a thrown error (the call itself failed) leaves the outcome unknown, so it does not claim
+/// says so. That is proven in the db-worker, not assumed: `apply_command` runs the whole command, the
+/// operation log and the idempotency memo in one transaction that only the final commit publishes, so
+/// any returned error was rolled back (`scenario_revert.rs`, and `a_refused_undo_leaves_the_vault_
+/// exactly_as_it_was` in `tests/scenario_revert.rs`). Nothing in the kernel or the IPC command can
+/// fail after that worker call; a thrown error (the call itself failed) leaves the outcome unknown, so it does not claim
 /// either way and points at the forecast (personal-cfo-5ie.12, Studio's F2).
 const UNDO_OUTCOME_UNKNOWN =
   "Couldn’t confirm whether the scenario was undone. Check the forecast before trying again.";
@@ -147,6 +151,7 @@ export function ScenariosView({
     applyScenario,
     previewRevert,
     revertScenarioApply,
+    refreshScenarios,
   } = useScenarios();
   const { timezone } = useHouseholdTimezone();
   const today = todayInTimezone(timezone);
@@ -261,8 +266,17 @@ export function ScenariosView({
       try {
         error = await revertScenarioApply(plan.scenario.id, plan.preview.confirmed_descendants);
       } catch {
-        // The call itself failed, so the outcome is not known: do not say nothing was undone.
-        setRevertPlan({ ...plan, error: UNDO_OUTCOME_UNKNOWN });
+        // The call itself failed, so the outcome is not known: do not say nothing was undone. Read
+        // the scenarios and the preview again, so the row and the list show what is really stored.
+        refreshScenarios();
+        let latest = plan.preview;
+        try {
+          const fresh = await previewRevert(plan.scenario.id);
+          if (fresh.status === "ok") latest = fresh.data;
+        } catch {
+          // The list stays as it was; the message already says to check the forecast.
+        }
+        setRevertPlan({ ...plan, preview: latest, error: UNDO_OUTCOME_UNKNOWN });
         return;
       }
       if (error === null) {

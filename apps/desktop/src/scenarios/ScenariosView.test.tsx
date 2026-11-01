@@ -446,9 +446,33 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
         ),
       );
       expect(alert).not.toHaveTextContent(/nothing was undone/i);
-      // Still open, and retryable.
+      // Still open, retryable and cancellable; nothing dismisses it by itself.
       expect(screen.getByRole("dialog", { name: CONFIRM_TITLE })).toBeInTheDocument();
       expect(within(dialog).getByRole("button", { name: "Undo scenario" })).toBeEnabled();
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    it("re-reads the scenarios and the preview after an unknown outcome, so the screen shows what is stored", async () => {
+      mocks.revertScenarioApply.mockRejectedValueOnce(new Error("connection lost"));
+      const { dialog } = await openConfirmation();
+      const listReads = mocks.scenarioList.mock.calls.length;
+      const previewReads = mocks.scenarioRevertPreview.mock.calls.length;
+      // The call failed, but the undo had in fact landed: the list now shows nothing to undo.
+      mocks.scenarioRevertPreview.mockResolvedValueOnce(
+        ok(preview({ lines: [], confirmed_descendants: [] })),
+      );
+      mocks.scenarioList.mockResolvedValue(ok([scenario()]));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+      const alert = await within(dialog).findByRole("alert");
+      await vi.waitFor(() => expect(alert).toHaveTextContent(/couldn.t confirm/i));
+      await vi.waitFor(() =>
+        expect(mocks.scenarioRevertPreview.mock.calls.length).toBeGreaterThan(previewReads),
+      );
+      await vi.waitFor(() =>
+        expect(mocks.scenarioList.mock.calls.length).toBeGreaterThan(listReads),
+      );
+      // The fresh list replaced the stale one: no change lines remain in the open dialog.
+      await vi.waitFor(() => expect(within(dialog).queryByText(/you changed/i)).not.toBeInTheDocument());
     });
 
     it("still reports a typed refusal as nothing undone when re-reading the list fails", async () => {
@@ -466,6 +490,9 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
         ),
       );
       expect(alert).not.toHaveTextContent(/couldn.t confirm/i);
+      expect(within(dialog).getByRole("button", { name: "Undo scenario" })).toBeEnabled();
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+      expect(screen.getByRole("dialog", { name: CONFIRM_TITLE })).toBeInTheDocument();
     });
 
     it("keeps the intro, the status and the lines in the scrolling body, with only the title pinned", async () => {

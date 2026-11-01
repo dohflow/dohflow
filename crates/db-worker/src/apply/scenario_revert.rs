@@ -264,6 +264,14 @@ pub(crate) fn plan_revert(conn: &Connection, scenario_id: Uuid) -> Result<Revert
     Ok(plan)
 }
 
+/// A refusal here writes nothing, and the interface relies on that to tell the person "nothing was
+/// undone": `apply_command` (`lib.rs`) opens ONE transaction (`inner.conn.transaction()`), this
+/// function and the operation-log and idempotency writes all run inside it, and every `?` after it
+/// returns the error with the transaction dropped uncommitted, which rolls it back; only the final
+/// `tx.commit()?` publishes. Nothing in `Kernel::dispatch` or the IPC command is fallible after the
+/// worker returns. `tests/scenario_revert.rs::a_refused_undo_leaves_the_vault_exactly_as_it_was`
+/// holds that to a full dump of the affected tables.
+///
 /// Applies [`WriteCommand::RevertScenarioApplyConfirmed`](crate::WriteCommand): clears the active
 /// descendants the person confirmed, restores the base events the apply superseded and clears the
 /// promoted rows. Returns the scenario id.

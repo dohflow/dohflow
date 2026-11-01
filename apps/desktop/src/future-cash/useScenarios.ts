@@ -200,7 +200,15 @@ export function useScenarios() {
     [expiryMutation],
   );
 
+  /// Read the scenarios and the forecast again. After a call that failed with an unknown outcome the
+  /// screen must show what is really stored, not what it last saw.
+  const refreshScenarios = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.scenarios });
+    void queryClient.invalidateQueries({ queryKey: ["forecast"] });
+  }, [queryClient]);
+
   return {
+    refreshScenarios,
     scenarios: query.data ?? null,
     error: query.error?.message ?? null,
     addScenario,
