@@ -85,21 +85,24 @@ impl AssumptionKind {
     #[must_use]
     pub const fn supersedes_on_promotion(self) -> bool {
         match self {
-            Self::IncomeAmount
-            | Self::BillAmount
-            | Self::IncomeDate
+            Self::IncomeDate
             | Self::BillDate
             | Self::Exclusion
             | Self::MinimumCashFloor
             | Self::InflationRate
             | Self::CardPaymentBehavior
             | Self::ScenarioToggle => true,
-            Self::OneTimeEvent | Self::RecurringDebtPayment | Self::VariableSpendOverride => false,
+            Self::IncomeAmount
+            | Self::BillAmount
+            | Self::OneTimeEvent
+            | Self::RecurringDebtPayment
+            | Self::VariableSpendOverride => false,
         }
     }
 }
 
-/// How many base events of an ADDING kind an earlier apply superseded (personal-cfo-5ie.13).
+/// How many base events of an ADDING kind an earlier apply superseded (personal-cfo-5ie.13). A base
+/// amount override that a promoted window did not overlap counts too: the amended rule keeps it.
 ///
 /// Read-only. Before the amendment, apply retired every base event matching a promoted event's
 /// `(kind, NULL, NULL)` key, so one scenario one-off retired all the user's base one-offs. This

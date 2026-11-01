@@ -65,12 +65,12 @@ fn the_free_standing_kinds_add_and_the_singleton_and_targeted_kinds_collide() {
         AssumptionKind::OneTimeEvent,
         AssumptionKind::RecurringDebtPayment,
         AssumptionKind::VariableSpendOverride,
+        AssumptionKind::BillAmount,
+        AssumptionKind::IncomeAmount,
     ] {
         assert!(!kind.supersedes_on_promotion(), "{kind:?} adds");
     }
     for kind in [
-        AssumptionKind::BillAmount,
-        AssumptionKind::IncomeAmount,
         AssumptionKind::BillDate,
         AssumptionKind::IncomeDate,
         AssumptionKind::Exclusion,
@@ -137,7 +137,7 @@ fn the_count_finds_exactly_the_adding_kind_events_an_applied_scenario_retired() 
         0
     );
 
-    use AssumptionKind::{BillAmount, OneTimeEvent, RecurringDebtPayment};
+    use AssumptionKind::{BillAmount, BillDate, OneTimeEvent, RecurringDebtPayment};
     // Counted: a base one-off and a base extra debt payment retired by rows promoted from the
     // applied scenario, and a promoted one-off retired by the next promoted one-off of the same
     // scenario (the second symptom of the bug).
@@ -153,8 +153,8 @@ fn the_count_finds_exactly_the_adding_kind_events_an_applied_scenario_retired() 
     // Not counted: a collision kind retired by a promotion (the intended supersession), a
     // one-off replaced by the user's own edit, a one-off retired by a scenario that is no
     // longer applied, and one that is still active.
-    insert_event(&worker, 20, BillAmount, None);
-    insert_event(&worker, 21, BillAmount, Some(1));
+    insert_event(&worker, 20, BillDate, None);
+    insert_event(&worker, 21, BillDate, Some(1));
     supersede(&worker, 20, 21);
     insert_event(&worker, 22, OneTimeEvent, None);
     insert_event(&worker, 23, OneTimeEvent, None);
@@ -163,9 +163,13 @@ fn the_count_finds_exactly_the_adding_kind_events_an_applied_scenario_retired() 
     insert_event(&worker, 25, OneTimeEvent, Some(2));
     supersede(&worker, 24, 25);
     insert_event(&worker, 26, OneTimeEvent, None);
+    // Counted: a base amount override retired by a promoted amount (an adding kind now).
+    insert_event(&worker, 27, BillAmount, None);
+    insert_event(&worker, 28, BillAmount, Some(1));
+    supersede(&worker, 27, 28);
 
     assert_eq!(
         worker.count_events_wrongly_superseded_by_apply().unwrap(),
-        3
+        4
     );
 }
