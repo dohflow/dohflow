@@ -8,7 +8,7 @@ use job_runtime::{BackoffPolicy, JobSpec, Schedule};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::backup_sink::{BackupSink, BackupSinkError, FolderSink, PutMode};
+use crate::backup_sink::{BackupSink, BackupSinkError, FolderSink, PutMode, PutOutcome};
 use crate::{Kernel, KernelError};
 
 /// Stable row identity for the one scheduled-backup consumer in each vault.
@@ -43,6 +43,17 @@ impl BackupCadence {
     fn enabled(self, destination: Option<&str>) -> bool {
         self != Self::Off && destination.is_some()
     }
+}
+
+/// How a cancellable scheduled backup ended (personal-cfo-g3m.29).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupRun {
+    /// The backup was written, verified and its receipt recorded. A cancel request that arrives
+    /// after this point is too late.
+    Done(BackupHistoryEntry),
+    /// A cancel request was seen before the receipt was recorded. Nothing remains: no partial or
+    /// temporary file in the destination, no receipt, nothing else.
+    Cancelled,
 }
 
 /// Local Settings view of this vault's backup configuration and latest job state.
@@ -237,6 +248,82 @@ impl Kernel {
         result
     }
 
+    /// [`Kernel::run_scheduled_backup`] that stops for a cancel request: `cancelled` is read
+    /// between the export's steps (blob reads, the snapshot, the manifest and frame steps, the
+    /// seal, each megabyte written, and before the read-back, the verification and the receipt),
+    /// and a request seen before the receipt is recorded removes what the run wrote and returns
+    /// [`BackupRun::Cancelled`] (personal-cfo-g3m.29). The seal is one call and cannot be
+    /// interrupted; the longest uninterrupted step is that call over the whole vault.
+    ///
+    /// # Errors
+    /// As [`Kernel::run_scheduled_backup`].
+    pub fn run_scheduled_backup_cancellable(
+        &self,
+        app_version: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<BackupRun, KernelError> {
+        match self.scheduled_backup_target() {
+            Ok(folder) => self.run_backup_to_sink_cancellable(
+                &FolderSink::new(folder),
+                app_version,
+                BackupHistoryKind::Scheduled,
+                cancelled,
+            ),
+            Err(error) => {
+                let result: Result<(), KernelError> = Err(error);
+                self.record_backup_outcome(&result);
+                result.map(|()| BackupRun::Cancelled)
+            }
+        }
+    }
+
+    /// [`Kernel::run_backup_to_sink`] that stops for a cancel request, as
+    /// [`Kernel::run_scheduled_backup_cancellable`] does.
+    ///
+    /// # Errors
+    /// As [`Kernel::run_backup_to_sink`].
+    pub fn run_backup_to_sink_cancellable(
+        &self,
+        sink: &dyn BackupSink,
+        app_version: &str,
+        kind: BackupHistoryKind,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<BackupRun, KernelError> {
+        let result = self.vault_metadata().and_then(|metadata| {
+            let name = scheduled_backup_name(metadata.vault_id, Utc::now());
+            self.perform_backup_export_cancellable(
+                sink,
+                &name,
+                app_version,
+                kind,
+                PutMode::CreateNew,
+                cancelled,
+                |kernel, package, backup_id| {
+                    kernel
+                        .verify_unattended_backup_bytes(package, backup_id)
+                        .map(|_| ())
+                },
+            )
+        });
+        // A cancelled run is neither a success nor a failure for the diagnostics counter.
+        if !matches!(result, Ok(None)) {
+            self.record_backup_outcome(&result);
+        }
+        result.map(|entry| entry.map_or(BackupRun::Cancelled, BackupRun::Done))
+    }
+
+    fn scheduled_backup_target(&self) -> Result<PathBuf, KernelError> {
+        let settings = self.backup_schedule_settings()?;
+        if settings.cadence == BackupCadence::Off {
+            return Err(KernelError::Validation(
+                "scheduled backups are turned off".to_owned(),
+            ));
+        }
+        settings.destination.ok_or_else(|| {
+            KernelError::Validation("choose a backup folder in Settings first".to_owned())
+        })
+    }
+
     fn run_scheduled_backup_inner(
         &self,
         app_version: &str,
@@ -322,22 +409,77 @@ impl Kernel {
         mode: PutMode,
         verify: impl FnOnce(&Self, &[u8], Uuid) -> Result<(), KernelError>,
     ) -> Result<BackupHistoryEntry, KernelError> {
+        // Never cancelled: the manual and on-demand paths have no cancel request to read.
+        self.perform_backup_export_cancellable(
+            sink,
+            name,
+            app_version,
+            kind,
+            mode,
+            &|| false,
+            verify,
+        )
+        .and_then(|entry| entry.ok_or_else(|| KernelError::Vault("backup cancelled".to_owned())))
+    }
+
+    /// The export, with checkpoints. `Ok(None)` is a cancel seen before the receipt was recorded,
+    /// with the destination left exactly as it was.
+    #[allow(clippy::too_many_arguments)]
+    fn perform_backup_export_cancellable(
+        &self,
+        sink: &dyn BackupSink,
+        name: &str,
+        app_version: &str,
+        kind: BackupHistoryKind,
+        mode: PutMode,
+        cancelled: &dyn Fn() -> bool,
+        verify: impl FnOnce(&Self, &[u8], Uuid) -> Result<(), KernelError>,
+    ) -> Result<Option<BackupHistoryEntry>, KernelError> {
         let vault_id = self.vault_metadata()?.vault_id;
         let backup_id = Uuid::now_v7();
         let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-        let stored = self
-            .assemble_unattended_backup(app_version, created_at.clone(), backup_id)
-            .map_err(|_| BackupSinkError)
-            .and_then(|package| sink.put(name, &package, mode));
+        let assembled = self.assemble_unattended_backup_cancellable(
+            app_version,
+            created_at.clone(),
+            backup_id,
+            cancelled,
+        );
+        let stored = match assembled {
+            Ok(None) => return Ok(None),
+            Ok(Some(package)) => match sink.put_cancellable(name, &package, mode, cancelled) {
+                Ok(PutOutcome::Cancelled) => return Ok(None),
+                Ok(PutOutcome::Stored(size)) => Ok(size),
+                Err(error) => Err(error),
+            },
+            Err(_) => Err(BackupSinkError),
+        };
+        // Past the write: a cancel from here removes the item this run created, so the
+        // destination is as it was. A sink that cannot remove it finishes the run instead.
+        let undo = |sink: &dyn BackupSink| -> bool {
+            mode == PutMode::CreateNew && sink.discard_created(name).is_ok()
+        };
+        if stored.is_ok() && cancelled() && undo(sink) {
+            return Ok(None);
+        }
         let failure = match &stored {
             Err(_) => Some("Could not write the backup file."),
-            Ok(_) => sink
-                .get(name)
-                .map_err(|_| KernelError::Vault("reading backup failed".to_owned()))
-                .and_then(|package| verify(self, &package, backup_id))
-                .err()
-                .map(|_| "Could not verify the backup file."),
+            Ok(_) => {
+                let read = sink
+                    .get(name)
+                    .map_err(|_| KernelError::Vault("reading backup failed".to_owned()));
+                if read.is_ok() && cancelled() && undo(sink) {
+                    return Ok(None);
+                }
+                read.and_then(|package| verify(self, &package, backup_id))
+                    .err()
+                    .map(|_| "Could not verify the backup file.")
+            }
         };
+        // The last look before the receipt, which is the commit: a request seen here undoes the
+        // run; one that arrives after the receipt is too late.
+        if failure.is_none() && cancelled() && undo(sink) {
+            return Ok(None);
+        }
         let entry = BackupHistoryEntry {
             backup_id,
             vault_id,
@@ -355,7 +497,7 @@ impl Kernel {
         if let Some(error) = entry.error.as_deref() {
             return Err(KernelError::Vault(error.to_owned()));
         }
-        Ok(entry)
+        Ok(Some(entry))
     }
 }
 
@@ -403,6 +545,36 @@ mod tests {
         assert_eq!(payload.destination.as_deref(), Some("/tmp/backups"));
         let rewritten = serde_json::to_string(&payload).unwrap();
         assert!(!rewritten.contains("keep_last"));
+    }
+
+    #[test]
+    fn a_cancel_that_arrives_during_verification_stops_before_the_receipt_and_removes_the_file() {
+        let root = tempdir().unwrap();
+        let backup_dir = root.path().join("backups");
+        std::fs::create_dir(&backup_dir).unwrap();
+        let kernel =
+            Kernel::create_vault(root.path().join("vault.db"), b"correct horse battery").unwrap();
+        let verified = std::cell::Cell::new(false);
+
+        let result = kernel
+            .perform_backup_export_cancellable(
+                &FolderSink::new(&backup_dir),
+                "during-verification.pcfobk",
+                "0.2.0-test",
+                BackupHistoryKind::Scheduled,
+                PutMode::CreateNew,
+                &|| verified.get(),
+                |_, _, _| {
+                    // The request lands while the read-back is being verified.
+                    verified.set(true);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert!(result.is_none(), "the run was cancelled before its receipt");
+        assert!(std::fs::read_dir(&backup_dir).unwrap().next().is_none());
+        assert!(kernel.backup_history().unwrap().is_empty());
     }
 
     #[test]

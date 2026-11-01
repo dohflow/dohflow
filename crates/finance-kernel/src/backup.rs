@@ -237,6 +237,9 @@ pub enum BackupError {
     /// A restored component's ciphertext hash did not match the manifest.
     #[error("backup integrity check failed: {0}")]
     IntegrityMismatch(String),
+    /// A cancel request was seen at a checkpoint; nothing was produced.
+    #[error("backup cancelled")]
+    Cancelled,
 }
 
 /// SHA-256 of `bytes`, lower-case hex.
@@ -288,6 +291,29 @@ fn validate_kdf(params: &Argon2Params) -> Result<(), BackupError> {
 /// [`BackupError`] if the envelope/KDF profile is unsupported, the manifest
 /// cannot be serialized, or a crypto step fails.
 pub fn assemble(dek: &vault_crypto::Dek, inputs: &BackupInputs) -> Result<Vec<u8>, BackupError> {
+    assemble_cancellable(dek, inputs, &|| false)
+}
+
+/// [`assemble`] that looks at `cancelled` between its steps: before the manifest, after each
+/// blob's hash and frame, and before and after the seal (personal-cfo-g3m.29). The seal itself is
+/// one AEAD call and cannot be interrupted, so the longest uninterrupted step is that call over
+/// the whole payload.
+///
+/// # Errors
+/// As [`assemble`], and [`BackupError::Cancelled`] when a checkpoint sees a cancel request.
+pub fn assemble_cancellable(
+    dek: &vault_crypto::Dek,
+    inputs: &BackupInputs,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, BackupError> {
+    let checkpoint = || {
+        if cancelled() {
+            Err(BackupError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
+    checkpoint()?;
     if inputs.envelope_bytes.len() > MAX_ENVELOPE_LEN {
         return Err(BackupError::Malformed);
     }
@@ -298,6 +324,17 @@ pub fn assemble(dek: &vault_crypto::Dek, inputs: &BackupInputs) -> Result<Vec<u8
     }
 
     // 1. Manifest with ciphertext content-hashes (ADR 0024 §3).
+    let vault_db_sha256 = sha256_hex(&inputs.db_bytes);
+    checkpoint()?;
+    let mut blob_entries = Vec::with_capacity(inputs.blobs.len());
+    for (storage_id, ciphertext) in &inputs.blobs {
+        blob_entries.push(ManifestBlobV2 {
+            storage_id: storage_id.clone(),
+            size: ciphertext.len() as u64,
+            ciphertext_sha256: sha256_hex(ciphertext),
+        });
+        checkpoint()?;
+    }
     let manifest = ManifestV2 {
         format_version: FORMAT_VERSION,
         manifest_schema_version: MANIFEST_SCHEMA_VERSION,
@@ -307,17 +344,9 @@ pub fn assemble(dek: &vault_crypto::Dek, inputs: &BackupInputs) -> Result<Vec<u8
         schema_version: inputs.schema_version,
         vault_envelope_version: inputs.vault_envelope_version,
         redaction_policy_version: REDACTION_POLICY_VERSION,
-        vault_db_sha256: sha256_hex(&inputs.db_bytes),
+        vault_db_sha256,
         envelope_sha256: sha256_hex(&inputs.envelope_bytes),
-        blobs: inputs
-            .blobs
-            .iter()
-            .map(|(storage_id, ciphertext)| ManifestBlobV2 {
-                storage_id: storage_id.clone(),
-                size: ciphertext.len() as u64,
-                ciphertext_sha256: sha256_hex(ciphertext),
-            })
-            .collect(),
+        blobs: blob_entries,
     };
     let manifest_json =
         serde_json::to_vec(&manifest).map_err(|error| BackupError::Manifest(error.to_string()))?;
@@ -334,6 +363,7 @@ pub fn assemble(dek: &vault_crypto::Dek, inputs: &BackupInputs) -> Result<Vec<u8
     for (storage_id, ciphertext) in &inputs.blobs {
         put_bytes_u32(&mut payload, storage_id.as_bytes());
         put_bytes_u64(&mut payload, ciphertext);
+        checkpoint()?;
     }
 
     // 3. A fresh salt and backup DEK for every export. The KEK is derived from
@@ -342,7 +372,9 @@ pub fn assemble(dek: &vault_crypto::Dek, inputs: &BackupInputs) -> Result<Vec<u8
     let backup_kek = derive_backup_kek(dek, hkdf_salt.as_bytes())?;
     let backup_dek = generate_dek()?;
     let wrapped = wrap_dek(&backup_kek, &backup_dek)?;
+    checkpoint()?;
     let sealed = seal(&backup_dek, &payload)?;
+    checkpoint()?;
 
     // 4. Format-v2 header: magic, version, bounded vault envelope, HKDF salt,
     //    wrapped backup DEK, then the sealed payload.
@@ -650,6 +682,34 @@ mod tests {
             backup_id: Uuid::from_bytes([7u8; 16]),
         };
         (inputs, vault_dek)
+    }
+
+    #[test]
+    fn assemble_asks_to_stop_at_every_phase_and_a_cancel_produces_nothing() {
+        // Pinned exactly so a removed checkpoint is noticed: the start, after the database hash,
+        // once per blob in the manifest and once per blob in the frame, before the seal, after it.
+        let (inputs, dek) = test_vault();
+        let asked = std::cell::Cell::new(0usize);
+        let package = assemble_cancellable(&dek, &inputs, &|| {
+            asked.set(asked.get() + 1);
+            false
+        })
+        .unwrap();
+        assert_eq!(asked.get(), 4 + 2 * inputs.blobs.len());
+        assert!(disassemble_with_vault_dek(&dek, &package).is_ok());
+
+        let total = asked.get();
+        for k in 1..=total {
+            let asked = std::cell::Cell::new(0usize);
+            let result = assemble_cancellable(&dek, &inputs, &|| {
+                asked.set(asked.get() + 1);
+                asked.get() >= k
+            });
+            assert!(
+                matches!(result, Err(BackupError::Cancelled)),
+                "cancel at {k} of {total} produced a package"
+            );
+        }
     }
 
     #[test]

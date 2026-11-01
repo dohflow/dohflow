@@ -30,6 +30,16 @@ pub enum PutMode {
     Replace,
 }
 
+/// What a cancellable [`BackupSink::put_cancellable`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutOutcome {
+    /// The whole container is stored; this is its size in bytes.
+    Stored(u64),
+    /// A cancel was seen first. The sink has removed whatever it had written of this item, so the
+    /// destination is exactly as it was.
+    Cancelled,
+}
+
 /// A destination failure. It deliberately carries no text: a path, an account name or
 /// a provider message must not travel into a log or a user-visible error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +66,9 @@ pub struct BackupSinkEntry {
 ///
 /// Implementations store opaque ciphertext. They must never delete or rewrite an
 /// item except through [`PutMode::Replace`] on the name they are given: DohFlow keeps
-/// every backup until the user removes it (S2a-0), and this interface offers no
-/// delete.
+/// every backup until the user removes it (S2a-0). The one removal the interface
+/// offers is [`BackupSink::discard_created`]: undoing the item a run itself just
+/// created, when the run is cancelled before it is recorded (personal-cfo-g3m.29).
 pub trait BackupSink {
     /// The label recorded in the local backup history for the item `name`. A folder
     /// sink returns the full path; another sink returns whatever identifies the item
@@ -72,6 +83,37 @@ pub trait BackupSink {
     /// [`PutMode::CreateNew`] collision.
     fn put(&self, name: &str, package: &[u8], mode: PutMode) -> Result<u64, BackupSinkError>;
 
+    /// [`BackupSink::put`] that stops for a cancel request. `cancelled` is read between the
+    /// sink's own write steps; once it reads true the sink removes what it wrote of this item and
+    /// returns [`PutOutcome::Cancelled`]. The default checks once before storing, which is all a
+    /// sink without write steps of its own can do.
+    ///
+    /// # Errors
+    /// As [`BackupSink::put`].
+    fn put_cancellable(
+        &self,
+        name: &str,
+        package: &[u8],
+        mode: PutMode,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<PutOutcome, BackupSinkError> {
+        if cancelled() {
+            return Ok(PutOutcome::Cancelled);
+        }
+        self.put(name, package, mode).map(PutOutcome::Stored)
+    }
+
+    /// Remove the item `name` that this run created a moment ago with [`PutMode::CreateNew`],
+    /// because the run was cancelled before it was recorded. Never an earlier backup: the name
+    /// carries this run's timestamp and a `CreateNew` collision would have failed the put. The
+    /// default refuses, and a run whose sink refuses completes instead of cancelling.
+    ///
+    /// # Errors
+    /// [`BackupSinkError`] if the item cannot be removed, or the sink does not support it.
+    fn discard_created(&self, _name: &str) -> Result<(), BackupSinkError> {
+        Err(BackupSinkError)
+    }
+
     /// Return the stored container named `name`, for verification or restore.
     ///
     /// # Errors
@@ -84,6 +126,9 @@ pub trait BackupSink {
     /// [`BackupSinkError`] if the destination cannot be read.
     fn list(&self) -> Result<Vec<BackupSinkEntry>, BackupSinkError>;
 }
+
+/// How much a folder sink writes between two looks at the cancel request.
+const WRITE_CHUNK: usize = 1 << 20;
 
 /// The local folder destination (the kernel's original and default destination).
 #[derive(Debug, Clone)]
@@ -128,6 +173,43 @@ impl BackupSink for FolderSink {
         let mut file = options.open(path).map_err(|_| BackupSinkError)?;
         file.write_all(package).map_err(|_| BackupSinkError)?;
         Ok(package.len() as u64)
+    }
+
+    fn put_cancellable(
+        &self,
+        name: &str,
+        package: &[u8],
+        mode: PutMode,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<PutOutcome, BackupSinkError> {
+        let path = self.item_path(name).ok_or(BackupSinkError)?;
+        if cancelled() {
+            return Ok(PutOutcome::Cancelled);
+        }
+        let mut options = OpenOptions::new();
+        options.write(true);
+        match mode {
+            PutMode::CreateNew => options.create_new(true),
+            PutMode::Replace => options.create(true).truncate(true),
+        };
+        let mut file = options.open(&path).map_err(|_| BackupSinkError)?;
+        for chunk in package.chunks(WRITE_CHUNK) {
+            if cancelled() && mode == PutMode::CreateNew {
+                // The file is ours (the exclusive create succeeded): remove the partial item. If it cannot
+                // be removed the destination is NOT as it was, so this is a failed write, never a clean
+                // cancel (the caller records the failure and the partial file stays visible).
+                drop(file);
+                std::fs::remove_file(&path).map_err(|_| BackupSinkError)?;
+                return Ok(PutOutcome::Cancelled);
+            }
+            file.write_all(chunk).map_err(|_| BackupSinkError)?;
+        }
+        Ok(PutOutcome::Stored(package.len() as u64))
+    }
+
+    fn discard_created(&self, name: &str) -> Result<(), BackupSinkError> {
+        let path = self.item_path(name).ok_or(BackupSinkError)?;
+        std::fs::remove_file(path).map_err(|_| BackupSinkError)
     }
 
     fn get(&self, name: &str) -> Result<Vec<u8>, BackupSinkError> {
