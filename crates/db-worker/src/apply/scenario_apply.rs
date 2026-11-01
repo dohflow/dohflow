@@ -17,9 +17,11 @@
 //! (ADR 0055 §3): apply is the one assumption-layer operation that changes what the
 //! household's real forecast says, and `meta.command_id` is stored as the reversal handle.
 
+use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Transaction};
 use uuid::Uuid;
 
+use crate::assumptions::AssumptionKind;
 use crate::{DbError, RejectCode};
 
 /// Promote a scenario's active events into base (ADR 0055 §1).
@@ -35,8 +37,10 @@ pub(crate) fn apply_scenario(
     ids: &core_ids::DerivedIds,
     scenario_id: Uuid,
     op_id: Uuid,
-    now: &str,
+    issued: DateTime<Utc>,
 ) -> Result<Uuid, DbError> {
+    let now = issued.to_rfc3339();
+    let now = now.as_str();
     // A deleted scenario cannot be applied; undoing an apply of one can still be done
     // (`revert_scenario_apply` does not check).
     super::scenario_cmds::require_live(tx, &scenario_id)?;
@@ -96,40 +100,49 @@ pub(crate) fn apply_scenario(
         ));
     }
 
-    for event in &events {
+    // The k-th promoted row is stamped `issued_at + k` microseconds, so the promoted rows keep the
+    // scenario's own order: kinds that compose by window resolve an overlap by creation order, and
+    // every row stamped the same instant would fall back to the id (ADR 0055 §2 amendment).
+    for (k, event) in (0_i64..).zip(&events) {
         // The promoted event's id is KEYED by the scenario and the source event it copies (the
         // number of events is the scenario's, i.e. base state, so no ordinal is consumed).
         let new_id = ids.keyed(
             "scenario-event",
             &[scenario_id.as_bytes(), event.id.as_bytes()],
         )?;
-        // Supersede the base event this collides with, if any. Two `active` events of the
-        // same kind against the same target would force the forecast to pick one by row
-        // order (ADR 0055 §2). `IS` rather than `=` so a NULL target matches a NULL
-        // target — kinds like `inflation_rate` and `minimum_cash_floor` are untargeted,
-        // and `=` is never true for NULL, so those would silently never supersede.
-        tx.execute(
-            "UPDATE forecast_assumption_events
-                SET status = 'superseded', superseded_by = ?1, updated_at = ?2
-              WHERE scenario_id IS NULL
-                AND status = 'active'
-                AND kind = ?3
-                AND target_entity_type IS ?4
-                AND target_entity_id IS ?5",
-            params![
-                new_id,
-                now,
-                event.kind,
-                event.target_entity_type,
-                event.target_entity_id
-            ],
-        )?;
+        let created_at = (issued + Duration::microseconds(k)).to_rfc3339();
+        // Supersede the base event this collides with, if any, but only for a COLLISION kind: the
+        // forecast reads one event per (kind, target) for those, so two `active` ones would force
+        // it to pick by row order (ADR 0055 §2). An ADDING kind is folded instance by instance,
+        // so promoting one replaces nothing and the base entries stay (ADR 0055 §2 amendment).
+        // `IS` rather than `=` so a NULL target matches a NULL target: `inflation_rate` and
+        // `minimum_cash_floor` are untargeted, and `=` is never true for NULL.
+        if AssumptionKind::from_token(&event.kind)
+            .is_none_or(AssumptionKind::supersedes_on_promotion)
+        {
+            tx.execute(
+                "UPDATE forecast_assumption_events
+                    SET status = 'superseded', superseded_by = ?1, updated_at = ?2
+                  WHERE scenario_id IS NULL
+                    AND status = 'active'
+                    AND kind = ?3
+                    AND target_entity_type IS ?4
+                    AND target_entity_id IS ?5",
+                params![
+                    new_id,
+                    now,
+                    event.kind,
+                    event.target_entity_type,
+                    event.target_entity_id
+                ],
+            )?;
+        }
         tx.execute(
             "INSERT INTO forecast_assumption_events
                 (id, kind, target_entity_type, target_entity_id, params_json,
                  source, scenario_id, status, superseded_by, origin_run_id,
                  created_at, updated_at, promoted_from_scenario_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'active', NULL, NULL, ?7, ?7, ?8)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'active', NULL, NULL, ?7, ?8, ?9)",
             params![
                 new_id,
                 event.kind,
@@ -137,6 +150,7 @@ pub(crate) fn apply_scenario(
                 event.target_entity_id,
                 event.params_json,
                 event.source,
+                created_at,
                 now,
                 scenario_id,
             ],

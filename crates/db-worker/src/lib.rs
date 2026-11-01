@@ -7784,7 +7784,7 @@ fn apply_command(
             &ids,
             *scenario_id,
             meta.command_id,
-            &apply::issued_at_text(meta),
+            apply::issued_at(meta),
         )?,
         WriteCommand::RevertScenarioApply { scenario_id } => {
             apply::scenario_apply::revert_scenario_apply(
