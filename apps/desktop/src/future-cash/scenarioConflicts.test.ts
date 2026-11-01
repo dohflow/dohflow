@@ -150,4 +150,158 @@ describe("detectConflicts (personal-cfo-4d8.27.6.5, ADR 0059 §3)", () => {
       ]),
     ).toEqual([]);
   });
+
+  describe("amount kinds overlap rather than replace (personal-cfo-5ie.15)", () => {
+    const window = (minor: number, from?: string, to?: string) =>
+      JSON.stringify({
+        new_amount_minor: minor,
+        ...(from ? { effective_date: from } : {}),
+        ...(to ? { end_date: to } : {}),
+      });
+    const amounts = (existing: string, change: string, kind = "bill_amount") =>
+      detectConflicts([
+        {
+          scenarioId: null,
+          events: [event({ id: "base1", kind, scenario_id: null, params_json: existing })],
+        },
+        { scenarioId: "b", events: [event({ id: "b1", kind, params_json: change })] },
+      ]);
+
+    it("marks a date kind as a replacement with no overlap window", () => {
+      const [conflict] = detectConflicts([
+        {
+          scenarioId: null,
+          events: [
+            event({
+              id: "base1",
+              kind: "bill_date",
+              scenario_id: null,
+              params_json: JSON.stringify({ new_anchor_date: "2027-01-05" }),
+            }),
+          ],
+        },
+        {
+          scenarioId: "b",
+          events: [
+            event({
+              id: "b1",
+              kind: "bill_date",
+              params_json: JSON.stringify({ new_anchor_date: "2027-01-12" }),
+            }),
+          ],
+        },
+      ]);
+      expect(conflict?.change).toBe("replaces");
+      expect(conflict?.overlap).toBeNull();
+    });
+
+    it("a window inside the existing one: the overlap is the scenario's, the existing continues", () => {
+      const [conflict] = amounts(
+        window(100_000, "2027-01-01", "2027-12-31"),
+        window(120_000, "2027-03-01", "2027-06-30"),
+      );
+      expect(conflict?.change).toBe("overlaps");
+      expect(conflict?.overlap).toEqual({
+        from: "2027-03-01",
+        to: "2027-06-30",
+        existingContinuesOutside: true,
+      });
+    });
+
+    it("a scenario window that covers the whole existing one leaves nothing outside", () => {
+      const [conflict] = amounts(
+        window(100_000, "2027-03-01", "2027-06-30"),
+        window(120_000, "2027-01-01", "2027-12-31"),
+      );
+      expect(conflict?.overlap).toEqual({
+        from: "2027-03-01",
+        to: "2027-06-30",
+        existingContinuesOutside: false,
+      });
+    });
+
+    it("partial overlap at the start of the scenario window", () => {
+      const [conflict] = amounts(
+        window(100_000, "2027-01-01", "2027-06-30"),
+        window(120_000, "2027-04-01", "2027-09-30"),
+      );
+      expect(conflict?.overlap).toEqual({
+        from: "2027-04-01",
+        to: "2027-06-30",
+        existingContinuesOutside: true,
+      });
+    });
+
+    it("partial overlap at the end of the scenario window", () => {
+      const [conflict] = amounts(
+        window(100_000, "2027-04-01", "2027-09-30"),
+        window(120_000, "2027-01-01", "2027-06-30"),
+      );
+      expect(conflict?.overlap).toEqual({
+        from: "2027-04-01",
+        to: "2027-06-30",
+        existingContinuesOutside: true,
+      });
+    });
+
+    it("an open-ended existing amount continues outside a bounded scenario window", () => {
+      const [conflict] = amounts(
+        window(100_000),
+        window(120_000, "2027-03-01", "2027-06-30"),
+      );
+      expect(conflict?.overlap).toEqual({
+        from: "2027-03-01",
+        to: "2027-06-30",
+        existingContinuesOutside: true,
+      });
+    });
+
+    it("an open-ended scenario amount takes over from its start onward", () => {
+      const [conflict] = amounts(
+        window(100_000, "2027-01-01", "2027-12-31"),
+        window(120_000, "2027-03-01"),
+      );
+      expect(conflict?.overlap).toEqual({
+        from: "2027-03-01",
+        to: "2027-12-31",
+        existingContinuesOutside: true,
+      });
+    });
+
+    it("two open-ended amounts overlap on every date, with nothing outside", () => {
+      const [conflict] = amounts(window(100_000), window(120_000));
+      expect(conflict?.overlap).toEqual({
+        from: null,
+        to: null,
+        existingContinuesOutside: false,
+      });
+    });
+
+    it("an open-ended scenario over an open-ended existing amount from a date: the earlier dates stay", () => {
+      const [conflict] = amounts(window(100_000), window(120_000, "2027-03-01"));
+      expect(conflict?.overlap).toEqual({
+        from: "2027-03-01",
+        to: null,
+        existingContinuesOutside: true,
+      });
+    });
+
+    it("income amounts overlap the same way", () => {
+      const [conflict] = amounts(
+        window(300_000, "2027-01-01", "2027-12-31"),
+        window(350_000, "2027-05-01", "2027-05-31"),
+        "income_amount",
+      );
+      expect(conflict?.change).toBe("overlaps");
+    });
+
+    it("reports nothing when the windows do not overlap", () => {
+      expect(
+        amounts(
+          window(100_000, "2027-01-01", "2027-02-28"),
+          window(120_000, "2027-03-01", "2027-06-30"),
+        ),
+      ).toEqual([]);
+    });
+  });
 });
