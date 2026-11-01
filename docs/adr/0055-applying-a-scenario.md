@@ -181,7 +181,7 @@ chain**: undoing an apply undoes the whole apply, including later edits to its i
    promoted rows; unmark the scenario.
 
 A restore has two guards. If the restored event's kind collides and another active base event now
-holds its key: when that event came from a later apply, or is an edit of one (found by walking its chain back), the undo is refused (the same rule as 1);
+holds its key: when that event came from a later apply that is still applied, or is an edit of one (found by walking its chain back), the undo is refused (the same rule as 1); a scenario that was undone is no blocker, so a person's edit of its row that the retired revert left active counts as a plain newer value;
 when it is a plain base row the person recorded since, the older event stays superseded and the
 confirmation says the newer value stays. A promoted item cleared after the apply has no active
 descendant, but the undo still restores what it replaced, so it is listed too.

@@ -597,7 +597,7 @@ active descendants equal the confirmed list, **queue-choose** otherwise.
 apply superseded, clears the promoted rows and unmarks the scenario. Two refusals keep applies
 undone last first, both `StateConflict` with no write: a promoted row's chain reaches a row
 promoted from another scenario, or a base event to restore has its key held by a row promoted from
-another scenario, or by an edit of one. A key held by a plain base row (the person recorded a newer value) leaves the
+another scenario that is still applied, or by an edit of one. A key held by a plain base row (the person recorded a newer value) leaves the
 older event superseded, and the confirmation says so. No id is minted and no clock is read.
 
 ## Linked beads

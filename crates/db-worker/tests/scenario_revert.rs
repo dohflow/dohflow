@@ -454,11 +454,23 @@ fn an_edit_left_by_the_retired_revert_is_a_newer_value_not_a_blocker() {
 
     let preview = worker.revert_preview(first).unwrap();
     assert!(preview.blocker.is_none(), "{preview:?}");
-    assert!(preview
+    let kept: Vec<&RevertLine> = preview
         .lines
         .iter()
-        .any(|line| line.change == RevertChange::KeptNewer));
+        .filter(|line| line.change == RevertChange::KeptNewer)
+        .collect();
+    assert_eq!(kept.len(), 1, "{preview:?}");
+    assert_eq!(
+        kept[0].after_params_json.as_deref(),
+        Some(rate(550).as_str())
+    );
     revert(&worker, first);
+    assert!(worker
+        .scenario(first)
+        .unwrap()
+        .unwrap()
+        .applied_at
+        .is_none());
     assert_eq!(base_ids(&worker), vec![edited], "the newer value stays");
     assert!(!base_ids(&worker).contains(&original));
 }
