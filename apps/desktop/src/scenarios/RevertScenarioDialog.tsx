@@ -154,7 +154,8 @@ export function RevertScenarioDialog({
             </DialogBody>
             <DialogError error={plan.error} />
             <DialogFooter>
-              <Button variant="ghost" ref={safeActionRef} onClick={onCancel}>
+              {/* Inert while the undo is in flight: closing now would hide a write that still lands. */}
+              <Button variant="ghost" ref={safeActionRef} disabled={busy} onClick={onCancel}>
                 Cancel
               </Button>
               <Button disabled={busy} onClick={onConfirm}>

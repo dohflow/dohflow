@@ -258,6 +258,8 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1", []),
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // The undone row stops showing Undo, so focus goes to the Scenarios heading.
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByText("Scenarios")));
   });
 
   describe("undoing an apply that was changed afterwards (personal-cfo-5ie.12)", () => {
@@ -308,6 +310,58 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
         expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-1", ["evt-2"]),
       );
       await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("starts on Cancel even when the scrolling body is the first tab stop", async () => {
+      // A body that overflows becomes focusable; without the initial-focus option Radix would put
+      // focus there, ahead of the footer.
+      const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+      const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+        configurable: true,
+        get: () => 900,
+      });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+        configurable: true,
+        get: () => 200,
+      });
+      try {
+        const { dialog } = await openConfirmation();
+        const body = dialog.querySelector('[tabindex="0"]');
+        expect(body).not.toBeNull();
+        expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+      } finally {
+        if (scroll) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scroll);
+        else Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+        if (client) Object.defineProperty(HTMLElement.prototype, "clientHeight", client);
+        else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+      }
+    });
+
+    it("cannot be cancelled while the undo is in flight, and a failure shows in the open dialog", async () => {
+      let resolve: (value: unknown) => void = () => undefined;
+      mocks.revertScenarioApply.mockImplementation(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          }),
+      );
+      const { dialog } = await openConfirmation();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Undo scenario" }));
+      await vi.waitFor(() => expect(mocks.revertScenarioApply).toHaveBeenCalledTimes(1));
+
+      // Cancel is inert and Escape does nothing: the write is still on its way.
+      const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+      expect(cancel).toBeDisabled();
+      fireEvent.click(cancel);
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      expect(screen.getByRole("dialog", { name: CONFIRM_TITLE })).toBeInTheDocument();
+
+      resolve({ status: "error", error: { Validation: "The database is busy." } });
+      const alert = await within(screen.getByRole("dialog")).findByRole("alert");
+      await vi.waitFor(() => expect(alert).toHaveTextContent("The database is busy."));
+      // Cancel works again once it has finished.
+      expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" })).toBeEnabled();
     });
 
     it("starts on Cancel, the safe action", async () => {

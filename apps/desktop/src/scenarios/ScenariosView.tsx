@@ -222,10 +222,19 @@ export function ScenariosView({
       setRevertPlan({ scenario: target, preview, moved: false, error: null });
       return;
     }
-    // Nothing to confirm, so nothing opened: the undone row stops showing Undo, so focus goes to
-    // the heading rather than to a button that is about to disappear.
+    // Nothing to confirm, so nothing opened. The undone row stops showing Undo, so on success focus
+    // goes to the heading rather than to a button that is about to disappear.
     revertOpener.current = null;
-    await run(() => revertScenarioApply(target.id, preview.confirmed_descendants));
+    setBusy(true);
+    try {
+      const error = await revertScenarioApply(target.id, preview.confirmed_descendants);
+      if (error === null) headingRef.current?.focus();
+      else setFormError(describeIpcError(error));
+    } catch {
+      setFormError("That didn't work. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   /// Send the undo with the list the person confirmed. The dialog stays open until it succeeds. If
