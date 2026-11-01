@@ -83,6 +83,12 @@ const ALLOW = new Set([
   // Python Software Foundation License 2.0 — permissive, OSI-approved.
   // devDependency only (argparse, a transitive build-tool dependency).
   "Python-2.0",
+  // Zero-Clause BSD — grants every use with no conditions and no attribution requirement, so it
+  // is at least as permissive as MIT-0 above; no AGPL conflict. OWNER-CONFIRMED 2026-11-01
+  // (decision recorded by 05-decisions on personal-cfo-4d8.6.1, option A): tslib 2.9.1, which
+  // arrives with the shared Dialog through Radix's scroll lock (react-remove-scroll). Shipped
+  // in production. deny.toml (the Rust list) is deliberately unchanged.
+  "0BSD",
 ]);
 
 let raw;
