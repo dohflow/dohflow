@@ -15,3 +15,6 @@ declare module "virtual:source-tree" {
   const files: { path: string; text: string }[];
   export default files;
 }
+
+/// The commit the dev server was started from (vite.config.ts); used only by the dev audit pages.
+declare const __SOURCE_SHA__: string;

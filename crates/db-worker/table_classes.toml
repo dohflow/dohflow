@@ -505,9 +505,9 @@ note = "Current assumption-event writer is direct; ADR 0074 and SYNC-2 decide cl
 
 [[table]]
 table = "forecast_dependency_edges"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current dependency-edge writer is direct; ADR 0074 and SYNC-2 decide class-1 routing with its assumption."
+class = "2"
+owner_bead = "personal-cfo-5ymg8.4"
+note = "Per-run attribution (an assumption event to a forecast row of one run). Derived from class-2 forecast_runs and forecast_rows, rebuilt locally and never shipped; no production caller writes it. Corrected from class 4 by ADR 0074 Addendum F."
 
 [[table]]
 table = "merchant_aliases"

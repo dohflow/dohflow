@@ -303,13 +303,25 @@ every release. The keychain group is prefixed with the Team ID, so **any change 
 must keep the Team ID**: otherwise the group, the profile and every stored item's access group change.
 (Account-change specifics are in the internal runbook, not here.)
 
-**Not yet automated, and not yet verifiable.** Reading back a stored item's attributes (device-only
-class, not synchronizable) must run inside the signed app bundle, because a restricted entitlement is
-honored only there. The harness is a **separate throwaway signed bundle** with the real app id and
-profile that runs `platform-macos`'s `--ignored` tests (`personal-cfo-md8h2.18`); it is deliberately
-not a smoke mode inside the shipped app, which would be an extra entry point in the release binary.
-Until it exists, `release-checklist.md` step 5 records the keychain check as
-open.
+**The keychain smoke harness (`scripts/keychain-smoke.sh`, `personal-cfo-md8h2.18`).** Reading back a
+stored item's attributes (device-only class, not synchronizable) must run inside the signed app bundle,
+because a restricted entitlement is honored only there. The harness builds a **separate throwaway
+bundle** with the real app id, the same entitlements template and the same embedded profile, signs it
+with the release identity, runs `platform-macos`'s entitled `--ignored` tests inside it, and runs the
+same binary unentitled to require `MissingEntitlement`. It is deliberately not a smoke mode inside the
+shipped app, which would be an extra entry point in the release binary; the bundle lives in a temporary
+directory, is removed on exit, and is never shipped, uploaded or notarized.
+
+```
+./scripts/keychain-smoke.sh --check   # identity, profile, test build, bundle layout; signs and runs nothing
+./scripts/keychain-smoke.sh           # the full run on the release machine
+```
+
+It needs only `APPLE_SIGNING_IDENTITY` and `APPLE_PROVISIONING_PROFILE` (defaults: the single installed
+Developer ID Application identity, and `~/.config/personal-cfo/DohFlow_Developer_ID.provisionprofile`),
+not `release.env`'s notarization credentials. On a Mac with enrolled biometrics, `KEYCHAIN_SMOKE_TOUCH_ID=1`
+adds the conformance suite, whose biometric store the OS refuses (`AuthFailed`) on a Mac with none. The
+sensor paths (a fresh match, a cancelled prompt) remain by hand from the same signed bundle.
 
 ## Part B — Repo wiring (867.1 — APPLIED 2026-07-05, PR #264)
 

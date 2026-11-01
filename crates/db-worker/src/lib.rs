@@ -972,6 +972,26 @@ pub enum WriteCommand {
         /// A `#RRGGBB` color, or none.
         color: Option<String>,
     },
+    /// Record a forecast assumption event (personal-cfo-5ymg8.4; ADR 0026 section 4): an `active`
+    /// override or scenario overlay with a caller-minted id. It carries no forecast run.
+    RecordAssumptionEvent {
+        /// The event to record.
+        event: NewAssumptionEvent,
+    },
+    /// Replace an `active` assumption event with a new one, atomically (personal-cfo-5ymg8.4): the
+    /// "edit" of a manual entry. One command, so a replica never applies the replacement and the
+    /// supersession apart.
+    SupersedeAssumptionEvent {
+        /// The event being replaced; it must still be `active`.
+        id: Uuid,
+        /// The replacement, with its own caller-minted id.
+        replacement: NewAssumptionEvent,
+    },
+    /// Clear (deactivate) an `active` assumption event and keep the row (personal-cfo-5ymg8.4).
+    ClearAssumptionEvent {
+        /// The event; it must still be `active`.
+        id: Uuid,
+    },
 }
 
 impl WriteCommand {
@@ -1037,6 +1057,9 @@ impl WriteCommand {
             WriteCommand::RemoveHouseholdMember { .. } => "remove_household_member",
             WriteCommand::RestoreHouseholdMember { .. } => "restore_household_member",
             WriteCommand::SetMemberProfile { .. } => "set_member_profile",
+            WriteCommand::RecordAssumptionEvent { .. } => "record_assumption_event",
+            WriteCommand::SupersedeAssumptionEvent { .. } => "supersede_assumption_event",
+            WriteCommand::ClearAssumptionEvent { .. } => "clear_assumption_event",
             WriteCommand::ArchiveCategory(_) => "archive_category",
             WriteCommand::ReinstateCategory(_) => "reinstate_category",
             WriteCommand::RecategorizeTransaction { .. } => "recategorize_transaction",
@@ -3727,29 +3750,15 @@ impl DbWorker {
     // persist across recomputes, gated by `status`, so a user override survives
     // a re-run until explicitly cleared or superseded. See [`assumptions`].
 
-    /// Record a new assumption event (status `active`, timestamps "now").
+    /// Record a new assumption event (status `active`) through the command bus
+    /// ([`WriteCommand::RecordAssumptionEvent`]).
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError`] from the command.
     pub fn record_assumption_event(&self, ev: &NewAssumptionEvent) -> Result<(), DbError> {
-        let now = Utc::now().to_rfc3339();
-        self.lock().conn.execute(
-            "INSERT INTO forecast_assumption_events
-                (id, kind, target_entity_type, target_entity_id, params_json,
-                 source, scenario_id, status, superseded_by, origin_run_id,
-                 created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', NULL, ?8, ?9, ?9)",
-            params![
-                ev.id,
-                ev.kind.as_token(),
-                ev.target_entity_type,
-                ev.target_entity_id,
-                ev.params_json,
-                ev.source.as_token(),
-                ev.scenario_id,
-                ev.origin_run_id,
-                now,
-            ],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::RecordAssumptionEvent { event: ev.clone() },
         )?;
         Ok(())
     }
@@ -3794,31 +3803,38 @@ impl DbWorker {
         Ok(out)
     }
 
-    /// Supersede an assumption event with another (status `superseded`; the row
-    /// is retained for history, `superseded_by` points at the replacement).
+    /// Supersede an `active` assumption event with a replacement, atomically
+    /// ([`WriteCommand::SupersedeAssumptionEvent`]; status `superseded`, the row is retained for
+    /// history and `superseded_by` points at the replacement).
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
-    pub fn supersede_assumption_event(&self, id: Uuid, superseded_by: Uuid) -> Result<(), DbError> {
-        self.lock().conn.execute(
-            "UPDATE forecast_assumption_events
-             SET status = 'superseded', superseded_by = ?2, updated_at = ?3
-             WHERE id = ?1",
-            params![id, superseded_by, Utc::now().to_rfc3339()],
+    /// [`DbError::Rejected`] when the event is missing or no longer active; other [`DbError`]s
+    /// from the command.
+    pub fn supersede_assumption_event(
+        &self,
+        id: Uuid,
+        replacement: &NewAssumptionEvent,
+    ) -> Result<(), DbError> {
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::SupersedeAssumptionEvent {
+                id,
+                replacement: replacement.clone(),
+            },
         )?;
         Ok(())
     }
 
-    /// Clear (deactivate) an assumption event without deleting it.
+    /// Clear (deactivate) an `active` assumption event without deleting it
+    /// ([`WriteCommand::ClearAssumptionEvent`]).
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError::Rejected`] when the event is missing or no longer active; other [`DbError`]s
+    /// from the command.
     pub fn clear_assumption_event(&self, id: Uuid) -> Result<(), DbError> {
-        self.lock().conn.execute(
-            "UPDATE forecast_assumption_events
-             SET status = 'cleared', updated_at = ?2
-             WHERE id = ?1",
-            params![id, Utc::now().to_rfc3339()],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::ClearAssumptionEvent { id },
         )?;
         Ok(())
     }
@@ -4324,16 +4340,30 @@ impl DbWorker {
         label: &str,
         account_id: Option<Uuid>,
     ) -> Result<(), DbError> {
-        self.record_assumption_event(&NewAssumptionEvent {
-            id,
-            kind: AssumptionKind::OneTimeEvent,
-            target_entity_type: None,
-            target_entity_id: None,
-            params_json: manual_entry::build_params_json(amount, occurs_on, label, account_id),
-            source: AssumptionSource::UserOverride,
-            scenario_id: None,
-            origin_run_id: None,
-        })
+        self.record_assumption_event(&manual_entry_event(
+            id, amount, occurs_on, label, account_id,
+        ))
+    }
+
+    /// Edit a manual future entry: replace the `active` entry `prior` with a new one in ONE
+    /// command, so the edit can never land as a record and a supersession applied apart.
+    ///
+    /// # Errors
+    /// [`DbError::Rejected`] when `prior` is missing or no longer active; other [`DbError`]s from
+    /// the command.
+    pub fn supersede_manual_entry(
+        &self,
+        prior: Uuid,
+        id: Uuid,
+        amount: Money,
+        occurs_on: NaiveDate,
+        label: &str,
+        account_id: Option<Uuid>,
+    ) -> Result<(), DbError> {
+        self.supersede_assumption_event(
+            prior,
+            &manual_entry_event(id, amount, occurs_on, label, account_id),
+        )
     }
 
     /// The active base manual future entries, oldest first.
@@ -5500,6 +5530,26 @@ fn would_create_category_cycle(
         |r| r.get(0),
     )?;
     Ok(count > 0)
+}
+
+/// The assumption event a manual future entry is stored as: a base, `user_override`
+/// `one_time_event` with the entry's canonical parameters.
+fn manual_entry_event(
+    id: Uuid,
+    amount: Money,
+    occurs_on: NaiveDate,
+    label: &str,
+    account_id: Option<Uuid>,
+) -> NewAssumptionEvent {
+    NewAssumptionEvent {
+        id,
+        kind: AssumptionKind::OneTimeEvent,
+        target_entity_type: None,
+        target_entity_id: None,
+        params_json: manual_entry::build_params_json(amount, occurs_on, label, account_id),
+        source: AssumptionSource::UserOverride,
+        scenario_id: None,
+    }
 }
 
 /// Seed the default category taxonomy of a NEW vault (called only from [`seed_new_vault`]).
@@ -7654,6 +7704,15 @@ fn apply_command(
             initials.as_deref(),
             color.as_deref(),
         )?,
+        WriteCommand::RecordAssumptionEvent { event } => {
+            apply::assumption_cmds::apply_record_assumption_event(&tx, meta, event)?
+        }
+        WriteCommand::SupersedeAssumptionEvent { id, replacement } => {
+            apply::assumption_cmds::apply_supersede_assumption_event(&tx, meta, id, replacement)?
+        }
+        WriteCommand::ClearAssumptionEvent { id } => {
+            apply::assumption_cmds::apply_clear_assumption_event(&tx, meta, id)?
+        }
         WriteCommand::ArchiveCategory(id) => {
             apply::categorization_cmds::apply_archive_category(&tx, meta, id)?
         }
@@ -7779,6 +7838,9 @@ fn apply_command(
         | WriteCommand::RemoveHouseholdMember { .. }
         | WriteCommand::RestoreHouseholdMember { .. } => "household_members",
         WriteCommand::SetMemberProfile { .. } => "profiles",
+        WriteCommand::RecordAssumptionEvent { .. }
+        | WriteCommand::SupersedeAssumptionEvent { .. }
+        | WriteCommand::ClearAssumptionEvent { .. } => "forecast_assumption_events",
         WriteCommand::RecordBalanceAssertion { .. }
         | WriteCommand::RecordConnectorBalance { .. } => "balance_observations",
         WriteCommand::CreateCategory { .. }

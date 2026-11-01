@@ -1116,7 +1116,7 @@ fn full_capture_tables() -> Vec<String> {
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
 /// * the rows of `category_aliases`, `credit_card_cycles`,
-///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
+///   `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
 ///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
 ///   reach the command bus with `personal-cfo-5ymg8`;
 /// * the rest need a second command on the same row (an update after a create).
@@ -1139,7 +1139,6 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("debt_terms", &["bu", "bd"]),
     ("dedupe_decisions", &["bu", "bd"]),
     ("forecast_assumption_events", &["bd"]),
-    ("forecast_dependency_edges", &["bi", "bu", "bd"]),
     ("household_members", &["bd"]),
     ("households", &["bi", "bd"]),
     // The map is insert-only: a command meets a (role, currency) pair no seed created (a euro
@@ -1257,6 +1256,9 @@ mod all_variants {
         "transfer_primary",
         "remove_household_member",
         "restore_household_member",
+        "record_assumption_event",
+        "supersede_assumption_event",
+        "clear_assumption_event",
     ];
 
     /// Ids the setup learns at run time (staging mints its own).
@@ -1485,7 +1487,6 @@ mod all_variants {
                         params_json: r#"{"annual_bps":400}"#.to_owned(),
                         source: AssumptionSource::UserOverride,
                         scenario_id: Some(scenario),
-                        origin_run_id: None,
                     })
                     .expect("setup: assumption event");
                 vec![]
@@ -1737,7 +1738,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 69, "every variant ran");
+        assert_eq!(checked, 72, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

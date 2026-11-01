@@ -277,6 +277,12 @@ synthetic no-app recovery test before any such public claim.
   (a write-set mismatch). The table joins Sync and genesis and the write set (`full`, key
   `(role, currency)`); existing rows replicate as they are and no id is rewritten. No wire layout or
   vector change. (18 is personal-cfo-5ymg8.4's.)
+- `spec-version = 18` (personal-cfo-5ymg8.4) corrects the class of `forecast_dependency_edges` in the
+  inventory from 4 (routed to class 1) to 2 (derived, rebuilt locally): a row names a forecast run
+  and a forecast row, both class 2 and never shipped, so a replicated edge would reference rows a
+  replica never receives, and nothing writes the table in production. The table leaves the Sync
+  inventory and the write set; no wire layout, vector or schema change. (19 is
+  personal-cfo-32fmp.3's.)
 - `spec-version = 17` (personal-cfo-g3m.26 part 2) lists the deterministic rejection codes in C.10
   and states the site-level classification rule, and narrows the `issued_at` bound of check 6 in
   C.4 from the years 0000 to 9999 to 1970-01-01T00:00:00Z to 9999-12-31T23:59:59.999999Z: nothing
@@ -466,7 +472,7 @@ therefore requires reviewing this inventory.
 | `balance_observations` | 1 | include | include | An account's balance as of a day (manual or connector). Written only by `RecordBalanceAssertion` and `RecordConnectorBalance`; a connector row's `source_record_id` is NULL on every command-written row. |
 | `scenarios` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `forecast_assumption_events` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `forecast_dependency_edges` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `forecast_dependency_edges` | 2 | rebuild | rebuild | Derived per-run attribution (an assumption event to a forecast row of one run); rebuilt locally, never shipped. Corrected from class 4 by ADR 0074 Addendum F. |
 | `merchant_aliases` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `merchant_identities` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `manual_entry_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
