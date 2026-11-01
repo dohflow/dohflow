@@ -31,7 +31,7 @@ const COPY: Record<string, string> = {
   unlock_unavailable:
     "Touch ID couldn't open the vault this time. Enter your master password.",
   attempt_in_progress:
-    "A Touch ID prompt is already open. Finish that, or enter your master password.",
+    "A Touch ID prompt is already open. Finish or cancel it first.",
 };
 
 const FALLBACK = "Enter your master password.";
