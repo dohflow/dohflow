@@ -21,18 +21,18 @@ function Harness({
   longBody = false,
   removeOpener = false,
   restoreFocus = false,
-  focusCancel = false,
+  focusConfirm = false,
 }: {
   onConfirm?: () => void;
   error?: string | null;
   longBody?: boolean;
   removeOpener?: boolean;
   restoreFocus?: boolean;
-  focusCancel?: boolean;
+  focusConfirm?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [openerGone, setOpenerGone] = useState(false);
-  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
   const explicitRef = useRef<HTMLButtonElement>(null);
   const fallbackRef = useRef<HTMLButtonElement>(null);
   return (
@@ -55,7 +55,7 @@ function Harness({
       </main>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          initialFocusRef={focusCancel ? cancelRef : undefined}
+          initialFocusRef={focusConfirm ? confirmRef : undefined}
           restoreFocusTo={restoreFocus ? explicitRef : undefined}
           fallbackFocusTo={fallbackRef}
         >
@@ -68,10 +68,11 @@ function Harness({
           </DialogBody>
           <DialogError error={error} />
           <DialogFooter>
-            <Button variant="ghost" ref={cancelRef} onClick={() => setOpen(false)}>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
             <Button
+              ref={confirmRef}
               onClick={() => {
                 onConfirm();
                 if (removeOpener) setOpenerGone(true);
@@ -137,8 +138,15 @@ describe("the shared Dialog (personal-cfo-4d8.6.1)", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
-  it("focuses the chosen element on open, so a confirm can start on its safe action", () => {
-    render(<Harness focusCancel />);
+  it("focuses the chosen element on open, even when it is not the first one", () => {
+    // Cancel is the first tabbable element; the option points at the confirm button instead.
+    render(<Harness focusConfirm />);
+    openDialog();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Undo scenario" }));
+  });
+
+  it("without the option, focus starts on the first tabbable element", () => {
+    render(<Harness />);
     openDialog();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
   });
