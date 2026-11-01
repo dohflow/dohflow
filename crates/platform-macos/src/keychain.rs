@@ -28,7 +28,9 @@ use security_framework_sys::item::{
     kSecReturnAttributes, kSecReturnData, kSecUseAuthenticationContext,
     kSecUseDataProtectionKeychain, kSecValueData,
 };
-use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete};
+use security_framework_sys::keychain_item::{
+    SecItemAdd, SecItemCopyMatching, SecItemDelete, SecItemUpdate,
+};
 use zeroize::Zeroizing;
 
 use crate::auth;
@@ -127,6 +129,12 @@ impl MacSecretStore {
             query.push((
                 CFString::wrap_under_get_rule(kSecMatchLimit),
                 CFString::wrap_under_get_rule(kSecMatchLimitOne).as_CFType(),
+            ));
+            // Reading attributes must never prompt: if the platform would need the user to
+            // authenticate, the call fails with `Unavailable(Locked)` instead of showing UI.
+            query.push((
+                CFString::wrap_under_get_rule(kSecUseAuthenticationContext),
+                auth::non_interactive_context(),
             ));
         }
         let result = copy_matching(&query)?;
@@ -337,6 +345,43 @@ impl SecretStore for MacSecretStore {
         match status {
             0 | ERR_SEC_ITEM_NOT_FOUND => Ok(()),
             other => Err(map_os_status(other)),
+        }
+    }
+
+    fn update_public_tag(
+        &self,
+        key: &SecretKey,
+        tag: Option<&PublicTag>,
+    ) -> Result<(), SecretError> {
+        let mut query = self.base_query(key);
+        // The call may not show UI: an update that would need the user to authenticate fails with
+        // `Unavailable(Locked)` (errSecInteractionNotAllowed) instead of prompting.
+        // SAFETY: constants as above; the context is a retained LAContext used as a CFType.
+        unsafe {
+            query.push((
+                CFString::wrap_under_get_rule(kSecUseAuthenticationContext),
+                auth::non_interactive_context(),
+            ));
+        }
+        // Only the generic attribute changes: the secret, its access control and its class are not part
+        // of the update. An empty value stands for "no tag" (a tag is never empty).
+        let bytes: &[u8] = tag.map_or(&[], PublicTag::as_bytes);
+        // SAFETY: constant as above.
+        let changes = unsafe {
+            vec![(
+                CFString::wrap_under_get_rule(kSecAttrGeneric),
+                CFData::from_buffer(bytes).as_CFType(),
+            )]
+        };
+        let query = CFDictionary::from_CFType_pairs(&query);
+        let changes = CFDictionary::from_CFType_pairs(&changes);
+        // SAFETY: both dictionaries are valid for the call.
+        let status =
+            unsafe { SecItemUpdate(query.as_concrete_TypeRef(), changes.as_concrete_TypeRef()) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(map_os_status(status))
         }
     }
 

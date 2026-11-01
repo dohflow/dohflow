@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 mod biometric;
+mod clock;
 pub mod conformance;
 mod error;
 mod key;
@@ -32,6 +33,7 @@ mod tag;
 mod value;
 
 pub use biometric::{BiometricAuth, BiometricAvailability, PreflightResult};
+pub use clock::{BootClock, BootClockError, BootId};
 pub use error::{SecretError, UnavailableReason};
 pub use key::{AccessGroup, SecretKey, SERVICE_PREFIX};
 pub use policy::{AccessPolicy, AuthPrompt, MAX_PROMPT_CHARS};

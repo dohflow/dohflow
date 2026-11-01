@@ -111,6 +111,53 @@ pub fn run(store: &dyn SecretStore, biometry: &dyn BiometricAuth, namespace: &st
         "no item, no tag"
     );
 
+    // update_public_tag: changes ONLY the tag (the secret and its policy are as they were), sets,
+    // replaces and removes it, and never creates an item
+    let markers = key("markers");
+    let tag_1 = PublicTag::new(b"marker-1").expect("tag");
+    let tag_2 = PublicTag::new(b"marker-2").expect("tag");
+    store
+        .store_secret_tagged(
+            &markers,
+            &value(b"kept"),
+            AccessPolicy::DeviceOnly,
+            Some(&tag_1),
+        )
+        .expect("store");
+    store
+        .update_public_tag(&markers, Some(&tag_2))
+        .expect("replace the tag");
+    assert_eq!(
+        store.public_tag(&markers).expect("tag"),
+        Some(tag_2.clone())
+    );
+    assert_eq!(
+        store.load_secret(&markers, &prompt).expect("load"),
+        value(b"kept"),
+        "updating the tag leaves the secret exactly as it was"
+    );
+    store
+        .update_public_tag(&markers, None)
+        .expect("remove the tag");
+    assert_eq!(store.public_tag(&markers).expect("tag"), None);
+    store
+        .update_public_tag(&markers, Some(&tag_1))
+        .expect("set it again");
+    assert_eq!(store.public_tag(&markers).expect("tag"), Some(tag_1));
+    assert_eq!(
+        store.load_secret(&markers, &prompt).expect("load"),
+        value(b"kept")
+    );
+    assert_eq!(
+        store.update_public_tag(&absent, Some(&tag_2)).unwrap_err(),
+        SecretError::NotFound,
+        "updating a tag never creates an item"
+    );
+    assert_eq!(
+        store.load_secret(&absent, &prompt).unwrap_err(),
+        SecretError::NotFound
+    );
+
     // A REFUSED store leaves the previous secret intact: asking for a protection this store cannot
     // provide must fail before anything is replaced (never a weaker store, never a lost secret).
     // Only checkable where the policy is refused up front, i.e. a store without biometric access
@@ -216,7 +263,35 @@ pub fn run(store: &dyn SecretStore, biometry: &dyn BiometricAuth, namespace: &st
         Roaming::Never | Roaming::Unknown | Roaming::May
     ));
 
-    for name in ["other", "binary", "biometric", "tagged"] {
+    for name in ["other", "binary", "biometric", "tagged", "markers"] {
         let _ = store.delete_secret(&key(name));
     }
+}
+
+/// The behavior every [`BootClock`] must show: a boot id that is stable while the device stays up, and a
+/// monotonic clock that never goes backwards and moves forward with real time.
+///
+/// # Panics
+/// On any violation of the contract.
+pub fn run_boot_clock(clock: &dyn crate::BootClock) {
+    let first = clock.boot_id().expect("boot id");
+    assert_eq!(
+        clock.boot_id().expect("boot id again"),
+        first,
+        "the boot id is stable during one boot"
+    );
+    let mut last = clock.monotonic_ns().expect("monotonic time");
+    for _ in 0..50 {
+        let now = clock.monotonic_ns().expect("monotonic time");
+        assert!(now >= last, "the monotonic clock went backwards");
+        last = now;
+    }
+    let before = clock.monotonic_ns().expect("monotonic time");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let after = clock.monotonic_ns().expect("monotonic time");
+    assert!(
+        after - before >= 15_000_000,
+        "20 ms of real time moved the clock by only {} ns",
+        after - before
+    );
 }

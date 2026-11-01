@@ -9,8 +9,8 @@
 //! * [`MacBiometricAuth`]: `LocalAuthentication`, availability and a pre-flight prompt only. It never
 //!   releases a secret; a biometric-gated secret is released by the keychain's own access control.
 //!
-//! The whole crate is empty off macOS. `unsafe` is confined to the two modules that call Apple
-//! frameworks (`keychain`, `auth`); `status` stays safe. Nothing here logs: the repository scan in
+//! The whole crate is empty off macOS. `unsafe` is confined to the three modules that call Apple
+//! frameworks or the kernel (`keychain`, `auth`, `clock`); `status`, `availability` and `group` stay safe. Nothing here logs: the repository scan in
 //! `platform-traits` enforces it.
 
 #![deny(unsafe_code)]
@@ -18,6 +18,9 @@
 #[cfg(target_os = "macos")]
 mod auth;
 mod availability;
+mod boot_session;
+#[cfg(target_os = "macos")]
+mod clock;
 mod group;
 #[cfg(target_os = "macos")]
 mod keychain;
@@ -26,6 +29,9 @@ mod status;
 #[cfg(target_os = "macos")]
 pub use auth::MacBiometricAuth;
 pub use availability::availability_from_la_code;
+pub use boot_session::parse_boot_session_uuid;
+#[cfg(target_os = "macos")]
+pub use clock::MacBootClock;
 pub use group::access_group_from_entitlement;
 #[cfg(target_os = "macos")]
 pub use keychain::{own_access_group, MacSecretStore, StoredAttributes};

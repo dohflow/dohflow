@@ -16,7 +16,7 @@
 //!   the sensor stay manual.
 #![cfg(target_os = "macos")]
 
-use platform_macos::{own_access_group, MacBiometricAuth, MacSecretStore};
+use platform_macos::{own_access_group, MacBiometricAuth, MacBootClock, MacSecretStore};
 use platform_traits::{
     conformance, AccessGroup, AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability,
     PublicTag, SecretError, SecretKey, SecretStore, SecretValue, UnavailableReason,
@@ -64,12 +64,41 @@ fn an_unentitled_build_fails_every_call_with_the_typed_error() {
     assert_eq!(store.delete_secret(&key()).unwrap_err(), MISSING);
     assert_eq!(store.stored_attributes(&key()).unwrap_err(), MISSING);
     assert_eq!(store.public_tag(&key()).unwrap_err(), MISSING);
+    assert_eq!(
+        store
+            .update_public_tag(&key(), Some(&PublicTag::new(b"marker").unwrap()))
+            .unwrap_err(),
+        MISSING
+    );
     let tag = PublicTag::new(b"fingerprint").unwrap();
     assert_eq!(
         store
             .store_secret_tagged(&key(), &value(), AccessPolicy::DeviceOnly, Some(&tag))
             .unwrap_err(),
         MISSING
+    );
+}
+
+#[test]
+fn the_boot_clock_passes_its_conformance_suite_on_this_mac() {
+    // Needs no entitlement: the boot id comes from `kern.bootsessionuuid` and the monotonic clock from
+    // `mach_continuous_time`. Stable id, a clock that never goes backwards and moves with real time.
+    conformance::run_boot_clock(&MacBootClock::new());
+}
+
+#[test]
+fn the_boot_id_is_the_kernels_boot_session_uuid() {
+    // The same value `sysctl -n kern.bootsessionuuid` prints, parsed the same way, and stable across calls.
+    let printed = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.bootsessionuuid"])
+        .output()
+        .expect("run sysctl");
+    let text = String::from_utf8(printed.stdout).unwrap();
+    let expected = platform_macos::parse_boot_session_uuid(text.trim()).expect("a valid UUID");
+    let clock = MacBootClock::new();
+    assert_eq!(
+        platform_traits::BootClock::boot_id(&clock).unwrap(),
+        expected
     );
 }
 
@@ -186,6 +215,85 @@ fn entitled_a_public_tag_is_stored_and_read_back_without_authentication() {
     store.delete_secret(&k).expect("cleanup");
     assert_eq!(read.expect("tag"), Some(tag.clone()));
     assert_eq!(attrs.expect("attributes").public_tag, Some(tag));
+}
+
+#[test]
+#[ignore = "needs a signed build with the keychain entitlement"]
+fn entitled_a_public_tag_is_updated_without_authentication_and_the_secret_is_untouched() {
+    let store = entitled_store();
+    let k = SecretKey::new(
+        "app.dohflow.keychain-test",
+        &format!("markers-{}", std::process::id()),
+    )
+    .unwrap();
+    let first = PublicTag::new(&[0x11; 40]).unwrap();
+    let second = PublicTag::new(&[0x22; 40]).unwrap();
+    store
+        .store_secret_tagged(&k, &value(), AccessPolicy::DeviceOnly, Some(&first))
+        .expect("store");
+    let updated = store.update_public_tag(&k, Some(&second));
+    let after_update = store.public_tag(&k);
+    let loaded = store.load_secret(&k, &prompt());
+    let removed = store.update_public_tag(&k, None);
+    let after_removal = store.public_tag(&k);
+    let absent = store.update_public_tag(
+        &SecretKey::new("app.dohflow.keychain-test", "never-stored").unwrap(),
+        Some(&second),
+    );
+    store.delete_secret(&k).expect("cleanup");
+    updated.expect("update");
+    assert_eq!(after_update.expect("tag"), Some(second));
+    assert_eq!(
+        loaded.expect("secret"),
+        value(),
+        "the secret was not touched"
+    );
+    removed.expect("remove");
+    assert_eq!(after_removal.expect("tag"), None);
+    assert_eq!(
+        absent.unwrap_err(),
+        SecretError::NotFound,
+        "never creates an item"
+    );
+}
+
+#[test]
+#[ignore = "needs a Touch ID Mac and a signed entitled build (AC K6: does an attribute-only update of a biometric item prompt?)"]
+fn manual_updating_the_tag_of_a_biometric_item_needs_no_authentication() {
+    // The owner's Touch ID run. The update runs with a context that may not show UI, so if the platform
+    // would need the user to authenticate it FAILS (`Unavailable(Locked)`, errSecInteractionNotAllowed)
+    // instead of prompting. Ok means the markers can live in the item's public tag. A failure means they
+    // must move to a sibling non-secret item (same class, no access control): tell planning.
+    let store = entitled_store();
+    assert!(
+        MacBiometricAuth::new().is_available(),
+        "run this on a Mac with Touch ID enrolled"
+    );
+    let k = SecretKey::new(
+        "app.dohflow.keychain-test",
+        &format!("bio-markers-{}", std::process::id()),
+    )
+    .unwrap();
+    let first = PublicTag::new(&[0x33; 40]).unwrap();
+    let second = PublicTag::new(&[0x44; 40]).unwrap();
+    store
+        .store_secret_tagged(
+            &k,
+            &value(),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            Some(&first),
+        )
+        .expect("store");
+    let read = store.public_tag(&k);
+    let updated = store.update_public_tag(&k, Some(&second));
+    let after = store.public_tag(&k);
+    store.delete_secret(&k).expect("cleanup");
+    assert_eq!(
+        read.expect("reading the tag of a biometric item needs no authentication"),
+        Some(first)
+    );
+    updated.expect("updating the tag of a biometric item needs no authentication");
+    assert_eq!(after.expect("tag"), Some(second));
 }
 
 #[test]

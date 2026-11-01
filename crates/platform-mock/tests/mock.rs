@@ -1,10 +1,13 @@
 //! The mock passes the shared conformance suite, models the biometric access control separately from
 //! the pre-flight prompt, and can play an unavailable platform.
 
-use platform_mock::{BiometryDevice, BiometryScript, MockBiometricAuth, MockSecretStore};
+use platform_mock::{
+    BiometryDevice, BiometryScript, MockBiometricAuth, MockBootClock, MockSecretStore,
+};
 use platform_traits::{
-    conformance, AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, PreflightResult,
-    PublicTag, SecretError, SecretKey, SecretStore, SecretValue, UnavailableReason,
+    conformance, AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, BootClock,
+    PreflightResult, PublicTag, SecretError, SecretKey, SecretStore, SecretValue,
+    UnavailableReason,
 };
 
 fn prompt() -> AuthPrompt {
@@ -330,4 +333,89 @@ fn a_public_tag_is_bounded_and_prints_only_its_length() {
     );
     let tag = PublicTag::new(&[0xAB; 32]).unwrap();
     assert_eq!(format!("{tag:?}"), "PublicTag(32 bytes)");
+}
+
+// ---- update_public_tag --------------------------------------------------------------------------
+
+#[test]
+fn updating_the_tag_never_prompts_never_touches_the_secret_and_works_on_a_biometric_item() {
+    let store = MockSecretStore::new();
+    let k = key("wrapped-dek");
+    let first = PublicTag::new(&[1_u8; 40]).unwrap();
+    let second = PublicTag::new(&[2_u8; 40]).unwrap();
+    store
+        .store_secret_tagged(
+            &k,
+            &value(b"dek"),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            Some(&first),
+        )
+        .unwrap();
+    // The platform's access control would refuse a read right now; the tag still updates.
+    store.script_biometry(BiometryScript::Fail);
+    store.update_public_tag(&k, Some(&second)).unwrap();
+    assert_eq!(store.public_tag(&k).unwrap(), Some(second));
+    // The update did not re-create the item with a weaker protection: the platform's access control still
+    // refuses a failed match (a device-only item would have been released).
+    assert_eq!(
+        store.load_secret(&k, &prompt()).unwrap_err(),
+        SecretError::AuthFailed,
+        "a tag update must keep the biometric access control"
+    );
+    store.script_biometry(BiometryScript::Match);
+    assert_eq!(store.load_secret(&k, &prompt()).unwrap(), value(b"dek"));
+}
+
+#[test]
+fn updating_the_tag_of_a_missing_item_is_not_found_and_creates_nothing() {
+    let store = MockSecretStore::new();
+    let tag = PublicTag::new(b"x").unwrap();
+    assert_eq!(
+        store
+            .update_public_tag(&key("nothing"), Some(&tag))
+            .unwrap_err(),
+        SecretError::NotFound
+    );
+    assert!(store.is_empty());
+}
+
+#[test]
+fn an_unavailable_store_refuses_a_tag_update_with_its_reason() {
+    let store = MockSecretStore::unavailable(UnavailableReason::MissingEntitlement);
+    let tag = PublicTag::new(b"x").unwrap();
+    assert_eq!(
+        store.update_public_tag(&key("a"), Some(&tag)).unwrap_err(),
+        SecretError::Unavailable(UnavailableReason::MissingEntitlement)
+    );
+}
+
+// ---- the scriptable boot clock ------------------------------------------------------------------
+
+#[test]
+fn the_mock_clock_restarts_advances_goes_backwards_and_fails_on_command() {
+    let clock = MockBootClock::new();
+    let boot = clock.boot_id().unwrap();
+    assert_eq!(clock.boot_id().unwrap(), boot);
+
+    let t0 = clock.monotonic_ns().unwrap();
+    clock.advance_days(31);
+    assert_eq!(
+        clock.monotonic_ns().unwrap() - t0,
+        31 * 24 * 60 * 60 * 1_000_000_000
+    );
+
+    clock.set_now(t0);
+    assert_eq!(
+        clock.monotonic_ns().unwrap(),
+        t0,
+        "a test can move it backwards"
+    );
+
+    clock.restart();
+    assert_ne!(clock.boot_id().unwrap(), boot, "a restart is a new boot");
+
+    clock.fail(true);
+    assert!(clock.boot_id().is_err() && clock.monotonic_ns().is_err());
+    clock.fail(false);
+    assert!(clock.boot_id().is_ok());
 }
