@@ -161,6 +161,41 @@ describe("the shared Dialog (personal-cfo-4d8.6.1)", () => {
     );
   });
 
+  it("uses the fallback when the caller's explicit target is empty, ignoring the opener", async () => {
+    function Explicit() {
+      const [open, setOpen] = useState(false);
+      const none = useRef<HTMLElement | null>(null);
+      const fallback = useRef<HTMLButtonElement>(null);
+      return (
+        <div>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open
+          </button>
+          <button type="button" ref={fallback}>
+            Fallback target
+          </button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogContent restoreFocusTo={none} fallbackFocusTo={fallback}>
+              <DialogHeader>
+                <DialogTitle>Title</DialogTitle>
+                <DialogDescription>Description</DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button onClick={() => setOpen(false)}>Close</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      );
+    }
+    render(<Explicit />);
+    openDialog();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Fallback target" })),
+    );
+  });
+
   it("returns focus to the fallback when the opener is gone", async () => {
     render(<Harness removeOpener />);
     openDialog();
