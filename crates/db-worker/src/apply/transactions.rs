@@ -357,7 +357,7 @@ pub(crate) fn apply_convert_unexplained_to_transaction(
         let observed_at: String = tx.query_row(
             "SELECT observed_at FROM balance_observations
                  WHERE account_id = ?1 AND source IN ('manual', 'connector_sync')
-                 ORDER BY observed_at DESC, created_at DESC LIMIT 1",
+                 ORDER BY observed_at DESC, created_at DESC, id DESC LIMIT 1",
             [account_id.as_uuid()],
             |r| r.get(0),
         )?;

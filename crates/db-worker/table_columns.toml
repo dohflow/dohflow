@@ -47,7 +47,7 @@ columns = ["backup_id:uuid", "vault_id:uuid", "created_at:text", "kind:text", "d
 
 [[table]]
 name = "balance_observations"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["id"]
 columns = ["id:uuid", "account_id:uuid", "observed_at:text", "balance_amount_minor:int", "balance_currency:text", "source:text", "source_record_id:uuid", "reconciliation_session_id:uuid", "created_at:text"]
@@ -194,8 +194,8 @@ columns = ["id:uuid", "model_id:text", "as_of_date:text", "horizon_days:int", "m
 
 [[table]]
 name = "forecast_dependency_edges"
-class = "4"
-write_set = "full"
+class = "2"
+write_set = "none"
 primary_key = ["id"]
 columns = ["id:uuid", "forecast_run_id:uuid", "from_event_id:uuid", "to_row_id:uuid", "edge_type:text", "created_at:text"]
 
@@ -484,8 +484,8 @@ columns = ["id:uuid", "source_record_id:uuid", "proposed_account_id:uuid", "post
 
 [[table]]
 name = "system_ledger_accounts"
-class = "3"
-write_set = "none"
+class = "1"
+write_set = "full"
 primary_key = ["role", "currency"]
 columns = ["role:text", "currency:text", "ledger_account_id:uuid"]
 
@@ -568,6 +568,18 @@ table = "connector_account_links"
 column = "external_id"
 max_bytes = 234
 mechanism = "writer"
+
+[[key_bound]]
+table = "system_ledger_accounts"
+column = "role"
+max_bytes = 32
+mechanism = "construction"
+
+[[key_bound]]
+table = "system_ledger_accounts"
+column = "currency"
+max_bytes = 8
+mechanism = "construction"
 
 [[projection]]
 source = "attachments"

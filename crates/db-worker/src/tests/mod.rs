@@ -2222,16 +2222,14 @@ fn manual_entry_folds_into_forecast_and_survives_rerun() {
     // Editing supersedes (no silent mutation): the old entry leaves, the new one lands.
     let replacement = Uuid::now_v7();
     worker
-        .record_manual_entry(
+        .supersede_manual_entry(
+            entry,
             replacement,
             Money::new(700_000, Currency::Usd),
             date,
             "Bigger bonus",
             None,
         )
-        .unwrap();
-    worker
-        .supersede_assumption_event(entry, replacement)
         .unwrap();
     let after = forecast::compute(&worker.read_connection().unwrap(), as_of, 90, &[]).unwrap();
     let day = after.days.iter().find(|d| d.date == date).unwrap();
@@ -2306,7 +2304,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
                     .to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
     worker
@@ -2318,7 +2315,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
             params_json: r#"{"new_amount_minor":250000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -2362,7 +2358,6 @@ fn scenario_overlay_applies_additions_overrides_and_exclusions() {
             params_json: "{}".to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: None,
-            origin_run_id: None,
         })
         .unwrap();
     let excluded = forecast::compute(&conn(), as_of, 90, &[]).unwrap();
@@ -2403,7 +2398,6 @@ fn zero_income_override_zeroes_that_income_under_the_scenario() {
             params_json: r#"{"new_amount_minor":0}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -4968,19 +4962,101 @@ fn backtest_penalizes_forecasts_with_missed_events() {
     );
 }
 
-/// 6p6b: the canonical-merchant seed is idempotent — re-running it (as every vault open
-/// does) adds no duplicate identities or aliases.
+/// 6p6b: the canonical-merchant seed is idempotent — re-running it adds no duplicate identities
+/// or aliases (it runs only when a vault is created, but `INSERT OR IGNORE` keeps it safe).
 #[test]
 fn seed_merchants_is_idempotent() {
     let (_dir, worker) = worker();
     let count = worker.merchant_identity_count().unwrap();
     assert!(count >= 1, "at least Amazon is seeded");
-    merchant_identity::ensure_seed_merchants(&worker.read_connection().unwrap()).unwrap();
+    merchant_identity::seed_merchants(
+        &worker.read_connection().unwrap(),
+        "2026-10-20T00:00:00+00:00",
+    )
+    .unwrap();
     assert_eq!(
         worker.merchant_identity_count().unwrap(),
         count,
         "re-seeding adds nothing"
     );
+}
+
+/// personal-cfo-32fmp.3: a vault is created in ONE transaction. A seeder that fails rolls the
+/// `vault_metadata` row back with it, so a half-created vault (a row, no seeds) cannot exist: seeds
+/// are written only when the row is, and nothing would ever repair it.
+#[test]
+fn a_vault_is_never_half_created() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_keyed(&dir.path().join("half.vault"), KEY).unwrap();
+    migrations::run_migrations(&mut conn).unwrap();
+    // Break the last seeder: the merchant aliases have nowhere to go.
+    conn.execute_batch("DROP TABLE merchant_aliases").unwrap();
+    assert!(create_vault_rows_if_new(&mut conn).is_err());
+    for table in [
+        "vault_metadata",
+        "households",
+        "ledger_accounts",
+        "system_ledger_accounts",
+        "categories",
+        "merchant_identities",
+    ] {
+        let rows: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "{table} kept a row of the failed creation");
+    }
+}
+
+/// The seed rows as text, per table, in a stable order.
+fn seed_rows(conn: &Connection) -> Vec<String> {
+    let mut out = Vec::new();
+    for table in [
+        "ledger_accounts",
+        "system_ledger_accounts",
+        "categories",
+        "merchant_identities",
+        "merchant_aliases",
+    ] {
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {table} ORDER BY 1, 2"))
+            .unwrap();
+        let width = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            let cells: Vec<String> = (0..width)
+                .map(|i| format!("{:?}", row.get::<_, rusqlite::types::Value>(i).unwrap()))
+                .collect();
+            out.push(format!("{table}: {}", cells.join("|")));
+        }
+    }
+    out
+}
+
+/// personal-cfo-32fmp.3: two vaults with one vault id and creation time seed identical class-1 rows
+/// (system accounts, categories, merchants), because every id and timestamp is a function of them.
+#[test]
+fn two_vaults_with_one_id_and_creation_time_seed_identical_rows() {
+    let vault_id = Uuid::from_u128(0x0198_c2c1_5f0a_7c3d_8a4e_9b1d_0000_00aa);
+    let created_at = "2026-10-20T00:00:00+00:00";
+    let seeded = |name: &str| {
+        let dir = TempDir::new().unwrap();
+        let mut conn = open_keyed(&dir.path().join(name), KEY).unwrap();
+        migrations::run_migrations(&mut conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        ensure_vault_metadata(&tx, migrations::CURRENT_VERSION).unwrap();
+        // The vault's own identity, as a replica would install the origin's before any mint.
+        tx.execute(
+            "UPDATE vault_metadata SET vault_id = ?1, created_at = ?2",
+            params![vault_id, created_at],
+        )
+        .unwrap();
+        seed_new_vault(&tx, &vault_id, created_at).unwrap();
+        tx.commit().unwrap();
+        seed_rows(&conn)
+    };
+    let (a, b) = (seeded("a.vault"), seeded("b.vault"));
+    assert!(a.len() > 50, "the seeds were written");
+    assert_eq!(a, b);
 }
 
 #[test]
@@ -8088,7 +8164,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             params_json: r#"{"new_amount_minor":100000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: None,
-            origin_run_id: None,
         })
         .unwrap();
     let before = base_fingerprint(&worker);
@@ -8115,7 +8190,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             params_json: r#"{"new_amount_minor":250000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
     worker
@@ -8127,7 +8201,6 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             params_json: r#"{"annual_bps":400}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -8238,7 +8311,6 @@ fn a_reverted_scenario_can_be_applied_again() {
             params_json: r#"{"annual_bps":400}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
 
@@ -8326,7 +8398,6 @@ fn a_promoted_base_event_carries_the_scenario_it_came_from() {
             params_json: r#"{"new_amount_minor":250000}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: Some(scenario),
-            origin_run_id: None,
         })
         .unwrap();
     // A base override the user set directly, on a different bill.
@@ -8340,7 +8411,6 @@ fn a_promoted_base_event_carries_the_scenario_it_came_from() {
             params_json: r#"{"new_amount_minor":9900}"#.to_owned(),
             source: AssumptionSource::UserOverride,
             scenario_id: None,
-            origin_run_id: None,
         })
         .unwrap();
 

@@ -64,7 +64,7 @@ pub use importer_core::{
 pub use job_runtime::{
     BackoffPolicy, CancellationToken, ClaimedJob, Clock, JobDispatcher, JobExecution, JobExecutor,
     JobFailure, JobFinishResult, JobHandler, JobOutcome, JobRecord, JobRunReport, JobRunnerError,
-    JobSpec, JobSpecError, JobState, Schedule, SystemClock,
+    JobSpec, JobSpecError, JobState, Schedule, SystemClock, CANCELLATION_POLL_INTERVAL,
 };
 pub use pay_schedule::{Frequency, PaySchedule};
 // Canonical onboarding warning (ADR 0002 / personal-cfo-n7bo): re-exported so the
@@ -84,7 +84,9 @@ use uuid::Uuid;
 mod rekey;
 pub use rekey::RekeyRecovery;
 mod vault;
-pub use vault::{classify_vault, UnlockOptions, VaultController, VaultHealth, VaultState};
+pub use vault::{
+    classify_vault, PasswordVerified, UnlockOptions, VaultController, VaultHealth, VaultState,
+};
 
 pub mod backup;
 mod backup_jobs;
@@ -3219,6 +3221,12 @@ impl Kernel {
         Ok(self.worker.cancel_job(id)?)
     }
 
+    /// Whether a cancellation was requested for a job. A lock-releasing handler reads this at its
+    /// checkpoints, and inside the section that commits (personal-cfo-pxi.25).
+    pub fn job_cancellation_requested(&self, id: Uuid) -> Result<bool, KernelError> {
+        Ok(self.worker.job_cancellation_requested(id)?)
+    }
+
     /// Run due jobs for one unlocked-vault window.  Desktop callers invoke
     /// this from a spawned blocking task after unlock; the method itself never
     /// waits on the vault lifecycle mutex.  The handler receives this kernel as
@@ -4587,17 +4595,24 @@ impl Kernel {
         Ok(self.worker.manual_entries()?)
     }
 
-    /// Supersede an assumption event with a replacement (personal-cfo-5u2) — the
-    /// "edit" of a manual entry: no silent mutation, history retained.
+    /// Edit a manual future entry (personal-cfo-5u2; personal-cfo-5ymg8.4): replace the active
+    /// entry `prior` with a new one in one atomic command — no silent mutation, history
+    /// retained.
     ///
     /// # Errors
-    /// Returns [`KernelError`] on a persistence failure.
-    pub fn supersede_assumption_event(
+    /// Returns [`KernelError`] on a persistence failure, or when `prior` is missing or no longer
+    /// active.
+    pub fn supersede_manual_entry(
         &self,
+        prior: Uuid,
         id: Uuid,
-        superseded_by: Uuid,
+        amount: Money,
+        occurs_on: NaiveDate,
+        label: &str,
+        account_id: Option<Uuid>,
     ) -> Result<(), KernelError> {
-        self.worker.supersede_assumption_event(id, superseded_by)?;
+        self.worker
+            .supersede_manual_entry(prior, id, amount, occurs_on, label, account_id)?;
         Ok(())
     }
 

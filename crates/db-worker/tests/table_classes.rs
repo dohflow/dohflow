@@ -889,7 +889,6 @@ fn starting_assignment_rows_are_not_silently_dropped() {
         "balance_observations",
         "scenarios",
         "forecast_assumption_events",
-        "forecast_dependency_edges",
         "dedupe_decisions",
         "merchant_aliases",
         "merchant_identities",

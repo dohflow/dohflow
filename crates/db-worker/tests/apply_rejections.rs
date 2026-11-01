@@ -13,13 +13,17 @@
 
 mod common;
 
+use chrono::NaiveDate;
 use common::KEY;
 use core_ledger::{
     Account, AccountFlags, AccountId, AccountSubtype, CashflowRole, CategoryId, LedgerAccountId,
     TransactionId,
 };
 use core_money::{Currency, Money};
-use db_worker::{ActorType, CommandMeta, DbError, DbWorker, IssuedAt, RejectCode, WriteCommand};
+use db_worker::{
+    ActorType, AssumptionKind, AssumptionSource, CommandMeta, DbError, DbWorker, IssuedAt,
+    NewAssumptionEvent, RejectCode, WriteCommand,
+};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -58,6 +62,44 @@ fn create_account(n: u128, role: CashflowRole, currency: Currency) -> WriteComma
             AccountFlags::default(),
         )),
         opening_balance: None,
+    }
+}
+
+fn event(n: u128, scenario: Option<u128>, params_json: &str) -> NewAssumptionEvent {
+    NewAssumptionEvent {
+        id: u(n),
+        kind: AssumptionKind::OneTimeEvent,
+        target_entity_type: None,
+        target_entity_id: None,
+        params_json: params_json.to_owned(),
+        source: AssumptionSource::UserOverride,
+        scenario_id: scenario.map(u),
+    }
+}
+
+fn record_event(n: u128, scenario: Option<u128>, params_json: &str) -> WriteCommand {
+    WriteCommand::RecordAssumptionEvent {
+        event: event(n, scenario, params_json),
+    }
+}
+
+fn supersede_event(old: u128, new: u128) -> WriteCommand {
+    WriteCommand::SupersedeAssumptionEvent {
+        id: u(old),
+        replacement: event(new, None, "{}"),
+    }
+}
+
+fn clear_event(n: u128) -> WriteCommand {
+    WriteCommand::ClearAssumptionEvent { id: u(n) }
+}
+
+fn assertion(id: u128, account_id: AccountId, amount: Money) -> WriteCommand {
+    WriteCommand::RecordBalanceAssertion {
+        id: u(id),
+        account_id,
+        amount,
+        as_of: NaiveDate::from_ymd_opt(2001, 9, 1).unwrap(),
     }
 }
 
@@ -293,6 +335,95 @@ fn scenarios() -> Vec<Step> {
             },
             Reject(ReferenceMissing),
         ),
+        step(
+            "recording an assumption event",
+            record_event(70, None, "{}"),
+            Fine,
+        ),
+        step(
+            "an assumption event whose parameters are not a JSON object",
+            record_event(71, None, "[1]"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "an assumption event in an unknown scenario",
+            record_event(72, Some(97), "{}"),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "an assumption event id that is already in use",
+            record_event(70, None, "{}"),
+            Reject(StateConflict),
+        ),
+        step(
+            "an assumption event superseding itself",
+            supersede_event(70, 70),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "superseding an unknown assumption event",
+            supersede_event(98, 73),
+            Reject(ReferenceMissing),
+        ),
+        step("superseding an active event", supersede_event(70, 74), Fine),
+        step(
+            "superseding an event that is no longer active",
+            supersede_event(70, 75),
+            Reject(StateConflict),
+        ),
+        step(
+            "recording a base event to supersede",
+            record_event(76, None, "{}"),
+            Fine,
+        ),
+        step(
+            "superseding a base event with a scenario overlay",
+            WriteCommand::SupersedeAssumptionEvent {
+                id: u(76),
+                replacement: event(77, Some(97), "{}"),
+            },
+            Reject(StateConflict),
+        ),
+        step("clearing an active event", clear_event(74), Fine),
+        step(
+            "clearing an event that is already cleared",
+            clear_event(74),
+            Fine,
+        ),
+        step(
+            "clearing an event that was superseded",
+            clear_event(70),
+            Reject(StateConflict),
+        ),
+        step(
+            "an assertion on a real account",
+            assertion(78, account(1), Money::new(100, Currency::Usd)),
+            Fine,
+        ),
+        step(
+            "an assertion on an unknown account",
+            assertion(79, account(96), Money::new(100, Currency::Usd)),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "an assertion in a currency other than the account's",
+            assertion(79, account(1), Money::new(100, Currency::Eur)),
+            Reject(StateConflict),
+        ),
+        step(
+            "an assertion whose id is already in use",
+            assertion(78, account(1), Money::new(200, Currency::Usd)),
+            Reject(StateConflict),
+        ),
+        step(
+            "a connector reading dated after the command's household-local day",
+            WriteCommand::RecordConnectorBalance {
+                account_id: account(1),
+                observed_at: NaiveDate::from_ymd_opt(2030, 1, 1).unwrap(),
+                amount: Money::new(100, Currency::Usd),
+            },
+            Reject(StateConflict),
+        ),
     ]
 }
 
@@ -311,9 +442,11 @@ fn run(worker: &DbWorker) -> Vec<String> {
             let line = match (&outcome, s.expect) {
                 (Ok(_), Fine) => {
                     let set = worker.last_write_set().unwrap();
-                    // Setup steps only: their write sets can include a system account whose id is
-                    // random until personal-cfo-32fmp.3, so only the row count is compared.
-                    format!("{}: ok rows={}", s.label, set.rows.len())
+                    // The whole write set is compared, hash included: a system ledger account a
+                    // setup step creates has a content-derived id (personal-cfo-32fmp.3), the same
+                    // on every device and in every environment.
+                    let hash: String = set.hash.iter().map(|b| format!("{b:02x}")).collect();
+                    format!("{}: ok rows={} hash={hash}", s.label, set.rows.len())
                 }
                 (Err(DbError::Rejected { code, .. }), Reject(expected)) => {
                     assert_eq!(*code, expected, "{}", s.label);
@@ -342,7 +475,16 @@ fn add_class_3_noise(worker: &DbWorker) {
     .unwrap_or_else(|e| panic!("class-3 noise: {e}"));
 }
 
-fn lines_in_child(zone: &str) -> Vec<String> {
+/// A copy of `base` in `dir`, opened: every environment runs on the SAME vault (one vault id), as
+/// the replicas of one vault do. A derived id is a function of the vault id, so write sets are
+/// only comparable between copies of one vault.
+fn copy_of(dir: &Path, base: &Path, name: &str) -> DbWorker {
+    let path = dir.join(name);
+    std::fs::copy(base, &path).unwrap();
+    open(&path)
+}
+
+fn lines_in_child(zone: &str, base: &Path) -> Vec<String> {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--ignored",
@@ -352,6 +494,7 @@ fn lines_in_child(zone: &str) -> Vec<String> {
             "--test-threads=1",
         ])
         .env("TZ", zone)
+        .env("REJECTION_BASE_VAULT", base)
         .output()
         .unwrap();
     assert!(
@@ -372,7 +515,8 @@ fn lines_in_child(zone: &str) -> Vec<String> {
 #[ignore = "run by a_rejection_is_the_same_under_every_environment in a child process"]
 fn child_run_under_the_inherited_time_zone() {
     let dir = tempfile::tempdir().unwrap();
-    let worker = open(&dir.path().join("v.vault"));
+    let base = std::env::var_os("REJECTION_BASE_VAULT").expect("the parent names the base vault");
+    let worker = copy_of(dir.path(), Path::new(&base), "v.vault");
     for line in run(&worker) {
         println!("OUTCOME {line}");
     }
@@ -381,11 +525,16 @@ fn child_run_under_the_inherited_time_zone() {
 #[test]
 fn a_rejection_is_the_same_under_every_environment() {
     let dir = tempfile::tempdir().unwrap();
-    let plain = run(&open(&dir.path().join("plain.vault")));
+    let base = dir.path().join("base.vault");
+    {
+        let worker = open(&base);
+        worker.checkpoint_truncate().unwrap();
+    }
+    let plain = run(&copy_of(dir.path(), &base, "plain.vault"));
     assert_eq!(plain.len(), scenarios().len());
 
     // Class-3 state a device may hold.
-    let noisy_worker = open(&dir.path().join("noisy.vault"));
+    let noisy_worker = copy_of(dir.path(), &base, "noisy.vault");
     add_class_3_noise(&noisy_worker);
     assert_eq!(
         plain,
@@ -394,8 +543,8 @@ fn a_rejection_is_the_same_under_every_environment() {
     );
 
     // Two device time zones.
-    let chicago = lines_in_child("America/Chicago");
-    let auckland = lines_in_child("Pacific/Auckland");
+    let chicago = lines_in_child("America/Chicago", &base);
+    let auckland = lines_in_child("Pacific/Auckland", &base);
     assert_eq!(
         chicago, auckland,
         "the device time zone changed a verdict or a write set"
@@ -412,6 +561,8 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
     let mut sites = std::collections::BTreeSet::new();
     for module in [
         "apply/accounts.rs",
+        "apply/assumption_cmds.rs",
+        "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
         "apply/mod.rs",
     ] {

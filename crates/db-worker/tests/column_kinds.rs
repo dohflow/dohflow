@@ -58,6 +58,11 @@ const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
     // `upsert_connector_link` rejects a longer provider account id (connector_link_key_width.rs);
     // the primary key is (connection_id uuid, external_id text): 256 - 17 - 5 = 234.
     ("connector_account_links", "external_id", 234, "writer"),
+    // The role is one of the system-account constants (`opening_balance_equity`,
+    // `unmatched_expense`, `unmatched_income`: at most 22 bytes) and the currency an ISO code
+    // from the `Currency` enum (3 bytes); no caller passes free text.
+    ("system_ledger_accounts", "role", 32, "construction"),
+    ("system_ledger_accounts", "currency", 8, "construction"),
 ];
 
 /// BLOB columns that hold a 16-byte identifier although their name does not say so.
@@ -1110,8 +1115,8 @@ fn full_capture_tables() -> Vec<String> {
 ///
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
-/// * the rows of `balance_observations`, `category_aliases`, `credit_card_cycles`,
-///   `forecast_dependency_edges`, `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
+/// * the rows of `category_aliases`, `credit_card_cycles`,
+///   `manual_entry_links`, `merchant_aliases`, `merchant_identities`,
 ///   `recurring_event_instances` and `scenarios` are written by raw (non-command) APIs today and
 ///   reach the command bus with `personal-cfo-5ymg8`;
 /// * the rest need a second command on the same row (an update after a create).
@@ -1121,7 +1126,7 @@ fn full_capture_tables() -> Vec<String> {
 /// changes nothing observable.
 const UNEXERCISED: &[(&str, &[&str])] = &[
     ("accounts", &["bd"]),
-    ("balance_observations", &["bi", "bu", "bd"]),
+    ("balance_observations", &["bd"]),
     ("bill_contracts", &["bd"]),
     ("categories", &["bd"]),
     ("category_aliases", &["bi", "bu", "bd"]),
@@ -1134,9 +1139,11 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("debt_terms", &["bu", "bd"]),
     ("dedupe_decisions", &["bu", "bd"]),
     ("forecast_assumption_events", &["bd"]),
-    ("forecast_dependency_edges", &["bi", "bu", "bd"]),
     ("household_members", &["bd"]),
     ("households", &["bi", "bd"]),
+    // The map is insert-only: a command meets a (role, currency) pair no seed created (a euro
+    // account with an opening balance) and inserts it; nothing updates or deletes a row.
+    ("system_ledger_accounts", &["bu", "bd"]),
     ("income_sources", &["bd"]),
     ("ledger_accounts", &["bu", "bd"]),
     ("ledger_transactions", &["bd"]),
@@ -1240,6 +1247,8 @@ mod all_variants {
         "revert_scenario_apply",
         "void_transaction",
         "set_household_timezone",
+        "record_balance_assertion",
+        "record_connector_balance",
         "set_household_name",
         "add_household_member",
         "rename_household_member",
@@ -1247,6 +1256,9 @@ mod all_variants {
         "transfer_primary",
         "remove_household_member",
         "restore_household_member",
+        "record_assumption_event",
+        "supersede_assumption_event",
+        "clear_assumption_event",
     ];
 
     /// Ids the setup learns at run time (staging mints its own).
@@ -1282,6 +1294,21 @@ mod all_variants {
         rt: &mut Runtime,
     ) -> Vec<(&'static str, WriteCommand)> {
         match name {
+            "create_account" => vec![(
+                "setup: a euro account with an opening balance, so the system account for the new \
+                 currency is created (a map row)",
+                WriteCommand::CreateAccount {
+                    account: Box::new(Account::new(
+                        account(90),
+                        LedgerAccountId::from_uuid(u(190)),
+                        "Euro checking",
+                        CashflowRole::LiquidCash,
+                        Currency::Eur,
+                        AccountFlags::default(),
+                    )),
+                    opening_balance: Some(Money::new(10_000, Currency::Eur)),
+                },
+            )],
             "set_account_link" => vec![
                 (
                     "setup: asset account",
@@ -1305,6 +1332,14 @@ mod all_variants {
                     },
                 ),
             ],
+            "record_connector_balance" => vec![(
+                "setup: an earlier connector reading of the same day, so the sample updates it",
+                WriteCommand::RecordConnectorBalance {
+                    account_id: account(1),
+                    observed_at: date(2026, 10, 1),
+                    amount: usd(100_000),
+                },
+            )],
             "link_bill_to_loan" => vec![
                 (
                     "setup: a loan paid monthly",
@@ -1452,7 +1487,6 @@ mod all_variants {
                         params_json: r#"{"annual_bps":400}"#.to_owned(),
                         source: AssumptionSource::UserOverride,
                         scenario_id: Some(scenario),
-                        origin_run_id: None,
                     })
                     .expect("setup: assumption event");
                 vec![]
@@ -1704,7 +1738,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 67, "every variant ran");
+        assert_eq!(checked, 72, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

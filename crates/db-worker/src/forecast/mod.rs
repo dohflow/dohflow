@@ -46,7 +46,9 @@ pub(crate) use card_cycles::{
 pub use card_cycles::{
     CardCycleView, CardStatementForecastView, CardStatementHistoryView, StoredStatementView,
 };
-pub(crate) use events::{household_today, read_household_tz, reporting_currency};
+#[cfg(test)]
+pub(crate) use events::read_household_tz;
+pub(crate) use events::{household_today, reporting_currency};
 #[cfg(test)]
 pub(crate) use loan_link::loans_with_link_in_force;
 pub(crate) use loan_link::{link_status, LinkedBill};

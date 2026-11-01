@@ -102,15 +102,15 @@ const SEED_MERCHANTS: &[SeedMerchant] = &[
     },
 ];
 
-/// Idempotently seed the canonical merchants + aliases (ADR 0030 addendum). Run in the vault
-/// bootstrap after the default taxonomy. Deterministic v5 ids + `INSERT OR IGNORE` make a
-/// re-run a no-op, and a user's own alias mapping for the same normalized key is never
-/// clobbered (the alias PK already exists → ignored).
+/// Seed the canonical merchants + aliases of a NEW vault (ADR 0030 addendum), in the transaction
+/// that creates it (personal-cfo-32fmp.3). Deterministic v5 ids and `created_at` = the vault's
+/// creation time make the rows a function of the vault; `INSERT OR IGNORE` keeps a user's own alias
+/// mapping for the same normalized key from being clobbered.
 ///
 /// # Errors
 /// Returns [`DbError`] if a SQLite operation fails.
-pub(crate) fn ensure_seed_merchants(conn: &Connection) -> Result<(), DbError> {
-    let now = Utc::now().to_rfc3339();
+pub(crate) fn seed_merchants(conn: &Connection, created_at: &str) -> Result<(), DbError> {
+    let now = created_at;
     for m in SEED_MERCHANTS {
         let id = Uuid::new_v5(
             &Uuid::NAMESPACE_OID,
@@ -123,10 +123,10 @@ pub(crate) fn ensure_seed_merchants(conn: &Connection) -> Result<(), DbError> {
             params![id, m.display_name, i64::from(m.ambiguous), now],
         )?;
         for raw in m.exact_aliases {
-            seed_alias(conn, raw, id, "exact", &now)?;
+            seed_alias(conn, raw, id, "exact", now)?;
         }
         for raw in m.prefix_aliases {
-            seed_alias(conn, raw, id, "prefix", &now)?;
+            seed_alias(conn, raw, id, "prefix", now)?;
         }
     }
     Ok(())

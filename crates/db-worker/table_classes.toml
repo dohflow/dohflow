@@ -466,12 +466,9 @@ reference_validation = "source records and proposed account references must reso
 
 [[table]]
 table = "system_ledger_accounts"
-class = "3"
-owner_bead = "personal-cfo-bxsbz"
-note = "Device-local system-account mapping derived during vault bootstrap; canonical user ledger rows remain class 1."
-rebase_phase = "stable"
-rebase_preservation = "preserve the local role/currency mapping and regenerate only when its class-1 account reference is valid"
-reference_validation = "every mapping must point at a valid local ledger account"
+class = "1"
+owner_bead = "personal-cfo-32fmp.3"
+note = "The (role, currency) to ledger account map that apply reads to choose, and to create, the class-1 system ledger accounts (equity, unmatched income and the like), so it is consensus state and replicates with them; a legacy vault keeps its random ids, a new pair gets a content-derived id. Corrected from class 3 by ADR 0074 Addendum G (it was bxsbz's device-local classification)."
 
 [[table]]
 table = "projection_cursors"
@@ -490,9 +487,9 @@ note = "Current import decision writer is outside the bus, so this is a class-4 
 
 [[table]]
 table = "balance_observations"
-class = "4"
+class = "1"
 owner_bead = "personal-cfo-5ymg8"
-note = "Manual and connector balance assertions currently cross the staging boundary outside the bus; ADR 0074 and SYNC-2 decide the class-1 promotion and conflict disposition."
+note = "An account's balance as of a day, manual or reported by a connector. Written only by RecordBalanceAssertion (appended, never last-wins) and RecordConnectorBalance (an upsert on account, day and connector, monotone in issued_at, with a content-derived id). Rows are updated in place and never hard-deleted. source_record_id is NULL by design on every command-written row, with no foreign key, because a staged source record is device-local; legacy rows keep their values."
 
 [[table]]
 table = "scenarios"
@@ -508,9 +505,9 @@ note = "Current assumption-event writer is direct; ADR 0074 and SYNC-2 decide cl
 
 [[table]]
 table = "forecast_dependency_edges"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current dependency-edge writer is direct; ADR 0074 and SYNC-2 decide class-1 routing with its assumption."
+class = "2"
+owner_bead = "personal-cfo-5ymg8.4"
+note = "Per-run attribution (an assumption event to a forecast row of one run). Derived from class-2 forecast_runs and forecast_rows, rebuilt locally and never shipped; no production caller writes it. Corrected from class 4 by ADR 0074 Addendum F."
 
 [[table]]
 table = "merchant_aliases"

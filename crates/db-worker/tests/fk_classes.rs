@@ -98,3 +98,62 @@ fn the_scanner_would_catch_a_replicated_to_device_local_reference() {
     ]);
     assert!(replicated(&classes["child"]) && !replicated(&classes["parent"]));
 }
+
+const COLUMNS: &str = include_str!("../table_columns.toml");
+
+/// Columns of a replicated table that name a class-2 forecast run without a foreign key
+/// (personal-cfo-5ymg8.4). A run is derived and rebuilt locally, so a replicated row must never
+/// carry one: every command writes these columns NULL, and the column stays only so that older
+/// rows keep their value. A new `*_run_id` column of a replicated table has to be listed here, in
+/// the change that adds it, with the rule that keeps it NULL.
+const RUN_REFERENCES: &[&str] = &[
+    // Written NULL by RecordAssumptionEvent, SupersedeAssumptionEvent and scenario promotion.
+    "forecast_assumption_events.origin_run_id",
+    // Written NULL by the scenario commands of personal-cfo-5ymg8.4's second slice.
+    "scenarios.base_run_id",
+];
+
+#[test]
+fn a_replicated_table_names_a_forecast_run_only_through_a_listed_null_column() {
+    let classes = classes();
+    let mut found = Vec::new();
+    for block in COLUMNS.split("[[table]]").skip(1) {
+        let field = |key: &str| -> Option<String> {
+            block.lines().find_map(|l| {
+                let (k, v) = l.split_once('=')?;
+                (k.trim() == key).then(|| v.trim().to_owned())
+            })
+        };
+        let name = field("name").unwrap().trim_matches('"').to_owned();
+        if !classes.get(&name).is_some_and(|c| replicated(c)) {
+            continue;
+        }
+        for column in field("columns").unwrap().split('"') {
+            if let Some((column, _kind)) = column.split_once(':') {
+                if column.ends_with("_run_id") {
+                    found.push(format!("{name}.{column}"));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        found, RUN_REFERENCES,
+        "a replicated table gained (or lost) a column that names a forecast run"
+    );
+    // None of them is a foreign key: a run never replicates, so no constraint may depend on one.
+    let (_dir, worker) = worker();
+    let conn = worker.read_connection().unwrap();
+    for listed in RUN_REFERENCES {
+        let (table, column) = listed.split_once('.').unwrap();
+        let references: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_foreign_key_list('{table}') WHERE \"from\" = ?1"
+                ),
+                [column],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(references, 0, "{listed} must not be a foreign key");
+    }
+}

@@ -8,7 +8,10 @@ use core_ledger::{
     SourceRecordId, StagedTransactionId, TagId, TransactionId,
 };
 use core_money::{Currency, Money};
-use db_worker::{DebtTermsInput, RepaymentPhilosophy, SplitLineInput, WriteCommand};
+use db_worker::{
+    AssumptionKind, AssumptionSource, DebtTermsInput, NewAssumptionEvent, RepaymentPhilosophy,
+    SplitLineInput, WriteCommand,
+};
 use pay_schedule::Frequency;
 use uuid::Uuid;
 
@@ -518,6 +521,23 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "record_balance_assertion",
+            WriteCommand::RecordBalanceAssertion {
+                id: u(70),
+                account_id: account(1),
+                amount: Money::new(123_456, Currency::Usd),
+                as_of: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+            },
+        ),
+        (
+            "record_connector_balance",
+            WriteCommand::RecordConnectorBalance {
+                account_id: account(1),
+                observed_at: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+                amount: Money::new(125_000, Currency::Usd),
+            },
+        ),
+        (
             "set_household_name",
             WriteCommand::SetHouseholdName {
                 name: "The Garcia household".into(),
@@ -561,5 +581,37 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             "restore_household_member",
             WriteCommand::RestoreHouseholdMember { member_id: u(0) },
         ),
+        (
+            "record_assumption_event",
+            WriteCommand::RecordAssumptionEvent {
+                event: assumption_event(80, AssumptionKind::OneTimeEvent),
+            },
+        ),
+        (
+            "supersede_assumption_event",
+            WriteCommand::SupersedeAssumptionEvent {
+                id: u(80),
+                replacement: assumption_event(81, AssumptionKind::OneTimeEvent),
+            },
+        ),
+        (
+            "clear_assumption_event",
+            WriteCommand::ClearAssumptionEvent { id: u(81) },
+        ),
     ]
+}
+
+/// A sample assumption event: a base `one_time_event` override.
+fn assumption_event(n: u128, kind: AssumptionKind) -> NewAssumptionEvent {
+    NewAssumptionEvent {
+        id: u(n),
+        kind,
+        target_entity_type: None,
+        target_entity_id: None,
+        params_json:
+            r#"{"amount_minor":"50000","currency":"USD","label":"Bonus","occurs_on":"2026-11-15"}"#
+                .to_owned(),
+        source: AssumptionSource::UserOverride,
+        scenario_id: None,
+    }
 }

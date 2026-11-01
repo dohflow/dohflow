@@ -1,0 +1,194 @@
+{
+ "meta": {
+  "sourceSha": "bfe7e074e9df9cbc9f743ccd72c1ad4fe024d414",
+  "capturedAt": "2026-10-31T17:21:25.651Z",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/3.6556.2 Chrome/152.0.7977.167 Safari/537.36",
+  "locale": "en-US",
+  "timeZone": "America/Los_Angeles",
+  "innerWidth": 1024,
+  "innerHeight": 768,
+  "devicePixelRatio": 2,
+  "componentWidth": 368,
+  "theme": "dark"
+ },
+ "rows": {
+  "connection · fresh, short stamp": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 246,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 55.4140625,
+    "badgeLines": 1,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "connection · 2 days, still fresh": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 246,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 55.4140625,
+    "badgeLines": 1,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "connection · 3 days: Out of date": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 248,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 2,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "connection · Out of date, prior-year stamp": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 248,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 2,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "connection · Out of date, long name, prior-year stamp": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 268,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 2,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "connection · Out of date, refresh pending (spinner)": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 248,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 12,
+    "badgeLines": 2,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "connection · Needs attention": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 274,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 122.2578125,
+    "badgeLines": 1,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "connection · Never refreshed": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 246,
+    "scrollW": 368,
+    "clientW": 368,
+    "contentWidth": 342,
+    "actionHeight": 36,
+    "actionRightGap": 0,
+    "badgeToActionGap": 131.703125,
+    "badgeLines": 1,
+    "narrow": 1
+   },
+   "verdict": "fits"
+  },
+  "card strip · due today": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 184,
+    "scrollW": 368,
+    "clientW": 368
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 1 day (singular)": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 184,
+    "scrollW": 368,
+    "clientW": 368
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 5 days": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 184,
+    "scrollW": 368,
+    "clientW": 368
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 6 days (secondary)": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 135.5,
+    "scrollW": 368,
+    "clientW": 368
+   },
+   "verdict": "fits"
+  },
+  "card strip · due in 34 days": {
+   "problems": [],
+   "metrics": {
+    "width": 368,
+    "height": 135.5,
+    "scrollW": 368,
+    "clientW": 368
+   },
+   "verdict": "fits"
+  }
+ }
+}

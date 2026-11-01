@@ -2,7 +2,7 @@
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
 //! silently going stale as `WriteCommand` grows. It deliberately parses the
-//! enum declaration rather than constructing all 67 payloads, so a new variant
+//! enum declaration rather than constructing all 72 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
 //! can ship a command with no rebase rule. It also compares every checked-in
 //! ADR cell against this table and proves that a one-cell outcome drift fails.
@@ -252,6 +252,17 @@ const DISPOSITIONS: &[Disposition] = &[
         Shape::Toggle,
         "auto iff strict predicate and end state is equal; queue-choose if touched or opposed (no reinstate)",
     ),
+    // Balance observations (personal-cfo-5ymg8.3; ADR 0073 Addendum F).
+    d(
+        "RecordBalanceAssertion",
+        Shape::Create,
+        "auto; queue-choose only when the base already holds a manual assertion for the same account and day (both are kept, never LWW)",
+    ),
+    d(
+        "RecordConnectorBalance",
+        Shape::Set,
+        "auto, newest issued_at wins (monotone upsert); an older command applies as a no-op",
+    ),
     // The household record (personal-cfo-339; ADR 0073 Addendum E).
     d(
         "SetHouseholdName",
@@ -285,6 +296,21 @@ const DISPOSITIONS: &[Disposition] = &[
     ),
     d(
         "RestoreHouseholdMember",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
+    ),
+    d(
+        "RecordAssumptionEvent",
+        Shape::Create,
+        "auto; queue-edit if the event id is already in use",
+    ),
+    d(
+        "SupersedeAssumptionEvent",
+        Shape::Toggle,
+        "auto iff strict predicate and end state is equal; queue-choose if the old event was touched or is no longer active (the replacement is created in the same command)",
+    ),
+    d(
+        "ClearAssumptionEvent",
         Shape::Toggle,
         "auto iff strict predicate and end state is equal; queue-choose if touched or opposed",
     ),
@@ -497,7 +523,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        67,
+        72,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -525,9 +551,9 @@ fn disposition_appendix_covers_every_write_command_variant() {
     }
 
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
-    assert_eq!(shape_count(Shape::Create), 10);
-    assert_eq!(shape_count(Shape::Set), 26);
-    assert_eq!(shape_count(Shape::Toggle), 21);
+    assert_eq!(shape_count(Shape::Create), 12);
+    assert_eq!(shape_count(Shape::Set), 27);
+    assert_eq!(shape_count(Shape::Toggle), 23);
     assert_eq!(shape_count(Shape::BaseDependent), 5);
     assert_eq!(shape_count(Shape::TombstoneFirst), 0);
     assert_eq!(shape_count(Shape::ReshapeFirst), 4);

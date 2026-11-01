@@ -37,7 +37,7 @@ pub struct AppState {
     /// the unlock auto-sync, a manual sync, and rapid re-unlocks can never
     /// walk the network concurrently for one connection (the Bridge budget is
     /// ~24 requests/day, and the loser's whole batch would churn as skips).
-    connector_syncs_in_flight: Mutex<std::collections::HashSet<uuid::Uuid>>,
+    connector_syncs_in_flight: Arc<Mutex<std::collections::HashSet<uuid::Uuid>>>,
     /// Process-local consumer registry. Consumers own their opt-in policy and
     /// domain work; the production state always installs the dispatcher so an
     /// unlock runs the durable scheduler even before a feature bead registers
@@ -54,7 +54,7 @@ impl AppState {
             controller: Mutex::new(controller),
             registry: Mutex::new(VaultRegistry::default()),
             vaults_root: None,
-            connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
+            connector_syncs_in_flight: Arc::default(),
             job_dispatcher: new_job_dispatcher(),
         }
     }
@@ -71,7 +71,7 @@ impl AppState {
             controller: Mutex::new(controller),
             registry: Mutex::new(registry),
             vaults_root: Some(vaults_root),
-            connector_syncs_in_flight: Mutex::new(std::collections::HashSet::new()),
+            connector_syncs_in_flight: Arc::default(),
             job_dispatcher: new_job_dispatcher(),
         }
     }
@@ -99,6 +99,20 @@ impl AppState {
     pub fn release_connector_sync(&self, connection_id: uuid::Uuid) {
         if let Ok(mut set) = self.connector_syncs_in_flight.lock() {
             set.remove(&connection_id);
+        }
+    }
+
+    /// A release for a slot that outlives the call that claimed it: an abandoned provider fetch
+    /// keeps its connection's slot until the fetch actually ends (personal-cfo-pxi.25).
+    pub fn connector_sync_releaser(
+        &self,
+        connection_id: uuid::Uuid,
+    ) -> impl FnOnce() + Send + 'static {
+        let slots = Arc::clone(&self.connector_syncs_in_flight);
+        move || {
+            if let Ok(mut set) = slots.lock() {
+                set.remove(&connection_id);
+            }
         }
     }
 

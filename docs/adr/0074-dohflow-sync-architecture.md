@@ -379,7 +379,7 @@ as local.
 | Intent group | Class | Decision and accepted UX consequence |
 |---|---|---|
 | `balance_observations` | 1 | Assertions replicate. They are never last-write-wins: two assertions for one account and date queue for an explicit choice under ADR 0073. |
-| `scenarios`, `forecast_assumption_events`, and `forecast_dependency_edges` | 1 | Scenario work follows the user to another device; conflicting changes queue rather than silently losing an assumption. |
+| `scenarios` and `forecast_assumption_events` | 1 | Scenario work follows the user to another device; conflicting changes queue rather than silently losing an assumption. (`forecast_dependency_edges` was listed here and is class 2: Addendum F.) |
 | `dedupe_decisions` | 1 | An import decision follows the related history, so another device does not rediscover or reverse it. |
 | `merchant_aliases` | 1 | A user correction to a merchant name follows the user instead of producing different local interpretations. |
 | `merchant_identities` | 1 | Identity knowledge follows the user; conflicts remain visible through the disposition queue. |
@@ -1179,6 +1179,47 @@ owner decisions), recorded with the sync-core honor rule (spec-version 14):
   position (past the voided range when a void covers it). A successful apply with another
   write-set hash is a fork and halts; it is never an apply failure.
 
+## Addendum F — Table-class corrections (2026-10-31, `personal-cfo-5ymg8.4`)
+
+Engineering corrections to the class a table was given in Decision 5, ruled by planning inside this
+ADR and ADR 0073: they change no product behavior and no user-visible outcome.
+
+**`forecast_dependency_edges` is class 2.** A row is a per-run attribution edge: it names a
+`forecast_runs` row and a `forecast_rows` row, both class 2, rebuilt locally and never shipped, so
+a replicated edge would reference rows a replica never receives. Its writers (`record_dependency_edges`
+and the read `dependency_edges_for_row`) have no production caller, only tests. It leaves the Sync
+inventory and the write set; the scenario cascade that deletes a scenario's edges becomes a local
+cleanup of a rebuildable table. No command is written for it. The inventory row (vault-format.md,
+spec-version 18) and the manifests follow.
+
+## Addendum G — The system-account map is class 1 (2026-10-31, `personal-cfo-32fmp.3`)
+
+An engineering correction to a class recorded outside Decision 5, ruled by planning inside this ADR
+and ADR 0073 (no product behavior changes). `system_ledger_accounts`, the `(role, currency)` to
+ledger account map, was recorded as class 3 ("device-local, derived during bootstrap",
+`personal-cfo-bxsbz`). But `apply` reads it to choose which class-1 ledger account a posting names
+and to decide whether to create one, which ADR 0073 Addendum D forbids for class-3 state. A
+replica bootstrapped from a legacy origin receives the origin's `ledger_accounts` (random ids) in
+genesis but not the map, mints a system trio of its own, and then posts the first opening balance to
+a different account id than the origin: a write-set mismatch and a halt.
+
+**The map is class 1** (write set `full`, key `(role, currency)`; no foreign key, its
+`ledger_account_id` names a class-1 row). Genesis carries it, so a replica uses the origin's ids,
+legacy random or derived. Apply looks the pair up first and derives an id only on a miss, from
+`content_id("system-ledger-account", [role, currency])`, so two devices that create the same pair
+independently converge on one id and a rebased second command finds the row. **No data migration**:
+existing rows replicate as they are. Rejected alternative: keep the map as a class-3 cache and
+rewrite every legacy system id to a derived one across the ledger in a pre-genesis migration; it
+rewrites financial history for no gain.
+
+**Seeds happen at vault creation only.** The default categories, the system accounts and the seed
+merchants are written in the transaction that creates the vault, never on a later open, so no device
+writes class-1 seed rows on its own clock after genesis. A later seed change ships as a migration
+with deterministic content (derived ids, `created_at` = the vault's `created_at`). A seed id is
+never recomputed to find a row: seeded rows are renamed and moved by users and legacy rows have
+random ids, so rows are found by state. A replica bootstrap never takes the creating path and
+installs the origin's vault id before any derived mint. ADR 0073 cross-references this addendum.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` (this ADR)
@@ -1211,3 +1252,4 @@ owner decisions), recorded with the sync-core honor rule (spec-version 14):
 - `personal-cfo-g3m.22` (the vault-crypto receiver-path opener)
 - `personal-cfo-g3m.23` (the `check_envelope` conformance vectors)
 - `personal-cfo-g3m.24` and `personal-cfo-915.19` (Addendum D and the owner decision behind it)
+- `personal-cfo-32fmp.3` (Addendum G: the system-account map is class 1, seeds at creation only)

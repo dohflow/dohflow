@@ -4878,8 +4878,7 @@ pub fn update_manual_future_entry_impl(
     let account_id = parse_optional_account(&input.account_id)?;
     let id = Uuid::now_v7();
     with_kernel(state, |kernel| {
-        kernel.record_manual_entry(id, amount, occurs_on, &input.label, account_id)?;
-        kernel.supersede_assumption_event(prior, id)?;
+        kernel.supersede_manual_entry(prior, id, amount, occurs_on, &input.label, account_id)?;
         Ok(ManualFutureEntryDto {
             id: id.to_string(),
             amount: MoneyDto::from(amount),
@@ -6047,16 +6046,119 @@ fn held_link_ids(held_raw: &[String], links: &[finance_kernel::ConnectorLinkRow]
     held
 }
 
-/// Releases the [`AppState`] in-flight claim on every exit path.
+/// Releases the [`AppState`] in-flight claim on every exit path, except when an abandoned
+/// provider fetch has taken it over (it keeps the slot until the fetch actually ends).
 struct SyncClaim<'a> {
     state: &'a AppState,
     connection_id: Uuid,
+    released_elsewhere: bool,
+}
+
+impl SyncClaim<'_> {
+    /// The abandoned fetch now owns the release.
+    fn hand_over(&mut self) {
+        self.released_elsewhere = true;
+    }
 }
 
 impl Drop for SyncClaim<'_> {
     fn drop(&mut self) {
-        self.state.release_connector_sync(self.connection_id);
+        if !self.released_elsewhere {
+            self.state.release_connector_sync(self.connection_id);
+        }
     }
+}
+
+/// A scheduled refresh's own durable job, which is what a cancel request is addressed to
+/// (personal-cfo-pxi.25). The adapter is `'static` because an abandoned provider call outlives the
+/// sync that started it.
+#[derive(Clone, Copy)]
+pub struct ScheduledRun {
+    /// The `connector_refresh` job the refresh runs for.
+    pub job_id: Uuid,
+    /// The provider adapter, resolved from the registry.
+    pub adapter: &'static dyn ConnectorAdapter,
+}
+
+/// How a scheduled sync ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduledSyncEnd {
+    /// A cancel was seen before anything was written: no row, health, stamp, cursor or notice
+    /// changed. The caller records the job as cancelled.
+    Cancelled,
+    /// The sync ran to its end. `committed` is whether it wrote anything, in which case a cancel
+    /// that arrives afterwards is too late and must not rewrite the outcome.
+    Finished {
+        /// The sync's result, as a manual sync would report it.
+        result: ConnectorSyncResultDto,
+        /// Whether anything durable was written.
+        committed: bool,
+    },
+}
+
+/// The sync's early exit before any provider call or write: another sync of this connection
+/// holds the slot.
+const SYNC_IN_PROGRESS: &str = "sync_in_progress";
+
+/// Why a sync stopped before its result.
+enum SyncStop {
+    /// A cancel request was seen before the first write.
+    Cancelled,
+    Failed(IpcError),
+}
+
+impl From<IpcError> for SyncStop {
+    fn from(error: IpcError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+/// Run one provider call. A manual sync runs it inline. A scheduled run runs it so a cancel
+/// request stops the wait (it is polled from the job's durable flag, never holding the vault lock
+/// across the call): the call is abandoned, its result is dropped and never reaches the commit,
+/// and it keeps the connection's sync slot until it ends.
+fn provider_call<T: Send + 'static>(
+    state: &AppState,
+    claim: &mut SyncClaim<'_>,
+    adapter: &dyn ConnectorAdapter,
+    run: Option<ScheduledRun>,
+    call: impl FnOnce(&dyn ConnectorAdapter) -> T + Send + 'static,
+) -> Result<T, SyncStop> {
+    let Some(run) = run else {
+        return Ok(call(adapter));
+    };
+    let release = state.connector_sync_releaser(claim.connection_id);
+    match crate::abandonable::run_abandonable(
+        move || call(run.adapter),
+        || scheduled_cancel_requested(state, run),
+        release,
+    ) {
+        crate::abandonable::CallEnd::Done(result) => Ok(result),
+        crate::abandonable::CallEnd::Cancelled => {
+            claim.hand_over();
+            Err(SyncStop::Cancelled)
+        }
+        crate::abandonable::CallEnd::Lost => Err(SyncStop::Failed(IpcError::Unavailable(
+            "connector task failed".to_owned(),
+        ))),
+    }
+}
+
+/// A cancel request read inside the section that commits, with the vault lock held: cancelling
+/// takes the same lock, so a request lands either before this read or after the commit.
+fn cancel_seen_in_lock(kernel: &Kernel, run: Option<ScheduledRun>) -> Result<bool, IpcError> {
+    run.map_or(Ok(false), |run| {
+        Ok(kernel.job_cancellation_requested(run.job_id)?)
+    })
+}
+
+/// Whether the scheduled run's job has a cancel request, read under the vault lock for a moment.
+/// A read that fails is not a request.
+fn scheduled_cancel_requested(state: &AppState, run: ScheduledRun) -> bool {
+    with_kernel(state, |kernel| {
+        Ok(kernel.job_cancellation_requested(run.job_id)?)
+    })
+    .unwrap_or(false)
 }
 
 /// Classify a provider failure into a typed sync status and record it on the
@@ -6115,16 +6217,57 @@ pub fn connector_sync_impl(
     let started_at = std::time::Instant::now();
     let span = connector_span("connector_sync", adapter);
     let _entered = span.enter();
-    let result = connector_sync_inner(state, adapter, input);
+    let result = match connector_sync_inner(state, adapter, None, input) {
+        Ok(result) => Ok(result),
+        // A manual sync has no job to cancel.
+        Err(SyncStop::Cancelled) => Err(IpcError::Unavailable("sync cancelled".to_owned())),
+        Err(SyncStop::Failed(error)) => Err(error),
+    };
     finish_connector_span(&span, started_at, &result);
     result
+}
+
+/// A scheduled refresh's sync (personal-cfo-pxi.25): the same sync, cancellable. A cancel request
+/// on the run's job stops the provider fetch within the cancellation budget and, checked inside
+/// the section that commits, stops the commit; nothing is written for a run that ends
+/// [`ScheduledSyncEnd::Cancelled`].
+///
+/// # Errors
+/// [`IpcError`] when the sync fails inside DohFlow.
+pub fn connector_sync_scheduled_impl(
+    state: &AppState,
+    run: ScheduledRun,
+    input: ConnectorSyncInput,
+) -> Result<ScheduledSyncEnd, IpcError> {
+    let started_at = std::time::Instant::now();
+    let span = connector_span("connector_sync", run.adapter);
+    let _entered = span.enter();
+    let ended = connector_sync_inner(state, run.adapter, Some(run), input);
+    let outcome = match &ended {
+        Ok(_) => "success",
+        Err(SyncStop::Cancelled) => "cancelled",
+        Err(SyncStop::Failed(error)) => ipc_error_code(error),
+    };
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    span.record("duration_ms", duration_ms);
+    span.record("outcome", outcome);
+    tracing::info!(duration_ms, outcome, "connector operation completed");
+    match ended {
+        Ok(result) => {
+            let committed = result.status != SYNC_IN_PROGRESS;
+            Ok(ScheduledSyncEnd::Finished { result, committed })
+        }
+        Err(SyncStop::Cancelled) => Ok(ScheduledSyncEnd::Cancelled),
+        Err(SyncStop::Failed(error)) => Err(error),
+    }
 }
 
 fn connector_sync_inner(
     state: &AppState,
     adapter: &dyn ConnectorAdapter,
+    run: Option<ScheduledRun>,
     input: ConnectorSyncInput,
-) -> Result<ConnectorSyncResultDto, IpcError> {
+) -> Result<ConnectorSyncResultDto, SyncStop> {
     let connection_id = parse_connector_connection_id(&input.connection_id)?;
     let empty = |status: &str, message: Option<String>| ConnectorSyncResultDto {
         connection_id: connection_id.to_string(),
@@ -6141,13 +6284,14 @@ fn connector_sync_inner(
     // and rapid re-unlocks must never walk the network concurrently.
     if !state.claim_connector_sync(connection_id) {
         return Ok(empty(
-            "sync_in_progress",
+            SYNC_IN_PROGRESS,
             Some("a sync for this connection is already running".to_owned()),
         ));
     }
-    let _claim = SyncClaim {
+    let mut claim = SyncClaim {
         state,
         connection_id,
+        released_elsewhere: false,
     };
 
     // Phase 1 — read what the walk needs, then RELEASE the lock. Existence
@@ -6184,13 +6328,21 @@ fn connector_sync_inner(
                     )
                 })
         })?;
-        return match adapter.fetch_accounts(&ProviderConnection { credential }) {
+        let fetched = provider_call(state, &mut claim, adapter, run, move |adapter| {
+            adapter.fetch_accounts(&ProviderConnection { credential })
+        })?;
+        return match fetched {
             Ok(list) => {
                 let discovered = with_vault_bound(state, &vault, |kernel| {
                     if !kernel.connector_connection_exists(connection_id)? {
                         return Err(IpcError::Validation(
                             "connection no longer exists — nothing was written".to_owned(),
                         ));
+                    }
+                    // The commit is the linearization point: a cancel request lands before this
+                    // read (nothing is written) or after the commit (too late).
+                    if cancel_seen_in_lock(kernel, run)? {
+                        return Ok(None);
                     }
                     let mut count: u32 = 0;
                     for acct in &list {
@@ -6211,8 +6363,11 @@ fn connector_sync_inner(
                     kernel.clear_connector_error(connection_id)?;
                     // A discovery that succeeded proves the connection works again.
                     kernel.clear_connector_attention(connection_id)?;
-                    Ok(count)
+                    Ok(Some(count))
                 })?;
+                let Some(discovered) = discovered else {
+                    return Err(SyncStop::Cancelled);
+                };
                 if discovered > 0 {
                     Ok(empty(
                         "discovered_accounts",
@@ -6231,6 +6386,10 @@ fn connector_sync_inner(
                 }
             }
             Err(err) => {
+                // A cancel seen before the failure is recorded writes nothing.
+                if run.is_some_and(|run| scheduled_cancel_requested(state, run)) {
+                    return Err(SyncStop::Cancelled);
+                }
                 let (status, message) =
                     record_connector_failure(state, &vault, connection_id, &err)?;
                 Ok(empty(status, Some(message)))
@@ -6266,8 +6425,11 @@ fn connector_sync_inner(
         since = None;
     }
 
-    // Phase 2 — the network walk, no lock held.
-    let outcome = adapter.sync(&ProviderConnection { credential }, since);
+    // Phase 2 — the network walk, no lock held. A scheduled run can be cancelled here: the walk
+    // is abandoned and its result dropped (personal-cfo-pxi.25).
+    let outcome = provider_call(state, &mut claim, adapter, run, move |adapter| {
+        adapter.sync(&ProviderConnection { credential }, since)
+    })?;
 
     // Phase 3 — persist the outcome.
     match outcome {
@@ -6279,6 +6441,13 @@ fn connector_sync_inner(
                     return Err(IpcError::Validation(
                         "connection no longer exists — nothing was written".to_owned(),
                     ));
+                }
+                // The commit is the linearization point (personal-cfo-pxi.25): cancelling takes
+                // this same lock, so a request lands before this read (nothing is written, not
+                // the links, the batch, the stamp, the cursors or the notice) or after the
+                // commit (too late to change what the job records).
+                if cancel_seen_in_lock(kernel, run)? {
+                    return Ok(None);
                 }
                 let mut response_keys: std::collections::BTreeSet<String> =
                     std::collections::BTreeSet::new();
@@ -6361,10 +6530,11 @@ fn connector_sync_inner(
                         &crate::connector_attention::encode(&attention),
                     )?;
                 }
-                Ok((result, held_foreign))
+                Ok(Some((result, held_foreign)))
             });
             let (result, held_foreign) = match ingested {
-                Ok(outcome) => outcome,
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => return Err(SyncStop::Cancelled),
                 Err(err) => {
                     // Ingest failures (e.g. a poisoned mapping) must reach the
                     // health surface, not vanish into a tracing::warn loop.
@@ -6373,7 +6543,7 @@ fn connector_sync_inner(
                         kernel.record_connector_error(connection_id, &msg)?;
                         Ok(())
                     });
-                    return Err(err);
+                    return Err(err.into());
                 }
             };
             let warnings: Vec<String> = held_foreign
@@ -6406,6 +6576,10 @@ fn connector_sync_inner(
             })
         }
         Err(err) => {
+            // A cancel seen before the failure is recorded writes nothing.
+            if run.is_some_and(|run| scheduled_cancel_requested(state, run)) {
+                return Err(SyncStop::Cancelled);
+            }
             let (status, message) = record_connector_failure(state, &vault, connection_id, &err)?;
             Ok(empty(status, Some(message)))
         }

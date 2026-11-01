@@ -109,7 +109,6 @@ fn base(dir: &Path) -> PathBuf {
                 params_json: r#"{"annual_bps":400}"#.to_owned(),
                 source: AssumptionSource::UserOverride,
                 scenario_id: Some(u(25)),
-                origin_run_id: None,
             })
             .unwrap();
     }

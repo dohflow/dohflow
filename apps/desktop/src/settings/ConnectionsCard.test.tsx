@@ -3,7 +3,7 @@
 // confirm — all against mocked bindings, per FRONTEND.md §8.
 
 import { fireEvent, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -111,17 +111,131 @@ describe("ConnectionsCard", () => {
     expect(await findByText("Needs attention")).toBeInTheDocument();
   });
 
+  // personal-cfo-4d8.35: the words, not the tint, say whether a refresh is out of date. The clock is
+  // pinned because the fixture's stamp is 2026-08-22T10:00:00Z and the threshold is 3 whole days.
+  describe("refresh age (the badge's words carry the status)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    const at = (iso: string) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date(iso));
+    };
+
+    it("reads 'Refreshed <stamp>' while the refresh is recent", async () => {
+      at("2026-08-24T09:59:00Z"); // 1 day 23 h 59 m: 1 whole day
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+      expect(await findByText(/^Refreshed /)).toBeInTheDocument();
+      expect(queryByText(/Out of date/)).toBeNull();
+    });
+
+    it("reads 'Out of date · refreshed <stamp>' from the third whole day", async () => {
+      at("2026-08-25T10:00:00Z"); // exactly 3 days
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+      expect(await findByText(/^Out of date · refreshed /)).toBeInTheDocument();
+      // The fresh wording is NOT also shown: fresh and stale never read the same.
+      expect(queryByText(/^Refreshed /)).toBeNull();
+    });
+
+    it("reads 'Refreshed' just before 72 hours and 'Out of date' at exactly 72 hours", async () => {
+      // 30 seconds of margin: the pinned clock still advances with real time while the test runs.
+      at("2026-08-25T09:59:30Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const before = renderWithClient(<ConnectionsCard />);
+      expect(await before.findByText(/^Refreshed /)).toBeInTheDocument();
+      expect(before.queryByText(/Out of date/)).toBeNull();
+      before.unmount();
+      at("2026-08-25T10:00:00Z");
+      const exact = renderWithClient(<ConnectionsCard />);
+      expect(await exact.findByText(/^Out of date · refreshed /)).toBeInTheDocument();
+    });
+
+    it("includes the year only for a prior-year stamp, and the words stay whole across a year rollover", async () => {
+      at("2026-08-25T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const sameYear = renderWithClient(<ConnectionsCard />);
+      const sameText = (await sameYear.findByText(/^Out of date · refreshed /)).textContent ?? "";
+      expect(sameText).not.toContain("2026");
+      sameYear.unmount();
+      // Now is January 2027, the refresh was in December 2026: the stamp carries its year.
+      at("2027-01-02T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(
+        ok([connection({ last_synced_at: "2026-12-28T10:00:00Z" })]),
+      );
+      const rolled = renderWithClient(<ConnectionsCard />);
+      const rolledText = (await rolled.findByText(/^Out of date · refreshed /)).textContent ?? "";
+      expect(rolledText).toContain("2026");
+      expect(rolledText.startsWith("Out of date · refreshed ")).toBe(true);
+    });
+
+    it.each([
+      ["no stamp", null],
+      ["an unparseable stamp", "not-a-date"],
+    ])("reads 'Never refreshed' for %s, never 'Out of date'", async (_name, stamp) => {
+      at("2026-08-25T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection({ last_synced_at: stamp })]));
+      const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+      expect(await findByText("Never refreshed")).toBeInTheDocument();
+      expect(queryByText(/Out of date/)).toBeNull();
+    });
+
+    it.each([
+      ["a last error", { last_error: "access revoked" }],
+      ["an attention item", { attention: [{ kind: "reauth_institution", institution: "First Bank" }] }],
+    ])("lets %s take precedence over an old stamp: 'Needs attention', not 'Out of date'", async (_n, over) => {
+      at("2026-09-30T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection(over)]));
+      const { findByText, queryByText } = renderWithClient(<ConnectionsCard />);
+      expect(await findByText("Needs attention")).toBeInTheDocument();
+      expect(queryByText(/Out of date/)).toBeNull();
+    });
+
+    it("keeps the action's name and shows a spinner while a refresh is pending", async () => {
+      at("2026-09-30T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      mocks.connectorSync.mockReturnValue(new Promise(() => undefined));
+      const { findByRole, getByText } = renderWithClient(<ConnectionsCard />);
+      const button = await findByRole("button", { name: "Refresh now" });
+      expect(button.querySelector("svg.animate-spin")).toBeNull();
+      fireEvent.click(button);
+      await waitFor(() => expect(button).toBeDisabled());
+      expect(button).toHaveAccessibleName("Refresh now");
+      expect(button.querySelector("svg.animate-spin")).not.toBeNull();
+      // The status words are unchanged by the pending state.
+      expect(getByText(/^Out of date · refreshed /)).toBeInTheDocument();
+    });
+
+    it("keeps the fresh and the out-of-date wording different under their two variants", async () => {
+      at("2026-08-23T10:00:00Z");
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const fresh = renderWithClient(<ConnectionsCard />);
+      const freshText = (await fresh.findByText(/^Refreshed /)).textContent;
+      fresh.unmount();
+      at("2026-09-30T10:00:00Z");
+      const stale = renderWithClient(<ConnectionsCard />);
+      const staleText = (await stale.findByText(/refreshed /)).textContent;
+      expect(staleText).not.toBe(freshText);
+      expect(staleText).toMatch(/^Out of date/);
+    });
+  });
+
   it("renders a healthy connection with its refresh stamp and links", async () => {
-    mocks.connectorConnections.mockResolvedValue(ok([connection()]));
-    const { findByText, getByText } = renderWithClient(<ConnectionsCard />);
-    expect(await findByText("SimpleFIN Bridge connection")).toBeInTheDocument();
-    expect(getByText(/^Refreshed /)).toBeInTheDocument();
-    expect(getByText("Demo Checking")).toBeInTheDocument();
-    expect(
-      getByText(
-        "Not mapped — transactions from this account are not imported",
-      ),
-    ).toBeInTheDocument();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.setSystemTime(new Date("2026-08-23T10:00:00Z"));
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const { findByText, getByText } = renderWithClient(<ConnectionsCard />);
+      expect(await findByText("SimpleFIN Bridge connection")).toBeInTheDocument();
+      expect(getByText(/^Refreshed /)).toBeInTheDocument();
+      expect(getByText("Demo Checking")).toBeInTheDocument();
+      expect(
+        getByText("Not mapped — transactions from this account are not imported"),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("surfaces a failed connection with the error and a warning badge", async () => {

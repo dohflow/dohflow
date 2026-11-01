@@ -257,7 +257,6 @@ pub fn new_event(id: Uuid, kind: AssumptionKind, scenario_id: Option<Uuid>) -> N
         params_json: r#"{"net_minor":500000}"#.to_owned(),
         source: AssumptionSource::UserOverride,
         scenario_id,
-        origin_run_id: None,
     }
 }
 

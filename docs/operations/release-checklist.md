@@ -231,11 +231,13 @@ confirmed above ADR 0065's 14.0 floor):
   launch gate; confirm by hand that the signed, notarized app launches. The keychain read-back
   (a stored item has the device-only class and `kSecAttrSynchronizable = false`; the Touch ID item
   needs a fresh match) **cannot be run by an ordinary `cargo test`**: a restricted entitlement is
-  only honored inside an app bundle that carries the profile. Until the harness exists
-  (`personal-cfo-md8h2.18`: a separate throwaway signed bundle with the real app id and profile that
-  runs `platform-macos`'s `--ignored` tests; never shipped, never notarized for distribution), this item stays **open and must be recorded as not yet
-  verified** on the release bead, never ticked. Record what a user on an OLDER release sees once the
-  profile expires (the launch-risk question, `md8h2.17` item 6) the first time it is observed.
+  only honored inside an app bundle that carries the profile. Run `./scripts/keychain-smoke.sh` on the
+  release machine (`personal-cfo-md8h2.18`: a throwaway signed bundle with the real app id and profile,
+  never shipped, never notarized) and paste its `PASS` block, including any `NOT RUN` line, into the
+  release bead. Tick the attributes only on a `PASS`; the Touch ID paths (a fresh match, the cancelled
+  prompt) are ticked only after a by-hand run on a Touch ID Mac, never from a `NOT RUN`. Record what a
+  user on an OLDER release sees once the profile expires (the launch-risk question, `md8h2.17`
+  item 6) the first time it is observed.
 - [ ] Paste the `spctl` output, the `LSMinimumSystemVersion` value, and
   screenshots into this bead's notes for **macOS 14, macOS 15 (this run),
   and the stated minimum** — and separately for **macOS 26** when that

@@ -894,6 +894,31 @@ pub enum WriteCommand {
         /// The IANA zone name, for example `America/Chicago`.
         timezone: String,
     },
+    /// Record a manual balance assertion (personal-cfo-5ymg8.3; ADR 0027): "account = `amount`
+    /// as of `as_of`", stored as a `manual` observation. Never last-wins: two assertions for one
+    /// account and day are both kept. The id is minted by the caller. Not a ledger posting.
+    RecordBalanceAssertion {
+        /// The observation's id, minted by the caller.
+        id: Uuid,
+        /// The account.
+        account_id: AccountId,
+        /// The asserted balance; its currency is the account's.
+        amount: Money,
+        /// The day it is asserted for.
+        as_of: NaiveDate,
+    },
+    /// Record the balance a connector reported (personal-cfo-5ymg8.3; ADR 0027 addendum): an
+    /// UPSERT on (account, day, connector) that updates the row in place and only when this
+    /// command is newer than the stored one. `observed_at` is already clamped to the household's
+    /// today by the producer; the row carries no source record (that is device-local).
+    RecordConnectorBalance {
+        /// The account the provider balance belongs to.
+        account_id: AccountId,
+        /// The day observed.
+        observed_at: NaiveDate,
+        /// The provider's balance; its currency is the account's.
+        amount: Money,
+    },
     /// Rename the household (personal-cfo-339). A name that is already set is an accepted no-op.
     SetHouseholdName {
         /// The new name: 1 to 100 characters after trimming.
@@ -946,6 +971,26 @@ pub enum WriteCommand {
         initials: Option<String>,
         /// A `#RRGGBB` color, or none.
         color: Option<String>,
+    },
+    /// Record a forecast assumption event (personal-cfo-5ymg8.4; ADR 0026 section 4): an `active`
+    /// override or scenario overlay with a caller-minted id. It carries no forecast run.
+    RecordAssumptionEvent {
+        /// The event to record.
+        event: NewAssumptionEvent,
+    },
+    /// Replace an `active` assumption event with a new one, atomically (personal-cfo-5ymg8.4): the
+    /// "edit" of a manual entry. One command, so a replica never applies the replacement and the
+    /// supersession apart.
+    SupersedeAssumptionEvent {
+        /// The event being replaced; it must still be `active`.
+        id: Uuid,
+        /// The replacement, with its own caller-minted id.
+        replacement: NewAssumptionEvent,
+    },
+    /// Clear (deactivate) an `active` assumption event and keep the row (personal-cfo-5ymg8.4).
+    ClearAssumptionEvent {
+        /// The event; it must still be `active`.
+        id: Uuid,
     },
 }
 
@@ -1003,6 +1048,8 @@ impl WriteCommand {
             WriteCommand::UpdateCategory { .. } => "update_category",
             WriteCommand::MoveCategory { .. } => "move_category",
             WriteCommand::SetHouseholdTimezone { .. } => "set_household_timezone",
+            WriteCommand::RecordBalanceAssertion { .. } => "record_balance_assertion",
+            WriteCommand::RecordConnectorBalance { .. } => "record_connector_balance",
             WriteCommand::SetHouseholdName { .. } => "set_household_name",
             WriteCommand::AddHouseholdMember { .. } => "add_household_member",
             WriteCommand::RenameHouseholdMember { .. } => "rename_household_member",
@@ -1010,6 +1057,9 @@ impl WriteCommand {
             WriteCommand::RemoveHouseholdMember { .. } => "remove_household_member",
             WriteCommand::RestoreHouseholdMember { .. } => "restore_household_member",
             WriteCommand::SetMemberProfile { .. } => "set_member_profile",
+            WriteCommand::RecordAssumptionEvent { .. } => "record_assumption_event",
+            WriteCommand::SupersedeAssumptionEvent { .. } => "supersede_assumption_event",
+            WriteCommand::ClearAssumptionEvent { .. } => "clear_assumption_event",
             WriteCommand::ArchiveCategory(_) => "archive_category",
             WriteCommand::ReinstateCategory(_) => "reinstate_category",
             WriteCommand::RecategorizeTransaction { .. } => "recategorize_transaction",
@@ -1684,9 +1734,15 @@ impl DbWorker {
         )?)
     }
 
-    /// Shared post-keying bootstrap: migrate, seed singletons, self-test. Run
+    /// Shared post-keying bootstrap: migrate, seed a NEW vault, self-test. Run
     /// before the worker is usable so no domain query ever touches a
     /// half-migrated vault (personal-cfo-wkn).
+    ///
+    /// The vault's seed rows (household, system ledger accounts, default categories, seed
+    /// merchants) are written ONLY in the transaction that creates the `vault_metadata` row,
+    /// together with that row, so a crash cannot leave a vault that is never seeded, and no
+    /// later open writes a class-1 row (personal-cfo-32fmp.3; ADR 0074 Addendum G). A seed change
+    /// after a vault exists ships as a migration, never as a new check on open.
     fn bootstrap(
         path: PathBuf,
         mut conn: Connection,
@@ -1695,10 +1751,7 @@ impl DbWorker {
     ) -> Result<Self, DbError> {
         migrations::run_migrations(&mut conn)?;
         let node_id = ensure_node_id(&conn)?;
-        ensure_vault_metadata(&conn, migrations::CURRENT_VERSION)?;
-        ensure_system_accounts(&conn)?;
-        ensure_default_categories(&conn)?;
-        merchant_identity::ensure_seed_merchants(&conn)?;
+        create_vault_rows_if_new(&mut conn)?;
         // The write-set capture (vault-format.md C.1.5): temp triggers on the writer
         // connection, installed after the migrations and the seed writes so neither is captured.
         write_set::install(&conn)?;
@@ -1947,37 +2000,14 @@ impl DbWorker {
         amount: Money,
         as_of: NaiveDate,
     ) -> Result<(), DbError> {
-        let guard = self.lock();
-        let account_currency: Option<String> = guard
-            .conn
-            .query_row(
-                "SELECT currency FROM accounts WHERE id = ?1",
-                [account_id.as_uuid()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(account_currency) = account_currency else {
-            return Err(DbError::InvalidCommand("no such account".to_owned()));
-        };
-        if amount.currency() != currency_from_code(&account_currency)? {
-            return Err(DbError::InvalidCommand(
-                "assertion currency must match the account currency".to_owned(),
-            ));
-        }
-        let now = Utc::now().to_rfc3339();
-        guard.conn.execute(
-            "INSERT INTO balance_observations
-                (id, account_id, observed_at, balance_amount_minor, balance_currency,
-                 source, source_record_id, reconciliation_session_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'manual', NULL, NULL, ?6)",
-            params![
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::RecordBalanceAssertion {
                 id,
-                account_id.as_uuid(),
-                as_of.to_string(),
-                amount.minor_units(),
-                amount.currency().code(),
-                now,
-            ],
+                account_id,
+                amount,
+                as_of,
+            },
         )?;
         Ok(())
     }
@@ -3499,6 +3529,7 @@ impl DbWorker {
         }
         let mut staged = Vec::new();
         let mut skipped_unmapped = 0_usize;
+        let mut promotions: Vec<(Uuid, Uuid, NaiveDate, Money, CommandMeta)> = Vec::new();
         for rec in &batch.records {
             // Resolve the record's account up front: a record with no mapped
             // account cannot be staged (the commit path requires one).
@@ -3566,11 +3597,13 @@ impl DbWorker {
                 // evening sync west of UTC lands "tomorrow". A balance cannot
                 // be observed in the household's future, so clamp to the
                 // local today — keeping the same-day tie honest (a manual
-                // assertion recorded later still wins on created_at).
-                let local_today = forecast::read_household_tz(&tx)
-                    .map(|tz| Utc::now().with_timezone(&tz).date_naive())
-                    .unwrap_or_else(|_| Utc::now().date_naive());
-                let observed = bal.observed_at.min(local_today).to_string();
+                // assertion recorded later still wins on created_at). The
+                // command's metadata is built here and the clamp reads ITS
+                // instant, so the producer and apply judge the same day.
+                let meta = connectors::local_meta(ActorType::Importer, "connector");
+                let local_today = forecast::household_today_at(&tx, apply::issued_at(&meta))
+                    .unwrap_or_else(|_| apply::issued_at(&meta).date_naive());
+                let observed = bal.observed_at.min(local_today);
                 let staged_bal_id = ingestion::stage_balance(
                     &tx,
                     &ingestion::NewStagedBalance {
@@ -3594,35 +3627,39 @@ impl DbWorker {
                 if account_currency.as_deref() != Some(bal.amount.currency().code()) {
                     continue;
                 }
-                tx.execute(
-                    "DELETE FROM balance_observations
-                      WHERE account_id = ?1 AND observed_at = ?2
-                        AND source = 'connector_sync'",
-                    params![account, observed],
-                )?;
-                tx.execute(
-                    "INSERT INTO balance_observations
-                        (id, account_id, observed_at, balance_amount_minor,
-                         balance_currency, source, source_record_id,
-                         reconciliation_session_id, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'connector_sync', ?6, NULL, ?7)",
-                    params![
-                        Uuid::now_v7(),
-                        account,
-                        observed,
-                        bal.amount.minor_units(),
-                        bal.amount.currency().code(),
-                        record_id,
-                        Utc::now().to_rfc3339(),
-                    ],
-                )?;
-                tx.execute(
-                    "DELETE FROM staged_balances WHERE id = ?1",
-                    params![staged_bal_id],
-                )?;
+                // The promotion is a COMMAND on the bus (RecordConnectorBalance), which opens its
+                // own transaction, so it runs after this staging transaction commits.
+                promotions.push((staged_bal_id, account, observed, bal.amount, meta));
             }
         }
         tx.commit()?;
+        drop(guard);
+        // Promote each staged balance, then consume its staged row (class 3). A refused command
+        // (`DbError::Rejected`) leaves the balance staged and un-promoted, the same state as the
+        // currency guard's, and the loop goes on: staging has already committed, so one refusal
+        // must not strand the rest of the batch. Only a promotion that never ran (a refusal, or a
+        // crash between the command and the delete) leaves a staged row behind, and nothing
+        // revisits it: promotions come only from the current batch and `stage_balance` does not
+        // dedupe, so a later sync stages its own rows. Sweeping such rows is a follow-up
+        // (personal-cfo-0g528 reshapes the import family).
+        for (staged_bal_id, account, observed, amount, meta) in promotions {
+            match self.dispatch(
+                meta,
+                WriteCommand::RecordConnectorBalance {
+                    account_id: AccountId::from_uuid(account),
+                    observed_at: observed,
+                    amount,
+                },
+            ) {
+                Ok(_) => {}
+                Err(DbError::Rejected { .. }) => continue,
+                Err(other) => return Err(other),
+            }
+            self.lock().conn.execute(
+                "DELETE FROM staged_balances WHERE id = ?1",
+                params![staged_bal_id],
+            )?;
+        }
         Ok((staged, skipped_unmapped))
     }
 
@@ -3713,29 +3750,15 @@ impl DbWorker {
     // persist across recomputes, gated by `status`, so a user override survives
     // a re-run until explicitly cleared or superseded. See [`assumptions`].
 
-    /// Record a new assumption event (status `active`, timestamps "now").
+    /// Record a new assumption event (status `active`) through the command bus
+    /// ([`WriteCommand::RecordAssumptionEvent`]).
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError`] from the command.
     pub fn record_assumption_event(&self, ev: &NewAssumptionEvent) -> Result<(), DbError> {
-        let now = Utc::now().to_rfc3339();
-        self.lock().conn.execute(
-            "INSERT INTO forecast_assumption_events
-                (id, kind, target_entity_type, target_entity_id, params_json,
-                 source, scenario_id, status, superseded_by, origin_run_id,
-                 created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', NULL, ?8, ?9, ?9)",
-            params![
-                ev.id,
-                ev.kind.as_token(),
-                ev.target_entity_type,
-                ev.target_entity_id,
-                ev.params_json,
-                ev.source.as_token(),
-                ev.scenario_id,
-                ev.origin_run_id,
-                now,
-            ],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::RecordAssumptionEvent { event: ev.clone() },
         )?;
         Ok(())
     }
@@ -3780,31 +3803,38 @@ impl DbWorker {
         Ok(out)
     }
 
-    /// Supersede an assumption event with another (status `superseded`; the row
-    /// is retained for history, `superseded_by` points at the replacement).
+    /// Supersede an `active` assumption event with a replacement, atomically
+    /// ([`WriteCommand::SupersedeAssumptionEvent`]; status `superseded`, the row is retained for
+    /// history and `superseded_by` points at the replacement).
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
-    pub fn supersede_assumption_event(&self, id: Uuid, superseded_by: Uuid) -> Result<(), DbError> {
-        self.lock().conn.execute(
-            "UPDATE forecast_assumption_events
-             SET status = 'superseded', superseded_by = ?2, updated_at = ?3
-             WHERE id = ?1",
-            params![id, superseded_by, Utc::now().to_rfc3339()],
+    /// [`DbError::Rejected`] when the event is missing or no longer active; other [`DbError`]s
+    /// from the command.
+    pub fn supersede_assumption_event(
+        &self,
+        id: Uuid,
+        replacement: &NewAssumptionEvent,
+    ) -> Result<(), DbError> {
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::SupersedeAssumptionEvent {
+                id,
+                replacement: replacement.clone(),
+            },
         )?;
         Ok(())
     }
 
-    /// Clear (deactivate) an assumption event without deleting it.
+    /// Clear (deactivate) an `active` assumption event without deleting it
+    /// ([`WriteCommand::ClearAssumptionEvent`]).
     ///
     /// # Errors
-    /// [`DbError::Sqlite`] on a write failure.
+    /// [`DbError::Rejected`] when the event is missing or no longer active; other [`DbError`]s
+    /// from the command.
     pub fn clear_assumption_event(&self, id: Uuid) -> Result<(), DbError> {
-        self.lock().conn.execute(
-            "UPDATE forecast_assumption_events
-             SET status = 'cleared', updated_at = ?2
-             WHERE id = ?1",
-            params![id, Utc::now().to_rfc3339()],
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::ClearAssumptionEvent { id },
         )?;
         Ok(())
     }
@@ -4310,16 +4340,30 @@ impl DbWorker {
         label: &str,
         account_id: Option<Uuid>,
     ) -> Result<(), DbError> {
-        self.record_assumption_event(&NewAssumptionEvent {
-            id,
-            kind: AssumptionKind::OneTimeEvent,
-            target_entity_type: None,
-            target_entity_id: None,
-            params_json: manual_entry::build_params_json(amount, occurs_on, label, account_id),
-            source: AssumptionSource::UserOverride,
-            scenario_id: None,
-            origin_run_id: None,
-        })
+        self.record_assumption_event(&manual_entry_event(
+            id, amount, occurs_on, label, account_id,
+        ))
+    }
+
+    /// Edit a manual future entry: replace the `active` entry `prior` with a new one in ONE
+    /// command, so the edit can never land as a record and a supersession applied apart.
+    ///
+    /// # Errors
+    /// [`DbError::Rejected`] when `prior` is missing or no longer active; other [`DbError`]s from
+    /// the command.
+    pub fn supersede_manual_entry(
+        &self,
+        prior: Uuid,
+        id: Uuid,
+        amount: Money,
+        occurs_on: NaiveDate,
+        label: &str,
+        account_id: Option<Uuid>,
+    ) -> Result<(), DbError> {
+        self.supersede_assumption_event(
+            prior,
+            &manual_entry_event(id, amount, occurs_on, label, account_id),
+        )
     }
 
     /// The active base manual future entries, oldest first.
@@ -5114,8 +5158,12 @@ const DEFAULT_KDF_PARALLELISM: i64 = 1;
 /// `schema_migrations` tracker but never re-stamp this row, so without this
 /// update a vault created under an older build reports schema-incoherent on
 /// every open even after migrating cleanly (personal-cfo-4d8.27.1.3).
-/// Idempotent across re-opens.
-fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), DbError> {
+/// Idempotent across re-opens. Returns the new vault's id and creation time when THIS call
+/// created the row, and `None` for an existing vault: the caller seeds only on `Some`.
+fn ensure_vault_metadata(
+    conn: &Connection,
+    schema_version: i64,
+) -> Result<Option<(Uuid, String)>, DbError> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM vault_metadata WHERE singleton = 1)",
         [],
@@ -5131,7 +5179,7 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
              WHERE singleton = 1 AND schema_version < ?1",
             params![schema_version],
         )?;
-        return Ok(());
+        return Ok(None);
     }
     let vault_id = Uuid::now_v7();
     let created_at = Utc::now().to_rfc3339();
@@ -5185,6 +5233,31 @@ fn ensure_vault_metadata(conn: &Connection, schema_version: i64) -> Result<(), D
             ],
         )?;
     }
+    Ok(Some((vault_id, created_at)))
+}
+
+/// Create the vault's `vault_metadata` row and seed rows in ONE transaction when the vault is new,
+/// and only stamp the schema version when it exists. A failure anywhere rolls back the metadata
+/// row too, so a vault is never half-created (a row but no seeds, which creation-only seeding
+/// would never repair).
+fn create_vault_rows_if_new(conn: &mut Connection) -> Result<(), DbError> {
+    let tx = conn.transaction()?;
+    if let Some((vault_id, created_at)) = ensure_vault_metadata(&tx, migrations::CURRENT_VERSION)? {
+        seed_new_vault(&tx, &vault_id, &created_at)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Write the seed rows of a NEW vault, in the transaction that created its `vault_metadata` row.
+/// Every id and timestamp is a function of the vault (its id and creation time), so two vaults
+/// with the same id and creation time seed identical rows. A seed row is never looked up by
+/// recomputing its id: users rename and move seeded categories, and legacy vaults hold random
+/// ids, so rows are always found by state.
+fn seed_new_vault(conn: &Connection, vault_id: &Uuid, created_at: &str) -> Result<(), DbError> {
+    ensure_system_accounts(conn)?;
+    seed_default_categories(conn, vault_id, created_at)?;
+    merchant_identity::seed_merchants(conn, created_at)?;
     Ok(())
 }
 
@@ -5459,18 +5532,42 @@ fn would_create_category_cycle(
     Ok(count > 0)
 }
 
-fn ensure_default_categories(conn: &Connection) -> Result<(), DbError> {
-    let already_seeded: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM categories WHERE is_system = 1)",
-        [],
-        |r| r.get(0),
-    )?;
-    if already_seeded {
-        return Ok(());
+/// The assumption event a manual future entry is stored as: a base, `user_override`
+/// `one_time_event` with the entry's canonical parameters.
+fn manual_entry_event(
+    id: Uuid,
+    amount: Money,
+    occurs_on: NaiveDate,
+    label: &str,
+    account_id: Option<Uuid>,
+) -> NewAssumptionEvent {
+    NewAssumptionEvent {
+        id,
+        kind: AssumptionKind::OneTimeEvent,
+        target_entity_type: None,
+        target_entity_id: None,
+        params_json: manual_entry::build_params_json(amount, occurs_on, label, account_id),
+        source: AssumptionSource::UserOverride,
+        scenario_id: None,
     }
-    let now = Utc::now().to_rfc3339();
+}
+
+/// Seed the default category taxonomy of a NEW vault (called only from [`seed_new_vault`]).
+///
+/// Ids are content ids of the seed's names under the vault's derivation key (the group, or the
+/// group and the leaf: leaf names are unique within a group, and the parent's id is not needed in
+/// the parts), and both timestamps are the vault's creation time, so two vaults with the same id
+/// and creation time seed identical rows. The ids are for seeding only: a seeded category is
+/// renamed and moved by users, and a legacy vault holds random ids, so a seed row is never found
+/// by recomputing its id.
+fn seed_default_categories(
+    conn: &Connection,
+    vault_id: &Uuid,
+    created_at: &str,
+) -> Result<(), DbError> {
+    let key = core_ids::DerivedIdKey::for_vault(vault_id);
     for group in DEFAULT_TAXONOMY {
-        let group_id = Uuid::now_v7();
+        let group_id = key.content_id(CATEGORY_SEED_TAG, &[group.name.as_bytes()])?;
         insert_system_category(
             conn,
             group_id,
@@ -5478,22 +5575,32 @@ fn ensure_default_categories(conn: &Connection) -> Result<(), DbError> {
             group.name,
             group.category_type,
             group.forecast_behavior,
-            &now,
+            created_at,
         )?;
         for (leaf_name, leaf_behavior) in group.leaves {
+            let leaf_id = key.content_id(
+                CATEGORY_SEED_TAG,
+                &[group.name.as_bytes(), leaf_name.as_bytes()],
+            )?;
             insert_system_category(
                 conn,
-                Uuid::now_v7(),
+                leaf_id,
                 Some(group_id),
                 leaf_name,
                 group.category_type,
                 leaf_behavior,
-                &now,
+                created_at,
             )?;
         }
     }
     Ok(())
 }
+
+/// The content-id tag of a seeded category (`[group]` or `[group, leaf]`).
+const CATEGORY_SEED_TAG: &str = "category.seed";
+
+/// The content-id tag of a system ledger account (`[role, currency code]`).
+const SYSTEM_LEDGER_ACCOUNT_TAG: &str = "system-ledger-account";
 
 fn insert_system_category(
     conn: &Connection,
@@ -5514,7 +5621,8 @@ fn insert_system_category(
     Ok(())
 }
 
-/// Find (or create) the system ledger account for `(role, currency)`.
+/// Find (or create) the system ledger account for `(role, currency)`: the class-1 map first, then a
+/// content-derived id on a miss.
 fn ensure_system_ledger_account(
     conn: &Connection,
     role: &str,
@@ -5531,7 +5639,20 @@ fn ensure_system_ledger_account(
     if let Some(uuid) = existing {
         return Ok(LedgerAccountId::from_uuid(uuid));
     }
-    let ledger_account_id = LedgerAccountId::new();
+    // Not found: derive the id from the pair and the vault (a content id, independent of any
+    // command), so two devices that create the same pair independently converge on one row. The
+    // map is class 1 (ADR 0074 Addendum G): a replica holds the origin's rows from genesis, legacy
+    // random ids included, and finds them here before it derives anything.
+    let vault_id: Uuid = conn.query_row(
+        "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    let ledger_account_id =
+        LedgerAccountId::from_uuid(core_ids::DerivedIdKey::for_vault(&vault_id).content_id(
+            SYSTEM_LEDGER_ACCOUNT_TAG,
+            &[role.as_bytes(), currency.code().as_bytes()],
+        )?);
     insert_ledger_account(conn, ledger_account_id, kind, currency)?;
     conn.execute(
         "INSERT INTO system_ledger_accounts (role, currency, ledger_account_id) VALUES (?1, ?2, ?3)",
@@ -5730,7 +5851,7 @@ pub(crate) fn assertion_anchored_balance(
         .query_row(
             "SELECT balance_amount_minor, observed_at FROM balance_observations
              WHERE account_id = ?1 AND source IN ('manual', 'connector_sync')
-             ORDER BY observed_at DESC, created_at DESC LIMIT 1",
+             ORDER BY observed_at DESC, created_at DESC, id DESC LIMIT 1",
             [account_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -5770,7 +5891,7 @@ pub(crate) fn unexplained_adjustment(
         .query_row(
             "SELECT balance_amount_minor, observed_at, source FROM balance_observations
              WHERE account_id = ?1 AND source IN ('manual', 'connector_sync')
-             ORDER BY observed_at DESC, created_at DESC LIMIT 1",
+             ORDER BY observed_at DESC, created_at DESC, id DESC LIMIT 1",
             [account_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -5787,7 +5908,7 @@ pub(crate) fn unexplained_adjustment(
             "SELECT balance_amount_minor, observed_at FROM balance_observations
              WHERE account_id = ?1 AND source IN ('manual', 'connector_sync')
                AND observed_at < ?2
-             ORDER BY observed_at DESC, created_at DESC LIMIT 1",
+             ORDER BY observed_at DESC, created_at DESC, id DESC LIMIT 1",
             params![account_id, observed_at],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -5991,7 +6112,7 @@ fn cash_tier_rollups(conn: &Connection) -> Result<CashTiers, DbError> {
             "SELECT account_id, balance_amount_minor
              FROM (SELECT account_id, balance_amount_minor,
                           ROW_NUMBER() OVER (PARTITION BY account_id
-                                             ORDER BY observed_at DESC, created_at DESC) AS rn
+                                             ORDER BY observed_at DESC, created_at DESC, id DESC) AS rn
                      FROM balance_observations WHERE source IN ('manual', 'connector_sync'))
              WHERE rn = 1",
         )?;
@@ -6011,7 +6132,7 @@ fn cash_tier_rollups(conn: &Connection) -> Result<CashTiers, DbError> {
                  SELECT account_id, observed_at
                  FROM (SELECT account_id, observed_at,
                               ROW_NUMBER() OVER (PARTITION BY account_id
-                                                 ORDER BY observed_at DESC, created_at DESC) AS rn
+                                                 ORDER BY observed_at DESC, created_at DESC, id DESC) AS rn
                          FROM balance_observations WHERE source IN ('manual', 'connector_sync'))
                  WHERE rn = 1
              )
@@ -7528,6 +7649,26 @@ fn apply_command(
         WriteCommand::MoveCategory { id, new_parent_id } => {
             apply::categorization_cmds::apply_move_category(&tx, meta, id, new_parent_id)?
         }
+        WriteCommand::RecordBalanceAssertion {
+            id,
+            account_id,
+            amount,
+            as_of,
+        } => apply::balance_cmds::apply_record_balance_assertion(
+            &tx, meta, id, account_id, amount, as_of,
+        )?,
+        WriteCommand::RecordConnectorBalance {
+            account_id,
+            observed_at,
+            amount,
+        } => apply::balance_cmds::apply_record_connector_balance(
+            &tx,
+            meta,
+            &ids,
+            account_id,
+            observed_at,
+            amount,
+        )?,
         WriteCommand::SetHouseholdTimezone { timezone } => {
             apply::household::apply_set_household_timezone(&tx, meta, &ids, timezone)?
         }
@@ -7563,6 +7704,15 @@ fn apply_command(
             initials.as_deref(),
             color.as_deref(),
         )?,
+        WriteCommand::RecordAssumptionEvent { event } => {
+            apply::assumption_cmds::apply_record_assumption_event(&tx, meta, event)?
+        }
+        WriteCommand::SupersedeAssumptionEvent { id, replacement } => {
+            apply::assumption_cmds::apply_supersede_assumption_event(&tx, meta, id, replacement)?
+        }
+        WriteCommand::ClearAssumptionEvent { id } => {
+            apply::assumption_cmds::apply_clear_assumption_event(&tx, meta, id)?
+        }
         WriteCommand::ArchiveCategory(id) => {
             apply::categorization_cmds::apply_archive_category(&tx, meta, id)?
         }
@@ -7688,6 +7838,11 @@ fn apply_command(
         | WriteCommand::RemoveHouseholdMember { .. }
         | WriteCommand::RestoreHouseholdMember { .. } => "household_members",
         WriteCommand::SetMemberProfile { .. } => "profiles",
+        WriteCommand::RecordAssumptionEvent { .. }
+        | WriteCommand::SupersedeAssumptionEvent { .. }
+        | WriteCommand::ClearAssumptionEvent { .. } => "forecast_assumption_events",
+        WriteCommand::RecordBalanceAssertion { .. }
+        | WriteCommand::RecordConnectorBalance { .. } => "balance_observations",
         WriteCommand::CreateCategory { .. }
         | WriteCommand::UpdateCategory { .. }
         | WriteCommand::MoveCategory { .. }
