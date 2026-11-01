@@ -395,6 +395,58 @@ fn a_later_apply_over_a_cleared_item_still_blocks_the_earlier_undo() {
 }
 
 #[test]
+fn an_edited_row_of_a_later_apply_still_blocks_the_earlier_undo() {
+    let (_dir, worker, original, first) = rate_vault();
+    apply(&worker, first);
+    clear(&worker, promoted(&worker, first));
+    let second = scenario_with(&worker, &[(RATE, rate(500))]);
+    apply(&worker, second);
+    // The person edits the later apply's row: the edit is a plain base row, but it stands on the
+    // later apply.
+    let edited = edit(&worker, promoted(&worker, second), RATE, &rate(550));
+
+    let preview = worker.revert_preview(first).unwrap();
+    assert_eq!(preview.blocker.as_ref().unwrap().scenario_id, second);
+    refused(
+        revert_with(&worker, first, Vec::new()),
+        RejectCode::StateConflict,
+    );
+
+    // Undoing the later apply (which clears the edit) and then the earlier one leaves exactly the
+    // original.
+    let confirmed = worker.revert_preview(second).unwrap().confirmed_descendants;
+    assert_eq!(confirmed, vec![edited]);
+    revert_with(&worker, second, confirmed).unwrap();
+    revert(&worker, first);
+    assert_eq!(base_ids(&worker), vec![original]);
+}
+
+#[test]
+fn a_row_of_this_scenario_superseded_by_a_later_row_of_it_is_not_listed_as_kept() {
+    // Two rates in one scenario collide with each other as they are promoted: the first promoted
+    // row is superseded by the second. A plain newer base value then holds the key, and the undo
+    // keeps it with one line, not one per row.
+    let (_dir, worker) = worker();
+    let original = Uuid::now_v7();
+    record(&worker, event(original, RATE, &rate(300), None));
+    let scenario = scenario_with(&worker, &[(RATE, rate(400)), (RATE, rate(420))]);
+    apply(&worker, scenario);
+    clear(&worker, promoted(&worker, scenario));
+    let newer = Uuid::now_v7();
+    record(&worker, event(newer, RATE, &rate(350), None));
+
+    let preview = worker.revert_preview(scenario).unwrap();
+    let kept = preview
+        .lines
+        .iter()
+        .filter(|line| line.change == RevertChange::KeptNewer)
+        .count();
+    assert_eq!(kept, 1, "{preview:?}");
+    revert(&worker, scenario);
+    assert_eq!(base_ids(&worker), vec![newer]);
+}
+
+#[test]
 fn a_newer_base_value_recorded_since_the_apply_stays() {
     let (_dir, worker, original, scenario) = rate_vault();
     apply(&worker, scenario);

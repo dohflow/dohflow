@@ -73,6 +73,40 @@ fn line_kind(kind: &str) -> Option<AssumptionKind> {
     AssumptionKind::from_token(kind)
 }
 
+/// The scenario of a LATER apply that `row` came from, if any: the row itself is promoted from
+/// another scenario, or it is an edit (a supersede) somewhere down a chain that starts at a row
+/// promoted from another scenario. A plain base row the person recorded has no such origin.
+fn later_apply_behind(
+    conn: &Connection,
+    row: &EventRow,
+    scenario_id: Uuid,
+) -> Result<Option<Uuid>, DbError> {
+    if let Some(owner) = row.promoted_from {
+        return Ok((owner != scenario_id).then_some(owner));
+    }
+    let mut seen: HashSet<Uuid> = HashSet::from([row.id]);
+    let mut stack = vec![row.id];
+    while let Some(id) = stack.pop() {
+        let parents: Vec<EventRow> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {EVENT_COLUMNS} FROM forecast_assumption_events WHERE superseded_by = ?1"
+            ))?;
+            let rows = stmt.query_map(params![id], event_row)?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for parent in parents {
+            if !seen.insert(parent.id) {
+                continue;
+            }
+            match parent.promoted_from {
+                Some(owner) if owner != scenario_id => return Ok(Some(owner)),
+                _ => stack.push(parent.id),
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// What a revert of one applied scenario would do.
 pub(crate) struct RevertPlan {
     /// The ACTIVE descendants of the promoted rows, which the revert clears: exactly the ids the
@@ -168,7 +202,10 @@ pub(crate) fn plan_revert(conn: &Connection, scenario_id: Uuid) -> Result<Revert
         rows.collect::<Result<_, _>>()?
     };
     for old in retired {
-        let collides = line_kind(&old.kind).is_none_or(AssumptionKind::supersedes_on_promotion);
+        // A row of this scenario that a later row of the same scenario superseded is part of the
+        // apply: restore it and let the closing clear mark it, with no holder check and no line.
+        let collides = old.promoted_from != Some(scenario_id)
+            && line_kind(&old.kind).is_none_or(AssumptionKind::supersedes_on_promotion);
         if collides {
             let mut stmt = conn.prepare(&format!(
                 "SELECT {EVENT_COLUMNS} FROM forecast_assumption_events
@@ -188,9 +225,11 @@ pub(crate) fn plan_revert(conn: &Connection, scenario_id: Uuid) -> Result<Revert
                     !plan.descendants.contains(&row.id) && !promoted_ids.contains(&row.id)
                 })
                 .collect();
-            if let Some(later) = holders.iter().find_map(|row| row.promoted_from) {
-                plan.blocker = Some(later);
-                return Ok(plan);
+            for row in &holders {
+                if let Some(later) = later_apply_behind(conn, row, scenario_id)? {
+                    plan.blocker = Some(later);
+                    return Ok(plan);
+                }
             }
             if let Some(newer) = holders.first() {
                 plan.lines.push(RevertLine {
