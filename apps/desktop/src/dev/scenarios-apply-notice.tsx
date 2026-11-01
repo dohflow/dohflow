@@ -18,7 +18,8 @@ import { writeStoredThemePreference } from "@/theme/themePreference";
 /// Apply on load:
 ///
 /// - `overlap`: a bill amount window inside an existing open-ended amount.
-/// - `windows`: four amounts: partial overlap, open ends, and a window that covers the existing one.
+/// - `windows`: a partial overlap, a from-only amount and one with no existing amount left outside.
+/// - `open-ends`: a to-only amount and an every-date amount (both open-ended).
 /// - `mixed`: an amount overlap plus a replaced bill date.
 /// - `replace`: a replaced bill date alone (the wording that did not change).
 
@@ -73,6 +74,16 @@ function assumptions(owner: string | null): unknown[] {
             event("b1", "bill_amount", RENT, amount(100000, "2027-01-01", "2027-06-30"), null),
             event("b2", "bill_amount", PHONE, amount(8000), null),
             event("b3", "income_amount", "income-pay", amount(400000, "2027-03-01", "2027-06-30"), null),
+          ];
+    case "open-ends":
+      return mine
+        ? [
+            event("s1", "bill_amount", RENT, amount(120000, undefined, "2027-06-30"), owner),
+            event("s2", "bill_amount", PHONE, amount(9000), owner),
+          ]
+        : [
+            event("b1", "bill_amount", RENT, amount(100000), null),
+            event("b2", "bill_amount", PHONE, amount(8000), null),
           ];
     case "mixed":
       return mine

@@ -74,7 +74,7 @@ summary and a nested delete guard. `?theme=dark` and `?open=0` change the state.
 
 `scenarios-apply-notice.html` renders the **real** `ScenariosView` over a faked Tauri bridge and opens the Apply dialog, so the
 conflict notice shows the product's own strings. `?state=` is `overlap` (an amount window inside an existing amount),
-`windows` (partial overlap, open ends, a window that covers the existing one), `mixed` (an overlap plus a replaced date)
+`windows` (a partial overlap, from-only, no existing amount left outside), `open-ends` (to-only and every-date), `mixed` (an overlap plus a replaced date)
 or `replace` (a replaced date alone); `&open=1` clicks Apply on load and `&theme=dark` selects Dark.
 
 ```bash
