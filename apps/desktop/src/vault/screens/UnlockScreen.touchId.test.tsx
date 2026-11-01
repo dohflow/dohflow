@@ -49,6 +49,8 @@ describe("Touch ID on the unlock screen", () => {
     mocks.touchIdStatus.mockResolvedValue(status({}));
     render(<UnlockScreen />);
     expect(await screen.findByRole("button", { name: /unlock with touch id/i })).toBeEnabled();
+    // Nothing is prompted on its own: the screen only offers it.
+    expect(mocks.unlockWithTouchId).not.toHaveBeenCalled();
     // The password field is still the first thing: the button is an addition, not a replacement.
     expect(screen.getByLabelText(/master password/i)).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -56,7 +58,8 @@ describe("Touch ID on the unlock screen", () => {
 
   it.each([
     ["after_restart", /your mac restarted/i], // K1
-    ["too_many_failed_prompts", /three times in a row/i], // K2
+    ["too_many_failed_prompts", /three times since you last entered your master password/i], // K2
+    ["biometry_locked_out", /unlock your mac with its login password/i],
     ["password_too_old", /30 days/i], // K3
   ])("K: %s hides the button and says why in plain words", async (reason, words) => {
     mocks.touchIdStatus.mockResolvedValue(status({ offered: false, reason }));
@@ -108,7 +111,12 @@ describe("Touch ID on the unlock screen", () => {
       reason: "prompt_not_completed",
     });
     render(<UnlockScreen />);
-    fireEvent.click(await screen.findByRole("button", { name: /unlock with touch id/i }));
+    const button = await screen.findByRole("button", { name: /unlock with touch id/i });
+    // A real click moves focus to the button (fireEvent does not), so the password field has to win
+    // it back: without this the field's own autofocus would pass the assertion on its own.
+    button.focus();
+    expect(button).toHaveFocus();
+    fireEvent.click(button);
     expect(await screen.findByRole("status")).toHaveTextContent(/didn't unlock the vault/i);
     await waitFor(() => expect(screen.getByLabelText(/master password/i)).toHaveFocus());
     // Not an error: nothing red, and the button is there for another try.
@@ -129,7 +137,9 @@ describe("Touch ID on the unlock screen", () => {
     render(<UnlockScreen />);
     fireEvent.click(await screen.findByRole("button", { name: /unlock with touch id/i }));
     await waitFor(() => expect(touchButton()).not.toBeInTheDocument());
-    expect(screen.getByRole("status")).toHaveTextContent(/three times in a row/i);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /three times since you last entered your master password/i,
+    );
   });
 
   it("a failure the password would also hit is shown as an error, with the restore for a damaged vault", async () => {

@@ -7,7 +7,7 @@ const COPY: Record<string, string> = {
   after_restart:
     "Your Mac restarted. Enter your master password once and Touch ID works again.",
   too_many_failed_prompts:
-    "Touch ID didn't work three times in a row. Enter your master password to use Touch ID again.",
+    "Touch ID didn't work three times since you last entered your master password. Enter it to use Touch ID again.",
   password_too_old:
     "It has been 30 days since you entered your master password. Enter it to keep using Touch ID.",
   markers_unreadable:
@@ -18,7 +18,7 @@ const COPY: Record<string, string> = {
   biometry_not_enrolled:
     "No fingerprint is set up on this Mac. Add one in System Settings, then turn Touch ID on here.",
   biometry_locked_out:
-    "Touch ID is locked after too many tries. Enter your master password.",
+    "Touch ID is locked after too many tries. Enter your master password to open the vault. Touch ID works again after you unlock your Mac with its login password.",
   biometry_unknown:
     "DohFlow couldn't tell whether Touch ID is available. Enter your master password.",
   signed_build_needed:
