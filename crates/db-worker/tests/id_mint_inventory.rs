@@ -159,15 +159,20 @@ fn nothing_under_apply_or_in_the_modules_apply_reaches_mints_a_random_id() {
 }
 
 #[test]
-fn the_one_random_mint_apply_still_reaches_is_the_system_ledger_singleton() {
-    let reached: Vec<_> = listed()
+fn the_system_ledger_singleton_and_the_seeds_no_longer_mint_a_random_id() {
+    // personal-cfo-32fmp.3: the create-if-missing system account derives its id from its content,
+    // and the seeders derive theirs from the vault, so neither is a random mint any more.
+    let still_random: Vec<_> = listed()
         .into_iter()
-        .filter(|((_, _), _)| true)
         .filter(|((file, function), _)| {
-            file == "lib.rs" && function == "ensure_system_ledger_account"
+            file == "lib.rs"
+                && matches!(
+                    function.as_str(),
+                    "ensure_system_ledger_account" | "ensure_default_categories"
+                )
         })
         .collect();
-    assert_eq!(reached.len(), 1, "removed by personal-cfo-32fmp.3");
+    assert!(still_random.is_empty(), "{still_random:?}");
 }
 
 #[test]

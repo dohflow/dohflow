@@ -41,8 +41,6 @@ deliberate row here, in the same change.
 | `lib.rs` | `stage_sync_batch` | 1 | keep-class-3 | Device-local import staging. |
 | `lib.rs` | `ensure_node_id` | 1 | keep-class-3 | The device's own node id. |
 | `lib.rs` | `ensure_vault_metadata` | 1 | keep-seeder | The vault id, minted once at creation (genesis). |
-| `lib.rs` | `ensure_default_categories` | 2 | keep-seeder | Genesis seeder; `personal-cfo-32fmp.3` makes it genesis-only with content-derived ids. |
-| `lib.rs` | `ensure_system_ledger_account` | 1 | keep-singleton | The create-if-missing system account, reached from `apply`; `personal-cfo-32fmp.3` derives it from its content and it consumes no ordinal. The one allowed random mint reachable from apply, until then. |
 | `merchant_identity.rs` | `create_identity` | 1 | keep-caller | Reached from a direct writer outside the bus (`lib.rs`), not from `apply`; `personal-cfo-5ymg8.5` routes it. |
 
 ## Derived mints (inside `apply` and its helpers)
@@ -62,6 +60,8 @@ deliberate row here, in the same change.
 | `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (reads class-3 staging; see below) | keyed | `txn.commit-staged` | staged transaction id |
 | `apply/ingestion_cmds.rs` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
 | `apply/balance_cmds.rs` connector balance observation (insert branch of the upsert) | content | `balance-obs.connector` | account id, day (independent of the command: later commands update the row in place) |
+| `ensure_system_ledger_account` (`lib.rs`; from `apply` and the vault-creating transaction), only on a miss in the class-1 map | content | `system-ledger-account` | role, currency code (independent of the command; looked up first, so a legacy vault keeps its random ids; `personal-cfo-32fmp.3`) |
+| `seed_default_categories` (`lib.rs`), in the vault-creating transaction only, never reached from `apply` | content | `category.seed` | group name, or group name and leaf name (never recomputed to find a row: users rename and move seeded categories) |
 | `apply/ingestion_cmds.rs` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
 | `apply/household.rs` `SetHouseholdTimezone` audit row (class 3, written once per command: `INSERT OR IGNORE`) | keyed | `audit.household-timezone` | none (the command id is in every keyed id) |
 | `apply/recurring.rs` `apply_dismiss_recurring_suggestion` | none | | the suppression row has a natural key; the affected entity recorded with the command is the command id |

@@ -586,3 +586,4 @@ classified `ReferenceMissing` and `StateConflict` sites instead of `InvalidComma
 - `personal-cfo-5ymg8` — five write classes and new command dispositions
 - `personal-cfo-g3m.12` — ADR 0074 Addendum B, which defines the `AlreadyPresent` exception
 - `personal-cfo-07u` — SYNC-2a connection identity/secret split (Addendum C)
+- `personal-cfo-32fmp.3` — ADR 0074 Addendum G: the system-account map is class 1 consensus state, so apply may read it

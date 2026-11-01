@@ -276,6 +276,13 @@ synthetic no-app recovery test before any such public claim.
   tombstone, and a replica hides a tombstoned scenario and ignores its events. The rows' class-4
   label is gone. `base_run_id` and `origin_run_id` are NULL on every command-written row. No wire
   layout or vector change. (19 is personal-cfo-32fmp.3's.)
+- `spec-version = 19` (personal-cfo-32fmp.3) corrects the class of `system_ledger_accounts` in the
+  inventory from 3 (device-local, excluded) to 1 (included): apply reads the map to decide which
+  class-1 ledger account a posting names, and whether to create one, so a replica that lacked the
+  map would mint its own system accounts and post the same opening balance to a different id
+  (a write-set mismatch). The table joins Sync and genesis and the write set (`full`, key
+  `(role, currency)`); existing rows replicate as they are and no id is rewritten. No wire layout or
+  vector change. (18 is personal-cfo-5ymg8.4's.)
 - `spec-version = 18` (personal-cfo-5ymg8.4) corrects the class of `forecast_dependency_edges` in the
   inventory from 4 (routed to class 1) to 2 (derived, rebuilt locally): a row names a forecast run
   and a forecast row, both class 2 and never shipped, so a replicated edge would reference rows a
@@ -465,7 +472,7 @@ therefore requires reviewing this inventory.
 | `staged_accounts` | 3 | exclude | exclude | Device-local state. |
 | `staged_balances` | 3 | exclude | exclude | Device-local state. |
 | `staged_transactions` | 3 | exclude | exclude | Device-local state. |
-| `system_ledger_accounts` | 3 | exclude | exclude | Device-local state. |
+| `system_ledger_accounts` | 1 | include | include | The (role, currency) to ledger account map that apply reads to choose and create the system ledger accounts; consensus state, carried in genesis with the accounts it names (legacy random ids included). Corrected from class 3 by ADR 0074 Addendum G. |
 | `projection_cursors` | 3 | exclude | exclude | Device-local state. |
 | `dedupe_decisions` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `balance_observations` | 1 | include | include | An account's balance as of a day (manual or connector). Written only by `RecordBalanceAssertion` and `RecordConnectorBalance`; a connector row's `source_record_id` is NULL on every command-written row. |

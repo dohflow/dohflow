@@ -38,6 +38,19 @@ impl JobExecutor<()> for Succeed {
     }
 }
 
+struct Commit;
+
+impl JobExecutor<()> for Commit {
+    fn execute(
+        &self,
+        _job: &JobRecord,
+        _cancellation: &CancellationToken,
+        _context: &(),
+    ) -> JobExecution {
+        JobExecution::Committed
+    }
+}
+
 struct CountingSucceed {
     calls: Arc<AtomicU32>,
 }
@@ -292,6 +305,16 @@ impl JobStore for CancelAtTerminalWrite {
     ) -> Result<JobFinishResult, Self::Error> {
         self.worker.cancel_job(job.id)?;
         self.worker.finish_success(job, completed_at, next_due_at)
+    }
+
+    fn finish_committed(
+        &self,
+        job: &JobRecord,
+        completed_at: DateTime<Utc>,
+        next_due_at: Option<DateTime<Utc>>,
+    ) -> Result<(), Self::Error> {
+        self.worker.cancel_job(job.id)?;
+        self.worker.finish_committed(job, completed_at, next_due_at)
     }
 
     fn finish_failure(
@@ -940,6 +963,34 @@ fn cancellation_wins_the_final_poll_to_failure_write_race() {
         worker.durable_job(id).unwrap().unwrap().state,
         JobState::Cancelled
     );
+}
+
+#[test]
+fn a_cancel_at_the_terminal_write_does_not_rewrite_committed_work() {
+    // The same race as above, but the handler reports its work as committed: the request is too
+    // late, so the outcome is the truth and no cancellation is left pending on the row.
+    let (_dir, worker) = worker();
+    let worker = Arc::new(worker);
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    let store = CancelAtTerminalWrite {
+        worker: Arc::clone(&worker),
+    };
+    let report = JobRunner::new(&store)
+        .run_due_with_clock(
+            now(),
+            "unlock-terminal-committed-race",
+            &(),
+            &Commit,
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+
+    assert_eq!((report.succeeded, report.cancelled), (1, 0));
+    let row = worker.durable_job(id).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Succeeded);
+    assert!(!worker.job_cancellation_requested(id).unwrap());
 }
 
 #[test]

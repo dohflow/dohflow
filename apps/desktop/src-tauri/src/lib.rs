@@ -5,6 +5,7 @@
 //! of truth for the command list, shared by the running app ([`run`]) and the
 //! binding exporter ([`export_bindings`] / the `export_bindings` binary).
 
+mod abandonable;
 mod backup_job;
 pub mod connector_attention;
 pub mod connector_refresh;

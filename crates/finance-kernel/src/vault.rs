@@ -57,6 +57,22 @@ impl UnlockOptions {
     }
 }
 
+/// A single-use proof that a password was just checked against this vault's key envelope
+/// (personal-cfo-xuu; 03b's M2 on the Touch ID design). [`Kernel::released_unlock_material`] exports the
+/// live DEK as bytes for the platform store, so it cannot be called without one: the type has no public
+/// constructor, is not `Clone` or `Copy`, and the export consumes it.
+///
+/// The proof is bound to a vault only through that fingerprint: it names no path and no vault id, so it is
+/// meaningful only to the kernel that issued it, and the export re-checks the envelope it reads.
+///
+/// It carries only a fingerprint of the wrapped DEK that was verified, so the export can refuse when the
+/// envelope has changed since (a password change or a key rotation between the check and the export).
+#[derive(Debug)]
+#[must_use = "a password proof is only useful when handed to released_unlock_material"]
+pub struct PasswordVerified {
+    fingerprint: [u8; 32],
+}
+
 /// The sidecar that holds a vault's unlock material, derived from the DB path by
 /// appending `.envelope` (so `…/vault.db` → `…/vault.db.envelope`).
 fn sidecar_path(db_path: &Path) -> PathBuf {
@@ -316,6 +332,78 @@ impl Kernel {
                 _ => Err(error.into()),
             },
         }
+    }
+
+    /// Check `password` against this vault's envelope, changing nothing (personal-cfo-xuu, AC C).
+    ///
+    /// Unwraps the DEK with a KEK derived from `password` using **the same envelope bytes the
+    /// unlock fingerprint is computed from**, then compares the unwrapped key with the live key in
+    /// constant time. A wrong password is [`KernelError::VaultUnlockFailed`]; an envelope that no
+    /// longer wraps the key this vault is open with (another process changed it) is a typed error
+    /// too. Either way nothing is enabled, written or unlocked a second time.
+    ///
+    /// The host calls this under its vault-controller lock, so no state change interleaves with the
+    /// check and the export that follows it.
+    ///
+    /// # Errors
+    /// [`KernelError::VaultUnlockFailed`], [`KernelError::Vault`] (a malformed or changed
+    /// envelope), or [`KernelError::VaultNotFound`].
+    pub fn verify_password(&self, password: &[u8]) -> Result<PasswordVerified, KernelError> {
+        let envelope = self.read_envelope()?;
+        let kek = derive_kek(password, &envelope.salt, &envelope.kdf)?;
+        let unwrapped = unwrap_dek(&kek, &envelope.wrapped)?;
+        let matches = self
+            .worker
+            .with_dek(|live| bool::from(live.expose_bytes().ct_eq(unwrapped.expose_bytes())))?;
+        if !matches {
+            // The password opened the envelope on disk, but that envelope wraps a different key than
+            // the one this vault is open with: it changed behind our back. Enable nothing.
+            return Err(KernelError::Vault(
+                "the vault's key envelope no longer matches the open vault".to_owned(),
+            ));
+        }
+        Ok(PasswordVerified {
+            fingerprint: dek_fingerprint(&envelope.wrapped),
+        })
+    }
+
+    /// The unlock material for the platform's biometric store: the released plaintext of
+    /// `vault_crypto::released` built from this vault's live DEK, its `vault_id` and the fingerprint
+    /// of the wrapped DEK on disk. Consumes the [`PasswordVerified`] proof.
+    ///
+    /// The envelope is read again and its fingerprint must equal the one the proof recorded: a
+    /// password change or a rotation between the check and this call refuses the export.
+    ///
+    /// The result is a zeroizing buffer for the platform layer (Rust, never the WebView); it must
+    /// never reach IPC (`dek_boundary.rs`).
+    ///
+    /// # Errors
+    /// [`KernelError::Vault`] when the envelope changed since the proof, or on an I/O failure.
+    pub fn released_unlock_material(
+        &self,
+        proof: PasswordVerified,
+    ) -> Result<SecretBytes<RELEASED_LEN>, KernelError> {
+        let envelope = self.read_envelope()?;
+        if !bool::from(proof.fingerprint.ct_eq(&dek_fingerprint(&envelope.wrapped))) {
+            return Err(KernelError::Vault(
+                "the vault's key envelope changed since the password was checked".to_owned(),
+            ));
+        }
+        let vault_id = *self.vault_metadata()?.vault_id.as_bytes();
+        Ok(self
+            .worker
+            .with_dek(|dek| ReleasedUnlockMaterial::encode(vault_id, &envelope.wrapped, dek))?)
+    }
+
+    fn read_envelope(&self) -> Result<VaultEnvelope, KernelError> {
+        let bytes = match std::fs::read(sidecar_path(self.worker.db_path())) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Err(KernelError::VaultNotFound)
+            }
+            Err(error) => return Err(KernelError::Vault(error.to_string())),
+        };
+        Ok(VaultEnvelope::from_bytes(&bytes)?)
     }
 
     /// Lock the vault by consuming the kernel: checkpoint the write-ahead log into the main
@@ -914,6 +1002,59 @@ impl VaultController {
                 Err(error)
             }
         }
+    }
+
+    /// Unlock with the material a platform biometric store released (personal-cfo-xuu): the
+    /// controller edge of [`Kernel::unlock_vault_with_dek_options`]. Requires `Locked`. The host
+    /// passes the same [`UnlockOptions`] it passes the password path (its per-vault integrity-check
+    /// decision), and every failure returns the controller to its classified state with the file
+    /// untouched, exactly as a wrong password does.
+    ///
+    /// # Errors
+    /// [`KernelError::IllegalVaultTransition`] if not in `Locked`, or any
+    /// [`Kernel::unlock_vault_with_dek_options`] error (including
+    /// [`KernelError::ReleasedUnlock`] with the cause the caller's item policy branches on).
+    pub fn unlock_with_released(
+        &mut self,
+        released: SecretBytes<RELEASED_LEN>,
+        options: UnlockOptions,
+    ) -> Result<(), KernelError> {
+        self.transition_to(VaultState::Unlocking)?;
+        match Kernel::unlock_vault_with_dek_options(&self.path, released, options) {
+            Ok(kernel) => {
+                self.transition_to(VaultState::Unlocked)?;
+                self.kernel = Some(kernel);
+                Ok(())
+            }
+            Err(error) => {
+                self.reclassify();
+                Err(error)
+            }
+        }
+    }
+
+    /// The enrollment step for a platform biometric store: check `password` and, only if it is right,
+    /// build the unlock material, both inside one `&self` call so the caller's controller lock spans
+    /// the check and the export (personal-cfo-xuu, AC C and H). Requires `Unlocked`. A wrong
+    /// password enables nothing and changes nothing.
+    ///
+    /// # Errors
+    /// [`KernelError::IllegalVaultTransition`] if there is no unlocked kernel,
+    /// [`KernelError::VaultUnlockFailed`] for a wrong password, or as
+    /// [`Kernel::released_unlock_material`].
+    pub fn enrollment_unlock_material(
+        &self,
+        password: &[u8],
+    ) -> Result<SecretBytes<RELEASED_LEN>, KernelError> {
+        let kernel = self
+            .kernel
+            .as_ref()
+            .ok_or(KernelError::IllegalVaultTransition {
+                from: self.state,
+                to: VaultState::Unlocked,
+            })?;
+        let proof = kernel.verify_password(password)?;
+        kernel.released_unlock_material(proof)
     }
 
     /// Restore an encrypted backup into the (empty) vault location and end

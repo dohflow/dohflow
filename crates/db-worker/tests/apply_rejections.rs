@@ -648,9 +648,11 @@ fn run(worker: &DbWorker) -> Vec<String> {
             let line = match (&outcome, s.expect) {
                 (Ok(_), Fine) => {
                     let set = worker.last_write_set().unwrap();
-                    // Setup steps only: their write sets can include a system account whose id is
-                    // random until personal-cfo-32fmp.3, so only the row count is compared.
-                    format!("{}: ok rows={}", s.label, set.rows.len())
+                    // The whole write set is compared, hash included: a system ledger account a
+                    // setup step creates has a content-derived id (personal-cfo-32fmp.3), the same
+                    // on every device and in every environment.
+                    let hash: String = set.hash.iter().map(|b| format!("{b:02x}")).collect();
+                    format!("{}: ok rows={} hash={hash}", s.label, set.rows.len())
                 }
                 (Err(DbError::Rejected { code, .. }), Reject(expected)) => {
                     assert_eq!(*code, expected, "{}", s.label);
@@ -679,7 +681,16 @@ fn add_class_3_noise(worker: &DbWorker) {
     .unwrap_or_else(|e| panic!("class-3 noise: {e}"));
 }
 
-fn lines_in_child(zone: &str) -> Vec<String> {
+/// A copy of `base` in `dir`, opened: every environment runs on the SAME vault (one vault id), as
+/// the replicas of one vault do. A derived id is a function of the vault id, so write sets are
+/// only comparable between copies of one vault.
+fn copy_of(dir: &Path, base: &Path, name: &str) -> DbWorker {
+    let path = dir.join(name);
+    std::fs::copy(base, &path).unwrap();
+    open(&path)
+}
+
+fn lines_in_child(zone: &str, base: &Path) -> Vec<String> {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--ignored",
@@ -689,6 +700,7 @@ fn lines_in_child(zone: &str) -> Vec<String> {
             "--test-threads=1",
         ])
         .env("TZ", zone)
+        .env("REJECTION_BASE_VAULT", base)
         .output()
         .unwrap();
     assert!(
@@ -709,7 +721,8 @@ fn lines_in_child(zone: &str) -> Vec<String> {
 #[ignore = "run by a_rejection_is_the_same_under_every_environment in a child process"]
 fn child_run_under_the_inherited_time_zone() {
     let dir = tempfile::tempdir().unwrap();
-    let worker = open(&dir.path().join("v.vault"));
+    let base = std::env::var_os("REJECTION_BASE_VAULT").expect("the parent names the base vault");
+    let worker = copy_of(dir.path(), Path::new(&base), "v.vault");
     for line in run(&worker) {
         println!("OUTCOME {line}");
     }
@@ -718,11 +731,16 @@ fn child_run_under_the_inherited_time_zone() {
 #[test]
 fn a_rejection_is_the_same_under_every_environment() {
     let dir = tempfile::tempdir().unwrap();
-    let plain = run(&open(&dir.path().join("plain.vault")));
+    let base = dir.path().join("base.vault");
+    {
+        let worker = open(&base);
+        worker.checkpoint_truncate().unwrap();
+    }
+    let plain = run(&copy_of(dir.path(), &base, "plain.vault"));
     assert_eq!(plain.len(), scenarios().len());
 
     // Class-3 state a device may hold.
-    let noisy_worker = open(&dir.path().join("noisy.vault"));
+    let noisy_worker = copy_of(dir.path(), &base, "noisy.vault");
     add_class_3_noise(&noisy_worker);
     assert_eq!(
         plain,
@@ -731,8 +749,8 @@ fn a_rejection_is_the_same_under_every_environment() {
     );
 
     // Two device time zones.
-    let chicago = lines_in_child("America/Chicago");
-    let auckland = lines_in_child("Pacific/Auckland");
+    let chicago = lines_in_child("America/Chicago", &base);
+    let auckland = lines_in_child("Pacific/Auckland", &base);
     assert_eq!(
         chicago, auckland,
         "the device time zone changed a verdict or a write set"
