@@ -5,8 +5,9 @@
 //! password unlock (K3), all of it app-side, failing closed. One test per rule, one per lifecycle edge
 //! and one per branch of the error policy. What a real sensor does is the owner's Touch ID run (AC B).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use app_lib::ipc::commands::{
     change_password_impl, create_vault_impl, delete_vault_impl, lock_vault_impl,
@@ -44,7 +45,30 @@ struct Spy {
     inner: MockSecretStore,
     counter_seen_at_prompt: Mutex<Vec<u8>>,
     fail_delete: AtomicBool,
+    fail_update: AtomicBool,
     load_error: Mutex<Option<SecretError>>,
+    /// While set, `load_secret` blocks (the prompt is up) until `release_load` is called.
+    hold_load: AtomicBool,
+    loads_entered: AtomicU32,
+    load_released: (Mutex<bool>, Condvar),
+}
+
+impl Spy {
+    /// Lets every held `load_secret` go on, and stops holding new ones.
+    fn release_load(&self) {
+        self.hold_load.store(false, Ordering::SeqCst);
+        *self.load_released.0.lock().unwrap() = true;
+        self.load_released.1.notify_all();
+    }
+
+    /// Blocks until `n` loads have started (the prompts are up), or fails the test.
+    fn wait_for_loads(&self, n: u32) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.loads_entered.load(Ordering::SeqCst) < n {
+            assert!(Instant::now() < deadline, "the load never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 }
 
 impl SecretStore for Spy {
@@ -70,6 +94,17 @@ impl SecretStore for Spy {
                 .unwrap()
                 .push(tag.as_bytes()[COUNTER]);
         }
+        self.loads_entered.fetch_add(1, Ordering::SeqCst);
+        if self.hold_load.load(Ordering::SeqCst) {
+            // Bounded, so a regression that lets a second attempt reach the prompt fails the test
+            // instead of hanging it.
+            let released = self.load_released.0.lock().unwrap();
+            let _ = self
+                .load_released
+                .1
+                .wait_timeout_while(released, Duration::from_secs(5), |released| !*released)
+                .unwrap();
+        }
         if let Some(error) = self.load_error.lock().unwrap().clone() {
             return Err(error);
         }
@@ -81,6 +116,9 @@ impl SecretStore for Spy {
         key: &SecretKey,
         tag: Option<&PublicTag>,
     ) -> Result<(), SecretError> {
+        if self.fail_update.load(Ordering::SeqCst) {
+            return Err(SecretError::Platform { code: 1 });
+        }
         self.inner.update_public_tag(key, tag)
     }
 
@@ -118,7 +156,11 @@ impl Rig {
             inner: MockSecretStore::on_device(device.clone()),
             counter_seen_at_prompt: Mutex::default(),
             fail_delete: AtomicBool::new(false),
+            fail_update: AtomicBool::new(false),
             load_error: Mutex::default(),
+            hold_load: AtomicBool::new(false),
+            loads_entered: AtomicU32::new(0),
+            load_released: (Mutex::new(false), Condvar::new()),
         });
         let clock = Arc::new(MockBootClock::new());
         let auth = Arc::new(MockBiometricAuth::on(device.clone()));
@@ -466,6 +508,81 @@ fn k2_an_unwritable_counter_means_the_password_and_no_prompt() {
     assert!(rig.store.counter_seen_at_prompt.lock().unwrap().is_empty());
 }
 
+#[test]
+fn k2_a_counter_write_that_fails_means_the_password_and_no_prompt() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    // The markers are readable, but the increment cannot be written: nothing is shown.
+    rig.store.fail_update.store(true, Ordering::SeqCst);
+    rig.script(BiometryScript::Match);
+    let outcome = rig.touch();
+    assert!(!outcome.unlocked);
+    assert_eq!(reason(&outcome), "markers_unreadable");
+    assert_eq!(rig.store.loads_entered.load(Ordering::SeqCst), 0);
+    assert!(rig.store.counter_seen_at_prompt.lock().unwrap().is_empty());
+}
+
+#[test]
+fn k2_a_second_attempt_while_a_prompt_is_up_is_refused_with_no_prompt_and_no_count() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    rig.script(BiometryScript::Cancel);
+    rig.store.hold_load.store(true, Ordering::SeqCst);
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| rig.touch());
+        rig.store.wait_for_loads(1);
+
+        // The first prompt is showing. A double click, or a second request, is not a second prompt.
+        let second = rig.touch();
+        assert!(!second.unlocked);
+        assert_eq!(reason(&second), "attempt_in_progress");
+        assert_eq!(rig.store.loads_entered.load(Ordering::SeqCst), 1);
+        assert_eq!(rig.counter(), 1, "one prompt, counted once");
+
+        rig.store.release_load();
+        assert_eq!(reason(&first.join().unwrap()), "prompt_not_completed");
+    });
+    assert_eq!(rig.counter(), 1);
+    // The refusal left nothing behind: the next attempt is an ordinary one.
+    assert_eq!(reason(&rig.touch()), "prompt_not_completed");
+    assert_eq!(rig.counter(), 2);
+}
+
+#[test]
+fn k2_a_password_unlock_is_not_held_up_by_a_prompt_and_a_late_restore_does_not_undo_its_reset() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    rig.script(BiometryScript::Cancel);
+    assert!(!rig.touch().unlocked);
+    assert_eq!(rig.counter(), 1);
+
+    rig.script(BiometryScript::Match);
+    rig.store.hold_load.store(true, Ordering::SeqCst);
+    std::thread::scope(|scope| {
+        let attempt =
+            scope.spawn(|| touch_id_unlock_with_options_impl(&rig.state, UnlockOptions::default()));
+        rig.store.wait_for_loads(2);
+        assert_eq!(rig.counter(), 2, "raised before the prompt");
+
+        // The user types the password while the sheet is up. It completes without waiting for the sheet.
+        rig.password_unlock();
+        assert_eq!(rig.counter(), 0, "a password unlock zeroes the count");
+
+        // The sheet then ends in a way that would restore the old count (the vault is already open, so
+        // the attempt fails). The restore finds the markers changed and leaves them alone.
+        rig.store.release_load();
+        assert!(attempt.join().unwrap().is_err());
+    });
+    assert_eq!(
+        rig.counter(),
+        0,
+        "the late restore did not put the old count back"
+    );
+}
+
 // ---- K3: 30 days ----------------------------------------------------------------------------------
 
 #[test]
@@ -557,6 +674,57 @@ fn an_item_that_is_not_released_material_is_deleted() {
     assert!(!outcome.unlocked);
     assert_eq!(reason(&outcome), "retired");
     assert!(!rig.item_exists());
+}
+
+/// Replaces the stored item with the vault's real release, altered by `alter`, under the same markers.
+/// Taken while the vault is unlocked, so the key bytes and the fingerprint are the genuine ones: the
+/// only fault is the one `alter` makes.
+fn plant_altered_item(rig: &Rig, alter: impl FnOnce(&mut [u8])) {
+    let material = {
+        let guard = rig.state.lock_controller().unwrap();
+        guard
+            .enrollment_unlock_material(PASSWORD.as_bytes())
+            .unwrap()
+    };
+    let mut plaintext = material.expose().to_vec();
+    assert_eq!(plaintext.len(), 81);
+    alter(&mut plaintext);
+    let tag = rig.store.inner.public_tag(&Rig::key()).unwrap().unwrap();
+    rig.store
+        .inner
+        .store_secret_tagged(
+            &Rig::key(),
+            &SecretValue::new(&plaintext).unwrap(),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            Some(&tag),
+        )
+        .unwrap();
+}
+
+#[test]
+fn an_item_for_another_vault_or_an_unknown_version_is_retired_after_the_load() {
+    type Alter = fn(&mut [u8]);
+    let faults: [(&str, Alter); 2] = [
+        ("another vault's id", |bytes| bytes[1..17].fill(7)),
+        ("an unknown version", |bytes| bytes[0] = 9),
+    ];
+    for (fault, alter) in faults {
+        let rig = Rig::new();
+        rig.enable();
+        plant_altered_item(&rig, alter);
+        rig.lock();
+        rig.script(BiometryScript::Match);
+        let outcome = rig.touch();
+        assert!(!outcome.unlocked, "{fault}");
+        assert_eq!(reason(&outcome), "retired", "{fault}");
+        assert!(!rig.item_exists(), "{fault}: the item is gone");
+        assert_eq!(
+            rig.store.loads_entered.load(Ordering::SeqCst),
+            1,
+            "{fault}: it got as far as the load"
+        );
+        assert_eq!(rig.status().state, TouchIdStateDto::Off, "{fault}");
+    }
 }
 
 #[test]

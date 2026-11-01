@@ -56,6 +56,9 @@ pub enum Reason {
     /// The stored key is fine but the vault could not be opened with it right now (a damaged vault, a
     /// rotation that needs recovery): the password path decides what comes next.
     UnlockUnavailable,
+    /// Another Touch ID attempt for this app is still running (a prompt is up). The second one is
+    /// refused: no prompt, no count.
+    AttemptInProgress,
 }
 
 impl Reason {
@@ -77,6 +80,7 @@ impl Reason {
             Self::NotEnabled => "not_enabled",
             Self::PromptNotCompleted => "prompt_not_completed",
             Self::UnlockUnavailable => "unlock_unavailable",
+            Self::AttemptInProgress => "attempt_in_progress",
         }
     }
 }
@@ -317,6 +321,7 @@ mod tests {
             Reason::NotEnabled,
             Reason::PromptNotCompleted,
             Reason::UnlockUnavailable,
+            Reason::AttemptInProgress,
         ];
         let codes: std::collections::BTreeSet<_> = all.iter().map(|r| r.code()).collect();
         assert_eq!(codes.len(), all.len());

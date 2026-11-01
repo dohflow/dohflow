@@ -21,22 +21,23 @@
 //! * A retired item (a password change or a key rotation) is deleted before and after the change and
 //!   swept at launch and at every unlock.
 
-pub mod app;
 mod absent_auth;
+pub mod app;
 mod policy;
 mod tag;
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use finance_kernel::KernelError;
 use platform_traits::{
-    AccessPolicy, AuthPrompt, BiometricAuth, BootClock, BootClockError,
-    BootId, PublicTag, SecretError, SecretKey, SecretStore, SecretValue, UnavailableReason,
+    AccessPolicy, AuthPrompt, BiometricAuth, BootClock, BootClockError, BootId, PublicTag,
+    SecretError, SecretKey, SecretStore, SecretValue, UnavailableReason,
 };
 use vault_crypto::{SecretBytes, RELEASED_LEN};
 
-pub use policy::{reason_for, Reason, MAX_FAILED_PROMPTS, MAX_PASSWORD_AGE_NS};
 use absent_auth::AbsentAuth;
+pub use policy::{reason_for, Reason, MAX_FAILED_PROMPTS, MAX_PASSWORD_AGE_NS};
 use tag::Markers;
 
 /// The keychain service name of the item (`SecretKey` requires the `app.dohflow.` prefix).
@@ -91,6 +92,21 @@ pub struct TouchId {
     store: Arc<dyn SecretStore>,
     auth: Arc<dyn BiometricAuth>,
     clock: Arc<dyn BootClock>,
+    /// Serializes each read-then-write of the markers (the counter and the stamp). Held for one such
+    /// step only, never across a prompt, so a password unlock is not held up behind a Touch ID sheet.
+    markers: Arc<Mutex<()>>,
+    /// Set while a Touch ID attempt runs (from the counter increment to its outcome). A second attempt
+    /// is refused with no prompt and no count.
+    attempt_running: Arc<AtomicBool>,
+}
+
+/// Clears `attempt_running` when the attempt ends, however it ends.
+struct AttemptGuard(Arc<AtomicBool>);
+
+impl Drop for AttemptGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl TouchId {
@@ -100,7 +116,13 @@ impl TouchId {
         auth: Arc<dyn BiometricAuth>,
         clock: Arc<dyn BootClock>,
     ) -> Self {
-        Self { store, auth, clock }
+        Self {
+            store,
+            auth,
+            clock,
+            markers: Arc::new(Mutex::new(())),
+            attempt_running: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// No Touch ID on this build: every call is the typed `Unavailable(reason)` and the app stays
@@ -137,6 +159,12 @@ impl TouchId {
             let _ = bundle_id;
             Self::absent(UnavailableReason::Unsupported)
         }
+    }
+
+    fn serialized(&self) -> MutexGuard<'_, ()> {
+        self.markers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn key(account: &str) -> Option<SecretKey> {
@@ -223,6 +251,7 @@ impl TouchId {
         material: &SecretBytes<RELEASED_LEN>,
     ) -> Result<(), Reason> {
         let key = Self::key(account).ok_or(Reason::MarkersUnreadable)?;
+        let _step = self.serialized();
         let outcome = self.try_install(&key, material);
         if outcome.is_err() {
             // A failed enable is password-only, whatever the cause: an older item is removed too (a
@@ -274,6 +303,7 @@ impl TouchId {
     /// The store's error when the item cannot be removed.
     pub fn disable(&self, account: &str) -> Result<(), SecretError> {
         let key = Self::key(account).ok_or(SecretError::InvalidKey)?;
+        let _step = self.serialized();
         self.store.delete_secret(&key)
     }
 
@@ -295,9 +325,10 @@ impl TouchId {
         let Some(key) = Self::key(account) else {
             return;
         };
+        let _step = self.serialized();
         let Ok(Some(markers)) = self.read_markers(&key) else {
             // No item, an unusable store, or unreadable markers: unreadable ones are swept below.
-            self.sweep(account, fingerprint);
+            self.sweep_key(&key, fingerprint);
             return;
         };
         if fingerprint != Some(markers.fingerprint) {
@@ -331,7 +362,13 @@ impl TouchId {
         let Some(key) = Self::key(account) else {
             return;
         };
-        let stale = match self.store.public_tag(&key) {
+        let _step = self.serialized();
+        self.sweep_key(&key, fingerprint);
+    }
+
+    /// `sweep` for a caller that already holds the markers step.
+    fn sweep_key(&self, key: &SecretKey, fingerprint: Option<[u8; 32]>) {
+        let stale = match self.store.public_tag(key) {
             Ok(Some(tag)) => match Markers::decode(&tag) {
                 Some(markers) => fingerprint.is_some_and(|current| current != markers.fingerprint),
                 None => true,
@@ -340,7 +377,7 @@ impl TouchId {
             Err(_) => false,
         };
         if stale {
-            let _ = self.store.delete_secret(&key);
+            let _ = self.store.delete_secret(key);
         }
     }
 
@@ -352,42 +389,48 @@ impl TouchId {
         fingerprint: Option<[u8; 32]>,
         unlock_with: impl FnOnce(SecretBytes<RELEASED_LEN>) -> Result<(), KernelError>,
     ) -> Attempt {
+        if self.attempt_running.swap(true, Ordering::SeqCst) {
+            // Another attempt is running: refuse this one, with no prompt and no count.
+            return Attempt::PasswordRequired(Reason::AttemptInProgress);
+        }
+        let _attempt = AttemptGuard(Arc::clone(&self.attempt_running));
         let Some(key) = Self::key(account) else {
             return Attempt::PasswordRequired(Reason::MarkersUnreadable);
         };
-        let status = self.status(account, fingerprint);
-        match status.state {
-            State::On { offered: true } => {}
-            State::On { offered: false } => {
-                return Attempt::PasswordRequired(
-                    status.reason.unwrap_or(Reason::MarkersUnreadable),
-                )
-            }
-            State::Off => return Attempt::PasswordRequired(Reason::NotEnabled),
-            State::Unavailable(reason) => return Attempt::PasswordRequired(reason),
-        }
-        let Ok(Some(before)) = self.read_markers(&key) else {
-            return Attempt::PasswordRequired(Reason::MarkersUnreadable);
-        };
 
-        // The counter goes up BEFORE the prompt, so a prompt that never returns (a crash, a killed
-        // app) still counts. If it cannot be written the password is required and nothing is shown.
-        let counted = before.with_failed_prompts(before.failed_prompts.saturating_add(1));
-        if self
-            .store
-            .update_public_tag(&key, Some(&counted.encode()))
-            .is_err()
-        {
-            return Attempt::PasswordRequired(Reason::MarkersUnreadable);
-        }
-        let restore = || {
-            // Best effort: if this fails the counter stays one higher, which only moves toward the
-            // password.
-            let _ = self.store.update_public_tag(&key, Some(&before.encode()));
+        // The check, the read and the increment are one step: nothing else reads the markers between
+        // them and writes them back.
+        let (before, counted) = {
+            let _step = self.serialized();
+            let status = self.status(account, fingerprint);
+            match status.state {
+                State::On { offered: true } => {}
+                State::On { offered: false } => {
+                    return Attempt::PasswordRequired(
+                        status.reason.unwrap_or(Reason::MarkersUnreadable),
+                    )
+                }
+                State::Off => return Attempt::PasswordRequired(Reason::NotEnabled),
+                State::Unavailable(reason) => return Attempt::PasswordRequired(reason),
+            }
+            let Ok(Some(before)) = self.read_markers(&key) else {
+                return Attempt::PasswordRequired(Reason::MarkersUnreadable);
+            };
+            // The counter goes up BEFORE the prompt, so a prompt that never returns (a crash, a killed
+            // app) still counts. If it cannot be written the password is required and nothing is shown.
+            let counted = before.with_failed_prompts(before.failed_prompts.saturating_add(1));
+            if self
+                .store
+                .update_public_tag(&key, Some(&counted.encode()))
+                .is_err()
+            {
+                return Attempt::PasswordRequired(Reason::MarkersUnreadable);
+            }
+            (before, counted)
         };
 
         let Ok(prompt) = AuthPrompt::new(PROMPT_REASON) else {
-            restore();
+            self.restore(&key, &before, &counted);
             return Attempt::PasswordRequired(Reason::StoreUnavailable);
         };
         let value = match self.store.load_secret(&key, &prompt) {
@@ -401,6 +444,7 @@ impl TouchId {
         };
         let Some(released) = released_from(&value) else {
             // Not 81 bytes: an item this build cannot read. Retire it.
+            let _step = self.serialized();
             let _ = self.store.delete_secret(&key);
             return Attempt::PasswordRequired(Reason::Retired);
         };
@@ -409,13 +453,14 @@ impl TouchId {
         match unlock_with(released) {
             Ok(()) => {
                 // A successful unlock is not a failed prompt: put the counter back as it was.
-                restore();
+                self.restore(&key, &before, &counted);
                 Attempt::Unlocked
             }
             Err(KernelError::ReleasedUnlock(cause)) => {
-                restore();
+                self.restore(&key, &before, &counted);
                 if cause.requires_reenrollment() {
                     // The item no longer matches the vault, or cannot be read: retire it.
+                    let _step = self.serialized();
                     let _ = self.store.delete_secret(&key);
                     Attempt::PasswordRequired(Reason::Retired)
                 } else {
@@ -427,9 +472,25 @@ impl TouchId {
             Err(other) => {
                 // The password path would report the same (a damaged vault, a persistence error):
                 // keep the item, restore the counter, surface the error.
-                restore();
+                self.restore(&key, &before, &counted);
                 Attempt::Failed(other)
             }
+        }
+    }
+
+    /// Puts the counter back to `before`, but only if the markers are still the ones this attempt
+    /// wrote (`counted`). If a password unlock re-stamped them meanwhile, or the item is gone, that
+    /// newer state stands: a late restore never overwrites it.
+    fn restore(&self, key: &SecretKey, before: &Markers, counted: &Markers) {
+        let _step = self.serialized();
+        let unchanged = matches!(
+            self.store.public_tag(key),
+            Ok(Some(tag)) if Markers::decode(&tag) == Some(*counted)
+        );
+        if unchanged {
+            // Best effort: if this fails the counter stays one higher, which only moves toward the
+            // password.
+            let _ = self.store.update_public_tag(key, Some(&before.encode()));
         }
     }
 
@@ -450,27 +511,29 @@ impl TouchId {
             // Too many failed matches: macOS wants its own passcode. The password is required at once.
             SecretError::BiometryLockedOut => {
                 let locked = before.with_failed_prompts(MAX_FAILED_PROMPTS);
+                let _step = self.serialized();
                 let _ = self.store.update_public_tag(key, Some(&locked.encode()));
                 Attempt::PasswordRequired(Reason::BiometryLockedOut)
             }
             // The enrolled set changed (or was removed): the item is invalidated by the platform. Delete
             // it (a no-op if it is already gone) and offer enrollment again after the password.
             SecretError::NotFound => {
+                let _step = self.serialized();
                 let _ = self.store.delete_secret(key);
                 Attempt::PasswordRequired(Reason::Retired)
             }
             SecretError::BiometryNotEnrolled => {
-                let _ = self.store.update_public_tag(key, Some(&before.encode()));
+                self.restore(key, before, counted);
                 Attempt::PasswordRequired(Reason::BiometryNotEnrolled)
             }
             SecretError::Unavailable(UnavailableReason::MissingEntitlement) => {
-                let _ = self.store.update_public_tag(key, Some(&before.encode()));
+                self.restore(key, before, counted);
                 Attempt::PasswordRequired(Reason::SignedBuildNeeded)
             }
             // Locked, no keychain, a platform error: not the user's finger. Restore and ask for the
             // password.
             _ => {
-                let _ = self.store.update_public_tag(key, Some(&before.encode()));
+                self.restore(key, before, counted);
                 Attempt::PasswordRequired(Reason::StoreUnavailable)
             }
         }

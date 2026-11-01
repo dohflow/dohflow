@@ -17,10 +17,7 @@ impl BiometricAuth for AbsentAuth {
         BiometricAvailability::NotPresent
     }
 
-    fn preflight_prompt(
-        &self,
-        _prompt: &AuthPrompt,
-    ) -> Result<PreflightResult, SecretError> {
+    fn preflight_prompt(&self, _prompt: &AuthPrompt) -> Result<PreflightResult, SecretError> {
         Err(SecretError::Unavailable(UnavailableReason::Unsupported))
     }
 }

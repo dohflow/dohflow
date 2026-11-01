@@ -298,7 +298,11 @@ so all of it is app-side and fails closed.
 3. **The failed-prompt count is raised before the prompt is shown** (so a prompt that never returns still counts)
    and **a successful Touch ID unlock restores the pre-prompt value**: it never resets to zero on a success, only a
    password unlock does, so any number of successful unlocks never forces the password and three cancels in a row
-   do.
+   do. Only one attempt runs at a time: a second request while a prompt is up is refused (`attempt_in_progress`)
+   with no prompt and no count, and each read-then-write of the markers is one locked step that is never held
+   across a prompt, so a password unlock is not held up behind the sheet. A restore after a prompt applies only
+   if the markers are still the ones that attempt wrote; a password unlock's reset is never undone by a late
+   restore.
 4. **A lockout counts as three at once.** A wrong finger keeps the item (anyone at the keyboard could otherwise
    turn Touch ID off by failing it). A changed fingerprint set deletes it and offers enrollment again after the
    password. An item the kernel reports stale, foreign or unreadable is deleted; one that matches the envelope but
