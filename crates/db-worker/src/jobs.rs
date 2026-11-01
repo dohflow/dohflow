@@ -547,6 +547,30 @@ impl JobStore for DbWorker {
         })
     }
 
+    fn finish_committed(
+        &self,
+        job: &JobRecord,
+        completed_at: DateTime<Utc>,
+        next_due_at: Option<DateTime<Utc>>,
+    ) -> Result<(), Self::Error> {
+        // No `cancel_requested = 0` guard: the work is already committed, so a request that
+        // arrived after the commit is cleared and the outcome stands (personal-cfo-pxi.25).
+        let guard = self.lock();
+        guard.conn.execute(
+            "UPDATE durable_jobs
+                SET state = 'succeeded', attempt_count = 0,
+                    next_due_at = ?2, last_outcome = 'succeeded',
+                    last_error = NULL, cancel_requested = 0, updated_at = ?3
+              WHERE id = ?1 AND state = 'running'",
+            params![
+                job.id,
+                next_due_at.map(|value| value.to_rfc3339()),
+                completed_at.to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
     fn finish_failure(
         &self,
         job: &JobRecord,

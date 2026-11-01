@@ -64,7 +64,7 @@ pub use importer_core::{
 pub use job_runtime::{
     BackoffPolicy, CancellationToken, ClaimedJob, Clock, JobDispatcher, JobExecution, JobExecutor,
     JobFailure, JobFinishResult, JobHandler, JobOutcome, JobRecord, JobRunReport, JobRunnerError,
-    JobSpec, JobSpecError, JobState, Schedule, SystemClock,
+    JobSpec, JobSpecError, JobState, Schedule, SystemClock, CANCELLATION_POLL_INTERVAL,
 };
 pub use pay_schedule::{Frequency, PaySchedule};
 // Canonical onboarding warning (ADR 0002 / personal-cfo-n7bo): re-exported so the
@@ -3213,6 +3213,12 @@ impl Kernel {
     /// Request cancellation of a queued or running local job.
     pub fn cancel_job(&self, id: Uuid) -> Result<bool, KernelError> {
         Ok(self.worker.cancel_job(id)?)
+    }
+
+    /// Whether a cancellation was requested for a job. A lock-releasing handler reads this at its
+    /// checkpoints, and inside the section that commits (personal-cfo-pxi.25).
+    pub fn job_cancellation_requested(&self, id: Uuid) -> Result<bool, KernelError> {
+        Ok(self.worker.job_cancellation_requested(id)?)
     }
 
     /// Run due jobs for one unlocked-vault window.  Desktop callers invoke
