@@ -442,6 +442,16 @@ fn a_row_of_this_scenario_superseded_by_a_later_row_of_it_is_not_listed_as_kept(
         .filter(|line| line.change == RevertChange::KeptNewer)
         .count();
     assert_eq!(kept, 1, "{preview:?}");
+    let line = preview
+        .lines
+        .iter()
+        .find(|line| line.change == RevertChange::KeptNewer)
+        .unwrap();
+    assert_eq!(
+        line.before_params_json,
+        rate(300),
+        "the earlier value is the base rate the person had, never the scenario's own first rate"
+    );
     revert(&worker, scenario);
     assert_eq!(base_ids(&worker), vec![newer]);
 }

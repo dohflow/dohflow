@@ -367,6 +367,46 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       );
     });
 
+    it("explains a later apply that appeared meanwhile instead of a generic error", async () => {
+      applied();
+      const line = {
+        change: "edited" as const,
+        kind: "inflation_rate",
+        target_entity_id: null,
+        before_params_json: rate(400),
+        after_params_json: rate(450),
+      };
+      mocks.scenarioRevertPreview
+        .mockResolvedValueOnce(
+          ok(preview({ lines: [line], confirmed_descendants: ["evt-2"] })),
+        )
+        // The same changes, but another scenario was applied on top in the meantime.
+        .mockResolvedValueOnce(
+          ok(
+            preview({
+              lines: [line],
+              confirmed_descendants: ["evt-2"],
+              blocker_name: "Second plan",
+            }),
+          ),
+        );
+      mocks.revertScenarioApply.mockResolvedValue({
+        status: "error",
+        error: { Validation: "a scenario applied later has to be undone first" },
+      });
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /undo applying/i }));
+      const first = await screen.findByRole("dialog", { name: "Undo scenario" });
+      fireEvent.click(within(first).getByRole("button", { name: "Undo scenario" }));
+
+      const blocked = await screen.findByRole("dialog", {
+        name: "Undo another scenario first",
+      });
+      expect(blocked).toHaveTextContent(/Second plan/);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
     it("says a later scenario has to be undone first, and offers no undo", async () => {
       applied();
       mocks.scenarioRevertPreview.mockResolvedValue(

@@ -236,10 +236,13 @@ export function ScenariosView({
       const error = await revertScenarioApply(target.id, shown.confirmed_descendants);
       if (error === null) return;
       const fresh = await previewRevert(target.id);
+      // Refused because the changes moved, or because a later apply appeared on top meanwhile
+      // (the fresh preview then names it): show the fresh preview instead of a generic error.
       const moved =
         fresh.status === "ok" &&
-        fresh.data.confirmed_descendants.join(",") !==
-          shown.confirmed_descendants.join(",");
+        (fresh.data.blocker_name !== null ||
+          fresh.data.confirmed_descendants.join(",") !==
+            shown.confirmed_descendants.join(","));
       if (fresh.status === "ok" && moved) {
         setConfirmRevert({ scenario: target, preview: fresh.data, moved: true });
         return;
