@@ -1,9 +1,8 @@
 //! Parsing `kern.bootsessionuuid` (safe code with no platform calls, so it is tested on every host; the
 //! `sysctl` read is in `clock`).
 //!
-//! The boot identity is the per-boot random UUID the kernel generates once at start-up. Unlike
-//! `kern.boottime`, which the kernel shifts whenever the wall clock is stepped (`clock_set_calendar_microtime`),
-//! nothing a user or NTP does moves it, so it changes on a restart and only on a restart.
+//! The boot identity is the per-boot random UUID the kernel generates once at start-up (read-only, and it
+//! survives sleep, wake and hibernate). It is equal for the whole boot and different after a restart.
 
 use platform_traits::{BootClockError, BootId};
 

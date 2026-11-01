@@ -1,8 +1,7 @@
 use std::fmt;
 
 /// Identifies one boot of the device (on macOS, `kern.bootsessionuuid`, the per-boot random UUID, 16
-/// bytes). Equal for every call during one boot, whatever happens to the wall clock, and different after a
-/// restart. **Not secret.**
+/// bytes). Equal for every call during one boot and different after a restart. **Not secret.**
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BootId([u8; 16]);
 

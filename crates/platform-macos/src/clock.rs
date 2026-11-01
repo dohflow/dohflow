@@ -2,9 +2,7 @@
 //! again (`personal-cfo-xuu` AC K1 and K3). **Not the anti-rollback witness** (ADR 0017).
 //!
 //! * `boot_id`: `sysctl kern.bootsessionuuid`, the per-boot random UUID the kernel generates once at
-//!   start-up (16 bytes). Equal for the whole boot and different after a restart. It is NOT
-//!   `kern.boottime`, which the kernel shifts whenever the wall clock is stepped, so a manual clock
-//!   change or an NTP step would have looked like a restart.
+//!   start-up (16 bytes). Equal for the whole boot and different after a restart.
 //! * `monotonic_ns`: `mach_continuous_time` scaled by the timebase. It counts from this boot, never goes
 //!   backwards, and keeps counting while the Mac sleeps; changing the wall clock cannot move it.
 #![allow(unsafe_code)]
