@@ -26,8 +26,6 @@
 #                                one is used.
 #   APPLE_PROVISIONING_PROFILE   the Developer ID provisioning profile. Defaults to
 #                                ~/.config/personal-cfo/DohFlow_Developer_ID.provisionprofile.
-#   KEYCHAIN_SMOKE_TOUCH_ID=1    also run the conformance suite, whose biometric store the OS refuses on a Mac
-#                                with no enrolled biometrics. Set it only on a Touch ID Mac.
 # Neither needs release.env's notarization credentials, so do not source it for this.
 #
 # Not covered: the Touch ID paths (they need a person at the sensor; run them by hand from the signed
@@ -145,15 +143,16 @@ cmp -s "$app/Contents/embedded.provisionprofile" "$profile" || fail "the embedde
 
 # ── The entitled run, inside the bundle ──
 # The tests are named, and exactly that many must pass: a rename that leaves nothing to run must not read
-# as a pass. The conformance suite stores a biometric item, which the OS refuses on a Mac with no enrolled
-# biometrics (measured on the Mac Mini: AuthFailed), so it runs only on a Touch ID Mac, on request.
+# as a pass. The conformance suite adapts to the machine's RUNTIME biometric state (a Mac with nothing
+# enrolled must refuse a biometric item with the typed reason and store nothing; a Touch ID Mac must
+# store it), so it runs everywhere. What needs a person at the sensor is not run here.
 entitled_tests=(
   entitled_a_device_only_item_round_trips
   entitled_a_stored_item_has_the_device_only_class_and_is_not_synchronizable
+  entitled_a_public_tag_is_stored_and_read_back_without_authentication
+  entitled_the_access_group_is_the_signed_entitlement
+  entitled_the_store_passes_the_conformance_suite
 )
-if [[ "${KEYCHAIN_SMOKE_TOUCH_ID:-0}" == "1" ]]; then
-  entitled_tests+=(entitled_the_store_passes_the_conformance_suite)
-fi
 echo "==> entitled run (inside the signed bundle)"
 entitled_log="$work/entitled.log"
 set +e
@@ -196,10 +195,9 @@ echo "PASS keychain-smoke @ $head on macOS $(sw_vers -productVersion), $(date -u
 echo "  - a data-protection item round-trips (store, load, delete, gone) inside the signed bundle"
 echo "  - its attributes read back device-only (akpu), synchronizable false, in group $access_group"
 echo "  - the same binary without the entitlement fails with MissingEntitlement"
-if [[ "${KEYCHAIN_SMOKE_TOUCH_ID:-0}" == "1" ]]; then
-  echo "  - the conformance suite (including the biometric store) passed"
-else
-  echo "NOT RUN: the conformance suite's biometric store and the Touch ID paths (KEYCHAIN_SMOKE_TOUCH_ID=1 on a"
-  echo "         Touch ID Mac; the sensor paths are by hand). Record this line, do not tick them."
-fi
+echo "  - the app reads its own access group from its entitlement; a public tag reads back with no prompt"
+echo "  - the conformance suite passed for this Mac's biometric state ($(sw_vers -productVersion); on a Mac with no"
+echo "    enrolled biometrics it required the typed refusal for a biometric item)"
+echo "NOT RUN: the cases that need a person at the Touch ID sensor (a fresh match releasing a biometric item,"
+echo "         the pre-flight prompt). Run them by hand on a Touch ID Mac; record this line, do not tick them."
 echo "  (the bundle was throwaway: removed on exit, never shipped or notarized)"

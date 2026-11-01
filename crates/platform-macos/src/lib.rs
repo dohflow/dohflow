@@ -17,12 +17,16 @@
 
 #[cfg(target_os = "macos")]
 mod auth;
+mod availability;
+mod group;
 #[cfg(target_os = "macos")]
 mod keychain;
 mod status;
 
 #[cfg(target_os = "macos")]
 pub use auth::MacBiometricAuth;
+pub use availability::availability_from_la_code;
+pub use group::access_group_from_entitlement;
 #[cfg(target_os = "macos")]
-pub use keychain::{MacSecretStore, StoredAttributes};
+pub use keychain::{own_access_group, MacSecretStore, StoredAttributes};
 pub use status::map_os_status;

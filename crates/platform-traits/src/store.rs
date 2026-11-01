@@ -1,4 +1,4 @@
-use crate::{AccessPolicy, AuthPrompt, SecretError, SecretKey, SecretValue};
+use crate::{AccessPolicy, AuthPrompt, PublicTag, SecretError, SecretKey, SecretValue};
 
 /// Whether items can leave this device in a backup or by sync. Reported per implementation; a
 /// store that cannot prove "never" reports `Unknown`, not `Never`.
@@ -16,8 +16,10 @@ pub enum Roaming {
 pub struct StoreCapabilities {
     /// Items get the device-only class ([`AccessPolicy::DeviceOnly`]).
     pub device_only_class: bool,
-    /// The platform's own access control can require a current-set biometric
-    /// ([`AccessPolicy::DeviceOnlyBiometryCurrentSet`]).
+    /// This store IMPLEMENTS the biometric access control
+    /// ([`AccessPolicy::DeviceOnlyBiometryCurrentSet`]). It says nothing about whether THIS device can
+    /// create such an item right now (no enrolled biometrics, no sensor, locked out): that is
+    /// [`crate::BiometricAuth::availability`], a runtime fact a caller asks before storing.
     pub biometry_current_set: bool,
     /// Whether an item can move to another device.
     pub roams_to_other_device: Roaming,
@@ -45,7 +47,37 @@ pub trait SecretStore: Send + Sync {
         key: &SecretKey,
         value: &SecretValue,
         policy: AccessPolicy,
+    ) -> Result<(), SecretError> {
+        self.store_secret_tagged(key, value, policy, None)
+    }
+
+    /// [`SecretStore::store_secret`] with an optional [`PublicTag`] stored beside the item. A store
+    /// REPLACES the tag with the new one (or removes it when `None`), so a tag can never describe a
+    /// different value than the one stored with it.
+    ///
+    /// A biometric-gated item (`DeviceOnlyBiometryCurrentSet`) is refused with the typed error for
+    /// the device's current [`crate::BiometricAvailability`] **before** anything is replaced, when the
+    /// implementation can tell (a store with no biometric knowledge may leave it to the platform).
+    ///
+    /// # Errors
+    /// As [`SecretStore::store_secret`].
+    fn store_secret_tagged(
+        &self,
+        key: &SecretKey,
+        value: &SecretValue,
+        policy: AccessPolicy,
+        tag: Option<&PublicTag>,
     ) -> Result<(), SecretError>;
+
+    /// Reads the item's [`PublicTag`] **without authentication**: never shows a prompt, never
+    /// releases the secret, works for a biometric-gated item. `Ok(None)` for an item stored without a
+    /// tag. This is how an owner sweeps items it no longer wants without asking the user to match a
+    /// finger.
+    ///
+    /// # Errors
+    /// [`SecretError::NotFound`] when there is no item, [`SecretError::Unavailable`] or
+    /// [`SecretError::Platform`].
+    fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError>;
 
     /// Loads the secret. `prompt` is the text shown if the platform asks the user to authenticate
     /// (ignored for items that need no authentication), so a call site never branches on policy.

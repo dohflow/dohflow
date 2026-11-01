@@ -27,6 +27,9 @@ pub enum SecretError {
     NotFound,
     #[error("the secret key is not valid")]
     InvalidKey,
+    /// The authentication prompt text is empty, too long or contains a control character.
+    #[error("the authentication prompt text is not valid")]
+    InvalidPrompt,
     #[error("the secret is too large for the platform store")]
     TooLarge,
     #[error("an empty secret cannot be stored")]

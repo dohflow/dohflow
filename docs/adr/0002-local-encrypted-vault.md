@@ -244,3 +244,35 @@ is published, and (b) an expiry watch with lead time.
 - Rotating the vault key (ADR 0083) must refresh or invalidate Touch ID material; that stays with the Touch ID bead.
 - Open: the macOS anti-rollback witness design (decision 5), and the real behavior of a profile-bearing, notarized
   build (the dependency above).
+
+## Addendum (2026-11-01, `personal-cfo-xuu`): runtime biometric availability, the public tag, and the access group
+
+First of the four changes that build Touch ID unlock on the 2026-10-24 platform traits. It changes the traits
+and the macOS implementation only; nothing consumes them yet.
+
+1. **Biometric availability is a runtime state, asked each time.** Measured on a Mac with no enrolled biometrics:
+   the OS refuses to store a biometric-gated item with `errSecAuthFailed`, which a caller cannot tell from a wrong
+   finger. `BiometricAuth::availability()` returns `Available`, `NotEnrolled`, `NotPresent`, `LockedOut` or
+   `Unknown` (`LAContext.canEvaluatePolicy`), is never cached, and an enrolled fingerprint is seen without a
+   restart. `StoreCapabilities::biometry_current_set` now only says the store IMPLEMENTS the class. A biometric
+   store is refused with the typed reason for the device's current state (`BiometryNotEnrolled`,
+   `BiometryLockedOut`, `Unavailable(Unsupported)`) **before** anything is replaced, so a refusal never destroys
+   an existing item. The conformance suite requires exactly that on a device that cannot, and the store on one
+   that can.
+2. **A public tag, readable without authentication.** An item may carry a small non-secret `PublicTag` (on macOS
+   `kSecAttrGeneric`), replaced by every store and readable without any prompt, even for a biometric-gated item
+   (`SecretStore::public_tag`). Its purpose is custody hygiene: the owner of an item can compare a fingerprint with
+   the vault's current envelope and delete a stale item at launch, without asking the user to match a finger
+   (03b's M1 on the Touch ID design: a crash between a rotation and the item's deletion must not leave a
+   retired key behind). **It is not protected by the item's access control; never put a secret in it.**
+3. **The access group comes from the app's own entitlements.** `platform-macos` reads the process's
+   `keychain-access-groups` entitlement (`SecTaskCreateFromSelf`, in the one `unsafe` module). The first value must
+   be exactly `<TeamID>.<bundle id>` (10-character uppercase team id and this app's bundle id); anything else (no
+   entitlement, a wildcard, another app's group, a malformed team id) is treated as absent and every keychain call
+   takes the typed `Unavailable(MissingEntitlement)` path. No team id is written in the source.
+4. **Prompt problems have their own typed error** (`SecretError::InvalidPrompt`), and the pre-flight
+   `LAContext` is invalidated however the call ends (a match, a cancel, a failure, a timeout), so no
+   authenticated context lingers (the optional notes N1 and N2 from the first review of the traits).
+
+The keychain is unavailable while the screen is locked (`Unavailable(Locked)`, `errSecInteractionNotAllowed`),
+which the signed harness runs into if started on a locked Mac; that is the typed behavior, not a failure.

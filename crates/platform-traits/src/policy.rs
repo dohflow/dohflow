@@ -26,14 +26,14 @@ pub struct AuthPrompt(String);
 
 impl AuthPrompt {
     /// # Errors
-    /// [`SecretError::InvalidKey`] when `reason` is empty, longer than [`MAX_PROMPT_CHARS`], or
+    /// [`SecretError::InvalidPrompt`] when `reason` is empty, longer than [`MAX_PROMPT_CHARS`], or
     /// contains a control character.
     pub fn new(reason: &str) -> Result<Self, SecretError> {
         if reason.trim().is_empty()
             || reason.chars().count() > MAX_PROMPT_CHARS
             || reason.chars().any(char::is_control)
         {
-            return Err(SecretError::InvalidKey);
+            return Err(SecretError::InvalidPrompt);
         }
         Ok(Self(reason.to_owned()))
     }
