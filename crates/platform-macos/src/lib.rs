@@ -18,6 +18,7 @@
 #[cfg(target_os = "macos")]
 mod auth;
 mod availability;
+mod boot_session;
 #[cfg(target_os = "macos")]
 mod clock;
 mod group;
@@ -28,6 +29,7 @@ mod status;
 #[cfg(target_os = "macos")]
 pub use auth::MacBiometricAuth;
 pub use availability::availability_from_la_code;
+pub use boot_session::parse_boot_session_uuid;
 #[cfg(target_os = "macos")]
 pub use clock::MacBootClock;
 pub use group::access_group_from_entitlement;

@@ -81,9 +81,25 @@ fn an_unentitled_build_fails_every_call_with_the_typed_error() {
 
 #[test]
 fn the_boot_clock_passes_its_conformance_suite_on_this_mac() {
-    // Needs no entitlement: the boot id comes from `kern.boottime` and the monotonic clock from
+    // Needs no entitlement: the boot id comes from `kern.bootsessionuuid` and the monotonic clock from
     // `mach_continuous_time`. Stable id, a clock that never goes backwards and moves with real time.
     conformance::run_boot_clock(&MacBootClock::new());
+}
+
+#[test]
+fn the_boot_id_is_the_kernels_boot_session_uuid() {
+    // The same value `sysctl -n kern.bootsessionuuid` prints, parsed the same way, and stable across calls.
+    let printed = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.bootsessionuuid"])
+        .output()
+        .expect("run sysctl");
+    let text = String::from_utf8(printed.stdout).unwrap();
+    let expected = platform_macos::parse_boot_session_uuid(text.trim()).expect("a valid UUID");
+    let clock = MacBootClock::new();
+    assert_eq!(
+        platform_traits::BootClock::boot_id(&clock).unwrap(),
+        expected
+    );
 }
 
 #[test]

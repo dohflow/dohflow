@@ -355,6 +355,13 @@ fn updating_the_tag_never_prompts_never_touches_the_secret_and_works_on_a_biomet
     store.script_biometry(BiometryScript::Fail);
     store.update_public_tag(&k, Some(&second)).unwrap();
     assert_eq!(store.public_tag(&k).unwrap(), Some(second));
+    // The update did not re-create the item with a weaker protection: the platform's access control still
+    // refuses a failed match (a device-only item would have been released).
+    assert_eq!(
+        store.load_secret(&k, &prompt()).unwrap_err(),
+        SecretError::AuthFailed,
+        "a tag update must keep the biometric access control"
+    );
     store.script_biometry(BiometryScript::Match);
     assert_eq!(store.load_secret(&k, &prompt()).unwrap(), value(b"dek"));
 }
