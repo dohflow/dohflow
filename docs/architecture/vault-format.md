@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=18 -->
-<!-- vault-format: schema-version=61 -->
+<!-- vault-format: spec-version=20 -->
+<!-- vault-format: schema-version=62 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -270,6 +270,12 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 20` (personal-cfo-5ymg8.4) records `scenarios` and `forecast_assumption_events`
+  as class 1 (included in Sync and genesis and in the write set, key `id`) now that commands write
+  them, and adds `scenarios.deleted_at` to the `scenarios` row (schema version 62): a delete is a
+  tombstone, and a replica hides a tombstoned scenario and ignores its events. The rows' class-4
+  label is gone. `base_run_id` and `origin_run_id` are NULL on every command-written row. No wire
+  layout or vector change. (19 is personal-cfo-32fmp.3's.)
 - `spec-version = 18` (personal-cfo-5ymg8.4) corrects the class of `forecast_dependency_edges` in the
   inventory from 4 (routed to class 1) to 2 (derived, rebuilt locally): a row names a forecast run
   and a forecast row, both class 2 and never shipped, so a replicated edge would reference rows a
@@ -463,8 +469,8 @@ therefore requires reviewing this inventory.
 | `projection_cursors` | 3 | exclude | exclude | Device-local state. |
 | `dedupe_decisions` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `balance_observations` | 1 | include | include | An account's balance as of a day (manual or connector). Written only by `RecordBalanceAssertion` and `RecordConnectorBalance`; a connector row's `source_record_id` is NULL on every command-written row. |
-| `scenarios` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `forecast_assumption_events` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `scenarios` | 1 | include | include | A named scenario and its lifecycle. Written only by the scenario commands; a delete is a tombstone (`deleted_at`), and `base_run_id` is NULL on every command-written row. Recorded as class 1 by ADR 0074 Addendum H. |
+| `forecast_assumption_events` | 1 | include | include | A base override or scenario overlay row, immutable once written except for `status` and `superseded_by`. Written only by the assumption-event and scenario commands; `origin_run_id` is NULL on every command-written row. Recorded as class 1 by ADR 0074 Addendum H. |
 | `forecast_dependency_edges` | 2 | rebuild | rebuild | Derived per-run attribution (an assumption event to a forecast row of one run); rebuilt locally, never shipped. Corrected from class 4 by ADR 0074 Addendum F. |
 | `merchant_aliases` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `merchant_identities` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |

@@ -813,7 +813,9 @@ fn every_class4_row_records_the_pending_disposition() {
         .iter()
         .filter(|row| row.get("class") == Some("4"))
         .collect();
-    assert!(class4.len() >= 9);
+    // Shrinks as SYNC-2 routes each class-4 table to class 1: seven remain after the scenario
+    // and assumption-event commands (personal-cfo-5ymg8.4).
+    assert!(class4.len() >= 7);
     for row in class4 {
         let note = row.required("note").unwrap();
         assert!(

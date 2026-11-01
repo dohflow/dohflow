@@ -496,15 +496,15 @@ note = "An account's balance as of a day, manual or reported by a connector. Wri
 
 [[table]]
 table = "scenarios"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current scenario writer is direct; ADR 0074 and SYNC-2 decide routing so scenario intent follows the user."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.4"
+note = "A named scenario (definition and lifecycle). Written only by CreateScenario, SetScenarioStatus, RenameScenario, SetScenarioExpiry, CloneScenario, DeleteScenario, ReinstateScenario, ApplyScenario and RevertScenarioApply. A delete is a tombstone (deleted_at = issued_at) that leaves the scenario's events in place; base_run_id is NULL on every command-written row because a forecast run is class 2 and never shipped (ADR 0074 Addendum H)."
 
 [[table]]
 table = "forecast_assumption_events"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current assumption-event writer is direct; ADR 0074 and SYNC-2 decide class-1 routing and queued conflict handling."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.4"
+note = "An assumption event (a base override or a scenario overlay row). Written only by RecordAssumptionEvent, SupersedeAssumptionEvent, ClearAssumptionEvent, CloneScenario, ApplyScenario and RevertScenarioApply; content is immutable once written (a supersede inserts a new row), only status and superseded_by change. origin_run_id is NULL on every command-written row because a forecast run is class 2 (ADR 0074 Addendum H)."
 
 [[table]]
 table = "forecast_dependency_edges"

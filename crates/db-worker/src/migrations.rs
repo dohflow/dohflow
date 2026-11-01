@@ -2139,6 +2139,27 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Scenario tombstone (personal-cfo-5ymg8.4): `scenarios` is class 1 and a delete is a
+    // tombstone, not a purge (ADR 0074 Decision 7 and Addendum H). One nullable add, no backfill:
+    // every existing scenario is live. A scenario's events are not touched by a delete, so there
+    // is nothing to migrate in `forecast_assumption_events`.
+    Migration {
+        version: 62,
+        name: "scenario_tombstone",
+        up: "ALTER TABLE scenarios ADD COLUMN deleted_at TEXT;",
+        // Reverse: refuses (atomically, like 57, 59, 60 and 61) while any scenario is tombstoned,
+        // because dropping the column would silently resurrect it.
+        down: Some(
+            "CREATE TEMP TABLE scenarios_down_needs_no_tombstone (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO scenarios_down_needs_no_tombstone
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM scenarios WHERE deleted_at IS NOT NULL)
+                             THEN 0 ELSE 1 END;
+             DROP TABLE scenarios_down_needs_no_tombstone;
+             ALTER TABLE scenarios DROP COLUMN deleted_at;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -3249,7 +3270,11 @@ mod tests {
                 migrate_down(&mut conn, 60).is_err(),
                 "down must refuse with {label}"
             );
-            assert_eq!(user_version_of(&conn), 61, "{label}: still at 61");
+            assert_eq!(
+                user_version_of(&conn),
+                CURRENT_VERSION,
+                "{label}: the refused down changed nothing"
+            );
             assert_eq!(
                 household_rows(&conn),
                 rows_before,
@@ -3307,6 +3332,48 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         apply(&mut conn, MIGRATIONS).unwrap();
         assert!(household_rows(&conn).is_empty());
+    }
+
+    /// 62 only adds the tombstone column, so every existing scenario is live, and its down
+    /// refuses while a scenario is tombstoned (dropping the column would resurrect it).
+    #[test]
+    fn v62_leaves_scenarios_live_and_its_down_refuses_while_one_is_tombstoned() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..61]).unwrap();
+        conn.execute(
+            "INSERT INTO scenarios (id, name, status, created_at, updated_at)
+             VALUES (x'00000000000000000000000000000001', 'Move', 'draft', 't', 't')",
+            [],
+        )
+        .unwrap();
+        apply(&mut conn, &MIGRATIONS[61..62]).unwrap();
+        let tombstoned = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM scenarios WHERE deleted_at IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(tombstoned(&conn), 0, "an existing scenario is live");
+
+        conn.execute("UPDATE scenarios SET deleted_at = 't'", [])
+            .unwrap();
+        assert!(
+            migrate_down(&mut conn, 61).is_err(),
+            "down must refuse with a tombstoned scenario"
+        );
+        assert_eq!(user_version_of(&conn), 62, "still at 62");
+        assert_eq!(tombstoned(&conn), 1, "nothing changed");
+
+        conn.execute("UPDATE scenarios SET deleted_at = NULL", [])
+            .unwrap();
+        assert_eq!(migrate_down(&mut conn, 61).unwrap(), 1);
+        assert_eq!(user_version_of(&conn), 61);
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scenarios", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "the scenario survives the down");
     }
 
     /// A vault has exactly one household, however a row is inserted.

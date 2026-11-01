@@ -128,7 +128,7 @@ note = "insert_system_category: ensure_default_categories seeds the system categ
 [[site]]
 module = "lib.rs"
 table = "forecast_assumption_events"
-class = "4"
+class = "1"
 statements = 2
 status = "pending"
 bead = "personal-cfo-5ymg8.4"
@@ -182,7 +182,7 @@ note = "apply_command: the bus itself writes provenance links."
 [[site]]
 module = "lib.rs"
 table = "scenarios"
-class = "4"
+class = "1"
 statements = 6
 status = "pending"
 bead = "personal-cfo-5ymg8.4"
