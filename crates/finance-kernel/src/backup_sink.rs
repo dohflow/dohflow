@@ -195,9 +195,11 @@ impl BackupSink for FolderSink {
         let mut file = options.open(&path).map_err(|_| BackupSinkError)?;
         for chunk in package.chunks(WRITE_CHUNK) {
             if cancelled() && mode == PutMode::CreateNew {
-                // The file is ours (the exclusive create succeeded): remove the partial item.
+                // The file is ours (the exclusive create succeeded): remove the partial item. If it cannot
+                // be removed the destination is NOT as it was, so this is a failed write, never a clean
+                // cancel (the caller records the failure and the partial file stays visible).
                 drop(file);
-                let _ = std::fs::remove_file(&path);
+                std::fs::remove_file(&path).map_err(|_| BackupSinkError)?;
                 return Ok(PutOutcome::Cancelled);
             }
             file.write_all(chunk).map_err(|_| BackupSinkError)?;
