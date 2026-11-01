@@ -62,6 +62,9 @@ impl UnlockOptions {
 /// live DEK as bytes for the platform store, so it cannot be called without one: the type has no public
 /// constructor, is not `Clone` or `Copy`, and the export consumes it.
 ///
+/// The proof is bound to a vault only through that fingerprint: it names no path and no vault id, so it is
+/// meaningful only to the kernel that issued it, and the export re-checks the envelope it reads.
+///
 /// It carries only a fingerprint of the wrapped DEK that was verified, so the export can refuse when the
 /// envelope has changed since (a password change or a key rotation between the check and the export).
 #[derive(Debug)]

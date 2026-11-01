@@ -185,15 +185,102 @@ fn the_controller_unlocks_from_the_material_and_the_vault_is_intact() {
 
 #[test]
 fn the_integrity_option_reaches_the_released_unlock_path() {
-    let (_dir, mut controller) = unlocked();
+    let (dir, mut controller) = unlocked();
+    let path = dir.path().join("vault.db");
+    // Enough rows that the file spans many pages, so damage to the later pages is real.
+    for n in 0..400 {
+        controller
+            .kernel()
+            .unwrap()
+            .dispatch(CommandEnvelope::new(
+                meta(),
+                CreateAccount::new(Account::new(
+                    AccountId::new(),
+                    LedgerAccountId::new(),
+                    format!("Account number {n} with a reasonably long name to fill pages"),
+                    CashflowRole::LiquidCash,
+                    Currency::Usd,
+                    AccountFlags::default(),
+                )),
+            ))
+            .unwrap();
+    }
     let material = controller.enrollment_unlock_material(PASSWORD).unwrap();
     controller.lock().unwrap();
-    // A healthy vault passes the check; the point is that the host's option is accepted on this path
-    // and the unlock still completes (a damaged vault is covered by the kernel's own DEK tests).
+
+    // A healthy vault passes the check on the released path.
+    let healthy = controller.enrollment_unlock_material(PASSWORD);
+    assert!(healthy.is_err(), "locked: no enrollment");
+    let again = {
+        let mut c = VaultController::open(path.clone());
+        c.unlock(PASSWORD).unwrap();
+        let m = c.enrollment_unlock_material(PASSWORD).unwrap();
+        c.lock().unwrap();
+        m
+    };
     controller
-        .unlock_with_released(material, UnlockOptions::with_integrity_check())
-        .unwrap();
-    assert_eq!(controller.state(), VaultState::Unlocked);
+        .unlock_with_released(again, UnlockOptions::with_integrity_check())
+        .expect("a sound vault passes the check");
+    controller.lock().unwrap();
+
+    // Damage only the LAST pages: unlike the password path, the released path reads the header and the
+    // vault id (the key probe) before the integrity check, so the first pages must stay readable for the
+    // check to be the thing that refuses.
+    let mut bytes = std::fs::read(&path).unwrap();
+    assert!(
+        bytes.len() > 8 * 4096,
+        "the vault spans pages: {}",
+        bytes.len()
+    );
+    let pages = bytes.len() / 4096;
+    for page in pages.saturating_sub(3)..pages {
+        for byte in &mut bytes[page * 4096 + 64..page * 4096 + 192] {
+            *byte ^= 0xA5;
+        }
+    }
+    std::fs::write(&path, &bytes).unwrap();
+    let damaged = std::fs::read(&path).unwrap();
+
+    let refused = controller.unlock_with_released(material, UnlockOptions::with_integrity_check());
+    assert!(
+        matches!(refused, Err(KernelError::IntegrityCheckFailed { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(controller.state(), VaultState::Locked);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        damaged,
+        "the file was not written"
+    );
+}
+
+#[test]
+fn an_envelope_that_wraps_a_different_key_than_the_open_vault_enables_nothing() {
+    // Vault A is open. Another vault B with the SAME password has its envelope copied over A's sidecar,
+    // as an outside process swapping the file would. The password opens that envelope, but it wraps a
+    // different key than the one A is open with: the check must refuse, and the export must not run.
+    let (dir_a, controller) = unlocked();
+    let dir_b = TempDir::new().unwrap();
+    let mut other = VaultController::open(dir_b.path().join("vault.db"));
+    other.create(PASSWORD).unwrap();
+    other.lock().unwrap();
+
+    let a_sidecar = sidecar(&dir_a.path().join("vault.db"));
+    let b_sidecar = sidecar(&dir_b.path().join("vault.db"));
+    std::fs::copy(&b_sidecar, &a_sidecar).unwrap();
+    let swapped = std::fs::read(&a_sidecar).unwrap();
+
+    let kernel = controller.kernel().unwrap();
+    assert!(matches!(
+        kernel.verify_password(PASSWORD),
+        Err(KernelError::Vault(_))
+    ));
+    assert!(matches!(
+        controller.enrollment_unlock_material(PASSWORD),
+        Err(KernelError::Vault(_))
+    ));
+    // Nothing was written by the refusal.
+    assert_eq!(std::fs::read(&a_sidecar).unwrap(), swapped);
 }
 
 #[test]
