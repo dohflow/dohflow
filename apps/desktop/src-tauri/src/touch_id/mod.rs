@@ -22,6 +22,7 @@
 //!   swept at launch and at every unlock.
 
 pub mod app;
+mod absent_auth;
 mod policy;
 mod tag;
 
@@ -29,12 +30,13 @@ use std::sync::Arc;
 
 use finance_kernel::KernelError;
 use platform_traits::{
-    AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, BootClock, BootClockError,
+    AccessPolicy, AuthPrompt, BiometricAuth, BootClock, BootClockError,
     BootId, PublicTag, SecretError, SecretKey, SecretStore, SecretValue, UnavailableReason,
 };
 use vault_crypto::{SecretBytes, RELEASED_LEN};
 
 pub use policy::{reason_for, Reason, MAX_FAILED_PROMPTS, MAX_PASSWORD_AGE_NS};
+use absent_auth::AbsentAuth;
 use tag::Markers;
 
 /// The keychain service name of the item (`SecretKey` requires the `app.dohflow.` prefix).
@@ -559,22 +561,6 @@ impl SecretStore for AbsentStore {
             roams_to_other_device: platform_traits::Roaming::Never,
             rollback_resistant: false,
         }
-    }
-}
-
-/// No biometric hardware to ask.
-struct AbsentAuth;
-
-impl BiometricAuth for AbsentAuth {
-    fn availability(&self) -> BiometricAvailability {
-        BiometricAvailability::NotPresent
-    }
-
-    fn preflight_prompt(
-        &self,
-        _prompt: &AuthPrompt,
-    ) -> Result<platform_traits::PreflightResult, SecretError> {
-        Err(SecretError::Unavailable(UnavailableReason::Unsupported))
     }
 }
 
