@@ -10,6 +10,9 @@ import {
 } from "@/bindings";
 import { ipcQuery, queryKeys } from "@/lib/query";
 
+/// The longest scenario name the backend accepts (personal-cfo-5ymg8.4: 1 to 100 characters).
+export const SCENARIO_NAME_MAX = 100;
+
 /// The discriminated result of creating a scenario: the stored scenario on success
 /// (so the caller can auto-select it) or the typed error.
 export type CreateScenarioResult =

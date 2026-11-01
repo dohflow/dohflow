@@ -4936,7 +4936,6 @@ pub fn create_scenario_impl(
             id,
             name: input.name.clone(),
             description: input.description.clone(),
-            base_run_id: None,
         })?;
         let view = kernel
             .scenario(id)?
@@ -4999,8 +4998,8 @@ pub fn update_scenario(
     update_scenario_impl(state.inner(), input)
 }
 
-/// Delete a scenario (soft): archive it and clear its active scenario-scoped
-/// events so it neither appears nor affects any forecast.
+/// Delete a scenario: a tombstone, so it neither appears nor affects any forecast, while its
+/// events stay in the vault (ADR 0074 Addendum H).
 pub fn delete_scenario_impl(state: &AppState, id: String) -> Result<(), IpcError> {
     let id = parse_uuid(&id)?;
     with_kernel(state, |kernel| {

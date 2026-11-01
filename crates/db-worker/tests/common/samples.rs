@@ -9,8 +9,8 @@ use core_ledger::{
 };
 use core_money::{Currency, Money};
 use db_worker::{
-    AssumptionKind, AssumptionSource, DebtTermsInput, NewAssumptionEvent, RepaymentPhilosophy,
-    SplitLineInput, WriteCommand,
+    AssumptionKind, AssumptionSource, DebtTermsInput, NewAssumptionEvent, NewScenario,
+    RepaymentPhilosophy, ScenarioStatus, SplitLineInput, WriteCommand,
 };
 use pay_schedule::Frequency;
 use uuid::Uuid;
@@ -597,6 +597,54 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
         (
             "clear_assumption_event",
             WriteCommand::ClearAssumptionEvent { id: u(81) },
+        ),
+        (
+            "create_scenario",
+            WriteCommand::CreateScenario {
+                scenario: NewScenario {
+                    id: u(90),
+                    name: "Move to a smaller place".to_owned(),
+                    description: Some("Rent drops after the lease ends".to_owned()),
+                },
+            },
+        ),
+        (
+            "set_scenario_status",
+            WriteCommand::SetScenarioStatus {
+                id: u(90),
+                status: ScenarioStatus::Active,
+            },
+        ),
+        (
+            "rename_scenario",
+            WriteCommand::RenameScenario {
+                id: u(90),
+                name: "Smaller place".to_owned(),
+            },
+        ),
+        (
+            "set_scenario_expiry",
+            WriteCommand::SetScenarioExpiry {
+                id: u(90),
+                expires_on: Some(NaiveDate::from_ymd_opt(2027, 6, 30).unwrap()),
+            },
+        ),
+        (
+            "clone_scenario",
+            WriteCommand::CloneScenario {
+                source_id: u(90),
+                new_id: u(91),
+                name: "Smaller place, second try".to_owned(),
+                event_ids: vec![u(92), u(93)],
+            },
+        ),
+        (
+            "delete_scenario",
+            WriteCommand::DeleteScenario { id: u(90) },
+        ),
+        (
+            "reinstate_scenario",
+            WriteCommand::ReinstateScenario { id: u(90) },
         ),
     ]
 }

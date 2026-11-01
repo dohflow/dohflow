@@ -1220,6 +1220,23 @@ never recomputed to find a row: seeded rows are renamed and moved by users and l
 random ids, so rows are found by state. A replica bootstrap never takes the creating path and
 installs the origin's vault id before any derived mint. ADR 0073 cross-references this addendum.
 
+## Addendum H — Scenarios and assumption events are class 1 (2026-11-01, `personal-cfo-5ymg8.4`)
+
+Decision 5 listed `scenarios` and `forecast_assumption_events` among the class-4 tables routed to
+class 1. Their writers are now commands (ADR 0073 Addenda G and H), so the manifests record them
+as class 1 and the write set covers both (`full`, key `id`). **`scenarios` gains a nullable
+`deleted_at`** (migration 62): a delete is a tombstone with `deleted_at` = the command's
+`issued_at`, readers filter it, and reinstatement is the matching Toggle, as Decision 7 requires of
+every canonical row. The migration only adds the column, so an existing scenario is live; its
+down refuses while any scenario is tombstoned, because dropping the column would resurrect it.
+
+**A class-1 column never references class 2.** `scenarios.base_run_id` and
+`forecast_assumption_events.origin_run_id` name a forecast run, which is class 2 and never reaches a
+replica. Every producer already passed NULL, so no payload carries a run id and every command writes
+NULL. The foreign-key test sees only declared foreign keys, so these two columns are listed in it by
+name (`RUN_REFERENCES`). The inventory row (vault-format.md, spec-version 20) and the manifests
+follow.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` (this ADR)

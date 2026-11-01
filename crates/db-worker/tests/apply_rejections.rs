@@ -22,7 +22,7 @@ use core_ledger::{
 use core_money::{Currency, Money};
 use db_worker::{
     ActorType, AssumptionKind, AssumptionSource, CommandMeta, DbError, DbWorker, IssuedAt,
-    NewAssumptionEvent, RejectCode, WriteCommand,
+    NewAssumptionEvent, NewScenario, RejectCode, ScenarioStatus, WriteCommand,
 };
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -92,6 +92,25 @@ fn supersede_event(old: u128, new: u128) -> WriteCommand {
 
 fn clear_event(n: u128) -> WriteCommand {
     WriteCommand::ClearAssumptionEvent { id: u(n) }
+}
+
+fn create_scenario(n: u128, name: &str) -> WriteCommand {
+    WriteCommand::CreateScenario {
+        scenario: NewScenario {
+            id: u(n),
+            name: name.to_owned(),
+            description: None,
+        },
+    }
+}
+
+fn clone_scenario(source: u128, new: u128, events: &[u128]) -> WriteCommand {
+    WriteCommand::CloneScenario {
+        source_id: u(source),
+        new_id: u(new),
+        name: "Copy".to_owned(),
+        event_ids: events.iter().copied().map(u).collect(),
+    }
 }
 
 fn assertion(id: u128, account_id: AccountId, amount: Money) -> WriteCommand {
@@ -424,6 +443,193 @@ fn scenarios() -> Vec<Step> {
             },
             Reject(StateConflict),
         ),
+        step("creating a scenario", create_scenario(110, " Move "), Fine),
+        step(
+            "a scenario with a blank name",
+            create_scenario(112, "  "),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "a scenario id that is already in use",
+            create_scenario(110, "Again"),
+            Reject(StateConflict),
+        ),
+        step(
+            "renaming an unknown scenario",
+            WriteCommand::RenameScenario {
+                id: u(114),
+                name: "Nope".to_owned(),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "renaming a scenario",
+            WriteCommand::RenameScenario {
+                id: u(110),
+                name: "Smaller place".to_owned(),
+            },
+            Fine,
+        ),
+        step(
+            "an expiry before the supported years",
+            WriteCommand::SetScenarioExpiry {
+                id: u(110),
+                expires_on: NaiveDate::from_ymd_opt(1899, 12, 31),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting an expiry",
+            WriteCommand::SetScenarioExpiry {
+                id: u(110),
+                expires_on: NaiveDate::from_ymd_opt(2030, 1, 1),
+            },
+            Fine,
+        ),
+        step(
+            "recording the first event of a scenario",
+            record_event(120, Some(110), "{}"),
+            Fine,
+        ),
+        step(
+            "recording the second event of a scenario",
+            record_event(121, Some(110), "{}"),
+            Fine,
+        ),
+        step(
+            "cloning events listed out of order",
+            clone_scenario(110, 111, &[121, 120]),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "cloning more events than one command can mint",
+            WriteCommand::CloneScenario {
+                source_id: u(110),
+                new_id: u(111),
+                name: "Copy".to_owned(),
+                event_ids: (0..=4096).map(|n| u(10_000 + n)).collect(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "cloning an unknown scenario",
+            clone_scenario(114, 111, &[]),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "cloning into an id that is already in use",
+            clone_scenario(110, 110, &[120]),
+            Reject(StateConflict),
+        ),
+        step(
+            "cloning an event that is not the source's",
+            clone_scenario(110, 111, &[70]),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "cloning a scenario",
+            clone_scenario(110, 111, &[120, 121]),
+            Fine,
+        ),
+        step(
+            "deleting an unknown scenario",
+            WriteCommand::DeleteScenario { id: u(114) },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "reinstating an unknown scenario",
+            WriteCommand::ReinstateScenario { id: u(114) },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying an unknown scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(114),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying a scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(110),
+            },
+            Fine,
+        ),
+        step(
+            "applying a scenario that is already applied",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(110),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "reverting an unknown scenario",
+            WriteCommand::RevertScenarioApply {
+                scenario_id: u(114),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "reverting an applied scenario",
+            WriteCommand::RevertScenarioApply {
+                scenario_id: u(110),
+            },
+            Fine,
+        ),
+        step(
+            "reverting a scenario that is not applied",
+            WriteCommand::RevertScenarioApply {
+                scenario_id: u(110),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "creating a scenario with nothing in it",
+            create_scenario(115, "Empty"),
+            Fine,
+        ),
+        step(
+            "applying a scenario with no active changes",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(115),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "deleting a scenario",
+            WriteCommand::DeleteScenario { id: u(110) },
+            Fine,
+        ),
+        step(
+            "setting the status of a deleted scenario",
+            WriteCommand::SetScenarioStatus {
+                id: u(110),
+                status: ScenarioStatus::Archived,
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "recording an event into a deleted scenario",
+            record_event(122, Some(110), "{}"),
+            Reject(StateConflict),
+        ),
+        step(
+            "applying a deleted scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(110),
+            },
+            Reject(StateConflict),
+        ),
+        step(
+            "deleting a scenario that is already deleted",
+            WriteCommand::DeleteScenario { id: u(110) },
+            Fine,
+        ),
+        step(
+            "reinstating a deleted scenario",
+            WriteCommand::ReinstateScenario { id: u(110) },
+            Fine,
+        ),
     ]
 }
 
@@ -565,6 +771,8 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
         "apply/mod.rs",
+        "apply/scenario_apply.rs",
+        "apply/scenario_cmds.rs",
     ] {
         let path = root.join("src").join(module);
         let source = std::fs::read_to_string(&path).unwrap();

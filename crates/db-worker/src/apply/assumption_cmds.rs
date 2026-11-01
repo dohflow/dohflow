@@ -58,18 +58,10 @@ fn insert_event(
             "assumption parameters must be a JSON object".to_owned(),
         ));
     }
+    // The scenario must exist and not be deleted: an event recorded into a deleted scenario
+    // would be invisible, and a replica that saw the delete first refuses it deterministically.
     if let Some(scenario) = event.scenario_id {
-        let known: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM scenarios WHERE id = ?1)",
-            params![scenario],
-            |r| r.get(0),
-        )?;
-        if !known {
-            return Err(DbError::reject(
-                RejectCode::ReferenceMissing,
-                "scenario does not exist".to_owned(),
-            ));
-        }
+        super::scenario_cmds::require_live(tx, &scenario)?;
     }
     if status_of(tx, &event.id)?.is_some() {
         return Err(DbError::reject(

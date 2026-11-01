@@ -14,8 +14,10 @@ use uuid::Uuid;
 
 use crate::DbError;
 
-/// A scenario's lifecycle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A scenario's lifecycle state. Serialized as its token (`draft`, `active`, `archived`), the
+/// form `SetScenarioStatus` carries (frozen in version 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ScenarioStatus {
     Draft,
     Active,
@@ -45,16 +47,16 @@ impl ScenarioStatus {
     }
 }
 
-/// The fields needed to create a scenario. `status` starts `Draft`; timestamps are
-/// set on write.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The fields needed to create a scenario: the frozen version 1 payload of
+/// `WriteCommand::CreateScenario`. `status` starts `Draft`; timestamps are the command's
+/// `issued_at`. It carries no forecast run: a run is class 2 and never replicates, so
+/// `base_run_id` is NULL on every command-written row (ADR 0074 Addendum H).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NewScenario {
     /// Caller-supplied id (time-ordered `Uuid::now_v7`).
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    /// The forecast run this scenario forks from (for compare-vs-base).
-    pub base_run_id: Option<Uuid>,
 }
 
 /// A stored scenario definition (`scenarios`).
@@ -149,12 +151,19 @@ pub(crate) fn effective_scenario(
     let Some(id) = scenario else {
         return Ok(None);
     };
-    let mut stmt = conn.prepare("SELECT status, expires_on FROM scenarios WHERE id = ?1")?;
+    let mut stmt = conn.prepare(
+        "SELECT status, expires_on, deleted_at IS NOT NULL FROM scenarios WHERE id = ?1",
+    )?;
     let mut rows = stmt.query(rusqlite::params![id])?;
     let Some(row) = rows.next()? else {
-        // Deleted out from under a stale selection.
+        // Gone out from under a stale selection.
         return Ok(None);
     };
+    // A tombstoned scenario (`DeleteScenario`) is not selectable, however stale the selection:
+    // its events are still in the table and would otherwise apply.
+    if row.get::<_, bool>(2)? {
+        return Ok(None);
+    }
     // Fails CLOSED on an unreadable status (the scenario simply is not applied): the
     // column is CHECK-constrained so this is unreachable, and refusing to apply an
     // unknown state is the safe direction. A malformed EXPIRY below deliberately fails

@@ -20,15 +20,16 @@
 use rusqlite::{params, Transaction};
 use uuid::Uuid;
 
-use crate::DbError;
+use crate::{DbError, RejectCode};
 
 /// Promote a scenario's active events into base (ADR 0055 §1).
 ///
 /// Returns the scenario id for provenance.
 ///
 /// # Errors
-/// [`DbError::InvalidCommand`] when the scenario does not exist, is already applied, or
-/// carries no active events; [`DbError::Sqlite`] on a write failure.
+/// [`DbError::Rejected`] when the scenario does not exist (`ReferenceMissing`), was deleted, is
+/// already applied, or carries no active events (`StateConflict`); [`DbError::Sqlite`] on a write
+/// failure.
 pub(crate) fn apply_scenario(
     tx: &Transaction<'_>,
     ids: &core_ids::DerivedIds,
@@ -36,23 +37,20 @@ pub(crate) fn apply_scenario(
     op_id: Uuid,
     now: &str,
 ) -> Result<Uuid, DbError> {
-    let applied_at: Option<String> = tx
-        .query_row(
-            "SELECT applied_at FROM scenarios WHERE id = ?1",
-            params![scenario_id],
-            |row| row.get(0),
-        )
-        .map_err(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => {
-                DbError::InvalidCommand("no such scenario".to_owned())
-            }
-            other => DbError::from(other),
-        })?;
+    // A deleted scenario cannot be applied; undoing an apply of one can still be done
+    // (`revert_scenario_apply` does not check).
+    super::scenario_cmds::require_live(tx, &scenario_id)?;
+    let applied_at: Option<String> = tx.query_row(
+        "SELECT applied_at FROM scenarios WHERE id = ?1",
+        params![scenario_id],
+        |row| row.get(0),
+    )?;
     // Idempotent in the safe direction: applying twice would promote a second copy of
     // every event, each superseding the first, and the revert handle would only undo the
     // newer set (ADR 0055 consequences).
     if applied_at.is_some() {
-        return Err(DbError::InvalidCommand(
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
             "this scenario is already applied".to_owned(),
         ));
     }
@@ -92,7 +90,8 @@ pub(crate) fn apply_scenario(
     // promote, and marking it applied would offer a revert that undoes nothing — which is
     // how a user comes to believe something happened (ADR 0055 §5's reasoning).
     if events.is_empty() {
-        return Err(DbError::InvalidCommand(
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
             "this scenario has no active changes to apply".to_owned(),
         ));
     }
@@ -159,8 +158,8 @@ pub(crate) fn apply_scenario(
 /// exactly rather than reconstructing from a remembered value.
 ///
 /// # Errors
-/// [`DbError::InvalidCommand`] when the scenario does not exist or is not applied;
-/// [`DbError::Sqlite`] on a write failure.
+/// [`DbError::Rejected`] when the scenario does not exist (`ReferenceMissing`) or is not applied
+/// (`StateConflict`); [`DbError::Sqlite`] on a write failure.
 pub(crate) fn revert_scenario_apply(
     tx: &Transaction<'_>,
     scenario_id: Uuid,
@@ -173,15 +172,17 @@ pub(crate) fn revert_scenario_apply(
             |row| row.get(0),
         )
         .map_err(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => {
-                DbError::InvalidCommand("no such scenario".to_owned())
-            }
+            rusqlite::Error::QueryReturnedNoRows => DbError::reject(
+                RejectCode::ReferenceMissing,
+                "scenario does not exist".to_owned(),
+            ),
             other => DbError::from(other),
         })?;
     // An error rather than a silent no-op: a revert that reports success without
     // reverting anything is how a user comes to believe a change was undone (ADR 0055 §5).
     if applied_at.is_none() {
-        return Err(DbError::InvalidCommand(
+        return Err(DbError::reject(
+            RejectCode::StateConflict,
             "this scenario is not applied".to_owned(),
         ));
     }
