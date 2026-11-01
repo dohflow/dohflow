@@ -1,5 +1,7 @@
 import type { AssumptionEventDto } from "@/bindings";
 
+import { replacesOnApply } from "./applyDisposition";
+
 /// One side of a conflict: an event, and where it came from.
 export type ConflictSide = {
   eventId: string;
@@ -14,6 +16,15 @@ export type ConflictSide = {
   amountMinor: number | null;
 };
 
+/// The dates an amount change takes effect over an existing amount (personal-cfo-5ie.15). `null`
+/// on either end means open.
+export type AmountOverlap = {
+  from: string | null;
+  to: string | null;
+  /// The existing amount also covers dates outside the overlap, where it stays in force.
+  existingContinuesOutside: boolean;
+};
+
 /// Two events that both claim the same field of the same entity over overlapping time.
 export type ScenarioConflict = {
   kind: string;
@@ -22,6 +33,12 @@ export type ScenarioConflict = {
   loser: ConflictSide;
   /// The side that WINS — later in precedence, and what the forecast actually uses.
   winner: ConflictSide;
+  /// How applying resolves it (ADR 0055 section 2): `replaces` for a kind the forecast reads one
+  /// event of per target, `overlaps` for an amount kind, where the winner's amount is used only
+  /// over `overlap` and the loser's stays in force outside it.
+  change: "replaces" | "overlaps";
+  /// Set exactly when `change` is `overlaps`.
+  overlap: AmountOverlap | null;
 };
 
 /// The kinds that can conflict, and how to read an effect window out of their params.
@@ -68,6 +85,31 @@ function overlaps(a: ConflictSide, b: ConflictSide): boolean {
   return aFrom <= bTo && bFrom <= aTo;
 }
 
+/// The larger of two dates, `null` being open (earlier than any date) on a start.
+function laterStart(a: string | null, b: string | null): string | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return a > b ? a : b;
+}
+
+/// The smaller of two dates, `null` being open (later than any date) on an end.
+function earlierEnd(a: string | null, b: string | null): string | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return a < b ? a : b;
+}
+
+/// Where an amount change takes effect over an existing amount: the intersection of the two
+/// windows, and whether the existing one reaches past it. Assumes the windows overlap.
+function amountOverlap(existing: ConflictSide, change: ConflictSide): AmountOverlap {
+  const from = laterStart(existing.from, change.from);
+  const to = earlierEnd(existing.to, change.to);
+  const startsBefore =
+    existing.from === null ? from !== null : from !== null && existing.from < from;
+  const endsAfter = existing.to === null ? to !== null : to !== null && existing.to > to;
+  return { from, to, existingContinuesOutside: startsBefore || endsAfter };
+}
+
 /// Find the conflicts inside an ordered composition (personal-cfo-4d8.27.6.5, ADR 0059 §3).
 ///
 /// **A conflict is two events on the same `(kind, target_entity_id)` with overlapping
@@ -109,11 +151,14 @@ export function detectConflicts(
 
       // Higher rank wins, matching the forecast's own composition.
       const [loser, winner] = a.rank < b.rank ? [sideA, sideB] : [sideB, sideA];
+      const replaces = replacesOnApply(a.event.kind);
       conflicts.push({
         kind: a.event.kind,
         targetEntityId: a.event.target_entity_id as string,
         loser,
         winner,
+        change: replaces ? "replaces" : "overlaps",
+        overlap: replaces ? null : amountOverlap(loser, winner),
       });
     }
   }

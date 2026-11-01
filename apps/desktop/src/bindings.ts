@@ -18,6 +18,10 @@ export const commands = {
 	lockVault: () => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("lock_vault")),
 	changePassword: (input: ChangePasswordInput) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("change_password", { input })),
 	rotateVaultKey: (input: RotateVaultKeyInput) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("rotate_vault_key", { input })),
+	touchIdStatus: () => __TAURI_INVOKE<TouchIdStatusDto>("touch_id_status"),
+	touchIdEnable: (input: TouchIdEnableInput) => typedError<TouchIdEnableDto, IpcError>(__TAURI_INVOKE("touch_id_enable", { input })),
+	touchIdDisable: () => typedError<TouchIdStatusDto, IpcError>(__TAURI_INVOKE("touch_id_disable")),
+	touchIdUnlock: () => typedError<TouchIdUnlockDto, IpcError>(__TAURI_INVOKE("touch_id_unlock")),
 	deleteVault: () => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("delete_vault")),
 	listVaults: () => typedError<VaultListDto, IpcError>(__TAURI_INVOKE("list_vaults")),
 	createVaultNamed: (name: string, password: string) => typedError<VaultStatusDto, IpcError>(__TAURI_INVOKE("create_vault_named", { name, password })),
@@ -2647,6 +2651,61 @@ export type TagViewDto = {
 	color: string | null,
 	/**  Whether the tag is archived (soft-deleted). */
 	archived: boolean,
+};
+
+/**  How turning Touch ID on ended when the password was right. */
+export type TouchIdEnableDto = {
+	enabled: boolean,
+	/**  When not enabled: the stable reason code. The vault stays password-only. */
+	reason: string | null,
+};
+
+/**  Input to turn Touch ID on. The vault password is entered again; `Debug` is redacted (§6.6). */
+export type TouchIdEnableInput = {
+	/**  The vault password. */
+	password: string,
+};
+
+/**  Whether Touch ID can be used for this vault (personal-cfo-xuu). */
+export type TouchIdStateDto =
+/**  Not possible here; `reason` says why (a development build, no sensor, nothing enrolled, ...). */
+"unavailable" |
+/**  Possible, and not turned on for this vault. */
+"off" |
+/**  Turned on. `offered` says whether the unlock screen shows it right now. */
+"on";
+
+/**
+ *  Touch ID's status for the active vault. Carries no key material and no secret: a state, a flag, a
+ *  stable reason code and a count.
+ */
+export type TouchIdStatusDto = {
+	state: TouchIdStateDto,
+	/**
+	 *  `true` when the unlock screen should show Touch ID now (turned on, and no rule requires the
+	 *  vault password).
+	 */
+	offered: boolean,
+	/**
+	 *  Why Touch ID is not offered, as a stable lowercase code (`after_restart`,
+	 *  `too_many_failed_prompts`, `password_too_old`, `retired`, `biometry_not_enrolled`, ...), or
+	 *  `None` when it is offered.
+	 */
+	reason: string | null,
+	/**  Touch ID prompts that failed or were cancelled since the vault password was last entered. */
+	failed_prompts: number,
+};
+
+/**  How a Touch ID unlock attempt ended. */
+export type TouchIdUnlockDto = {
+	/**  `true` when the vault is now unlocked; `vault` is then its status. */
+	unlocked: boolean,
+	vault: VaultStatusDto | null,
+	/**
+	 *  When not unlocked: the stable reason code for the unlock screen to explain (it then shows the
+	 *  password field). Never a key, a path or error text.
+	 */
+	reason: string | null,
 };
 
 /**
