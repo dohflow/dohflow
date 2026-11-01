@@ -49,6 +49,21 @@ for name in $names; do
 done
 grep -q 'MissingEntitlement' "$SCRIPT" && pass "requires MissingEntitlement unentitled" || fail "no unentitled check"
 
+case_start "the conformance line in the PASS block is derived from the availability the Mac reported"
+# shellcheck disable=SC1090
+line_for() { KEYCHAIN_SMOKE_SOURCE_ONLY=1 bash -c 'source "$1"; conformance_line "$2" "$3"' _ "$SCRIPT" "$1" "$2"; }
+out="$(line_for NotPresent -12)"
+[[ "$out" == *"required the typed refusal"* && "$out" == *"NotPresent"* && "$out" == *"LAError -12"* ]] \
+  && pass "NotPresent names the typed refusal and the code" || fail "NotPresent: $out"
+out="$(line_for Available none)"
+[[ "$out" == *"stored a biometric item"* && "$out" != *"refusal"* ]] \
+  && pass "Available says it stored an item" || fail "Available: $out"
+out="$(line_for Unknown -1000)"
+[[ "$out" == NOT\ RUN:* && "$out" == *"typed-refusal branch"* && "$out" == *"-1000"* && "$out" != *"required the typed refusal"* ]] \
+  && pass "Unknown is a NOT RUN line, never a claim" || fail "Unknown: $out"
+grep -q 'BIOMETRIC_AVAILABILITY' "$SCRIPT" && grep -q -- '--nocapture' "$SCRIPT" \
+  && pass "the run captures the reported availability" || fail "the run does not capture the availability"
+
 case_start "argument handling (macOS only: the script refuses elsewhere)"
 if [[ "$(uname -s)" == "Darwin" ]]; then
   out="$("$SCRIPT" --bogus 2>&1)"; status=$?

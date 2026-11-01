@@ -23,6 +23,12 @@ use crate::availability::availability_from_la_code;
 /// Whether a biometric can be used on this Mac right now, asked of the system each time (never
 /// cached: a fingerprint can be enrolled or removed while the app runs).
 pub(crate) fn current_availability() -> BiometricAvailability {
+    current_availability_with_code().0
+}
+
+/// [`current_availability`] with the raw `LAError` code that produced it (`None` when a biometric can be
+/// used), so a harness or a log line can say WHICH unmapped code a Mac answered.
+pub(crate) fn current_availability_with_code() -> (BiometricAvailability, Option<i64>) {
     // SAFETY: a fresh context and a valid policy constant; the context is invalidated before it drops.
     let context = unsafe { LAContext::new() };
     let outcome = unsafe {
@@ -30,7 +36,8 @@ pub(crate) fn current_availability() -> BiometricAvailability {
     };
     // SAFETY: invalidating a context we own and no longer use.
     unsafe { context.invalidate() };
-    availability_from_la_code(outcome.err().map(|error| error.code() as i64))
+    let code = outcome.err().map(|error| error.code() as i64);
+    (availability_from_la_code(code), code)
 }
 
 /// `LAError` codes we map (stable public values).
@@ -84,6 +91,12 @@ impl MacBiometricAuth {
     #[must_use]
     pub fn new() -> Self {
         Self
+    }
+
+    /// The availability and the raw `LAError` code behind it (`None` when a biometric can be used).
+    #[must_use]
+    pub fn availability_with_code(&self) -> (BiometricAvailability, Option<i64>) {
+        current_availability_with_code()
     }
 }
 

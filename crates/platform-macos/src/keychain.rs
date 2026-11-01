@@ -218,6 +218,17 @@ impl SecretStore for MacSecretStore {
         // when this Mac cannot create one (measured: with nothing enrolled the OS answers AuthFailed
         // at the add, which a caller cannot tell from a wrong finger). Nothing is replaced.
         if biometric {
+            // The entitlement comes first: an unentitled build must answer MissingEntitlement for every
+            // call (the app stays password-only and says why), whatever this Mac's sensor reports. A
+            // read of the item is the cheapest call that shows it; "not found" is the expected answer.
+            if let Err(
+                error @ SecretError::Unavailable(
+                    platform_traits::UnavailableReason::MissingEntitlement,
+                ),
+            ) = self.stored_attributes(key)
+            {
+                return Err(error);
+            }
             if let Some(refusal) = auth::current_availability().store_refusal() {
                 return Err(refusal);
             }
@@ -385,20 +396,24 @@ fn own_keychain_access_groups() -> Option<Vec<String>> {
     Some(
         array
             .iter()
-            .filter_map(|item| {
+            .map(|item| {
                 let pointer = *item;
                 // SAFETY: the array's items are CF objects; the type id is checked before the pointer is
                 // treated as a CFString, and `wrap_under_get_rule` retains it.
                 let is_string = unsafe { core_foundation_sys::base::CFGetTypeID(pointer) }
                     == CFString::type_id();
-                is_string.then(|| {
+                // A non-string item keeps its POSITION as an empty value, which fails validation, so a
+                // malformed array can never promote its second item to "first".
+                if is_string {
                     unsafe {
                         CFString::wrap_under_get_rule(
                             pointer as core_foundation_sys::string::CFStringRef,
                         )
                     }
                     .to_string()
-                })
+                } else {
+                    String::new()
+                }
             })
             .collect(),
     )

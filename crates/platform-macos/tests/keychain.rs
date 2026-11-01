@@ -144,6 +144,17 @@ fn entitled_store() -> MacSecretStore {
 }
 
 #[test]
+#[ignore = "run by the signed harness with --nocapture; needs no entitlement but states what the harness ran"]
+fn entitled_report_the_biometric_availability() {
+    // The harness greps this line so its PASS block says which conformance branch this Mac took
+    // (a typed refusal where biometrics are unavailable, a stored item where they are available), and
+    // names the raw LAError code when the state is one this build does not map (`Unknown`).
+    let (state, code) = MacBiometricAuth::new().availability_with_code();
+    let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
+    println!("BIOMETRIC_AVAILABILITY={state:?} LA_CODE={code}");
+}
+
+#[test]
 #[ignore = "needs a signed build with the keychain entitlement"]
 fn entitled_the_access_group_is_the_signed_entitlement() {
     // The signed harness bundle carries `<TeamID>.<bundle id>`; the app reads it from itself.
