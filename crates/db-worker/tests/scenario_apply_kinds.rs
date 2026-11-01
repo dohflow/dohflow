@@ -360,6 +360,30 @@ fn amount_windows_apply_as_the_preview_showed_and_revert_restores_the_base() {
     let before = base_ids(&worker);
 
     apply(&worker, scenario);
+    // The promoted rows keep the scenario's own order, deterministically: a strictly increasing
+    // `created_at` in the order the scenario's windows were created, never an updated_at before it.
+    let promoted: Vec<(String, String, String)> = {
+        let conn = worker.read_connection().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT params_json, created_at, updated_at FROM forecast_assumption_events
+                  WHERE promoted_from_scenario_id = ?1 ORDER BY created_at, id",
+            )
+            .unwrap();
+        stmt.query_map([scenario], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(promoted.len(), 2);
+    assert!(promoted[0].0.contains("90000") && promoted[1].0.contains("70000"));
+    assert!(
+        promoted[0].1 < promoted[1].1,
+        "the promoted rows must not tie on created_at: {promoted:?}"
+    );
+    assert!(promoted
+        .iter()
+        .all(|(_, created, updated)| updated >= created));
     assert!(
         base_ids(&worker).contains(&base_window),
         "an amount window is an adding kind: the base window stays"
@@ -376,4 +400,71 @@ fn amount_windows_apply_as_the_preview_showed_and_revert_restores_the_base() {
         worker.future_cash_forecast(120, &[]).unwrap(),
         base_forecast
     );
+}
+
+#[test]
+fn spend_cuts_apply_as_the_preview_showed_and_revert_restores_the_base() {
+    let (_dir, worker) = worker();
+    let account = AccountId::new();
+    worker
+        .dispatch(
+            meta(),
+            liquid_account_cmd(account, Currency::Usd, 5_000_000),
+        )
+        .unwrap();
+    let category = variable_category(&worker);
+    let today = Utc::now().date_naive();
+    // Two years of variable spend in the category, so the model has something to cut.
+    for m in (1..=24u32).rev() {
+        let date = today.checked_sub_months(chrono::Months::new(m)).unwrap();
+        let cents = -(50_000 + i64::from(m <= 12) * 10_000);
+        plant_categorized(&worker, account, cents, date, category);
+    }
+    let cut = |minor: i64| format!(r#"{{"delta_minor_per_month":{minor}}}"#);
+    let target = Some(category.as_uuid());
+    let base_cut = Uuid::now_v7();
+    record(
+        &worker,
+        event(
+            base_cut,
+            AssumptionKind::VariableSpendOverride,
+            target,
+            &cut(-10_000),
+            None,
+        ),
+    );
+    let scenario = new_scenario(&worker);
+    record(
+        &worker,
+        event(
+            Uuid::now_v7(),
+            AssumptionKind::VariableSpendOverride,
+            target,
+            &cut(-20_000),
+            Some(scenario),
+        ),
+    );
+
+    let base_forecast = worker.future_cash_forecast(90, &[]).unwrap();
+    let preview = worker.future_cash_forecast(90, &[scenario]).unwrap();
+    assert_ne!(
+        preview, base_forecast,
+        "the scenario's cut must change something"
+    );
+    let before = base_ids(&worker);
+
+    apply(&worker, scenario);
+    assert!(
+        base_ids(&worker).contains(&base_cut),
+        "cuts add across base and scenario: the base cut stays"
+    );
+    assert_eq!(
+        worker.future_cash_forecast(90, &[]).unwrap(),
+        preview,
+        "the total after the apply is the preview the user saw"
+    );
+
+    revert(&worker, scenario);
+    assert_eq!(base_ids(&worker), before);
+    assert_eq!(worker.future_cash_forecast(90, &[]).unwrap(), base_forecast);
 }

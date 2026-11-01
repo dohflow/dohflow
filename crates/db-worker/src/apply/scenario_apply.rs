@@ -142,7 +142,7 @@ pub(crate) fn apply_scenario(
                 (id, kind, target_entity_type, target_entity_id, params_json,
                  source, scenario_id, status, superseded_by, origin_run_id,
                  created_at, updated_at, promoted_from_scenario_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'active', NULL, NULL, ?7, ?8, ?9)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'active', NULL, NULL, ?7, ?7, ?8)",
             params![
                 new_id,
                 event.kind,
@@ -151,7 +151,6 @@ pub(crate) fn apply_scenario(
                 event.params_json,
                 event.source,
                 created_at,
-                now,
                 scenario_id,
             ],
         )?;
