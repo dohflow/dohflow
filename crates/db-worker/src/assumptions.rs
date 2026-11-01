@@ -37,6 +37,9 @@ macro_rules! token_enum {
         $vis enum $name { $($variant),+ }
 
         impl $name {
+            /// Every variant, in declaration order.
+            $vis const ALL: &'static [Self] = &[$(Self::$variant),+];
+
             /// The stable SQL token persisted for this variant.
             #[must_use]
             $vis fn as_token(self) -> &'static str {
@@ -68,6 +71,69 @@ token_enum! {
         Exclusion => "exclusion",
         RecurringDebtPayment => "recurring_debt_payment",
     }
+}
+
+impl AssumptionKind {
+    /// Whether promoting a scenario's event of this kind retires the base event it collides with
+    /// (ADR 0055 section 2 as amended by `personal-cfo-5ie.13`).
+    ///
+    /// `true` (a collision kind) when the forecast reads at most one event per
+    /// `(kind, target)`, so a second one for the same key replaces the first. `false` (an adding
+    /// kind) when it reads every active instance, so promotion adds a row and replaces nothing.
+    /// One exhaustive match with no wildcard: a new kind does not compile until it is classified
+    /// here, with its row in the ADR table.
+    #[must_use]
+    pub const fn supersedes_on_promotion(self) -> bool {
+        match self {
+            Self::IncomeDate
+            | Self::BillDate
+            | Self::Exclusion
+            | Self::MinimumCashFloor
+            | Self::InflationRate
+            | Self::CardPaymentBehavior
+            | Self::ScenarioToggle => true,
+            Self::IncomeAmount
+            | Self::BillAmount
+            | Self::OneTimeEvent
+            | Self::RecurringDebtPayment
+            | Self::VariableSpendOverride => false,
+        }
+    }
+}
+
+/// How many base events of each ADDING kind an earlier apply superseded (personal-cfo-5ie.13). A
+/// base amount override that a promoted window did not overlap counts too: the amended rule keeps
+/// it.
+///
+/// Read-only. Before the amendment, apply retired every base event matching a promoted event's
+/// `(kind, NULL, NULL)` key, so one scenario one-off retired all the user's base one-offs. This
+/// counts the rows still in that state: events of an adding kind that are `superseded` by a row
+/// promoted from a scenario that is currently applied. A reverted scenario restored its rows, so
+/// it contributes none. Only counts are returned, one per adding kind (zero included), in the
+/// kinds' declaration order; no amount, name or id.
+///
+/// # Errors
+/// [`crate::DbError::Sqlite`] on a read failure.
+pub(crate) fn count_events_wrongly_superseded_by_apply(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(AssumptionKind, u64)>, crate::DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT COUNT(*)
+           FROM forecast_assumption_events e
+           JOIN forecast_assumption_events p ON p.id = e.superseded_by
+           JOIN scenarios s ON s.id = p.promoted_from_scenario_id
+          WHERE e.status = 'superseded'
+            AND s.applied_at IS NOT NULL
+            AND e.kind = ?1",
+    )?;
+    AssumptionKind::ALL
+        .iter()
+        .filter(|kind| !kind.supersedes_on_promotion())
+        .map(|kind| {
+            let count: i64 = stmt.query_row([kind.as_token()], |row| row.get(0))?;
+            Ok((*kind, u64::try_from(count).unwrap_or(0)))
+        })
+        .collect()
 }
 
 token_enum! {

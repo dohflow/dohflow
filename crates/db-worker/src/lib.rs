@@ -3864,6 +3864,19 @@ impl DbWorker {
         Ok(out)
     }
 
+    /// For each adding kind (a one-off, a recurring extra debt payment, a category spend cut, an
+    /// amount override), the number of base events an earlier apply retired that are still
+    /// superseded by a row promoted from an applied scenario (`personal-cfo-5ie.13`). Read-only;
+    /// the counts are all it returns.
+    ///
+    /// # Errors
+    /// [`DbError`] on a read failure.
+    pub fn count_events_wrongly_superseded_by_apply(
+        &self,
+    ) -> Result<Vec<(AssumptionKind, u64)>, DbError> {
+        assumptions::count_events_wrongly_superseded_by_apply(&self.read_connection()?)
+    }
+
     /// Supersede an `active` assumption event with a replacement, atomically
     /// ([`WriteCommand::SupersedeAssumptionEvent`]; status `superseded`, the row is retained for
     /// history and `superseded_by` points at the replacement).
@@ -7771,7 +7784,7 @@ fn apply_command(
             &ids,
             *scenario_id,
             meta.command_id,
-            &apply::issued_at_text(meta),
+            apply::issued_at(meta),
         )?,
         WriteCommand::RevertScenarioApply { scenario_id } => {
             apply::scenario_apply::revert_scenario_apply(

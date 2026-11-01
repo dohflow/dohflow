@@ -8226,8 +8226,20 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             scenario_id: None,
         })
         .unwrap();
+    // A base inflation rate the scenario's rate will replace: a singleton, so a COLLISION kind.
+    worker
+        .record_assumption_event(&NewAssumptionEvent {
+            id: Uuid::now_v7(),
+            kind: AssumptionKind::InflationRate,
+            target_entity_type: None,
+            target_entity_id: None,
+            params_json: r#"{"annual_bps":300}"#.to_owned(),
+            source: AssumptionSource::UserOverride,
+            scenario_id: None,
+        })
+        .unwrap();
     let before = base_fingerprint(&worker);
-    assert_eq!(before.len(), 1);
+    assert_eq!(before.len(), 2);
 
     let scenario = Uuid::now_v7();
     worker
@@ -8237,9 +8249,10 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
             description: None,
         })
         .unwrap();
-    // One colliding event (same kind + target as base) and one untargeted, so the
-    // NULL-target supersede path is exercised too — `= NULL` is never true, so a `=`
-    // instead of `IS` would silently never supersede untargeted kinds.
+    // An amount override on the same bill as the base one (an ADDING kind: the base entry stays,
+    // and the scenario's later one wins where they overlap) and an untargeted rate, so the
+    // NULL-target supersede path is exercised too: `= NULL` is never true, so a `=` instead of
+    // `IS` would silently never supersede untargeted kinds.
     worker
         .record_assumption_event(&NewAssumptionEvent {
             id: Uuid::now_v7(),
@@ -8276,8 +8289,8 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
     let applied = base_fingerprint(&worker);
     assert_eq!(
         applied.len(),
-        2,
-        "both scenario events are promoted; the colliding base override is superseded",
+        3,
+        "both scenario events are promoted; only the colliding rate is superseded",
     );
     assert!(
         applied
@@ -8286,10 +8299,18 @@ fn apply_scenario_promotes_events_and_revert_restores_base_exactly() {
         "the scenario's amount is what base now uses",
     );
     assert!(
-        !applied
+        applied
             .iter()
             .any(|(_, _, params)| params.contains("100000")),
-        "the superseded base override is no longer active",
+        "an amount override is an adding kind: the base entry stays active",
+    );
+    assert!(
+        applied.iter().any(|(_, _, params)| params.contains("400")),
+        "the scenario's rate replaced the base rate",
+    );
+    assert!(
+        !applied.iter().any(|(_, _, params)| params.contains("300")),
+        "the superseded base rate is no longer active",
     );
     let view = worker.scenario(scenario).unwrap().unwrap();
     assert!(view.applied_at.is_some(), "the scenario is marked applied");

@@ -77,6 +77,59 @@ The *interactive* story for collisions — showing the user what will be overwri
 they commit — is `4d8.27.6.5`. This ADR defines only the rule that makes a single apply
 correct on its own.
 
+#### Amendment to §2 (2026-11-01, `personal-cfo-5ie.13`): only collision kinds supersede
+
+§2 assumed one `Active` event per `(kind, target_entity_type, target_entity_id)`. That is false
+for a kind with several instances against one target, and for a kind with no target at all. A
+free-standing `one_time_event` (and every manual future entry) has a NULL target type and a NULL
+target id, so promoting one scenario one-off superseded **every** active base one-off, the user's
+manual future entries included, and two one-offs in one scenario superseded each other as they
+were promoted (only the last survived). The same held for `recurring_debt_payment`, and for amount
+overrides: two disjoint windows of one scenario on one bill superseded each other.
+
+**The rule.** The forecast reads at most one event per `(kind, target)` for a *collision kind*, so
+promoting a second one for the same key replaces the first (the supersession of §2, unchanged). It
+reads every active instance of an *adding kind*, so promoting one adds a row and replaces nothing.
+Apply decides by the kind alone, through one exhaustive function
+(`AssumptionKind::supersedes_on_promotion`); a new kind does not compile until it is classified.
+
+The test is the invariant behind §1b: after an apply, the forecast base reads must equal what a run
+of "base plus this scenario" showed, because a promoted event is an ordinary base event. Base ranks
+below every scenario in the preview (ADR 0059 section 2), and a promoted row is the newest base
+row, so for a collision kind the later event winning is exactly what the preview showed.
+
+| Kind | Class | Why, from how the forecast reads it |
+| --- | --- | --- |
+| `bill_amount` | ADDS | Targets a recurring bill; `entity_overrides` keeps every amount segment and the later event wins only where windows overlap, so the preview applies base windows the scenario's window does not overlap. |
+| `income_amount` | ADDS | The same, for an income source. |
+| `bill_date` | COLLIDES | One anchor per target; the later event wins (`entity_overrides`). |
+| `income_date` | COLLIDES | The same. |
+| `exclusion` | COLLIDES | One exclusion per target; the later event wins (`entity_overrides`). The target is the excluded bill or income source (its type is stored NULL, its id is not). |
+| `minimum_cash_floor` | COLLIDES | A singleton model parameter: one floor. No loader reads the kind yet (the shipped floor is a setting); classified by what it means. |
+| `inflation_rate` | COLLIDES | A singleton model parameter: one rate. No loader reads the kind yet. |
+| `card_payment_behavior` | COLLIDES | One behavior per target account. No loader reads the kind yet. |
+| `scenario_toggle` | COLLIDES | One switch per target. No loader reads the kind yet, and nothing writes it. |
+| `one_time_event` | ADDS | A free-standing cash event with no target; every active instance is folded (`collect_manual_events`). |
+| `recurring_debt_payment` | ADDS | A free-standing monthly payment with no target; every active instance is folded (`active_recurring_debt_payments`). |
+| `variable_spend_override` | ADDS | Targets a category, but the cuts are additive across base and the selected scenarios ("membership is enough", `category_spend_adjustments`), so replacing a base cut by a scenario's would change the total the preview showed. |
+
+The four kinds nothing reads yet are classified by what they mean, so the day a loader appears the
+apply already does the right thing. Reclassifying one later is a change of what apply writes and so
+a change of `engine_version`.
+
+**Ordering of the promoted rows.** An adding kind that composes by window (`bill_amount`,
+`income_amount`) resolves overlapping windows by creation order, so apply promotes a scenario's
+events in the scenario's own `(created_at, id)` order and stamps the k-th promoted row
+`created_at = issued_at + k` microseconds. The promoted rows therefore keep the order the scenario
+had, and a scenario may legitimately hold overlapping windows: they are not refused.
+
+**Revert is unchanged in shape.** It restores whatever a promoted row superseded and clears the
+promoted rows; for an adding kind there is nothing to restore, so revert clears exactly the rows
+apply added and leaves the base events as they were. A vault that applied a scenario before this
+amendment may hold base events apply wrongly superseded (including a base amount override a
+scenario's window did not overlap): a read-only check counts them for every adding kind, and any
+repair is a data change the owner approves first.
+
 ### 3. Apply is recorded on the operation log, exceptionally
 
 Assumption events normally bypass the `WriteCommand` bus: they are forecast inputs, not
