@@ -89,6 +89,25 @@ pub trait SecretStore: Send + Sync {
     fn load_secret(&self, key: &SecretKey, prompt: &AuthPrompt)
         -> Result<SecretValue, SecretError>;
 
+    /// Replaces the item's [`PublicTag`] (or removes it with `None`) **without authentication and
+    /// without touching the secret**: no prompt, the stored value and its access control are exactly
+    /// as they were, and a biometric-gated item is not re-created. This is how an owner keeps small
+    /// non-secret markers current (for example a failed-attempt counter) that change far more often
+    /// than the secret does.
+    ///
+    /// Whether the platform prompts for this on a BIOMETRIC-gated item is unverified on a device
+    /// (`personal-cfo-xuu` AC K6, the owner's Touch ID run); the day it does, the markers move to a
+    /// sibling non-secret item and this method keeps its contract.
+    ///
+    /// # Errors
+    /// [`SecretError::NotFound`] when there is no item (never created by this call),
+    /// [`SecretError::Unavailable`] or [`SecretError::Platform`].
+    fn update_public_tag(
+        &self,
+        key: &SecretKey,
+        tag: Option<&PublicTag>,
+    ) -> Result<(), SecretError>;
+
     /// Deletes the secret. **Idempotent**: deleting what is not there succeeds.
     ///
     /// # Errors

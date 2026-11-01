@@ -173,6 +173,7 @@ entitled_tests=(
   entitled_a_public_tag_is_stored_and_read_back_without_authentication
   entitled_the_access_group_is_the_signed_entitlement
   entitled_the_store_passes_the_conformance_suite
+  entitled_a_public_tag_is_updated_without_authentication_and_the_secret_is_untouched
   entitled_report_the_biometric_availability
 )
 echo "==> entitled run (inside the signed bundle)"

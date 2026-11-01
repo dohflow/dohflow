@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use platform_traits::{
-    AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, PreflightResult, PublicTag,
-    Roaming, SecretError, SecretKey, SecretStore, SecretValue, StoreCapabilities,
-    UnavailableReason,
+    AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, BootClock, BootClockError,
+    BootId, PreflightResult, PublicTag, Roaming, SecretError, SecretKey, SecretStore, SecretValue,
+    StoreCapabilities, UnavailableReason,
 };
 
 /// The simulated device's biometric state, SHARED by a [`MockSecretStore`] and a [`MockBiometricAuth`]
@@ -172,6 +172,21 @@ impl SecretStore for MockSecretStore {
         Ok(())
     }
 
+    fn update_public_tag(
+        &self,
+        key: &SecretKey,
+        tag: Option<&PublicTag>,
+    ) -> Result<(), SecretError> {
+        self.check_available()?;
+        match self.items.lock().unwrap().get_mut(key) {
+            Some(item) => {
+                item.tag = tag.cloned();
+                Ok(())
+            }
+            None => Err(SecretError::NotFound),
+        }
+    }
+
     fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
         self.check_available()?;
         self.items
@@ -277,5 +292,90 @@ impl BiometricAuth for MockBiometricAuth {
     fn preflight_prompt(&self, _prompt: &AuthPrompt) -> Result<PreflightResult, SecretError> {
         *self.prompts.lock().unwrap() += 1;
         self.outcome.lock().unwrap().clone()
+    }
+}
+
+/// A scriptable [`BootClock`]: the test restarts the "device", moves time forward, makes the clock go
+/// backwards (as a wall clock can) or makes it fail, and the code under test sees exactly that.
+pub struct MockBootClock {
+    state: Mutex<ClockState>,
+}
+
+struct ClockState {
+    boot: [u8; 16],
+    now_ns: u64,
+    failing: bool,
+}
+
+impl MockBootClock {
+    /// Boot number 1, one second after boot.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(ClockState {
+                boot: Self::boot_bytes(1),
+                now_ns: 1_000_000_000,
+                failing: false,
+            }),
+        }
+    }
+
+    fn boot_bytes(number: u64) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&number.to_le_bytes());
+        bytes
+    }
+
+    /// Time passes (the Mac may sleep: the clock counts it).
+    pub fn advance(&self, nanoseconds: u64) {
+        self.state.lock().unwrap().now_ns += nanoseconds;
+    }
+
+    /// Time passes, in days.
+    pub fn advance_days(&self, days: u64) {
+        self.advance(days * 24 * 60 * 60 * 1_000_000_000);
+    }
+
+    /// The Mac restarts: a new boot id and a clock that counts from the new boot.
+    pub fn restart(&self) {
+        let mut state = self.state.lock().unwrap();
+        let next = u64::from_le_bytes(state.boot[..8].try_into().unwrap()) + 1;
+        state.boot = Self::boot_bytes(next);
+        state.now_ns = 1_000_000_000;
+    }
+
+    /// The clock reads `nanoseconds` (a test can move it backwards, which a monotonic clock never
+    /// does; this lets a test prove the rules do not depend on that).
+    pub fn set_now(&self, nanoseconds: u64) {
+        self.state.lock().unwrap().now_ns = nanoseconds;
+    }
+
+    /// Every call fails until `false`.
+    pub fn fail(&self, failing: bool) {
+        self.state.lock().unwrap().failing = failing;
+    }
+}
+
+impl Default for MockBootClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BootClock for MockBootClock {
+    fn boot_id(&self) -> Result<BootId, BootClockError> {
+        let state = self.state.lock().unwrap();
+        if state.failing {
+            return Err(BootClockError);
+        }
+        Ok(BootId::new(state.boot))
+    }
+
+    fn monotonic_ns(&self) -> Result<u64, BootClockError> {
+        let state = self.state.lock().unwrap();
+        if state.failing {
+            return Err(BootClockError);
+        }
+        Ok(state.now_ns)
     }
 }

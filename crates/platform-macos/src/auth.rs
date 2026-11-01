@@ -73,6 +73,19 @@ pub(crate) fn authentication_context(prompt: &AuthPrompt) -> CFType {
     unsafe { CFType::wrap_under_create_rule(pointer as CFTypeRef) }
 }
 
+/// A fresh `LAContext` that may never show UI, as the CF object a keychain query takes
+/// (`kSecUseAuthenticationContext`). A query that WOULD need the user's authentication fails with
+/// `errSecInteractionNotAllowed` instead of prompting, so "this call never prompts" is structural, not
+/// a property of the item (`personal-cfo-xuu` AC K6: reading or updating the public tag).
+pub(crate) fn non_interactive_context() -> CFType {
+    // SAFETY: a plain `init`, then a boolean property set on an object we own.
+    let context = unsafe { LAContext::new() };
+    unsafe { context.setInteractionNotAllowed(true) };
+    let pointer: *const LAContext = Retained::into_raw(context);
+    // SAFETY: as in `authentication_context`: the +1 reference moves into the CF wrapper.
+    unsafe { CFType::wrap_under_create_rule(pointer as CFTypeRef) }
+}
+
 /// Invalidates a borrowed `LAContext` when dropped.
 struct InvalidateOnDrop<'a>(&'a Retained<LAContext>);
 
