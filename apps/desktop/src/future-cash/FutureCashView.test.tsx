@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/lib/query";
@@ -28,11 +28,13 @@ const mocks = vi.hoisted(() => ({
   incomeSourceList: vi.fn(),
   cashFlowHistory: vi.fn(),
   loanDoubleCountWarnings: vi.fn(),
+  setHouseholdTimezone: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
   commands: {
     householdTimezone: mocks.householdTimezone,
+    setHouseholdTimezone: mocks.setHouseholdTimezone,
     futureCashForecast: mocks.futureCashForecast,
     futureCashByAccount: mocks.futureCashByAccount,
     cashFlowHistory: mocks.cashFlowHistory,
@@ -530,5 +532,135 @@ describe("the stack only lists what the forecast includes (5ie.18)", () => {
       expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p"]),
     );
     expect(screen.queryByRole("button", { name: /Remove .* from the stack/ })).toBeNull();
+  });
+});
+
+describe("a failed refresh outranks the breakdown it replaces (5ie.18)", () => {
+  it("shows the failure with one Retry, drops the cached figures and Cover it, and a good read brings them back", async () => {
+    const short = multiSeries();
+    short.accounts[0]!.days = [day("2026-06-25", 400_000), day("2026-07-01", -50_000)];
+    mocks.futureCashByAccount.mockResolvedValue(ok(short));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<FutureCashView />, client);
+    await screen.findByRole("figure", { name: /projected liquid cash/i });
+    expect(screen.getByRole("button", { name: /cover it/i })).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+
+    // The next read of the breakdown fails while the earlier one is still cached.
+    mocks.futureCashByAccount.mockResolvedValue({ status: "error", error: "breakdown broke" });
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.forecastByAccount(90, "") });
+    });
+    const alerts = await screen.findAllByText(/breakdown broke/i);
+    expect(alerts.length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+    expect(screen.queryByRole("figure", { name: /projected liquid cash/i })).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("button", { name: /cover it/i })).toBeNull();
+
+    mocks.futureCashByAccount.mockResolvedValue(ok(short));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("figure", { name: /projected liquid cash/i });
+    expect(screen.getByRole("button", { name: /cover it/i })).toBeInTheDocument();
+    expect(screen.queryByText(/breakdown broke/i)).toBeNull();
+  });
+});
+
+describe("scenario selections wait for the household date (5ie.18, AC8)", () => {
+  // 2026-09-02 00:30 UTC is still September 1 in Los Angeles: a scenario that expires
+  // September 1 is live there and expired in UTC.
+  const LA = "America/Los_Angeles";
+  const dto = (id: string, name: string, extra: object = {}) => ({
+    id,
+    name,
+    description: null,
+    status: "draft",
+    created_at: "2026-06-20T00:00:00Z",
+    updated_at: "2026-06-20T00:00:00Z",
+    expires_on: null,
+    event_count: 0,
+    applied_at: null,
+    ...extra,
+  });
+  const scenarios = () => [dto("p", "Primary"), dto("s", "Ends Sep 1", { expires_on: "2026-09-01" })];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-02T00:30:00Z"));
+    mocks.householdTimezone.mockResolvedValue(ok(LA));
+    mocks.scenarioList.mockResolvedValue(ok(scenarios()));
+    mocks.setHouseholdTimezone.mockReset();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  async function stackedView() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onScenarioChange = vi.fn();
+    renderWithClient(<FutureCashView scenarioId="p" onScenarioChange={onScenarioChange} />, client);
+    const picker = await screen.findByLabelText("Add a scenario to the stack");
+    await within(picker).findByRole("option", { name: "Ends Sep 1" });
+    fireEvent.change(picker, { target: { value: "s" } });
+    await waitFor(() => expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p", "s"]));
+    // With the date known, the pile that explains the order is there too.
+    expect(await screen.findByRole("list", { name: /scenario stack/i })).toBeInTheDocument();
+    return { client, onScenarioChange };
+  }
+
+  /// The household timezone read starts over (as after a vault lock and unlock), still unread.
+  function forgetTimezone(client: QueryClient, next: Promise<unknown>) {
+    mocks.householdTimezone.mockReturnValue(next);
+    return act(async () => {
+      client.removeQueries({ queryKey: queryKeys.householdTimezone });
+      // Any change to what the view reads makes it build the (now empty) timezone query again.
+      client.setQueryData(queryKeys.scenarios, [
+        dto("p", "Primary", { updated_at: "2026-06-21T00:00:00Z" }),
+        dto("s", "Ends Sep 1", { expires_on: "2026-09-01" }),
+      ]);
+    });
+  }
+
+  it("keeps the primary and the stacked ids while the timezone has not been read, and still has them when Los Angeles arrives", async () => {
+    const { client, onScenarioChange } = await stackedView();
+    let resolveTz: (value: unknown) => void = () => {};
+    await forgetTimezone(client, new Promise((resolve) => (resolveTz = resolve)));
+    // Nothing is pruned or reselected on the UTC fallback; no eligibility is claimed.
+    await waitFor(() =>
+      expect(screen.queryByRole("list", { name: /scenario stack/i })).toBeNull(),
+    );
+    expect(screen.queryByLabelText("Add a scenario to the stack")).toBeNull();
+    expect(mocks.futureCashForecast).not.toHaveBeenLastCalledWith(90, ["p"]);
+    expect(onScenarioChange).not.toHaveBeenCalled();
+
+    await act(async () => resolveTz(ok(LA)));
+    await screen.findByRole("button", { name: /Remove Ends Sep 1 from the stack/ });
+    expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p", "s"]);
+    expect(onScenarioChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps them when the read failed, and a Retry that reads Los Angeles brings the stack back without a write", async () => {
+    const { client, onScenarioChange } = await stackedView();
+    await forgetTimezone(client, Promise.reject(new Error("host down")));
+    expect((await screen.findAllByText("Could not load the household timezone."))[0]).toBeInTheDocument();
+    expect(mocks.futureCashForecast).not.toHaveBeenLastCalledWith(90, ["p"]);
+
+    mocks.householdTimezone.mockResolvedValue(ok(LA));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("button", { name: /Remove Ends Sep 1 from the stack/ });
+    expect(mocks.setHouseholdTimezone).not.toHaveBeenCalled();
+    expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p", "s"]);
+    expect(onScenarioChange).not.toHaveBeenCalled();
+  });
+
+  it("a timezone read as UTC is a real answer: the scenario that ended is dropped", async () => {
+    const { client } = await stackedView();
+    await forgetTimezone(client, Promise.resolve(ok("UTC")));
+    await waitFor(() => expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p"]));
+    expect(screen.queryByRole("button", { name: /Remove Ends Sep 1 from the stack/ })).toBeNull();
+  });
+
+  it("after a good read, a stacked scenario that was archived or deleted is still dropped", async () => {
+    const { client } = await stackedView();
+    client.setQueryData(queryKeys.scenarios, [dto("p", "Primary")]);
+    await waitFor(() => expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p"]));
   });
 });

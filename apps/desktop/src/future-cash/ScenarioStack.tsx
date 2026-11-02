@@ -28,8 +28,8 @@ export function ScenarioStack({
   onChange: (next: string[]) => void;
 }) {
   const { scenarios } = useScenarios();
-  const { timezone } = useHouseholdTimezone();
-  const today = todayInTimezone(timezone);
+  const tz = useHouseholdTimezone();
+  const today = todayInTimezone(tz.timezone);
 
   const nameOf = (id: string) =>
     scenarios?.find((s) => s.id === id)?.name ?? "a deleted scenario";
@@ -40,6 +40,9 @@ export function ScenarioStack({
     (s) => s.id !== primaryId && !stacked.includes(s.id) && isInForecast(s, today),
   );
 
+  // Which scenarios are in the forecast depends on the household date, so nothing is offered or
+  // listed before that has been read (the bar above says what it is waiting for).
+  if (!tz.verified) return null;
   if (available.length === 0 && stacked.length === 0) return null;
 
   return (

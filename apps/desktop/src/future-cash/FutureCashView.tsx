@@ -88,10 +88,14 @@ export function FutureCashView({
   // render (not only by the effect below) so the first forecast read after the change
   // already omits it.
   const { scenarios } = useScenarios();
-  const { timezone } = useHouseholdTimezone();
-  const today = todayInTimezone(timezone);
+  const tz = useHouseholdTimezone();
+  const today = todayInTimezone(tz.timezone);
+  // Only a household timezone that has been read can say a scenario has expired. Until then
+  // (pending, paused, failed, or a cached value whose refresh failed) the selections are kept
+  // as they are: pruning on the UTC fallback would drop a scenario that is still live in the
+  // household's date, and it would not come back.
   const liveStacked =
-    scenarios === null
+    scenarios === null || !tz.verified
       ? stackedIds
       : stackedIds.filter((id) => {
           const scenario = scenarios.find((s) => s.id === id);
@@ -113,11 +117,15 @@ export function FutureCashView({
   const { selection: seriesSelection, setSelection: setSeriesSelection } =
     useFutureCashSeries();
   const {
-    projection,
+    projection: cachedProjection,
     error: projectionError,
     retry: retryProjection,
     retrying: retryingProjection,
   } = scenarioId ? scenarioProjection : baseProjection;
+  // A failed read outranks the breakdown cached from an earlier one: the chart, the table and
+  // Cover it show what the app could not just confirm, so they give way to the failure and its
+  // Retry until a read works again.
+  const projection = projectionError ? null : cachedProjection;
   // The realized past behind the projection (4d8.27.5.3). Lookback 0 = off.
   const { history } = useCashFlowHistory(lookback);
   const historyAccounts = lookback > 0 ? (history?.accounts ?? null) : null;
@@ -228,16 +236,20 @@ export function FutureCashView({
           <>
             {/* The chips say WHICH scenarios are on and in what order; the pile below says
                 what that order does. Chips first: picking the stack precedes reading it. */}
-            <ScenarioStack
-              primaryId={scenarioId}
-              stacked={liveStacked}
-              onChange={setStackedIds}
-            />
-            <ScenarioLayers
-              primaryId={scenarioId}
-              stacked={liveStacked}
-              onReorder={setStackedIds}
-            />
+            {tz.verified && (
+              <>
+                <ScenarioStack
+                  primaryId={scenarioId}
+                  stacked={liveStacked}
+                  onChange={setStackedIds}
+                />
+                <ScenarioLayers
+                  primaryId={scenarioId}
+                  stacked={liveStacked}
+                  onReorder={setStackedIds}
+                />
+              </>
+            )}
           </>
         )}
 

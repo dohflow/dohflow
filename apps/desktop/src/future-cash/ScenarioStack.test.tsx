@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { todayInTimezone } from "@/lib/format";
 import { renderWithClient } from "@/test/renderWithClient";
@@ -155,3 +155,20 @@ describe("which scenarios can be stacked (5ie.18)", () => {
     expect(screen.queryByRole("option", { name: "Long gone" })).toBeNull();
   });
 });
+
+describe("the stack waits for the household date (5ie.18, AC8)", () => {
+  it("offers and lists nothing until the timezone has been read", async () => {
+    let resolveTz: (value: unknown) => void = () => {};
+    mocks.householdTimezone.mockReturnValue(new Promise((resolve) => (resolveTz = resolve)));
+    renderWithClient(<ScenarioStack primaryId="a" stacked={["b"]} onChange={vi.fn()} />);
+    await waitFor(() => expect(mocks.scenarioList).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(screen.queryByLabelText("Add a scenario to the stack")).toBeNull();
+    expect(screen.queryByText("Pay rise")).toBeNull();
+    resolveTz(ok("UTC"));
+    expect(await screen.findByText("Pay rise")).toBeInTheDocument();
+  });
+});
+

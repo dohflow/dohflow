@@ -8,6 +8,7 @@ import { todayInTimezone } from "@/lib/format";
 import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
 import { isExpired } from "./scenarioEligibility";
+import { TimezoneReadNotice } from "./TimezoneReadNotice";
 import { SCENARIO_NAME_MAX, useScenarios } from "./useScenarios";
 
 const STATUS_CLASS = "h-9 rounded-md border bg-background px-3 text-sm";
@@ -27,8 +28,10 @@ export function ScenarioBar({
   const { scenarios, error, addScenario, archiveScenario, updateScenario } = useScenarios();
   // The backend gate compares `expires_on` against the HOUSEHOLD-local date (ADR 0051 §3),
   // so the picker does too, not the device's calendar.
-  const { timezone } = useHouseholdTimezone();
-  const today = todayInTimezone(timezone);
+  // Until that date has been read (not the UTC fallback), the picker offers no choices and the
+  // selection is left alone.
+  const tz = useHouseholdTimezone();
+  const today = todayInTimezone(tz.timezone);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -42,17 +45,19 @@ export function ScenarioBar({
   // gated by the backend (ADR 0051 §1/§3), so offering them would let the user pick a
   // scenario whose changes are silently not applied — the compare banner would read
   // "+$0.00" and look like the plan had no effect.
-  const visible = (scenarios ?? []).filter(
-    (s) => s.status !== "archived" && !isExpired(s, today),
-  );
-  const selected = visible.find((s) => s.id === selectedId) ?? null;
+  const notArchived = (scenarios ?? []).filter((s) => s.status !== "archived");
+  const visible = tz.verified ? notArchived.filter((s) => !isExpired(s, today)) : [];
+  // While the date is unverified the selection stays as it was, and is shown, not judged.
+  const selected =
+    (tz.verified ? visible : notArchived).find((s) => s.id === selectedId) ?? null;
   // A selection that is no longer selectable (archived/expired/deleted elsewhere) falls
-  // back to base, rather than leaving a blank picker over base numbers.
+  // back to base, rather than leaving a blank picker over base numbers. Only a verified date
+  // can say a scenario has expired, so nothing falls back before that.
   useEffect(() => {
-    if (selectedId !== null && scenarios !== null && selected === null) {
+    if (tz.verified && selectedId !== null && scenarios !== null && selected === null) {
       onSelect(null);
     }
-  }, [selectedId, scenarios, selected, onSelect]);
+  }, [tz.verified, selectedId, scenarios, selected, onSelect]);
 
   function startEditing() {
     if (!selected) return;
@@ -116,15 +121,19 @@ export function ScenarioBar({
           id="scenario-select"
           value={selectedId ?? ""}
           onChange={(e) => onSelect(e.target.value || null)}
+          disabled={!tz.verified}
           className="h-9 rounded-md border bg-background px-3 text-sm"
         >
           <option value="">Base (no scenario)</option>
-          {visible.map((scenario) => (
+          {(tz.verified ? visible : selected ? [selected] : []).map((scenario) => (
             <option key={scenario.id} value={scenario.id}>
               {scenario.name}
             </option>
           ))}
         </select>
+        {!tz.verified && (
+          <TimezoneReadNotice failure={tz.failure} retry={tz.retry} retrying={tz.retrying} />
+        )}
         {!creating && (
           <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
             <FolderPlus aria-hidden />

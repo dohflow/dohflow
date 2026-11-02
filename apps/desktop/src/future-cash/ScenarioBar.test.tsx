@@ -1,3 +1,4 @@
+import { QueryClient, onlineManager } from "@tanstack/react-query";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -8,6 +9,7 @@ import { ScenarioBar } from "./ScenarioBar";
 
 const mocks = vi.hoisted(() => ({
   householdTimezone: vi.fn(),
+  setHouseholdTimezone: vi.fn(),
   scenarioList: vi.fn(),
   createScenario: vi.fn(),
   updateScenario: vi.fn(),
@@ -117,4 +119,126 @@ test("a scenario is expired by the household date, not the device's (g3m 5ie.18)
   mocks.householdTimezone.mockResolvedValue(ok(BEHIND));
   renderWithClient(<ScenarioBar selectedId={null} onSelect={vi.fn()} />);
   expect(await screen.findByRole("option", { name: "Raise" })).toBeInTheDocument();
+});
+
+// 2026-09-02 00:30 UTC is still September 1 in Los Angeles, so a scenario that expires on
+// September 1 is live there and expired in UTC (5ie.18, AC8).
+describe("the picker waits for the household date (5ie.18, AC8)", () => {
+  const LA = "America/Los_Angeles";
+  const expiring = () => ({ ...scenario("s1", "Raise"), expires_on: "2026-09-01" });
+  const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-02T00:30:00Z"));
+    mocks.scenarioList.mockResolvedValue(ok([expiring(), scenario("s2", "Move")]));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    onlineManager.setOnline(true);
+  });
+
+  test("scenarios that arrive before the timezone are not judged on the UTC fallback", async () => {
+    let resolveTz: (value: unknown) => void = () => {};
+    mocks.householdTimezone.mockReturnValue(new Promise((resolve) => (resolveTz = resolve)));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    // The scenarios are in (the selected one is named), the timezone is not.
+    await waitFor(() => expect(screen.getByLabelText("Scenario")).toHaveValue("s1"));
+    expect(screen.getByLabelText("Scenario")).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading…");
+    expect(onSelect).not.toHaveBeenCalled();
+
+    resolveTz(ok(LA));
+    expect(await screen.findByRole("option", { name: "Move" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Scenario")).toBeEnabled();
+    expect(screen.getByLabelText("Scenario")).toHaveValue("s1"); // still live in Los Angeles
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("a read that is paused (offline, or a key rotation) leaves the selection alone", async () => {
+    onlineManager.setOnline(false);
+    mocks.householdTimezone.mockResolvedValue(ok(LA));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Loading…"));
+    expect(mocks.householdTimezone).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+
+    onlineManager.setOnline(true);
+    expect(await screen.findByRole("option", { name: "Move" })).toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("a failed read says so, keeps the selection, and Retry reads it again without writing", async () => {
+    mocks.householdTimezone.mockRejectedValueOnce(new Error("host down"));
+    mocks.householdTimezone.mockResolvedValue(ok(LA));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the household timezone.");
+    expect(screen.queryByRole("option", { name: "Move" })).toBeNull();
+    expect(onSelect).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("option", { name: "Move" })).toBeInTheDocument();
+    expect(mocks.householdTimezone).toHaveBeenCalledTimes(2);
+    expect(mocks.setHouseholdTimezone).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("Retry reads Retrying… and is disabled while the read runs", async () => {
+    mocks.householdTimezone.mockRejectedValueOnce(new Error("host down"));
+    let finish: (value: unknown) => void = () => {};
+    mocks.householdTimezone.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    renderWithClient(<ScenarioBar selectedId={null} onSelect={vi.fn()} />, client());
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const pending = await screen.findByRole("button", { name: "Retrying…" });
+    expect(pending).toBeDisabled();
+    // The failure being retried stays on screen meanwhile.
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load the household timezone.");
+    finish(ok(LA));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /retry/i })).toBeNull());
+  });
+
+  test("a cached timezone whose refresh failed is not a fresh read: the failure shows and nothing is judged", async () => {
+    const c = client();
+    mocks.householdTimezone.mockResolvedValue(ok(LA));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, c);
+    await screen.findByRole("option", { name: "Move" });
+
+    mocks.householdTimezone.mockRejectedValue(new Error("host down"));
+    await c.refetchQueries({ queryKey: ["household-timezone"] });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the household timezone.");
+    expect(screen.getByLabelText("Scenario")).toBeDisabled();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("nothing falls back to base for any reason before the timezone is read", async () => {
+    // The selected scenario is not in the list at all; that is judged once the read is in.
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s2", "Move")]));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() => expect(mocks.scenarioList).toHaveBeenCalled());
+    await screen.findByRole("status");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("a timezone that was read as UTC is a real answer: the scenario that expired falls back to base", async () => {
+    mocks.householdTimezone.mockResolvedValue(ok("UTC"));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(null));
+  });
+
+  test("after a good read, a scenario that was deleted elsewhere still falls back to base", async () => {
+    mocks.householdTimezone.mockResolvedValue(ok(LA));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s2", "Move")]));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(null));
+  });
 });
