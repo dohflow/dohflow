@@ -11,51 +11,28 @@
 //! back to the normalized string — behaviour identical to v1. **Ambiguous** identities
 //! (Amazon, Costco) are excluded from auto-fill: they span categories, so a single learned
 //! category must not propagate — they defer to disambiguation (ADR 0030 / zrpg).
+//!
+//! This module is the READ-ONLY planner (personal-cfo-5ymg8.5): it returns the fills, and the
+//! `ApplyMerchantMemory` command writes them (`apply/merchant_cmds.rs`). The thresholds below are
+//! tunable, which is why the command carries the OUTCOME rather than re-deriving it in apply.
 
 use std::collections::HashMap;
 
 use categorization::normalize_merchant;
-use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use uuid::Uuid;
 
-use crate::DbError;
+use crate::merchant_identity::AliasIndex;
+use crate::{CategoryId, DbError, MerchantAssignment, TransactionId};
 
 /// Minimum agreement (winning category count / total) to auto-apply a merchant's learned
 /// category, in basis points (60%). Conflicted merchants below this are left for review.
 const MIN_AGREEMENT_BPS: i64 = 6000;
 
-/// How a normalized merchant key resolves to its canonical identity (7yh0-v2).
-struct Resolved {
-    identity: Uuid,
-    ambiguous: bool,
-}
-
-/// The alias index loaded once per apply: exact-key lookups plus prefix aliases for
-/// multi-location chains (2a6r), longest-first so a more specific brand token wins.
-struct Resolution {
-    exact: HashMap<String, Resolved>,
-    prefixes: Vec<(String, Resolved)>,
-}
-
-impl Resolution {
-    /// Resolve a normalized key: exact alias, then a prefix alias the key begins with on a
-    /// word boundary (`COSTCO` matches `COSTCO WHSE SEATTLE`, never `COSTCOX`).
-    fn get(&self, norm: &str) -> Option<&Resolved> {
-        if let Some(r) = self.exact.get(norm) {
-            return Some(r);
-        }
-        self.prefixes
-            .iter()
-            .find(|(p, _)| norm.starts_with(&format!("{p} ")))
-            .map(|(_, r)| r)
-    }
-}
-
 /// The grouping key for a counterparty: its resolved identity when an alias maps it,
 /// else the normalized string. `None` means "skip" — an empty key, or an **ambiguous**
 /// identity that must not receive a single auto-category.
-fn group_key(resolution: &Resolution, counterparty: &str) -> Option<String> {
+fn group_key(resolution: &AliasIndex, counterparty: &str) -> Option<String> {
     let norm = normalize_merchant(counterparty);
     if norm.is_empty() {
         return None;
@@ -67,46 +44,15 @@ fn group_key(resolution: &Resolution, counterparty: &str) -> Option<String> {
     }
 }
 
-/// Apply merchant memory; returns the number of transactions newly categorized.
-pub(crate) fn apply(conn: &Connection) -> Result<u32, DbError> {
-    // Mint earned anchors for unseeded multi-location chains first (5n4.4), so the resolution
-    // load below sees them and the memory groups those chains' locations together.
-    crate::merchant_grouping::mint_anchors(conn)?;
-
+/// Plan the fills merchant memory would make now, ascending by transaction id.
+///
+/// Learns merchant→category from the user's manual categorizations and picks, for each merchant
+/// whose winning category clears [`MIN_AGREEMENT_BPS`], every currently uncategorized transaction of
+/// that merchant. Anchors are minted first by the caller (the plan must see them).
+pub(crate) fn plan_assignments(conn: &Connection) -> Result<Vec<MerchantAssignment>, DbError> {
     // 0. Load the normalized-key → identity resolution (7yh0-v2 + 2a6r prefixes). Small (one
     //    row per alias); empty when no identities exist, so grouping is by normalized string.
-    let resolution = {
-        let mut exact: HashMap<String, Resolved> = HashMap::new();
-        let mut prefixes: Vec<(String, Resolved)> = Vec::new();
-        let mut stmt = conn.prepare(
-            "SELECT ma.normalized_key, ma.merchant_identity_id, mi.is_ambiguous, ma.match_type
-             FROM merchant_aliases ma
-             JOIN merchant_identities mi ON mi.id = ma.merchant_identity_id",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Uuid>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        for row in rows {
-            let (key, identity, ambiguous, match_type) = row?;
-            let resolved = Resolved {
-                identity,
-                ambiguous: ambiguous != 0,
-            };
-            if match_type == "prefix" {
-                prefixes.push((key, resolved));
-            } else {
-                exact.insert(key, resolved);
-            }
-        }
-        // Longest prefix first so the most specific brand token wins.
-        prefixes.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
-        Resolution { exact, prefixes }
-    };
+    let resolution = AliasIndex::load(conn)?;
 
     // 1. Build the memory: grouping key → (category → count) from USER assignments.
     let mut memory: HashMap<String, HashMap<Uuid, u32>> = HashMap::new();
@@ -142,7 +88,7 @@ pub(crate) fn apply(conn: &Connection) -> Result<u32, DbError> {
         })
         .collect();
     if winners.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
     // 3. Collect uncategorized transactions that carry a counterparty.
@@ -160,23 +106,21 @@ pub(crate) fn apply(conn: &Connection) -> Result<u32, DbError> {
         rows.collect::<Result<Vec<_>, _>>()?
     };
 
-    // 4. Apply the learned category where the grouping key (identity or normalized merchant)
-    //    matches. An ambiguous-identity counterparty resolves to `None` and is skipped.
-    let now = Utc::now().to_rfc3339();
-    let mut applied = 0u32;
+    // 4. Fill where the grouping key (identity or normalized merchant) matches. An ambiguous
+    //    identity's counterparty resolves to `None` and is skipped.
+    let mut plan: Vec<MerchantAssignment> = Vec::new();
     for (txn_id, counterparty) in uncategorized {
         let Some(key) = group_key(&resolution, &counterparty) else {
             continue;
         };
         if let Some((category, agreement_bps)) = winners.get(&key) {
-            conn.execute(
-                "INSERT INTO transaction_categorizations
-                    (transaction_id, category_id, source, confidence_bps, assigned_at)
-                 VALUES (?1, ?2, 'rule', ?3, ?4)",
-                params![txn_id, category, agreement_bps, now],
-            )?;
-            applied += 1;
+            plan.push(MerchantAssignment {
+                transaction_id: TransactionId::from_uuid(txn_id),
+                category_id: CategoryId::from_uuid(*category),
+                confidence_bps: *agreement_bps,
+            });
         }
     }
-    Ok(applied)
+    plan.sort_by_key(|a| a.transaction_id.as_uuid());
+    Ok(plan)
 }

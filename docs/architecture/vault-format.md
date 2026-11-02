@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=23 -->
+<!-- vault-format: spec-version=24 -->
 <!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,16 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 24` (personal-cfo-5ymg8.5) adds the version 1 commands `MintMerchantAnchors` and
+  `ApplyMerchantMemory` and records `merchant_aliases`, `merchant_identities` and
+  `transaction_categorizations` as class 1 now that no raw writer remains (the genesis seed is the
+  one non-command writer, in the vault-creating transaction). Each command carries the OUTCOME of a
+  heuristic the issuing device ran (the brands to mint, the fills to make) and apply runs no
+  heuristic. A mint skips a key any alias holds; a fill skips a voided or already-categorized
+  transaction and never overwrites; a missing transaction or category refuses the whole command. An
+  earned brand's identity id is `v5(NAMESPACE_OID, "merchant-auto:{key}")`, frozen. ADR 0073
+  Addendum J gives the dispositions (Base-dependent, auto after re-evaluation). No schema version,
+  wire layout or existing vector changes; the version 1 payload fixtures gain two files.
 - `spec-version = 23` (personal-cfo-5ymg8.9) corrects the class of `recurring_event_instances` in the
   inventory from 1 to 2 (derived, rebuilt locally): the rows are rebuilt on read from the active
   schedules and the ledger and depend on the day they are rebuilt, so two devices hold different
@@ -501,10 +511,10 @@ therefore requires reviewing this inventory.
 | `forecast_assumption_events` | 1 | include | include | A base override or scenario overlay row, immutable once written except for `status` and `superseded_by`. Written only by the assumption-event and scenario commands; `origin_run_id` is NULL on every command-written row. Recorded as class 1 by ADR 0074 Addendum H. |
 | `forecast_dependency_edges` | 2 | rebuild | rebuild | Derived per-run attribution (an assumption event to a forecast row of one run); rebuilt locally, never shipped. Corrected from class 4 by ADR 0074 Addendum F. |
 | `recurring_event_instances` | 2 | rebuild | rebuild | Derived occurrences of the active schedules, linked to ledger postings; rebuilt locally from the schedules and the ledger and dependent on today, so never shipped. Stores no user outcome (confirmations are class-1 `confirmed_obligations`); an outcome must never be stored here, because a rebuild deletes it. Corrected from class 1 by ADR 0074 Addendum F. |
-| `merchant_aliases` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `merchant_identities` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `merchant_aliases` | 1 | include | include | A key's mapping to a merchant identity. Written by the genesis seed and by `MintMerchantAnchors`, never by a raw write. Routed to class 1 by ADR 0074 Decision 5. |
+| `merchant_identities` | 1 | include | include | A canonical merchant. Written by the genesis seed and by `MintMerchantAnchors` (id `v5("merchant-auto:{key}")`, frozen). Routed to class 1 by ADR 0074 Decision 5. |
 | `manual_entry_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `transaction_categorizations` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `transaction_categorizations` | 1 | include | include | A transaction's category and its source. Written by `RecategorizeTransaction`, the import commit and `ApplyMerchantMemory`, all through the command bus. Routed to class 1 by ADR 0074 Decision 5. |
 | `settings_user_keys` | 4 | fields | fields | Key-scope marker for the `user.*` keys carried from `settings`. |
 | `attachment_blobs` | 1b | artifact | artifact | Document bytes: plaintext inside the portable bundle; an opaque, epoch-scoped artifact object under Sync. |
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |

@@ -511,15 +511,15 @@ note = "Per-run attribution (an assumption event to a forecast row of one run). 
 
 [[table]]
 table = "merchant_aliases"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current merchant-alias writer is direct; ADR 0074 and SYNC-2 decide the class-1 user-correction route."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.5"
+note = "Merchant alias mappings; the genesis seed and MintMerchantAnchors write them, and a user correction follows the user (ADR 0074 Decision 5). Routed from class 4 by personal-cfo-5ymg8.5."
 
 [[table]]
 table = "merchant_identities"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current merchant-identity writer is direct; ADR 0074 and SYNC-2 decide the class-1 identity route."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.5"
+note = "Merchant identities; the genesis seed and MintMerchantAnchors write them (ADR 0074 Decision 5). Routed from class 4 by personal-cfo-5ymg8.5."
 
 [[table]]
 table = "manual_entry_links"
@@ -529,9 +529,9 @@ note = "Current manual-entry link writer is direct; ADR 0074 and SYNC-2 decide c
 
 [[table]]
 table = "transaction_categorizations"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "The apply path is a class-1 writer but merchant_memory.rs is currently a class-4 writer; ADR 0074 and SYNC-2 decide the single routed command path."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.5"
+note = "Transaction categorizations; RecategorizeTransaction, the import commit and ApplyMerchantMemory write them, all through the command bus (ADR 0074 Decision 5). Routed from class 4 by personal-cfo-5ymg8.5."
 
 [[table]]
 table = "settings_user_keys"

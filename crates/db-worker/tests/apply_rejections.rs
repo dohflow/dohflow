@@ -22,7 +22,8 @@ use core_ledger::{
 use core_money::{Currency, Money};
 use db_worker::{
     ActorType, AssumptionKind, AssumptionSource, CommandMeta, DbError, DbWorker, IssuedAt,
-    NewAssumptionEvent, NewScenario, RejectCode, ScenarioStatus, WriteCommand,
+    MerchantAnchor, MerchantAssignment, NewAssumptionEvent, NewScenario, RejectCode,
+    ScenarioStatus, WriteCommand,
 };
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -701,7 +702,127 @@ fn scenarios() -> Vec<Step> {
             revert_confirmed(130, &[]),
             Fine,
         ),
+        // ---- apply/merchant_cmds.rs (personal-cfo-5ymg8.5) ----
+        step("minting no anchors", mint(&[]), Reject(PayloadInvalid)),
+        step(
+            "minting past the per-command bound",
+            WriteCommand::MintMerchantAnchors {
+                anchors: (0..=db_worker::MAX_MERCHANT_COMMAND_ENTRIES)
+                    .map(|n| anchor(&format!("K{n:05}")))
+                    .collect(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "minting anchors out of key order",
+            mint(&["ZED", "ABC"]),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "minting the same key twice in one command",
+            mint(&["ABC", "ABC"]),
+            Reject(PayloadInvalid),
+        ),
+        step("minting an empty key", mint(&[""]), Reject(PayloadInvalid)),
+        step(
+            "minting a key wider than the replicated key width",
+            WriteCommand::MintMerchantAnchors {
+                anchors: vec![anchor(&"K".repeat(db_worker::MAX_ALIAS_KEY_BYTES + 1))],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "minting an anchor with a blank display name",
+            WriteCommand::MintMerchantAnchors {
+                anchors: vec![MerchantAnchor {
+                    key: "ABC".to_owned(),
+                    display_name: "  ".to_owned(),
+                }],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step("minting two anchors", mint(&["ABC", "ZED"]), Fine),
+        step("minting a held key again skips it", mint(&["ABC"]), Fine),
+        step(
+            "applying memory to no transactions",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: Vec::new(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory past the per-command bound",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: (0..=db_worker::MAX_MERCHANT_COMMAND_ENTRIES as u128)
+                    .map(|n| assignment(3_000 + n, 10, 10_000))
+                    .collect(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory out of transaction order",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(31, 10, 10_000), assignment(30, 10, 10_000)],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory with a confidence above 100%",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 10, 10_001)],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory to an unknown transaction",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(93, 10, 10_000)],
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying memory with an unknown category",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 92, 10_000)],
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying memory fills the uncategorized transaction",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 10, 7_500)],
+            },
+            Fine,
+        ),
+        step(
+            "applying memory again skips the categorized transaction",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 11, 9_000)],
+            },
+            Fine,
+        ),
     ]
+}
+
+fn anchor(key: &str) -> MerchantAnchor {
+    MerchantAnchor {
+        key: key.to_owned(),
+        display_name: format!("Brand {key}"),
+    }
+}
+
+fn mint(keys: &[&str]) -> WriteCommand {
+    WriteCommand::MintMerchantAnchors {
+        anchors: keys.iter().map(|k| anchor(k)).collect(),
+    }
+}
+
+fn assignment(txn: u128, category_n: u128, confidence_bps: i64) -> MerchantAssignment {
+    MerchantAssignment {
+        transaction_id: TransactionId::from_uuid(u(txn)),
+        category_id: category(category_n),
+        confidence_bps,
+    }
 }
 
 fn revert_confirmed(scenario: u128, confirmed: &[u128]) -> WriteCommand {
@@ -857,6 +978,7 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/assumption_cmds.rs",
         "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
+        "apply/merchant_cmds.rs",
         "apply/mod.rs",
         "apply/scenario_apply.rs",
         "apply/scenario_cmds.rs",

@@ -230,15 +230,31 @@ fn a_replace_conflict_is_seen_as_a_change_of_the_replaced_row() {
     // merchant_aliases is written with INSERT OR REPLACE; recursive triggers make the implied
     // delete visible, so the before image is the replaced row.
     let (_dir, worker) = worker();
-    let identity = worker
-        .create_merchant_identity("Cafe", None, false, "user")
-        .unwrap();
+    let plant = |id: Uuid, name: &str| {
+        worker
+            .read_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO merchant_identities
+                   (id, display_name, default_category_id, is_ambiguous, source, created_at)
+                 VALUES (?1, ?2, NULL, 0, 'user', 'now')",
+                params![id, name],
+            )
+            .unwrap();
+        id
+    };
+    let identity = plant(Uuid::from_u128(1), "Cafe");
     worker
-        .link_merchant_alias("CAFE", identity, "user", 5_000)
+        .read_connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO merchant_aliases
+               (normalized_key, merchant_identity_id, source, confidence_bps, created_at)
+             VALUES ('CAFE', ?1, 'user', 5000, 'now')",
+            params![identity],
+        )
         .unwrap();
-    let other = worker
-        .create_merchant_identity("Other", None, false, "user")
-        .unwrap();
+    let other = plant(Uuid::from_u128(2), "Other");
     let set = command(&worker, |tx| {
         tx.execute(
             "INSERT OR REPLACE INTO merchant_aliases

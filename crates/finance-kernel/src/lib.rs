@@ -3481,7 +3481,7 @@ impl Kernel {
         // personal-cfo-5n4.2) when the setting is on and something committed. Reuses the
         // idempotent, uncategorized-only apply, so it never overwrites a user assignment.
         let auto_categorized = if committed > 0 && self.auto_categorize_on_import()? {
-            self.worker.apply_merchant_memory()?
+            self.worker.apply_merchant_memory_caused_by(Some(meta))?
         } else {
             0
         };
@@ -3644,7 +3644,7 @@ impl Kernel {
         ))?;
 
         let auto_categorized = if committed > 0 && self.auto_categorize_on_import()? {
-            self.worker.apply_merchant_memory()?
+            self.worker.apply_merchant_memory_caused_by(Some(meta))?
         } else {
             0
         };

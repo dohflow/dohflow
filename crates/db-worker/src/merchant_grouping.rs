@@ -10,31 +10,28 @@
 //! containment by construction: an anchor is only ever a curated-or-earned brand, never a
 //! fusion of two arbitrary keys, so the false-merge blast radius is one identity.
 //!
-//! Idempotent: deterministic v5 ids + `INSERT OR IGNORE`, and already-resolved keys are
-//! skipped, so a re-run mints nothing new and a user's own mapping is never clobbered.
+//! This module is the READ-ONLY planner (personal-cfo-5ymg8.5): it returns the brands to mint, and
+//! the `MintMerchantAnchors` command writes them (`apply/merchant_cmds.rs`, which derives the
+//! identity id from the key and skips a key an alias already holds). Planning is idempotent: a
+//! brand once minted resolves its locations, so a re-plan returns nothing new.
 
 use std::collections::{HashMap, HashSet};
 
 use categorization::{brand_anchor, normalize_merchant};
-use chrono::Utc;
 use rusqlite::Connection;
-use uuid::Uuid;
 
-use crate::{merchant_identity, DbError};
+use crate::merchant_identity::{alias_key_fits, AliasIndex};
+use crate::{DbError, MerchantAnchor};
 
 /// Minimum distinct location-bearing keys sharing a brand before it is minted as an anchor —
 /// a chain must be seen at ≥2 locations, so a one-off sighting never invents a merchant.
 const MIN_DISTINCT_LOCATIONS: usize = 2;
 
-/// Confidence (bps) recorded on an auto-minted alias — below the 10000 of a seed/user mapping
-/// so a weak grouping stays auditable and reversible (ADR 0030).
-const AUTO_ALIAS_CONFIDENCE_BPS: i64 = 8000;
-
-/// Mint anchors for unseeded multi-location chains. Returns the number of new identities minted.
+/// Plan the anchors to mint for unseeded multi-location chains, in strictly ascending key order.
 ///
 /// # Errors
-/// Returns [`DbError`] if a SQLite operation fails.
-pub(crate) fn mint_anchors(conn: &Connection) -> Result<u32, DbError> {
+/// Returns [`DbError`] if a SQLite read fails.
+pub(crate) fn plan_anchors(conn: &Connection) -> Result<Vec<MerchantAnchor>, DbError> {
     // Distinct merchant counterparties across non-voided transactions.
     let mut stmt = conn.prepare(
         "SELECT DISTINCT td.counterparty
@@ -48,6 +45,8 @@ pub(crate) fn mint_anchors(conn: &Connection) -> Result<u32, DbError> {
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
 
+    let index = AliasIndex::load(conn)?;
+
     // Group still-unresolved, location-bearing keys by their brand anchor.
     let mut groups: HashMap<String, HashSet<String>> = HashMap::new();
     for raw in &raw_keys {
@@ -56,7 +55,7 @@ pub(crate) fn mint_anchors(conn: &Connection) -> Result<u32, DbError> {
             continue;
         }
         // Skip keys an existing seed/user/auto alias already resolves (no duplicate anchors).
-        if merchant_identity::resolve(conn, &key)?.is_some() {
+        if index.lookup(&key).is_some() {
             continue;
         }
         if let Some(anchor) = brand_anchor(&key) {
@@ -67,40 +66,26 @@ pub(crate) fn mint_anchors(conn: &Connection) -> Result<u32, DbError> {
         }
     }
 
-    let now = Utc::now().to_rfc3339();
-    let mut minted = 0u32;
-    // Deterministic order so a run is reproducible regardless of HashMap iteration.
-    let mut anchors: Vec<(&String, &HashSet<String>)> = groups.iter().collect();
-    anchors.sort_by(|a, b| a.0.cmp(b.0));
-    for (anchor, keys) in anchors {
-        if keys.len() < MIN_DISTINCT_LOCATIONS {
-            continue;
-        }
-        // An anchor derived from transaction text that would exceed the replicated key width
-        // is not minted (no alias, no identity): ingestion must not fail on it, and the key is
-        // never truncated, which would change what it identifies.
-        if !merchant_identity::alias_key_fits(anchor) {
-            continue;
-        }
-        let id = Uuid::new_v5(
-            &Uuid::NAMESPACE_OID,
-            format!("merchant-auto:{anchor}").as_bytes(),
-        );
-        let changed = conn.execute(
-            "INSERT OR IGNORE INTO merchant_identities
-                (id, display_name, default_category_id, is_ambiguous, source, created_at)
-             VALUES (?1, ?2, NULL, 0, 'auto', ?3)",
-            rusqlite::params![id, title_case(anchor), now],
-        )?;
-        conn.execute(
-            "INSERT OR IGNORE INTO merchant_aliases
-                (normalized_key, merchant_identity_id, source, confidence_bps, match_type, created_at)
-             VALUES (?1, ?2, 'auto', ?3, 'prefix', ?4)",
-            rusqlite::params![anchor, id, AUTO_ALIAS_CONFIDENCE_BPS, now],
-        )?;
-        minted += u32::try_from(changed).unwrap_or(0);
-    }
-    Ok(minted)
+    let mut anchors: Vec<MerchantAnchor> = groups
+        .into_iter()
+        .filter(|(anchor, keys)| {
+            // A chain must be seen at several locations, so a one-off sighting never invents a
+            // merchant. An anchor derived from transaction text that would exceed the replicated
+            // key width is not minted: ingestion must not fail on it, and the key is never
+            // truncated, which would change what it identifies. An anchor key some alias already
+            // holds is not minted either (the apply skips it too).
+            keys.len() >= MIN_DISTINCT_LOCATIONS
+                && alias_key_fits(anchor)
+                && !index.holds_key(anchor)
+        })
+        .map(|(anchor, _)| MerchantAnchor {
+            display_name: title_case(&anchor),
+            key: anchor,
+        })
+        .collect();
+    // Deterministic order: the payload is a function of the vault, never of HashMap iteration.
+    anchors.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(anchors)
 }
 
 /// Title-case a normalized (uppercase) anchor for display: `RITUAL COFFEE` → `Ritual Coffee`.

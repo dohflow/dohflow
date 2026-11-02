@@ -9,9 +9,14 @@
 //! This is the schema seam only — seeding, fuzzy alias matching, and the read-model
 //! population are downstream beads (7yh0-v2, the ambiguous-merchant beads), each designed
 //! against its real consumer.
+//!
+//! Writes: the only writer here is the genesis seed (the vault-creating transaction). Earned brands
+//! and learned categories reach the tables through `MintMerchantAnchors` and `ApplyMerchantMemory`
+//! (`apply/merchant_cmds.rs`, personal-cfo-5ymg8.5); the rest of this module is read-only.
 
 use categorization::normalize_merchant;
-use chrono::Utc;
+use std::collections::HashMap;
+
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
@@ -171,34 +176,6 @@ pub struct MerchantIdentity {
     pub source: String,
 }
 
-/// Create a merchant identity, returning its id.
-///
-/// # Errors
-/// Returns [`DbError`] if the insert fails (e.g. an out-of-domain `source`).
-pub(crate) fn create_identity(
-    conn: &Connection,
-    display_name: &str,
-    default_category_id: Option<Uuid>,
-    is_ambiguous: bool,
-    source: &str,
-) -> Result<Uuid, DbError> {
-    let id = Uuid::now_v7();
-    conn.execute(
-        "INSERT INTO merchant_identities
-            (id, display_name, default_category_id, is_ambiguous, source, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            id,
-            display_name,
-            default_category_id,
-            i64::from(is_ambiguous),
-            source,
-            Utc::now().to_rfc3339(),
-        ],
-    )?;
-    Ok(id)
-}
-
 /// The longest `merchant_aliases.normalized_key`, in UTF-8 bytes. The key is the table's primary
 /// key, and the canonical row encoding caps a primary key at 256 bytes (vault-format.md
 /// C.1.5): a text key is a tag byte, a `u32` length and the bytes, so 256 - 5 = 251. A
@@ -210,38 +187,96 @@ pub(crate) fn alias_key_fits(key: &str) -> bool {
     key.len() <= MAX_ALIAS_KEY_BYTES
 }
 
-/// Point a normalized merchant key at an identity. Re-linking a key moves it — the key is the
-/// primary key, since a deterministic key resolves to exactly one identity.
-///
-/// # Errors
-/// Returns [`DbError::ReplicatedKeyTooLong`] if the key would exceed the replicated key width
-/// (it is rejected, never truncated), or [`DbError`] if the insert fails (e.g. an
-/// out-of-domain `source`).
-pub(crate) fn link_alias(
-    conn: &Connection,
-    normalized_key: &str,
-    merchant_identity_id: Uuid,
-    source: &str,
-    confidence_bps: i64,
-) -> Result<(), DbError> {
-    if !alias_key_fits(normalized_key) {
-        return Err(DbError::ReplicatedKeyTooLong {
-            table: "merchant_aliases",
-        });
+/// How a normalized merchant key resolves to its canonical identity.
+pub(crate) struct Resolved {
+    /// The identity the key resolves to.
+    pub(crate) identity: Uuid,
+    /// Whether that identity spans categories (never auto-categorized).
+    pub(crate) ambiguous: bool,
+}
+
+/// The alias index, loaded once: exact-key lookups plus prefix aliases for multi-location chains,
+/// longest-first so a more specific brand token wins. The ONE resolver both planners and
+/// [`resolve`] use, so the grouping pass and the memory pass cannot disagree about a key.
+pub(crate) struct AliasIndex {
+    exact: HashMap<String, Resolved>,
+    prefixes: Vec<(String, Resolved)>,
+}
+
+impl AliasIndex {
+    /// Read every alias (one row per alias, so small).
+    pub(crate) fn load(conn: &Connection) -> Result<Self, DbError> {
+        let mut exact: HashMap<String, Resolved> = HashMap::new();
+        let mut prefixes: Vec<(String, Resolved)> = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT ma.normalized_key, ma.merchant_identity_id, mi.is_ambiguous, ma.match_type
+             FROM merchant_aliases ma
+             JOIN merchant_identities mi ON mi.id = ma.merchant_identity_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Uuid>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (key, identity, ambiguous, match_type) = row?;
+            let resolved = Resolved {
+                identity,
+                ambiguous: ambiguous != 0,
+            };
+            if match_type == "prefix" {
+                prefixes.push((key, resolved));
+            } else {
+                exact.insert(key, resolved);
+            }
+        }
+        // Longest prefix first, ties by key, so the most specific brand token wins and the order
+        // never depends on row order.
+        prefixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        Ok(Self { exact, prefixes })
     }
-    conn.execute(
-        "INSERT OR REPLACE INTO merchant_aliases
-            (normalized_key, merchant_identity_id, source, confidence_bps, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            normalized_key,
-            merchant_identity_id,
-            source,
-            confidence_bps,
-            Utc::now().to_rfc3339(),
-        ],
-    )?;
-    Ok(())
+
+    /// Resolve a normalized key: an exact alias first, then a prefix alias the key begins with on a
+    /// word boundary (`COSTCO` matches `COSTCO WHSE SEATTLE`, never `COSTCOX`).
+    pub(crate) fn get(&self, normalized_key: &str) -> Option<&Resolved> {
+        if let Some(found) = self.exact.get(normalized_key) {
+            return Some(found);
+        }
+        self.prefixes
+            .iter()
+            .find(|(prefix, _)| {
+                normalized_key.len() > prefix.len()
+                    && normalized_key.starts_with(prefix.as_str())
+                    && normalized_key.as_bytes()[prefix.len()] == b' '
+            })
+            .map(|(_, resolved)| resolved)
+    }
+
+    /// Resolve a key the way a reader of one alias asks: an alias whose own key is exactly this
+    /// one resolves it whatever its match type (a prefix alias resolves its bare token), then the
+    /// prefix rule of [`AliasIndex::get`]. [`resolve`] and the grouping planner use this; merchant
+    /// memory groups with [`AliasIndex::get`], which does not treat a bare prefix token as a hit.
+    pub(crate) fn lookup(&self, normalized_key: &str) -> Option<&Resolved> {
+        if let Some(found) = self.exact.get(normalized_key) {
+            return Some(found);
+        }
+        if let Some((_, found)) = self
+            .prefixes
+            .iter()
+            .find(|(prefix, _)| prefix == normalized_key)
+        {
+            return Some(found);
+        }
+        self.get(normalized_key)
+    }
+
+    /// Whether any alias, exact or prefix, holds exactly this key.
+    pub(crate) fn holds_key(&self, key: &str) -> bool {
+        self.exact.contains_key(key) || self.prefixes.iter().any(|(prefix, _)| prefix == key)
+    }
 }
 
 /// Resolve a normalized merchant key (the `normalize_merchant` output) to its canonical
@@ -255,43 +290,26 @@ pub(crate) fn resolve(
     conn: &Connection,
     normalized_key: &str,
 ) -> Result<Option<MerchantIdentity>, DbError> {
-    const SELECT: &str =
-        "SELECT mi.id, mi.display_name, mi.default_category_id, mi.is_ambiguous, mi.source
-         FROM merchant_aliases ma
-         JOIN merchant_identities mi ON mi.id = ma.merchant_identity_id";
-    let map = |r: &rusqlite::Row| {
-        Ok(MerchantIdentity {
-            id: r.get(0)?,
-            display_name: r.get(1)?,
-            default_category_id: r.get(2)?,
-            is_ambiguous: r.get::<_, i64>(3)? != 0,
-            source: r.get(4)?,
-        })
+    let index = AliasIndex::load(conn)?;
+    let Some(found) = index.lookup(normalized_key) else {
+        return Ok(None);
     };
-
-    if let Some(found) = conn
+    Ok(conn
         .query_row(
-            &format!("{SELECT} WHERE ma.normalized_key = ?1"),
-            params![normalized_key],
-            map,
+            "SELECT id, display_name, default_category_id, is_ambiguous, source
+             FROM merchant_identities WHERE id = ?1",
+            params![found.identity],
+            |r| {
+                Ok(MerchantIdentity {
+                    id: r.get(0)?,
+                    display_name: r.get(1)?,
+                    default_category_id: r.get(2)?,
+                    is_ambiguous: r.get::<_, i64>(3)? != 0,
+                    source: r.get(4)?,
+                })
+            },
         )
-        .optional()?
-    {
-        return Ok(Some(found));
-    }
-    // Prefix fallback: the key begins with a prefix alias's token + a space (word boundary),
-    // so `APPLE` matches `APPLE STORE …` but never `APPLEBEE'S`.
-    let row = conn
-        .query_row(
-            &format!(
-                "{SELECT} WHERE ma.match_type = 'prefix' AND ?1 LIKE ma.normalized_key || ' %'
-                 ORDER BY length(ma.normalized_key) DESC LIMIT 1"
-            ),
-            params![normalized_key],
-            map,
-        )
-        .optional()?;
-    Ok(row)
+        .optional()?)
 }
 
 /// Count of canonical merchant identities — the observability / test seam.

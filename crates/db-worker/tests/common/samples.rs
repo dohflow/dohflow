@@ -9,8 +9,9 @@ use core_ledger::{
 };
 use core_money::{Currency, Money};
 use db_worker::{
-    AssumptionKind, AssumptionSource, DebtTermsInput, NewAssumptionEvent, NewScenario,
-    RepaymentPhilosophy, ScenarioStatus, SplitLineInput, WriteCommand,
+    AssumptionKind, AssumptionSource, DebtTermsInput, MerchantAnchor, MerchantAssignment,
+    NewAssumptionEvent, NewScenario, RepaymentPhilosophy, ScenarioStatus, SplitLineInput,
+    WriteCommand,
 };
 use pay_schedule::Frequency;
 use uuid::Uuid;
@@ -517,6 +518,38 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
                         category_id: None,
                         note: None,
                         tag_ids: vec![],
+                    },
+                ],
+            },
+        ),
+        (
+            "mint_merchant_anchors",
+            WriteCommand::MintMerchantAnchors {
+                anchors: vec![
+                    MerchantAnchor {
+                        key: "RITUAL COFFEE".into(),
+                        display_name: "Ritual Coffee".into(),
+                    },
+                    MerchantAnchor {
+                        key: "SHELL OIL".into(),
+                        display_name: "Shell Oil".into(),
+                    },
+                ],
+            },
+        ),
+        (
+            "apply_merchant_memory",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![
+                    MerchantAssignment {
+                        transaction_id: txn(10),
+                        category_id: category(16),
+                        confidence_bps: 10_000,
+                    },
+                    MerchantAssignment {
+                        transaction_id: txn(11),
+                        category_id: category(16),
+                        confidence_bps: 6_000,
                     },
                 ],
             },

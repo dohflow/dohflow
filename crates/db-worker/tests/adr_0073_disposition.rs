@@ -2,7 +2,7 @@
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
 //! silently going stale as `WriteCommand` grows. It deliberately parses the
-//! enum declaration rather than constructing all 80 payloads, so a new variant
+//! enum declaration rather than constructing all 82 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
 //! can ship a command with no rebase rule. It also compares every checked-in
 //! ADR cell against this table and proves that a one-cell outcome drift fails.
@@ -400,6 +400,16 @@ const DISPOSITIONS: &[Disposition] = &[
         Shape::BaseDependent,
         "auto iff the active descendants equal the confirmed list; queue-choose otherwise",
     ),
+    d(
+        "MintMerchantAnchors",
+        Shape::BaseDependent,
+        "auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose",
+    ),
+    d(
+        "ApplyMerchantMemory",
+        Shape::BaseDependent,
+        "auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose",
+    ),
     // Exceptions that must be completed before their command can enter the
     // Sync envelope stream.
     d(
@@ -563,7 +573,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        80,
+        82,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -594,7 +604,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     assert_eq!(shape_count(Shape::Create), 14);
     assert_eq!(shape_count(Shape::Set), 30);
     assert_eq!(shape_count(Shape::Toggle), 25);
-    assert_eq!(shape_count(Shape::BaseDependent), 6);
+    assert_eq!(shape_count(Shape::BaseDependent), 8);
     assert_eq!(shape_count(Shape::TombstoneFirst), 0);
     assert_eq!(shape_count(Shape::ReshapeFirst), 4);
     assert_eq!(shape_count(Shape::NeverShips), 1);
