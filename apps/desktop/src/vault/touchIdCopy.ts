@@ -40,6 +40,8 @@ const FALLBACK = "Enter your master password.";
 /// (xuu repair round); shown as a persistent alert.
 export const TOUCH_ID_UNLOCK_UNKNOWN =
   "Couldn’t confirm the Touch ID result. Enter your master password.";
+/// Announced (not shown) after each failed read-only status check in Settings.
+export const TOUCH_ID_CHECK_FAILED = "Couldn’t check Touch ID status. Try again.";
 export const TOUCH_ID_CHANGE_UNKNOWN =
   "Couldn’t confirm the Touch ID change. Check its status before trying again.";
 

@@ -12,7 +12,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { TOUCH_ID_CHANGE_UNKNOWN, touchIdReasonCopy } from "@/vault/touchIdCopy";
+import {
+  TOUCH_ID_CHANGE_UNKNOWN,
+  TOUCH_ID_CHECK_FAILED,
+  touchIdReasonCopy,
+} from "@/vault/touchIdCopy";
 import { describeIpcError } from "@/vault/useVault";
 import { useTouchIdStatus } from "@/vault/useTouchIdStatus";
 
@@ -68,9 +72,9 @@ export function TouchIdCard() {
     setRefocus(true);
   }
 
-  function endUnknown() {
+  function endUnknown(announce = "") {
     setUnknown(true);
-    setAnnouncement("");
+    setAnnouncement(announce);
     setBusy(false);
     setRefocus(true);
   }
@@ -130,7 +134,9 @@ export function TouchIdCard() {
     if (read) {
       end(read);
     } else {
-      endUnknown();
+      // Every failed check is announced. A second identical failure is still heard because each
+      // check first announces "Checking Touch ID…", so the region's text changes between the two.
+      endUnknown(TOUCH_ID_CHECK_FAILED);
     }
   }
 

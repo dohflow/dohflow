@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import type { TouchIdStatusDto } from "@/bindings";
 import { renderWithClient } from "@/test/renderWithClient";
@@ -188,6 +188,73 @@ describe("TouchIdCard", () => {
       await waitFor(() => expect(mocks.touchIdStatus).toHaveBeenCalledTimes(2));
       expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
       expect(screen.getByRole("button", { name: "Check Touch ID status" })).toBeEnabled();
+    });
+
+    describe("a status check that fails (xuu repair round 2)", () => {
+      const FAILED = "Couldn’t check Touch ID status. Try again.";
+
+      /// Every text the live region shows, in order, so a repeat is told from a text that never changed.
+      function recordAnnouncements() {
+        const region = screen.getByTestId("touch-id-announcement");
+        const seen: string[] = [];
+        new MutationObserver(() => {
+          const text = region.textContent ?? "";
+          if (seen.at(-1) !== text) seen.push(text);
+        }).observe(region, { childList: true, characterData: true, subtree: true });
+        return seen;
+      }
+
+      async function unknownState() {
+        mocks.touchIdStatus.mockResolvedValueOnce(status({ state: "on", offered: true, reason: null }));
+        mocks.touchIdDisable.mockRejectedValue(new Error("host went away"));
+        renderWithClient(<TouchIdCard />);
+        fireEvent.click(await screen.findByRole("button", { name: /turn off touch id/i }));
+        await screen.findByRole("alert");
+      }
+
+      it("is announced after each failure, including a second identical one", async () => {
+        await unknownState();
+        mocks.touchIdStatus.mockRejectedValue(new Error("host went away"));
+        const seen = recordAnnouncements();
+        for (const times of [1, 2]) {
+          fireEvent.click(screen.getByRole("button", { name: "Check Touch ID status" }));
+          await waitFor(() => expect(seen.filter((t) => t === FAILED)).toHaveLength(times));
+          await waitFor(() =>
+            expect(screen.getByRole("button", { name: "Check Touch ID status" })).toBeEnabled(),
+          );
+        }
+        // The text changed in between (the pending announcement), so a polite region says it again.
+        expect(seen).toEqual(["Checking Touch ID…", FAILED, "Checking Touch ID…", FAILED]);
+      });
+
+      it("a pending check announces once, then on failure keeps the alert and Check, and refocuses Check", async () => {
+        await unknownState();
+        let fail: (reason: Error) => void = () => {};
+        mocks.touchIdStatus.mockReturnValue(new Promise((_, reject) => (fail = reject)));
+        fireEvent.click(screen.getByRole("button", { name: "Check Touch ID status" }));
+        await waitFor(() =>
+          expect(screen.getByTestId("touch-id-announcement")).toHaveTextContent("Checking Touch ID…"),
+        );
+        expect(screen.getByRole("button", { name: "Check Touch ID status" })).toBeDisabled();
+        await act(async () => fail(new Error("host went away")));
+        expect(screen.getByTestId("touch-id-announcement")).toHaveTextContent(FAILED);
+        expect(screen.getByRole("alert")).toHaveTextContent(UNKNOWN);
+        const check = screen.getByRole("button", { name: "Check Touch ID status" });
+        expect(check).toBeEnabled();
+        await waitFor(() => expect(check).toHaveFocus());
+      });
+
+      it("guesses no state and makes no enable or disable call", async () => {
+        await unknownState();
+        mocks.touchIdStatus.mockRejectedValue(new Error("host went away"));
+        fireEvent.click(screen.getByRole("button", { name: "Check Touch ID status" }));
+        await waitFor(() =>
+          expect(screen.getByTestId("touch-id-announcement")).toHaveTextContent(FAILED),
+        );
+        expect(screen.queryByText(/touch id is (on|off) for this vault/i)).not.toBeInTheDocument();
+        expect(mocks.touchIdDisable).toHaveBeenCalledTimes(1);
+        expect(mocks.touchIdEnable).not.toHaveBeenCalled();
+      });
     });
 
     it("says nothing in the live region just because the card loaded", async () => {

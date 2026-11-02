@@ -213,4 +213,45 @@ describe("Touch ID on the unlock screen", () => {
     fireEvent.click(await screen.findByRole("button", { name: /unlock with touch id/i }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
+
+  describe("the unconfirmed-result alert and a password attempt (xuu repair round 2)", () => {
+    const UNKNOWN = "Couldn’t confirm the Touch ID result. Enter your master password.";
+
+    async function unknownThenType() {
+      mocks.touchIdStatus.mockResolvedValue(status({}));
+      mocks.unlockWithTouchId.mockRejectedValue(new Error("host went away"));
+      render(<UnlockScreen />);
+      fireEvent.click(await screen.findByRole("button", { name: /unlock with touch id/i }));
+      await screen.findByText(UNKNOWN);
+      const password = screen.getByLabelText(/master password/i);
+      fireEvent.change(password, { target: { value: "synthetic-password" } });
+      return password;
+    }
+
+    it("clears when a password attempt starts, before it answers", async () => {
+      await unknownThenType();
+      mocks.unlockVault.mockReturnValue(new Promise(() => {}));
+      fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
+      await waitFor(() => expect(screen.queryByText(UNKNOWN)).not.toBeInTheDocument());
+    });
+
+    it("a wrong password then shows only its own error", async () => {
+      await unknownThenType();
+      mocks.unlockVault.mockResolvedValue("VaultUnlockFailed");
+      fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("Incorrect password");
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(screen.queryByText(UNKNOWN)).not.toBeInTheDocument();
+    });
+
+    it("typing does not clear it, and an empty submit keeps it", async () => {
+      const password = await unknownThenType();
+      expect(screen.getByText(UNKNOWN)).toBeInTheDocument(); // typed, not submitted
+      fireEvent.change(password, { target: { value: "" } });
+      fireEvent.submit(password.closest("form")!);
+      expect(screen.getByText(UNKNOWN)).toBeInTheDocument();
+      expect(mocks.unlockVault).not.toHaveBeenCalled();
+    });
+  });
 });

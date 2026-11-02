@@ -46,6 +46,9 @@ export function UnlockScreen() {
     if (password.length === 0 || submitting) return;
     setSubmitting(true);
     setError(null);
+    // A real password attempt has started, so the unconfirmed Touch ID result is no longer the
+    // news; if the password fails, only its own error shows.
+    setTouchUnknown(false);
     setDamaged(false);
     const failure = await unlockVault(password);
     if (failure) {
