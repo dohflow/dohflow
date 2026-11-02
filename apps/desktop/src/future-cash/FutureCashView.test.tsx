@@ -607,8 +607,9 @@ describe("scenario selections wait for the household date (5ie.18, AC8)", () => 
   }
 
   /// The household timezone read starts over (as after a vault lock and unlock), still unread.
-  function forgetTimezone(client: QueryClient, next: Promise<unknown>) {
-    mocks.householdTimezone.mockReturnValue(next);
+  function forgetTimezone(client: QueryClient, next: () => Promise<unknown>) {
+    // A factory, so a rejection is created when the read is made, not before anything handles it.
+    mocks.householdTimezone.mockImplementation(next);
     return act(async () => {
       client.removeQueries({ queryKey: queryKeys.householdTimezone });
       // Any change to what the view reads makes it build the (now empty) timezone query again.
@@ -622,7 +623,10 @@ describe("scenario selections wait for the household date (5ie.18, AC8)", () => 
   it("keeps the primary and the stacked ids while the timezone has not been read, and still has them when Los Angeles arrives", async () => {
     const { client, onScenarioChange } = await stackedView();
     let resolveTz: (value: unknown) => void = () => {};
-    await forgetTimezone(client, new Promise((resolve) => (resolveTz = resolve)));
+    await forgetTimezone(
+      client,
+      () => new Promise((resolve) => (resolveTz = resolve)),
+    );
     // Nothing is pruned or reselected on the UTC fallback; no eligibility is claimed.
     await waitFor(() =>
       expect(screen.queryByRole("list", { name: /scenario stack/i })).toBeNull(),
@@ -639,7 +643,7 @@ describe("scenario selections wait for the household date (5ie.18, AC8)", () => 
 
   it("keeps them when the read failed, and a Retry that reads Los Angeles brings the stack back without a write", async () => {
     const { client, onScenarioChange } = await stackedView();
-    await forgetTimezone(client, Promise.reject(new Error("host down")));
+    await forgetTimezone(client, () => Promise.reject(new Error("host down")));
     expect((await screen.findAllByText("Could not load the household timezone."))[0]).toBeInTheDocument();
     expect(mocks.futureCashForecast).not.toHaveBeenLastCalledWith(90, ["p"]);
 
@@ -653,7 +657,7 @@ describe("scenario selections wait for the household date (5ie.18, AC8)", () => 
 
   it("a timezone read as UTC is a real answer: the scenario that ended is dropped", async () => {
     const { client } = await stackedView();
-    await forgetTimezone(client, Promise.resolve(ok("UTC")));
+    await forgetTimezone(client, () => Promise.resolve(ok("UTC")));
     await waitFor(() => expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p"]));
     expect(screen.queryByRole("button", { name: /Remove Ends Sep 1 from the stack/ })).toBeNull();
   });
