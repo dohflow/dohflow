@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=24 -->
+<!-- vault-format: spec-version=25 -->
 <!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,7 +270,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 24` (personal-cfo-5ymg8.5) adds the version 1 commands `MintMerchantAnchors` and
+- `spec-version = 25` (personal-cfo-5ymg8.5) adds the version 1 commands `MintMerchantAnchors` and
   `ApplyMerchantMemory` and records `merchant_aliases`, `merchant_identities` and
   `transaction_categorizations` as class 1 now that no raw writer remains (the genesis seed is the
   one non-command writer, in the vault-creating transaction). Each command carries the OUTCOME of a

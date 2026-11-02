@@ -196,8 +196,18 @@ pub(crate) struct Resolved {
 }
 
 /// The alias index, loaded once: exact-key lookups plus prefix aliases for multi-location chains,
-/// longest-first so a more specific brand token wins. The ONE resolver both planners and
-/// [`resolve`] use, so the grouping pass and the memory pass cannot disagree about a key.
+/// longest-first so a more specific brand token wins. The ONE source both planners and [`resolve`]
+/// read, so the grouping pass and the memory pass cannot disagree about which aliases exist.
+///
+/// It offers two lookups that keep the exact semantics of the two resolvers it replaced
+/// (personal-cfo-5ymg8.5 preserves behavior):
+///
+/// - [`AliasIndex::get`], used by merchant memory to group counterparties: an exact-type alias, else
+///   a prefix alias the key begins with on a word boundary. A prefix alias does NOT resolve its own
+///   bare token (a counterparty that is just `COSTCO` groups as itself).
+/// - [`AliasIndex::lookup`], used by the grouping planner's "already resolved" check and by
+///   [`resolve`]: an alias whose key is exactly this one resolves it whatever its match type, else
+///   the same prefix rule as `get`.
 pub(crate) struct AliasIndex {
     exact: HashMap<String, Resolved>,
     prefixes: Vec<(String, Resolved)>,
