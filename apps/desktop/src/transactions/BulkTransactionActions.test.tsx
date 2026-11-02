@@ -60,9 +60,9 @@ let currentRows: TransactionRowDto[] = [];
 
 function setup(over: Partial<Parameters<typeof BulkTransactionActions>[0]> = {}) {
   const ops = {
-    recategorize: vi.fn(okOp),
-    setReviewed: vi.fn(okOp),
-    deleteTransaction: vi.fn(okOp),
+    recategorize: vi.fn<(id: string, categoryId: string | null) => Promise<IpcError | null>>(okOp),
+    setReviewed: vi.fn<(id: string, reviewed: boolean) => Promise<IpcError | null>>(okOp),
+    deleteTransaction: vi.fn<(id: string) => Promise<IpcError | null>>(okOp),
     setTags: vi.fn<(id: string, tagIds: string[]) => Promise<IpcError | null>>(okOp),
     createTag: vi.fn<(name: string) => Promise<string | IpcError>>(async () => "tag-new"),
     onSelectAll: vi.fn(),
