@@ -22,9 +22,9 @@ use finance_kernel::{
     MultiSeriesForecast, Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor,
     RecordTransaction, RecurringBillView, RecurringCandidateView, RecurringEventId,
     RecurringInstanceRow, RecurringTransferId, RecurringTransferView, RepaymentPhilosophy,
-    ScenarioView, SourceBatchId, SplitLineInput, SplitLineView, StagedTransactionId, TagId,
-    TagView, TransactionId, TransactionPage, TransactionPageQuery, TransactionRow,
-    TransactionSortOrder, Transfer, VaultHealth, VaultState,
+    RevertChange, RevertPreview, ScenarioView, SourceBatchId, SplitLineInput, SplitLineView,
+    StagedTransactionId, TagId, TagView, TransactionId, TransactionPage, TransactionPageQuery,
+    TransactionRow, TransactionSortOrder, Transfer, VaultHealth, VaultState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -3644,6 +3644,65 @@ impl From<ScenarioView> for ScenarioDto {
             expires_on: view.expires_on,
             event_count: view.event_count,
             applied_at: view.applied_at,
+        }
+    }
+}
+
+/// One item the confirmation before undoing an applied scenario lists (personal-cfo-5ie.12).
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct RevertLineDto {
+    /// `edited` (changed after the apply), `cleared` (removed after the apply) or `kept_newer`
+    /// (a newer value was recorded, so the undo keeps it).
+    pub change: String,
+    /// The assumption-kind token of the item.
+    pub kind: String,
+    /// The base income source, bill or category the item targets, when it has one.
+    pub target_entity_id: Option<String>,
+    /// The value the apply put in; for `kept_newer`, the earlier value the undo would restore.
+    pub before_params_json: String,
+    /// The value the person changed it to; for `kept_newer`, the newer value that stays;
+    /// `None` for a cleared item.
+    pub after_params_json: Option<String>,
+}
+
+/// What undoing an applied scenario would do (personal-cfo-5ie.12).
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct RevertPreviewDto {
+    /// One line per changed item. Empty means nothing was touched since the apply: the undo
+    /// needs no confirmation.
+    pub lines: Vec<RevertLineDto>,
+    /// Set when a scenario applied later sits on top: its name, to be undone first.
+    pub blocker_name: Option<String>,
+    /// The changes the undo will clear. Send them back unchanged with the undo: the command
+    /// refuses if they are no longer the changes on the base.
+    pub confirmed_descendants: Vec<String>,
+}
+
+impl From<RevertPreview> for RevertPreviewDto {
+    fn from(preview: RevertPreview) -> Self {
+        Self {
+            lines: preview
+                .lines
+                .into_iter()
+                .map(|line| RevertLineDto {
+                    change: match line.change {
+                        RevertChange::Edited => "edited",
+                        RevertChange::Cleared => "cleared",
+                        RevertChange::KeptNewer => "kept_newer",
+                    }
+                    .to_owned(),
+                    kind: line.kind,
+                    target_entity_id: line.target_entity_id.map(|id| id.to_string()),
+                    before_params_json: line.before_params_json,
+                    after_params_json: line.after_params_json,
+                })
+                .collect(),
+            blocker_name: preview.blocker.map(|blocker| blocker.scenario_name),
+            confirmed_descendants: preview
+                .confirmed_descendants
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
         }
     }
 }

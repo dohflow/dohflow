@@ -473,6 +473,13 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             WriteCommand::RevertScenarioApply { scenario_id: u(25) },
         ),
         (
+            "revert_scenario_apply_confirmed",
+            WriteCommand::RevertScenarioApplyConfirmed {
+                scenario_id: u(25),
+                confirmed_descendants: vec![u(26), u(27)],
+            },
+        ),
+        (
             "create_tag",
             WriteCommand::CreateTag {
                 id: tag(17),

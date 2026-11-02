@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { Archive, Check, Copy, FolderPlus, LineChart, RotateCcw, Trash2, Undo2 } from "lucide-react";
 
 import type { IpcError, ScenarioDto } from "@/bindings";
@@ -13,10 +13,27 @@ import {
 } from "@/components/ui/data-table";
 import { formatIsoDate, todayInTimezone } from "@/lib/format";
 import { appliedRowProps } from "./appliedRow";
+import { RevertScenarioDialog, type RevertPlan } from "./RevertScenarioDialog";
 import { cn } from "@/lib/utils";
 import { SCENARIO_NAME_MAX, useScenarios } from "@/future-cash/useScenarios";
 import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
+
+/// What a failed undo says. A typed refusal means the command ran and wrote nothing, so the dialog
+/// says so. That is proven in the db-worker, not assumed: `apply_command` runs the whole command, the
+/// operation log and the idempotency memo in one transaction that only the final commit publishes, so
+/// any returned error was rolled back (`scenario_revert.rs`, and `a_refused_undo_leaves_the_vault_
+/// exactly_as_it_was` in `tests/scenario_revert.rs`). Nothing in the kernel or the IPC command can
+/// fail after that worker call; a thrown error (the call itself failed) leaves the outcome unknown, so it does not claim
+/// either way and points at the forecast (personal-cfo-5ie.12, Studio's F2).
+const UNDO_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the scenario was undone. Check the forecast before trying again.";
+
+function refusedUndo(error: IpcError): string {
+  const detail = describeIpcError(error).trim();
+  const sentence = detail === "" ? "" : `${detail.charAt(0).toUpperCase()}${detail.slice(1)}${/[.!?]$/.test(detail) ? "" : "."} `;
+  return `That didn’t work, and nothing was undone. ${sentence}Please try again.`;
+}
 
 const COPY_SUFFIX = " (copy)";
 
@@ -130,8 +147,11 @@ export function ScenariosView({
     cloneScenario,
     setScenarioExpiry,
     updateScenario,
+    deletedApplied,
     applyScenario,
+    previewRevert,
     revertScenarioApply,
+    refreshScenarios,
   } = useScenarios();
   const { timezone } = useHouseholdTimezone();
   const today = todayInTimezone(timezone);
@@ -144,6 +164,13 @@ export function ScenariosView({
   // Applying changes the household's real forecast, so it is confirmed and the dialog
   // says exactly what will and will not change (ADR 0055).
   const [confirmApply, setConfirmApply] = useState<ScenarioDto | null>(null);
+  // Undoing an apply is confirmed when the person changed the scenario's items after applying
+  // it (undoing removes those changes too), and explained when a later apply has to go first.
+  const [revertPlan, setRevertPlan] = useState<RevertPlan | null>(null);
+  // Where focus goes when that dialog closes: the Undo button that opened it, or the section
+  // heading when that button is gone (an undone scenario stops showing Undo).
+  const revertOpener = useRef<HTMLElement | null>(null);
+  const headingRef = useRef<HTMLDivElement>(null);
 
   const all = scenarios ?? [];
   const visible = showArchived ? all : all.filter((s) => s.status !== "archived");
@@ -185,6 +212,101 @@ export function ScenariosView({
       }
     } catch {
       setFormError("That didn't work. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /// Undo an apply. With nothing changed since applying it goes straight through; otherwise the
+  /// confirmation lists what else is undone (personal-cfo-5ie.12). The ids the preview named are
+  /// sent back unchanged, so the backend can tell if they moved in the meantime.
+  async function startRevert(target: ScenarioDto, opener: HTMLElement | null) {
+    setFormError(null);
+    revertOpener.current = opener;
+    let result: Awaited<ReturnType<typeof previewRevert>>;
+    try {
+      result = await previewRevert(target.id);
+    } catch {
+      setFormError("That didn't work. Please try again.");
+      return;
+    }
+    if (result.status === "error") {
+      setFormError(describeIpcError(result.error));
+      return;
+    }
+    const preview = result.data;
+    if (preview.blocker_name !== null || preview.lines.length > 0) {
+      setRevertPlan({ scenario: target, preview, moved: false, error: null });
+      return;
+    }
+    // Nothing to confirm, so nothing opened. The undone row stops showing Undo, so on success focus
+    // goes to the heading rather than to a button that is about to disappear.
+    revertOpener.current = null;
+    setBusy(true);
+    try {
+      const error = await revertScenarioApply(target.id, preview.confirmed_descendants);
+      if (error === null) headingRef.current?.focus();
+      else setFormError(describeIpcError(error));
+    } catch {
+      // The call itself failed, so the outcome is not known: read the scenarios again so the row
+      // shows what is stored, as the dialog path does.
+      refreshScenarios();
+      setFormError(UNDO_OUTCOME_UNKNOWN);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /// Send the undo with the list the person confirmed. The dialog stays open until it succeeds. If
+  /// the backend refuses because the changes moved meanwhile (another device edited an item, or
+  /// a later apply appeared), read the list again and show the fresh one to confirm again; nothing
+  /// was written. Any other failure is shown inside the dialog and stays until the next attempt.
+  async function confirmUndo(plan: RevertPlan) {
+    setBusy(true);
+    setRevertPlan({ ...plan, error: null });
+    try {
+      let error: IpcError | null;
+      try {
+        error = await revertScenarioApply(plan.scenario.id, plan.preview.confirmed_descendants);
+      } catch {
+        // The call itself failed, so the outcome is not known: do not say nothing was undone. Read
+        // the scenarios and the preview again, so the row and the list show what is really stored.
+        refreshScenarios();
+        let latest = plan.preview;
+        try {
+          const fresh = await previewRevert(plan.scenario.id);
+          if (fresh.status === "ok") latest = fresh.data;
+        } catch {
+          // The list stays as it was; the message already says to check the forecast.
+        }
+        setRevertPlan({ ...plan, preview: latest, error: UNDO_OUTCOME_UNKNOWN });
+        return;
+      }
+      if (error === null) {
+        // The row stops being applied, so its Undo button is going away: focus goes to the heading.
+        revertOpener.current = null;
+        setRevertPlan(null);
+        return;
+      }
+      // A typed refusal wrote nothing. Read the list again: if the changes moved, or a later apply
+      // appeared, show the fresh preview to confirm again; otherwise show the reason.
+      let fresh: Awaited<ReturnType<typeof previewRevert>> | null = null;
+      try {
+        fresh = await previewRevert(plan.scenario.id);
+      } catch {
+        fresh = null;
+      }
+      const moved =
+        fresh !== null &&
+        fresh.status === "ok" &&
+        (fresh.data.blocker_name !== null ||
+          fresh.data.confirmed_descendants.join(",") !==
+            plan.preview.confirmed_descendants.join(","));
+      if (fresh !== null && fresh.status === "ok" && moved) {
+        setRevertPlan({ scenario: plan.scenario, preview: fresh.data, moved: true, error: null });
+        return;
+      }
+      setRevertPlan({ ...plan, error: refusedUndo(error) });
     } finally {
       setBusy(false);
     }
@@ -338,7 +460,7 @@ export function ScenariosView({
                 size="sm"
                 disabled={busy}
                 aria-label={`Undo applying ${scenario.name}`}
-                onClick={() => void run(() => revertScenarioApply(scenario.id))}
+                onClick={(event) => void startRevert(scenario, event.currentTarget)}
               >
                 <Undo2 aria-hidden className="size-4" />
               </Button>
@@ -393,7 +515,9 @@ export function ScenariosView({
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
-            <CardTitle>Scenarios</CardTitle>
+            <CardTitle ref={headingRef} tabIndex={-1} className="focus-visible:outline-none">
+              Scenarios
+            </CardTitle>
             <CardDescription>
               Plans layered over your real forecast. A scenario never changes your
               actual numbers — you compare it on Cash Flow.
@@ -464,6 +588,36 @@ export function ScenariosView({
                 rowProps={appliedRowProps}
                 minWidth="min-w-[640px]"
               />
+              {deletedApplied.length > 0 && (
+                // Deleting hides a scenario but leaves its apply in the forecast, so the
+                // way back stays here rather than needing a reinstate first.
+                <div className="flex flex-col gap-2 border-t pt-3">
+                  <h3 className="text-sm font-medium">Deleted, but still applied</h3>
+                  <p className="text-xs text-muted-foreground">
+                    You deleted these after applying them, so their changes are still in your
+                    forecast. Undo to take them out.
+                  </p>
+                  <ul className="flex flex-col gap-1">
+                    {deletedApplied.map((deleted) => (
+                      <li
+                        key={deleted.id}
+                        className="flex items-center justify-between gap-2 text-sm"
+                      >
+                        <span>{deleted.name}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          aria-label={`Undo applying deleted scenario ${deleted.name}`}
+                          onClick={(event) => void startRevert(deleted, event.currentTarget)}
+                        >
+                          <Undo2 aria-hidden className="size-4" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {archivedCount > 0 && (
                 <button
                   type="button"
@@ -492,6 +646,16 @@ export function ScenariosView({
           }}
         />
       )}
+      <RevertScenarioDialog
+        plan={revertPlan}
+        busy={busy}
+        onCancel={() => setRevertPlan(null)}
+        onConfirm={() => {
+          if (revertPlan) void confirmUndo(revertPlan);
+        }}
+        restoreFocusTo={revertOpener}
+        fallbackFocusTo={headingRef}
+      />
       {confirmDelete && (
         <DeleteScenarioDialog
           scenario={confirmDelete}

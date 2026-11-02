@@ -70,6 +70,19 @@ Open it in Safari as well (and a narrow `w`) if the engine matters.
 `disclosure-example.html` shows the shared `Disclosure` with a long title, a persistent error and retry, a collapsed
 summary and a nested delete guard. `?theme=dark` and `?open=0` change the state.
 
+## Undoing an applied scenario (`personal-cfo-5ie.12`)
+
+`scenarios-revert.html` renders the **real** `ScenariosView` over a faked Tauri bridge, so every string is the
+product's. `?state=` is one of `list` (the one-click undo), `lines` (the confirmation), `blocker` (a later scenario
+has to be undone first), `changed` (the changes moved while the person looked), `failed` (an undo failed; the error
+shows inside the dialog) and `deleted` ("Deleted, but still applied"); `&long=1` uses 100-character unbroken names and
+32 lines; `&open=1` clicks Undo on load (and the confirm button for `changed` and `failed`); `&theme=dark` selects Dark.
+
+```bash
+pnpm -C apps/desktop exec vite --port 5199 --strictPort
+# http://localhost:5199/scenarios-revert.html?state=lines&open=1&long=1&theme=dark
+```
+
 ## Shared dialog example (`personal-cfo-4d8.6.1`)
 
 `dialog-example.html` shows the shared `Dialog` with fake data, loading the app's own IBM Plex Sans. `?case=` is `plain`,
@@ -93,3 +106,8 @@ or `replace` (a replaced date alone); `&open=1` clicks Apply on load and `&theme
 pnpm -C apps/desktop exec vite --port 5199 --strictPort
 # http://localhost:5199/scenarios-apply-notice.html?state=windows&open=1&theme=dark
 ```
+
+## Frame (`frame.html`)
+
+Loads another dev page in an iframe of a chosen size, so a narrow or short window can be captured from a larger browser
+window (a headless window has a minimum size): `http://localhost:5199/frame.html?src=%2Fscenarios-revert.html%3Fstate%3Dlines%26open%3D1&w=360&h=500`.

@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=21 -->
+<!-- vault-format: spec-version=22 -->
 <!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,14 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 22` (personal-cfo-5ie.12) adds the version 1 command `RevertScenarioApplyConfirmed`
+  (`scenario_id` and `confirmed_descendants`, strictly ascending) and retires `RevertScenarioApply`:
+  it stays decodable and replays as before, and no producer builds it. Apply clears the confirmed
+  active descendants of the promoted rows, restores what the apply superseded and clears the
+  promoted rows; it refuses with `StateConflict` and writes nothing when a later apply sits on top
+  or when the active descendants differ from the confirmed list. ADR 0073 Addendum I gives the
+  disposition (Base-dependent). No schema version, wire layout or existing vector changes; the
+  version 1 payload fixtures gain one file.
 - `spec-version = 21` (personal-cfo-g3m.31) adds `durable_jobs.committed_at` and
   `durable_jobs.committed_outcome` (schema version 63): a device-local marker, set in the same
   transaction as a running job's durable effect, with what committed (`succeeded`, or `failed` for a

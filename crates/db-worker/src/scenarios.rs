@@ -103,6 +103,51 @@ impl ScenarioView {
     }
 }
 
+/// What undoing an apply would do to one item (personal-cfo-5ie.12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevertChange {
+    /// The promoted item was edited after the apply; the undo clears the edit.
+    Edited,
+    /// The promoted item was cleared after the apply; the undo restores the earlier value.
+    Cleared,
+    /// A newer value was recorded for the item after the apply; the undo keeps it and does not
+    /// bring the earlier value back.
+    KeptNewer,
+}
+
+/// One item the confirmation lists. `before_params_json` is the value the apply put in (or, for
+/// [`RevertChange::KeptNewer`], the earlier value the undo would have restored);
+/// `after_params_json` is the value the person changed it to (or the newer value that stays), and
+/// `None` for a cleared item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertLine {
+    pub change: RevertChange,
+    /// The stored assumption-kind token.
+    pub kind: String,
+    pub target_entity_type: Option<String>,
+    pub target_entity_id: Option<Uuid>,
+    pub before_params_json: String,
+    pub after_params_json: Option<String>,
+}
+
+/// The later scenario that has to be undone first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertBlocker {
+    pub scenario_id: Uuid,
+    pub scenario_name: String,
+}
+
+/// What undoing an applied scenario would do, read before the person confirms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertPreview {
+    /// One line per changed item; empty when nothing was touched after the apply.
+    pub lines: Vec<RevertLine>,
+    /// Set when a scenario applied later sits on top: the undo is refused until that one is undone.
+    pub blocker: Option<RevertBlocker>,
+    /// The active changes the undo would clear, ascending: what the confirmation must send back.
+    pub confirmed_descendants: Vec<Uuid>,
+}
+
 /// Resolve the scenario a forecast run should actually apply (ADR 0051 §1, §3).
 ///
 /// A scenario only reaches a run if it is selectable: it must still exist, must not be
