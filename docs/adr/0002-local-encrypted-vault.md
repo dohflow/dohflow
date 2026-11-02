@@ -306,9 +306,10 @@ so all of it is app-side and fails closed.
 4. **A lockout counts as three at once.** A wrong finger keeps the item (anyone at the keyboard could otherwise
    turn Touch ID off by failing it). A changed fingerprint set deletes it and offers enrollment again after the
    password. An item the kernel reports stale, foreign or unreadable is deleted; one that matches the envelope but
-   cannot open the vault (a damaged database, a rotation that needs recovery) is kept.
+   cannot open the vault (a damaged database, a rotation that needs recovery) is kept. Once a prompt may have been shown, any other store error fails closed: it keeps the raised count (the count is restored only when no prompt was shown, because the store was unreachable or no fingerprint is enrolled). An unlock attempt on a vault that is already unlocked is refused before any prompt or count.
 5. **The item never outlives the key it unwraps.** It is removed before and after a password change and a key
-   rotation (the change does not start if it cannot be removed), when the vault is deleted, and when Touch ID is
+   rotation (the change does not start if it cannot be removed, and the current password is checked first, so a typo
+   leaves Touch ID on), when the vault is deleted, and when Touch ID is
    turned off; a launch sweep and every password unlock remove any item whose fingerprint no longer matches the
    envelope, read with `Kernel::envelope_fingerprint` while the vault is still locked. Enabling asks for the vault
    password again.

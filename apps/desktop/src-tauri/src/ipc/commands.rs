@@ -529,7 +529,9 @@ pub fn change_password_impl(
         )));
     }
     // Touch ID's item is removed BEFORE the key material changes, and again after (personal-cfo-xuu). If
-    // it cannot be removed the change does not start: an item must not outlive the key it unwraps.
+    // it cannot be removed the change does not start: an item must not outlive the key it unwraps. The
+    // current password is checked first, so a mistyped one changes nothing and Touch ID stays on.
+    verify_current_password(state, old_password.as_bytes())?;
     retire_touch_id_before_change(state)?;
     let mut guard = state.lock_controller()?;
     guard.change_password(old_password.as_bytes(), new_password.as_bytes())?;
@@ -562,7 +564,9 @@ pub fn rotate_vault_key_impl(
 ) -> Result<VaultStatusDto, IpcError> {
     let password = Zeroizing::new(input.password);
     // Removed before the rotation starts and again after it (personal-cfo-xuu): a rotation is aborted
-    // if the Touch ID item cannot be removed.
+    // if the Touch ID item cannot be removed. The password is checked first, so a mistyped one changes
+    // nothing and Touch ID stays on.
+    verify_current_password(state, password.as_bytes())?;
     retire_touch_id_before_change(state)?;
     let mut guard = state.lock_controller()?;
     let result = guard.rotate_key(password.as_bytes());
@@ -6577,7 +6581,9 @@ fn connector_sync_inner(
                     }
                 }
                 let source_name = format!("{} sync", adapter.display_name());
-                let result = kernel.ingest_sync_batch(
+                // A scheduled refresh's job carries its commit marker from the first durable write on
+                // (personal-cfo-g3m.31): a manual sync has no job and no marker.
+                let result = kernel.ingest_sync_batch_for_job(
                     adapter.id(),
                     &synced.adapter_version,
                     &source_name,
@@ -6585,6 +6591,7 @@ fn connector_sync_inner(
                     &synced.batch,
                     &effective_map,
                     &user_meta(&input.idempotency_key),
+                    run.map(|run| run.job_id),
                 )?;
                 // Watermarks advance ONLY for links that (a) were mapped when
                 // the walk started (phase-1 map — a mid-sync mapping keeps
@@ -7204,6 +7211,20 @@ mod provider_site_tests {
 //
 // The commands take a password or nothing and return a status, a flag and a stable reason code. The
 // key-bearing work is in `crate::touch_id`; nothing here names key material.
+
+/// Checks `password` against the open vault without changing anything, so a change that needs the
+/// current password fails on a typo before Touch ID's item is touched (personal-cfo-xuu, K7).
+fn verify_current_password(state: &AppState, password: &[u8]) -> Result<(), IpcError> {
+    let guard = state.lock_controller()?;
+    let kernel = guard
+        .kernel()
+        .ok_or(finance_kernel::KernelError::IllegalVaultTransition {
+            from: guard.state(),
+            to: finance_kernel::VaultState::Unlocked,
+        })?;
+    let _proof = kernel.verify_password(password)?;
+    Ok(())
+}
 
 /// The fixed text of a refusal to start a change because Touch ID's item could not be removed first.
 fn retire_touch_id_before_change(state: &AppState) -> Result<(), IpcError> {

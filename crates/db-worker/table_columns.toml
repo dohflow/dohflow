@@ -169,7 +169,7 @@ name = "durable_jobs"
 class = "3"
 write_set = "none"
 primary_key = ["id"]
-columns = ["id:uuid", "kind:text", "cadence:text", "next_due_at:text", "state:text", "attempt_count:int", "max_attempts:int", "backoff_initial_seconds:int", "backoff_multiplier_bps:int", "enabled:int", "requires_explicit_opt_in:int", "payload_json:text", "last_run_at:text", "last_outcome:text", "last_error:text", "last_unlock_window:text", "cancel_requested:int", "created_at:text", "updated_at:text"]
+columns = ["id:uuid", "kind:text", "cadence:text", "next_due_at:text", "state:text", "attempt_count:int", "max_attempts:int", "backoff_initial_seconds:int", "backoff_multiplier_bps:int", "enabled:int", "requires_explicit_opt_in:int", "payload_json:text", "last_run_at:text", "last_outcome:text", "last_error:text", "last_unlock_window:text", "cancel_requested:int", "created_at:text", "updated_at:text", "committed_at:text", "committed_outcome:text"]
 
 [[table]]
 name = "forecast_actuals"

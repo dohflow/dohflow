@@ -24,7 +24,7 @@ and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
 <!-- vault-format: spec-version=22 -->
-<!-- vault-format: schema-version=62 -->
+<!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -278,6 +278,13 @@ synthetic no-app recovery test before any such public claim.
   or when the active descendants differ from the confirmed list. ADR 0073 Addendum I gives the
   disposition (Base-dependent). No schema version, wire layout or existing vector changes; the
   version 1 payload fixtures gain one file.
+- `spec-version = 21` (personal-cfo-g3m.31) adds `durable_jobs.committed_at` and
+  `durable_jobs.committed_outcome` (schema version 63): a device-local marker, set in the same
+  transaction as a running job's durable effect, with what committed (`succeeded`, or `failed` for a
+  backup receipt that records a failure; the two are set and cleared together), and cleared when the run
+  is claimed again and at every terminal write, so recovery can tell a committed run from an uncommitted
+  one and record the truth. `durable_jobs` stays class 3 (excluded from Sync and genesis, no write set). No wire
+  layout or vector change.
 - `spec-version = 20` (personal-cfo-5ymg8.4) records `scenarios` and `forecast_assumption_events`
   as class 1 (included in Sync and genesis and in the write set, key `id`) now that commands write
   them, and adds `scenarios.deleted_at` to the `scenarios` row (schema version 62): a delete is a

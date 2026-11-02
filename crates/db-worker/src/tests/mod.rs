@@ -7563,6 +7563,86 @@ fn panic_after_oplog_also_rolls_back() {
     assert_eq!(worker.idempotency_key_count().unwrap(), 0);
 }
 
+/// personal-cfo-g3m.31: a running job's commit marker and the command that is its durable effect are
+/// one transaction. A panic after both writes rolls both back; without the panic, both are there.
+#[test]
+fn a_marked_dispatch_is_atomic_with_its_commit_marker() {
+    let running = |worker: &DbWorker| {
+        let id = Uuid::now_v7();
+        worker
+            .read_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO durable_jobs (id, kind, cadence, state, attempt_count, max_attempts,
+                                           created_at, updated_at)
+                 VALUES (?1, 'connector_refresh', 'daily', 'running', 1, 3, 't', 't')",
+                [id],
+            )
+            .unwrap();
+        id
+    };
+    let marker = |worker: &DbWorker, id: Uuid| -> Option<String> {
+        worker
+            .read_connection()
+            .unwrap()
+            .query_row(
+                "SELECT committed_at FROM durable_jobs WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+
+    let (_dir, worker) = worker();
+    let id = running(&worker);
+    let outcome = worker.dispatch_inner_marking(
+        meta(),
+        create_account_cmd(),
+        Fault::PanicAt(FaultPoint::AfterOpLog),
+        Some(id),
+    );
+    assert!(matches!(outcome, Err(DbError::WriterPanicked)));
+    assert_eq!(
+        worker.read_connection().unwrap().count_accounts().unwrap(),
+        0
+    );
+    assert!(
+        marker(&worker, id).is_none(),
+        "the marker rolled back with the effect"
+    );
+
+    let (_dir2, worker) = self::worker();
+    let id = running(&worker);
+    worker
+        .dispatch_marking_job(meta(), create_account_cmd(), id)
+        .unwrap();
+    assert_eq!(
+        worker.read_connection().unwrap().count_accounts().unwrap(),
+        1
+    );
+    assert!(marker(&worker, id).is_some(), "both are there");
+
+    // A job that is not running is never marked.
+    let queued = Uuid::now_v7();
+    worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO durable_jobs (id, kind, cadence, state, max_attempts, created_at, updated_at)
+             VALUES (?1, 'connector_refresh', 'daily', 'queued', 3, 't', 't')",
+            [queued],
+        )
+        .unwrap();
+    worker
+        .dispatch_marking_job(
+            meta_with_key(&Uuid::new_v4().to_string()),
+            create_account_cmd(),
+            queued,
+        )
+        .unwrap();
+    assert!(marker(&worker, queued).is_none());
+}
+
 /// personal-cfo-g3m.8: the timezone value, its `audit_events` row and its `operation_log`
 /// row are one transaction. A panic after all three writes rolls every one back.
 #[test]
