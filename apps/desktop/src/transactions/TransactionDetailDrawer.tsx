@@ -225,10 +225,23 @@ export function TransactionDetailDrawer({
     if (failure) setActionError(describeIpcError(failure));
   }
 
+  // The attachments whose Remove call is in flight: each is disabled until its call returns, so
+  // a second click cannot send the same removal twice.
+  const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
   async function onRemove(id: string) {
+    if (removing.has(id)) return;
     setActionError(null);
-    const failure = await removeAttachment(id);
-    if (failure) setActionError(describeIpcError(failure));
+    setRemoving((prev) => new Set(prev).add(id));
+    try {
+      const failure = await removeAttachment(id);
+      if (failure) setActionError(describeIpcError(failure));
+    } finally {
+      setRemoving((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   }
 
   return (
@@ -535,6 +548,7 @@ export function TransactionDetailDrawer({
                   <button
                     type="button"
                     onClick={() => onRemove(doc.id)}
+                    disabled={removing.has(doc.id)}
                     aria-label={`Remove ${doc.original_filename ?? "document"}`}
                     className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-loss"
                   >

@@ -574,9 +574,10 @@ describe("TransactionsView", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
 
-    // The row is saved (record called), the attach failed → a non-blocking warning.
+    // The row is saved (record called), the attach failed → a non-blocking warning that
+    // says how many documents did not attach.
     expect(
-      await screen.findByText(/could not be saved/i),
+      await screen.findByText(/1 attachment didn’t attach/i),
     ).toBeInTheDocument();
     expect(mocks.recordTransaction).toHaveBeenCalledTimes(1);
     expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
@@ -584,6 +585,181 @@ describe("TransactionsView", () => {
     expect(
       screen.queryByRole("button", { name: /add details/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("a file that cannot be read after the record committed is reported, and never records twice (g3m.35)", async () => {
+    const unreadable = pickable("receipt.pdf", "application/pdf", [1]);
+    unreadable.arrayBuffer = () => Promise.reject(new Error("file moved"));
+    const other = pickable("scan.pdf", "application/pdf", [2]);
+    mockTransactionPage([txn({ transaction_id: NEW_TXN_ID })]);
+    renderWithClient(<TransactionsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+    fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "40" } });
+    fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+    fireEvent.click(screen.getByRole("button", { name: /add details/i }));
+    fireEvent.change(screen.getByLabelText(/attach documents/i), {
+      target: { files: [unreadable, other] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+
+    // The unreadable one is known not to be attached; the other is still tried and attaches.
+    expect(await screen.findByText(/1 attachment didn’t attach/i)).toBeInTheDocument();
+    expect(mocks.recordTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /add details/i })).not.toBeInTheDocument();
+  });
+
+  describe("one idempotency key per draft (g3m.35)", () => {
+    async function fillDraft(amount: string) {
+      fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: amount } });
+      fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+    }
+    const submit = () => fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+    const keyOf = (call: number) => mocks.recordTransaction.mock.calls[call]?.[0].idempotency_key;
+
+    it("submitting again after a call that threw sends the same key; a changed amount sends a new one", async () => {
+      mocks.recordTransaction.mockRejectedValueOnce(new Error("connection lost"));
+      mocks.recordTransaction.mockRejectedValueOnce(new Error("connection lost"));
+      mockTransactionPage([txn()]);
+      renderWithClient(<TransactionsView />);
+      await fillDraft("40");
+      submit();
+      expect(await screen.findByText(/couldn’t confirm whether the transaction was recorded/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /add details/i })).toBeInTheDocument();
+
+      submit();
+      await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(2));
+      expect(keyOf(1)).toBe(keyOf(0));
+
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "55" } });
+      submit();
+      await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(3));
+      expect(keyOf(2)).not.toBe(keyOf(0));
+    });
+
+    it("a typed refusal resubmits with the same key too, since nothing was recorded under it", async () => {
+      mocks.recordTransaction.mockResolvedValueOnce({
+        status: "error",
+        error: { Validation: "Pick an account." },
+      });
+      mockTransactionPage([txn()]);
+      renderWithClient(<TransactionsView />);
+      await fillDraft("40");
+      submit();
+      expect(await screen.findByText("Pick an account.")).toBeInTheDocument();
+      submit();
+      await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(2));
+      expect(keyOf(1)).toBe(keyOf(0));
+    });
+  });
+
+  it.each([
+    ["note", () => mocks.setNote.mockRejectedValue(new Error("connection lost"))],
+    ["tags", () => mocks.setTags.mockRejectedValue(new Error("connection lost"))],
+    ["category", () => mocks.recategorizeTransaction.mockRejectedValue(new Error("connection lost"))],
+  ])("a %s follow-up that throws after the record committed is a partial result, not a failed save (g3m.35)", async (_name, reject) => {
+    mocks.tagList.mockResolvedValue(
+      ok([{ id: VACATION_TAG, name: "Vacation", color: null, archived: false }]),
+    );
+    reject();
+    mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) =>
+      Promise.resolve(pageResult([], input)),
+    );
+    mockTransactionPage([txn({ transaction_id: NEW_TXN_ID })]);
+    renderWithClient(<TransactionsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+    fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "40" } });
+    fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+    fireEvent.click(screen.getByRole("button", { name: /add details/i }));
+    fireEvent.change(screen.getByLabelText("Category"), { target: { value: CATEGORY.id } });
+    fireEvent.change(screen.getByLabelText(/add a tag/i), { target: { value: "Vacation" } });
+    fireEvent.keyDown(screen.getByLabelText(/add a tag/i), { key: "Enter" });
+    fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Groceries run" } });
+    fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+
+    // The warning for a saved transaction, never the "couldn't confirm the record" message.
+    expect(
+      await screen.findByText(/some details .* may not have saved\. Open it to check before trying again/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/couldn’t confirm whether the transaction was recorded/i)).toBeNull();
+    expect(mocks.recordTransaction).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /add details/i })).not.toBeInTheDocument();
+  });
+
+  describe("which warning shows after a saved transaction (g3m.35)", () => {
+    const DETAILS_UNKNOWN =
+      "Transaction added, but some details (category, tags, note, or attachments) may not have saved. Open it to check before trying again.";
+    const ATTACH_UNKNOWN =
+      "Transaction added, but some attachments may not have attached. Open it to check before trying again.";
+
+    async function addWith(files: File[], withNote = false) {
+      mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) =>
+        Promise.resolve(pageResult([], input)),
+      );
+      mockTransactionPage([txn({ transaction_id: NEW_TXN_ID })]);
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "40" } });
+      fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+      fireEvent.click(screen.getByRole("button", { name: /add details/i }));
+      if (withNote) {
+        fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Groceries run" } });
+      }
+      if (files.length > 0) {
+        fireEvent.change(screen.getByLabelText(/attach documents/i), { target: { files } });
+      }
+      fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+    }
+
+    it("(a) a thrown note call is unknown: the details sentence, not 'could not be saved'", async () => {
+      mocks.setNote.mockRejectedValue(new Error("connection lost"));
+      await addWith([], true);
+      expect(await screen.findByText(DETAILS_UNKNOWN)).toBeInTheDocument();
+      expect(screen.queryByText(/could not be saved/i)).not.toBeInTheDocument();
+    });
+
+    it("(a) a refused note beside a thrown attach is still the details sentence: unknown outranks", async () => {
+      mocks.setNote.mockResolvedValue(err("note refused"));
+      mocks.attachDocument.mockRejectedValue(new Error("connection lost"));
+      await addWith([pickable("receipt.pdf", "application/pdf", [1])], true);
+      expect(await screen.findByText(DETAILS_UNKNOWN)).toBeInTheDocument();
+    });
+
+    it("(b) a thrown attach call is unknown: it may or may not have attached, never 'didn’t attach'", async () => {
+      mocks.attachDocument.mockRejectedValue(new Error("connection lost"));
+      await addWith([pickable("receipt.pdf", "application/pdf", [1])]);
+      expect(await screen.findByText(ATTACH_UNKNOWN)).toBeInTheDocument();
+      expect(screen.queryByText(/didn’t attach/i)).not.toBeInTheDocument();
+      expect(mocks.recordTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("(b) one file confirmed unattached and one that threw: the unknown outranks the count", async () => {
+      const unreadable = pickable("a.pdf", "application/pdf", [1]);
+      unreadable.arrayBuffer = () => Promise.reject(new Error("file moved"));
+      mocks.attachDocument.mockRejectedValue(new Error("connection lost"));
+      await addWith([unreadable, pickable("b.pdf", "application/pdf", [2])]);
+      expect(await screen.findByText(ATTACH_UNKNOWN)).toBeInTheDocument();
+      expect(screen.queryByText(/didn’t attach/i)).not.toBeInTheDocument();
+    });
+
+    it("(c) a refused note with nothing unknown keeps the 'could not be saved' sentence", async () => {
+      mocks.setNote.mockResolvedValue(err("note refused"));
+      await addWith([], true);
+      expect(
+        await screen.findByText(/some details .* could not be saved\. Open it to try again/i),
+      ).toBeInTheDocument();
+    });
+
+    it("(d) a file that fails before anything is sent, or is refused, is counted as 'didn’t attach'", async () => {
+      const unreadable = pickable("a.pdf", "application/pdf", [1]);
+      unreadable.arrayBuffer = () => Promise.reject(new Error("file moved"));
+      mocks.attachDocument.mockResolvedValue(err("attach refused"));
+      await addWith([unreadable, pickable("b.pdf", "application/pdf", [2])]);
+      expect(await screen.findByText(/2 attachments didn’t attach/i)).toBeInTheDocument();
+    });
   });
 
   it("hides the attachment picker when creating a recurring bill (4d8.24.2.3)", async () => {

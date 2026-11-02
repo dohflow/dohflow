@@ -15,7 +15,7 @@ import {
 } from "@/bindings";
 import { mintIdempotencyKey } from "@/lib/idempotency";
 import { ipcQuery, queryKeys } from "@/lib/query";
-import { attach as attachDocumentFile } from "./useTransactionAttachments";
+import { readFileBytes, sendAttachment } from "./useTransactionAttachments";
 
 /// One server-side page of the filtered transaction list (personal-cfo-3fdd.1).
 /// Keyed under the `transactions` prefix so every mutation that invalidates the
@@ -141,7 +141,20 @@ export function useTransactions({ list = true }: { list?: boolean } = {}) {
     ): Promise<
       | { status: "ok" }
       | { status: "record-failed"; error: IpcError }
-      | { status: "partial"; error: IpcError }
+      | {
+          status: "partial";
+          /// The first follow-up error, or `null` when the call threw instead of returning one.
+          error: IpcError | null;
+          /// Whether the category, tags or note did not all save (refused or unknown).
+          metaFailed: boolean;
+          /// Whether a category, tags or note call threw, so it may or may not have saved.
+          metaUnknown: boolean;
+          /// How many picked files are KNOWN not attached: unreadable before anything was sent, or
+          /// refused by the host.
+          unattached: number;
+          /// How many attach calls threw, so the file may or may not be attached.
+          attachUnknown: number;
+        }
     > => {
       const result = await mutation.mutateAsync(input);
       if (result.status !== "ok") {
@@ -150,32 +163,61 @@ export function useTransactions({ list = true }: { list?: boolean } = {}) {
       const id = result.data.transaction_id;
 
       // Sequential so an early failure short-circuits later calls; the returned error is
-      // the first meaningful one. Only non-empty metadata triggers a write.
+      // the first meaningful one. Only non-empty metadata triggers a write. A call that
+      // THROWS (not a typed refusal) is a failure too: the row is already recorded, so it
+      // must never escape as a rejection that reads as "nothing saved" and invites a resubmit.
       let firstError: IpcError | null = null;
+      let metaFailed = false;
+      let metaUnknown = false;
+      const followUp = async (run: () => Promise<IpcError | null>) => {
+        try {
+          const failure = await run();
+          if (failure) {
+            metaFailed = true;
+            if (!firstError) firstError = failure;
+          }
+        } catch {
+          // A call that threw may or may not have saved.
+          metaFailed = true;
+          metaUnknown = true;
+        }
+      };
       if (meta.categoryId !== null) {
-        const failure = await recategorize(id, meta.categoryId);
-        if (failure && !firstError) firstError = failure;
+        await followUp(() => recategorize(id, meta.categoryId));
       }
       if (meta.tagIds.length > 0) {
-        const failure = await followUps.setTags(id, meta.tagIds);
-        if (failure && !firstError) firstError = failure;
+        await followUp(() => followUps.setTags(id, meta.tagIds));
       }
       if (meta.note !== null && meta.note.trim() !== "") {
-        const failure = await followUps.setNote(id, meta.note.trim());
-        if (failure && !firstError) firstError = failure;
+        await followUp(() => followUps.setNote(id, meta.note!.trim()));
       }
       // Attachments last (personal-cfo-4d8.24.2.3): the row is already durably recorded, so
       // an attach failure degrades to "partial" exactly like tags/note — never a rollback.
-      // Sequential; the first failure short-circuits the rest and becomes the reported error.
+      // Sequential, and each file is tried: one that fails does not stop the others. A file that
+      // could not be read, or that the host refused, is known not to be attached; a call that
+      // threw is unknown (the host may have stored it).
+      let unattached = 0;
+      let attachUnknown = 0;
       for (const file of files) {
-        const result = await attachDocumentFile(id, file);
-        if (result.status !== "ok") {
-          if (!firstError) firstError = result.error;
-          break;
+        let bytes: number[];
+        try {
+          bytes = await readFileBytes(file);
+        } catch {
+          unattached += 1;
+          continue;
+        }
+        try {
+          const result = await sendAttachment(id, file, bytes);
+          if (result.status !== "ok") {
+            unattached += 1;
+            if (!firstError) firstError = result.error;
+          }
+        } catch {
+          attachUnknown += 1;
         }
       }
-      return firstError
-        ? { status: "partial", error: firstError }
+      return metaFailed || unattached > 0 || attachUnknown > 0
+        ? { status: "partial", error: firstError, metaFailed, metaUnknown, unattached, attachUnknown }
         : { status: "ok" };
     },
     [mutation, recategorize],
