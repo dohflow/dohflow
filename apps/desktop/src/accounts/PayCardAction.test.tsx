@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -123,4 +124,152 @@ test("does not offer an investment account as a source (liquidate to cash first)
   // A brokerage isn't a valid direct card payer, so the tool offers no source.
   expect(await screen.findByText(/no liquid account holds funds/i)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull();
+});
+
+const openTool = async () => {
+  fireEvent.click(screen.getByRole("button", { name: /pay card/i }));
+  return screen.findByRole("button", { name: /confirm payment/i });
+};
+const keyOf = (call: number) => mocks.recordTransfer.mock.calls[call]?.[0].idempotency_key;
+const UNKNOWN =
+  "Couldn’t confirm whether the payment was recorded. Confirm again and it won’t be recorded twice.";
+
+describe("a payment in flight (6wk.24)", () => {
+  test("Cancel is disabled and Escape does nothing until the outcome returns, then the tool closes with focus on Pay card", async () => {
+    let finish: (value: unknown) => void = () => {};
+    mocks.recordTransfer.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    renderWithClient(<PayCardAction card={card} />);
+    const confirm = await openTool();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /confirm payment/i })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: /confirm payment/i })).toBeInTheDocument();
+
+    await act(async () => finish(ok({ op_seq: 1, replayed: false })));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: /pay card/i })).toHaveFocus());
+  });
+});
+
+describe("a payment that does not come back clean (6wk.24)", () => {
+  test("a typed refusal shows the app's reason, releases the buttons, and a retry sends the same key", async () => {
+    mocks.recordTransfer.mockResolvedValue({
+      status: "error",
+      error: { Validation: "That account does not have enough to cover this." },
+    });
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(await openTool());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That account does not have enough to cover this.",
+    );
+    expect(screen.getByRole("button", { name: /confirm payment/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(keyOf(1)).toBe(keyOf(0));
+  });
+
+  test("a thrown call says the outcome is unknown, re-reads accounts, releases busy, and the same payment keeps its key", async () => {
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(<PayCardAction card={card} />);
+    const confirm = await openTool();
+    const reads = mocks.accountList.mock.calls.length;
+    fireEvent.click(confirm);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+    await waitFor(() => expect(mocks.accountList.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(screen.getByRole("button", { name: /confirm payment/i })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    // The warning stays on screen until the person acts.
+    expect(screen.getByRole("alert")).toHaveTextContent(UNKNOWN);
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(keyOf(1)).toBe(keyOf(0));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull());
+  });
+
+  test("Confirm stays held until the re-read finishes", async () => {
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(<PayCardAction card={card} />);
+    const confirm = await openTool();
+    let release: (value: unknown) => void = () => {};
+    const stored = await mocks.accountList();
+    mocks.accountList.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    fireEvent.click(confirm);
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: /confirm payment/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await act(async () => release(stored));
+    await waitFor(() => expect(screen.getByRole("button", { name: /confirm payment/i })).toBeEnabled());
+  });
+
+  test("a changed amount is a new draft with a new key", async () => {
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(await openTool());
+    await waitFor(() => expect(screen.getByRole("button", { name: /confirm payment/i })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "500" } });
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(keyOf(1)).not.toBe(keyOf(0));
+  });
+
+  test("after a recorded payment the next one is a new draft, even for the same amount", async () => {
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(await openTool());
+    await waitFor(() => expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull());
+    fireEvent.click(await openTool());
+    await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(keyOf(1)).not.toBe(keyOf(0));
+  });
+});
+
+describe("every opened state can be left, with focus back on Pay card (6wk.24)", () => {
+  async function expectEscapeAndCancelClose(ready: () => Promise<unknown>) {
+    for (const how of ["Escape", "Cancel"] as const) {
+      fireEvent.click(screen.getByRole("button", { name: /pay card/i }));
+      await ready();
+      if (how === "Escape") {
+        fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      }
+      const pay = await screen.findByRole("button", { name: /pay card/i });
+      await waitFor(() => expect(pay).toHaveFocus());
+    }
+  }
+
+  test("ready to pay", async () => {
+    renderWithClient(<PayCardAction card={card} />);
+    await expectEscapeAndCancelClose(() => screen.findByRole("button", { name: /confirm payment/i }));
+  });
+
+  test("no account to pay from", async () => {
+    mocks.accountList.mockResolvedValue(ok([] as AccountViewDto[]));
+    renderWithClient(<PayCardAction card={card} />);
+    await expectEscapeAndCancelClose(() => screen.findByText(/no liquid account holds funds/i));
+  });
+
+  test("a re-render does not pull focus from a control the person chose outside the tool", async () => {
+    function Beside() {
+      const [n, setN] = useState(0);
+      return (
+        <>
+          <button onClick={() => setN(n + 1)}>Outside {n}</button>
+          <PayCardAction card={card} />
+        </>
+      );
+    }
+    renderWithClient(<Beside />);
+    await openTool();
+    const outside = screen.getByRole("button", { name: /^Outside/ });
+    outside.focus();
+    fireEvent.click(outside);
+    expect(await screen.findByRole("button", { name: "Outside 1" })).toHaveFocus();
+  });
 });
