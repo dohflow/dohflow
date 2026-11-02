@@ -141,7 +141,15 @@ export function useTransactions({ list = true }: { list?: boolean } = {}) {
     ): Promise<
       | { status: "ok" }
       | { status: "record-failed"; error: IpcError }
-      | { status: "partial"; error: IpcError }
+      | {
+          status: "partial";
+          /// The first follow-up error, or `null` when the call threw instead of returning one.
+          error: IpcError | null;
+          /// Whether the category, tags or note did not all save.
+          metaFailed: boolean;
+          /// How many of the picked files were not attached (the failed one and any after it).
+          unattached: number;
+        }
     > => {
       const result = await mutation.mutateAsync(input);
       if (result.status !== "ok") {
@@ -150,32 +158,54 @@ export function useTransactions({ list = true }: { list?: boolean } = {}) {
       const id = result.data.transaction_id;
 
       // Sequential so an early failure short-circuits later calls; the returned error is
-      // the first meaningful one. Only non-empty metadata triggers a write.
+      // the first meaningful one. Only non-empty metadata triggers a write. A call that
+      // THROWS (not a typed refusal) is a failure too: the row is already recorded, so it
+      // must never escape as a rejection that reads as "nothing saved" and invites a resubmit.
       let firstError: IpcError | null = null;
+      let metaFailed = false;
+      const followUp = async (run: () => Promise<IpcError | null>) => {
+        try {
+          const failure = await run();
+          if (failure) {
+            metaFailed = true;
+            if (!firstError) firstError = failure;
+          }
+        } catch {
+          metaFailed = true;
+        }
+      };
       if (meta.categoryId !== null) {
-        const failure = await recategorize(id, meta.categoryId);
-        if (failure && !firstError) firstError = failure;
+        await followUp(() => recategorize(id, meta.categoryId));
       }
       if (meta.tagIds.length > 0) {
-        const failure = await followUps.setTags(id, meta.tagIds);
-        if (failure && !firstError) firstError = failure;
+        await followUp(() => followUps.setTags(id, meta.tagIds));
       }
       if (meta.note !== null && meta.note.trim() !== "") {
-        const failure = await followUps.setNote(id, meta.note.trim());
-        if (failure && !firstError) firstError = failure;
+        await followUp(() => followUps.setNote(id, meta.note!.trim()));
       }
       // Attachments last (personal-cfo-4d8.24.2.3): the row is already durably recorded, so
       // an attach failure degrades to "partial" exactly like tags/note — never a rollback.
       // Sequential; the first failure short-circuits the rest and becomes the reported error.
-      for (const file of files) {
-        const result = await attachDocumentFile(id, file);
-        if (result.status !== "ok") {
-          if (!firstError) firstError = result.error;
+      let unattached = 0;
+      for (const [index, file] of files.entries()) {
+        let failed = false;
+        try {
+          const result = await attachDocumentFile(id, file);
+          if (result.status !== "ok") {
+            failed = true;
+            if (!firstError) firstError = result.error;
+          }
+        } catch {
+          // Reading the file or the call itself threw after the row was recorded.
+          failed = true;
+        }
+        if (failed) {
+          unattached = files.length - index;
           break;
         }
       }
-      return firstError
-        ? { status: "partial", error: firstError }
+      return metaFailed || unattached > 0
+        ? { status: "partial", error: firstError, metaFailed, unattached }
         : { status: "ok" };
     },
     [mutation, recategorize],

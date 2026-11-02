@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Plus, X } from "lucide-react";
 
 import type {
@@ -64,6 +64,41 @@ function dollarsOrNull(s: string): number | null {
 const bpsToPct = (bps: number | null) => (bps === null ? "" : String(bps / 100));
 const minorToDollars = (m: number | null) => (m === null ? "" : String(m / 100));
 const intToString = (n: number | null) => (n === null ? "" : String(n));
+
+/// What the account is known to hold. Edit mode starts from the account being edited; create mode
+/// starts empty and takes the account's values from the form once `createAccount` succeeds, so
+/// from then on the drawer is editing THAT account and a retry cannot create a second one.
+type Baseline = {
+  id: string;
+  name: string;
+  subtype: string | null;
+  balanceMinor: number;
+  currency: string;
+  notes: string | null;
+  linkedId: string | null;
+};
+
+const baselineOf = (a: AccountViewDto): Baseline => ({
+  id: a.id,
+  name: a.name,
+  subtype: a.subtype ?? null,
+  balanceMinor: a.balance.minor_units,
+  currency: a.balance.currency,
+  notes: a.notes ?? null,
+  linkedId: a.linked_account_id ?? null,
+});
+
+/// What a failed save tells the person: which steps are stored, which one stopped it and why, and
+/// which were never tried. There is no rollback, so nothing here offers an undo.
+type PartialSave = {
+  saved: string[];
+  failed: { label: string; reason: string };
+  untried: string[];
+};
+
+/// A step whose call threw: the app can't say whether it saved. Every step after the account is
+/// created sets a value, so trying it again is safe.
+const STEP_OUTCOME_UNKNOWN = "Couldn’t confirm whether this saved.";
 
 /// The unified account editor (ADR 0044, personal-cfo-4d8.22.5): ONE drawer for both
 /// creating and editing an account, with an inline Debt section (so debt terms are
@@ -133,6 +168,14 @@ export function AccountEditorDrawer({
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Progress across attempts at one save (g3m.35): the account as stored so far, the steps that
+  // saved, and the one idempotency key for creating it.
+  const [base, setBase] = useState<Baseline | null>(account ? baselineOf(account) : null);
+  const [savedSteps, setSavedSteps] = useState<string[]>([]);
+  const [partial, setPartial] = useState<PartialSave | null>(null);
+  const createKey = useRef<{ identity: string; key: string } | null>(null);
+  // The account exists, whether it was opened for editing or was created by this drawer.
+  const exists = base !== null;
 
   const roleToken = ROLE_DTO_TO_TOKEN[role] ?? "";
   const isDebt = DEBT_ROLES.has(roleToken);
@@ -169,13 +212,17 @@ export function AccountEditorDrawer({
     setPayingSource(terms.paying_source_account_id ?? "");
   }, [terms]);
 
+  // Nothing closes the drawer while a save is in flight: the steps would finish unseen.
+  const requestClose = () => {
+    if (!busy) onClose();
+  };
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !busy) onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, busy]);
 
   function debtInputFor(accountId: string): SetDebtTermsInput {
     return {
@@ -214,77 +261,154 @@ export function AccountEditorDrawer({
 
     setBusy(true);
     setError(null);
-    const fail = (e: IpcErrorLike): boolean => {
-      setBusy(false);
-      setError(describeIpcError(e));
-      return true;
-    };
+    setPartial(null);
+    const storedFigureMinor =
+      figureMinor === null
+        ? null
+        : enteredToStoredMinor(roleToken, figureMinor);
+    const saved = [...savedSteps];
 
-    if (!isEdit) {
-      const { id, error: createErr } = await createAccount({
+    let cur = base;
+    if (cur === null) {
+      const input = {
         name: name.trim(),
         cashflow_role: role,
         subtype: chosenSubtype,
         currency,
         flags: null,
         opening_balance:
-          figureMinor === null
+          storedFigureMinor === null
             ? null
-            : {
-                minor_units: enteredToStoredMinor(roleToken, figureMinor),
-                currency,
-              },
-        idempotency_key: mintIdempotencyKey(),
-      });
-      if (createErr || id === null) {
-        if (createErr) return void fail(createErr);
+            : { minor_units: storedFigureMinor, currency },
+      };
+      // One key per draft: a retry of the same account replays instead of creating another.
+      const identity = JSON.stringify(input);
+      if (createKey.current?.identity !== identity) {
+        createKey.current = { identity, key: mintIdempotencyKey() };
+      }
+      let created: Awaited<ReturnType<typeof createAccount>>;
+      try {
+        created = await createAccount({
+          ...input,
+          idempotency_key: createKey.current.key,
+        });
+      } catch {
         setBusy(false);
+        setError(STEP_OUTCOME_UNKNOWN);
         return;
       }
-      if (isDebt) {
-        const e = await saveDebtTerms(debtInputFor(id));
-        if (e) return void fail(e);
+      if (created.error || created.id === null) {
+        setBusy(false);
+        if (created.error) setError(describeIpcError(created.error));
+        return;
       }
-      if (notes.trim() !== "") {
-        const e = await setAccountNote(id, notes.trim());
-        if (e) return void fail(e);
+      cur = {
+        id: created.id,
+        name: input.name,
+        subtype: chosenSubtype,
+        balanceMinor: storedFigureMinor ?? 0,
+        currency,
+        notes: null,
+        linkedId: null,
+      };
+      saved.push("Account");
+      setBase(cur);
+      setSavedSteps(saved);
+    }
+
+    const acc: Baseline = { ...cur };
+    type Step = { label: string; run: () => Promise<IpcErrorLike | null> };
+    const steps: Step[] = [];
+    if (name.trim() !== acc.name) {
+      steps.push({
+        label: "Name",
+        run: async () => {
+          const e = await renameAccount(acc.id, name.trim());
+          if (!e) acc.name = name.trim();
+          return e;
+        },
+      });
+    }
+    if (chosenSubtype !== acc.subtype) {
+      steps.push({
+        label: "Subtype",
+        run: async () => {
+          const e = await setSubtype(acc.id, chosenSubtype);
+          if (!e) acc.subtype = chosenSubtype;
+          return e;
+        },
+      });
+    }
+    if (storedFigureMinor !== null && storedFigureMinor !== acc.balanceMinor) {
+      steps.push({
+        label: figureLabel,
+        run: async () => {
+          const { error: e } = await assertBalance({
+            account_id: acc.id,
+            amount: { minor_units: storedFigureMinor, currency: acc.currency },
+            as_of_date: new Date().toLocaleDateString("en-CA"),
+          });
+          if (!e) acc.balanceMinor = storedFigureMinor;
+          return e;
+        },
+      });
+    }
+    if ((notes.trim() || null) !== acc.notes) {
+      steps.push({
+        label: "Notes",
+        run: async () => {
+          const e = await setAccountNote(acc.id, notes.trim() || null);
+          if (!e) acc.notes = notes.trim() || null;
+          return e;
+        },
+      });
+    }
+    if (isDebt) {
+      steps.push({
+        label: "Debt",
+        run: async () => {
+          // Debt and a link never share an account type, so no saved step follows this one.
+          return saveDebtTerms(debtInputFor(acc.id));
+        },
+      });
+    }
+    if (isRealAsset && (linkedLiabilityId || null) !== acc.linkedId) {
+      steps.push({
+        label: "Link",
+        run: async () => {
+          const e = await setAccountLink(acc.id, linkedLiabilityId || null);
+          if (!e) acc.linkedId = linkedLiabilityId || null;
+          return e;
+        },
+      });
+    }
+
+    for (const [i, step] of steps.entries()) {
+      let e: IpcErrorLike | null;
+      let threw = false;
+      try {
+        e = await step.run();
+      } catch {
+        e = null;
+        threw = true;
       }
-      if (isRealAsset && linkedLiabilityId !== "") {
-        const e = await setAccountLink(id, linkedLiabilityId);
-        if (e) return void fail(e);
+      if (e || threw) {
+        setBase(acc);
+        setSavedSteps(saved);
+        setBusy(false);
+        const reason = threw
+          ? STEP_OUTCOME_UNKNOWN
+          : describeIpcError(e as IpcErrorLike);
+        if (saved.length === 0) setError(reason);
+        else
+          setPartial({
+            saved,
+            failed: { label: step.label, reason },
+            untried: steps.slice(i + 1).map((t) => t.label),
+          });
+        return;
       }
-    } else {
-      const acc = account;
-      if (name.trim() !== acc.name) {
-        const e = await renameAccount(acc.id, name.trim());
-        if (e) return void fail(e);
-      }
-      if (chosenSubtype !== (acc.subtype ?? null)) {
-        const e = await setSubtype(acc.id, chosenSubtype);
-        if (e) return void fail(e);
-      }
-      const storedFigureMinor =
-        figureMinor === null ? null : enteredToStoredMinor(roleToken, figureMinor);
-      if (storedFigureMinor !== null && storedFigureMinor !== acc.balance.minor_units) {
-        const { error: e } = await assertBalance({
-          account_id: acc.id,
-          amount: { minor_units: storedFigureMinor, currency: acc.balance.currency },
-          as_of_date: new Date().toLocaleDateString("en-CA"),
-        });
-        if (e) return void fail(e);
-      }
-      if ((notes.trim() || null) !== (acc.notes ?? null)) {
-        const e = await setAccountNote(acc.id, notes.trim() || null);
-        if (e) return void fail(e);
-      }
-      if (isDebt) {
-        const e = await saveDebtTerms(debtInputFor(acc.id));
-        if (e) return void fail(e);
-      }
-      if (isRealAsset && (linkedLiabilityId || null) !== (acc.linked_account_id ?? null)) {
-        const e = await setAccountLink(acc.id, linkedLiabilityId || null);
-        if (e) return void fail(e);
-      }
+      saved.push(step.label);
     }
     setBusy(false);
     onClose();
@@ -292,14 +416,15 @@ export function AccountEditorDrawer({
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true"
-      aria-label={isEdit ? `Edit ${account.name}` : "New account"}>
-      <div className="absolute inset-0 bg-foreground/40" aria-hidden onClick={onClose} />
+      aria-label={exists ? `Edit ${base.name}` : "New account"}>
+      <div className="absolute inset-0 bg-foreground/40" aria-hidden onClick={requestClose} />
       <div className="relative flex h-full w-full max-w-2xl flex-col border-l bg-background shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4">
-          <h2 className="font-semibold">{isEdit ? "Edit account" : "New account"}</h2>
+          <h2 className="font-semibold">{exists ? "Edit account" : "New account"}</h2>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
+            disabled={busy}
             aria-label="Close"
             className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
@@ -335,7 +460,7 @@ export function AccountEditorDrawer({
                       setRole(e.target.value as CreateAccountInput["cashflow_role"]);
                       setSubtypeState("");
                     }}
-                    disabled={isEdit}
+                    disabled={exists}
                   >
                     {ACCOUNT_TYPES.map((t) => (
                       <option key={t.value} value={t.value}>
@@ -360,7 +485,7 @@ export function AccountEditorDrawer({
                   </Field>
                 )}
               </div>
-              <Field label={isEdit ? figureLabel : `Opening ${figureLabel.toLowerCase()}`}>
+              <Field label={exists ? figureLabel : `Opening ${figureLabel.toLowerCase()}`}>
                 <Input
                   inputMode="decimal"
                   value={figure}
@@ -494,11 +619,25 @@ export function AccountEditorDrawer({
                 {error}
               </p>
             )}
+            {partial && (
+              <div role="alert" className="flex flex-col gap-1 text-sm sm:col-span-2">
+                <p className="font-medium text-loss">
+                  {account
+                    ? "Some changes saved and some didn’t."
+                    : "The account was added, but not everything saved."}
+                </p>
+                <p>Saved: {partial.saved.join(", ")}.</p>
+                <p className="text-loss">
+                  Didn’t save: {partial.failed.label}. {partial.failed.reason}
+                </p>
+                {partial.untried.length > 0 && <p>Not tried yet: {partial.untried.join(", ")}.</p>}
+              </div>
+            )}
           </form>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t px-5 py-4">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+          <Button type="button" variant="ghost" onClick={requestClose} disabled={busy}>
             Cancel
           </Button>
           <Button
@@ -507,7 +646,7 @@ export function AccountEditorDrawer({
             disabled={busy || debtBlocked}
           >
             {busy && <Loader2 className="animate-spin" aria-hidden />}
-            {isEdit ? "Save account" : "Add account"}
+            {partial ? "Try again" : exists ? "Save account" : "Add account"}
           </Button>
         </div>
       </div>

@@ -615,7 +615,11 @@ export function TransactionsView({
             setAdding(null);
             if (outcome.status === "partial") {
               setAddWarning(
-                "Transaction added, but some details (category, tags, note, or attachments) could not be saved. Open it to try again.",
+                outcome.unattached > 0 && !outcome.metaFailed
+                  ? `Transaction added, but ${outcome.unattached} ${
+                      outcome.unattached === 1 ? "attachment" : "attachments"
+                    } didn’t attach. Open it to try again.`
+                  : "Transaction added, but some details (category, tags, note, or attachments) could not be saved. Open it to try again.",
               );
             }
             return null;
@@ -1030,6 +1034,11 @@ function SplitLinesDetail({
 
 // Rust remains authoritative for validation (ADR 0003); this schema only gates
 // the form UI and shapes display copy.
+/// Shown when recording a transaction threw: nobody knows whether it was recorded. Submitting the
+/// same draft again reuses its idempotency key, so it cannot be recorded twice.
+const TRANSACTION_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the transaction was recorded. Submit again and it won’t be added twice.";
+
 const transactionFormSchema = z.object({
   account_id: z.string().min(1, "Choose an account."),
   kind: z.enum(["expense", "income"]),
@@ -1113,6 +1122,7 @@ function AddTransactionForm({
   // Documents picked at add time (personal-cfo-4d8.24.2.3): staged locally (no txn id
   // yet) and attached after the record. Only for a one-off txn — a bill has no id.
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
+  const draftKey = useRef<{ identity: string; key: string } | null>(null);
   const filePicker = useRef<HTMLInputElement>(null);
   function onPickFiles(event: ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(event.target.files ?? []);
@@ -1212,22 +1222,36 @@ function AddTransactionForm({
     }
 
     const signed = values.kind === "expense" ? -magnitude : magnitude;
-    const input: RecordTransactionInput = {
+    const draft = {
       account_id: selectedAccount.id,
       amount: {
         minor_units: signed,
         currency: selectedAccount.balance.currency,
       },
       occurred_at: `${values.date}T00:00:00Z`,
-      idempotency_key: mintIdempotencyKey(),
+    };
+    // One idempotency key per draft: submitting the same draft again (after a call that
+    // threw, so nobody knows whether it was recorded) replays instead of recording a second
+    // transaction. A different account, amount or date is a different draft.
+    const identity = JSON.stringify(draft);
+    if (draftKey.current?.identity !== identity) {
+      draftKey.current = { identity, key: mintIdempotencyKey() };
+    }
+    const input: RecordTransactionInput = {
+      ...draft,
+      idempotency_key: draftKey.current.key,
     };
     const meta: TransactionMeta = {
       categoryId: values.categoryId === "" ? null : values.categoryId,
       tagIds: values.tagIds,
       note: values.note.trim() === "" ? null : values.note.trim(),
     };
-    const failure = await onCreate(input, meta, stagedFiles);
-    if (failure) setError(failure);
+    try {
+      const failure = await onCreate(input, meta, stagedFiles);
+      if (failure) setError(failure);
+    } catch {
+      setError(TRANSACTION_OUTCOME_UNKNOWN);
+    }
   });
 
   return (

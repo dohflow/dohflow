@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -203,6 +203,25 @@ describe("TransactionDetailDrawer", () => {
         doc().id,
         txn().transaction_id,
       ),
+    );
+  });
+
+  it("disables an attachment's Remove while its call is pending (g3m.35)", async () => {
+    mocks.transactionAttachments
+      .mockResolvedValueOnce(ok([doc()]))
+      .mockResolvedValue(ok([]));
+    let finish: (value: unknown) => void = () => {};
+    mocks.removeAttachment.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    renderDrawer();
+
+    const remove = await screen.findByRole("button", { name: /remove receipt\.pdf/i });
+    fireEvent.click(remove);
+    await waitFor(() => expect(remove).toBeDisabled());
+    fireEvent.click(remove);
+    expect(mocks.removeAttachment).toHaveBeenCalledTimes(1);
+    await act(async () => finish(ok(null)));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /remove receipt\.pdf/i })).not.toBeInTheDocument(),
     );
   });
 
