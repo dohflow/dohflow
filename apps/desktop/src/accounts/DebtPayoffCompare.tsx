@@ -174,10 +174,11 @@ export function DebtPayoffCompare({ accountIds }: { accountIds?: string[] } = {}
           rowKey={(plan) => plan.strategy}
           label="Debt payoff plans by approach"
           // "ready" is gated on plans having actually ARRIVED, not on `loading` being
-          // false. `isLoading` is false for a query TanStack has paused (it pauses on
-          // navigator.onLine even though every read here is local IPC), and a paused
+          // false. `isLoading` is false for a query TanStack has paused, and a paused
           // query with no data would otherwise render as "no revolving debt" — telling
-          // the household they have no debt when we simply have not read it yet.
+          // the household they have no debt when we simply have not read it yet. The OS
+          // going offline no longer pauses reads (see `createQueryClient`), but a key
+          // rotation still does (ADR 0083 §5), so the gate stays.
           status={error ? "error" : plans === null ? "loading" : "ready"}
           error={error}
           empty={{

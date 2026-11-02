@@ -1,4 +1,16 @@
-import { QueryClient } from "@tanstack/react-query";
+import { onlineManager, QueryClient } from "@tanstack/react-query";
+
+/// TanStack Query's `online` network mode pauses every query and mutation while
+/// `onlineManager` says offline, and by default that follows the OS's offline
+/// event. Every read and write here is local IPC, so a laptop in airplane mode must
+/// not leave screens on a spinner. The manager is therefore cut off from the OS: it
+/// means "the vault can take a command", and only the app flips it (a key rotation
+/// holds the vault lock and pauses polling this way, ADR 0083 §5). A future
+/// network-backed query (Sync, connectors) sets its own `networkMode` and checks
+/// connectivity itself.
+function ignoreOsConnectivity(): void {
+  onlineManager.setEventListener(() => () => {});
+}
 
 /// Build the app-wide query cache (ADR 0020). A factory (not a singleton) so each
 /// `App` mount — including every test render — gets an isolated cache. Defaults
@@ -8,6 +20,7 @@ import { QueryClient } from "@tanstack/react-query";
 /// is **cleared on vault lock** (ADR 0003 — no financial data lingers after
 /// lock); see `VaultProvider`.
 export function createQueryClient(): QueryClient {
+  ignoreOsConnectivity();
   return new QueryClient({
     defaultOptions: {
       queries: {
