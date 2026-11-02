@@ -274,6 +274,41 @@ describe("a save that stops part-way (g3m.35)", () => {
     expect(screen.getByLabelText("Type")).toBeDisabled();
   });
 
+  test("a step that threw is listed as unconfirmed, never as not saved", async () => {
+    mocks.setAccountNote.mockRejectedValueOnce(new Error("connection lost"));
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={onClose} />,
+    );
+    fillCard();
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    const heading = await screen.findByText(/the account was added, but not everything could be confirmed/i);
+    const block = heading.parentElement as HTMLElement;
+    expect(within(block).getByText("Saved: Account.")).toBeInTheDocument();
+    expect(within(block).getByText("Couldn’t confirm: Notes. It may or may not have saved.")).toBeInTheDocument();
+    expect(within(block).queryByText(/Didn’t save/)).toBeNull();
+    expect(within(block).getByText("Not tried yet: Debt.")).toBeInTheDocument();
+
+    // Trying again repeats the unconfirmed step and the rest, and never creates a second account.
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.createAccount).toHaveBeenCalledTimes(1);
+    expect(mocks.setAccountNote).toHaveBeenCalledTimes(2);
+  });
+
+  test("a refused step and a thrown step never share a bucket", async () => {
+    mocks.setDebtTerms.mockResolvedValue(refusal);
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={vi.fn()} />,
+    );
+    fillCard();
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    const heading = await screen.findByText(/the account was added, but not everything saved/i);
+    expect(within(heading.parentElement as HTMLElement).queryByText(/Couldn’t confirm/)).toBeNull();
+  });
+
   test("a create call that threw is retried with the same key", async () => {
     mocks.createAccount.mockRejectedValueOnce(new Error("connection lost"));
     renderWithClient(

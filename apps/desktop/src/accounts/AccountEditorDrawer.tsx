@@ -88,11 +88,14 @@ const baselineOf = (a: AccountViewDto): Baseline => ({
   linkedId: a.linked_account_id ?? null,
 });
 
-/// What a failed save tells the person: which steps are stored, which one stopped it and why, and
-/// which were never tried. There is no rollback, so nothing here offers an undo.
+/// What a failed save tells the person, in three buckets: the steps that are stored, the step the
+/// app refused (`failed`, with its reason, so it did not save), or the step whose call threw
+/// (`unconfirmed`, so nobody knows whether it saved), and the steps never tried. Exactly one of
+/// `failed` and `unconfirmed` is set. There is no rollback, so nothing here offers an undo.
 type PartialSave = {
   saved: string[];
-  failed: { label: string; reason: string };
+  failed: { label: string; reason: string } | null;
+  unconfirmed: string | null;
   untried: string[];
 };
 
@@ -396,16 +399,18 @@ export function AccountEditorDrawer({
         setBase(acc);
         setSavedSteps(saved);
         setBusy(false);
-        const reason = threw
-          ? STEP_OUTCOME_UNKNOWN
-          : describeIpcError(e as IpcErrorLike);
-        if (saved.length === 0) setError(reason);
-        else
+        if (saved.length === 0) {
+          setError(threw ? STEP_OUTCOME_UNKNOWN : describeIpcError(e as IpcErrorLike));
+        } else {
           setPartial({
             saved,
-            failed: { label: step.label, reason },
+            failed: threw
+              ? null
+              : { label: step.label, reason: describeIpcError(e as IpcErrorLike) },
+            unconfirmed: threw ? step.label : null,
             untried: steps.slice(i + 1).map((t) => t.label),
           });
+        }
         return;
       }
       saved.push(step.label);
@@ -622,14 +627,25 @@ export function AccountEditorDrawer({
             {partial && (
               <div role="alert" className="flex flex-col gap-1 text-sm sm:col-span-2">
                 <p className="font-medium text-loss">
-                  {account
-                    ? "Some changes saved and some didn’t."
-                    : "The account was added, but not everything saved."}
+                  {partial.unconfirmed !== null
+                    ? account
+                      ? "Some changes saved and some couldn’t be confirmed."
+                      : "The account was added, but not everything could be confirmed."
+                    : account
+                      ? "Some changes saved and some didn’t."
+                      : "The account was added, but not everything saved."}
                 </p>
                 <p>Saved: {partial.saved.join(", ")}.</p>
-                <p className="text-loss">
-                  Didn’t save: {partial.failed.label}. {partial.failed.reason}
-                </p>
+                {partial.failed && (
+                  <p className="text-loss">
+                    Didn’t save: {partial.failed.label}. {partial.failed.reason}
+                  </p>
+                )}
+                {partial.unconfirmed !== null && (
+                  <p className="text-loss">
+                    Couldn’t confirm: {partial.unconfirmed}. It may or may not have saved.
+                  </p>
+                )}
                 {partial.untried.length > 0 && <p>Not tried yet: {partial.untried.join(", ")}.</p>}
               </div>
             )}

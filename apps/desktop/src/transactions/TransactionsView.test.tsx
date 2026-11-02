@@ -655,6 +655,40 @@ describe("TransactionsView", () => {
     });
   });
 
+  it.each([
+    ["note", () => mocks.setNote.mockRejectedValue(new Error("connection lost"))],
+    ["tags", () => mocks.setTags.mockRejectedValue(new Error("connection lost"))],
+    ["category", () => mocks.recategorizeTransaction.mockRejectedValue(new Error("connection lost"))],
+  ])("a %s follow-up that throws after the record committed is a partial result, not a failed save (g3m.35)", async (_name, reject) => {
+    mocks.tagList.mockResolvedValue(
+      ok([{ id: VACATION_TAG, name: "Vacation", color: null, archived: false }]),
+    );
+    reject();
+    mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) =>
+      Promise.resolve(pageResult([], input)),
+    );
+    mockTransactionPage([txn({ transaction_id: NEW_TXN_ID })]);
+    renderWithClient(<TransactionsView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+    fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "40" } });
+    fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+    fireEvent.click(screen.getByRole("button", { name: /add details/i }));
+    fireEvent.change(screen.getByLabelText("Category"), { target: { value: CATEGORY.id } });
+    fireEvent.change(screen.getByLabelText(/add a tag/i), { target: { value: "Vacation" } });
+    fireEvent.keyDown(screen.getByLabelText(/add a tag/i), { key: "Enter" });
+    fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Groceries run" } });
+    fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+
+    // The warning for a saved transaction, never the "couldn't confirm the record" message.
+    expect(
+      await screen.findByText(/some details .* could not be saved/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/couldn’t confirm whether the transaction was recorded/i)).toBeNull();
+    expect(mocks.recordTransaction).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /add details/i })).not.toBeInTheDocument();
+  });
+
   it("hides the attachment picker when creating a recurring bill (4d8.24.2.3)", async () => {
     renderWithClient(<TransactionsView />);
     fireEvent.click(
