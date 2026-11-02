@@ -1,0 +1,63 @@
+applied 5
+[identities]
+Amazon | seed | ambiguous 1 | default category 0
+Apple | seed | ambiguous 1 | default category 0
+Cash App | seed | ambiguous 1 | default category 0
+Contoso | user | ambiguous 0 | default category 0
+Costco | seed | ambiguous 1 | default category 0
+Ritual Coffee | auto | ambiguous 0 | default category 0
+Target | seed | ambiguous 1 | default category 0
+Venmo | seed | ambiguous 1 | default category 0
+Walmart | seed | ambiguous 1 | default category 0
+Zelle | seed | ambiguous 1 | default category 0
+[aliases]
+AMAZON MARKETPLACE -> Amazon | seed | 10000 bps | exact
+AMAZON MKTPL -> Amazon | seed | 10000 bps | exact
+AMAZON.COM -> Amazon | seed | 10000 bps | exact
+AMZN MKTP -> Amazon | seed | 10000 bps | exact
+AMZN MKTP US -> Amazon | seed | 10000 bps | exact
+APPLE -> Apple | seed | 10000 bps | prefix
+APPLE.COM -> Apple | seed | 10000 bps | exact
+APPLE.COM/BILL -> Apple | seed | 10000 bps | exact
+CASH APP -> Cash App | seed | 10000 bps | exact
+CASHAPP -> Cash App | seed | 10000 bps | exact
+CONTOSO -> Contoso | user | 10000 bps | exact
+CONTOSO HQ -> Contoso | user | 10000 bps | exact
+COSTCO -> Costco | seed | 10000 bps | prefix
+COSTCO.COM -> Costco | seed | 10000 bps | exact
+ITUNES.COM -> Apple | seed | 10000 bps | exact
+ITUNES.COM/BILL -> Apple | seed | 10000 bps | exact
+RITUAL COFFEE -> Ritual Coffee | auto | 8000 bps | prefix
+TARGET -> Target | seed | 10000 bps | prefix
+TARGET.COM -> Target | seed | 10000 bps | exact
+VENMO -> Venmo | seed | 10000 bps | exact
+WAL-MART -> Walmart | seed | 10000 bps | prefix
+WALMART -> Walmart | seed | 10000 bps | prefix
+WALMART.COM -> Walmart | seed | 10000 bps | exact
+WM SUPERCENTER -> Walmart | seed | 10000 bps | prefix
+ZELLE -> Zelle | seed | 10000 bps | exact
+[categorizations]
+2026-01-02 | CORNER CAFE | Alcohol/Bars | user | 10000
+2026-01-03 | CORNER CAFE | Alcohol/Bars | user | 10000
+2026-01-04 | CORNER CAFE | Alcohol/Bars | user | 10000
+2026-01-05 | CORNER CAFE | Alcohol/Bars | rule | 10000
+2026-01-06 | CORNER CAFE | Alcohol/Bars | rule | 10000
+2026-01-07 | MARKET HALL | Alcohol/Bars | user | 10000
+2026-01-08 | MARKET HALL | Alcohol/Bars | user | 10000
+2026-01-09 | MARKET HALL | Alcohol/Bars | user | 10000
+2026-01-10 | MARKET HALL | Auto Insurance | user | 10000
+2026-01-11 | MARKET HALL | Auto Insurance | user | 10000
+2026-01-12 | MARKET HALL | Alcohol/Bars | rule | 6000
+2026-01-13 | DELI COUNTER | Alcohol/Bars | user | 10000
+2026-01-14 | DELI COUNTER | Auto Insurance | user | 10000
+2026-01-15 | DELI COUNTER | - | - | -
+2026-01-16 | RITUAL COFFEE SF | Auto Insurance | user | 10000
+2026-01-17 | RITUAL COFFEE SF | Auto Insurance | user | 10000
+2026-01-18 | RITUAL COFFEE OAKLAND | Auto Insurance | rule | 10000
+2026-01-19 | AMAZON.COM | Alcohol/Bars | user | 10000
+2026-01-20 | AMAZON.COM | Alcohol/Bars | user | 10000
+2026-01-21 | AMAZON.COM | Alcohol/Bars | user | 10000
+2026-01-22 | AMZN MKTP US | - | - | -
+2026-01-23 | CONTOSO HQ | Auto Insurance | user | 10000
+2026-01-24 | CONTOSO HQ | Auto Insurance | user | 10000
+2026-01-25 | CONTOSO STORE 42 | Auto Insurance | rule | 10000
