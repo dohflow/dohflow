@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=23 -->
+<!-- vault-format: spec-version=24 -->
 <!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,17 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 24` (personal-cfo-g3m.33) corrects what the service dedupes when it appends a void
+  (C.10 "Void records", two passages): it dedupes only an identical void (the same body id) and keeps
+  every distinct void, including a second one that names the exact same `seq`. The earlier text also
+  deduped any second void naming the same `seq`; that let a void which is inert for a
+  signer-controlled reason (it names a valid envelope, or one a replica cannot yet judge)
+  permanently block the genuine one, which contradicts the invariant that a malicious member cannot
+  block recovery. The finding is `03a-escalation`'s from the `personal-cfo-g3m.26` pre-read (item 4),
+  adopted as `personal-cfo-v98vd` AC22 and `personal-cfo-g3m.33` AC1; ADR 0074 Addendum D rule 3
+  carries the same correction. No wire layout and no existing vector changes: the replica-side
+  honor rule (`void-honor-v1.json`) never depended on the service dedupe. The service-side wire
+  form is in the Sync service protocol 4.11.
 - `spec-version = 23` (personal-cfo-5ymg8.9) corrects the class of `recurring_event_instances` in the
   inventory from 1 to 2 (derived, rebuilt locally): the rows are rebuilt on read from the active
   schedules and the ledger and depend on the day they are rebuilt, so two devices hold different
@@ -1850,8 +1861,11 @@ log position `V` the service assigns when it appends the void is not in the body
 - **What the service checks.** The signature and the signer (an authorized member at the
   membership head in force at the position `V` it assigns); that the vault matches; and that `seq`
   is an existing command-envelope position and that `command_id` and `envelope_digest` equal the
-  index's record for it. It dedupes only an identical void (the same body id) or a second void for
-  the exact same `seq`. It cannot check that the envelope is actually invalid (that needs the
+  index's record for it. It dedupes only an identical void (the same body id) and keeps every
+  distinct void, including a second one for the exact same `seq` (corrected 2026-11-02, spec-version
+  24: a same-`seq` dedupe would let a void that is inert for a signer-controlled reason block the
+  genuine one for good; `03a-escalation` on `personal-cfo-g3m.26`, `personal-cfo-v98vd` AC22). It
+  cannot check that the envelope is actually invalid (that needs the
   plaintext) and does not try. **It never refuses a void because an earlier void's range would
   cover it**: whether a void is honored, and so what a range covers, is decided only by replicas.
   A malicious member can append a void for a *valid* envelope; replicas ignore it, and a later
@@ -1905,8 +1919,8 @@ log position `V` the service assigns when it appends the void is not in the body
   rooted inside a voided range is never an exit, and EVERY exit (for every kind of stop) requires a
   snapshot of this build's `engine_version` that is not rooted inside any void range the replica
   holds. The ranges counted are those of every verified void, honored or not (an update-required
-  replica cannot judge them), and the service dedupes only a second void for the same position,
-  so a member can keep appending voids for early positions and keep recent roots inside some
+  replica cannot judge them), and the service keeps every distinct void (it dedupes only an
+  identical one), so a member can keep appending voids for early positions and keep recent roots inside some
   range: the snapshot exit is best-effort under such spam. The other exit, a build whose
   `engine_version` equals the envelope's, is unaffected; until one of them is available the
   replica shows "update required" at that position and applies nothing past it. A snapshot is installed only against a permit
