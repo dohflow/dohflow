@@ -211,7 +211,7 @@ need "a v1 client must process void_claims" 'A version-1 client MUST process `vo
 need "4.7 promises a log object per page" 'holds at least one log object (an envelope, an epoch entry or a void, section 4.11) whenever any exists past `after_seq`'
 need "7.2 promises a log object per page" 'a page still holds at least one log object (an envelope, an epoch entry or a void)'
 need "11.4 lists the page rule with the amendment" 'a page holds at least one log object (an envelope, an epoch entry or a void), not at least one entry'
-if grep -Eq 'holds at least one entry' <<<"$FLAT"; then
+if grep -Eq 'holds at least one entry' "$FLAT"; then
   fail "a page is still promised to hold 'at least one entry', which a void-only page contradicts"
 else
   pass "no wording promises a page at least one entry"
