@@ -198,8 +198,19 @@ refused="$(jq -r '[.operations[] | select(.op == "installEpoch" or .op == "stage
 [ "$refused" = "3" ] && pass "stageSnapshot, publishSnapshot and installEpoch can all return ReplicaHalted" || fail "ReplicaHalted is not on all three gated operations"
 other="$(jq -r '[.operations[] | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
 [ "$other" = "3" ] && pass "no other operation returns ReplicaHalted" || fail "ReplicaHalted appears on an operation that the halt gate does not cover"
-answers="$(awk '/^### 11.4 /{on=1;next} /^### /{on=0} on' "$DOC" | grep -c '^[1-5]\. \*\*.*:\*\* not changed')"
-[ "$answers" = "5" ] && pass "section 11.4 answers each of the five limits of 11.1 with 'not changed'" || fail "section 11.4 does not answer all five limits of 11.1 (found $answers)"
+SEC114="$(awk '/^### 11.4 /{on=1;next} /^### /{on=0} on' "$DOC")"
+answers="$(grep -c '^[1-5]\. \*\*.*:\*\* not changed' <<<"$SEC114")"
+[ "$answers" = "4" ] && pass "section 11.4 answers four of the five limits of 11.1 with 'not changed'" || fail "section 11.4 does not answer items 1, 3, 4 and 5 of 11.1 with 'not changed' (found $answers)"
+item2="$(grep -c '^2\. \*\*An existing member.s meaning:\*\*' <<<"$SEC114")"
+[ "$item2" = "1" ] && pass "section 11.4 answers item 2 of 11.1 itself" || fail "section 11.4 lost its answer to item 2 of 11.1"
+need "item 2 names the pre-release amendment" 'that is the pre-release amendment of the first row, not an addition'
+need "11.1 states the pre-release rule" 'Protocol version 1 is pre-release until the first deploy of a conforming Sync server to the operator'"'"'s production environment'
+need "staging does not count as release" 'staging does not count'
+need "a v1 client must process voids on pulls" '**A version-1 client MUST process `voids`, and `void_claims` on push results'
+need "a v1 client must process void_claims" 'A version-1 client MUST process `void_claims` where it appears'
+need "an incomplete page is a failed pull" 'treats it as a failed pull, never as a gap to skip'
+need "the response-member rule excepts voids" 'except the members this document defines'
+need "the pre-release changes are listed with a basis" '| pre-release amendment |'
 VOID_VECTORS="$REPO_ROOT/docs/architecture/vectors/sync-service-void-v1.json"
 if [ -f "$VOID_VECTORS" ] && [ "$(jq -r '.vectors_version' "$VOID_VECTORS")" = "1" ] && grep -Fq 'sync-service-void-v1.json' "$DOC"; then
   pass "the void conformance vectors exist and the document names them"

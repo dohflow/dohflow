@@ -85,7 +85,9 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in
 A server MUST reject a request body with an unknown member, a duplicate member,
 or a value outside these forms with `MalformedRequest`. A client MUST ignore
 unknown members in a **response** (section 11 explains which additions may
-appear within one protocol version).
+appear within one protocol version), except the members this document defines
+and requires a version-1 client to process: `voids` and `void_claims`
+(sections 4.7 and 4.11).
 
 ### 2.3 Versioning
 
@@ -498,7 +500,13 @@ client bootstraps from that snapshot.
 
 A page can also carry the optional member `voids`: the void records that sit in
 the same log (section 4.11). A log without a void has the response shown above
-and no `voids`.
+and no `voids`. **A version-1 client MUST process `voids`, and `void_claims` on
+push results (section 4.11).** A void takes a `seq`, so without `voids` a client
+would see gaps in the envelope sequence, and a page can hold only voids: an empty
+`entries` does not mean the log is exhausted, `has_more` and `head_seq` do. A
+client that finds a `seq` between `floor_seq + 1` and `head_seq` that is neither
+an envelope in `entries` nor a void in `voids` has an incomplete page and treats
+it as a failed pull, never as a gap to skip.
 
 ### 4.8 `ack`
 
@@ -656,7 +664,8 @@ appears on an entry of `results` in `pushEnvelopes` (`duplicate` is `true`) and 
 an entry of `accepted` in the `HeadMismatch` details, and is omitted when there is
 none. A claim is a claim, not a verdict; the client decides from its own verdict
 whether to roll back and re-issue (Addendum D rule 6), and a position's
-`command_id` and idempotency-key tag are never reusable.
+`command_id` and idempotency-key tag are never reusable. A version-1 client MUST
+process `void_claims` where it appears (section 4.7).
 
 **Voids in a pull.** `pullEnvelopes`, and the `HeadMismatch` details, carry the
 optional member `voids`, in log order, present only when the page holds a void:
@@ -1109,6 +1118,12 @@ no cryptographic primitive other than hashing and strict Ed25519 verification
   change an existing operation's request, an existing member's meaning, a status
   code, the decision order of sections 5 and 6, or a number in section 7.1.
   Anything else is a new `protocol_version`.
+- **Pre-release** (ruled 2026-11-02, `personal-cfo-g3m.33`). Protocol version 1
+  is pre-release until the first deploy of a conforming Sync server to the
+  operator's production environment; staging does not count. Until then version
+  1 may change in ways the rules above forbid, and every change is listed with
+  its date and bead in the pre-release list of section 11.4. From that deploy the
+  rules above govern strictly, and anything else is a new `protocol_version`.
 - A change to this document that alters the operation, error or limit lists
   changes `sync-service-protocol.json` in the same commit and bumps the version
   marker only when the rule above requires a new protocol version. A new
@@ -1116,32 +1131,6 @@ no cryptographic primitive other than hashing and strict Ed25519 verification
 - `engine_version` and `schema_version` skew is handled by ADR 0074 (R40) in the
   client; the server stores and returns the values in the clear header and
   gives them no other meaning.
-
-### 11.4 Additions within protocol version 1
-
-Each row is an addition made under the second bullet of section 11.1. The
-version stays `1`; `sync-service-protocol.json` changed in the same commit.
-
-| Date | Bead | Addition |
-| --- | --- | --- |
-| 2026-11-02 | `personal-cfo-g3m.33` | Operations `appendVoid` (4.11) and `reportHalt` (4.12); the optional response members `voids` (on `pullEnvelopes` and the `HeadMismatch` details) and `void_claims` (on `pushEnvelopes` results and `HeadMismatch` `accepted` entries); errors `VoidSignatureInvalid`, `VoidSignerNotAuthorized`, `VoidTargetMismatch` and `ReplicaHalted`, the last of which the new halt gate (4.12) returns to `stageSnapshot`, `publishSnapshot` and `installEpoch`; the void evidence rule of 7.3. |
-
-That addition against the five things section 11.1 forbids a change to within a
-version:
-
-1. **An existing operation's request:** not changed. No existing request gains a
-   member, a query parameter or a header; the new operations are new paths.
-2. **An existing member's meaning:** not changed. `entries`, `has_more`,
-   `head_seq`, `floor_seq` and `results` mean what they did. A log with no void
-   gives byte-for-byte the responses it gave before, with no `voids` and no
-   `void_claims`.
-3. **A status code:** not changed. The four new codes have their own statuses; no
-   existing code moved.
-4. **The decision order of sections 5 and 6:** not changed. No step is added,
-   removed or reordered in either list. The halt gate is defined outside them
-   (4.12) and passes for every device with no recorded halt.
-5. **A number in section 7.1:** not changed. No row of the limits table changed,
-   and none was added.
 
 ### 11.2 Conformance
 
@@ -1166,3 +1155,46 @@ document through the change control above.
 Account sign-in and the issuance of account credentials, billing and
 entitlement, hosting, region and sub-processors, storage layout, quota and rate
 numbers, and the service's internal design are outside this protocol.
+
+### 11.4 Pre-release changes and additions within protocol version 1
+
+Each row is a change made to version 1, with its date and bead. The version stays
+`1`; `sync-service-protocol.json` changed in the same commit. The **basis** says
+which rule of section 11.1 allows it: an *addition* (the second bullet) or a
+*pre-release amendment* (the pre-release bullet, valid only before the first
+production deploy).
+
+| Date | Bead | Basis | Change |
+| --- | --- | --- | --- |
+| 2026-11-02 | `personal-cfo-g3m.33` | pre-release amendment | The optional response members `voids` (on `pullEnvelopes` and the `HeadMismatch` details) and `void_claims` (on `pushEnvelopes` results and `HeadMismatch` `accepted` entries), which a version-1 client MUST process (4.7, 4.11), and the shared sequence of `seq` values they imply: a void takes a `seq`. |
+| 2026-11-02 | `personal-cfo-g3m.33` | addition | Operations `appendVoid` (4.11) and `reportHalt` (4.12); errors `VoidSignatureInvalid`, `VoidSignerNotAuthorized`, `VoidTargetMismatch` and `ReplicaHalted`, the last of which the halt gate (4.12) returns to `stageSnapshot`, `publishSnapshot` and `installEpoch`; the void evidence rule of 7.3. |
+
+**Why `voids` is a pre-release amendment and not an addition.** A response member
+that a client may ignore is an addition. `voids` cannot be ignored: a void takes a
+`seq` and a page can hold only voids, so a client that ignored it would see gaps
+in the envelope sequence and pages with an empty `entries`, and would loop on
+`HeadMismatch` or skip a void (ADR 0074 Addendum D needs every replica to see
+every void). No client or server implements version 1 yet, so requiring clients to
+process it breaks nothing, and the alternative, a second protocol version before
+the first has shipped, would add cost and no safety. The rule is fixed by the
+pre-release bullet of 11.1 and ends at the first production deploy.
+
+That change against the five things section 11.1 forbids a change to within a
+version, for the **additions** of the second row and for the pre-release row where
+it says so:
+
+1. **An existing operation's request:** not changed. No existing request gains a
+   member, a query parameter or a header; the two new operations are new paths.
+2. **An existing member's meaning:** `entries`, `has_more`, `head_seq`,
+   `floor_seq` and `results` mean what they did, and a log with no void gives
+   byte-for-byte the responses it gave before, with no `voids` and no
+   `void_claims`. For a log **with** a void, a page can hold only voids and the
+   envelope sequence has gaps that `voids` fills; that is the pre-release
+   amendment of the first row, not an addition.
+3. **A status code:** not changed. The four new codes have their own statuses; no
+   existing code moved.
+4. **The decision order of sections 5 and 6:** not changed. No step is added,
+   removed or reordered in either list. The halt gate is defined outside them
+   (4.12) and passes for every device with no recorded halt.
+5. **A number in section 7.1:** not changed. No row of the limits table changed,
+   and none was added.
