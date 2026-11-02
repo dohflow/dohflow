@@ -180,6 +180,33 @@ need "forged grant may surface as either code" 'a conformance test accepts eithe
 need "compatible-with naming rule" '"Compatible with DohFlow"'
 need "no official-service naming without agreement" 'MUST NOT present itself as the official DohFlow Sync'
 
+case_start "the void additions (personal-cfo-g3m.33) stay stated"
+need "appendVoid keeps every distinct void" 'Two voids with different bodies are two entries'
+need "an exact retry is the only dedupe" 'The server dedupes only an exact retry'
+need "a void takes the next seq" 'It takes the next `seq`'
+need "the server never says a position is voided" 'it never says that a position *is* voided'
+need "signer is checked by verify_void" 'This is the check `verify_void` of `sync-core` makes'
+need "void claims are claims, not verdicts" 'A claim is a claim, not a verdict'
+need "voids and envelopes share one sequence" 'Envelopes and voids share one sequence of `seq` values'
+need "a client applies Addendum D and E to voids" 'it applies ADR 0074 Addendum D and Addendum E'
+need "halt report is the device's own" 'a device reports only its own state'
+need "the halt gate is outside sections 5 and 6" 'it is not a step of section 5 or 6'
+need "appendVoid works for a halted device" '`appendVoid` and `reportHalt` must work for a halted device'
+need "void evidence is retained" 'A server does not drop the envelope at a position a void'
+need "additions are recorded with their date" '| 2026-11-02 | `personal-cfo-g3m.33` |'
+refused="$(jq -r '[.operations[] | select(.op == "installEpoch" or .op == "stageSnapshot" or .op == "publishSnapshot") | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
+[ "$refused" = "3" ] && pass "stageSnapshot, publishSnapshot and installEpoch can all return ReplicaHalted" || fail "ReplicaHalted is not on all three gated operations"
+other="$(jq -r '[.operations[] | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
+[ "$other" = "3" ] && pass "no other operation returns ReplicaHalted" || fail "ReplicaHalted appears on an operation that the halt gate does not cover"
+answers="$(awk '/^### 11.4 /{on=1;next} /^### /{on=0} on' "$DOC" | grep -c '^[1-5]\. \*\*.*:\*\* not changed')"
+[ "$answers" = "5" ] && pass "section 11.4 answers each of the five limits of 11.1 with 'not changed'" || fail "section 11.4 does not answer all five limits of 11.1 (found $answers)"
+VOID_VECTORS="$REPO_ROOT/docs/architecture/vectors/sync-service-void-v1.json"
+if [ -f "$VOID_VECTORS" ] && [ "$(jq -r '.vectors_version' "$VOID_VECTORS")" = "1" ] && grep -Fq 'sync-service-void-v1.json' "$DOC"; then
+  pass "the void conformance vectors exist and the document names them"
+else
+  fail "the void conformance vectors are missing, unversioned, or not named by section 11.2"
+fi
+
 case_start "references resolve"
 refs="$(grep -oE 'C\.[0-9]+' "$DOC" | sort -u)"
 missing=""

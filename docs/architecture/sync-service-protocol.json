@@ -40,6 +40,7 @@
       "errors": [
         "VaultExists",
         "VaultNotFound",
+        "ReplicaHalted",
         "WritesSuspended",
         "MembershipChainInvalid",
         "EpochRecordInvalid",
@@ -119,6 +120,7 @@
       "success": "201/200",
       "errors": [
         "VaultNotFound",
+        "ReplicaHalted",
         "WritesSuspended",
         "MalformedObject",
         "UnsupportedSuite",
@@ -137,6 +139,7 @@
       "success": "200",
       "errors": [
         "VaultNotFound",
+        "ReplicaHalted",
         "WritesSuspended",
         "SnapshotNotFound",
         "MalformedObject",
@@ -204,6 +207,33 @@
       "errors": [
         "VaultNotFound"
       ]
+    },
+    {
+      "op": "appendVoid",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/voids",
+      "auth": "device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "WritesSuspended",
+        "MalformedObject",
+        "UnsupportedSuite",
+        "VoidSignerNotAuthorized",
+        "VoidSignatureInvalid",
+        "VoidTargetMismatch",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "reportHalt",
+      "method": "PUT",
+      "path": "/vaults/{vault_id}/devices/{device_id}/halt",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound"
+      ]
     }
   ],
   "common_errors": [
@@ -262,6 +292,10 @@
       "status": 400
     },
     {
+      "code": "VoidSignatureInvalid",
+      "status": 400
+    },
+    {
       "code": "Unauthorized",
       "status": 401
     },
@@ -271,6 +305,10 @@
     },
     {
       "code": "DeviceRevoked",
+      "status": 403
+    },
+    {
+      "code": "VoidSignerNotAuthorized",
       "status": 403
     },
     {
@@ -335,6 +373,14 @@
     },
     {
       "code": "AckBeyondHead",
+      "status": 409
+    },
+    {
+      "code": "VoidTargetMismatch",
+      "status": 409
+    },
+    {
+      "code": "ReplicaHalted",
       "status": 409
     },
     {
