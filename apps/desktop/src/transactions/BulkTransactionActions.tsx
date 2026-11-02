@@ -196,15 +196,20 @@ export function BulkTransactionActions({
 
   /// The summary after a bulk run, when anything did not save: "Tagged 1 of 3 — 1 failed, 1
   /// couldn’t be confirmed. Check the unconfirmed rows before trying again." Nothing is said when
-  /// every row saved.
+  /// every row saved. When no row saved and any is unconfirmed, the lead says zero *confirmed*
+  /// ("Tagged: 0 of 3 confirmed — ..."), since the unconfirmed rows may have changed.
   function reportBatch(verb: string, savedCount: number, failed: number, unconfirmed: number) {
     if (failed === 0 && unconfirmed === 0) return;
     const parts = [
       failed > 0 ? `${failed} failed` : null,
       unconfirmed > 0 ? `${unconfirmed} couldn’t be confirmed` : null,
     ].filter(Boolean);
+    const lead =
+      savedCount === 0 && unconfirmed > 0
+        ? `${verb}: 0 of ${count} confirmed`
+        : `${verb} ${savedCount} of ${count}`;
     setNote(
-      `${verb} ${savedCount} of ${count} — ${parts.join(", ")}.` +
+      `${lead} — ${parts.join(", ")}.` +
         (unconfirmed > 0 ? " Check the unconfirmed rows before trying again." : ""),
     );
   }

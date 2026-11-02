@@ -349,12 +349,80 @@ describe("bulk tag is honest (5n4.10)", () => {
       expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1"]);
     });
 
+    describe("when no row saved and one is unconfirmed, the lead says zero confirmed (round 2)", () => {
+      test("Tagged: failed and unconfirmed rows, the same ids stay selected, no new calls", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setTags.mockImplementation(async (id: string) => {
+          if (id === "t1") return { Validation: "nope" } as IpcError;
+          throw new Error("connection lost");
+        });
+        enter();
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Tagged: 0 of 3 confirmed — 1 failed, 2 couldn’t be confirmed. ${CHECK}`,
+        );
+        expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1", "t2", "t3"]);
+        expect(ops.setTags).toHaveBeenCalledTimes(3);
+        expect(ops.createTag).not.toHaveBeenCalled();
+      });
+
+      test("Mark reviewed (per row): every row unconfirmed", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setReviewed.mockRejectedValue(new Error("connection lost"));
+        fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Marked reviewed: 0 of 3 confirmed — 3 couldn’t be confirmed. ${CHECK}`,
+        );
+        expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1", "t2", "t3"]);
+        expect(ops.setReviewed).toHaveBeenCalledTimes(3);
+      });
+
+      test("Delete and Categorize use the same form", async () => {
+        const ops = setup();
+        ops.deleteTransaction.mockRejectedValue(new Error("connection lost"));
+        fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+        fireEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Deleted: 0 of 2 confirmed — 2 couldn’t be confirmed. ${CHECK}`,
+        );
+        ops.recategorize.mockRejectedValue(new Error("connection lost"));
+        fireEvent.click(screen.getByRole("button", { name: "Categorize selected" }));
+        fireEvent.pointerDown(screen.getByRole("option", { name: /Groceries/ }));
+        await waitFor(() =>
+          expect(screen.getByRole("alert")).toHaveTextContent(
+            `Recategorized: 0 of 2 confirmed — 2 couldn’t be confirmed. ${CHECK}`,
+          ),
+        );
+      });
+
+      test("zero saved with only confirmed failures keeps the plain lead", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setTags.mockResolvedValue({ Validation: "nope" } as IpcError);
+        enter();
+        const alert = await screen.findByRole("alert");
+        expect(alert).toHaveTextContent("Tagged 0 of 3 — 3 failed.");
+        expect(alert).not.toHaveTextContent(/confirmed/);
+      });
+
+      test("a summary with at least one saved row keeps the plain lead", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setTags.mockImplementation(async (id: string) => {
+          if (id === "t1") return null;
+          if (id === "t2") return { Validation: "nope" } as IpcError;
+          throw new Error("connection lost");
+        });
+        enter();
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Tagged 1 of 3 — 1 failed, 1 couldn’t be confirmed. ${CHECK}`,
+        );
+      });
+    });
+
     test("Mark reviewed (one call) that throws leaves every row selected and unconfirmed", async () => {
       const bulk = vi.fn().mockRejectedValue(new Error("connection lost"));
       const ops = setup({ bulkMarkReviewed: bulk });
       fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
       expect(await screen.findByRole("alert")).toHaveTextContent(
-        `Marked reviewed 0 of 2 — 2 couldn’t be confirmed. ${CHECK}`,
+        `Marked reviewed: 0 of 2 confirmed — 2 couldn’t be confirmed. ${CHECK}`,
       );
       expect(ops.onSelectionChange).not.toHaveBeenCalled();
       expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
