@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type {
   CategoryDto,
@@ -215,6 +215,42 @@ describe("bulk tag is honest (5n4.10)", () => {
     // The selection is untouched and the bar is usable again.
     expect(ops.onSelectionChange).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  test("a new tag is only created after the fresh read succeeds, so a failed read leaves nothing behind and keeps the typed name", async () => {
+    const ops = setup({ tags: [] });
+    mocks.transactionRowsByIds.mockRejectedValue(new Error("connection lost"));
+    enter("Travel");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t read the current tags, so nothing was changed. Try again.",
+    );
+    expect(ops.createTag).not.toHaveBeenCalled();
+    expect(ops.setTags).not.toHaveBeenCalled();
+    // Try again does not mean retyping.
+    expect(tagInput()).toHaveValue("Travel");
+
+    mocks.transactionRowsByIds.mockImplementation(async () => ok(currentRows));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(ops.setTags).toHaveBeenCalledTimes(2));
+    expect(ops.createTag).toHaveBeenCalledTimes(1);
+    expect(mocks.transactionRowsByIds.mock.invocationCallOrder[1]!).toBeLessThan(
+      ops.createTag.mock.invocationCallOrder[0]!,
+    );
+    expect(tagInput()).toHaveValue("");
+  });
+
+  test("two starts in the same tick run once: the guard does not wait for a re-render", async () => {
+    const ops = setup();
+    fireEvent.change(tagInput(), { target: { value: "Vacation" } });
+    const add = screen.getByRole("button", { name: "Add" });
+    // One act batches both clicks, so the button is still enabled for the second: only the
+    // synchronous guard can stop it.
+    await act(async () => {
+      add.click();
+      add.click();
+    });
+    await waitFor(() => expect(ops.setTags).toHaveBeenCalledTimes(2));
+    expect(mocks.transactionRowsByIds).toHaveBeenCalledTimes(1);
   });
 
   test("a row the fresh read no longer returns is not written, and is counted as not changed", async () => {
