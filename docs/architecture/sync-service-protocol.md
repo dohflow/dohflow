@@ -493,8 +493,8 @@ whose `seq` equals its `position` and before `position + 1`: that is how a clien
 learns an epoch's position `h` (`vault-format.md` C.7). A client treats an
 envelope past the last authenticated epoch position as pending until it has
 fetched that epoch's snapshot and checked `base_seq` against `position`. A page
-holds at least one entry whenever any exists past `after_seq`, so a client always
-makes progress. If `after_seq` is below `floor_seq`, the server returns
+holds at least one log object (an envelope, an epoch entry or a void, section
+4.11) whenever any exists past `after_seq`, so a client always makes progress. If `after_seq` is below `floor_seq`, the server returns
 `TailTruncated` (HTTP 410) with `details.latest_snapshot` as in `getStatus`; the
 client bootstraps from that snapshot.
 
@@ -967,7 +967,7 @@ client reads them and does not assume a default.
 | --- | --- |
 | `max_artifact_bytes` | largest artifact container the server stores; a larger artifact is `PayloadTooLarge` |
 | `push_batch_max_envelopes` | most envelopes in one `pushEnvelopes`; at least 1 |
-| `pull_page_max_entries`, `pull_page_max_bytes` | page bounds for pulls and `HeadMismatch` tails; a page still holds at least one entry |
+| `pull_page_max_entries`, `pull_page_max_bytes` | page bounds for pulls and `HeadMismatch` tails; a page still holds at least one log object (an envelope, an epoch entry or a void) |
 | `orphan_grace_seconds` | how long an upload not referenced by an accepted publication is kept |
 | `superseded_root_window_seconds` | how long a superseded snapshot and its tail stay available to an offline device |
 
@@ -1166,7 +1166,7 @@ production deploy).
 
 | Date | Bead | Basis | Change |
 | --- | --- | --- | --- |
-| 2026-11-02 | `personal-cfo-g3m.33` | pre-release amendment | The optional response members `voids` (on `pullEnvelopes` and the `HeadMismatch` details) and `void_claims` (on `pushEnvelopes` results and `HeadMismatch` `accepted` entries), which a version-1 client MUST process (4.7, 4.11), and the shared sequence of `seq` values they imply: a void takes a `seq`. |
+| 2026-11-02 | `personal-cfo-g3m.33` | pre-release amendment | The optional response members `voids` (on `pullEnvelopes` and the `HeadMismatch` details) and `void_claims` (on `pushEnvelopes` results and `HeadMismatch` `accepted` entries), which a version-1 client MUST process (4.7, 4.11), and the shared sequence of `seq` values they imply: a void takes a `seq`; and the page rule that follows from it: a page holds at least one log object (an envelope, an epoch entry or a void), not at least one entry, because a page can hold only voids. |
 | 2026-11-02 | `personal-cfo-g3m.33` | addition | Operations `appendVoid` (4.11) and `reportHalt` (4.12); errors `VoidSignatureInvalid`, `VoidSignerNotAuthorized`, `VoidTargetMismatch` and `ReplicaHalted`, the last of which the halt gate (4.12) returns to `stageSnapshot`, `publishSnapshot` and `installEpoch`; the void evidence rule of 7.3. |
 
 **Why `voids` is a pre-release amendment and not an addition.** A response member

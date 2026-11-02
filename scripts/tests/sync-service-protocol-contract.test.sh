@@ -208,6 +208,14 @@ need "11.1 states the pre-release rule" 'Protocol version 1 is pre-release until
 need "staging does not count as release" 'staging does not count'
 need "a v1 client must process voids on pulls" '**A version-1 client MUST process `voids`, and `void_claims` on push results'
 need "a v1 client must process void_claims" 'A version-1 client MUST process `void_claims` where it appears'
+need "4.7 promises a log object per page" 'holds at least one log object (an envelope, an epoch entry or a void, section 4.11) whenever any exists past `after_seq`'
+need "7.2 promises a log object per page" 'a page still holds at least one log object (an envelope, an epoch entry or a void)'
+need "11.4 lists the page rule with the amendment" 'a page holds at least one log object (an envelope, an epoch entry or a void), not at least one entry'
+if grep -Eq 'holds at least one entry' <<<"$FLAT"; then
+  fail "a page is still promised to hold 'at least one entry', which a void-only page contradicts"
+else
+  pass "no wording promises a page at least one entry"
+fi
 need "an incomplete page is a failed pull" 'treats it as a failed pull, never as a gap to skip'
 need "the response-member rule excepts voids" 'except the members this document defines'
 need "the pre-release changes are listed with a basis" '| pre-release amendment |'
