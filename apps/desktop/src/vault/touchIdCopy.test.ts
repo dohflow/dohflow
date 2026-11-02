@@ -43,4 +43,10 @@ describe("Touch ID reason copy", () => {
       expect(touchIdReasonCopy(code)).toBe("Enter your master password.");
     }
   });
+
+  it("says a retired item needs setting up again, with no unsupported cause", () => {
+    expect(touchIdReasonCopy("retired")).toBe(
+      "Touch ID needs to be set up again for this vault. Enter your master password, then turn Touch ID on again in Settings.",
+    );
+  });
 });

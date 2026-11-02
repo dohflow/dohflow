@@ -30,7 +30,7 @@ describe("TouchIdCard", () => {
     await screen.findByLabelText(/master password/i);
     const text = document.body.textContent ?? "";
     expect(text).toMatch(/after you restart your Mac/i);
-    expect(text).toMatch(/three Touch ID tries that fail or are cancelled/i);
+    expect(text).toMatch(/three Touch ID tries that fail or are canceled/i);
     expect(text).toMatch(/every 30 days/i);
   });
 
@@ -49,7 +49,8 @@ describe("TouchIdCard", () => {
     await waitFor(() =>
       expect(mocks.touchIdEnable).toHaveBeenCalledWith({ password: "synthetic-password" }),
     );
-    expect(await screen.findByText(/touch id is on for this vault/i)).toBeInTheDocument();
+    // The visible line and the one announcement for a screen reader.
+    expect(await screen.findAllByText(/touch id is on for this vault/i)).toHaveLength(2);
     expect(screen.queryByLabelText(/master password/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /turn off touch id/i })).toBeInTheDocument();
   });
@@ -114,5 +115,120 @@ describe("TouchIdCard", () => {
     renderWithClient(<TouchIdCard />);
     expect(await screen.findByText(/status could not be read/i)).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  describe("a call that throws (the outcome is unknown)", () => {
+    const UNKNOWN = "Couldn’t confirm the Touch ID change. Check its status before trying again.";
+    const announcement = () => screen.getByTestId("touch-id-announcement");
+
+    it("a rejected enable releases the button, keeps the password and offers a read-only check", async () => {
+      mocks.touchIdStatus.mockResolvedValue(status({}));
+      mocks.touchIdEnable.mockRejectedValue(new Error("host went away"));
+      renderWithClient(<TouchIdCard />);
+      fireEvent.change(await screen.findByLabelText(/master password/i), {
+        target: { value: "synthetic-password" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /turn on touch id/i }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+      // No on/off claim until the status is read again.
+      expect(screen.queryByText(/touch id is on for this vault/i)).not.toBeInTheDocument();
+      const check = screen.getByRole("button", { name: "Check Touch ID status" });
+      expect(check).toBeEnabled();
+      await waitFor(() => expect(check).toHaveFocus());
+
+      fireEvent.click(check);
+      // The check only reads: nothing is enabled again and nothing prompts.
+      await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+      expect(mocks.touchIdEnable).toHaveBeenCalledTimes(1);
+      expect(mocks.touchIdDisable).not.toHaveBeenCalled();
+      // Still off, and the typed password is still there.
+      expect(screen.getByLabelText(/master password/i)).toHaveValue("synthetic-password");
+    });
+
+    it("a rejected disable is unknown too, and the check shows what the host says", async () => {
+      mocks.touchIdStatus
+        .mockResolvedValueOnce(status({ state: "on", offered: true, reason: null }))
+        .mockResolvedValue(status({}));
+      mocks.touchIdDisable.mockRejectedValue(new Error("host went away"));
+      renderWithClient(<TouchIdCard />);
+      fireEvent.click(await screen.findByRole("button", { name: /turn off touch id/i }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+      expect(screen.queryByText(/touch id is on for this vault/i)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Check Touch ID status" }));
+      expect(await screen.findByRole("button", { name: /turn on touch id/i })).toBeInTheDocument();
+      expect(mocks.touchIdDisable).toHaveBeenCalledTimes(1);
+    });
+
+    it("an enable that worked but whose status read rejects is unknown, not on", async () => {
+      mocks.touchIdStatus
+        .mockResolvedValueOnce(status({}))
+        .mockRejectedValueOnce(new Error("host went away"))
+        .mockResolvedValue(status({ state: "on", offered: true, reason: null }));
+      mocks.touchIdEnable.mockResolvedValue(ok({ enabled: true, reason: null }));
+      renderWithClient(<TouchIdCard />);
+      fireEvent.change(await screen.findByLabelText(/master password/i), {
+        target: { value: "synthetic-password" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /turn on touch id/i }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+      expect(screen.queryByText(/touch id is on for this vault/i)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Check Touch ID status" }));
+      expect(await screen.findByRole("button", { name: /turn off touch id/i })).toBeInTheDocument();
+    });
+
+    it("a status check that also fails keeps the alert and the check", async () => {
+      mocks.touchIdStatus
+        .mockResolvedValueOnce(status({ state: "on", offered: true, reason: null }))
+        .mockRejectedValue(new Error("host went away"));
+      mocks.touchIdDisable.mockRejectedValue(new Error("host went away"));
+      renderWithClient(<TouchIdCard />);
+      fireEvent.click(await screen.findByRole("button", { name: /turn off touch id/i }));
+      await screen.findByRole("alert");
+      fireEvent.click(screen.getByRole("button", { name: "Check Touch ID status" }));
+      await waitFor(() => expect(mocks.touchIdStatus).toHaveBeenCalledTimes(2));
+      expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+      expect(screen.getByRole("button", { name: "Check Touch ID status" })).toBeEnabled();
+    });
+
+    it("says nothing in the live region just because the card loaded", async () => {
+      mocks.touchIdStatus.mockResolvedValue(status({ state: "on", offered: true, reason: null }));
+      renderWithClient(<TouchIdCard />);
+      await screen.findByRole("button", { name: /turn off touch id/i });
+      expect(announcement()).toBeEmptyDOMElement();
+    });
+
+    it("turning on announces the wait, then the result once, and focus lands on Turn off", async () => {
+      mocks.touchIdStatus
+        .mockResolvedValueOnce(status({}))
+        .mockResolvedValue(status({ state: "on", offered: true, reason: null }));
+      let finish: (value: ReturnType<typeof ok>) => void = () => {};
+      mocks.touchIdEnable.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      renderWithClient(<TouchIdCard />);
+      fireEvent.change(await screen.findByLabelText(/master password/i), {
+        target: { value: "synthetic-password" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /turn on touch id/i }));
+      await waitFor(() => expect(announcement()).toHaveTextContent("Turning on…"));
+      finish(ok({ enabled: true, reason: null }));
+      await waitFor(() =>
+        expect(announcement()).toHaveTextContent(/^Touch ID is on for this vault\.$/),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /turn off touch id/i })).toHaveFocus(),
+      );
+      // One persistent region, not a new one per change.
+      expect(screen.getAllByTestId("touch-id-announcement")).toHaveLength(1);
+    });
+
+    it("turning off announces the result once, and focus lands on the master password field", async () => {
+      mocks.touchIdStatus.mockResolvedValue(status({ state: "on", offered: true, reason: null }));
+      mocks.touchIdDisable.mockResolvedValue(ok(status({})));
+      renderWithClient(<TouchIdCard />);
+      fireEvent.click(await screen.findByRole("button", { name: /turn off touch id/i }));
+      await waitFor(() =>
+        expect(announcement()).toHaveTextContent(/^Touch ID is off for this vault\.$/),
+      );
+      await waitFor(() => expect(screen.getByLabelText(/master password/i)).toHaveFocus());
+    });
   });
 });

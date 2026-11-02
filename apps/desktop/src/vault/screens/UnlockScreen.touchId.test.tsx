@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   touchIdStatus: vi.fn(),
   unlockVault: vi.fn(),
   unlockWithTouchId: vi.fn(),
+  refresh: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/vault/useVault", async (importOriginal) => ({
   useVault: () => ({
     unlockVault: mocks.unlockVault,
     unlockWithTouchId: mocks.unlockWithTouchId,
+    refresh: mocks.refresh,
   }),
 }));
 vi.mock("@/backup/RestoreFromBackup", () => ({
@@ -42,6 +44,7 @@ beforeEach(() => {
   mocks.touchIdStatus.mockReset();
   mocks.unlockVault.mockReset();
   mocks.unlockWithTouchId.mockReset();
+  mocks.refresh.mockReset();
 });
 
 describe("Touch ID on the unlock screen", () => {
@@ -104,7 +107,7 @@ describe("Touch ID on the unlock screen", () => {
     expect(mocks.unlockVault).not.toHaveBeenCalled();
   });
 
-  it("a cancelled prompt falls back to the password field, focused, with a calm note", async () => {
+  it("a canceled prompt falls back to the password field, focused, with a calm note", async () => {
     mocks.touchIdStatus.mockResolvedValue(status({ failed_prompts: 1 }));
     mocks.unlockWithTouchId.mockResolvedValue({
       kind: "password",
@@ -173,5 +176,41 @@ describe("Touch ID on the unlock screen", () => {
     render(<UnlockScreen />);
     fireEvent.click(await screen.findByRole("button", { name: /unlock with touch id/i }));
     expect(await screen.findByRole("status")).toHaveTextContent("Enter your master password.");
+  });
+
+  it("a Touch ID call that throws releases the screen, keeps the password and says it could not confirm", async () => {
+    mocks.touchIdStatus.mockResolvedValue(status({}));
+    mocks.unlockWithTouchId.mockRejectedValue(new Error("host went away"));
+    render(<UnlockScreen />);
+    const password = screen.getByLabelText(/master password/i);
+    fireEvent.change(password, { target: { value: "synthetic-password" } });
+    const button = await screen.findByRole("button", { name: /unlock with touch id/i });
+    button.focus();
+    fireEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t confirm the Touch ID result. Enter your master password.",
+    );
+    // Released: the password is still there and works, the button can be pressed again, and the
+    // password field has the focus.
+    await waitFor(() => expect(password).toHaveFocus());
+    expect(password).toHaveValue("synthetic-password");
+    expect(screen.getByRole("button", { name: /^unlock$/i })).toBeEnabled();
+    expect(touchButton()).toBeEnabled();
+    // Both the vault and Touch ID are asked again; nothing prompts on its own.
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.touchIdStatus).toHaveBeenCalledTimes(2));
+    expect(mocks.unlockWithTouchId).toHaveBeenCalledTimes(1);
+  });
+
+  it("the alert clears when Touch ID is tried again", async () => {
+    mocks.touchIdStatus.mockResolvedValue(status({}));
+    mocks.unlockWithTouchId
+      .mockRejectedValueOnce(new Error("host went away"))
+      .mockResolvedValue({ kind: "password", reason: "prompt_not_completed" });
+    render(<UnlockScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: /unlock with touch id/i }));
+    await screen.findByRole("alert");
+    fireEvent.click(await screen.findByRole("button", { name: /unlock with touch id/i }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 });

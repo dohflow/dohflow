@@ -13,7 +13,7 @@ const COPY: Record<string, string> = {
   markers_unreadable:
     "DohFlow couldn't confirm that Touch ID is safe to use right now. Enter your master password.",
   retired:
-    "Touch ID was turned off because this vault's key or the fingerprints on this Mac changed. Enter your master password, then turn Touch ID on again in Settings.",
+    "Touch ID needs to be set up again for this vault. Enter your master password, then turn Touch ID on again in Settings.",
   biometry_not_present: "Touch ID isn't available on this Mac right now.",
   biometry_not_enrolled:
     "No fingerprint is set up on this Mac. Add one in System Settings, then turn Touch ID on here.",
@@ -35,6 +35,13 @@ const COPY: Record<string, string> = {
 };
 
 const FALLBACK = "Enter your master password.";
+
+/// A Touch ID call that threw instead of answering, so what happened is not known. Studio's wording
+/// (xuu repair round); shown as a persistent alert.
+export const TOUCH_ID_UNLOCK_UNKNOWN =
+  "Couldn’t confirm the Touch ID result. Enter your master password.";
+export const TOUCH_ID_CHANGE_UNKNOWN =
+  "Couldn’t confirm the Touch ID change. Check its status before trying again.";
 
 /// The sentence that explains `code` to the person looking at the screen.
 export function touchIdReasonCopy(code: string | null | undefined): string {

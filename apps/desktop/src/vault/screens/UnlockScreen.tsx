@@ -12,12 +12,12 @@ import {
 } from "@/components/ui/card";
 import { RestoreFromBackup } from "@/backup/RestoreFromBackup";
 import { describeIpcError, useVault } from "@/vault/useVault";
-import { touchIdReasonCopy } from "@/vault/touchIdCopy";
+import { TOUCH_ID_UNLOCK_UNKNOWN, touchIdReasonCopy } from "@/vault/touchIdCopy";
 import { useTouchIdStatus } from "@/vault/useTouchIdStatus";
 import { Screen } from "./Screen";
 
 export function UnlockScreen() {
-  const { unlockVault, unlockWithTouchId } = useVault();
+  const { unlockVault, unlockWithTouchId, refresh: refreshVault } = useVault();
   const touchId = useTouchIdStatus();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +28,9 @@ export function UnlockScreen() {
   // What the last Touch ID attempt said, when it did not unlock (a cancelled prompt, ...).
   const [touchNote, setTouchNote] = useState<string | null>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
+
+  // The Touch ID call threw instead of answering: the outcome is not known (xuu repair round).
+  const [touchUnknown, setTouchUnknown] = useState(false);
 
   const touchOn = touchId.status?.state === "on";
   const touchOffered = touchOn && touchId.status?.offered === true;
@@ -60,9 +63,18 @@ export function UnlockScreen() {
     setError(null);
     setDamaged(false);
     setTouchNote(null);
-    const result = await unlockWithTouchId();
-    if (result.kind === "unlocked") return; // the vault is open; this screen goes away
-    if (result.kind === "error") {
+    setTouchUnknown(false);
+    let result: Awaited<ReturnType<typeof unlockWithTouchId>> | null = null;
+    try {
+      result = await unlockWithTouchId();
+    } catch {
+      // Not known whether the vault opened. Read it again; if it did, this screen goes away.
+      void refreshVault();
+    }
+    if (result?.kind === "unlocked") return; // the vault is open; this screen goes away
+    if (result === null) {
+      setTouchUnknown(true);
+    } else if (result.kind === "error") {
       // The password path would report the same thing (a damaged vault, a failed read).
       setError(describeIpcError(result.error));
       setDamaged(result.error === "VaultIntegrityCheckFailed");
@@ -105,6 +117,11 @@ export function UnlockScreen() {
             {error && (
               <p role="alert" className="text-sm text-loss">
                 {error}
+              </p>
+            )}
+            {touchUnknown && (
+              <p role="alert" className="text-sm text-loss">
+                {TOUCH_ID_UNLOCK_UNKNOWN}
               </p>
             )}
 
