@@ -1,4 +1,5 @@
 import { QueryClient, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -399,6 +400,48 @@ describe("Cancel and Escape in every opened state (5ie.17 repair)", () => {
   test("ready", async () => {
     renderWithClient(<CoverItNotice projection={projection(SHORT)} />);
     await expectEscapeAndCancelClose(() => screen.findByLabelText("Amount to transfer"));
+  });
+});
+
+describe("focus is kept where the person put it (5ie.17 repair)", () => {
+  function Beside() {
+    const [renders, setRenders] = useState(0);
+    return (
+      <>
+        <button onClick={() => setRenders((n) => n + 1)}>Outside {renders}</button>
+        <CoverItNotice projection={projection(SHORT)} />
+      </>
+    );
+  }
+
+  test("a re-render does not pull focus from a control outside the open panel", async () => {
+    renderWithClient(<Beside />);
+    await openTool();
+    await screen.findByRole("button", { name: /confirm transfer/i });
+    const outside = screen.getByRole("button", { name: /^Outside/ });
+    outside.focus();
+    fireEvent.click(outside);
+    expect(await screen.findByRole("button", { name: "Outside 1" })).toHaveFocus();
+  });
+
+  test("a focused control inside the panel going away returns focus to the panel", async () => {
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    renderWithClient(<CoverItNotice projection={projection(SHORT)} />);
+    await openTool();
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    retry.focus();
+    mocks.accountList.mockResolvedValue(
+      ok([
+        { id: "chk", name: "Checking", cashflow_role: "liquid_cash", subtype: "checking", active: true, balance: usd(20_000) },
+        { id: SAVINGS, name: "Savings", cashflow_role: "liquid_cash", subtype: "savings", active: true, balance: usd(500_000) },
+      ] as AccountViewDto[]),
+    );
+    fireEvent.click(retry);
+    const confirm = await screen.findByRole("button", { name: /confirm transfer/i });
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    const held = document.activeElement as HTMLElement;
+    expect(held).toHaveAttribute("tabindex", "-1");
+    expect(held).toContainElement(confirm);
   });
 });
 

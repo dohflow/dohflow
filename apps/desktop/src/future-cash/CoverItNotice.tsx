@@ -70,9 +70,12 @@ export function CoverItNotice({
   const draftKey = useRef<{ identity: string; key: string } | null>(null);
 
   // An opened panel owns the keyboard: the button that opened it is gone, so focus moves in (and
-  // back in if a control it was on disappears), which is what lets Escape reach it.
+  // back in if a control it was on disappears), which is what lets Escape reach it. Only focus that
+  // was lost is taken back; a control the person chose outside the panel keeps it across re-renders.
   useEffect(() => {
-    if (open && panel.current && !panel.current.contains(document.activeElement)) {
+    if (!open || !panel.current) return;
+    const active = document.activeElement;
+    if (!active || active === document.body || active === document.documentElement) {
       panel.current.focus();
     }
   });
