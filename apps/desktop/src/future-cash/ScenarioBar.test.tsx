@@ -1,5 +1,6 @@
 import { QueryClient, onlineManager } from "@tanstack/react-query";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -240,5 +241,99 @@ describe("the picker waits for the household date (5ie.18, AC8)", () => {
     const onSelect = vi.fn();
     renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith(null));
+  });
+});
+
+// While the timezone is unverified (or the list has not come) the select holds the selection
+// instead of reading "Base (no scenario)" (5ie.18, Studio round 3).
+describe("the picker never shows Base for a selection it cannot judge yet (5ie.18)", () => {
+  const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const shown = () => {
+    const select = screen.getByLabelText("Scenario") as HTMLSelectElement;
+    return { value: select.value, text: select.selectedOptions[0]?.textContent };
+  };
+
+  test("a list that has not come yet shows Loading… for the selection", async () => {
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    mocks.scenarioList.mockReturnValue(new Promise(() => {}));
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={vi.fn()} />, client());
+    await screen.findByRole("status");
+    expect(shown()).toEqual({ value: "s1", text: "Loading…" });
+  });
+
+  test("a row missing from the list shows Loading… while the timezone is unread", async () => {
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s2", "Move")]));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() => expect(mocks.scenarioList).toHaveBeenCalled());
+    await screen.findByRole("status");
+    expect(shown()).toEqual({ value: "s1", text: "Loading…" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("an archived selected row shows its name while the timezone is unread", async () => {
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s1", "Old plan", "archived")]));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() =>
+      expect(shown()).toEqual({ value: "s1", text: "Old plan" }),
+    );
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("a failed list shows its own error for the selection", async () => {
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    mocks.scenarioList.mockRejectedValue(new Error("boom"));
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={vi.fn()} />, client());
+    await waitFor(() =>
+      expect(shown()).toEqual({ value: "s1", text: "Could not load your scenarios." }),
+    );
+  });
+
+  test("Base shows as selected for no selection, with or without the timezone", async () => {
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    renderWithClient(<ScenarioBar selectedId={null} onSelect={vi.fn()} />, client());
+    await screen.findByRole("status");
+    expect(shown()).toEqual({ value: "", text: "Base (no scenario)" });
+    const select = screen.getByLabelText("Scenario") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Base (no scenario)"]);
+  });
+
+  test("a read timezone with a list still on its way holds the selection as Loading…", async () => {
+    mocks.householdTimezone.mockResolvedValue(ok("UTC"));
+    mocks.scenarioList.mockReturnValue(new Promise(() => {}));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() => expect(screen.getByLabelText("Scenario")).toBeEnabled());
+    expect(shown()).toEqual({ value: "s1", text: "Loading…" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("once the reads are in, a live scenario is kept and its name shows", async () => {
+    let resolveTz: (value: unknown) => void = () => {};
+    mocks.householdTimezone.mockReturnValue(new Promise((resolve) => (resolveTz = resolve)));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await waitFor(() => expect(shown()).toEqual({ value: "s1", text: "Raise" }));
+    resolveTz(ok("UTC"));
+    await screen.findByRole("option", { name: "Raise" });
+    await waitFor(() => expect(screen.getByLabelText("Scenario")).toBeEnabled());
+    expect(shown()).toEqual({ value: "s1", text: "Raise" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("once the reads are in, a row that is really gone prunes to Base", async () => {
+    mocks.householdTimezone.mockResolvedValue(ok("UTC"));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s2", "Move")]));
+    function Parent() {
+      const [id, setId] = useState<string | null>("s1");
+      return <ScenarioBar selectedId={id} onSelect={setId} />;
+    }
+    renderWithClient(<Parent />, client());
+    await waitFor(() =>
+      expect(shown()).toEqual({ value: "", text: "Base (no scenario)" }),
+    );
   });
 });

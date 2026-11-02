@@ -50,6 +50,21 @@ export function ScenarioBar({
   // While the date is unverified the selection stays as it was, and is shown, not judged.
   const selected =
     (tz.verified ? visible : notArchived).find((s) => s.id === selectedId) ?? null;
+  // Until the reads that can judge the selection are in (the date, and the list), the select still
+  // holds that exact scenario, so it never reads as "Base (no scenario)". It carries the scenario's
+  // name when the row is known (archived or not), else what is happening to the list.
+  const listed = tz.verified ? visible : [];
+  const heldSelection =
+    selectedId !== null &&
+    (!tz.verified || scenarios === null) &&
+    !listed.some((s) => s.id === selectedId)
+      ? {
+          id: selectedId,
+          label:
+            (scenarios ?? []).find((s) => s.id === selectedId)?.name ??
+            (scenarios === null && error ? error : "Loading…"),
+        }
+      : null;
   // A selection that is no longer selectable (archived/expired/deleted elsewhere) falls
   // back to base, rather than leaving a blank picker over base numbers. Only a verified date
   // can say a scenario has expired, so nothing falls back before that.
@@ -125,11 +140,16 @@ export function ScenarioBar({
           className="h-9 rounded-md border bg-background px-3 text-sm"
         >
           <option value="">Base (no scenario)</option>
-          {(tz.verified ? visible : selected ? [selected] : []).map((scenario) => (
+          {listed.map((scenario) => (
             <option key={scenario.id} value={scenario.id}>
               {scenario.name}
             </option>
           ))}
+          {heldSelection && (
+            <option key={heldSelection.id} value={heldSelection.id}>
+              {heldSelection.label}
+            </option>
+          )}
         </select>
         {!tz.verified && (
           <TimezoneReadNotice failure={tz.failure} retry={tz.retry} retrying={tz.retrying} />
