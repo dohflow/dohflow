@@ -168,9 +168,11 @@ const SELECT_COLUMNS: &str = "
     last_error, last_unlock_window, cancel_requested";
 
 /// Writes the commit marker of the running job `id` on `conn`, which is the caller's open transaction
-/// (personal-cfo-g3m.31). The marker is the instant the job's durable effect became part of the vault;
-/// it is set only on a row that is `running` and keeps its first value, so a later write of the same run
-/// cannot move it.
+/// (personal-cfo-g3m.31). The marker is the instant the job's durable effect became part of the vault,
+/// and `outcome` says what committed: `'succeeded'`, or `'failed'` with the `failure_reason` the job's
+/// `last_error` then carries (sanitized as the runner's own failure write is), so a failure that
+/// recovery has to record still reaches the Money Inbox. It is set only on a row that is `running` and
+/// keeps its first value, so a later write of the same run cannot move it.
 ///
 /// `at` is the caller's instant, never read here: the command path passes the command's own `issued_at`
 /// so nothing in `apply` reads the wall clock.
@@ -178,13 +180,31 @@ pub(crate) fn mark_committed(
     conn: &rusqlite::Connection,
     id: Uuid,
     at: &str,
+    outcome: CommitOutcome<'_>,
 ) -> rusqlite::Result<usize> {
+    let (outcome, last_error) = match outcome {
+        CommitOutcome::Succeeded => ("succeeded", None),
+        CommitOutcome::Failed(reason) => ("failed", Some(sanitize_error(reason))),
+    };
     conn.execute(
         "UPDATE durable_jobs
-            SET committed_at = COALESCE(committed_at, ?2)
+            SET committed_at = COALESCE(committed_at, ?2),
+                committed_outcome = COALESCE(committed_outcome, ?3),
+                last_error = CASE WHEN committed_outcome IS NULL AND ?3 = 'failed' AND ?4 IS NOT NULL
+                                  THEN ?4 ELSE last_error END
           WHERE id = ?1 AND state = 'running'",
-        params![id, at],
+        params![id, at, outcome, last_error],
     )
+}
+
+/// What a job's durable effect committed (personal-cfo-g3m.31).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitOutcome<'a> {
+    /// The work succeeded: recovery records a success.
+    Succeeded,
+    /// The work recorded a failure (the text is what the job's `last_error` will say): recovery records
+    /// a failure.
+    Failed(&'a str),
 }
 
 impl DbWorker {
@@ -481,37 +501,52 @@ impl JobStore for DbWorker {
         let tx = guard.conn.transaction()?;
         let now_text = now.to_rfc3339();
         // A row that carries the commit marker and a cancel request: the work committed before the
-        // process died, so the truth is a success, never `Cancelled` (personal-cfo-g3m.31). Its next
-        // due time comes from its schedule, as the runner's own terminal write would have set it.
-        let committed: Vec<(Uuid, String)> = {
+        // process died, so the truth is what committed, never `Cancelled` and never a re-run
+        // (personal-cfo-g3m.31). A 'succeeded' marker records a success, with its next due time from
+        // its schedule as the runner's own terminal write would have set it. A 'failed' marker (a
+        // backup receipt that records a failure) records the failure, with the `last_error` that
+        // receipt's transaction stored, so the failure still reaches the Money Inbox.
+        let committed: Vec<(Uuid, String, String)> = {
             let mut stmt = tx.prepare(
-                "SELECT id, cadence FROM durable_jobs
+                "SELECT id, cadence, committed_outcome FROM durable_jobs
                   WHERE state = 'running' AND cancel_requested = 1 AND committed_at IS NOT NULL",
             )?;
-            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
-        let mut succeeded = 0;
-        for (id, cadence) in committed {
-            let next_due = job_runtime::Schedule::parse(&cadence)
-                .ok()
-                .and_then(|schedule| schedule.next_due_after(now))
-                .map(|due| due.to_rfc3339());
-            succeeded += tx.execute(
-                "UPDATE durable_jobs
-                    SET state = 'succeeded', attempt_count = 0,
-                        next_due_at = ?2, last_outcome = 'succeeded',
-                        last_error = NULL, cancel_requested = 0, committed_at = NULL,
-                        updated_at = ?3
-                  WHERE id = ?1 AND state = 'running'",
-                params![id, next_due, now_text],
-            )?;
+        let mut recovered = 0;
+        for (id, cadence, outcome) in committed {
+            recovered += if outcome == "failed" {
+                tx.execute(
+                    "UPDATE durable_jobs
+                        SET state = 'failed', last_outcome = 'failed',
+                            last_error = COALESCE(last_error, 'the run failed before recovery'),
+                            cancel_requested = 0, committed_at = NULL, committed_outcome = NULL,
+                            updated_at = ?2
+                      WHERE id = ?1 AND state = 'running'",
+                    params![id, now_text],
+                )?
+            } else {
+                let next_due = job_runtime::Schedule::parse(&cadence)
+                    .ok()
+                    .and_then(|schedule| schedule.next_due_after(now))
+                    .map(|due| due.to_rfc3339());
+                tx.execute(
+                    "UPDATE durable_jobs
+                        SET state = 'succeeded', attempt_count = 0,
+                            next_due_at = ?2, last_outcome = 'succeeded',
+                            last_error = NULL, cancel_requested = 0, committed_at = NULL,
+                            committed_outcome = NULL, updated_at = ?3
+                      WHERE id = ?1 AND state = 'running'",
+                    params![id, next_due, now_text],
+                )?
+            };
         }
         let cancelled = tx.execute(
             "UPDATE durable_jobs
                 SET state = 'cancelled', last_outcome = 'cancelled',
                     last_error = 'cancelled before recovery',
-                    cancel_requested = 0, committed_at = NULL, updated_at = ?1
+                    cancel_requested = 0, committed_at = NULL, committed_outcome = NULL, updated_at = ?1
               WHERE state = 'running' AND cancel_requested = 1 AND committed_at IS NULL",
             params![now_text],
         )?;
@@ -522,13 +557,13 @@ impl JobStore for DbWorker {
                         WHEN next_due_at IS NULL OR next_due_at > ?1 THEN ?1
                         ELSE next_due_at
                     END,
-                    cancel_requested = 0, committed_at = NULL,
+                    cancel_requested = 0, committed_at = NULL, committed_outcome = NULL,
                     updated_at = ?1
               WHERE state = 'running' AND cancel_requested = 0",
             params![now_text],
         )?;
         tx.commit()?;
-        Ok((succeeded + cancelled + requeued) as u64)
+        Ok((recovered + cancelled + requeued) as u64)
     }
 
     fn due_jobs(
@@ -562,7 +597,7 @@ impl JobStore for DbWorker {
         let changed = guard.conn.execute(
             "UPDATE durable_jobs
                 SET state = 'running', attempt_count = ?2, last_run_at = ?3,
-                    last_unlock_window = ?4, cancel_requested = 0, committed_at = NULL,
+                    last_unlock_window = ?4, cancel_requested = 0, committed_at = NULL, committed_outcome = NULL,
                     updated_at = ?3
               WHERE id = ?1
                 AND state IN ('queued', 'succeeded')
@@ -598,7 +633,7 @@ impl JobStore for DbWorker {
             "UPDATE durable_jobs
                 SET state = 'succeeded', attempt_count = 0,
                     next_due_at = ?2, last_outcome = 'succeeded',
-                    last_error = NULL, cancel_requested = 0, committed_at = NULL,
+                    last_error = NULL, cancel_requested = 0, committed_at = NULL, committed_outcome = NULL,
                     updated_at = ?3
               WHERE id = ?1 AND state = 'running' AND cancel_requested = 0",
             params![
@@ -627,7 +662,7 @@ impl JobStore for DbWorker {
             "UPDATE durable_jobs
                 SET state = 'succeeded', attempt_count = 0,
                     next_due_at = ?2, last_outcome = 'succeeded',
-                    last_error = NULL, cancel_requested = 0, committed_at = NULL,
+                    last_error = NULL, cancel_requested = 0, committed_at = NULL, committed_outcome = NULL,
                     updated_at = ?3
               WHERE id = ?1 AND state = 'running'",
             params![
@@ -656,7 +691,7 @@ impl JobStore for DbWorker {
             "UPDATE durable_jobs
                 SET state = ?2, next_due_at = COALESCE(?3, next_due_at),
                     last_outcome = 'failed', last_error = ?4,
-                    cancel_requested = 0, committed_at = NULL, updated_at = ?5
+                    cancel_requested = 0, committed_at = NULL, committed_outcome = NULL, updated_at = ?5
               WHERE id = ?1 AND state IN ('running', 'queued', 'succeeded')
                 AND (cancel_requested = 0 OR committed_at IS NOT NULL)",
             params![
@@ -684,7 +719,7 @@ impl JobStore for DbWorker {
         guard.conn.execute(
             "UPDATE durable_jobs
                 SET state = 'cancelled', last_outcome = 'cancelled',
-                    last_error = ?2, committed_at = NULL, updated_at = ?3
+                    last_error = ?2, committed_at = NULL, committed_outcome = NULL, updated_at = ?3
               WHERE id = ?1 AND state = 'running'",
             params![job.id, sanitize_error(reason), cancelled_at.to_rfc3339()],
         )?;
@@ -700,7 +735,7 @@ impl JobStore for DbWorker {
         let changed = guard.conn.execute(
             "UPDATE durable_jobs
                 SET state = 'queued', last_outcome = 'skipped',
-                    cancel_requested = 0, committed_at = NULL, updated_at = ?2
+                    cancel_requested = 0, committed_at = NULL, committed_outcome = NULL, updated_at = ?2
               WHERE id = ?1 AND state = 'running' AND cancel_requested = 0",
             params![job.id, skipped_at.to_rfc3339()],
         )?;

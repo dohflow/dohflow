@@ -94,6 +94,7 @@ pub mod backup_sink;
 pub mod connector_currency_guard;
 pub use backup_jobs::{
     BackupCadence, BackupRun, BackupScheduleSettings, BACKUP_JOB_ID, BACKUP_JOB_KIND,
+    SCHEDULED_BACKUP_FAILURE_REASON,
 };
 pub use backup_sink::{
     BackupSink, BackupSinkEntry, BackupSinkError, FolderSink, PutMode, PutOutcome,

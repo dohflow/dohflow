@@ -163,7 +163,7 @@ fn a_receipt_and_its_jobs_commit_marker_are_atomic() {
     )
     .unwrap();
     assert!(worker
-        .record_backup_history_for_job(&receipt, Some(job))
+        .record_backup_history_for_job(&receipt, Some((job, "The scheduled backup failed.")))
         .is_err());
     assert!(
         worker.backup_history(vault_id).unwrap().is_empty(),
@@ -173,7 +173,7 @@ fn a_receipt_and_its_jobs_commit_marker_are_atomic() {
 
     conn.execute_batch("DROP TRIGGER refuse_marker").unwrap();
     worker
-        .record_backup_history_for_job(&receipt, Some(job))
+        .record_backup_history_for_job(&receipt, Some((job, "The scheduled backup failed.")))
         .unwrap();
     assert_eq!(worker.backup_history(vault_id).unwrap(), vec![receipt]);
     assert!(marker().is_some(), "both");
@@ -209,4 +209,67 @@ fn a_manual_receipt_writes_no_marker() {
         )
         .unwrap();
     assert_eq!(marked, 0);
+}
+
+/// What a receipt commits is recorded with the marker: a verified receipt is a success, and a receipt that
+/// records a failure is a failure whose reason lands in the job's `last_error` in the same transaction.
+#[test]
+fn a_failed_receipt_marks_the_job_failed_with_its_reason_in_the_same_transaction() {
+    let (_dir, worker) = worker();
+    let vault_id = worker.vault_metadata().unwrap().vault_id;
+    let conn = worker.read_connection().unwrap();
+    let running = |job: Uuid| {
+        conn.execute(
+            "INSERT INTO durable_jobs (id, kind, cadence, state, attempt_count, max_attempts,
+                                       created_at, updated_at)
+             VALUES (?1, 'backup_export', 'weekly', 'running', 1, 3, 't', 't')",
+            [job],
+        )
+        .unwrap();
+    };
+    let read = |job: Uuid| -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT committed_outcome, last_error FROM durable_jobs WHERE id = ?1",
+            [job],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+    let reason = "Could not create or verify the scheduled backup.\nCheck the folder in Settings.";
+
+    let verified_job = Uuid::now_v7();
+    running(verified_job);
+    worker
+        .record_backup_history_for_job(
+            &entry(
+                Uuid::now_v7(),
+                vault_id,
+                BackupHistoryKind::Scheduled,
+                "2026-11-01T12:00:00Z",
+            ),
+            Some((verified_job, reason)),
+        )
+        .unwrap();
+    assert_eq!(read(verified_job), (Some("succeeded".to_owned()), None));
+
+    let failed_job = Uuid::now_v7();
+    running(failed_job);
+    let mut failed = entry(
+        Uuid::now_v7(),
+        vault_id,
+        BackupHistoryKind::Scheduled,
+        "2026-11-01T12:01:00Z",
+    );
+    failed.verified = false;
+    failed.error = Some("Could not verify the backup file.".to_owned());
+    worker
+        .record_backup_history_for_job(&failed, Some((failed_job, reason)))
+        .unwrap();
+    let (outcome, last_error) = read(failed_job);
+    assert_eq!(outcome.as_deref(), Some("failed"));
+    assert_eq!(
+        last_error.as_deref(),
+        Some("Could not create or verify the scheduled backup.Check the folder in Settings."),
+        "the job's reason, sanitized as the runner's own failure write is"
+    );
 }

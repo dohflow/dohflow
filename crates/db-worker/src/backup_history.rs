@@ -87,13 +87,14 @@ impl DbWorker {
         self.record_backup_history_for_job(entry, None)
     }
 
-    /// [`DbWorker::record_backup_history`] for a receipt that is the durable effect of a running job:
-    /// the job's commit marker is written in the SAME transaction as the receipt, so the vault holds
-    /// both or neither (personal-cfo-g3m.31).
+    /// [`DbWorker::record_backup_history`] for a receipt that is the durable effect of a running job
+    /// (`job` is its id and the failure text it records if the receipt is unverified): the job's commit
+    /// marker, with what committed, is written in the SAME transaction as the receipt, so the vault
+    /// holds both or neither (personal-cfo-g3m.31).
     pub fn record_backup_history_for_job(
         &self,
         entry: &BackupHistoryEntry,
-        job_id: Option<Uuid>,
+        job: Option<(Uuid, &str)>,
     ) -> Result<(), DbError> {
         chrono::DateTime::parse_from_rfc3339(&entry.created_at).map_err(|_| {
             DbError::InvalidCommand("backup creation time must be RFC 3339".to_owned())
@@ -155,8 +156,16 @@ impl DbWorker {
                 error,
             ],
         )?;
-        if let Some(job_id) = job_id {
-            crate::jobs::mark_committed(&tx, job_id, &chrono::Utc::now().to_rfc3339())?;
+        if let Some((job_id, failure_reason)) = job {
+            // What committed: a verified receipt is a success; a receipt that records a failure is a
+            // failure, and the job's `last_error` is written in this same transaction so a crash before
+            // the runner records the failure still leaves a failed job with its reason.
+            let outcome = if entry.verified {
+                crate::jobs::CommitOutcome::Succeeded
+            } else {
+                crate::jobs::CommitOutcome::Failed(failure_reason)
+            };
+            crate::jobs::mark_committed(&tx, job_id, &chrono::Utc::now().to_rfc3339(), outcome)?;
         }
         tx.commit()?;
         Ok(())

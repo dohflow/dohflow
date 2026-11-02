@@ -1186,7 +1186,7 @@ fn the_marker_is_cleared_by_a_new_claim_and_by_every_terminal_write() {
         .read_connection()
         .unwrap()
         .execute(
-            "UPDATE durable_jobs SET committed_at = 't' WHERE id = ?1",
+            "UPDATE durable_jobs SET committed_at = 't', committed_outcome = 'succeeded' WHERE id = ?1",
             params![id],
         )
         .unwrap();
@@ -1201,7 +1201,7 @@ fn the_marker_is_cleared_by_a_new_claim_and_by_every_terminal_write() {
             .read_connection()
             .unwrap()
             .execute(
-                "UPDATE durable_jobs SET committed_at = 't' WHERE id = ?1",
+                "UPDATE durable_jobs SET committed_at = 't', committed_outcome = 'succeeded' WHERE id = ?1",
                 params![id],
             )
             .unwrap();
@@ -1267,5 +1267,42 @@ fn the_runner_promotes_a_marked_success_to_a_commit_through_the_real_store() {
     assert_eq!(
         worker.durable_job(id).unwrap().unwrap().state,
         JobState::Succeeded
+    );
+}
+
+/// A marked row whose outcome is 'failed' (a backup receipt that records a failure) and that has a cancel
+/// pending is recovered as failed, with the stored reason and the Money Inbox item that reason raises:
+/// never cancelled, never requeued, never succeeded.
+#[test]
+fn recovery_records_a_failed_marker_as_failed_with_its_reason_and_an_inbox_item() {
+    let (_dir, worker) = worker();
+    let id = running_job(&worker, false);
+    worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "UPDATE durable_jobs
+                SET committed_at = 't', committed_outcome = 'failed', last_error = 'Backup failed.'
+              WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+    assert!(worker.cancel_job(id).unwrap());
+
+    assert_eq!(worker.recover_running(now()).unwrap(), 1);
+
+    let row = worker.durable_job(id).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Failed);
+    assert_eq!(row.last_outcome, Some(job_runtime::JobOutcome::Failed));
+    assert_eq!(row.last_error.as_deref(), Some("Backup failed."));
+    assert!(!row.cancel_requested);
+    assert!(
+        marker(&worker, id).is_none(),
+        "the marker lives for one run"
+    );
+    let inbox = worker.money_inbox_list().unwrap();
+    assert!(
+        inbox.iter().any(|item| item.item_kind == "job_failure"),
+        "the failure reaches the Money Inbox"
     );
 }

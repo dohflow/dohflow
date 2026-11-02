@@ -695,6 +695,106 @@ fn a_backup_that_failed_after_its_receipt_with_a_cancel_pending_is_recorded_fail
     fs::set_permissions(&fixture.destination, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// A handler for the real backup kind whose export records a FAILED receipt (the destination cannot be
+/// written) and whose process then dies before the failure is recorded, with a cancel request pending.
+struct CrashesAfterAFailedReceiptWithACancelPending;
+
+impl JobHandler<Kernel> for CrashesAfterAFailedReceiptWithACancelPending {
+    fn kind(&self) -> &'static str {
+        BACKUP_JOB_KIND
+    }
+
+    fn should_run(&self, job: &JobRecord, _context: &Kernel) -> bool {
+        job.id == BACKUP_JOB_ID
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        kernel: &Kernel,
+    ) -> JobExecution {
+        let execution = backup_job_execution_observed(job, cancellation, kernel, &|| {});
+        assert!(matches!(execution, JobExecution::Failed(_)));
+        assert!(kernel.cancel_job(BACKUP_JOB_ID).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancellation.is_cancelled() {
+            assert!(
+                Instant::now() < deadline,
+                "the watcher never raised the token"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        panic!("the process died here");
+    }
+}
+
+/// personal-cfo-g3m.31: a FAILED scheduled backup whose process dies before the failure is recorded, with
+/// a cancel pending. The failed receipt carries a 'failed' marker and the job's failure text, so recovery
+/// records the failure: never succeeded, never cancelled, and it reaches the Money Inbox.
+#[cfg(unix)]
+#[test]
+fn a_crash_after_a_failed_backup_receipt_with_a_cancel_pending_recovers_as_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let BackupFixture {
+        dir,
+        destination,
+        state,
+    } = backup_fixture();
+    let path = dir.path().join("vault.db");
+    // The destination cannot be written, so the export ends in a failure receipt.
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o555)).unwrap();
+    {
+        let dispatcher = JobDispatcher::<Kernel>::new();
+        dispatcher
+            .register(Arc::new(CrashesAfterAFailedReceiptWithACancelPending))
+            .unwrap();
+        let guard = state.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        let crashed = catch_unwind(AssertUnwindSafe(|| {
+            run_due(kernel, &dispatcher, "crashes-failed-receipt")
+        }));
+        assert!(crashed.is_err(), "the handler panicked");
+        assert_eq!(
+            kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap().state,
+            JobState::Running
+        );
+        let history = kernel.backup_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].verified, "the failed attempt has its receipt");
+    }
+    drop(state);
+
+    let reopened = AppState::new(VaultController::open(&path));
+    unlock_vault_impl(&reopened, PASSWORD.to_owned()).expect("unlock reopened vault");
+    {
+        let guard = reopened.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        run_due(
+            kernel,
+            reopened.job_dispatcher().as_ref(),
+            "recover-failed-receipt",
+        );
+        let row = kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap();
+        assert_eq!(row.state, JobState::Failed, "never succeeded or cancelled");
+        assert_eq!(row.last_outcome, Some(finance_kernel::JobOutcome::Failed));
+        assert_eq!(
+            row.last_error.as_deref(),
+            Some(finance_kernel::SCHEDULED_BACKUP_FAILURE_REASON)
+        );
+        assert!(!row.cancel_requested);
+        let item = kernel
+            .money_inbox_list()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.item_kind == "job_failure")
+            .expect("the failure is actionable in the Money Inbox");
+        assert!(item.payload_json.contains("Could not create or verify"));
+        assert!(!item.payload_json.contains(destination.to_str().unwrap()));
+    }
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[test]
 fn a_backup_cancelled_mid_export_stops_within_the_sla_and_commits_nothing() {
     for (index, offset) in RACE_OFFSETS_MS.iter().enumerate() {

@@ -2,7 +2,7 @@
 
 use finance_kernel::{
     BackupCadence, BackupRun, JobExecution, JobFailure, JobHandler, JobRecord, Kernel,
-    BACKUP_JOB_ID, BACKUP_JOB_KIND,
+    BACKUP_JOB_ID, BACKUP_JOB_KIND, SCHEDULED_BACKUP_FAILURE_REASON,
 };
 use job_runtime::CancellationToken;
 
@@ -66,9 +66,7 @@ pub fn backup_job_execution_observed(
             // Kernel errors may contain a local path. Keep the durable
             // failure, Money Inbox copy, and logs path-free.
             tracing::warn!(outcome = "failed", "scheduled backup export failed");
-            JobExecution::Failed(JobFailure::retryable(
-                "Could not create or verify the scheduled backup. Check the destination folder in Settings.",
-            ))
+            JobExecution::Failed(JobFailure::retryable(SCHEDULED_BACKUP_FAILURE_REASON))
         }
     }
 }

@@ -11,6 +11,12 @@ use uuid::Uuid;
 use crate::backup_sink::{BackupSink, BackupSinkError, FolderSink, PutMode, PutOutcome};
 use crate::{Kernel, KernelError};
 
+/// The reason a failed scheduled backup is recorded with: the job's `last_error` when the receipt of a
+/// failed attempt commits (personal-cfo-g3m.31), and the text of the failure the desktop handler returns.
+/// Fixed text: kernel errors may carry a local path, and neither the job row nor the Money Inbox may.
+pub const SCHEDULED_BACKUP_FAILURE_REASON: &str =
+    "Could not create or verify the scheduled backup. Check the destination folder in Settings.";
+
 /// Stable row identity for the one scheduled-backup consumer in each vault.
 pub const BACKUP_JOB_ID: Uuid = Uuid::from_u128(0x8c9d_6d13_1e2a_4b0a_8f5e_0000_0000_0001);
 /// Stable local durable-job kind token.
@@ -492,8 +498,10 @@ impl Kernel {
             error: failure.map(str::to_owned),
         };
         // A scheduled receipt is the scheduled job's durable effect: its commit marker goes in the same
-        // transaction as the receipt (personal-cfo-g3m.31).
-        let job = matches!(entry.kind, BackupHistoryKind::Scheduled).then_some(BACKUP_JOB_ID);
+        // transaction as the receipt, with what committed (a verified receipt succeeded, a receipt that
+        // records a failure failed, with the job's failure text) (personal-cfo-g3m.31).
+        let job = matches!(entry.kind, BackupHistoryKind::Scheduled)
+            .then_some((BACKUP_JOB_ID, SCHEDULED_BACKUP_FAILURE_REASON));
         self.worker
             .record_backup_history_for_job(&entry, job)
             .map_err(|_| {

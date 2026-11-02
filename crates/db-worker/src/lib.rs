@@ -8008,7 +8008,12 @@ fn apply_command(
     // class-3 row, written after the write set and the operation log are final, so it is never part of
     // either.
     if let Some(job_id) = mark_job {
-        jobs::mark_committed(&tx, job_id, &apply::issued_at_text(meta))?;
+        jobs::mark_committed(
+            &tx,
+            job_id,
+            &apply::issued_at_text(meta),
+            jobs::CommitOutcome::Succeeded,
+        )?;
     }
 
     fault.maybe_panic(FaultPoint::AfterOpLog);

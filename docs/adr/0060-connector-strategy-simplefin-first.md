@@ -290,9 +290,12 @@ addendum records how the connector refresh meets it.
 5. **A crash between the commit and the terminal write** leaves the job `running`. With no cancel request
    pending, recovery requeues it and the next run is idempotent through the import dedupe (ADR 0060 section 5):
    never a second import, never `Cancelled`. With a cancel request also pending, recovery reads the **durable commit
-   marker** (`personal-cfo-g3m.31`): `durable_jobs.committed_at`, set in the same transaction as the sync's first
-   durable write (the source batch), so a row that carries it is recorded as succeeded, with its next due time from
-   its schedule, and only a row without it is recorded `Cancelled`. The marker lives for one run: a new claim and every
+   marker** (`personal-cfo-g3m.31`): `durable_jobs.committed_at`, with `committed_outcome`, set in the same transaction
+   as the sync's first durable write (the source batch; outcome `succeeded`), so a row that carries it is recorded as
+   succeeded, with its next due time from its schedule, and only a row without it is recorded `Cancelled`. (The
+   scheduled backup writes the same marker with its receipt; a receipt that records a failure marks `failed` and
+   stores the job's `last_error` in the same transaction, so a crash before the failure is recorded still recovers
+   as a failed job with its Money Inbox item.) The marker lives for one run: a new claim and every
    terminal write clear it. It is device-local (class 3) and never synced.
 6. **A failure after the first write.** The commit section is several separate writes (the account links, the import,
    the watermarks, the refresh stamp, the notice), so an internal failure after the import is returned as a failure.

@@ -38,8 +38,9 @@
 //! A crash between the commit and the terminal write leaves the row `running`. With no cancel
 //! request pending, recovery requeues it, so a committed handler must be idempotent when re-run
 //! (the connector refresh is, through its import dedupe). With a cancel request ALSO pending,
-//! recovery reads the commit marker: a row that carries it is recorded as succeeded (its work is
-//! in), and only a row without it is recorded `Cancelled` (personal-cfo-g3m.31). The marker lives
+//! recovery reads the commit marker: a row that carries it is recorded as what committed (succeeded,
+//! or failed when the effect was a failure record such as a failed backup's receipt), and only a row
+//! without it is recorded `Cancelled` (personal-cfo-g3m.31). The marker lives
 //! while a run is in flight: a new claim and every terminal write clear it.
 
 use std::collections::BTreeMap;
