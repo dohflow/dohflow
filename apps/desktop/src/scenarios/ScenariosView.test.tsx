@@ -452,6 +452,32 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
       expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
     });
 
+    it("re-reads the scenarios after an unknown outcome on the one-click undo, which has no dialog", async () => {
+      applied();
+      mocks.scenarioRevertPreview.mockResolvedValue(ok(preview({})));
+      mocks.revertScenarioApply.mockRejectedValueOnce(new Error("connection lost"));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      const opener = await screen.findByRole("button", { name: /undo applying/i });
+      const listReads = mocks.scenarioList.mock.calls.length;
+      // The call failed, but the undo had in fact landed: the list now shows the scenario unapplied.
+      mocks.scenarioList.mockResolvedValue(ok([scenario()]));
+      fireEvent.click(opener);
+      await vi.waitFor(() =>
+        expect(
+          screen.getByText(
+            /Couldn’t confirm whether the scenario was undone\. Check the forecast before trying again\./,
+          ),
+        ).toBeInTheDocument(),
+      );
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(mocks.scenarioList.mock.calls.length).toBeGreaterThan(listReads),
+      );
+      await vi.waitFor(() =>
+        expect(screen.queryByRole("button", { name: /undo applying/i })).not.toBeInTheDocument(),
+      );
+    });
+
     it("re-reads the scenarios and the preview after an unknown outcome, so the screen shows what is stored", async () => {
       mocks.revertScenarioApply.mockRejectedValueOnce(new Error("connection lost"));
       const { dialog } = await openConfirmation();

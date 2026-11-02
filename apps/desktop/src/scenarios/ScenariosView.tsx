@@ -248,6 +248,9 @@ export function ScenariosView({
       if (error === null) headingRef.current?.focus();
       else setFormError(describeIpcError(error));
     } catch {
+      // The call itself failed, so the outcome is not known: read the scenarios again so the row
+      // shows what is stored, as the dialog path does.
+      refreshScenarios();
       setFormError(UNDO_OUTCOME_UNKNOWN);
     } finally {
       setBusy(false);
