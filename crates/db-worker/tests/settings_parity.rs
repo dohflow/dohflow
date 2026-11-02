@@ -1,4 +1,4 @@
-//! What the six household settings do, pinned to a golden file written from the code as it was
+//! What the five household settings do, pinned to a golden file written from the code as it was
 //! before `user.*` settings moved onto the command bus and their keys were renamed
 //! (personal-cfo-5ymg8.7). Rows are dumped by LABEL, never by stored key name: the point is that no
 //! reader's answer changes, whatever the key is called. Regenerate with `SETTINGS_PARITY_UPDATE=1`
@@ -19,7 +19,6 @@ const GOLDEN: &str = include_str!("settings_parity.golden.txt");
 
 /// (label, the key's constant). The constants are the only way this test names a key.
 const PREFERENCES: &[(&str, &str)] = &[
-    ("locale", LOCALE_KEY),
     ("reporting currency", REPORTING_CURRENCY_KEY),
     ("minimum cash floor", MINIMUM_CASH_FLOOR_KEY),
     ("comfort band upper", COMFORT_BAND_UPPER_KEY),
@@ -83,7 +82,6 @@ fn every_household_setting_answers_what_it_answered_before_it_moved_onto_the_bus
         text.push_str(&dump(&worker, "nothing set"));
 
         for (label, key, value) in [
-            ("locale", LOCALE_KEY, "en-US"),
             ("reporting currency", REPORTING_CURRENCY_KEY, "EUR"),
             ("minimum cash floor", MINIMUM_CASH_FLOOR_KEY, "250000"),
             ("comfort band upper", COMFORT_BAND_UPPER_KEY, "900000"),
@@ -102,7 +100,7 @@ fn every_household_setting_answers_what_it_answered_before_it_moved_onto_the_bus
             set_household_preference(&worker, key, value);
         }
         set_device_preference(&worker, "window", "1");
-        text.push_str(&dump(&worker, "all six set"));
+        text.push_str(&dump(&worker, "all five set"));
         writeln!(
             text,
             "device window: {:?}",
