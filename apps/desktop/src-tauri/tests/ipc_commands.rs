@@ -841,6 +841,17 @@ mod set_tags_expected_set {
         ids
     }
 
+    /// Entries in the operation log (the change journal): a refused write must add none.
+    fn journal_len(f: &Fixture) -> u64 {
+        f.state
+            .lock_controller()
+            .unwrap()
+            .kernel()
+            .unwrap()
+            .operation_count()
+            .unwrap()
+    }
+
     fn sorted(mut ids: Vec<String>) -> Vec<String> {
         ids.sort();
         ids
@@ -857,6 +868,7 @@ mod set_tags_expected_set {
             String::new(),
         )
         .unwrap();
+        let journal_before = journal_len(&f);
         set_tags_impl(
             &f.state,
             f.txn.clone(),
@@ -866,6 +878,10 @@ mod set_tags_expected_set {
         )
         .unwrap();
         assert_eq!(tags_of(&f), sorted(vec![f.a.clone(), f.b.clone()]));
+        assert!(
+            journal_len(&f) > journal_before,
+            "a matching write is journaled"
+        );
     }
 
     #[test]
@@ -888,6 +904,7 @@ mod set_tags_expected_set {
             String::new(),
         )
         .unwrap();
+        let journal_before = journal_len(&f);
         let err = set_tags_impl(
             &f.state,
             f.txn.clone(),
@@ -899,6 +916,11 @@ mod set_tags_expected_set {
         assert!(
             matches!(&err, IpcError::Validation(m) if m.contains("changed since you last read")),
             "{err:?}"
+        );
+        assert_eq!(
+            journal_len(&f),
+            journal_before,
+            "a refused write leaves no change-journal entry"
         );
         assert_eq!(
             tags_of(&f),
