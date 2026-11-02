@@ -1,0 +1,38 @@
+[nothing set]
+locale: None
+reporting currency: None
+minimum cash floor: None
+comfort band upper: None
+auto-categorize on import: None
+future cash series: None
+comfort band: USD lower 0 upper None
+cash availability: floor 0 below_floor false
+[all six set]
+locale: Some("en-US")
+reporting currency: Some("EUR")
+minimum cash floor: Some("250000")
+comfort band upper: Some("900000")
+auto-categorize on import: Some("false")
+future cash series: Some("[\"total\",\"checking\"]")
+comfort band: EUR lower 250000 upper Some(900000)
+cash availability: floor 250000 below_floor true
+device window: Some("1")
+[floor changed]
+locale: Some("en-US")
+reporting currency: Some("EUR")
+minimum cash floor: Some("300000")
+comfort band upper: Some("900000")
+auto-categorize on import: Some("false")
+future cash series: Some("[\"total\",\"checking\"]")
+comfort band: EUR lower 300000 upper Some(900000)
+cash availability: floor 300000 below_floor true
+[after reopening]
+locale: Some("en-US")
+reporting currency: Some("EUR")
+minimum cash floor: Some("300000")
+comfort band upper: Some("900000")
+auto-categorize on import: Some("false")
+future cash series: Some("[\"total\",\"checking\"]")
+comfort band: EUR lower 300000 upper Some(900000)
+cash availability: floor 300000 below_floor true
+device window: Some("1")
