@@ -5,6 +5,7 @@ import { renderWithClient } from "@/test/renderWithClient";
 import type {
   AccountViewDto,
   CategoryDto,
+  CreateRecurringBillInput,
   TransactionPageInput,
   TransactionRowDto,
 } from "@/bindings";
@@ -626,6 +627,152 @@ describe("TransactionsView", () => {
       ).toBeInTheDocument();
       await waitFor(() => expect(screen.queryByLabelText(/bill name/i)).not.toBeInTheDocument());
       expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+    });
+
+    it("an answer that threw after the bill was created closes the form, says so, and never creates the bill again", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(
+        ok({ ...LOAN, strength: "possible", matched_by: "declared_terms" }),
+      );
+      mocks.createRecurringBill.mockResolvedValue(ok({ op_seq: 1, replayed: false, event_id: "bill-new" }));
+      mocks.setBillNotLoanPayment.mockRejectedValue(new Error("connection lost"));
+      await fillRecurring();
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "No, it's a different bill" }));
+      expect(
+        await screen.findByText(
+          "The bill was added, but we couldn’t confirm that your answer was saved, so DohFlow may ask again.",
+        ),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByLabelText(/bill name/i)).not.toBeInTheDocument());
+      expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+    });
+
+    describe("an edit while the warning is open ends that confirmation", () => {
+      const openDetails = () => {
+        if (!screen.queryByLabelText("Note")) {
+          fireEvent.click(screen.getByRole("button", { name: /add details/i }));
+        }
+      };
+      const edits: [string, () => unknown, (bill: CreateRecurringBillInput) => unknown, unknown][] = [
+        [
+          "the amount",
+          () => fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1600" } }),
+          (bill) => bill.amount.minor_units,
+          160_000,
+        ],
+        [
+          "the bill name",
+          () => fireEvent.change(screen.getByLabelText(/bill name/i), { target: { value: "Home loan" } }),
+          (bill) => bill.name,
+          "Home loan",
+        ],
+        [
+          "the first due date",
+          () =>
+            fireEvent.change(screen.getByLabelText(/first due date/i), { target: { value: "2026-08-05" } }),
+          (bill) => bill.anchor_date,
+          "2026-08-05",
+        ],
+        [
+          "the frequency",
+          () => fireEvent.change(screen.getByLabelText(/frequency/i), { target: { value: "weekly" } }),
+          (bill) => bill.frequency,
+          "weekly",
+        ],
+        [
+          "the note",
+          () => {
+            openDetails();
+            fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Home loan" } });
+          },
+          (bill) => bill.description,
+          "Home loan",
+        ],
+        [
+          "the category",
+          () => {
+            openDetails();
+            fireEvent.change(screen.getByLabelText("Category"), { target: { value: CATEGORY.id } });
+          },
+          (bill) => bill.category_id,
+          CATEGORY.id,
+        ],
+        [
+          "a tag",
+          async () => {
+            openDetails();
+            const input = screen.getByLabelText("Add a tag");
+            fireEvent.change(input, { target: { value: "Vacation" } });
+            fireEvent.keyDown(input, { key: "Enter" });
+            await waitFor(() => expect(mocks.createTag).toHaveBeenCalled());
+          },
+          (bill) => bill.tag_ids,
+          [VACATION_TAG],
+        ],
+      ];
+
+      it.each(edits)(
+        "%s: the warning goes, nothing is created, and the next submit checks and creates the current draft with a new key",
+        async (_field, edit, read, expected) => {
+          mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+          mocks.createRecurringBill.mockRejectedValueOnce(new Error("connection lost"));
+          await fillRecurring();
+          // A first attempt that threw leaves the 1500 draft's key behind.
+          create();
+          fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+          await screen.findByText(/couldn’t confirm whether the recurring bill was created/i);
+          expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+
+          create();
+          await screen.findByRole("button", { name: "Add anyway" });
+          await edit();
+          // The stale confirmation is gone: the form is back to its submit state.
+          await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+          expect(screen.getByRole("button", { name: /create recurring bill/i })).toBeEnabled();
+          expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+
+          create();
+          const checks = mocks.checkLoanOverlap.mock.calls;
+          await waitFor(() => expect(checks.length).toBe(3));
+          expect(read(checks[2]?.[0])).toEqual(expected);
+          fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+          await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(2));
+          expect(read(mocks.createRecurringBill.mock.calls[1]?.[0])).toEqual(expected);
+          expect(keyOf(1)).not.toBe(keyOf(0));
+        },
+      );
+
+      it("an edit that is put back still ends the confirmation, and the unchanged draft keeps its key", async () => {
+        mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+        mocks.createRecurringBill.mockRejectedValueOnce(new Error("connection lost"));
+        await fillRecurring();
+        create();
+        fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+        await screen.findByText(/couldn’t confirm whether the recurring bill was created/i);
+
+        create();
+        await screen.findByRole("button", { name: "Add anyway" });
+        fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1600" } });
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+        fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1500" } });
+        expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull();
+
+        create();
+        fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+        await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(2));
+        expect(keyOf(1)).toBe(keyOf(0));
+      });
+
+      it("turning recurring off ends the confirmation", async () => {
+        mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+        await fillRecurring();
+        create();
+        await screen.findByRole("button", { name: "Add anyway" });
+        fireEvent.click(screen.getByLabelText(/set up as a recurring bill/i));
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+        expect(screen.getByRole("button", { name: /add transaction/i })).toBeInTheDocument();
+        expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+      });
     });
 
     it("a link the app refused keeps its existing message", async () => {

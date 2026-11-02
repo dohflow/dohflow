@@ -1055,18 +1055,18 @@ function SplitLinesDetail({
   );
 }
 
-// Rust remains authoritative for validation (ADR 0003); this schema only gates
-// the form UI and shapes display copy.
-/// Shown when recording a transaction threw: nobody knows whether it was recorded. Submitting the
-/// same draft again reuses its idempotency key, so it cannot be recorded twice.
 /// Shown when the call that creates the recurring bill threw: the bill may or may not exist, and
 /// the same draft keeps its key, so submitting again cannot add a second one.
 const BILL_OUTCOME_UNKNOWN =
   "Couldn’t confirm whether the recurring bill was created. Submit again and it won’t be added twice.";
 
+/// Shown when recording a transaction threw: nobody knows whether it was recorded. Submitting the
+/// same draft again reuses its idempotency key, so it cannot be recorded twice.
 const TRANSACTION_OUTCOME_UNKNOWN =
   "Couldn’t confirm whether the transaction was recorded. Submit again and it won’t be added twice.";
 
+// Rust remains authoritative for validation (ADR 0003); this schema only gates
+// the form UI and shapes display copy.
 const transactionFormSchema = z.object({
   account_id: z.string().min(1, "Choose an account."),
   kind: z.enum(["expense", "income"]),
@@ -1090,6 +1090,24 @@ const transactionFormSchema = z.object({
   interval_unit: z.string(),
 });
 type TransactionFormValues = z.infer<typeof transactionFormSchema>;
+
+/// Everything the recurring bill is built from. The loan warning is a confirmation of exactly one
+/// draft, so it stays only while this still reads the same.
+function billDraftSignature(values: TransactionFormValues, recurring: boolean): string {
+  return JSON.stringify([
+    recurring,
+    values.account_id,
+    values.amount,
+    values.date,
+    values.categoryId,
+    values.tagIds,
+    values.note,
+    values.recurringName,
+    values.frequency,
+    values.interval_count,
+    values.interval_unit,
+  ]);
+}
 
 /// The metadata the form assembles for the record→attach one-flow (personal-cfo-4d8.24.2).
 type TransactionMeta = {
@@ -1146,6 +1164,7 @@ function AddTransactionForm({
   });
   const kind = watch("kind");
   const tagIds = watch("tagIds");
+  const liveValues = watch();
   const [error, setError] = useState<string | null>(null);
   // When on, submit promotes to a recurring bill (name + cadence) via the shared bill
   // create path instead of recording a one-off transaction (personal-cfo-4d8.24.2.2).
@@ -1162,7 +1181,16 @@ function AddTransactionForm({
   const [overlap, setOverlap] = useState<{
     match: LoanOverlapMatchDto;
     input: CreateRecurringBillInput;
+    /// The draft the check ran on: a change to any field of it ends this confirmation.
+    signature: string;
   } | null>(null);
+  // An edit to the draft while the warning is open ends it: its Add anyway would create the draft
+  // that was checked, not the one on screen. The next submit checks the current draft again.
+  const activeOverlap =
+    overlap && overlap.signature === billDraftSignature(liveValues, recurring) ? overlap : null;
+  useEffect(() => {
+    if (overlap && !activeOverlap) setOverlap(null);
+  }, [overlap, activeOverlap]);
   const [creatingBill, setCreatingBill] = useState(false);
   const filePicker = useRef<HTMLInputElement>(null);
   function onPickFiles(event: ChangeEvent<HTMLInputElement>) {
@@ -1288,7 +1316,7 @@ function AddTransactionForm({
       // Advisory and fail-open, like on the bill form: a match is shown before anything is created.
       const match = await findLoanOverlap(billDraft, { sourceMerchantKey: null });
       if (match) {
-        setOverlap({ match, input });
+        setOverlap({ match, input, signature: billDraftSignature(values, recurring) });
         return;
       }
       await createBill(input);
@@ -1620,15 +1648,15 @@ function AddTransactionForm({
             </p>
           )}
 
-          {overlap ? (
+          {activeOverlap ? (
             <LoanOverlapPanel
-              match={overlap.match}
-              autopayAccountId={overlap.input.autopay_account_id}
+              match={activeOverlap.match}
+              autopayAccountId={activeOverlap.input.autopay_account_id}
               accounts={accounts}
               saving={creatingBill}
               submitLabel="Create recurring bill"
               onCancel={onCancel}
-              onCreate={(follow) => void createBill(overlap.input, follow)}
+              onCreate={(follow) => void createBill(activeOverlap.input, follow)}
             />
           ) : (
             <div className="flex justify-end gap-2">
