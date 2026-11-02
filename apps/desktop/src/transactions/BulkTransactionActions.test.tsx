@@ -271,10 +271,94 @@ describe("bulk tag is honest (5n4.10)", () => {
       return null;
     });
     enter();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Tagged 1 of 3 — 2 failed.");
+    // A refusal is a failure; a call that threw is unconfirmed, because it may have saved.
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Tagged 1 of 3 — 1 failed, 1 couldn’t be confirmed. Check the unconfirmed rows before trying again.",
+    );
+    // Both stay selected; the saved one drops out.
     expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2", "t3"]);
     // Not stuck busy after a row threw.
     expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  describe("a call that throws is unconfirmed for every bulk verb (5n4.10)", () => {
+    const CHECK = "Check the unconfirmed rows before trying again.";
+
+    test("only a thrown write: no failed count, and the row stays selected", async () => {
+      const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+      ops.setTags.mockImplementation(async (id: string) => {
+        if (id === "t3") throw new Error("connection lost");
+        return null;
+      });
+      enter();
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(`Tagged 2 of 3 — 1 couldn’t be confirmed. ${CHECK}`);
+      expect(alert).not.toHaveTextContent(/failed/);
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t3"]);
+    });
+
+    test("only a typed refusal: counted as failed, no unconfirmed sentence", async () => {
+      const ops = setup({ selected: [txn("t1"), txn("t2")] });
+      ops.setTags.mockImplementation(async (id: string) =>
+        id === "t2" ? ({ Validation: "nope" } as IpcError) : null,
+      );
+      enter();
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("Tagged 1 of 2 — 1 failed.");
+      expect(alert).not.toHaveTextContent(/confirm/);
+    });
+
+    test("Categorize: a rejected write is unconfirmed and stays selected", async () => {
+      const ops = setup();
+      ops.recategorize.mockImplementation(async (id: string) => {
+        if (id === "t1") throw new Error("connection lost");
+        return null;
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Categorize selected" }));
+      fireEvent.pointerDown(screen.getByRole("option", { name: /Groceries/ }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Recategorized 1 of 2 — 1 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1"]);
+    });
+
+    test("Delete: a rejected write is unconfirmed and stays selected", async () => {
+      const ops = setup();
+      ops.deleteTransaction.mockImplementation(async (id: string) => {
+        if (id === "t2") throw new Error("connection lost");
+        return null;
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+      fireEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Deleted 1 of 2 — 1 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2"]);
+    });
+
+    test("Mark reviewed (per row): a rejected write is unconfirmed and stays selected", async () => {
+      const ops = setup();
+      ops.setReviewed.mockImplementation(async (id: string) => {
+        if (id === "t1") throw new Error("connection lost");
+        return null;
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Marked reviewed 1 of 2 — 1 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1"]);
+    });
+
+    test("Mark reviewed (one call) that throws leaves every row selected and unconfirmed", async () => {
+      const bulk = vi.fn().mockRejectedValue(new Error("connection lost"));
+      const ops = setup({ bulkMarkReviewed: bulk });
+      fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Marked reviewed 0 of 2 — 2 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+    });
   });
 
   test("other bulk actions are also exclusive while one is running", async () => {
