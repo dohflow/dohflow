@@ -1229,3 +1229,43 @@ fn the_marker_is_cleared_by_a_new_claim_and_by_every_terminal_write() {
         }
     }
 }
+
+/// A handler that reports only `Succeeded` for work the store knows committed (its marker is set), with
+/// a cancel request pending, is recorded succeeded through the real store: the runner promotes it to a
+/// commit, because the store's `finish_success` would otherwise defer to the cancel.
+#[test]
+fn the_runner_promotes_a_marked_success_to_a_commit_through_the_real_store() {
+    struct CommitThenSucceed<'a>(&'a DbWorker);
+    impl JobExecutor<()> for CommitThenSucceed<'_> {
+        fn execute(
+            &self,
+            job: &JobRecord,
+            _cancellation: &CancellationToken,
+            _context: &(),
+        ) -> JobExecution {
+            self.0
+                .dispatch_marking_job(common::meta(), common::create_account_cmd(), job.id)
+                .unwrap();
+            self.0.cancel_job(job.id).unwrap();
+            JobExecution::Succeeded
+        }
+    }
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    let report = worker
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-marked-success",
+            &(),
+            &CommitThenSucceed(&worker),
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+    assert_eq!((report.succeeded, report.cancelled), (1, 0));
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Succeeded
+    );
+}

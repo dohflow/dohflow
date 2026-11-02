@@ -3231,6 +3231,17 @@ impl Kernel {
             .map_err(|error| KernelError::Persistence(error.to_string()))
     }
 
+    /// Whether the running job `id` carries its durable commit marker: its effect committed in this run
+    /// (personal-cfo-g3m.31).
+    ///
+    /// # Errors
+    /// [`KernelError::Persistence`] on a store failure.
+    pub fn job_commit_marked(&self, id: uuid::Uuid) -> Result<bool, KernelError> {
+        self.worker
+            .job_committed(id)
+            .map_err(|error| KernelError::Persistence(error.to_string()))
+    }
+
     /// Read the local durable-job history for a Settings/status surface.
     pub fn durable_jobs(&self) -> Result<Vec<DurableJobView>, KernelError> {
         Ok(self.worker.durable_jobs()?)

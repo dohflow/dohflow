@@ -624,6 +624,77 @@ fn a_crash_after_the_backup_completed_with_a_cancel_pending_is_not_recorded_as_c
     );
 }
 
+/// A handler for the real backup kind whose export records a FAILED receipt (the destination cannot be
+/// written), and whose cancel request lands before the job's outcome is written.
+struct FailsAndThenACancelArrives;
+
+impl JobHandler<Kernel> for FailsAndThenACancelArrives {
+    fn kind(&self) -> &'static str {
+        BACKUP_JOB_KIND
+    }
+
+    fn should_run(&self, job: &JobRecord, _context: &Kernel) -> bool {
+        job.id == BACKUP_JOB_ID
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        kernel: &Kernel,
+    ) -> JobExecution {
+        let execution = backup_job_execution_observed(job, cancellation, kernel, &|| {});
+        assert!(kernel.cancel_job(BACKUP_JOB_ID).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancellation.is_cancelled() {
+            assert!(
+                Instant::now() < deadline,
+                "the watcher never raised the token"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        execution
+    }
+}
+
+/// personal-cfo-g3m.31, case (b) for the backup kind: the export wrote its failed receipt (the
+/// receipt carries the job's commit marker), and a cancel request lands before the outcome. The
+/// failure is the truth: the job is recorded as failed, not cancelled.
+#[cfg(unix)]
+#[test]
+fn a_backup_that_failed_after_its_receipt_with_a_cancel_pending_is_recorded_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = backup_fixture();
+    // The destination cannot be written, so the export ends in a failure receipt.
+    fs::set_permissions(&fixture.destination, fs::Permissions::from_mode(0o555)).unwrap();
+    let dispatcher = JobDispatcher::<Kernel>::new();
+    dispatcher
+        .register(Arc::new(FailsAndThenACancelArrives))
+        .unwrap();
+    {
+        let guard = fixture.state.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        let report = run_due(kernel, &dispatcher, "fails-then-cancel");
+
+        assert_eq!((report.failed, report.cancelled), (1, 0), "{report:?}");
+        let row = kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap();
+        assert_eq!(
+            row.last_outcome,
+            Some(finance_kernel::JobOutcome::Failed),
+            "recorded as the failure it was"
+        );
+        assert_ne!(row.state, JobState::Cancelled);
+        let history = kernel.backup_history().unwrap();
+        assert_eq!(history.len(), 1, "the failed attempt has its receipt");
+        assert!(!history[0].verified);
+        assert!(
+            !kernel.job_cancellation_requested(BACKUP_JOB_ID).unwrap(),
+            "the late request is cleared, not left pending"
+        );
+    }
+    fs::set_permissions(&fixture.destination, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[test]
 fn a_backup_cancelled_mid_export_stops_within_the_sla_and_commits_nothing() {
     for (index, offset) in RACE_OFFSETS_MS.iter().enumerate() {
@@ -848,6 +919,11 @@ fn open_state() -> (TempDir, AppState) {
 
 /// Link a connection and map its checking account, as a user would. Returns the connection id.
 fn linked(state: &AppState) -> Uuid {
+    linked_with_account(state).0
+}
+
+/// [`linked`], and the id of the account its feed is mapped to.
+fn linked_with_account(state: &AppState) -> (Uuid, String) {
     let connection_id = connector_link_impl(
         state,
         healthy(),
@@ -882,12 +958,12 @@ fn linked(state: &AppState) -> Uuid {
         ConnectorSetAccountLinkInput {
             connection_id: connection_id.clone(),
             external_id: "mock-acct-checking".to_owned(),
-            account_id: Some(account),
+            account_id: Some(account.clone()),
             allow_shared_feed: false,
         },
     )
     .expect("map");
-    Uuid::parse_str(&connection_id).unwrap()
+    (Uuid::parse_str(&connection_id).unwrap(), account)
 }
 
 fn job_state(state: &AppState, connection: Uuid) -> JobState {
@@ -1412,6 +1488,71 @@ fn a_crash_after_the_commit_with_a_cancel_pending_is_not_recorded_as_cancelled()
         JobState::Cancelled,
         "recovery recorded a cancelled job whose batch is imported"
     );
+}
+
+/// personal-cfo-g3m.31, case (b) for the connector kind. The refresh's first durable write is its
+/// source batch, dispatched with the job's commit marker (`ingest_sync_batch_for_job`); the rest of the
+/// commit section can then fail inside DohFlow (the later writes are separate transactions) and a cancel
+/// request can land before the outcome. This drives the kind's real claim, its marked first write and
+/// its real finish path with an internal failure: the job is recorded as failed, not cancelled. Without
+/// the marker the same sequence is still `Cancelled` (the last assertion).
+#[test]
+fn a_refresh_that_failed_after_its_first_write_with_a_cancel_pending_is_recorded_failed() {
+    use finance_kernel::{
+        ActorType, CommandEnvelope, CommandMeta, CreateSourceBatch, JobFailure, SourceBatchId,
+    };
+    for (marked, expected) in [(true, JobState::Queued), (false, JobState::Cancelled)] {
+        let (_dir, app) = open_state();
+        let connection = linked(&app);
+        let job_id = refresh_job_id(connection);
+        let clock = FixedClock(Utc::now());
+        let guard = app.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        let (claimed, _) = kernel
+            .claim_due_jobs_of_kind(CONNECTOR_REFRESH_JOB_KIND, clock.now(), "w", &clock)
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        if marked {
+            let create = CreateSourceBatch::new(
+                SourceBatchId::new(),
+                "other".to_owned(),
+                Some("Other sync".to_owned()),
+                None,
+                Some("1.0.0".to_owned()),
+            )
+            .with_connector_connection(connection);
+            let meta = CommandMeta {
+                command_id: Uuid::now_v7(),
+                correlation_id: Uuid::now_v7(),
+                causation_id: None,
+                actor_type: ActorType::User,
+                actor_id: "tester".to_owned(),
+                idempotency_key: Uuid::new_v4().to_string(),
+                issued_at: finance_kernel::IssuedAt::now(),
+            };
+            kernel
+                .dispatch_marking_job(CommandEnvelope::new(meta, create), job_id)
+                .unwrap();
+        }
+        assert!(kernel.cancel_job(job_id).unwrap(), "the cancel is accepted");
+        let report = kernel
+            .finish_claimed_job(
+                &claimed[0],
+                JobExecution::Failed(JobFailure::retryable("the refresh could not be saved")),
+                &clock,
+            )
+            .unwrap();
+        let row = kernel.durable_job(job_id).unwrap().unwrap();
+        assert_eq!(row.state, expected, "marker set: {marked}; {report:?}");
+        if marked {
+            assert_eq!(
+                row.last_outcome,
+                Some(finance_kernel::JobOutcome::Failed),
+                "recorded as the failure it was"
+            );
+            assert_eq!((report.failed, report.cancelled), (1, 0));
+        }
+    }
 }
 
 /// A crash between the commit and the terminal write leaves the job `running`. Recovery requeues
