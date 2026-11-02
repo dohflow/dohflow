@@ -36,10 +36,13 @@ export function useTags() {
     mutationFn: ({
       transactionId,
       tagIds,
+      expectedTagIds,
     }: {
       transactionId: string;
       tagIds: string[];
-    }) => commands.setTags(transactionId, tagIds, mintIdempotencyKey()),
+      expectedTagIds: string[] | null;
+    }) =>
+      commands.setTags(transactionId, tagIds, expectedTagIds, mintIdempotencyKey()),
     onSuccess: (result) => {
       if (result.status === "ok") invalidateTransactions();
     },
@@ -69,8 +72,19 @@ export function useTags() {
     [createTagMutation],
   );
   const setTags = useCallback(
-    async (transactionId: string, tagIds: string[]): Promise<IpcError | null> => {
-      const result = await setTagsMutation.mutateAsync({ transactionId, tagIds });
+    // `expectedTagIds` is the set the caller merged into: if the transaction's tags are no
+    // longer that set the write is refused (a concurrent edit is not overwritten). Omit it
+    // for a plain replace.
+    async (
+      transactionId: string,
+      tagIds: string[],
+      expectedTagIds: string[] | null = null,
+    ): Promise<IpcError | null> => {
+      const result = await setTagsMutation.mutateAsync({
+        transactionId,
+        tagIds,
+        expectedTagIds,
+      });
       return result.status === "ok" ? null : result.error;
     },
     [setTagsMutation],

@@ -2205,11 +2205,33 @@ pub fn create_tag(
     create_tag_impl(state.inner(), name, color, idempotency_key)
 }
 
+/// What a refused `set_tags` tells the person: someone else's edit landed between their read
+/// and their write. Fixed text: the IPC layer shows it as it is.
+const TAGS_CHANGED: &str =
+    "These tags changed since you last read them. Read them again and retry.";
+
+/// A tag set as a sorted list of ids, so two sets compare without caring about order.
+fn tag_set(tags: &[TagId]) -> Vec<String> {
+    let mut ids: Vec<String> = tags.iter().map(|t| t.as_uuid().to_string()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// Replace a transaction's tag set (ADR 0033).
+///
+/// `expected_tag_ids` is the set the caller read and merged into (personal-cfo-5n4.10): when it
+/// is given, the write is refused with a [`IpcError::Validation`] and nothing changes if the
+/// transaction's tags are no longer that set, so a concurrent edit is never overwritten
+/// silently. The read and the write happen under the controller lock every kernel access goes
+/// through, so nothing slips between them. A write that would leave the tags exactly as they
+/// already are is not refused, which also lets a retry of a write that landed come back as the
+/// replay it is. `None` keeps the plain replace.
 pub fn set_tags_impl(
     state: &AppState,
     transaction_id: String,
     tag_ids: Vec<String>,
+    expected_tag_ids: Option<Vec<String>>,
     idempotency_key: String,
 ) -> Result<MutationResult, IpcError> {
     with_kernel(state, |kernel| {
@@ -2218,6 +2240,19 @@ pub fn set_tags_impl(
             .iter()
             .map(|t| parse_tag_id(t))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(expected) = expected_tag_ids {
+            let expected = expected
+                .iter()
+                .map(|t| parse_tag_id(t))
+                .collect::<Result<Vec<_>, _>>()?;
+            // A transaction that is gone has no tags to compare; the write below says so.
+            if let Some(row) = kernel.transactions_by_ids(&[txn])?.first() {
+                let current = tag_set(&row.tag_ids);
+                if current != tag_set(&expected) && current != tag_set(&tags) {
+                    return Err(IpcError::Validation(TAGS_CHANGED.to_owned()));
+                }
+            }
+        }
         let outcome = kernel.dispatch(CommandEnvelope::new(
             user_meta(&idempotency_key),
             SetTags::new(txn, tags),
@@ -2232,9 +2267,16 @@ pub fn set_tags(
     state: tauri::State<'_, AppState>,
     transaction_id: String,
     tag_ids: Vec<String>,
+    expected_tag_ids: Option<Vec<String>>,
     idempotency_key: String,
 ) -> Result<MutationResult, IpcError> {
-    set_tags_impl(state.inner(), transaction_id, tag_ids, idempotency_key)
+    set_tags_impl(
+        state.inner(),
+        transaction_id,
+        tag_ids,
+        expected_tag_ids,
+        idempotency_key,
+    )
 }
 
 /// Set or clear a transaction's free-text note (ADR 0033 §3).

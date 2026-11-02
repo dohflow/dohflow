@@ -41,7 +41,13 @@ export function BulkTransactionActions({
   recategorize: (id: string, categoryId: string | null) => Promise<IpcError | null>;
   setReviewed: (id: string, reviewed: boolean) => Promise<IpcError | null>;
   deleteTransaction: (id: string) => Promise<IpcError | null>;
-  setTags: (id: string, tagIds: string[]) => Promise<IpcError | null>;
+  /// `expectedTagIds` is the set the new tags were merged into; the write is refused if the
+  /// transaction's tags are no longer exactly that set.
+  setTags: (
+    id: string,
+    tagIds: string[],
+    expectedTagIds?: string[],
+  ) => Promise<IpcError | null>;
   /// Create a tag by name (or resolve an existing one) — powers the always-available
   /// create-and-apply tag control (personal-cfo-4d8.24.8). Returns the new tag id, or an
   /// `IpcError`.
@@ -126,7 +132,11 @@ export function BulkTransactionActions({
           const current = freshTagsById.get(t.transaction_id);
           // A row the fresh read did not return is gone; there is no set to merge into.
           if (current === undefined) return Promise.resolve<IpcError | null>(MISSING_ROW);
-          return setTags(t.transaction_id, [...new Set([...current, tagId])]);
+          return setTags(
+            t.transaction_id,
+            [...new Set([...current, tagId])],
+            current,
+          );
         },
         "Tagged",
       );

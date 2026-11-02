@@ -63,7 +63,7 @@ function setup(over: Partial<Parameters<typeof BulkTransactionActions>[0]> = {})
     recategorize: vi.fn(okOp),
     setReviewed: vi.fn(okOp),
     deleteTransaction: vi.fn(okOp),
-    setTags: vi.fn<(id: string, tagIds: string[]) => Promise<IpcError | null>>(okOp),
+    setTags: vi.fn<(id: string, tagIds: string[], expected?: string[]) => Promise<IpcError | null>>(okOp),
     createTag: vi.fn<(name: string) => Promise<string | IpcError>>(async () => "tag-new"),
     onSelectAll: vi.fn(),
     onSelectionChange: vi.fn(),
@@ -100,7 +100,7 @@ test("applies an existing tag (by name) to all, merging with each transaction's 
   fireEvent.change(input, { target: { value: "Vacation" } }); // matches TAG (id tag-1)
   fireEvent.keyDown(input, { key: "Enter" });
   await waitFor(() =>
-    expect(ops.setTags).toHaveBeenCalledWith("t1", ["existing", "tag-1"]),
+    expect(ops.setTags).toHaveBeenCalledWith("t1", ["existing", "tag-1"], ["existing"]),
   );
   // An existing match does not mint a new tag.
   expect(ops.createTag).not.toHaveBeenCalled();
@@ -117,8 +117,8 @@ test("creates a new tag and applies it to every selected transaction (even with 
   await waitFor(() => expect(ops.createTag).toHaveBeenCalledTimes(1));
   expect(ops.createTag).toHaveBeenCalledWith("Travel");
   await waitFor(() => expect(ops.setTags).toHaveBeenCalledTimes(2));
-  expect(ops.setTags).toHaveBeenCalledWith("t1", ["tag-new"]);
-  expect(ops.setTags).toHaveBeenCalledWith("t2", ["keep", "tag-new"]);
+  expect(ops.setTags).toHaveBeenCalledWith("t1", ["tag-new"], []);
+  expect(ops.setTags).toHaveBeenCalledWith("t2", ["keep", "tag-new"], ["keep"]);
 });
 
 test("does not create a tag for an empty name, and surfaces a create failure", async () => {
@@ -182,7 +182,12 @@ describe("bulk tag is honest (5n4.10)", () => {
     currentRows = [txn("t1", { tag_ids: ["old", "added-elsewhere"] })];
     enter();
     await waitFor(() =>
-      expect(ops.setTags).toHaveBeenCalledWith("t1", ["old", "added-elsewhere", "tag-1"]),
+      expect(ops.setTags).toHaveBeenCalledWith(
+        "t1",
+        ["old", "added-elsewhere", "tag-1"],
+        // The set it merged into, so the write is refused if the tags move again.
+        ["old", "added-elsewhere"],
+      ),
     );
   });
 
@@ -223,7 +228,7 @@ describe("bulk tag is honest (5n4.10)", () => {
     enter();
     expect(await screen.findByRole("alert")).toHaveTextContent("Tagged 1 of 2 — 1 failed.");
     expect(ops.setTags).toHaveBeenCalledTimes(1);
-    expect(ops.setTags).toHaveBeenCalledWith("t1", ["tag-1"]);
+    expect(ops.setTags).toHaveBeenCalledWith("t1", ["tag-1"], []);
     expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2"]);
   });
 
@@ -239,6 +244,18 @@ describe("bulk tag is honest (5n4.10)", () => {
     expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2", "t3"]);
     // Not stuck busy after a row threw.
     expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  test("a row whose tags changed after the read is refused, counted as not changed, and stays selected", async () => {
+    const ops = setup({ selected: [txn("t1"), txn("t2")] });
+    ops.setTags.mockImplementation(async (id: string) =>
+      id === "t2"
+        ? ({ Validation: "These tags changed since you last read them. Read them again and retry." } as IpcError)
+        : null,
+    );
+    enter();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Tagged 1 of 2 — 1 failed.");
+    expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2"]);
   });
 
   test("other bulk actions are also exclusive while one is running", async () => {
