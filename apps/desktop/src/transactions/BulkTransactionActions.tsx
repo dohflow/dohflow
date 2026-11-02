@@ -95,6 +95,27 @@ export function BulkTransactionActions({
     const name = rawName.trim();
     if (!name) return;
     await exclusive(async () => {
+      // Read first, create after: a failed read must leave nothing behind, so a tag that does
+      // not exist yet is only minted once the fresh tag sets are in hand.
+      //
+      // Merge against FRESH tag sets: selection snapshots can be stale for rows that
+      // were never re-registered as visible (whole-inbox select-all), and set_tags
+      // REPLACES the set — a stale merge would silently drop tags added since the
+      // snapshot (adversarial review of 4d8.25.16). If the fresh read fails there is
+      // nothing safe to merge into, so stop and write nothing rather than fall back to
+      // the snapshot.
+      let freshTagsById: Map<string, string[]>;
+      try {
+        const fresh = await commands.transactionRowsByIds(
+          selected.map((t) => t.transaction_id),
+        );
+        if (fresh.status !== "ok") throw new Error("read refused");
+        freshTagsById = new Map(fresh.data.map((t) => [t.transaction_id, t.tag_ids]));
+      } catch {
+        // The typed name stays in the box, so Try again does not mean retyping it.
+        setNote("Couldn’t read the current tags, so nothing was changed. Try again.");
+        return;
+      }
       const existing = activeTags.find(
         (t) => t.name.toLowerCase() === name.toLowerCase(),
       );
@@ -110,23 +131,6 @@ export function BulkTransactionActions({
         tagId = created;
       }
       setTagDraft("");
-      // Merge against FRESH tag sets: selection snapshots can be stale for rows that
-      // were never re-registered as visible (whole-inbox select-all), and set_tags
-      // REPLACES the set — a stale merge would silently drop tags added since the
-      // snapshot (adversarial review of 4d8.25.16). If the fresh read fails there is
-      // nothing safe to merge into, so stop and write nothing rather than fall back to
-      // the snapshot.
-      let freshTagsById: Map<string, string[]>;
-      try {
-        const fresh = await commands.transactionRowsByIds(
-          selected.map((t) => t.transaction_id),
-        );
-        if (fresh.status !== "ok") throw new Error("read refused");
-        freshTagsById = new Map(fresh.data.map((t) => [t.transaction_id, t.tag_ids]));
-      } catch {
-        setNote("Couldn’t read the current tags, so nothing was changed. Try again.");
-        return;
-      }
       await runBatch(
         (t) => {
           const current = freshTagsById.get(t.transaction_id);
