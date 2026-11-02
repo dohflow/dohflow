@@ -21,10 +21,11 @@
 //!   the commit, is decided at the commit: before it, nothing is written; after it, the job stays
 //!   succeeded (personal-cfo-pxi.25).
 //! * A crash between the commit and the terminal write, with NO cancel request pending, recovers to
-//!   a truthful outcome and the re-run imports nothing twice. **With a cancel request also pending,
-//!   recovery still records the job as cancelled although the batch is imported**, and a failure
-//!   after the writes began, with a cancel pending, can be recorded as cancelled too: both need the
-//!   durable commit marker of personal-cfo-g3m.31 and are the `#[ignore]`d cases of that bead below.
+//!   a truthful outcome and the re-run imports nothing twice. With a cancel request also pending,
+//!   recovery reads the durable commit marker (personal-cfo-g3m.31): a job whose batch is imported,
+//!   or whose bundle and receipt exist, is recorded as succeeded, never cancelled. The same marker
+//!   keeps a failure after the writes began, with a cancel pending, recorded as failed
+//!   (`crates/db-worker/tests/durable_jobs.rs` runs that against the real store).
 //! * The terminal state is durable: after the vault is closed and reopened the job is still
 //!   cancelled and is not claimed again.
 //! * Queued cancels are terminal at once and their P99 is under the 500 ms SLA (live: one indexed
@@ -566,13 +567,11 @@ impl JobHandler<Kernel> for CrashesAfterTheExportWithACancelPending {
     }
 }
 
-/// Known gap, personal-cfo-g3m.31 (the same case as the connector refresh's, for the backup): a crash
-/// after the bundle and its receipt exist, WITH a cancel request pending. Recovery terminalizes any
-/// running row that has a cancel request as `Cancelled`, because nothing durable says the export
-/// completed. The correct outcome (what this asserts) is that a job whose bundle and receipt exist is not
-/// recorded as cancelled; g3m.31's durable commit marker delivers it and un-ignores this case.
+/// personal-cfo-g3m.31 (the same case as the connector refresh's, for the backup): a crash after the
+/// bundle and its receipt exist, WITH a cancel request pending. The receipt's transaction carries the
+/// job's commit marker, so recovery records a success instead of `Cancelled`, and the next run is not
+/// due again.
 #[test]
-#[ignore = "personal-cfo-g3m.31: needs the durable commit marker; today recovery records this job as cancelled with its bundle and receipt in place"]
 fn a_crash_after_the_backup_completed_with_a_cancel_pending_is_not_recorded_as_cancelled() {
     let BackupFixture {
         dir,
@@ -623,6 +622,177 @@ fn a_crash_after_the_backup_completed_with_a_cancel_pending_is_not_recorded_as_c
         JobState::Cancelled,
         "recovery recorded a cancelled job whose bundle and receipt exist"
     );
+}
+
+/// A handler for the real backup kind whose export records a FAILED receipt (the destination cannot be
+/// written), and whose cancel request lands before the job's outcome is written.
+struct FailsAndThenACancelArrives;
+
+impl JobHandler<Kernel> for FailsAndThenACancelArrives {
+    fn kind(&self) -> &'static str {
+        BACKUP_JOB_KIND
+    }
+
+    fn should_run(&self, job: &JobRecord, _context: &Kernel) -> bool {
+        job.id == BACKUP_JOB_ID
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        kernel: &Kernel,
+    ) -> JobExecution {
+        let execution = backup_job_execution_observed(job, cancellation, kernel, &|| {});
+        assert!(kernel.cancel_job(BACKUP_JOB_ID).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancellation.is_cancelled() {
+            assert!(
+                Instant::now() < deadline,
+                "the watcher never raised the token"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        execution
+    }
+}
+
+/// personal-cfo-g3m.31, case (b) for the backup kind: the export wrote its failed receipt (the
+/// receipt carries the job's commit marker), and a cancel request lands before the outcome. The
+/// failure is the truth: the job is recorded as failed, not cancelled.
+#[cfg(unix)]
+#[test]
+fn a_backup_that_failed_after_its_receipt_with_a_cancel_pending_is_recorded_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = backup_fixture();
+    // The destination cannot be written, so the export ends in a failure receipt.
+    fs::set_permissions(&fixture.destination, fs::Permissions::from_mode(0o555)).unwrap();
+    let dispatcher = JobDispatcher::<Kernel>::new();
+    dispatcher
+        .register(Arc::new(FailsAndThenACancelArrives))
+        .unwrap();
+    {
+        let guard = fixture.state.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        let report = run_due(kernel, &dispatcher, "fails-then-cancel");
+
+        assert_eq!((report.failed, report.cancelled), (1, 0), "{report:?}");
+        let row = kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap();
+        assert_eq!(
+            row.last_outcome,
+            Some(finance_kernel::JobOutcome::Failed),
+            "recorded as the failure it was"
+        );
+        assert_ne!(row.state, JobState::Cancelled);
+        let history = kernel.backup_history().unwrap();
+        assert_eq!(history.len(), 1, "the failed attempt has its receipt");
+        assert!(!history[0].verified);
+        assert!(
+            !kernel.job_cancellation_requested(BACKUP_JOB_ID).unwrap(),
+            "the late request is cleared, not left pending"
+        );
+    }
+    fs::set_permissions(&fixture.destination, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A handler for the real backup kind whose export records a FAILED receipt (the destination cannot be
+/// written) and whose process then dies before the failure is recorded, with a cancel request pending.
+struct CrashesAfterAFailedReceiptWithACancelPending;
+
+impl JobHandler<Kernel> for CrashesAfterAFailedReceiptWithACancelPending {
+    fn kind(&self) -> &'static str {
+        BACKUP_JOB_KIND
+    }
+
+    fn should_run(&self, job: &JobRecord, _context: &Kernel) -> bool {
+        job.id == BACKUP_JOB_ID
+    }
+
+    fn execute(
+        &self,
+        job: &JobRecord,
+        cancellation: &CancellationToken,
+        kernel: &Kernel,
+    ) -> JobExecution {
+        let execution = backup_job_execution_observed(job, cancellation, kernel, &|| {});
+        assert!(matches!(execution, JobExecution::Failed(_)));
+        assert!(kernel.cancel_job(BACKUP_JOB_ID).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancellation.is_cancelled() {
+            assert!(
+                Instant::now() < deadline,
+                "the watcher never raised the token"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        panic!("the process died here");
+    }
+}
+
+/// personal-cfo-g3m.31: a FAILED scheduled backup whose process dies before the failure is recorded, with
+/// a cancel pending. The failed receipt carries a 'failed' marker and the job's failure text, so recovery
+/// records the failure: never succeeded, never cancelled, and it reaches the Money Inbox.
+#[cfg(unix)]
+#[test]
+fn a_crash_after_a_failed_backup_receipt_with_a_cancel_pending_recovers_as_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let BackupFixture {
+        dir,
+        destination,
+        state,
+    } = backup_fixture();
+    let path = dir.path().join("vault.db");
+    // The destination cannot be written, so the export ends in a failure receipt.
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o555)).unwrap();
+    {
+        let dispatcher = JobDispatcher::<Kernel>::new();
+        dispatcher
+            .register(Arc::new(CrashesAfterAFailedReceiptWithACancelPending))
+            .unwrap();
+        let guard = state.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        let crashed = catch_unwind(AssertUnwindSafe(|| {
+            run_due(kernel, &dispatcher, "crashes-failed-receipt")
+        }));
+        assert!(crashed.is_err(), "the handler panicked");
+        assert_eq!(
+            kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap().state,
+            JobState::Running
+        );
+        let history = kernel.backup_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].verified, "the failed attempt has its receipt");
+    }
+    drop(state);
+
+    let reopened = AppState::new(VaultController::open(&path));
+    unlock_vault_impl(&reopened, PASSWORD.to_owned()).expect("unlock reopened vault");
+    {
+        let guard = reopened.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        run_due(
+            kernel,
+            reopened.job_dispatcher().as_ref(),
+            "recover-failed-receipt",
+        );
+        let row = kernel.durable_job(BACKUP_JOB_ID).unwrap().unwrap();
+        assert_eq!(row.state, JobState::Failed, "never succeeded or cancelled");
+        assert_eq!(row.last_outcome, Some(finance_kernel::JobOutcome::Failed));
+        assert_eq!(
+            row.last_error.as_deref(),
+            Some(finance_kernel::SCHEDULED_BACKUP_FAILURE_REASON)
+        );
+        assert!(!row.cancel_requested);
+        let item = kernel
+            .money_inbox_list()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.item_kind == "job_failure")
+            .expect("the failure is actionable in the Money Inbox");
+        assert!(item.payload_json.contains("Could not create or verify"));
+        assert!(!item.payload_json.contains(destination.to_str().unwrap()));
+    }
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 #[test]
@@ -849,6 +1019,11 @@ fn open_state() -> (TempDir, AppState) {
 
 /// Link a connection and map its checking account, as a user would. Returns the connection id.
 fn linked(state: &AppState) -> Uuid {
+    linked_with_account(state).0
+}
+
+/// [`linked`], and the id of the account its feed is mapped to.
+fn linked_with_account(state: &AppState) -> (Uuid, String) {
     let connection_id = connector_link_impl(
         state,
         healthy(),
@@ -883,12 +1058,12 @@ fn linked(state: &AppState) -> Uuid {
         ConnectorSetAccountLinkInput {
             connection_id: connection_id.clone(),
             external_id: "mock-acct-checking".to_owned(),
-            account_id: Some(account),
+            account_id: Some(account.clone()),
             allow_shared_feed: false,
         },
     )
     .expect("map");
-    Uuid::parse_str(&connection_id).unwrap()
+    (Uuid::parse_str(&connection_id).unwrap(), account)
 }
 
 fn job_state(state: &AppState, connection: Uuid) -> JobState {
@@ -1361,13 +1536,10 @@ fn job_cancel_pending(state: &AppState, connection: Uuid) -> bool {
         .unwrap()
 }
 
-/// Known gap, personal-cfo-g3m.31: a crash after the commit WITH a cancel request pending. Recovery
-/// terminalizes any running row that has a cancel request as `Cancelled`, although the batch is
-/// imported, because nothing durable says the commit happened. The correct outcome (what this
-/// asserts) is that the job is not recorded as cancelled once its rows are in; g3m.31's durable
-/// commit marker delivers it and un-ignores this case.
+/// personal-cfo-g3m.31: a crash after the commit WITH a cancel request pending. The import's first
+/// write carries the job's commit marker, so recovery records a success instead of `Cancelled`
+/// although the batch is imported.
 #[test]
-#[ignore = "personal-cfo-g3m.31: needs the durable commit marker; today recovery records this job as cancelled with the batch imported"]
 fn a_crash_after_the_commit_with_a_cancel_pending_is_not_recorded_as_cancelled() {
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join("vault.db");
@@ -1416,6 +1588,71 @@ fn a_crash_after_the_commit_with_a_cancel_pending_is_not_recorded_as_cancelled()
         JobState::Cancelled,
         "recovery recorded a cancelled job whose batch is imported"
     );
+}
+
+/// personal-cfo-g3m.31, case (b) for the connector kind. The refresh's first durable write is its
+/// source batch, dispatched with the job's commit marker (`ingest_sync_batch_for_job`); the rest of the
+/// commit section can then fail inside DohFlow (the later writes are separate transactions) and a cancel
+/// request can land before the outcome. This drives the kind's real claim, its marked first write and
+/// its real finish path with an internal failure: the job is recorded as failed, not cancelled. Without
+/// the marker the same sequence is still `Cancelled` (the last assertion).
+#[test]
+fn a_refresh_that_failed_after_its_first_write_with_a_cancel_pending_is_recorded_failed() {
+    use finance_kernel::{
+        ActorType, CommandEnvelope, CommandMeta, CreateSourceBatch, JobFailure, SourceBatchId,
+    };
+    for (marked, expected) in [(true, JobState::Queued), (false, JobState::Cancelled)] {
+        let (_dir, app) = open_state();
+        let connection = linked(&app);
+        let job_id = refresh_job_id(connection);
+        let clock = FixedClock(Utc::now());
+        let guard = app.lock_controller().unwrap();
+        let kernel = guard.kernel().unwrap();
+        let (claimed, _) = kernel
+            .claim_due_jobs_of_kind(CONNECTOR_REFRESH_JOB_KIND, clock.now(), "w", &clock)
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        if marked {
+            let create = CreateSourceBatch::new(
+                SourceBatchId::new(),
+                "other".to_owned(),
+                Some("Other sync".to_owned()),
+                None,
+                Some("1.0.0".to_owned()),
+            )
+            .with_connector_connection(connection);
+            let meta = CommandMeta {
+                command_id: Uuid::now_v7(),
+                correlation_id: Uuid::now_v7(),
+                causation_id: None,
+                actor_type: ActorType::User,
+                actor_id: "tester".to_owned(),
+                idempotency_key: Uuid::new_v4().to_string(),
+                issued_at: finance_kernel::IssuedAt::now(),
+            };
+            kernel
+                .dispatch_marking_job(CommandEnvelope::new(meta, create), job_id)
+                .unwrap();
+        }
+        assert!(kernel.cancel_job(job_id).unwrap(), "the cancel is accepted");
+        let report = kernel
+            .finish_claimed_job(
+                &claimed[0],
+                JobExecution::Failed(JobFailure::retryable("the refresh could not be saved")),
+                &clock,
+            )
+            .unwrap();
+        let row = kernel.durable_job(job_id).unwrap().unwrap();
+        assert_eq!(row.state, expected, "marker set: {marked}; {report:?}");
+        if marked {
+            assert_eq!(
+                row.last_outcome,
+                Some(finance_kernel::JobOutcome::Failed),
+                "recorded as the failure it was"
+            );
+            assert_eq!((report.failed, report.cancelled), (1, 0));
+        }
+    }
 }
 
 /// A crash between the commit and the terminal write leaves the job `running`. Recovery requeues
