@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 
 import type { ForecastDayDto } from "@/bindings";
 import {
@@ -15,7 +17,9 @@ import {
   formatSignedMoney,
   signedAmountClass,
 } from "@/lib/format";
+import { todayInTimezone } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { classifyCashFlow } from "./cashFlowState";
 import { MultiSeriesChart } from "./MultiSeriesChart";
 import { SeriesPicker } from "./SeriesPicker";
@@ -33,6 +37,8 @@ import { ScenarioBar } from "./ScenarioBar";
 import { ScenarioLayers } from "./ScenarioLayers";
 import { ScenarioStack } from "./ScenarioStack";
 import { ScenarioEvents } from "./ScenarioEvents";
+import { isInForecast } from "./scenarioEligibility";
+import { useScenarios } from "./useScenarios";
 import {
   DEFAULT_FUTURE_CASH_HORIZON,
   FUTURE_CASH_HORIZONS,
@@ -76,19 +82,42 @@ export function FutureCashView({
   // it); these compose over it. Order is the precedence (ADR 0059 §1), and a later entry
   // wins a conflict — which is why the stack is rendered in order rather than as a set.
   const [stackedIds, setStackedIds] = useState<string[]>([]);
-  const selection = scenarioId === null ? [] : [scenarioId, ...stackedIds];
+  // The stack the forecast actually includes. A stacked scenario archived, deleted or
+  // expired since it was picked is dropped by the backend (ADR 0051), so it is dropped here
+  // too: otherwise the readout would list a change the forecast does not have. Pruned in the
+  // render (not only by the effect below) so the first forecast read after the change
+  // already omits it.
+  const { scenarios } = useScenarios();
+  const { timezone } = useHouseholdTimezone();
+  const today = todayInTimezone(timezone);
+  const liveStacked =
+    scenarios === null
+      ? stackedIds
+      : stackedIds.filter((id) => {
+          const scenario = scenarios.find((s) => s.id === id);
+          return scenario !== undefined && isInForecast(scenario, today);
+        });
+  useEffect(() => {
+    if (liveStacked.length !== stackedIds.length) setStackedIds(liveStacked);
+  }, [liveStacked, stackedIds.length]);
+  const selection = scenarioId === null ? [] : [scenarioId, ...liveStacked];
   // Always load the base; load the scenario when one is selected (same key as
   // base when `null`, so TanStack dedups). The compare delta reads both. The
   // aggregate drives the stat cards + compare; the per-account/per-group
   // projection (personal-cfo-l8oh) drives the multi-series chart + table.
   const base = useFutureCash(horizon, []);
   const scenarioForecast = useFutureCash(horizon, selection);
-  const { forecast, error } = scenarioId ? scenarioForecast : base;
+  const { forecast, error, retry, retrying } = scenarioId ? scenarioForecast : base;
   const baseProjection = useFutureCashByAccount(horizon, []);
   const scenarioProjection = useFutureCashByAccount(horizon, selection);
   const { selection: seriesSelection, setSelection: setSeriesSelection } =
     useFutureCashSeries();
-  const { projection } = scenarioId ? scenarioProjection : baseProjection;
+  const {
+    projection,
+    error: projectionError,
+    retry: retryProjection,
+    retrying: retryingProjection,
+  } = scenarioId ? scenarioProjection : baseProjection;
   // The realized past behind the projection (4d8.27.5.3). Lookback 0 = off.
   const { history } = useCashFlowHistory(lookback);
   const historyAccounts = lookback > 0 ? (history?.accounts ?? null) : null;
@@ -113,8 +142,17 @@ export function FutureCashView({
             "restore from backup". */}
         <p role="alert" className="text-sm text-loss">
           Couldn&apos;t build your projection. Your vault is readable — this forecast
-          failed to compute, so your accounts and transactions are unaffected. ({error})
+          failed to compute, so your accounts and transactions are unaffected. {error}
         </p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-3"
+          onClick={retry}
+          disabled={retrying}
+        >
+          {retrying ? "Retrying…" : "Retry"}
+        </Button>
       </div>
     );
   }
@@ -192,12 +230,12 @@ export function FutureCashView({
                 what that order does. Chips first: picking the stack precedes reading it. */}
             <ScenarioStack
               primaryId={scenarioId}
-              stacked={stackedIds}
+              stacked={liveStacked}
               onChange={setStackedIds}
             />
             <ScenarioLayers
               primaryId={scenarioId}
-              stacked={stackedIds}
+              stacked={liveStacked}
               onReorder={setStackedIds}
             />
           </>
@@ -274,6 +312,12 @@ export function FutureCashView({
                 history={historyAccounts}
                 todayIso={projection.start_date}
               />
+            ) : projectionError ? (
+              <ProjectionFailed
+                reason={projectionError}
+                onRetry={retryProjection}
+                retrying={retryingProjection}
+              />
             ) : (
               <ProjectionLoading />
             )}
@@ -311,6 +355,8 @@ export function FutureCashView({
               ) : (
                 <ProjectedActivityTable projection={projection} />
               )
+            ) : projectionError ? (
+              <ProjectionFailed reason={projectionError} compact />
             ) : (
               <ProjectionLoading />
             )}
@@ -355,6 +401,42 @@ function NotEnoughToProject({
     <div className="flex flex-col items-center gap-1.5 py-12 text-center">
       <p className="text-sm font-medium text-foreground">{headline}</p>
       <p className="max-w-md text-sm text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+/// The per-account breakdown failed to load. Its chart, the activity table and Cover it all
+/// depend on it, so this says so and offers a read again rather than a spinner that never
+/// ends. The activity table's slot repeats the fact only (`compact`), as for
+/// [`NotEnoughToProject`].
+function ProjectionFailed({
+  reason,
+  onRetry,
+  retrying = false,
+  compact = false,
+}: {
+  reason: string;
+  onRetry?: () => void;
+  retrying?: boolean;
+  compact?: boolean;
+}) {
+  if (compact) {
+    return (
+      <p role="alert" className="px-6 pb-6 text-sm text-loss">
+        {reason}
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col items-center gap-2 py-10 text-center">
+      <p role="alert" className="text-sm text-loss">
+        {reason}
+      </p>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
+          {retrying ? "Retrying…" : "Retry"}
+        </Button>
+      )}
     </div>
   );
 }

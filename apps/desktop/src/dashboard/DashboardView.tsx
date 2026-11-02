@@ -24,6 +24,7 @@ import {
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/PageHeader";
+import { Button } from "@/components/ui/button";
 import { FutureCashChart } from "@/future-cash/FutureCashChart";
 import { SafeToSpendCard } from "./SafeToSpendCard";
 import { ReadinessCard } from "./ReadinessCard";
@@ -52,14 +53,17 @@ export function DashboardView({
 }: {
   onOpenCashFlow?: () => void;
 } = {}) {
-  const { forecast, error } = useDashboard();
+  const { forecast, error, retry, retrying } = useDashboard();
 
   if (error) {
     return (
-      <div className="mx-auto w-full max-w-4xl">
+      <div className="mx-auto flex w-full max-w-4xl flex-col items-start gap-3">
         <p role="alert" className="text-sm text-loss">
           {error}
         </p>
+        <Button variant="outline" size="sm" onClick={retry} disabled={retrying}>
+          {retrying ? "Retrying…" : "Retry"}
+        </Button>
       </div>
     );
   }

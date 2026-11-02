@@ -1,5 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/query";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type {
@@ -11,6 +13,7 @@ import type {
 import { FutureCashView } from "./FutureCashView";
 
 const mocks = vi.hoisted(() => ({
+  householdTimezone: vi.fn(),
   futureCashForecast: vi.fn(),
   futureCashByAccount: vi.fn(),
   manualFutureEntryList: vi.fn(),
@@ -29,6 +32,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/bindings", () => ({
   commands: {
+    householdTimezone: mocks.householdTimezone,
     futureCashForecast: mocks.futureCashForecast,
     futureCashByAccount: mocks.futureCashByAccount,
     cashFlowHistory: mocks.cashFlowHistory,
@@ -129,6 +133,8 @@ function multiSeries(
 }
 
 beforeEach(() => {
+  mocks.householdTimezone.mockReset();
+  mocks.householdTimezone.mockResolvedValue(ok("UTC"));
   mocks.loanDoubleCountWarnings.mockReset();
   mocks.loanDoubleCountWarnings.mockResolvedValue(ok([]));
   mocks.futureCashForecast.mockReset();
@@ -454,3 +460,75 @@ test("Cash Flow shows no overlap card when there is none", async () => {
   expect(screen.queryByRole("region", { name: /loan payment/i })).toBeNull();
 });
 
+
+describe("failed reads can be asked for again, and say so (5ie.18)", () => {
+  it("offers Retry on a failed forecast, and a successful read replaces the error", async () => {
+    mocks.futureCashForecast.mockResolvedValueOnce({ status: "error", error: "engine timed out" });
+    mocks.futureCashForecast.mockResolvedValue(ok(forecast()));
+    renderWithClient(<FutureCashView />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/engine timed out/i);
+    const reads = mocks.futureCashForecast.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("figure", { name: /projected liquid cash/i });
+    expect(mocks.futureCashForecast.mock.calls.length).toBeGreaterThan(reads);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("shows a failed breakdown as an error with Retry, never endless Loading", async () => {
+    mocks.futureCashByAccount.mockResolvedValueOnce({ status: "error", error: "breakdown broke" });
+    mocks.futureCashByAccount.mockResolvedValue(ok(multiSeries()));
+    renderWithClient(<FutureCashView />);
+    // The aggregate loaded, so the headline cards are there; the breakdown sections say why not.
+    const alerts = await screen.findAllByText(/breakdown broke/i);
+    expect(alerts.length).toBeGreaterThan(0);
+    expect(screen.queryByText(/^Loading…$/)).toBeNull();
+    expect(screen.queryByText(/projected to reach about/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("figure", { name: /projected liquid cash/i });
+    expect(screen.queryByText(/breakdown broke/i)).toBeNull();
+  });
+});
+
+describe("the stack only lists what the forecast includes (5ie.18)", () => {
+  const dto = (id: string, name: string, extra: object = {}) => ({
+    id,
+    name,
+    description: null,
+    status: "draft",
+    created_at: "2026-06-20T00:00:00Z",
+    updated_at: "2026-06-20T00:00:00Z",
+    expires_on: null,
+    event_count: 0,
+    applied_at: null,
+    ...extra,
+  });
+
+  it("drops a stacked scenario that was archived, one that expired, and one that was deleted", async () => {
+    const live = [dto("p", "Primary"), dto("a", "Archived later"), dto("e", "Expires later"), dto("d", "Deleted later")];
+    mocks.scenarioList.mockResolvedValue(ok(live));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<FutureCashView scenarioId="p" onScenarioChange={vi.fn()} />, client);
+
+    for (const name of ["Archived later", "Expires later", "Deleted later"]) {
+      const picker = await screen.findByLabelText("Add a scenario to the stack");
+      await within(picker).findByRole("option", { name });
+      fireEvent.change(picker, { target: { value: live.find((s) => s.name === name)!.id } });
+    }
+    await waitFor(() =>
+      expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p", "a", "e", "d"]),
+    );
+
+    // Changed elsewhere (the Scenarios tab): archived, expired, deleted.
+    client.setQueryData(queryKeys.scenarios, [
+      dto("p", "Primary"),
+      dto("a", "Archived later", { status: "archived" }),
+      dto("e", "Expires later", { expires_on: "2001-01-01" }),
+    ]);
+
+    await waitFor(() =>
+      expect(mocks.futureCashForecast).toHaveBeenLastCalledWith(90, ["p"]),
+    );
+    expect(screen.queryByRole("button", { name: /Remove .* from the stack/ })).toBeNull();
+  });
+});

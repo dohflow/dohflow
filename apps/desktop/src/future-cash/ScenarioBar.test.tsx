@@ -3,9 +3,11 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { ScenarioDto } from "@/bindings";
+import { todayInTimezone } from "@/lib/format";
 import { ScenarioBar } from "./ScenarioBar";
 
 const mocks = vi.hoisted(() => ({
+  householdTimezone: vi.fn(),
   scenarioList: vi.fn(),
   createScenario: vi.fn(),
   updateScenario: vi.fn(),
@@ -14,6 +16,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/bindings", () => ({ commands: mocks }));
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
+// Two zones 26 hours apart, so their calendar dates always differ. A scenario that expires
+// on one zone's "today" is expired for the other, whatever the machine running the test
+// thinks the date is: that is how these tests tell the household date from the device's.
+const AHEAD = "Pacific/Kiritimati";
+const BEHIND = "Etc/GMT+12";
+
 const scenario = (id: string, name: string, status = "draft"): ScenarioDto => ({
   id,
   name,
@@ -28,6 +36,7 @@ const scenario = (id: string, name: string, status = "draft"): ScenarioDto => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.householdTimezone.mockResolvedValue(ok("UTC"));
   mocks.scenarioList.mockResolvedValue(ok([scenario("s1", "Raise", "draft")]));
   mocks.createScenario.mockResolvedValue(ok(scenario("s2", "Big move")));
   mocks.updateScenario.mockResolvedValue(ok(scenario("s1", "Raise + rent", "active")));
@@ -91,4 +100,21 @@ test("rejects an empty rename", async () => {
 
   expect(await screen.findByRole("alert")).toHaveTextContent(/name your scenario/i);
   expect(mocks.updateScenario).not.toHaveBeenCalled();
+});
+
+test("a scenario is expired by the household date, not the device's (g3m 5ie.18)", async () => {
+  // Expires on the date it is in BEHIND right now: still live there, expired in AHEAD.
+  const expiresOn = todayInTimezone(BEHIND);
+  mocks.scenarioList.mockResolvedValue(
+    ok([{ ...scenario("s1", "Raise"), expires_on: expiresOn }, scenario("s2", "Move")]),
+  );
+  mocks.householdTimezone.mockResolvedValue(ok(AHEAD));
+  const { unmount } = renderWithClient(<ScenarioBar selectedId={null} onSelect={vi.fn()} />);
+  await screen.findByRole("option", { name: "Move" });
+  await waitFor(() => expect(screen.queryByRole("option", { name: "Raise" })).toBeNull());
+  unmount();
+
+  mocks.householdTimezone.mockResolvedValue(ok(BEHIND));
+  renderWithClient(<ScenarioBar selectedId={null} onSelect={vi.fn()} />);
+  expect(await screen.findByRole("option", { name: "Raise" })).toBeInTheDocument();
 });

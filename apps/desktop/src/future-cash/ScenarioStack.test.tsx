@@ -1,13 +1,20 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 
+import { todayInTimezone } from "@/lib/format";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import { ScenarioStack } from "./ScenarioStack";
 
-const mocks = vi.hoisted(() => ({ scenarioList: vi.fn() }));
+const mocks = vi.hoisted(() => ({ scenarioList: vi.fn(), householdTimezone: vi.fn() }));
 vi.mock("@/bindings", () => ({ commands: mocks }));
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
+// Two zones 26 hours apart, so their calendar dates always differ. A scenario that expires
+// on one zone's "today" is expired for the other, whatever the machine running the test
+// thinks the date is: that is how these tests tell the household date from the device's.
+const AHEAD = "Pacific/Kiritimati";
+const BEHIND = "Etc/GMT+12";
+
 
 const scenario = (id: string, name: string, status = "draft") => ({
   id,
@@ -23,6 +30,7 @@ const scenario = (id: string, name: string, status = "draft") => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.householdTimezone.mockResolvedValue(ok("UTC"));
   mocks.scenarioList.mockResolvedValue(
     ok([
       scenario("a", "Rent hike"),
@@ -116,5 +124,34 @@ describe("ScenarioStack (personal-cfo-4d8.27.6.4, ADR 0059)", () => {
     );
     await vi.waitFor(() => expect(mocks.scenarioList).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("which scenarios can be stacked (5ie.18)", () => {
+  it("leaves out an expired one, by the household date", async () => {
+    // Expires on the date it is in BEHIND right now: live there, expired in AHEAD.
+    const expiresOn = todayInTimezone(BEHIND);
+    mocks.scenarioList.mockResolvedValue(
+      ok([
+        scenario("a", "Rent hike"),
+        { ...scenario("late", "Lapsed plan"), expires_on: expiresOn },
+        { ...scenario("long", "Long gone"), expires_on: "2001-01-01" },
+        scenario("b", "Pay rise"),
+      ]),
+    );
+    mocks.householdTimezone.mockResolvedValue(ok(AHEAD));
+    const { unmount } = renderWithClient(
+      <ScenarioStack primaryId="a" stacked={[]} onChange={vi.fn()} />,
+    );
+    await screen.findByRole("option", { name: "Pay rise" });
+    // The household zone arrives after the first paint, so wait for it to apply.
+    await waitFor(() => expect(screen.queryByRole("option", { name: "Lapsed plan" })).toBeNull());
+    expect(screen.queryByRole("option", { name: "Long gone" })).toBeNull();
+    unmount();
+
+    mocks.householdTimezone.mockResolvedValue(ok(BEHIND));
+    renderWithClient(<ScenarioStack primaryId="a" stacked={[]} onChange={vi.fn()} />);
+    expect(await screen.findByRole("option", { name: "Lapsed plan" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Long gone" })).toBeNull();
   });
 });

@@ -4,20 +4,11 @@ import { Archive, FolderPlus, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { todayInTimezone } from "@/lib/format";
+import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
+import { isExpired } from "./scenarioEligibility";
 import { SCENARIO_NAME_MAX, useScenarios } from "./useScenarios";
-
-/// Whether a scenario has passed its expiry — mirrors the backend gate, which compares
-/// `expires_on` against the household-local date (ADR 0051 §3).
-function isExpired(scenario: { expires_on: string | null }): boolean {
-  if (scenario.expires_on === null) return false;
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return (
-    scenario.expires_on <
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
-  );
-}
 
 const STATUS_CLASS = "h-9 rounded-md border bg-background px-3 text-sm";
 
@@ -34,6 +25,10 @@ export function ScenarioBar({
   onSelect: (id: string | null) => void;
 }) {
   const { scenarios, error, addScenario, archiveScenario, updateScenario } = useScenarios();
+  // The backend gate compares `expires_on` against the HOUSEHOLD-local date (ADR 0051 §3),
+  // so the picker does too, not the device's calendar.
+  const { timezone } = useHouseholdTimezone();
+  const today = todayInTimezone(timezone);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -48,7 +43,7 @@ export function ScenarioBar({
   // scenario whose changes are silently not applied — the compare banner would read
   // "+$0.00" and look like the plan had no effect.
   const visible = (scenarios ?? []).filter(
-    (s) => s.status !== "archived" && !isExpired(s),
+    (s) => s.status !== "archived" && !isExpired(s, today),
   );
   const selected = visible.find((s) => s.id === selectedId) ?? null;
   // A selection that is no longer selectable (archived/expired/deleted elsewhere) falls

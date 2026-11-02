@@ -147,6 +147,31 @@ describe("ProjectedActivityTable", () => {
     expect(screen.getByText("Acme Corp")).toBeInTheDocument();
   });
 
+  it("names two accounts that share a name apart, in the picker and the column headers (5ie.18)", () => {
+    const base = projection();
+    const twin = {
+      ...base,
+      accounts: [
+        { ...base.accounts[0]!, account_id: "acc-1", name: "Savings", subtype: "checking" },
+        { ...base.accounts[0]!, account_id: "acc-2", name: "Savings", subtype: "savings" },
+      ],
+    };
+    renderWithClient(<ProjectedActivityTable projection={twin} />);
+    fireEvent.click(screen.getByRole("button", { name: /accounts/i }));
+    const picker = screen.getByRole("group", { name: "Account columns" });
+    const checking = within(picker).getByText("Savings · Checking");
+    const savings = within(picker).getByText("Savings · Savings");
+    // No truncation: the label wraps rather than being cut off.
+    expect(checking.className).not.toContain("truncate");
+    fireEvent.click(within(picker).getByLabelText("Savings · Checking"));
+    fireEvent.click(within(picker).getByLabelText("Savings · Savings"));
+    expect(savings).toBeInTheDocument();
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toContain("Savings · Checking");
+    expect(headers).toContain("Savings · Savings");
+    expect(headers).not.toContain("Savings");
+  });
+
   it("steps the running balance per row within a day (not the day-end total on every row)", () => {
     renderWithClient(<ProjectedActivityTable projection={sameDayProjection()} />);
     const rows = screen.getAllByRole("row").slice(1); // [Today, KP, KB]

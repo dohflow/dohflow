@@ -44,6 +44,10 @@ export function useFutureCash(
   return {
     forecast: query.data ?? null,
     error: query.error?.message ?? null,
+    /// Read again after a failure. The app-wide default is no auto-retry (kernel errors are
+    /// deterministic), so the person asks.
+    retry: () => void query.refetch(),
+    retrying: query.isFetching,
   };
 }
 
@@ -71,5 +75,7 @@ export function useFutureCashByAccount(
   return {
     projection: query.data ?? null,
     error: query.error?.message ?? null,
+    retry: () => void query.refetch(),
+    retrying: query.isFetching,
   };
 }
