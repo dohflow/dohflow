@@ -1,0 +1,1474 @@
+{
+  "cases": [
+    {
+      "description": "Five envelopes are accepted. A signs a void for position 3: it is appended as position 6, which becomes the head. The same record again is an exact retry: 200 with the original position. A pull then shows the five envelopes and the void by position.",
+      "name": "a_member_signed_void_is_appended_at_the_next_seq",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 200,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "after_seq": "0",
+          "credential": "A",
+          "expect": {
+            "entries": [
+              "envelope:1",
+              "envelope:2",
+              "envelope:3",
+              "envelope:4",
+              "envelope:5"
+            ],
+            "has_more": false,
+            "head_seq": "6",
+            "status": 200,
+            "voids": [
+              {
+                "position": "6",
+                "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+              }
+            ]
+          },
+          "limit": 500,
+          "op": "pullEnvelopes"
+        }
+      ]
+    },
+    {
+      "description": "B's credential carries a void that A signed, and A's credential carries one that B signed: the signer need not be the credential's device.",
+      "name": "any_member_may_send_and_any_member_may_sign",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "B",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "7",
+            "position": "7",
+            "status": 201,
+            "void_id": "8ba822b27a10e4004064d8a3b253719a8a53d3ffbd951b3896f7556b410bb7b6"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAExMTExMTExMTExMTExMTExNTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTUARAnl-4tCryfuhxQlryrpzmBrbOZcVl0e7l9PTadfE05AAZb_tol4ACKY_sTq-qTEjx2OzbSc6c239w4UiHVyaAcNP1j4vxpr1fZ5-UQUVPv7h6d0TurtPDCjua6CV47wv-tR1gKC_YD"
+        }
+      ]
+    },
+    {
+      "description": "A and B each sign a void for position 3, and A signs a second, different one (another issued_at). All three are kept at positions 6, 7 and 8; none is deduped as a second void for the same seq. A replay of the envelope at 3 returns every claim in append order.",
+      "name": "two_distinct_claims_for_one_position_are_both_kept",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "credential": "B",
+          "expect": {
+            "head_seq": "7",
+            "position": "7",
+            "status": 201,
+            "void_id": "c9d16b8f5708f1e5d072755c0d5a8d77eebcee8b1de9ef72b74817d926afa479"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTARAnl-4tCryfuhxQlryrpzmBrbOZcVl0e7l9PTadfE05AAZb_tol4AJNP0iWHaO2hTmMtRl1BlRKFVl5bFu3V-g-bPhwPD-iwosvTvj_HBVQ79jwbSksO8_wIOAY47cnjva1wP_OcZQM"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "8",
+            "position": "8",
+            "status": 201,
+            "void_id": "8e1656c531ae4488ffc3b8cf58bcc780e9a023a61a93a694c888de83dbb6e419"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AHNOqFy6zQugX3rq4W1_wMHQ9rTOAxeNHb1y4aZceHCvyfhIi1MBoSCLnRgfl8pNxz5lDo6HzkLKcB-3d_JDKQI"
+        },
+        {
+          "expect": {
+            "duplicate": true,
+            "seq": "3",
+            "status": 200,
+            "void_claims": [
+              "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657",
+              "c9d16b8f5708f1e5d072755c0d5a8d77eebcee8b1de9ef72b74817d926afa479",
+              "8e1656c531ae4488ffc3b8cf58bcc780e9a023a61a93a694c888de83dbb6e419"
+            ]
+          },
+          "op": "replayPush",
+          "seq": "3"
+        },
+        {
+          "expect": {
+            "duplicate": true,
+            "seq": "2",
+            "status": 200
+          },
+          "op": "replayPush",
+          "seq": "2"
+        },
+        {
+          "after_seq": "0",
+          "credential": "A",
+          "expect": {
+            "entries": [
+              "envelope:1",
+              "envelope:2",
+              "envelope:3",
+              "envelope:4",
+              "envelope:5"
+            ],
+            "has_more": false,
+            "head_seq": "8",
+            "status": 200,
+            "voids": [
+              {
+                "position": "6",
+                "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+              },
+              {
+                "position": "7",
+                "void_id": "c9d16b8f5708f1e5d072755c0d5a8d77eebcee8b1de9ef72b74817d926afa479"
+              },
+              {
+                "position": "8",
+                "void_id": "8e1656c531ae4488ffc3b8cf58bcc780e9a023a61a93a694c888de83dbb6e419"
+              }
+            ]
+          },
+          "limit": 500,
+          "op": "pullEnvelopes"
+        }
+      ]
+    },
+    {
+      "description": "A void for position 2 is appended; replicas decide whether it is honored, so the server must still accept a void for position 4, which that void's range would cover if it were honored, and one for position 1.",
+      "name": "an_earlier_void_never_blocks_a_later_one",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "ce2efa1982eda774f63f0bcdfd56d6a72a9642692097f7cf745bbb2983fa5625"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAACwsLCwsLCwsLCwsLCwsLCwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLSAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AD8xdvHT7cen2OEsPtPP-9HvCjRMnCIrM-f8oNSFPc6EratqG0VmQLS4tGtSz3d749Vd9YSFCYjs_AoBcXuL1QO"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "7",
+            "position": "7",
+            "status": 201,
+            "void_id": "a50d02ed0b3e4c203c3224483cb01ab5818d7461a0c7bf390f89eef677f68927"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAExMTExMTExMTExMTExMTExNTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTUAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AA4gaNoexHihy4AU_gcRHsxkuNeiK3nJFdHcnYjCCXyjsrR67Wt9KwGTQm0TwfC9pTdaJZSMm7dIb-wKoc63PoL"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "8",
+            "position": "8",
+            "status": 201,
+            "void_id": "f03794545d9b89b04033e729339ec49564ecf178993e1da18d3d036b7b135a0f"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwdHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHRAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AAuyATV6dQdGmE6oUnMYU2dznvUV_rwYQljA4MR0gVW6rh8mfOIDNRsPaAYH3zEF1ms5x8SmGWyVFvUMUl9bMoD"
+        }
+      ]
+    },
+    {
+      "description": "C is not in the chain. C's void is VoidSignerNotAuthorized (403) whoever carries it, the head does not move, and a pull has no voids member.",
+      "name": "a_signer_who_is_not_a_member_is_refused",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidSignerNotAuthorized",
+            "status": 403
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAYk-rlEF_SC6HG4H5IbNOhAIDB4yPUDkyq0U6DDpyhyZAAZb_tol4ACcnydChJtl0fDI3Lj8hXbDDUrRlpLrmVSqVcnVVvc7EEk07xMYTPPnotdvgWnutnlF6q4-Ye59R2by-8OJP6EA"
+        },
+        {
+          "after_seq": "0",
+          "credential": "A",
+          "expect": {
+            "entries": [
+              "envelope:1",
+              "envelope:2",
+              "envelope:3",
+              "envelope:4",
+              "envelope:5"
+            ],
+            "has_more": false,
+            "head_seq": "5",
+            "status": 200
+          },
+          "limit": 500,
+          "op": "pullEnvelopes"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        }
+      ]
+    },
+    {
+      "description": "One flipped signature bit is VoidSignatureInvalid (400).",
+      "name": "a_signature_that_does_not_verify_is_refused",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidSignatureInvalid",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sD"
+        }
+      ]
+    },
+    {
+      "description": "A void whose command id or envelope digest differs from the index's record, one for a position beyond the head, position 0, and one for a position a void occupies (not a command envelope) are VoidTargetMismatch (409).",
+      "name": "a_void_must_name_the_envelope_the_index_holds",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidTargetMismatch",
+            "status": 409
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADmZmZmZmZmZmZmZmZmZmZmdPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AAGKh21FbOm0rZEZdSxKo7rUM1YrXdR4736dyOBSxpLlAEhgdJhLV0rLWe8usPDMUcy5w-wgpC3r6aaarI9uPMN"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidTargetMismatch",
+            "status": 409
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw5mZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AA5e2zVa-Nzui2VkDaQd7xpXYDFKUJihxnPTsjljkGuKIbiVGysASe0_yE0I-nwU1zjKsg492UlwPFdNkwmNx8L"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidTargetMismatch",
+            "status": 409
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAJycnJycnJycnJycnJycnJydnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACFpy5C4BkYeFqHI-LxV75QTvGkgZtzRvleAp3PdEVTww9tAVml_7eXmYKFNJsNt-pjARBut_DsZjWw0csXWbcH"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidTargetMismatch",
+            "status": 409
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAAwMDAwMDAwMDAwMDAwMDAwNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACFzbQ8YJJpy18zNMbgWpg9evbMZZk4lglXidEA9ObM928A66G1r_DEqWgViLTpE8Y3tvAvvka7aRaTIUZSv_0N"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidTargetMismatch",
+            "status": 409
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAGxsbGxsbGxsbGxsbGxsbGxtbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbWAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACXWrOHLF3-HtJf5y9HquxcFTwTg0jGLriJvAUJPKDg_EStYgb3IeTv-IxBGmOasUxa_lx8OwTWc-_2YBB2JNAE"
+        }
+      ]
+    },
+    {
+      "description": "A truncated record, a protocol version other than 1 inside the body, and a void for another vault are MalformedObject (400); a suite other than 1 is UnsupportedSuite (400). Each is refused before its signer is looked at.",
+      "name": "a_record_that_cannot_be_parsed_is_refused",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "MalformedObject",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2s"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "MalformedObject",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAgABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACHFsX2k3lHdgoE-f4FjDm8GtVqXubJDk57wKTTBXZsMf1JztvTuoQbBRtTyYJJfUaD7XXU0Y1nonZjJsMgnPAO"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "MalformedObject",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABd3d3d3d3d3d3d3d3d3d3dwAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AD2OZoIT9FBrc0C3cLoxe7fRN6xj3T01tgb3ruGDnzB1gK3B2yyPEOcxrB2QehnwkVlx6yJnYU7Oz79YN0AW4QG"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "UnsupportedSuite",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQACAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ABi5SXco4YdPukG5GHj8Lmbh91T0QDgio-gfLoMy-bIplfNu_-k4xD491QmC_hX5UCTFguZ7jTpO6J8jYcSpzcC"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "UnsupportedSuite",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQACAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAYk-rlEF_SC6HG4H5IbNOhAIDB4yPUDkyq0U6DDpyhyZAAZb_tol4ACvzoPZam7xfmGiJ9q7tvFdukByigRdtnmBoDyUMUdLM1KiF15iviL0DPgbI_f01Q8o0BTwE5t_P-dhpXW8-xoM"
+        }
+      ]
+    },
+    {
+      "description": "The first failing step answers. A truncated record, a void for another vault and a suite other than 1 are answered even when writes are suspended (MalformedObject, UnsupportedSuite). An exact retry of an appended void is 200 even when writes are suspended; a new void then is WritesSuspended before its signer or its target is looked at; with writes allowed a non-member signer is answered before a mismatched target, a bad signature before a mismatched target, and a mismatched target before QuotaExceeded.",
+      "name": "the_decision_order_of_appendvoid",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "conditions": {
+            "writes_permitted": false
+          },
+          "credential": "A",
+          "expect": {
+            "error": "MalformedObject",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2s"
+        },
+        {
+          "conditions": {
+            "writes_permitted": false
+          },
+          "credential": "A",
+          "expect": {
+            "error": "MalformedObject",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABd3d3d3d3d3d3d3d3d3d3dwAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AD2OZoIT9FBrc0C3cLoxe7fRN6xj3T01tgb3ruGDnzB1gK3B2yyPEOcxrB2QehnwkVlx6yJnYU7Oz79YN0AW4QG"
+        },
+        {
+          "conditions": {
+            "writes_permitted": false
+          },
+          "credential": "A",
+          "expect": {
+            "error": "UnsupportedSuite",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQACAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ABi5SXco4YdPukG5GHj8Lmbh91T0QDgio-gfLoMy-bIplfNu_-k4xD491QmC_hX5UCTFguZ7jTpO6J8jYcSpzcC"
+        },
+        {
+          "conditions": {
+            "writes_permitted": false
+          },
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 200,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "conditions": {
+            "writes_permitted": false
+          },
+          "credential": "A",
+          "expect": {
+            "error": "WritesSuspended",
+            "status": 403
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAYk-rlEF_SC6HG4H5IbNOhAIDB4yPUDkyq0U6DDpyhyZAAZb_tol4ACcnydChJtl0fDI3Lj8hXbDDUrRlpLrmVSqVcnVVvc7EEk07xMYTPPnotdvgWnutnlF6q4-Ye59R2by-8OJP6EA"
+        },
+        {
+          "conditions": {
+            "writes_permitted": false
+          },
+          "credential": "A",
+          "expect": {
+            "error": "WritesSuspended",
+            "status": 403
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADmZmZmZmZmZmZmZmZmZmZmdPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AAGKh21FbOm0rZEZdSxKo7rUM1YrXdR4736dyOBSxpLlAEhgdJhLV0rLWe8usPDMUcy5w-wgpC3r6aaarI9uPMN"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidSignerNotAuthorized",
+            "status": 403
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADmZmZmZmZmZmZmZmZmZmZmdPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAYk-rlEF_SC6HG4H5IbNOhAIDB4yPUDkyq0U6DDpyhyZAAZb_tol4AAiUJOf-4t5YNtrxsJWFXMGkvNBJscNUAo6YDepY8Xnlq36GpSM_k7H7tgpZfNdGqSSv5wyAO0QHiIK0wpN7l4I"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "error": "VoidSignatureInvalid",
+            "status": 400
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADmZmZmZmZmZmZmZmZmZmZmdPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AAGKh21FbOm0rZEZdSxKo7rUM1YrXdR4736dyOBSxpLlAEhgdJhLV0rLWe8usPDMUcy5w-wgpC3r6aaarI9uPMM"
+        },
+        {
+          "conditions": {
+            "quota_exceeded": true
+          },
+          "credential": "A",
+          "expect": {
+            "error": "VoidTargetMismatch",
+            "status": 409
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADmZmZmZmZmZmZmZmZmZmZmdPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AAGKh21FbOm0rZEZdSxKo7rUM1YrXdR4736dyOBSxpLlAEhgdJhLV0rLWe8usPDMUcy5w-wgpC3r6aaarI9uPMN"
+        },
+        {
+          "conditions": {
+            "quota_exceeded": true
+          },
+          "credential": "A",
+          "expect": {
+            "error": "QuotaExceeded",
+            "status": 403
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAExMTExMTExMTExMTExMTExNTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTUAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AA4gaNoexHihy4AU_gcRHsxkuNeiK3nJFdHcnYjCCXyjsrR67Wt9KwGTQm0TwfC9pTdaJZSMm7dIb-wKoc63PoL"
+        },
+        {
+          "conditions": {
+            "quota_exceeded": true
+          },
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 200,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "7",
+            "position": "7",
+            "status": 201,
+            "void_id": "a50d02ed0b3e4c203c3224483cb01ab5818d7461a0c7bf390f89eef677f68927"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAExMTExMTExMTExMTExMTExNTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTUAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AA4gaNoexHihy4AU_gcRHsxkuNeiK3nJFdHcnYjCCXyjsrR67Wt9KwGTQm0TwfC9pTdaJZSMm7dIb-wKoc63PoL"
+        }
+      ]
+    },
+    {
+      "description": "Envelopes 1 and 2, a void at 3 (naming 2), envelopes 4 and 5, and an epoch entry at the head, then a void at 7 (naming 5). A full pull lists every position once: the epoch entry follows the log object whose seq is its position. The voids member is present only on pages that hold a void.",
+      "name": "voids_and_envelopes_share_one_sequence_in_pulls",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "3",
+            "position": "3",
+            "status": 201,
+            "void_id": "ce2efa1982eda774f63f0bcdfd56d6a72a9642692097f7cf745bbb2983fa5625"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAACwsLCwsLCwsLCwsLCwsLCwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLSAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4AD8xdvHT7cen2OEsPtPP-9HvCjRMnCIrM-f8oNSFPc6EratqG0VmQLS4tGtSz3d749Vd9YSFCYjs_AoBcXuL1QO"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "expect": {
+            "position": "5"
+          },
+          "op": "recordEpochEntry"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "2d261f35f45cb4bf1719121cb712c9b6c2d199cffabe6c7f9a5a9ad73b09ed2f"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAAFxcXFxcXFxcXFxcXFxcXFxdXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXVAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSjI3PJGoUT2Ts8nJoV2xQcNG2vgu7F1Yd7KjTejm0UL_xXwaWpPbb7FRRrFsh-hblSqhRO-gR9gVdGJ5EklAG"
+        },
+        {
+          "after_seq": "0",
+          "credential": "A",
+          "expect": {
+            "entries": [
+              "envelope:1",
+              "envelope:2",
+              "envelope:4",
+              "envelope:5",
+              "epoch:5"
+            ],
+            "has_more": false,
+            "head_seq": "6",
+            "status": 200,
+            "voids": [
+              {
+                "position": "3",
+                "void_id": "ce2efa1982eda774f63f0bcdfd56d6a72a9642692097f7cf745bbb2983fa5625"
+              },
+              {
+                "position": "6",
+                "void_id": "2d261f35f45cb4bf1719121cb712c9b6c2d199cffabe6c7f9a5a9ad73b09ed2f"
+              }
+            ]
+          },
+          "limit": 500,
+          "op": "pullEnvelopes"
+        }
+      ]
+    },
+    {
+      "description": "Envelopes 1 to 3 and a void at 4, in pages of three log objects. The second page has no envelope entry and carries the void with has_more false, so a client that stops on an empty entries list would lose it; the page before it says has_more true.",
+      "name": "a_page_can_hold_only_a_void",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "4",
+            "position": "4",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "after_seq": "0",
+          "credential": "A",
+          "expect": {
+            "entries": [
+              "envelope:1",
+              "envelope:2",
+              "envelope:3"
+            ],
+            "has_more": true,
+            "head_seq": "4",
+            "status": 200
+          },
+          "limit": 3,
+          "op": "pullEnvelopes"
+        },
+        {
+          "after_seq": "3",
+          "credential": "A",
+          "expect": {
+            "entries": [],
+            "has_more": false,
+            "head_seq": "4",
+            "status": 200,
+            "voids": [
+              {
+                "position": "4",
+                "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+              }
+            ]
+          },
+          "limit": 3,
+          "op": "pullEnvelopes"
+        }
+      ]
+    },
+    {
+      "description": "A reports a stop at 3. A's stageSnapshot, publishSnapshot and installEpoch are then ReplicaHalted (409) with the reported position; B's pass the gate, an account credential passes (it has no device), and A can still append a void, report again (the latest report wins) and pull. A reports null and A's requests pass the gate again.",
+      "name": "a_halt_is_reported_refused_and_cleared",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "gate": "pass"
+          },
+          "op": "stageSnapshot"
+        },
+        {
+          "credential": "A",
+          "device": "A",
+          "expect": {
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "status": 200,
+            "stopped_at": "3"
+          },
+          "op": "reportHalt",
+          "stopped_at": "3"
+        },
+        {
+          "credential": "A",
+          "device": "A",
+          "expect": {
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "status": 200,
+            "stopped_at": "3"
+          },
+          "op": "reportHalt",
+          "stopped_at": "3"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "details": {
+              "stopped_at": "3"
+            },
+            "error": "ReplicaHalted",
+            "status": 409
+          },
+          "op": "stageSnapshot"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "details": {
+              "stopped_at": "3"
+            },
+            "error": "ReplicaHalted",
+            "status": 409
+          },
+          "op": "publishSnapshot"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "details": {
+              "stopped_at": "3"
+            },
+            "error": "ReplicaHalted",
+            "status": 409
+          },
+          "op": "installEpoch"
+        },
+        {
+          "credential": "B",
+          "expect": {
+            "gate": "pass"
+          },
+          "op": "stageSnapshot"
+        },
+        {
+          "credential": "account",
+          "expect": {
+            "gate": "pass"
+          },
+          "op": "installEpoch"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "head_seq": "6",
+            "position": "6",
+            "status": 201,
+            "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+          },
+          "op": "appendVoid",
+          "record": "AAAAiwAUZG9oZmxvdy9zeW5jLXZvaWQvdjEAAQABAAAAAAAAQACAAAAAAAAA8AAAAAAAAAADw8PDw8PDw8PDw8PDw8PDw9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PTAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAZb_tol4ACSJ-SnInSbf1WpYX7FbMHe0rqVRtA9xc_5lKL3trxluYdqEa3loAA2ZV8aW643tEAYg_TY16ktA7wAPduXi2sC"
+        },
+        {
+          "credential": "A",
+          "device": "A",
+          "expect": {
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "status": 200,
+            "stopped_at": "4"
+          },
+          "op": "reportHalt",
+          "stopped_at": "4"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "details": {
+              "stopped_at": "4"
+            },
+            "error": "ReplicaHalted",
+            "status": 409
+          },
+          "op": "publishSnapshot"
+        },
+        {
+          "after_seq": "5",
+          "credential": "A",
+          "expect": {
+            "entries": [],
+            "has_more": false,
+            "head_seq": "6",
+            "status": 200,
+            "voids": [
+              {
+                "position": "6",
+                "void_id": "0d73883aafe3d557f1d580001af042ce6f7af15b75d4bc354d1a1463a211f657"
+              }
+            ]
+          },
+          "limit": 500,
+          "op": "pullEnvelopes"
+        },
+        {
+          "credential": "A",
+          "device": "A",
+          "expect": {
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "status": 200,
+            "stopped_at": null
+          },
+          "op": "reportHalt",
+          "stopped_at": null
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "gate": "pass"
+          },
+          "op": "stageSnapshot"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "gate": "pass"
+          },
+          "op": "publishSnapshot"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "gate": "pass"
+          },
+          "op": "installEpoch"
+        }
+      ]
+    },
+    {
+      "description": "B cannot report A's halt (Forbidden, 403) or clear it, and a refused report records nothing.",
+      "name": "a_device_reports_only_its_own_halt",
+      "steps": [
+        {
+          "command_id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "envelope_digest": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "expect": {
+            "seq": "1",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+          "envelope_digest": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+          "expect": {
+            "seq": "2",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "envelope_digest": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+          "expect": {
+            "seq": "3",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+          "envelope_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "expect": {
+            "seq": "4",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "command_id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+          "envelope_digest": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+          "expect": {
+            "seq": "5",
+            "status": 200
+          },
+          "op": "pushEnvelope"
+        },
+        {
+          "credential": "A",
+          "device": "A",
+          "expect": {
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "status": 200,
+            "stopped_at": "2"
+          },
+          "op": "reportHalt",
+          "stopped_at": "2"
+        },
+        {
+          "credential": "B",
+          "device": "A",
+          "expect": {
+            "error": "Forbidden",
+            "status": 403
+          },
+          "op": "reportHalt",
+          "stopped_at": null
+        },
+        {
+          "credential": "B",
+          "device": "A",
+          "expect": {
+            "error": "Forbidden",
+            "status": 403
+          },
+          "op": "reportHalt",
+          "stopped_at": "4"
+        },
+        {
+          "credential": "A",
+          "expect": {
+            "details": {
+              "stopped_at": "2"
+            },
+            "error": "ReplicaHalted",
+            "status": 409
+          },
+          "op": "stageSnapshot"
+        },
+        {
+          "credential": "B",
+          "expect": {
+            "gate": "pass"
+          },
+          "op": "stageSnapshot"
+        }
+      ]
+    }
+  ],
+  "chain": {
+    "devices": {
+      "A": {
+        "device_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "B": {
+        "device_id": "00000000-0000-4000-8000-000000000002"
+      },
+      "C": {
+        "device_id": "00000000-0000-4000-8000-000000000003"
+      }
+    },
+    "epoch_records": [
+      "AAABiwAcZG9oZmxvdy9zeW5jLWVwb2NoLXJlY29yZC92MQABAAEAIAAAAAAAAEAAgAAAAAAAAPAAAAAAAAAAAQE0OYC6dTrUPN8Gj2zhUDTyLbOh8iRJolBT5VFIEeqwaQABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC0TYMGf1LlAthH4K-7PnU4eOWzq1hI0wHEHy5wfa2-rQAAAABAAAAAAAAQACAAAAAAAAAAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAEAIAAAACDu7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7gAAAG3MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMNuMNk-_rQEFRNIFLMNAVdWZEtMLYJ8GdxjRX6E84-j5o9X1xj15WoARPw-I5E4DyHzaOa49dlJAh-deg4yysBg",
+      "AAABqwAcZG9oZmxvdy9zeW5jLWVwb2NoLXJlY29yZC92MQABAAEAIAAAAAAAAEAAgAAAAAAAAPAAAAAAAAAAAQP6RHjTunCo8mKcir4oto9TdpOVEUcs35V-vdb7dyPJkAHeaUj_N7K1YeJmjh1w_Y1__p2XzKnoVWoWy_wtBlg5HgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLRNgwZ_UuUC2Efgr7s-dTh45bOrWEjTAcQfLnB9rb6tAAAAAEAAAAAAABAAIAAAAAAAAACECeX7i0KvJ-6HFCWvKunOYGts5lxWXR7uX09Np18TTkAAQAgAAAAIO7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7uAAAAbczMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMxRQ-xs2Rhot20dNkbPNORPM9uSwmzUyo1j7_PcgTOhO2p7KCnQNfSQZLBVA5Hxo1rVMm2eu-mNGQ-Bk8cB-WEG"
+    ],
+    "membership_records": [
+      "AAAAuAAaZG9oZmxvdy9zeW5jLW1lbWJlcnNoaXAvdjEAAQABACAAAAAAAABAAIAAAAAAAADwAAAAAAAAAAEAAdE2DBn9S5QLYR-Cvuz51OHjls6tYSNMBxB8ucH2tvq0AAAAAAAAQACAAAAAAAAAAYqI4910CfGV_VLbLTy6XXLKZwm_HZQSG_N0iAG0D29cAAAAIDExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExAAZb_tol4AH6hfmcLyhP3XVxqh4G0QwuWY_bbIzOION3jFhR3-Mijaa3A_mEX01kJ_195aNqfbUS_lKA-E9OwwfomXPqg98P",
+      "AAAA2AAaZG9oZmxvdy9zeW5jLW1lbWJlcnNoaXAvdjEAAQABACAAAAAAAABAAIAAAAAAAADwAAAAAAAAAAIBNDmAunU61DzfBo9s4VA08i2zofIkSaJQU-VRSBHqsGkB0TYMGf1LlAthH4K-7PnU4eOWzq1hI0wHEHy5wfa2-rQAAAAAAABAAIAAAAAAAAACgTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5QAAAAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIABlv-2iXgAkPaqRgOmRnMPJMS-LqkMkXsZOzERaiJfCsCZAZ9uunAqaHkgt_Ncct4bvdcvI7JTElfPomsVa4fPevVWwqDDQo"
+    ],
+    "vault_id": "00000000-0000-4000-8000-0000000000f0"
+  },
+  "decision_order_of_appendvoid": [
+    "1 authenticate (not exercised: every credential here is valid)",
+    "2 parse: MalformedObject (framing, body, a protocol version other than 1, another vault), UnsupportedSuite",
+    "3 exact retry: a void with this void_id is in the log: 200 with its position",
+    "4 writes permitted: WritesSuspended",
+    "5 signer: VoidSignerNotAuthorized, then VoidSignatureInvalid (the verify_void of sync-core)",
+    "6 target: VoidTargetMismatch",
+    "7 quota: QuotaExceeded",
+    "8 append at position head + 1"
+  ],
+  "how_to_read": "Each case is a list of steps against ONE server that starts empty: a vault with the 'chain' below, head 0, no halts, writes permitted and no quota exceeded. A step may change those with 'conditions' (writes_permitted false, quota_exceeded true), for that step only. 'credential' names the device whose credential carries the request ('A', 'B', or 'account' for an account credential). 'pushEnvelope' stands for an accepted envelope: it appends an identity (command_id, envelope_digest) to the accepted-envelope index at head + 1, so cases need no sealed envelope. 'recordEpochEntry' stands for an installed epoch record at the current head (an epoch entry; it takes no seq). 'replayPush' is an exact replay of the envelope accepted at 'seq'. 'stageSnapshot', 'publishSnapshot' and 'installEpoch' stand for those requests arriving at the halt gate of section 4.12: the outcome is the gate's refusal, or {\"gate\": \"pass\"} when the request goes on to its own decision procedure. 'expect' is the outcome: a 'status' and the response members named, or 'error' for a non-2xx response, or 'details'. A pull's 'entries' lists the page's envelope and epoch entries as 'envelope:SEQ' and 'epoch:POSITION', and its 'voids' (absent when the page holds none) lists the voids by position and void id; a client merges them by seq. A 'void_id' is SHA-256 of the void body. In 'reportHalt', 'device' names the {device_id} in the path.",
+  "spec": "docs/architecture/sync-service-protocol.md 4.11, 4.12 and 11.2; ADR 0074 Addendum D and E; docs/architecture/vault-format.md C.10 \"Void records\"",
+  "synthetic": "Every value is synthetic. The chain, its keys and the signatures are made from fixed seeds that live only in the generator (crates/sync-core/tests/sync_service_void_vectors.rs); the file holds the signed records. Command ids and envelope digests are repeated bytes.",
+  "vectors_version": 1
+}

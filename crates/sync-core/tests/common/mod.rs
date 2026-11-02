@@ -120,6 +120,10 @@ pub struct Chain {
     pub e1: [u8; 32],
     /// The epoch record id that installs B (membership version 2).
     pub e2: [u8; 32],
+    /// The signed membership records, oldest first (the bytes `verify_chain` read).
+    pub membership_records: Vec<Vec<u8>>,
+    /// The signed epoch records, oldest first.
+    pub epoch_records: Vec<Vec<u8>>,
 }
 
 pub fn chain() -> Chain {
@@ -141,6 +145,8 @@ pub fn chain() -> Chain {
         state,
         e1: id_of(&e1_body),
         e2: id_of(&e2_body),
+        membership_records: vec![m1, m2],
+        epoch_records: vec![e1, e2],
     }
 }
 
