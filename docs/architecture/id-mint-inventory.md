@@ -41,7 +41,6 @@ deliberate row here, in the same change.
 | `lib.rs` | `stage_sync_batch` | 1 | keep-class-3 | Device-local import staging. |
 | `lib.rs` | `ensure_node_id` | 1 | keep-class-3 | The device's own node id. |
 | `lib.rs` | `ensure_vault_metadata` | 1 | keep-seeder | The vault id, minted once at creation (genesis). |
-| `merchant_identity.rs` | `create_identity` | 1 | keep-caller | Reached from a direct writer outside the bus (`lib.rs`), not from `apply`; `personal-cfo-5ymg8.5` routes it. |
 
 ## Derived mints (inside `apply` and its helpers)
 

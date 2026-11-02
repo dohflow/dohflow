@@ -388,6 +388,16 @@ as local.
 | `transaction_categorizations` | 1 | `merchant_memory.rs` is routed through the command bus by SYNC-2, eliminating the present split writer and preserving the user's category decision. |
 | `settings` keys under `user.*` | 1 | Household-level settings follow the user through the command bus. This explicitly reverses the direct `set_setting` convention at `lib.rs:2595`; `device.*` settings remain class 3. |
 
+*Routing note (2026-11-03, `personal-cfo-5ymg8.5`).* `merchant_aliases`, `merchant_identities` and
+`transaction_categorizations` are class 1 in the manifest now that no raw writer remains. The genesis
+seed writes the canonical merchants in the vault-creating transaction (seeds at creation only,
+Addendum "Seeds happen at vault creation only"); earned brands and learned categories reach the tables
+through `MintMerchantAnchors` and `ApplyMerchantMemory`, which carry the outcome of the grouping and
+merchant-memory heuristics rather than re-running them (ADR 0073 Addendum J). The create-identity and
+link-alias writers had no caller outside tests and were removed: a user-correction feature brings its
+own commands with its UI, and any "unlink" it adds must leave a tombstone, because an uncategorize or
+unlink with no tombstone lets a later automatic pass fill the row again.
+
 Class 1 covers user-facing canonical intent; class 1b covers artifact bytes;
 class 2 is rebuilt; class 3 includes connector credentials, refresh
 watermarks, staged rows, idempotency keys, audit events, node-local values,

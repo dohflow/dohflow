@@ -14,6 +14,7 @@ pub(crate) mod connector_cmds;
 pub(crate) mod household;
 pub(crate) mod inbox;
 pub(crate) mod ingestion_cmds;
+pub(crate) mod merchant_cmds;
 pub(crate) mod recurring;
 pub(crate) mod scenario_apply;
 pub(crate) mod scenario_cmds;

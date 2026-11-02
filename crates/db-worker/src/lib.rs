@@ -157,6 +157,7 @@ pub const PERSISTED_SETTING_KEYS: &[&str] = &[
     AUTO_CATEGORIZE_ON_IMPORT_KEY,
     FUTURE_CASH_SERIES_KEY,
 ];
+pub use apply::merchant_cmds::{MAX_MERCHANT_COMMAND_ENTRIES, MAX_MERCHANT_DISPLAY_NAME_BYTES};
 pub use categorization::RecurringCandidate;
 pub use connectors::MAX_LINK_EXTERNAL_ID_BYTES;
 pub use debt::{DebtTermsInput, DebtTermsView, RepaymentPhilosophy};
@@ -313,6 +314,29 @@ pub struct SplitLineInput {
     pub note: Option<String>,
     /// The line's tags.
     pub tag_ids: Vec<TagId>,
+}
+
+/// One earned merchant brand of a [`WriteCommand::MintMerchantAnchors`] (personal-cfo-5ymg8.5): the
+/// outcome of the grouping heuristic, computed by the issuing device. Apply derives the identity id
+/// from `key` (`v5("merchant-auto:{key}")`, frozen) and runs no heuristic of its own.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MerchantAnchor {
+    /// The normalized brand key, which becomes a `prefix` alias.
+    pub key: String,
+    /// The identity's display name, chosen by the issuing device. The first one sequenced wins.
+    pub display_name: String,
+}
+
+/// One learned category of a [`WriteCommand::ApplyMerchantMemory`] (personal-cfo-5ymg8.5): the
+/// outcome of merchant memory for one uncategorized transaction, computed by the issuing device.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MerchantAssignment {
+    /// The uncategorized transaction to fill.
+    pub transaction_id: TransactionId,
+    /// The learned category.
+    pub category_id: CategoryId,
+    /// The agreement ratio behind the choice, in basis points (0 to 10000).
+    pub confidence_bps: i64,
 }
 
 /// A mutating command. The enum is the exhaustive write surface, so the worker's
@@ -904,6 +928,20 @@ pub enum WriteCommand {
         /// The full desired set of split lines (sum must equal the txn amount).
         lines: Vec<SplitLineInput>,
     },
+    /// Mint earned merchant identities (ADR 0030 addendum, personal-cfo-5n4.4; routed onto the bus
+    /// by personal-cfo-5ymg8.5). Carries the grouping heuristic's outcome; apply runs no heuristic.
+    /// A key that already has an alias is skipped whole.
+    MintMerchantAnchors {
+        /// The brands to mint, strictly ascending by key, at most 5,000.
+        anchors: Vec<MerchantAnchor>,
+    },
+    /// Fill uncategorized transactions with the category merchant memory learned (ADR 0030 addendum,
+    /// personal-cfo-7yh0; routed onto the bus by personal-cfo-5ymg8.5). Carries the outcome; apply
+    /// skips a voided or already-categorized transaction and never overwrites.
+    ApplyMerchantMemory {
+        /// The fills, strictly ascending by transaction id, at most 5,000.
+        assignments: Vec<MerchantAssignment>,
+    },
     /// Set the household's IANA timezone (`personal-cfo-g3m.8`, ADR 0021 section 1).
     /// It sets the calendar boundary of the forecast horizon, so it is a class-1 logical
     /// field that changes only through this logged command (`vault-format.md` B.2 rule 6),
@@ -1149,6 +1187,8 @@ impl WriteCommand {
             WriteCommand::SetTags { .. } => "set_tags",
             WriteCommand::SetNote { .. } => "set_note",
             WriteCommand::SetSplits { .. } => "set_splits",
+            WriteCommand::MintMerchantAnchors { .. } => "mint_merchant_anchors",
+            WriteCommand::ApplyMerchantMemory { .. } => "apply_merchant_memory",
         }
     }
 }
@@ -2269,67 +2309,89 @@ impl DbWorker {
     /// **uncategorized** transactions of the same normalized merchant (`source = 'rule'`,
     /// never overwriting a user assignment). Returns the number newly categorized.
     ///
+    /// Earned brands are minted first (the plan must see them). The heuristics run here, on a read
+    /// connection; what they decide travels in [`WriteCommand::MintMerchantAnchors`] and
+    /// [`WriteCommand::ApplyMerchantMemory`] (personal-cfo-5ymg8.5), chunked to the per-command bound.
+    ///
     /// # Errors
     /// [`DbError`] on a read/write failure.
     pub fn apply_merchant_memory(&self) -> Result<u32, DbError> {
-        let guard = self.lock();
-        merchant_memory::apply(&guard.conn)
+        self.apply_merchant_memory_caused_by(None)
     }
 
-    /// Mint canonical identities for unseeded multi-location chains discovered in the user's
-    /// own transactions (ADR 0030 addendum, personal-cfo-5n4.4), returning the count minted.
-    /// `apply_merchant_memory` runs this first; exposed separately for the import path + tests.
+    /// [`DbWorker::apply_merchant_memory`] for a run another command triggered (an import commit):
+    /// the commands it dispatches carry that command's correlation and `causation_id`, so they queue
+    /// with it if it queues (ADR 0073).
     ///
     /// # Errors
-    /// Returns [`DbError`] if the read/write fails.
-    pub fn apply_merchant_grouping(&self) -> Result<u32, DbError> {
-        let guard = self.lock();
-        merchant_grouping::mint_anchors(&guard.conn)
-    }
-
-    /// Create a canonical merchant identity (ADR 0030 addendum, personal-cfo-zrpg),
-    /// returning its id. `source` is `seed` | `user` | `auto`. The write seam the
-    /// merchant-entity consumers (seeding, the ambiguous-merchant beads) build on.
-    ///
-    /// # Errors
-    /// Returns [`DbError`] if the insert fails (e.g. an out-of-domain `source`).
-    pub fn create_merchant_identity(
+    /// [`DbError`] on a read/write failure.
+    pub fn apply_merchant_memory_caused_by(
         &self,
-        display_name: &str,
-        default_category_id: Option<CategoryId>,
-        is_ambiguous: bool,
-        source: &str,
-    ) -> Result<Uuid, DbError> {
-        let guard = self.lock();
-        merchant_identity::create_identity(
-            &guard.conn,
-            display_name,
-            default_category_id.map(CategoryId::as_uuid),
-            is_ambiguous,
-            source,
-        )
+        cause: Option<&CommandMeta>,
+    ) -> Result<u32, DbError> {
+        let meta = || {
+            let mut meta = connectors::local_meta(ActorType::User, "user");
+            if let Some(cause) = cause {
+                meta.correlation_id = cause.correlation_id;
+                meta.causation_id = Some(cause.command_id);
+                meta.actor_type = cause.actor_type;
+                meta.actor_id.clone_from(&cause.actor_id);
+            }
+            meta
+        };
+        for chunk in self
+            .plan_merchant_anchors()?
+            .chunks(apply::merchant_cmds::MAX_MERCHANT_COMMAND_ENTRIES)
+        {
+            self.dispatch(
+                meta(),
+                WriteCommand::MintMerchantAnchors {
+                    anchors: chunk.to_vec(),
+                },
+            )?;
+        }
+        let mut applied = 0u32;
+        for chunk in self
+            .plan_merchant_assignments()?
+            .chunks(apply::merchant_cmds::MAX_MERCHANT_COMMAND_ENTRIES)
+        {
+            let meta = meta();
+            let assigned_at = apply::issued_at_text(&meta);
+            self.dispatch(
+                meta,
+                WriteCommand::ApplyMerchantMemory {
+                    assignments: chunk.to_vec(),
+                },
+            )?;
+            // What the command wrote, not what it was asked to: it skips a transaction that was
+            // voided or categorized between the plan and the apply.
+            let written: i64 = self.read_connection()?.query_row(
+                "SELECT COUNT(*) FROM transaction_categorizations
+                  WHERE source = 'rule' AND assigned_at = ?1",
+                [assigned_at],
+                |r| r.get(0),
+            )?;
+            applied += u32::try_from(written).unwrap_or(0);
+        }
+        Ok(applied)
     }
 
-    /// Point a normalized merchant key (`categorization::normalize_merchant` output) at an
-    /// identity (ADR 0030 addendum, personal-cfo-zrpg). Re-linking a key moves it.
+    /// The earned merchant brands the grouping heuristic would mint now (ADR 0030 addendum,
+    /// personal-cfo-5n4.4), ascending by key. Read-only.
     ///
     /// # Errors
-    /// Returns [`DbError`] if the insert fails.
-    pub fn link_merchant_alias(
-        &self,
-        normalized_key: &str,
-        merchant_identity_id: Uuid,
-        source: &str,
-        confidence_bps: i64,
-    ) -> Result<(), DbError> {
-        let guard = self.lock();
-        merchant_identity::link_alias(
-            &guard.conn,
-            normalized_key,
-            merchant_identity_id,
-            source,
-            confidence_bps,
-        )
+    /// Returns [`DbError`] if the read fails.
+    pub fn plan_merchant_anchors(&self) -> Result<Vec<MerchantAnchor>, DbError> {
+        merchant_grouping::plan_anchors(&self.read_connection()?)
+    }
+
+    /// The fills merchant memory would make now, ascending by transaction id. Read-only; plan after
+    /// the anchors are minted.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if the read fails.
+    pub fn plan_merchant_assignments(&self) -> Result<Vec<MerchantAssignment>, DbError> {
+        merchant_memory::plan_assignments(&self.read_connection()?)
     }
 
     /// Resolve a normalized merchant key to its canonical identity, if mapped (ADR 0030
@@ -7947,6 +8009,12 @@ fn apply_command(
             transaction_id,
             lines,
         } => apply::transactions::apply_set_splits(&tx, &mut ids, transaction_id, lines)?,
+        WriteCommand::MintMerchantAnchors { anchors } => {
+            apply::merchant_cmds::write_merchant_anchors(&tx, meta, anchors)?
+        }
+        WriteCommand::ApplyMerchantMemory { assignments } => {
+            apply::merchant_cmds::write_merchant_assignments(&tx, meta, assignments)?
+        }
     };
 
     fault.maybe_panic(FaultPoint::AfterMutation);
@@ -8006,6 +8074,8 @@ fn apply_command(
         WriteCommand::SetTags { .. } => "transaction_tags",
         WriteCommand::SetNote { .. } => "transaction_details",
         WriteCommand::SetSplits { .. } => "split_lines",
+        WriteCommand::MintMerchantAnchors { .. } => "merchant_identities",
+        WriteCommand::ApplyMerchantMemory { .. } => "transaction_categorizations",
         WriteCommand::CreateRecurringTransfer { .. }
         | WriteCommand::DeleteRecurringTransfer(_)
         | WriteCommand::ReinstateRecurringTransfer(_) => "recurring_transfers",

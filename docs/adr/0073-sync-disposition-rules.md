@@ -291,6 +291,8 @@ receives semantic auto-merge treatment.
 | `ApplyScenario` | Base-dependent | queue-choose (reversal handle is command_id) |
 | `RevertScenarioApply` | Base-dependent | queue-choose (reversal handle is command_id); retired, never produced |
 | `RevertScenarioApplyConfirmed` | Base-dependent | auto iff the active descendants equal the confirmed list; queue-choose otherwise |
+| `MintMerchantAnchors` | Base-dependent | auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose |
+| `ApplyMerchantMemory` | Base-dependent | auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose |
 | `DeleteRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ReinstateRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DeleteIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -611,3 +613,34 @@ older event superseded, and the confirmation says so. No id is minted and no clo
 - `personal-cfo-g3m.12` — ADR 0074 Addendum B, which defines the `AlreadyPresent` exception
 - `personal-cfo-07u` — SYNC-2a connection identity/secret split (Addendum C)
 - `personal-cfo-32fmp.3` — ADR 0074 Addendum G: the system-account map is class 1 consensus state, so apply may read it
+
+## Addendum J — Merchant grouping and merchant memory travel as outcomes (2026-11-03, `personal-cfo-5ymg8.5`)
+
+`MintMerchantAnchors` and `ApplyMerchantMemory` are added as version 1 commands. That makes
+**Base-dependent 8** and 82 appendix rows (**Create 14**, **Set 30**, **Toggle 25** unchanged).
+
+**The payload carries the outcome of a heuristic, never the heuristic.** The issuing device runs the
+grouping and merchant-memory passes on a read connection (thresholds, `brand_anchor`,
+`normalize_merchant`) and sends what they decided: the brands to mint (`key`, `display_name`) and the
+fills (`transaction_id`, `category_id`, `confidence_bps`). Apply validates and writes; it calls none of
+those rules, so a tuned threshold, or a device on another engine version, cannot change what a logged
+command writes or what an old log replays to. Both lists are strictly ascending (keys, transaction
+ids; a repeat or a misordered list is `PayloadInvalid`), non-empty and at most 5,000 entries (the
+kernel chunks a larger plan), and a confidence is 0 to 10000 basis points. A key must be non-empty and
+within the replicated key width; a display name must be non-blank and at most 128 bytes.
+
+**Disposition: Base-dependent, auto after re-evaluation, never queue-choose.** What each command skips
+depends on the base: `MintMerchantAnchors` skips an anchor whose key any alias already holds (so an
+identity is never left without its alias, and a user's mapping is never clobbered; the first
+`display_name` sequenced wins), and `ApplyMerchantMemory` skips a voided transaction or one that
+already has a categorization of any source (no silent re-tag, ADR 0030). Those skip rules ARE the
+resolution: a recategorization made on another device must not queue a whole run as a user choice, so
+neither command is ever queue-choose. A missing transaction or category refuses the whole command
+(`ReferenceMissing`); an archived category is not a reason to skip, as in `RecategorizeTransaction`.
+When an import commit triggers a run, the commands carry its correlation and `causation_id`, so they
+queue with it if it queues.
+
+**The identity id is derived, and frozen.** An earned brand's identity id is
+`v5(NAMESPACE_OID, "merchant-auto:{key}")` of the payload key, derived in apply and not carried in the
+payload. Vaults already hold identities minted under that formula, so changing it needs a new
+variant; a known-vector test pins one key to one UUID.

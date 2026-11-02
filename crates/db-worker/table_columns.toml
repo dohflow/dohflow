@@ -295,14 +295,14 @@ columns = ["assumption_event_id:uuid", "linked_transaction_id:uuid", "matched_on
 
 [[table]]
 name = "merchant_aliases"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["normalized_key"]
 columns = ["normalized_key:text", "merchant_identity_id:uuid", "source:text", "confidence_bps:int", "created_at:text", "match_type:text"]
 
 [[table]]
 name = "merchant_identities"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["id"]
 columns = ["id:uuid", "display_name:text", "default_category_id:uuid", "is_ambiguous:int", "source:text", "created_at:text"]
@@ -498,7 +498,7 @@ columns = ["id:uuid", "name:text", "color:text", "archived_at:text", "created_at
 
 [[table]]
 name = "transaction_categorizations"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["transaction_id"]
 columns = ["transaction_id:uuid", "category_id:uuid", "source:text", "confidence_bps:int", "assigned_at:text"]
