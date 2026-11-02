@@ -403,3 +403,60 @@ fn a_pass_with_nothing_to_do_dispatches_no_command() {
         .unwrap();
     assert_eq!(before, after);
 }
+
+// ---- a plan never contains what apply refuses ---------------------------------------------------
+
+/// A brand can be as wide as a replicated key (251 bytes), wider than the 128 bytes a display name
+/// may be. The planner shortens the name instead of emitting a mint apply refuses, which would fail
+/// merchant memory on every run (a regression from the pass before it moved onto the bus).
+#[test]
+fn a_brand_wider_than_a_display_name_is_minted_with_a_shortened_name_and_memory_still_runs() {
+    let mut f = Fixture::new();
+    // An unrelated learned fill in the same vault, which must still be written.
+    for _ in 0..2 {
+        let t = f.txn();
+        f.worker
+            .dispatch(
+                meta(),
+                WriteCommand::RecategorizeTransaction {
+                    transaction_id: t,
+                    category_id: Some(f.category),
+                },
+            )
+            .unwrap();
+    }
+    let target = f.txn();
+
+    // A two-location chain whose brand is 159 bytes.
+    let brand = (0..20)
+        .map(|n| format!("BRAND{n:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(brand.len() > 128 && brand.len() < db_worker::MAX_ALIAS_KEY_BYTES);
+    for (i, place) in ["SF", "OAKLAND"].into_iter().enumerate() {
+        record_with_counterparty(
+            &f.worker,
+            f.account,
+            -500,
+            NaiveDate::from_ymd_opt(2026, 4, 1 + u32::try_from(i).unwrap()).unwrap(),
+            &format!("{brand} {place}"),
+        );
+    }
+    let planned = f.worker.plan_merchant_anchors().unwrap();
+    assert_eq!(planned.len(), 1, "the wide brand is planned");
+    assert_eq!(planned[0].key, brand);
+    assert!(planned[0].display_name.len() <= MAX_MERCHANT_DISPLAY_NAME_BYTES);
+
+    let applied = f.worker.apply_merchant_memory().unwrap();
+    assert_eq!(applied, 1, "the unrelated learned fill is still written");
+    assert!(f.row(target).is_some());
+    let identity = f
+        .worker
+        .resolve_merchant_identity(&format!("{brand} OAKLAND"))
+        .unwrap()
+        .expect("the brand was minted and resolves its locations");
+    assert!(identity.display_name.len() <= MAX_MERCHANT_DISPLAY_NAME_BYTES);
+    assert!(!identity.display_name.is_empty());
+    // And the next run is quiet rather than failing again.
+    assert_eq!(f.worker.apply_merchant_memory().unwrap(), 0);
+}

@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use categorization::{brand_anchor, normalize_merchant};
 use rusqlite::Connection;
 
+use crate::apply::merchant_cmds::{display_name_is_valid, fit_display_name};
 use crate::merchant_identity::{alias_key_fits, AliasIndex};
 use crate::{DbError, MerchantAnchor};
 
@@ -79,9 +80,14 @@ pub(crate) fn plan_anchors(conn: &Connection) -> Result<Vec<MerchantAnchor>, DbE
                 && !index.holds_key(anchor)
         })
         .map(|(anchor, _)| MerchantAnchor {
-            display_name: title_case(&anchor),
+            // A brand can be as wide as a key (251 bytes), wider than apply accepts for a name, and
+            // title-casing can lengthen non-ASCII text: shorten at a character boundary, so the
+            // plan never contains what apply would refuse.
+            display_name: fit_display_name(&title_case(&anchor)),
             key: anchor,
         })
+        // The same check apply makes (a name that is blank after shortening has no brand to show).
+        .filter(|anchor| display_name_is_valid(&anchor.display_name))
         .collect();
     // Deterministic order: the payload is a function of the vault, never of HashMap iteration.
     anchors.sort_by(|a, b| a.key.cmp(&b.key));

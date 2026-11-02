@@ -4,7 +4,7 @@
 //! `merchant_grouping.rs` and `merchant_memory.rs`). Apply validates and writes it; it never runs
 //! `normalize_merchant`, `brand_anchor` or any other tunable rule, so a changed threshold or a device
 //! on another engine version cannot change what a logged command writes. Both are Base-dependent
-//! (ADR 0073 Addendum I): what is skipped depends on rows already in the vault, and the skip rules
+//! (ADR 0073 Addendum J): what is skipped depends on rows already in the vault, and the skip rules
 //! below are the whole resolution.
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,6 +16,23 @@ use crate::{CommandMeta, DbError, MerchantAnchor, MerchantAssignment, RejectCode
 pub const MAX_MERCHANT_COMMAND_ENTRIES: usize = 5_000;
 /// The longest `display_name` of a minted identity, in UTF-8 bytes.
 pub const MAX_MERCHANT_DISPLAY_NAME_BYTES: usize = 128;
+/// Whether `name` is a display name apply accepts. The ONE check: apply refuses a mint with a name
+/// that fails it, and the anchor planner must never emit one.
+pub(crate) fn display_name_is_valid(name: &str) -> bool {
+    !name.trim().is_empty() && name.len() <= MAX_MERCHANT_DISPLAY_NAME_BYTES
+}
+
+/// `name` cut at a character boundary so it is at most [`MAX_MERCHANT_DISPLAY_NAME_BYTES`] bytes.
+/// A brand key can be as wide as the replicated key width (251 bytes), wider than a display name,
+/// so the planner shortens the name rather than losing the brand.
+pub(crate) fn fit_display_name(name: &str) -> String {
+    let mut end = name.len().min(MAX_MERCHANT_DISPLAY_NAME_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].trim_end().to_owned()
+}
+
 /// The confidence recorded on an auto-minted prefix alias (below the 10000 of a seed or user
 /// mapping, so a weak grouping stays auditable and reversible, ADR 0030).
 const AUTO_ALIAS_CONFIDENCE_BPS: i64 = 8000;
@@ -59,9 +76,7 @@ pub(crate) fn write_merchant_anchors(
                 "an anchor key is empty or wider than the replicated key width".to_owned(),
             ));
         }
-        if anchor.display_name.trim().is_empty()
-            || anchor.display_name.len() > MAX_MERCHANT_DISPLAY_NAME_BYTES
-        {
+        if !display_name_is_valid(&anchor.display_name) {
             return Err(DbError::reject(
                 RejectCode::PayloadInvalid,
                 "an anchor display name is empty or too long".to_owned(),
@@ -177,4 +192,43 @@ pub(crate) fn write_merchant_assignments(
     }
     // The provenance handle: the first transaction of the run (the list is non-empty, validated).
     Ok(assignments[0].transaction_id.as_uuid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_name_within_the_bound_is_left_alone() {
+        assert_eq!(fit_display_name("Ritual Coffee"), "Ritual Coffee");
+        let at_bound = "a".repeat(MAX_MERCHANT_DISPLAY_NAME_BYTES);
+        assert_eq!(fit_display_name(&at_bound), at_bound);
+        assert!(display_name_is_valid(&at_bound));
+    }
+
+    #[test]
+    fn a_longer_name_is_cut_to_the_bound_and_the_cut_name_is_valid() {
+        let long = "a".repeat(MAX_MERCHANT_DISPLAY_NAME_BYTES + 40);
+        let cut = fit_display_name(&long);
+        assert_eq!(cut.len(), MAX_MERCHANT_DISPLAY_NAME_BYTES);
+        assert!(display_name_is_valid(&cut));
+        assert!(!display_name_is_valid(&long));
+    }
+
+    /// The cut falls on a character boundary, never inside a multi-byte character.
+    #[test]
+    fn the_cut_never_splits_a_multibyte_character() {
+        // 3-byte characters: 128 is not a multiple of 3, so a byte cut would split one.
+        let long = "\u{20ac}".repeat(80); // 240 bytes
+        let cut = fit_display_name(&long);
+        assert!(cut.len() <= MAX_MERCHANT_DISPLAY_NAME_BYTES);
+        assert_eq!(cut.len() % 3, 0);
+        assert!(display_name_is_valid(&cut));
+    }
+
+    #[test]
+    fn a_blank_name_is_not_valid() {
+        assert!(!display_name_is_valid(""));
+        assert!(!display_name_is_valid("   "));
+    }
 }
