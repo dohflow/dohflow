@@ -65,7 +65,8 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in
   slash.
 - `{vault_id}`, `{device_id}` and `{snapshot_id}` are UUIDs in lowercase,
   hyphenated text. `{artifact_id}` is a `sync_artifact_id` as 64 lowercase hex
-  characters.
+  characters. `{part_number}` is an unsigned decimal in the syntax of section 2.2
+  (`0|[1-9][0-9]*`), from `1` to `10000`.
 - Request and response bodies are `application/json` (UTF-8) except where an
   operation says `application/octet-stream`, which carries one container exactly
   as defined in `vault-format.md` (`DFSY` for envelopes and snapshots, `DFSA`
@@ -152,8 +153,10 @@ interprets. `message` is for display and logs and MUST NOT be parsed.
 unknown `code` treats it by HTTP status class (4xx: do not retry unchanged; 5xx:
 retry with backoff).
 
-A failure mutates nothing, with one stated exception: an upload that completed
-before the failing step stays staged for the grace period of section 7.3.
+A failure mutates nothing, with two stated exceptions: an upload that completed
+before the failing step stays staged for the grace period of section 7.3, and a
+`completeSnapshotUpload` whose assembled container does not match what was declared
+discards the upload it was completing (section 4.13).
 
 ### 2.6 Retry, rate and availability
 
@@ -1319,7 +1322,7 @@ production deploy).
 | --- | --- | --- | --- |
 | 2026-11-02 | `personal-cfo-g3m.33` | pre-release amendment | The optional response members `voids` (on `pullEnvelopes` and the `HeadMismatch` details) and `void_claims` (on `pushEnvelopes` results and `HeadMismatch` `accepted` entries), which a version-1 client MUST process (4.7, 4.11), and the shared sequence of `seq` values they imply: a void takes a `seq`; and the page rule that follows from it: a page holds at least one log object (an envelope, an epoch entry or a void), not at least one entry, because a page can hold only voids. |
 | 2026-11-02 | `personal-cfo-g3m.33` | addition | Operations `appendVoid` (4.11) and `reportHalt` (4.12); errors `VoidSignatureInvalid`, `VoidSignerNotAuthorized`, `VoidTargetMismatch` and `ReplicaHalted`, the last of which the halt gate (4.12) returns to `stageSnapshot`, `publishSnapshot` and `installEpoch`; the void evidence rule of 7.3. |
-| 2026-11-03 | `personal-cfo-g3m.36` | addition | Operations `beginSnapshotUpload`, `putSnapshotPart`, `completeSnapshotUpload` and `abortSnapshotUpload` (4.13), which stage a snapshot in parts; errors `UploadNotFound`, `PartOutOfSequence` and `UploadIncomplete`; the optional `getInfo` limits `snapshot_single_request_max_bytes`, `snapshot_part_max_bytes` and `snapshot_upload_expiry_seconds` (7.2); the incomplete-upload expiry of 7.3; the halt gate (4.12) also applies to the three operations that stage. |
+| 2026-11-03 | `personal-cfo-g3m.36` | addition | Operations `beginSnapshotUpload`, `putSnapshotPart`, `completeSnapshotUpload` and `abortSnapshotUpload` (4.13), which stage a snapshot in parts; errors `UploadNotFound`, `PartOutOfSequence` and `UploadIncomplete`; the optional `getInfo` limits `snapshot_single_request_max_bytes`, `snapshot_part_max_bytes` and `snapshot_upload_expiry_seconds` (7.2); the incomplete-upload expiry of 7.3; the halt gate (4.12) also applies to the three operations that stage; and the second exception to the failure rule of 2.5, the discard of an upload whose container does not match what was declared (4.13). |
 | 2026-11-03 | `personal-cfo-g3m.36` | pre-release amendment | What 7.1's acceptance rule means for a snapshot: a server accepts it through `stageSnapshot` up to its `snapshot_single_request_max_bytes` and above that through the operations of 4.13, so `stageSnapshot` can answer `PayloadTooLarge` (a code it did not list before) for a container over that limit. |
 
 **Why `voids` is a pre-release amendment and not an addition.** A response member
