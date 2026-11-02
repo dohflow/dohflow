@@ -202,7 +202,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       // query (polling included) until it finishes; paused queries resume
       // afterwards. Queries use the default `online` network mode, so marking
       // the manager offline is what pauses them; the manager ignores the OS's own
-      // connectivity (`createQueryClient`), so this is the only thing that does.
+      // connectivity (`createQueryClient`), so this is the only thing that does
+      // and this is the only writer of `onlineManager`.
       onlineManager.setOnline(false);
       let error: IpcError | null;
       try {
