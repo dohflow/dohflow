@@ -365,8 +365,8 @@ columns = ["read_model_name:text", "current_checksum:int", "computed_at:text"]
 
 [[table]]
 name = "recurring_event_instances"
-class = "1"
-write_set = "full"
+class = "2"
+write_set = "none"
 primary_key = ["id"]
 columns = ["id:uuid", "recurring_event_id:uuid", "scheduled_date:text", "expected_amount_minor:int", "currency:text", "status:text", "override_amount_minor:int", "linked_transaction_id:uuid", "created_at:text"]
 

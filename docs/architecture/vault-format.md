@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=22 -->
+<!-- vault-format: spec-version=23 -->
 <!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,13 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 23` (personal-cfo-5ymg8.9) corrects the class of `recurring_event_instances` in the
+  inventory from 1 to 2 (derived, rebuilt locally): the rows are rebuilt on read from the active
+  schedules and the ledger and depend on the day they are rebuilt, so two devices hold different
+  rows and no single value exists to replicate, and the table stores no user outcome (confirmations
+  are class-1 `confirmed_obligations`). The table leaves the Sync and genesis inventory and the
+  write set; no command writes it, and an occurrence outcome must never be stored on it, because a
+  rebuild deletes it. No wire layout, vector or schema change.
 - `spec-version = 22` (personal-cfo-5ie.12) adds the version 1 command `RevertScenarioApplyConfirmed`
   (`scenario_id` and `confirmed_descendants`, strictly ascending) and retires `RevertScenarioApply`:
   it stays decodable and replays as before, and no producer builds it. Apply clears the confirmed
@@ -437,7 +444,6 @@ therefore requires reviewing this inventory.
 | `profiles` | 1 | include | include | Per-member non-secret display preferences (initials, color). No secret-bearing column. |
 | `income_sources` | 1 | include | include | Canonical user intent. |
 | `recurring_events` | 1 | include | include | Canonical user intent. |
-| `recurring_event_instances` | 1 | include | include | Canonical user intent. |
 | `recurring_event_tags` | 1 | include | include | Canonical user intent. |
 | `recurring_transfers` | 1 | include | include | Canonical user intent. |
 | `bill_contracts` | 1 | include | include | Canonical user intent. |
@@ -494,6 +500,7 @@ therefore requires reviewing this inventory.
 | `scenarios` | 1 | include | include | A named scenario and its lifecycle. Written only by the scenario commands; a delete is a tombstone (`deleted_at`), and `base_run_id` is NULL on every command-written row. Recorded as class 1 by ADR 0074 Addendum H. |
 | `forecast_assumption_events` | 1 | include | include | A base override or scenario overlay row, immutable once written except for `status` and `superseded_by`. Written only by the assumption-event and scenario commands; `origin_run_id` is NULL on every command-written row. Recorded as class 1 by ADR 0074 Addendum H. |
 | `forecast_dependency_edges` | 2 | rebuild | rebuild | Derived per-run attribution (an assumption event to a forecast row of one run); rebuilt locally, never shipped. Corrected from class 4 by ADR 0074 Addendum F. |
+| `recurring_event_instances` | 2 | rebuild | rebuild | Derived occurrences of the active schedules, linked to ledger postings; rebuilt locally from the schedules and the ledger and dependent on today, so never shipped. Stores no user outcome (confirmations are class-1 `confirmed_obligations`); an outcome must never be stored here, because a rebuild deletes it. Corrected from class 1 by ADR 0074 Addendum F. |
 | `merchant_aliases` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `merchant_identities` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `manual_entry_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |

@@ -1,0 +1,264 @@
+[instances]
+Acme Corp | 2025-08-01 | 300000 USD | scheduled | -
+Acme Corp | 2025-08-15 | 300000 USD | scheduled | -
+Acme Corp | 2025-08-29 | 300000 USD | scheduled | -
+Acme Corp | 2025-09-12 | 300000 USD | scheduled | -
+Acme Corp | 2025-09-26 | 300000 USD | scheduled | -
+Acme Corp | 2025-10-10 | 300000 USD | scheduled | -
+Acme Corp | 2025-10-24 | 300000 USD | scheduled | -
+Acme Corp | 2025-11-07 | 300000 USD | scheduled | -
+Acme Corp | 2025-11-21 | 300000 USD | scheduled | -
+Acme Corp | 2025-12-05 | 300000 USD | scheduled | -
+Acme Corp | 2025-12-19 | 300000 USD | scheduled | -
+Acme Corp | 2026-01-02 | 300000 USD | scheduled | -
+Acme Corp | 2026-01-16 | 300000 USD | scheduled | -
+Acme Corp | 2026-01-30 | 300000 USD | scheduled | -
+Acme Corp | 2026-02-13 | 300000 USD | scheduled | -
+Acme Corp | 2026-02-27 | 300000 USD | scheduled | -
+Acme Corp | 2026-03-13 | 300000 USD | scheduled | -
+Acme Corp | 2026-03-27 | 300000 USD | scheduled | -
+Acme Corp | 2026-04-10 | 300000 USD | scheduled | -
+Acme Corp | 2026-04-24 | 300000 USD | scheduled | -
+Acme Corp | 2026-05-08 | 300000 USD | scheduled | -
+Acme Corp | 2026-05-22 | 300000 USD | scheduled | -
+Acme Corp | 2026-06-05 | 300000 USD | scheduled | -
+Acme Corp | 2026-06-19 | 300000 USD | paid | 2026-06-19 -300000
+Acme Corp | 2026-07-03 | 300000 USD | scheduled | -
+Acme Corp | 2026-07-17 | 300000 USD | scheduled | -
+Acme Corp | 2026-07-31 | 300000 USD | scheduled | -
+Acme Corp | 2026-08-14 | 300000 USD | scheduled | -
+Acme Corp | 2026-08-28 | 300000 USD | scheduled | -
+Acme Corp | 2026-09-11 | 300000 USD | scheduled | -
+Acme Corp | 2026-09-25 | 300000 USD | scheduled | -
+Acme Corp | 2026-10-09 | 300000 USD | scheduled | -
+Acme Corp | 2026-10-23 | 300000 USD | scheduled | -
+Acme Corp | 2026-11-06 | 300000 USD | scheduled | -
+Acme Corp | 2026-11-20 | 300000 USD | scheduled | -
+Acme Corp | 2026-12-04 | 300000 USD | scheduled | -
+Acme Corp | 2026-12-18 | 300000 USD | scheduled | -
+Acme Corp | 2027-01-01 | 300000 USD | scheduled | -
+Acme Corp | 2027-01-15 | 300000 USD | scheduled | -
+Acme Corp | 2027-01-29 | 300000 USD | scheduled | -
+Acme Corp | 2027-02-12 | 300000 USD | scheduled | -
+Acme Corp | 2027-02-26 | 300000 USD | scheduled | -
+Acme Corp | 2027-03-12 | 300000 USD | scheduled | -
+Acme Corp | 2027-03-26 | 300000 USD | scheduled | -
+Acme Corp | 2027-04-09 | 300000 USD | scheduled | -
+Acme Corp | 2027-04-23 | 300000 USD | scheduled | -
+Acme Corp | 2027-05-07 | 300000 USD | scheduled | -
+Acme Corp | 2027-05-21 | 300000 USD | scheduled | -
+Acme Corp | 2027-06-04 | 300000 USD | scheduled | -
+Acme Corp | 2027-06-18 | 300000 USD | scheduled | -
+Acme Corp | 2027-07-02 | 300000 USD | scheduled | -
+Acme Corp | 2027-07-16 | 300000 USD | scheduled | -
+Gym | 2025-08-12 | 4500 USD | scheduled | -
+Gym | 2025-09-12 | 4500 USD | scheduled | -
+Gym | 2025-10-12 | 4500 USD | scheduled | -
+Gym | 2025-11-12 | 4500 USD | scheduled | -
+Gym | 2025-12-12 | 4500 USD | scheduled | -
+Gym | 2026-01-12 | 4500 USD | scheduled | -
+Gym | 2026-02-12 | 4500 USD | scheduled | -
+Gym | 2026-03-12 | 4500 USD | scheduled | -
+Gym | 2026-04-12 | 4500 USD | scheduled | -
+Gym | 2026-05-12 | 4500 USD | scheduled | -
+Gym | 2026-06-12 | 4500 USD | scheduled | -
+Gym | 2026-07-12 | 4500 USD | scheduled | -
+Gym | 2026-08-12 | 4500 USD | scheduled | -
+Gym | 2026-09-12 | 4500 USD | scheduled | -
+Gym | 2026-10-12 | 4500 USD | scheduled | -
+Gym | 2026-11-12 | 4500 USD | scheduled | -
+Gym | 2026-12-12 | 4500 USD | scheduled | -
+Gym | 2027-01-12 | 4500 USD | scheduled | -
+Gym | 2027-02-12 | 4500 USD | scheduled | -
+Gym | 2027-03-12 | 4500 USD | scheduled | -
+Gym | 2027-04-12 | 4500 USD | scheduled | -
+Gym | 2027-05-12 | 4500 USD | scheduled | -
+Gym | 2027-06-12 | 4500 USD | scheduled | -
+Gym | 2027-07-12 | 4500 USD | scheduled | -
+Rent | 2025-08-01 | 180000 USD | scheduled | -
+Rent | 2025-09-01 | 180000 USD | scheduled | -
+Rent | 2025-10-01 | 180000 USD | scheduled | -
+Rent | 2025-11-01 | 180000 USD | scheduled | -
+Rent | 2025-12-01 | 180000 USD | scheduled | -
+Rent | 2026-01-01 | 180000 USD | scheduled | -
+Rent | 2026-02-01 | 180000 USD | scheduled | -
+Rent | 2026-03-01 | 180000 USD | scheduled | -
+Rent | 2026-04-01 | 180000 USD | scheduled | -
+Rent | 2026-05-01 | 180000 USD | scheduled | -
+Rent | 2026-06-01 | 180000 USD | scheduled | -
+Rent | 2026-07-01 | 180000 USD | paid | 2026-07-01 -180000
+Rent | 2026-08-01 | 180000 USD | scheduled | -
+Rent | 2026-09-01 | 180000 USD | scheduled | -
+Rent | 2026-10-01 | 180000 USD | scheduled | -
+Rent | 2026-11-01 | 180000 USD | scheduled | -
+Rent | 2026-12-01 | 180000 USD | scheduled | -
+Rent | 2027-01-01 | 180000 USD | scheduled | -
+Rent | 2027-02-01 | 180000 USD | scheduled | -
+Rent | 2027-03-01 | 180000 USD | scheduled | -
+Rent | 2027-04-01 | 180000 USD | scheduled | -
+Rent | 2027-05-01 | 180000 USD | scheduled | -
+Rent | 2027-06-01 | 180000 USD | scheduled | -
+Rent | 2027-07-01 | 180000 USD | scheduled | -
+Spotify | 2025-08-10 | 1000 USD | scheduled | -
+Spotify | 2025-09-10 | 1000 USD | scheduled | -
+Spotify | 2025-10-10 | 1000 USD | scheduled | -
+Spotify | 2025-11-10 | 1000 USD | scheduled | -
+Spotify | 2025-12-10 | 1000 USD | scheduled | -
+Spotify | 2026-01-10 | 1000 USD | scheduled | -
+Spotify | 2026-02-10 | 1000 USD | scheduled | -
+Spotify | 2026-03-10 | 1000 USD | scheduled | -
+Spotify | 2026-04-10 | 1000 USD | scheduled | -
+Spotify | 2026-05-10 | 1000 USD | scheduled | -
+Spotify | 2026-06-10 | 1000 USD | scheduled | -
+Spotify | 2026-07-10 | 1000 USD | paid | 2026-07-10 -1000
+Spotify | 2026-08-10 | 1000 USD | scheduled | -
+Spotify | 2026-09-10 | 1000 USD | scheduled | -
+Spotify | 2026-10-10 | 1000 USD | scheduled | -
+Spotify | 2026-11-10 | 1000 USD | scheduled | -
+Spotify | 2026-12-10 | 1000 USD | scheduled | -
+Spotify | 2027-01-10 | 1000 USD | scheduled | -
+Spotify | 2027-02-10 | 1000 USD | scheduled | -
+Spotify | 2027-03-10 | 1000 USD | scheduled | -
+Spotify | 2027-04-10 | 1000 USD | scheduled | -
+Spotify | 2027-05-10 | 1000 USD | scheduled | -
+Spotify | 2027-06-10 | 1000 USD | scheduled | -
+Spotify | 2027-07-10 | 1000 USD | scheduled | -
+Water | 2025-08-15 | 6000 USD | scheduled | -
+Water | 2025-09-15 | 6000 USD | scheduled | -
+Water | 2025-10-15 | 6000 USD | scheduled | -
+Water | 2025-11-15 | 6000 USD | scheduled | -
+Water | 2025-12-15 | 6000 USD | scheduled | -
+Water | 2026-01-15 | 6000 USD | scheduled | -
+Water | 2026-02-15 | 6000 USD | scheduled | -
+Water | 2026-03-15 | 6000 USD | scheduled | -
+Water | 2026-04-15 | 6000 USD | scheduled | -
+Water | 2026-05-15 | 6000 USD | scheduled | -
+Water | 2026-06-15 | 6000 USD | scheduled | -
+Water | 2026-07-15 | 6000 USD | paid | 2026-07-15 -6000
+Water | 2026-08-15 | 6000 USD | scheduled | -
+Water | 2026-09-15 | 6000 USD | scheduled | -
+Water | 2026-10-15 | 6000 USD | scheduled | -
+Water | 2026-11-15 | 6000 USD | scheduled | -
+Water | 2026-12-15 | 6000 USD | scheduled | -
+Water | 2027-01-15 | 6000 USD | scheduled | -
+Water | 2027-02-15 | 6000 USD | scheduled | -
+Water | 2027-03-15 | 6000 USD | scheduled | -
+Water | 2027-04-15 | 6000 USD | scheduled | -
+Water | 2027-05-15 | 6000 USD | scheduled | -
+Water | 2027-06-15 | 6000 USD | scheduled | -
+Water | 2027-07-15 | 6000 USD | scheduled | -
+[bills]
+Rent | 2025-08-01 | 180000 | scheduled | -
+Rent | 2025-09-01 | 180000 | scheduled | -
+Rent | 2025-10-01 | 180000 | scheduled | -
+Rent | 2025-11-01 | 180000 | scheduled | -
+Rent | 2025-12-01 | 180000 | scheduled | -
+Rent | 2026-01-01 | 180000 | scheduled | -
+Rent | 2026-02-01 | 180000 | scheduled | -
+Rent | 2026-03-01 | 180000 | scheduled | -
+Rent | 2026-04-01 | 180000 | scheduled | -
+Rent | 2026-05-01 | 180000 | scheduled | -
+Rent | 2026-06-01 | 180000 | scheduled | -
+Rent | 2026-07-01 | 180000 | paid | 2026-07-01 -180000
+Rent | 2026-08-01 | 180000 | scheduled | -
+Rent | 2026-09-01 | 180000 | scheduled | -
+Rent | 2026-10-01 | 180000 | scheduled | -
+Rent | 2026-11-01 | 180000 | scheduled | -
+Rent | 2026-12-01 | 180000 | scheduled | -
+Rent | 2027-01-01 | 180000 | scheduled | -
+Rent | 2027-02-01 | 180000 | scheduled | -
+Rent | 2027-03-01 | 180000 | scheduled | -
+Rent | 2027-04-01 | 180000 | scheduled | -
+Rent | 2027-05-01 | 180000 | scheduled | -
+Rent | 2027-06-01 | 180000 | scheduled | -
+Rent | 2027-07-01 | 180000 | scheduled | -
+Spotify | 2025-08-10 | 1000 | scheduled | -
+Spotify | 2025-09-10 | 1000 | scheduled | -
+Spotify | 2025-10-10 | 1000 | scheduled | -
+Spotify | 2025-11-10 | 1000 | scheduled | -
+Spotify | 2025-12-10 | 1000 | scheduled | -
+Spotify | 2026-01-10 | 1000 | scheduled | -
+Spotify | 2026-02-10 | 1000 | scheduled | -
+Spotify | 2026-03-10 | 1000 | scheduled | -
+Spotify | 2026-04-10 | 1000 | scheduled | -
+Spotify | 2026-05-10 | 1000 | scheduled | -
+Spotify | 2026-06-10 | 1000 | scheduled | -
+Spotify | 2026-07-10 | 1000 | paid | 2026-07-10 -1000
+Spotify | 2026-08-10 | 1000 | scheduled | -
+Spotify | 2026-09-10 | 1000 | scheduled | -
+Spotify | 2026-10-10 | 1000 | scheduled | -
+Spotify | 2026-11-10 | 1000 | scheduled | -
+Spotify | 2026-12-10 | 1000 | scheduled | -
+Spotify | 2027-01-10 | 1000 | scheduled | -
+Spotify | 2027-02-10 | 1000 | scheduled | -
+Spotify | 2027-03-10 | 1000 | scheduled | -
+Spotify | 2027-04-10 | 1000 | scheduled | -
+Spotify | 2027-05-10 | 1000 | scheduled | -
+Spotify | 2027-06-10 | 1000 | scheduled | -
+Spotify | 2027-07-10 | 1000 | scheduled | -
+Gym | 2025-08-12 | 4500 | scheduled | -
+Gym | 2025-09-12 | 4500 | scheduled | -
+Gym | 2025-10-12 | 4500 | scheduled | -
+Gym | 2025-11-12 | 4500 | scheduled | -
+Gym | 2025-12-12 | 4500 | scheduled | -
+Gym | 2026-01-12 | 4500 | scheduled | -
+Gym | 2026-02-12 | 4500 | scheduled | -
+Gym | 2026-03-12 | 4500 | scheduled | -
+Gym | 2026-04-12 | 4500 | scheduled | -
+Gym | 2026-05-12 | 4500 | scheduled | -
+Gym | 2026-06-12 | 4500 | scheduled | -
+Gym | 2026-07-12 | 4500 | scheduled | -
+Gym | 2026-08-12 | 4500 | scheduled | -
+Gym | 2026-09-12 | 4500 | scheduled | -
+Gym | 2026-10-12 | 4500 | scheduled | -
+Gym | 2026-11-12 | 4500 | scheduled | -
+Gym | 2026-12-12 | 4500 | scheduled | -
+Gym | 2027-01-12 | 4500 | scheduled | -
+Gym | 2027-02-12 | 4500 | scheduled | -
+Gym | 2027-03-12 | 4500 | scheduled | -
+Gym | 2027-04-12 | 4500 | scheduled | -
+Gym | 2027-05-12 | 4500 | scheduled | -
+Gym | 2027-06-12 | 4500 | scheduled | -
+Gym | 2027-07-12 | 4500 | scheduled | -
+Water | 2025-08-15 | 6000 | scheduled | -
+Water | 2025-09-15 | 6000 | scheduled | -
+Water | 2025-10-15 | 6000 | scheduled | -
+Water | 2025-11-15 | 6000 | scheduled | -
+Water | 2025-12-15 | 6000 | scheduled | -
+Water | 2026-01-15 | 6000 | scheduled | -
+Water | 2026-02-15 | 6000 | scheduled | -
+Water | 2026-03-15 | 6000 | scheduled | -
+Water | 2026-04-15 | 6000 | scheduled | -
+Water | 2026-05-15 | 6000 | scheduled | -
+Water | 2026-06-15 | 6000 | scheduled | -
+Water | 2026-07-15 | 6000 | paid | 2026-07-15 -6000
+Water | 2026-08-15 | 6000 | scheduled | -
+Water | 2026-09-15 | 6000 | scheduled | -
+Water | 2026-10-15 | 6000 | scheduled | -
+Water | 2026-11-15 | 6000 | scheduled | -
+Water | 2026-12-15 | 6000 | scheduled | -
+Water | 2027-01-15 | 6000 | scheduled | -
+Water | 2027-02-15 | 6000 | scheduled | -
+Water | 2027-03-15 | 6000 | scheduled | -
+Water | 2027-04-15 | 6000 | scheduled | -
+Water | 2027-05-15 | 6000 | scheduled | -
+Water | 2027-06-15 | 6000 | scheduled | -
+Water | 2027-07-15 | 6000 | scheduled | -
+[unconfirmed past due]
+Gym | 2026-07-12 | 4500 USD | 8 days
+[future cash]
+start 614000 on 2026-07-20
+2026-07-25 | Visa payment | loan_payment | -1000 | RecurringSchedule { frequency: Monthly } | closing 613000
+2026-07-31 | Acme Corp | income | 300000 | RecurringSchedule { frequency: Biweekly } | closing 913000
+2026-08-01 | Rent | recurring_bill | -180000 | RecurringSchedule { frequency: Monthly } | closing 733000
+2026-08-12 | Gym | recurring_bill | -4500 | RecurringSchedule { frequency: Monthly } | closing 728500
+2026-08-14 | Acme Corp | income | 300000 | RecurringSchedule { frequency: Biweekly } | closing 1028500
+2026-08-15 | Water | recurring_bill | -6000 | RecurringSchedule { frequency: Monthly } | closing 1022500
+2026-08-28 | Acme Corp | income | 300000 | RecurringSchedule { frequency: Biweekly } | closing 1322500
+2026-09-01 | Rent | recurring_bill | -180000 | RecurringSchedule { frequency: Monthly } | closing 1142500
+2026-09-11 | Acme Corp | income | 300000 | RecurringSchedule { frequency: Biweekly } | closing 1442500
+2026-09-12 | Gym | recurring_bill | -4500 | RecurringSchedule { frequency: Monthly } | closing 1438000
+2026-09-15 | Water | recurring_bill | -6000 | RecurringSchedule { frequency: Monthly } | closing 1432000
+2026-09-25 | Acme Corp | income | 300000 | RecurringSchedule { frequency: Biweekly } | closing 1731000
+2026-09-25 | Visa payment | loan_payment | -1000 | RecurringSchedule { frequency: Monthly } | closing 1731000
+2026-10-01 | Rent | recurring_bill | -180000 | RecurringSchedule { frequency: Monthly } | closing 1551000

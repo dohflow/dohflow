@@ -846,7 +846,6 @@ fn starting_assignment_rows_are_not_silently_dropped() {
         "split_lines",
         "split_line_tags",
         "recurring_events",
-        "recurring_event_instances",
         "recurring_event_tags",
         "recurring_transfers",
         "bill_contracts",
@@ -867,6 +866,7 @@ fn starting_assignment_rows_are_not_silently_dropped() {
         // Class 2 projections.
         "money_inbox_read_model",
         "commitments",
+        "recurring_event_instances",
         "forecast_actuals",
         "forecast_diffs",
         "forecast_dirty_ranges",

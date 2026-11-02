@@ -893,6 +893,111 @@ fn a_command_that_also_rebuilds_a_read_model_has_the_same_write_set_as_one_that_
     assert_eq!(rebuilt_set.hash, plain_set.hash);
 }
 
+/// A vault whose recurring-instance rebuild writes rows: a rent bill with a ledger posting that
+/// links to its first occurrence (personal-cfo-5ymg8.9). Without it the rebuild writes nothing and
+/// the comparison below proves nothing.
+fn seed_a_bill_with_a_linked_posting(worker: &DbWorker) {
+    use chrono::NaiveDate;
+    use core_ledger::{AccountFlags, CashflowRole};
+    use core_money::{Currency, Money};
+
+    let meta = || crate::CommandMeta {
+        command_id: Uuid::now_v7(),
+        correlation_id: Uuid::now_v7(),
+        causation_id: None,
+        actor_type: crate::ActorType::User,
+        actor_id: "tester".to_owned(),
+        idempotency_key: Uuid::new_v4().to_string(),
+        issued_at: crate::IssuedAt::now(),
+    };
+    let checking = crate::AccountId::new();
+    let july_1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+    worker
+        .dispatch(
+            meta(),
+            crate::WriteCommand::CreateAccount {
+                account: Box::new(crate::Account::new(
+                    checking,
+                    crate::LedgerAccountId::new(),
+                    "Checking",
+                    CashflowRole::LiquidCash,
+                    Currency::Usd,
+                    AccountFlags::default(),
+                )),
+                opening_balance: None,
+            },
+        )
+        .unwrap();
+    worker
+        .dispatch(
+            meta(),
+            crate::WriteCommand::CreateRecurringBill {
+                event_id: crate::RecurringEventId::new(),
+                contract_id: crate::BillContractId::new(),
+                name: "Rent".to_owned(),
+                amount: Money::new(180_000, Currency::Usd),
+                bill_type: "rent_mortgage".to_owned(),
+                frequency: pay_schedule::Frequency::Monthly,
+                anchor: july_1,
+                autopay_account_id: Some(checking),
+                description: None,
+                source_merchant_key: None,
+                category_id: None,
+                tag_ids: Vec::new(),
+            },
+        )
+        .unwrap();
+    worker
+        .dispatch(
+            meta(),
+            crate::WriteCommand::RecordTransaction {
+                transaction_id: crate::TransactionId::new(),
+                account_id: checking,
+                amount: Money::new(-180_000, Currency::Usd),
+                occurred_at: july_1.and_hms_opt(12, 0, 0).unwrap().and_utc(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn rebuilding_recurring_instances_rows_inside_a_command_leaves_its_write_set_unchanged() {
+    // Two vaults in the same state; only the second rebuilds the instances inside the command.
+    let (_dir, plain) = worker();
+    seed_a_bill_with_a_linked_posting(&plain);
+    let plain_set = command(&plain, tag_insert).unwrap();
+    assert_eq!(tables(&plain_set), ["tags"]);
+
+    let (_dir, rebuilt) = worker();
+    seed_a_bill_with_a_linked_posting(&rebuilt);
+    let rebuilt_set = command(&rebuilt, |tx| {
+        tag_insert(tx)?;
+        crate::recurring_instances::rebuild_in(
+            tx,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap(),
+        )
+        .map_err(to_sqlite)?;
+        Ok(())
+    })
+    .unwrap();
+
+    // The rebuild really wrote instance rows, and one of them is linked to the posting.
+    let conn = rebuilt.read_connection().unwrap();
+    let (rows, linked): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(linked_transaction_id) FROM recurring_event_instances",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(rows > 0, "the rebuild wrote instance rows");
+    assert!(linked > 0, "an instance is linked to the posting");
+
+    // And none of it is part of the command's write set: the table is class 2.
+    assert_eq!(rebuilt_set.rows, plain_set.rows);
+    assert_eq!(rebuilt_set.hash, plain_set.hash);
+}
+
 fn to_sqlite(error: DbError) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(error))
 }

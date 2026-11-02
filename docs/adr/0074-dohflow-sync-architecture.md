@@ -1192,6 +1192,28 @@ inventory and the write set; the scenario cascade that deletes a scenario's edge
 cleanup of a rebuildable table. No command is written for it. The inventory row (vault-format.md,
 spec-version 18) and the manifests follow.
 
+**`recurring_event_instances` is class 2 (2026-11-02, `personal-cfo-5ymg8.9`).** It was recorded as
+class 1 outside Decision 5: the CLASS-0 manifest (owner `personal-cfo-rxw`) called it "canonical
+materialized recurring occurrences and user outcomes" and the inventory called it canonical user
+intent, which suggests splitting it into derived occurrences and class-1 user outcomes. The code
+shows the split has nothing to carry. Its one writer, `rebuild_in`, deletes every row and re-inserts
+the occurrences on a read connection; every column is derived from the active schedules and the
+ledger (`status` is `paid` exactly when a realized posting was linked, else `scheduled`); and the
+rows depend on the day they are rebuilt (the window starts at `today` and `created_at` is the
+rebuild day), so two devices on different days hold different rows and links and no single value
+exists to replicate. The household's confirmations are not stored here: they are
+`confirmed_obligations`, class 1, written by commands. The whole table is therefore class 2: it
+leaves the Sync and genesis inventory and the write set, and no command is written for it. The
+inventory row (vault-format.md, spec-version 23) and the manifests follow. No schema change:
+`override_amount_minor` and the `skipped` and `overridden` status values are dead (no code writes or
+reads them) and stay in place.
+
+Two rules follow for later work. An occurrence outcome (a skip or an adjusted amount) must never be
+stored on this table, because the next rebuild deletes it; a future feature of that kind gets its own
+class-1 table keyed `(recurring_event_id, scheduled_date)` and its own commands, and the projection
+reads it. And a class-1 decision, and so any command's apply, never reads this table, for the reason
+ADR 0073 Addendum D gives for class 3: its outcome would vary by device and day.
+
 ## Addendum G — The system-account map is class 1 (2026-10-31, `personal-cfo-32fmp.3`)
 
 An engineering correction to a class recorded outside Decision 5, ruled by planning inside this ADR
