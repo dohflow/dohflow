@@ -163,9 +163,9 @@ impl DbWorker {
             let outcome = if entry.verified {
                 crate::jobs::CommitOutcome::Succeeded
             } else {
-                crate::jobs::CommitOutcome::Failed(failure_reason)
+                crate::jobs::CommitOutcome::failed(failure_reason)
             };
-            crate::jobs::mark_committed(&tx, job_id, &chrono::Utc::now().to_rfc3339(), outcome)?;
+            crate::jobs::mark_committed(&tx, job_id, &chrono::Utc::now().to_rfc3339(), &outcome)?;
         }
         tx.commit()?;
         Ok(())

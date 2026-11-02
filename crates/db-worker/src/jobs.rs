@@ -180,11 +180,14 @@ pub(crate) fn mark_committed(
     conn: &rusqlite::Connection,
     id: Uuid,
     at: &str,
-    outcome: CommitOutcome<'_>,
+    outcome: &CommitOutcome,
 ) -> rusqlite::Result<usize> {
+    // (No call here to a helper that reads the clock, even by name: `apply` reaches this function, and
+    // the ratchet in tests/apply_clock_ratchet.rs matches helpers by name. The failure text is
+    // sanitized when the outcome is built.)
     let (outcome, last_error) = match outcome {
         CommitOutcome::Succeeded => ("succeeded", None),
-        CommitOutcome::Failed(reason) => ("failed", Some(sanitize_error(reason))),
+        CommitOutcome::Failed(reason) => ("failed", Some(reason.as_str())),
     };
     conn.execute(
         "UPDATE durable_jobs
@@ -198,13 +201,20 @@ pub(crate) fn mark_committed(
 }
 
 /// What a job's durable effect committed (personal-cfo-g3m.31).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommitOutcome<'a> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitOutcome {
     /// The work succeeded: recovery records a success.
     Succeeded,
-    /// The work recorded a failure (the text is what the job's `last_error` will say): recovery records
-    /// a failure.
-    Failed(&'a str),
+    /// The work recorded a failure (the already-sanitized text is what the job's `last_error` will say):
+    /// recovery records a failure. Build it with [`CommitOutcome::failed`].
+    Failed(String),
+}
+
+impl CommitOutcome {
+    /// A failure outcome whose reason is sanitized as the runner's own failure write is.
+    pub(crate) fn failed(reason: &str) -> Self {
+        Self::Failed(sanitize_error(reason))
+    }
 }
 
 impl DbWorker {

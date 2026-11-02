@@ -8012,7 +8012,7 @@ fn apply_command(
             &tx,
             job_id,
             &apply::issued_at_text(meta),
-            jobs::CommitOutcome::Succeeded,
+            &jobs::CommitOutcome::Succeeded,
         )?;
     }
 
