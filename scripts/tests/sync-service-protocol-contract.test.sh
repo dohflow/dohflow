@@ -194,15 +194,18 @@ need "the halt gate is outside sections 5 and 6" 'it is not a step of section 5 
 need "appendVoid works for a halted device" '`appendVoid` and `reportHalt` must work for a halted device'
 need "void evidence is retained" 'A server does not drop the envelope at a position a void'
 need "additions are recorded with their date" '| 2026-11-02 | `personal-cfo-g3m.33` |'
-refused="$(jq -r '[.operations[] | select(.op == "installEpoch" or .op == "stageSnapshot" or .op == "publishSnapshot") | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
-[ "$refused" = "3" ] && pass "stageSnapshot, publishSnapshot and installEpoch can all return ReplicaHalted" || fail "ReplicaHalted is not on all three gated operations"
+GATED="installEpoch stageSnapshot publishSnapshot beginSnapshotUpload putSnapshotPart completeSnapshotUpload"
+refused="$(jq -r --arg ops "$GATED" '($ops | split(" ")) as $g | [.operations[] | select(.op as $o | $g | index($o)) | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
+[ "$refused" = "6" ] && pass "the three operations that stage a snapshot or install an epoch, and the three that stage in parts, can all return ReplicaHalted" || fail "ReplicaHalted is not on all six gated operations"
 other="$(jq -r '[.operations[] | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
-[ "$other" = "3" ] && pass "no other operation returns ReplicaHalted" || fail "ReplicaHalted appears on an operation that the halt gate does not cover"
+[ "$other" = "6" ] && pass "no other operation returns ReplicaHalted" || fail "ReplicaHalted appears on an operation that the halt gate does not cover"
+abort_gated="$(jq -r '[.operations[] | select(.op == "abortSnapshotUpload") | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
+[ "$abort_gated" = "0" ] && pass "abortSnapshotUpload is not gated, so a halted device can clean up" || fail "abortSnapshotUpload must not return ReplicaHalted"
 SEC114="$(awk '/^### 11.4 /{on=1;next} /^### /{on=0} on' "$DOC")"
 answers="$(grep -c '^[1-5]\. \*\*.*:\*\* not changed' <<<"$SEC114")"
-[ "$answers" = "4" ] && pass "section 11.4 answers four of the five limits of 11.1 with 'not changed'" || fail "section 11.4 does not answer items 1, 3, 4 and 5 of 11.1 with 'not changed' (found $answers)"
+[ "$answers" = "9" ] && pass "section 11.4 answers four limits of 11.1 for g3m.33 and all five for g3m.36 with 'not changed'" || fail "section 11.4 does not answer 4 + 5 limits of 11.1 with 'not changed' (found $answers)"
 item2="$(grep -c '^2\. \*\*An existing member.s meaning:\*\*' <<<"$SEC114")"
-[ "$item2" = "1" ] && pass "section 11.4 answers item 2 of 11.1 itself" || fail "section 11.4 lost its answer to item 2 of 11.1"
+[ "$item2" = "2" ] && pass "section 11.4 answers item 2 of 11.1 for both beads" || fail "section 11.4 lost its answer to item 2 of 11.1 for one of the beads (found $item2)"
 need "item 2 names the pre-release amendment" 'that is the pre-release amendment of the first row, not an addition'
 need "11.1 states the pre-release rule" 'Protocol version 1 is pre-release until the first deploy of a conforming Sync server to the operator'"'"'s production environment'
 need "staging does not count as release" 'staging does not count'
@@ -216,6 +219,18 @@ if grep -Eq 'holds at least one entry' "$FLAT"; then
 else
   pass "no wording promises a page at least one entry"
 fi
+need "parts: a server accepts every snapshot through one of two paths" 'A server MUST accept every well-formed snapshot within section 7.1 through `stageSnapshot` or through these'
+need "parts: complete checks the whole container before it counts as staged" '**Nothing counts as staged until the whole container has been checked.**'
+need "parts: a digest mismatch discards the upload" 'and the server **discards the upload**'
+need "parts: 4.13 says an incomplete upload expires" 'An upload that is not completed within `snapshot_upload_expiry_seconds` is aborted by the server (section 7.3)'
+need "parts: 7.3 says an incomplete upload expires" 'An upload begun with `beginSnapshotUpload` that is not completed within `snapshot_upload_expiry_seconds` is aborted by the server'
+need "parts: 2.5 names the discard as an exception to the failure rule" 'A failure mutates nothing, with two stated exceptions'
+need "parts: 2.5 says which upload is discarded" 'whose assembled container does not match what was declared discards the upload it was completing'
+need "parts: 11.4 lists the discard exception" 'the second exception to the failure rule of 2.5, the discard of an upload whose container does not match what was declared'
+need "parts: 2.1 gives the part number its form" '`{part_number}` is an unsigned decimal in the syntax of section 2.2'
+need "parts: the part size floor" 'at least **5,242,880** bytes'
+need "parts: the part count ceiling" 'is at most **10,000**'
+need "parts: the 7.1 clarification is a listed pre-release amendment" '| 2026-11-03 | `personal-cfo-g3m.36` | pre-release amendment |'
 need "an incomplete page is a failed pull" 'treats it as a failed pull, never as a gap to skip'
 need "the response-member rule excepts voids" 'except the members this document defines'
 need "the pre-release changes are listed with a basis" '| pre-release amendment |'
@@ -224,6 +239,12 @@ if [ -f "$VOID_VECTORS" ] && [ "$(jq -r '.vectors_version' "$VOID_VECTORS")" = "
   pass "the void conformance vectors exist and the document names them"
 else
   fail "the void conformance vectors are missing, unversioned, or not named by section 11.2"
+fi
+PARTS_VECTORS="$REPO_ROOT/docs/architecture/vectors/sync-service-snapshot-parts-v1.json"
+if [ -f "$PARTS_VECTORS" ] && [ "$(jq -r '.vectors_version' "$PARTS_VECTORS")" = "1" ] && grep -Fq 'sync-service-snapshot-parts-v1.json' "$DOC"; then
+  pass "the snapshot-parts conformance vectors exist and the document names them"
+else
+  fail "the snapshot-parts conformance vectors are missing, unversioned, or not named by section 11.2"
 fi
 
 # The service dedupes only an identical void (spec-version 24): no passage may still say it dedupes a second void for the same position.
