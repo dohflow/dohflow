@@ -51,7 +51,12 @@ export function DebtPayoffCompare({ accountIds }: { accountIds?: string[] } = {}
   );
   const { baseCurrency } = useBaseCurrency();
   const { createPayoffScenario, pending } = useCreatePayoffScenario();
-  const [scenarioNote, setScenarioNote] = useState<string | null>(null);
+  // The result of "Add to Cash Flow". It is announced once when it arrives (a success politely, a
+  // failure as an alert) and stays until the amount changes; it never takes focus.
+  const [scenarioNote, setScenarioNote] = useState<{
+    kind: "added" | "failed";
+    text: string;
+  } | null>(null);
   // Which plan's per-debt breakdown to show (the cash outflow is the same across strategies; they
   // differ in which debt clears first).
   const [perDebtStrategy, setPerDebtStrategy] = useState<Strategy>("snowball");
@@ -72,11 +77,17 @@ export function DebtPayoffCompare({ accountIds }: { accountIds?: string[] } = {}
       });
       setScenarioNote(
         failure
-          ? describeIpcError(failure)
-          : `Added “${name}” — open Cash Flow to compare it against your base forecast.`,
+          ? { kind: "failed", text: describeIpcError(failure) }
+          : {
+              kind: "added",
+              text: `Added “${name}” — open Cash Flow to compare it against your base forecast.`,
+            },
       );
     } catch {
-      setScenarioNote("Could not add the scenario to Cash Flow. Please try again.");
+      setScenarioNote({
+        kind: "failed",
+        text: "Could not add the scenario to Cash Flow. Please try again.",
+      });
     } finally {
       submitting.current = false;
     }
@@ -155,7 +166,16 @@ export function DebtPayoffCompare({ accountIds }: { accountIds?: string[] } = {}
             Add to Cash Flow
           </Button>
         </div>
-        {scenarioNote && <p className="text-sm text-muted-foreground">{scenarioNote}</p>}
+        {/* The polite region is always mounted, so its text arriving is what gets announced; an
+            alert is announced as it appears. Only one of them holds the result at a time. */}
+        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+          {scenarioNote?.kind === "added" ? scenarioNote.text : null}
+        </p>
+        {scenarioNote?.kind === "failed" && (
+          <p role="alert" className="text-sm text-loss">
+            {scenarioNote.text}
+          </p>
+        )}
 
         {!loading && !error && plans && plans.length > 0 && (
           <DebtBurndownChart
