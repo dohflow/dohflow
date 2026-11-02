@@ -85,9 +85,9 @@ note = "Canonical recurring-event rules; replicated through the command bus."
 
 [[table]]
 table = "recurring_event_instances"
-class = "1"
-owner_bead = "personal-cfo-rxw"
-note = "Canonical materialized recurring occurrences and user outcomes; replicated through the command bus."
+class = "2"
+owner_bead = "personal-cfo-5ymg8.9"
+note = "Derived occurrences of the active schedules, linked to ledger postings; rebuilt locally on read from the schedules and the ledger, and dependent on today, so never shipped. It stores no user outcome (confirmations are class-1 confirmed_obligations); override_amount_minor and the skipped and overridden statuses are dead. Corrected from class 1 by ADR 0074 Addendum F."
 
 [[table]]
 table = "recurring_event_tags"

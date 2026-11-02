@@ -252,15 +252,6 @@ bead = "personal-cfo-0s0"
 note = "record_snooze / record_dismiss, called only from apply/inbox.rs."
 
 [[site]]
-module = "recurring_instances.rs"
-table = "recurring_event_instances"
-class = "1"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.9"
-note = "Materialized occurrences are rebuilt (DELETE + INSERT) on reads outside the bus although the manifest says class 1 with user outcomes. Owned by personal-cfo-5ymg8.9, which splits it: derived occurrences become class 2 and rebuild locally, user outcomes stay class 1 through commands."
-
-[[site]]
 module = "rekey.rs"
 table = "attachments"
 class = "4"
