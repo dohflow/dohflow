@@ -8,6 +8,10 @@ import type {
 } from "@/bindings";
 import { BulkTransactionActions } from "./BulkTransactionActions";
 
+const mocks = vi.hoisted(() => ({ transactionRowsByIds: vi.fn() }));
+vi.mock("@/bindings", () => ({ commands: mocks }));
+const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
+
 function txn(id: string, over: Partial<TransactionRowDto> = {}): TransactionRowDto {
   return {
     transaction_id: id,
@@ -47,19 +51,28 @@ const TAG: TagViewDto = { id: "tag-1", name: "Vacation", color: null, archived: 
 
 const okOp = () => Promise.resolve<IpcError | null>(null);
 
+/// The fresh read returns the rows as selected unless a test says the tags moved.
+beforeEach(() => {
+  mocks.transactionRowsByIds.mockReset();
+  mocks.transactionRowsByIds.mockImplementation(async () => ok(currentRows));
+});
+let currentRows: TransactionRowDto[] = [];
+
 function setup(over: Partial<Parameters<typeof BulkTransactionActions>[0]> = {}) {
   const ops = {
     recategorize: vi.fn(okOp),
     setReviewed: vi.fn(okOp),
     deleteTransaction: vi.fn(okOp),
-    setTags: vi.fn(okOp),
+    setTags: vi.fn<(id: string, tagIds: string[]) => Promise<IpcError | null>>(okOp),
     createTag: vi.fn<(name: string) => Promise<string | IpcError>>(async () => "tag-new"),
     onSelectAll: vi.fn(),
     onSelectionChange: vi.fn(),
   };
+  const selected = over.selected ?? [txn("t1"), txn("t2")];
+  currentRows = selected;
   render(
     <BulkTransactionActions
-      selected={[txn("t1"), txn("t2")]}
+      selected={selected}
       total={5}
       categories={[CATEGORY]}
       tags={[TAG]}
@@ -155,4 +168,88 @@ test("offers Select all when not everything is selected", () => {
   const ops = setup(); // 2 of 5 selected
   fireEvent.click(screen.getByRole("button", { name: /select all 5 shown/i }));
   expect(ops.onSelectAll).toHaveBeenCalled();
+});
+
+describe("bulk tag is honest (5n4.10)", () => {
+  const tagInput = () => screen.getByLabelText(/add or create tag/i);
+  const enter = (name = "Vacation") => {
+    fireEvent.change(tagInput(), { target: { value: name } });
+    fireEvent.keyDown(tagInput(), { key: "Enter" });
+  };
+
+  test("merges into the tags as they are now, not as the list last saw them", async () => {
+    const ops = setup({ selected: [txn("t1", { tag_ids: ["old"] })] });
+    currentRows = [txn("t1", { tag_ids: ["old", "added-elsewhere"] })];
+    enter();
+    await waitFor(() =>
+      expect(ops.setTags).toHaveBeenCalledWith("t1", ["old", "added-elsewhere", "tag-1"]),
+    );
+  });
+
+  test("a second Enter or click while the fresh read is pending does nothing", async () => {
+    const ops = setup();
+    let release: (value: unknown) => void = () => {};
+    mocks.transactionRowsByIds.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    enter();
+    // Busy from the first keystroke, not only once the writes start.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add" })).toBeDisabled());
+    fireEvent.keyDown(tagInput(), { key: "Enter" });
+    fireEvent.keyDown(tagInput(), { key: "Enter" });
+    expect(mocks.transactionRowsByIds).toHaveBeenCalledTimes(1);
+    release(ok([txn("t1"), txn("t2")]));
+    await waitFor(() => expect(ops.setTags).toHaveBeenCalledTimes(2));
+    expect(mocks.transactionRowsByIds).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["is refused", () => mocks.transactionRowsByIds.mockResolvedValue({ status: "error", error: { Validation: "no" } })],
+    ["throws", () => mocks.transactionRowsByIds.mockRejectedValue(new Error("connection lost"))],
+  ])("a fresh read that %s stops with an error and writes nothing", async (_name, fail) => {
+    const ops = setup({ selected: [txn("t1", { tag_ids: ["old"] }), txn("t2")] });
+    fail();
+    enter();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t read the current tags, so nothing was changed. Try again.",
+    );
+    expect(ops.setTags).not.toHaveBeenCalled();
+    // The selection is untouched and the bar is usable again.
+    expect(ops.onSelectionChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  test("a row the fresh read no longer returns is not written, and is counted as not changed", async () => {
+    const ops = setup();
+    currentRows = [txn("t1")];
+    enter();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Tagged 1 of 2 — 1 failed.");
+    expect(ops.setTags).toHaveBeenCalledTimes(1);
+    expect(ops.setTags).toHaveBeenCalledWith("t1", ["tag-1"]);
+    expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2"]);
+  });
+
+  test("a partial result says how many changed and how many did not, whether a row was refused or threw", async () => {
+    const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+    ops.setTags.mockImplementation(async (id: string) => {
+      if (id === "t2") return { Validation: "nope" } as IpcError;
+      if (id === "t3") throw new Error("connection lost");
+      return null;
+    });
+    enter();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Tagged 1 of 3 — 2 failed.");
+    expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2", "t3"]);
+    // Not stuck busy after a row threw.
+    expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  test("other bulk actions are also exclusive while one is running", async () => {
+    let release: (value: IpcError | null) => void = () => {};
+    const ops = setup();
+    ops.recategorize.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    fireEvent.click(screen.getByRole("button", { name: "Categorize selected" }));
+    fireEvent.pointerDown(screen.getByRole("option", { name: /Groceries/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+    expect(ops.setReviewed).not.toHaveBeenCalled();
+    release(null);
+  });
 });
