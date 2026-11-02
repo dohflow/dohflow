@@ -16,7 +16,10 @@
 //!   duplicate / unmatched-account exception, ADR 0014 §2/§3). The item id and
 //!   `surfaced_at` derive from the staged row (its id + `created_at`), so a rebuild
 //!   is byte-identical. Resolution is intrinsic: import-anyway flips the row to
-//!   `committed` and skip to `skipped`, so the next rebuild omits it.
+//!   `committed` and skip to `skipped`, so the next rebuild omits it. The payload's
+//!   `suspected_duplicate` is derived from the stored `dedupe_status`: it is `false` for a row the
+//!   ledger could not accept (flagged with a `not imported:` reason and its `dedupe_status` left
+//!   alone), which the view labels apart from a possible duplicate (personal-cfo-pxi.14).
 //!
 //! **Soft actions (ADR 0014 §7 / personal-cfo-3d3).** Snooze and dismiss don't change
 //! canonical state, so they're recorded in `change_journal_entries` and re-applied to
@@ -236,7 +239,8 @@ fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
                       AND c.proposed_account_id IS s.proposed_account_id
                       AND c.commit_status = 'committed'
                       AND lt.voided_at IS NULL
-                    ORDER BY c.created_at, c.id LIMIT 1))
+                    ORDER BY c.created_at, c.id LIMIT 1)),
+                s.dedupe_status
          FROM staged_transactions s
          JOIN source_records sr ON sr.id = s.source_record_id
          JOIN source_batches sb ON sb.id = sr.source_batch_id
@@ -259,6 +263,7 @@ fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
                 r.get::<_, Option<String>>(9)?,  // account name
                 r.get::<_, Option<String>>(10)?, // dedupe reason
                 r.get::<_, Option<Uuid>>(11)?,   // suspected committed txn id
+                r.get::<_, String>(12)?,         // dedupe_status
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -278,6 +283,7 @@ fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
         account_name,
         reason,
         counterpart_txn_id,
+        dedupe_status,
     ) in &rows
     {
         let account_uuid = account_id.map(|id| id.to_string());
@@ -287,7 +293,7 @@ fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
         let payload = format!(
             "{{\"merchant\":{},\"description\":{},\"amount_minor\":{},\"currency\":{},\
              \"posted_at\":{},\"account_id\":{},\"account_name\":{},\"source_name\":{},\
-             \"dedupe_reason\":{},\"suspected_committed_txn_id\":{}}}",
+             \"dedupe_reason\":{},\"suspected_committed_txn_id\":{},\"suspected_duplicate\":{}}}",
             json_opt(merchant.as_deref()),
             json_opt(description.as_deref()),
             amount_minor,
@@ -298,6 +304,11 @@ fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
             json_opt(source_name.as_deref()),
             json_opt(reason.as_deref()),
             json_opt(counterpart.as_deref()),
+            // Derived from the stored `dedupe_status`, so a rebuild gives the same answer. A row the ledger
+            // cannot accept (zero amount, a currency that differs from the account's, no or an unknown
+            // account, an unreadable date) is flagged with a `not imported:` reason and its
+            // `dedupe_status` left alone: it is not a duplicate (personal-cfo-pxi.14).
+            dedupe_status == "suspected_duplicate",
         );
         conn.execute(
             "INSERT INTO money_inbox_read_model (

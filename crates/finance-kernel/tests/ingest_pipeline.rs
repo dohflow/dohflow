@@ -741,6 +741,15 @@ fn an_invalid_row_is_flagged_and_the_rest_of_the_batch_commits() {
             "{}",
             inbox[0].payload_json
         );
+        // personal-cfo-pxi.14: a row the ledger cannot accept is NOT a suspected duplicate, and the
+        // payload says so from the stored dedupe status.
+        assert!(
+            inbox[0]
+                .payload_json
+                .ends_with("\"suspected_duplicate\":false}"),
+            "{reason}: {}",
+            inbox[0].payload_json
+        );
 
         // Re-importing the identical file is file-deduped and adds nothing.
         let again = import_middle(&kernel, plugin, account_id);
