@@ -122,6 +122,7 @@
         "VaultNotFound",
         "ReplicaHalted",
         "WritesSuspended",
+        "PayloadTooLarge",
         "MalformedObject",
         "UnsupportedSuite",
         "EpochRejected",
@@ -234,6 +235,67 @@
       "errors": [
         "VaultNotFound"
       ]
+    },
+    {
+      "op": "beginSnapshotUpload",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "ReplicaHalted",
+        "WritesSuspended",
+        "SnapshotTooLarge",
+        "PayloadTooLarge",
+        "ObjectConflict",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "putSnapshotPart",
+      "method": "PUT",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads/parts/{part_number}",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "ReplicaHalted",
+        "WritesSuspended",
+        "UploadNotFound",
+        "PartOutOfSequence",
+        "ObjectConflict",
+        "MalformedObject",
+        "UnsupportedSuite",
+        "EpochRejected",
+        "PayloadTooLarge"
+      ]
+    },
+    {
+      "op": "completeSnapshotUpload",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads/complete",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "ReplicaHalted",
+        "WritesSuspended",
+        "UploadNotFound",
+        "UploadIncomplete",
+        "MalformedObject",
+        "EpochRejected"
+      ]
+    },
+    {
+      "op": "abortSnapshotUpload",
+      "method": "DELETE",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads",
+      "auth": "account/device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound"
+      ]
     }
   ],
   "common_errors": [
@@ -336,6 +398,10 @@
       "status": 404
     },
     {
+      "code": "UploadNotFound",
+      "status": 404
+    },
+    {
       "code": "VaultExists",
       "status": 409
     },
@@ -377,6 +443,14 @@
     },
     {
       "code": "VoidTargetMismatch",
+      "status": 409
+    },
+    {
+      "code": "PartOutOfSequence",
+      "status": 409
+    },
+    {
+      "code": "UploadIncomplete",
       "status": 409
     },
     {
