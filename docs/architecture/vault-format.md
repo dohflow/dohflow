@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=20 -->
+<!-- vault-format: spec-version=22 -->
 <!-- vault-format: schema-version=62 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,14 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 22` (personal-cfo-5ie.12) adds the version 1 command `RevertScenarioApplyConfirmed`
+  (`scenario_id` and `confirmed_descendants`, strictly ascending) and retires `RevertScenarioApply`:
+  it stays decodable and replays as before, and no producer builds it. Apply clears the confirmed
+  active descendants of the promoted rows, restores what the apply superseded and clears the
+  promoted rows; it refuses with `StateConflict` and writes nothing when a later apply sits on top
+  or when the active descendants differ from the confirmed list. ADR 0073 Addendum I gives the
+  disposition (Base-dependent). No schema version, wire layout or existing vector changes; the
+  version 1 payload fixtures gain one file.
 - `spec-version = 20` (personal-cfo-5ymg8.4) records `scenarios` and `forecast_assumption_events`
   as class 1 (included in Sync and genesis and in the write set, key `id`) now that commands write
   them, and adds `scenarios.deleted_at` to the `scenarios` row (schema version 62): a delete is a

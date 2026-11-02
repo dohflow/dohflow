@@ -289,7 +289,8 @@ receives semantic auto-merge treatment.
 | `ConfirmObligationEarly` | Base-dependent | auto after idempotent re-evaluation of (event, date) |
 | `ConvertUnexplainedToTransaction` | Base-dependent | auto after residual/assertion re-evaluation |
 | `ApplyScenario` | Base-dependent | queue-choose (reversal handle is command_id) |
-| `RevertScenarioApply` | Base-dependent | queue-choose (reversal handle is command_id) |
+| `RevertScenarioApply` | Base-dependent | queue-choose (reversal handle is command_id); retired, never produced |
+| `RevertScenarioApplyConfirmed` | Base-dependent | auto iff the active descendants equal the confirmed list; queue-choose otherwise |
 | `DeleteRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ReinstateRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DeleteIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -575,6 +576,29 @@ and never replicates; ADR 0074 Addendum H). **Validation moves into apply:** a s
 (`PayloadInvalid` for both), and the existing refusals of `ApplyScenario` and
 `RevertScenarioApply` (no such scenario, already applied, nothing to apply, not applied) are
 classified `ReferenceMissing` and `StateConflict` sites instead of `InvalidCommand`.
+
+## Addendum I — Undoing an apply follows the chain (2026-11-01, `personal-cfo-5ie.12`)
+
+`RevertScenarioApplyConfirmed` is added as a version 1 command carrying `scenario_id` and
+`confirmed_descendants`, strictly ascending (a repeat or a misordered list is `PayloadInvalid`).
+That makes **Base-dependent 6** and 80 appendix rows (**Create 14**, **Set 30**, **Toggle 25**
+unchanged). The frozen `RevertScenarioApply` stays decodable with its apply unchanged, because an
+operation log written since `personal-cfo-t2s4b` can hold it, but no producer builds it any more
+(a test scans the sources for one); its appendix row is marked retired.
+
+**The payload carries what the person confirmed.** The producer reads the active descendants of the
+promoted rows (the edits made to the promoted items since the apply) and sends them, as
+`CloneScenario` sends its source ids. Apply recomputes that set on the current base and compares by
+set equality: a difference is `StateConflict` with no write (another device changed a promoted item
+meanwhile, so the person confirms again). The disposition is Base-dependent: **auto** when the
+active descendants equal the confirmed list, **queue-choose** otherwise.
+
+**What apply does.** It clears exactly the confirmed descendants, restores the base events the
+apply superseded, clears the promoted rows and unmarks the scenario. Two refusals keep applies
+undone last first, both `StateConflict` with no write: a promoted row's chain reaches a row
+promoted from another scenario, or a base event to restore has its key held by a row promoted from
+another scenario that is still applied, or by an edit of one. A key held by a plain base row (the person recorded a newer value) leaves the
+older event superseded, and the confirmation says so. No id is minted and no clock is read.
 
 ## Linked beads
 

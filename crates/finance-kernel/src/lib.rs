@@ -47,9 +47,10 @@ pub use db_worker::{
     LoanPaymentMatch, ManualEntry, MatchStrength, MatchedBy, MoneyInboxItem, MultiSeriesForecast,
     NewScenario, Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecurringBillView,
     RecurringCandidateView, RecurringInstanceRow, RecurringTransferView, RepaymentPhilosophy,
-    ReviewStatus, ScenarioStatus, ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput,
-    SplitLineView, TagView, TransactionDisplayRow, TransactionPage, TransactionPageQuery,
-    TransactionRow, TransactionSortOrder, UnconfirmedOccurrence, VaultMetadata, WorkerState,
+    RevertBlocker, RevertChange, RevertLine, RevertPreview, ReviewStatus, ScenarioStatus,
+    ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput, SplitLineView, TagView,
+    TransactionDisplayRow, TransactionPage, TransactionPageQuery, TransactionRow,
+    TransactionSortOrder, UnconfirmedOccurrence, VaultMetadata, WorkerState,
     AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
     FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
@@ -415,19 +416,28 @@ impl KernelCommand for ApplyScenario {
     }
 }
 
-/// Undo an [`ApplyScenario`] (ADR 0055 §5): clear the promoted base events and restore
-/// whatever they superseded. Reverting a scenario that is not applied is an error, not a
-/// no-op — checked in the db-worker apply.
-#[derive(Debug, Clone, Copy)]
+/// Undo an [`ApplyScenario`] and everything done to its promoted items since (ADR 0055 §5 as
+/// amended by personal-cfo-5ie.12): clear the promoted base events and the changes made to them,
+/// and restore whatever they superseded. Reverting a scenario that is not applied is an error,
+/// not a no-op — checked in the db-worker apply.
+///
+/// `confirmed_descendants` is the list the person saw in the confirmation
+/// ([`Kernel::revert_preview`]), passed back unchanged. It is never recomputed here: the
+/// command compares it with the changes on the base when it applies, and refuses if they differ.
+#[derive(Debug, Clone)]
 pub struct RevertScenarioApply {
     scenario_id: Uuid,
+    confirmed_descendants: Vec<Uuid>,
 }
 
 impl RevertScenarioApply {
-    /// Revert the apply of `scenario_id`.
+    /// Revert the apply of `scenario_id`, clearing the `confirmed_descendants` the person saw.
     #[must_use]
-    pub const fn new(scenario_id: Uuid) -> Self {
-        Self { scenario_id }
+    pub const fn new(scenario_id: Uuid, confirmed_descendants: Vec<Uuid>) -> Self {
+        Self {
+            scenario_id,
+            confirmed_descendants,
+        }
     }
 }
 
@@ -435,7 +445,7 @@ impl sealed::Sealed for RevertScenarioApply {}
 
 impl KernelCommand for RevertScenarioApply {
     fn kind(&self) -> &'static str {
-        "revert_scenario_apply"
+        "revert_scenario_apply_confirmed"
     }
 
     fn validate(&self) -> Result<(), KernelError> {
@@ -443,8 +453,9 @@ impl KernelCommand for RevertScenarioApply {
     }
 
     fn lower(self) -> WriteCommand {
-        WriteCommand::RevertScenarioApply {
+        WriteCommand::RevertScenarioApplyConfirmed {
             scenario_id: self.scenario_id,
+            confirmed_descendants: self.confirmed_descendants,
         }
     }
 }
@@ -4676,6 +4687,23 @@ impl Kernel {
     /// Returns [`KernelError`] on a read failure or an unrecognized stored token.
     pub fn list_scenarios(&self) -> Result<Vec<ScenarioView>, KernelError> {
         Ok(self.worker.list_scenarios()?)
+    }
+
+    /// The applied scenarios that were deleted afterwards (personal-cfo-5ie.12): deleting hides a
+    /// scenario but leaves its apply in the forecast, so these stay listed to be undone.
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a read failure or an unrecognized stored token.
+    pub fn deleted_applied_scenarios(&self) -> Result<Vec<ScenarioView>, KernelError> {
+        Ok(self.worker.deleted_applied_scenarios()?)
+    }
+
+    /// What undoing an applied scenario would do, for the confirmation (personal-cfo-5ie.12).
+    ///
+    /// # Errors
+    /// Returns [`KernelError`] on a read failure.
+    pub fn revert_preview(&self, scenario_id: Uuid) -> Result<RevertPreview, KernelError> {
+        Ok(self.worker.revert_preview(scenario_id)?)
     }
 
     /// Update a scenario's lifecycle status (draft → active → archived)

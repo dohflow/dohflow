@@ -173,6 +173,8 @@ macro_rules! app_commands {
             ipc::commands::archive_scenario,
             ipc::commands::apply_scenario,
             ipc::commands::revert_scenario_apply,
+            ipc::commands::scenario_revert_preview,
+            ipc::commands::scenario_deleted_applied_list,
             ipc::commands::spend_by_category,
             ipc::commands::clone_scenario,
             ipc::commands::set_scenario_expiry,
