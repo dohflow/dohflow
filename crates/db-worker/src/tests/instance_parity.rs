@@ -162,14 +162,12 @@ fn snapshot() -> (String, Vec<String>) {
     out.push_str("[instances]\n");
     let mut rows = crate::recurring_instances::read_rows(&conn).unwrap();
     rows.sort_by(|a, b| {
-        (name_of(a.recurring_event_id.into()), &a.scheduled_date)
-            .cmp(&(name_of(b.recurring_event_id.into()), &b.scheduled_date))
+        (name_of(a.recurring_event_id), &a.scheduled_date)
+            .cmp(&(name_of(b.recurring_event_id), &b.scheduled_date))
     });
     for row in &rows {
         let name = name_of(row.recurring_event_id);
-        let link = row
-            .linked_transaction_id
-            .map_or("-".to_owned(), &posting_of);
+        let link = row.linked_transaction_id.map_or("-".to_owned(), posting_of);
         if row.linked_transaction_id.is_some() {
             linked.push(format!("{name} {}", row.scheduled_date));
         }
@@ -189,9 +187,7 @@ fn snapshot() -> (String, Vec<String>) {
         ("Water", water),
     ] {
         for row in crate::recurring_instances::read_rows_for_event(&conn, id.as_uuid()).unwrap() {
-            let link = row
-                .linked_transaction_id
-                .map_or("-".to_owned(), &posting_of);
+            let link = row.linked_transaction_id.map_or("-".to_owned(), posting_of);
             writeln!(
                 out,
                 "{label} | {} | {} | {} | {link}",
