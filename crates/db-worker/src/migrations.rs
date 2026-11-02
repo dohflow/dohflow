@@ -2160,6 +2160,35 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Durable commit marker (personal-cfo-g3m.31): `committed_at` is set in the same transaction as a
+    // running job's durable effect (the connector's import commit, the backup's receipt), and
+    // `committed_outcome` says what committed: 'succeeded', or 'failed' for a backup receipt that
+    // records a failure. Together they let recovery and every finish path tell "nothing committed" from
+    // "committed", and record the truth either way. The two are always set and cleared together (the
+    // paired CHECK). `durable_jobs` stays class 3 (device-local, never synced). Both are transient: set
+    // while a run is in flight, cleared when the run is claimed again and at every terminal write. Two
+    // nullable adds, no backfill: no existing row has committed anything it could not already say.
+    Migration {
+        version: 63,
+        name: "durable_job_commit_marker",
+        up: "ALTER TABLE durable_jobs ADD COLUMN committed_at TEXT;
+             ALTER TABLE durable_jobs ADD COLUMN committed_outcome TEXT
+                 CHECK (committed_outcome IS NULL OR committed_outcome IN ('succeeded', 'failed'))
+                 CHECK ((committed_at IS NULL) = (committed_outcome IS NULL));",
+        // Reverse: refuses (atomically, like 57, 59, 60, 61 and 62) while a running job carries a
+        // marker, because dropping the columns would make a committed run look uncommitted to recovery.
+        down: Some(
+            "CREATE TEMP TABLE durable_jobs_down_needs_no_marker (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO durable_jobs_down_needs_no_marker
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM durable_jobs WHERE committed_at IS NOT NULL)
+                             THEN 0 ELSE 1 END;
+             DROP TABLE durable_jobs_down_needs_no_marker;
+             ALTER TABLE durable_jobs DROP COLUMN committed_outcome;
+             ALTER TABLE durable_jobs DROP COLUMN committed_at;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -3363,7 +3392,14 @@ mod tests {
             migrate_down(&mut conn, 61).is_err(),
             "down must refuse with a tombstoned scenario"
         );
-        assert_eq!(user_version_of(&conn), 62, "still at 62");
+        // `apply` stamps the newest version it knows, so "still applied" is what the tracker says.
+        assert!(
+            super::applied_versions(&conn)
+                .unwrap()
+                .iter()
+                .any(|(v, _)| *v == 62),
+            "62 is still applied"
+        );
         assert_eq!(tombstoned(&conn), 1, "nothing changed");
 
         conn.execute("UPDATE scenarios SET deleted_at = NULL", [])
@@ -3374,6 +3410,94 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM scenarios", [], |r| r.get(0))
             .unwrap();
         assert_eq!(kept, 1, "the scenario survives the down");
+    }
+
+    /// 63 adds the marker and its outcome as NULL on every existing job, refuses an unpaired or unknown
+    /// marker, and its down refuses while a job carries one.
+    #[test]
+    fn v63_adds_an_empty_paired_commit_marker_and_its_down_refuses_while_one_is_set() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..62]).unwrap();
+        conn.execute(
+            "INSERT INTO durable_jobs (id, kind, cadence, state, next_due_at, max_attempts,
+                                       created_at, updated_at)
+             VALUES (x'00000000000000000000000000000001', 'k', 'once', 'queued', 't', 3, 't', 't')",
+            [],
+        )
+        .unwrap();
+        apply(&mut conn, &MIGRATIONS[62..63]).unwrap();
+        let marked = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM durable_jobs
+                  WHERE committed_at IS NOT NULL AND committed_outcome IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(marked(&conn), 0, "an existing job has committed nothing");
+
+        // The two are set and cleared together, and the outcome is one of two words.
+        for refused in [
+            "UPDATE durable_jobs SET committed_at = 't'",
+            "UPDATE durable_jobs SET committed_outcome = 'succeeded'",
+            "UPDATE durable_jobs SET committed_at = 't', committed_outcome = 'maybe'",
+        ] {
+            assert!(conn.execute(refused, []).is_err(), "{refused}");
+        }
+        for outcome in ["succeeded", "failed"] {
+            conn.execute(
+                "UPDATE durable_jobs SET committed_at = 't', committed_outcome = ?1",
+                [outcome],
+            )
+            .unwrap();
+            assert_eq!(marked(&conn), 1);
+            conn.execute(
+                "UPDATE durable_jobs SET committed_at = NULL, committed_outcome = NULL",
+                [],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "UPDATE durable_jobs SET committed_at = 't', committed_outcome = 'failed'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            migrate_down(&mut conn, 62).is_err(),
+            "down must refuse while a job carries a marker"
+        );
+        assert!(
+            super::applied_versions(&conn)
+                .unwrap()
+                .iter()
+                .any(|(v, _)| *v == 63),
+            "63 is still applied"
+        );
+        assert_eq!(marked(&conn), 1, "nothing changed");
+
+        conn.execute(
+            "UPDATE durable_jobs SET committed_at = NULL, committed_outcome = NULL",
+            [],
+        )
+        .unwrap();
+        assert_eq!(migrate_down(&mut conn, 62).unwrap(), 1);
+        assert_eq!(user_version_of(&conn), 62);
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM durable_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "the job survives the down");
+        for column in ["committed_at", "committed_outcome"] {
+            let present: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('durable_jobs') WHERE name = ?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 0, "{column} is gone");
+        }
     }
 
     /// A vault has exactly one household, however a row is inserted.

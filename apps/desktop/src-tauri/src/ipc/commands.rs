@@ -6526,7 +6526,9 @@ fn connector_sync_inner(
                     }
                 }
                 let source_name = format!("{} sync", adapter.display_name());
-                let result = kernel.ingest_sync_batch(
+                // A scheduled refresh's job carries its commit marker from the first durable write on
+                // (personal-cfo-g3m.31): a manual sync has no job and no marker.
+                let result = kernel.ingest_sync_batch_for_job(
                     adapter.id(),
                     &synced.adapter_version,
                     &source_name,
@@ -6534,6 +6536,7 @@ fn connector_sync_inner(
                     &synced.batch,
                     &effective_map,
                     &user_meta(&input.idempotency_key),
+                    run.map(|run| run.job_id),
                 )?;
                 // Watermarks advance ONLY for links that (a) were mapped when
                 // the walk started (phase-1 map — a mid-sync mapping keeps

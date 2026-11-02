@@ -2,7 +2,10 @@
 
 use std::fs;
 
-use finance_kernel::{BackupCadence, BackupHistoryKind, Kernel};
+use chrono::{DateTime, Duration, Utc};
+use finance_kernel::{
+    BackupCadence, BackupHistoryKind, Clock, Kernel, BACKUP_JOB_ID, BACKUP_JOB_KIND,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -80,4 +83,51 @@ fn scheduled_exports_keep_prior_backups_and_never_delete_foreign_files() {
         .iter()
         .any(|entry| entry.backup_id == on_demand.backup_id
             && entry.kind == BackupHistoryKind::Manual));
+}
+
+struct FixedClock(DateTime<Utc>);
+
+impl Clock for FixedClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.0
+    }
+}
+
+/// personal-cfo-g3m.31: a SCHEDULED receipt is the scheduled job's durable effect and carries its commit
+/// marker; a manual backup, made while that job happens to be running, writes none.
+#[test]
+fn only_a_scheduled_receipt_marks_the_running_backup_job() {
+    let vault_dir = tempdir().unwrap();
+    let backup_dir = vault_dir.path().join("backups");
+    fs::create_dir(&backup_dir).unwrap();
+    let kernel =
+        Kernel::create_vault(vault_dir.path().join("vault.db"), b"correct horse battery").unwrap();
+    kernel
+        .configure_backup_schedule(BackupCadence::Weekly, Some(&backup_dir))
+        .unwrap();
+    // Claim the job so it is running (its next due time is a week away).
+    let clock = FixedClock(Utc::now() + Duration::days(30));
+    let (claimed, _) = kernel
+        .claim_due_jobs_of_kind(BACKUP_JOB_KIND, clock.now(), "window", &clock)
+        .unwrap();
+    assert_eq!(claimed.len(), 1, "the backup job is running");
+    assert!(!kernel.job_commit_marked(BACKUP_JOB_ID).unwrap());
+
+    let manual = backup_dir.join("manual.pcfobk");
+    kernel.export_manual_backup(&manual, "0.2.0-test").unwrap();
+    assert!(
+        !kernel.job_commit_marked(BACKUP_JOB_ID).unwrap(),
+        "a manual export writes no marker"
+    );
+    kernel.run_backup_now("0.2.0-test").unwrap();
+    assert!(
+        !kernel.job_commit_marked(BACKUP_JOB_ID).unwrap(),
+        "neither does a backup run on demand"
+    );
+
+    kernel.run_scheduled_backup("0.2.0-test").unwrap();
+    assert!(
+        kernel.job_commit_marked(BACKUP_JOB_ID).unwrap(),
+        "the scheduled receipt marks the job"
+    );
 }

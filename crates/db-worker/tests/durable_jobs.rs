@@ -19,8 +19,8 @@ use chrono::{DateTime, Duration, Utc};
 use common::worker;
 use db_worker::{DbError, DbWorker, JobStoreError};
 use job_runtime::{
-    BackoffPolicy, CancellationToken, Clock, JobExecution, JobExecutor, JobFinishResult, JobRecord,
-    JobRunner, JobSpec, JobState, JobStore, Schedule,
+    BackoffPolicy, CancellationToken, Clock, JobExecution, JobExecutor, JobFailure,
+    JobFinishResult, JobRecord, JobRunner, JobSpec, JobState, JobStore, Schedule,
 };
 use rusqlite::params;
 use uuid::Uuid;
@@ -1018,4 +1018,291 @@ fn cancellation_wins_the_final_poll_to_executor_skipped_write_race() {
     let row = worker.durable_job(id).unwrap().unwrap();
     assert_eq!(row.state, JobState::Cancelled);
     assert_eq!(row.last_outcome, Some(job_runtime::JobOutcome::Cancelled));
+}
+
+// ---- the durable commit marker (personal-cfo-g3m.31) ----------------------------------------------
+
+/// The commit marker as the row holds it.
+fn marker(worker: &DbWorker, id: Uuid) -> Option<String> {
+    worker
+        .read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT committed_at FROM durable_jobs WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// A claimed (running) job whose durable effect has, or has not, committed: the effect is a real
+/// command dispatched with the marker, so the marker and the effect are one transaction.
+fn running_job(worker: &DbWorker, committed: bool) -> Uuid {
+    let id = Uuid::now_v7();
+    worker
+        .schedule_job(&spec(id, Schedule::Interval { seconds: 3600 }))
+        .unwrap();
+    assert!(worker.claim_job(id, 1, now(), "unlock-marker").unwrap());
+    if committed {
+        worker
+            .dispatch_marking_job(common::meta(), common::create_account_cmd(), id)
+            .unwrap();
+    }
+    id
+}
+
+#[test]
+fn recovery_reads_the_marker_a_committed_row_with_a_cancel_pending_succeeds() {
+    let (_dir, worker) = worker();
+    let committed = running_job(&worker, true);
+    let uncommitted = running_job(&worker, false);
+    let committed_no_cancel = running_job(&worker, true);
+    assert!(worker.cancel_job(committed).unwrap());
+    assert!(worker.cancel_job(uncommitted).unwrap());
+    assert!(
+        marker(&worker, committed).is_some(),
+        "the effect carried the marker"
+    );
+    assert!(marker(&worker, uncommitted).is_none());
+
+    assert_eq!(worker.recover_running(now()).unwrap(), 3);
+
+    let row = worker.durable_job(committed).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Succeeded, "its work is in");
+    assert_eq!(row.last_outcome, Some(job_runtime::JobOutcome::Succeeded));
+    assert_eq!(row.next_due_at, Some(now() + Duration::seconds(3600)));
+    assert!(!row.cancel_requested);
+    assert!(
+        marker(&worker, committed).is_none(),
+        "the marker lives for one run"
+    );
+    assert_eq!(
+        worker.durable_job(uncommitted).unwrap().unwrap().state,
+        JobState::Cancelled,
+        "nothing committed, so the cancel stands"
+    );
+    // No cancel pending: a committed row is requeued as before (the handler is idempotent).
+    assert_eq!(
+        worker
+            .durable_job(committed_no_cancel)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Queued
+    );
+    assert!(marker(&worker, committed_no_cancel).is_none());
+}
+
+#[test]
+fn a_failure_after_the_marker_is_recorded_failed_even_with_a_cancel_pending() {
+    let (_dir, worker) = worker();
+    for (committed, expected, finish) in [
+        (true, JobState::Failed, JobFinishResult::Applied),
+        (false, JobState::Running, JobFinishResult::Cancelled),
+    ] {
+        let id = running_job(&worker, committed);
+        assert!(worker.cancel_job(id).unwrap());
+        let job = worker.durable_job(id).unwrap().unwrap();
+        let result = worker
+            .finish_failure(
+                &job,
+                now(),
+                &JobFailure::permanent("bookkeeping failed"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(result, finish, "marker set: {committed}");
+        assert_eq!(
+            worker.durable_job(id).unwrap().unwrap().state,
+            expected,
+            "marker set: {committed}"
+        );
+        if committed {
+            assert!(
+                marker(&worker, id).is_none(),
+                "cleared by the terminal write"
+            );
+        }
+    }
+}
+
+/// The same case through the real runner: a handler whose effect committed with the marker, whose
+/// own bookkeeping then fails while a cancel request is pending, is recorded failed, not cancelled.
+#[test]
+fn the_runner_records_a_committed_handlers_failure_as_failed_despite_a_pending_cancel() {
+    struct CommitThenFail<'a>(&'a DbWorker);
+    impl JobExecutor<()> for CommitThenFail<'_> {
+        fn execute(
+            &self,
+            job: &JobRecord,
+            _cancellation: &CancellationToken,
+            _context: &(),
+        ) -> JobExecution {
+            self.0
+                .dispatch_marking_job(common::meta(), common::create_account_cmd(), job.id)
+                .unwrap();
+            self.0.cancel_job(job.id).unwrap();
+            JobExecution::Failed(JobFailure::permanent("bookkeeping failed"))
+        }
+    }
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    let report = worker
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-commit-then-fail",
+            &(),
+            &CommitThenFail(&worker),
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+    assert_eq!((report.failed, report.cancelled), (1, 0));
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Failed
+    );
+}
+
+#[test]
+fn the_marker_is_cleared_by_a_new_claim_and_by_every_terminal_write() {
+    let (_dir, worker) = worker();
+    let id = running_job(&worker, true);
+    assert!(marker(&worker, id).is_some());
+    assert!(worker.job_committed(id).unwrap());
+    let job = worker.durable_job(id).unwrap().unwrap();
+    worker
+        .finish_committed(&job, now(), Some(now() + Duration::seconds(3600)))
+        .unwrap();
+    assert!(marker(&worker, id).is_none(), "finish_committed clears it");
+    assert!(
+        !worker.job_committed(id).unwrap(),
+        "and a row that is not running has none"
+    );
+
+    // A stale marker on a row that is about to be claimed again never survives the claim.
+    worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "UPDATE durable_jobs SET committed_at = 't', committed_outcome = 'succeeded' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+    assert!(worker.claim_job(id, 1, now(), "unlock-again").unwrap());
+    assert!(
+        marker(&worker, id).is_none(),
+        "a claim starts a run with nothing committed"
+    );
+
+    for finish in ["cancelled", "skipped", "success"] {
+        worker
+            .read_connection()
+            .unwrap()
+            .execute(
+                "UPDATE durable_jobs SET committed_at = 't', committed_outcome = 'succeeded' WHERE id = ?1",
+                params![id],
+            )
+            .unwrap();
+        let job = worker.durable_job(id).unwrap().unwrap();
+        match finish {
+            "cancelled" => worker.finish_cancelled(&job, now(), "stop").unwrap(),
+            "skipped" => {
+                worker.finish_skipped(&job, now()).unwrap();
+            }
+            _ => {
+                worker.finish_success(&job, now(), None).unwrap();
+            }
+        }
+        assert!(marker(&worker, id).is_none(), "{finish} clears it");
+        if finish != "success" {
+            // Put the row back to running for the next terminal write.
+            worker
+                .read_connection()
+                .unwrap()
+                .execute(
+                    "UPDATE durable_jobs SET state = 'running' WHERE id = ?1",
+                    params![id],
+                )
+                .unwrap();
+        }
+    }
+}
+
+/// A handler that reports only `Succeeded` for work the store knows committed (its marker is set), with
+/// a cancel request pending, is recorded succeeded through the real store: the runner promotes it to a
+/// commit, because the store's `finish_success` would otherwise defer to the cancel.
+#[test]
+fn the_runner_promotes_a_marked_success_to_a_commit_through_the_real_store() {
+    struct CommitThenSucceed<'a>(&'a DbWorker);
+    impl JobExecutor<()> for CommitThenSucceed<'_> {
+        fn execute(
+            &self,
+            job: &JobRecord,
+            _cancellation: &CancellationToken,
+            _context: &(),
+        ) -> JobExecution {
+            self.0
+                .dispatch_marking_job(common::meta(), common::create_account_cmd(), job.id)
+                .unwrap();
+            self.0.cancel_job(job.id).unwrap();
+            JobExecution::Succeeded
+        }
+    }
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    worker.schedule_job(&spec(id, Schedule::Once)).unwrap();
+    let report = worker
+        .run_due_jobs_with_clock(
+            now(),
+            "unlock-marked-success",
+            &(),
+            &CommitThenSucceed(&worker),
+            &CancellationToken::new(),
+            &FixedClock(now()),
+        )
+        .unwrap();
+    assert_eq!((report.succeeded, report.cancelled), (1, 0));
+    assert_eq!(
+        worker.durable_job(id).unwrap().unwrap().state,
+        JobState::Succeeded
+    );
+}
+
+/// A marked row whose outcome is 'failed' (a backup receipt that records a failure) and that has a cancel
+/// pending is recovered as failed, with the stored reason and the Money Inbox item that reason raises:
+/// never cancelled, never requeued, never succeeded.
+#[test]
+fn recovery_records_a_failed_marker_as_failed_with_its_reason_and_an_inbox_item() {
+    let (_dir, worker) = worker();
+    let id = running_job(&worker, false);
+    worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "UPDATE durable_jobs
+                SET committed_at = 't', committed_outcome = 'failed', last_error = 'Backup failed.'
+              WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+    assert!(worker.cancel_job(id).unwrap());
+
+    assert_eq!(worker.recover_running(now()).unwrap(), 1);
+
+    let row = worker.durable_job(id).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Failed);
+    assert_eq!(row.last_outcome, Some(job_runtime::JobOutcome::Failed));
+    assert_eq!(row.last_error.as_deref(), Some("Backup failed."));
+    assert!(!row.cancel_requested);
+    assert!(
+        marker(&worker, id).is_none(),
+        "the marker lives for one run"
+    );
+    let inbox = worker.money_inbox_list().unwrap();
+    assert!(
+        inbox.iter().any(|item| item.item_kind == "job_failure"),
+        "the failure reaches the Money Inbox"
+    );
 }
