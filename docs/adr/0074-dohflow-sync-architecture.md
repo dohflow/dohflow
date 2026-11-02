@@ -1069,8 +1069,12 @@ reached is never "invalid"; for any deterministic reason; the void's `reason` by
 and see the same `command_id` and `envelope_digest` in the void. Anything else is
 inert: kept for diagnosis, skipping nothing. The service cannot make this decision (it cannot read
 the plaintext), so it never refuses a void because an earlier void's range would cover it; it
-dedupes only an identical void or a second void for the exact same position. Otherwise a member
-could append a void for a *valid* envelope and block every later genuine void inside its range.
+dedupes only an identical void (the same body id) and keeps every distinct void, including a second
+one for the exact same position. Otherwise a member could append a void for a *valid* envelope and
+block every later genuine void inside its range, and a void that is inert for a signer-controlled
+reason would block the genuine one for the same position. (Corrected 2026-11-02, `personal-cfo-g3m.33`:
+the earlier text also deduped a second void for the same position. The finding is `03a-escalation`'s
+from the `personal-cfo-g3m.26` pre-read, item 4, adopted as `personal-cfo-v98vd` AC22.)
 The signer must be an authorized member at the membership head in force at the void's position. A
 malicious member therefore cannot void a **valid** envelope (this is recovery, not censorship),
 and spam is inert. A replica stopped at `N` always evaluates `N` before it can read a void
