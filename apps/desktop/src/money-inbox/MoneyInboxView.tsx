@@ -68,7 +68,24 @@ type ImportedWaitingCommitPayload = {
   source_name: string | null;
   dedupe_reason: string | null;
   suspected_committed_txn_id: string | null;
+  /// `true` for a suspected duplicate; `false` for a row the ledger could not accept (zero amount,
+  /// a currency that differs from the account's, no or an unknown account, an unreadable date),
+  /// which is not a duplicate and cannot be imported anyway (personal-cfo-pxi.14).
+  suspected_duplicate: boolean;
 };
+
+/// The stored reason of a row the ledger could not accept starts with this (db-worker
+/// `apply/ingestion_cmds.rs`). Only the legacy-payload fallback below reads it.
+const NOT_IMPORTED_PREFIX = "not imported:";
+
+/// The stored reason as a sentence for the person: `not imported: the amount is zero` becomes
+/// `The amount is zero.`
+function unimportableSentence(reason: string | null): string {
+  const bare = (reason ?? "").replace(/^not imported:\s*/i, "").trim();
+  if (bare.length === 0) return "This row couldn't be added to your ledger.";
+  const sentence = bare.charAt(0).toUpperCase() + bare.slice(1);
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+}
 
 function parsePayload(json: string): ImportedWaitingCommitPayload | null {
   try {
@@ -77,6 +94,7 @@ function parsePayload(json: string): ImportedWaitingCommitPayload | null {
       return null;
     }
     const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+    const dedupeReason = str(raw.dedupe_reason);
     return {
       merchant: str(raw.merchant),
       description: str(raw.description),
@@ -85,8 +103,13 @@ function parsePayload(json: string): ImportedWaitingCommitPayload | null {
       posted_at: str(raw.posted_at) ?? "",
       account_name: str(raw.account_name),
       source_name: str(raw.source_name),
-      dedupe_reason: str(raw.dedupe_reason),
+      dedupe_reason: dedupeReason,
       suspected_committed_txn_id: str(raw.suspected_committed_txn_id),
+      // A projection built before the field existed has no `suspected_duplicate`: read the stored reason.
+      suspected_duplicate:
+        typeof raw.suspected_duplicate === "boolean"
+          ? raw.suspected_duplicate
+          : !(dedupeReason ?? "").toLowerCase().startsWith(NOT_IMPORTED_PREFIX),
     };
   } catch {
     return null;
@@ -932,6 +955,9 @@ function ImportedWaitingCommitRow({
   // A committed counterpart exists → lead with Review (the side-by-side panel is where
   // the decision is made, personal-cfo-4d8.8); otherwise the primary is Import anyway.
   const isReview = Boolean(payload?.suspected_committed_txn_id);
+  // A row the ledger could not accept is not a duplicate: it says why and offers Skip, never Import anyway
+  // (which could only return the kernel's validation error).
+  const cannotImport = payload !== null && !payload.suspected_duplicate;
 
   return (
     <>
@@ -965,6 +991,16 @@ function ImportedWaitingCommitRow({
             <Button size="sm" onClick={onReview}>
               Review
               <ArrowRight aria-hidden />
+            </Button>
+          ) : cannotImport ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending !== null}
+              onClick={() => run("skip", onSkip)}
+            >
+              <X aria-hidden />
+              {pending === "skip" ? "Skipping…" : "Skip"}
             </Button>
           ) : (
             <Button
@@ -1000,11 +1036,18 @@ function ImportedWaitingCommitRow({
             <div className="flex flex-col gap-3 p-4">
               <div className="flex items-start gap-2 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-                <span>
-                  <span className="font-medium">Possible duplicate.</span>{" "}
-                  {payload?.dedupe_reason ??
-                    "This looks like a transaction you already have."}
-                </span>
+                {cannotImport ? (
+                  <span>
+                    <span className="font-medium">Couldn't import.</span> This isn't a
+                    duplicate. {unimportableSentence(payload?.dedupe_reason ?? null)}
+                  </span>
+                ) : (
+                  <span>
+                    <span className="font-medium">Possible duplicate.</span>{" "}
+                    {payload?.dedupe_reason ??
+                      "This looks like a transaction you already have."}
+                  </span>
+                )}
               </div>
 
               {payload?.source_name && (
@@ -1046,7 +1089,7 @@ function ImportedWaitingCommitRow({
                   </>
                 ) : (
                   <>
-                    {!isReview && (
+                    {!isReview && !cannotImport && (
                       <Button
                         variant="ghost"
                         size="sm"

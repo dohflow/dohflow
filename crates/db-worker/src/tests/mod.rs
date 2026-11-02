@@ -6003,6 +6003,13 @@ fn flagging_a_staged_duplicate_surfaces_a_money_inbox_item() {
         "payload carries the merchant: {}",
         item.payload_json
     );
+    // personal-cfo-pxi.14: the payload says this one IS a suspected duplicate (from the stored
+    // `dedupe_status`), so the view reviews it instead of calling it unimportable.
+    assert!(
+        item.payload_json.ends_with("\"suspected_duplicate\":true}"),
+        "payload marks the suspected duplicate: {}",
+        item.payload_json
+    );
 }
 
 /// dsq: the Money Inbox projection is deterministic — rebuilding from canonical
