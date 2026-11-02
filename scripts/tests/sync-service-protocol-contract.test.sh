@@ -209,12 +209,14 @@ fi
 
 # The service dedupes only an identical void (spec-version 24): no passage may still say it dedupes a second void for the same position.
 ADR="$REPO_ROOT/docs/adr/0074-dohflow-sync-architecture.md"
-if tr '\n' ' ' < "$FORMAT" | tr -s ' ' | grep -Eq 'second void for (the )?(exact )?same'; then
+FLAT_FORMAT="$(tr '\n' ' ' < "$FORMAT" | tr -s ' ')"
+if grep -Eq 'second void for (the )?(exact )?same' <<<"$FLAT_FORMAT"; then
   fail "vault-format.md still says the service dedupes a second void for the same position"
 else
   pass "vault-format.md keeps every distinct void"
 fi
-if tr '\n' ' ' < "$ADR" | tr -s ' ' | grep -Eq 'second void for the exact same position\.? Otherwise|or a second void for the exact same position'; then
+FLAT_ADR="$(tr '\n' ' ' < "$ADR" | tr -s ' ')"
+if grep -Eq 'second void for the exact same position\.? Otherwise|or a second void for the exact same position' <<<"$FLAT_ADR"; then
   fail "ADR 0074 Addendum D still says the service dedupes a second void for the same position"
 else
   pass "ADR 0074 Addendum D keeps every distinct void"
