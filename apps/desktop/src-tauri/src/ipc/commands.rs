@@ -59,11 +59,11 @@ use crate::ipc::dto::{
     ScenarioDto, SetBillAutopayInput, SetCardStatementBalanceInput, SetDebtTermsInput,
     SetScenarioExpiryInput, SourcePresetDto, SpendBreakdownDto, SpendByCategoryInput, SplitLineDto,
     SplitLineInputDto, TagViewDto, TouchIdEnableDto, TouchIdEnableInput, TouchIdStateDto,
-    TouchIdStatusDto, TouchIdUnlockDto, TransactionPageDto, TransactionPageInput, TransactionRowDto,
-    UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput, UpdateBatchStateInput,
-    UpdateCategoryInput, UpdateIncomeSourceInput, UpdateManualFutureEntryInput,
-    UpdateRecurringBillInput, UpdateScenarioInput, VaultHealthDto, VaultListDto, VaultStatusDto,
-    VaultSummaryDto,
+    TouchIdStatusDto, TouchIdUnlockDto, TransactionPageDto, TransactionPageInput,
+    TransactionRowDto, UnconfirmObligationInput, UnconfirmedOccurrenceDto, UpdateAccountInput,
+    UpdateBatchStateInput, UpdateCategoryInput, UpdateIncomeSourceInput,
+    UpdateManualFutureEntryInput, UpdateRecurringBillInput, UpdateScenarioInput, VaultHealthDto,
+    VaultListDto, VaultStatusDto, VaultSummaryDto,
 };
 #[cfg(desktop)]
 use crate::ipc::dto::{ApplyUpdateResultDto, UpdateStatusDto};
