@@ -583,6 +583,74 @@ fn k2_a_password_unlock_is_not_held_up_by_a_prompt_and_a_late_restore_does_not_u
     );
 }
 
+#[test]
+fn k7_an_error_nobody_mapped_after_the_prompt_still_counts_toward_the_three() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    // A platform status this build has no name for: the prompt may have been shown, so it fails closed.
+    *rig.store.load_error.lock().unwrap() = Some(SecretError::Platform { code: 99_999 });
+    for expected in [1, 2] {
+        let outcome = rig.touch();
+        assert!(!outcome.unlocked);
+        assert_eq!(reason(&outcome), "prompt_not_completed");
+        assert_eq!(rig.counter(), expected);
+    }
+    assert_eq!(reason(&rig.touch()), "too_many_failed_prompts");
+    assert_eq!(rig.counter(), MAX_FAILED_PROMPTS);
+    assert!(
+        rig.item_exists(),
+        "the item is kept; only the password is now required"
+    );
+}
+
+#[test]
+fn k7_a_store_that_could_not_be_reached_shows_no_prompt_and_does_not_count() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    *rig.store.load_error.lock().unwrap() =
+        Some(SecretError::Unavailable(UnavailableReason::Locked));
+    let outcome = rig.touch();
+    assert!(!outcome.unlocked);
+    assert_eq!(reason(&outcome), "store_unavailable");
+    assert_eq!(
+        rig.counter(),
+        0,
+        "no prompt was shown, so nothing is counted"
+    );
+}
+
+#[test]
+fn k7_no_fingerprint_enrolled_shows_no_prompt_and_does_not_count() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    *rig.store.load_error.lock().unwrap() = Some(SecretError::BiometryNotEnrolled);
+    assert_eq!(reason(&rig.touch()), "biometry_not_enrolled");
+    assert_eq!(rig.counter(), 0);
+}
+
+#[test]
+fn k7_an_unlocked_vault_is_refused_before_any_prompt_or_count() {
+    let rig = Rig::new();
+    rig.enable();
+    // The vault is unlocked (Rig::new leaves it so): a Touch ID attempt has nothing to unlock.
+    rig.script(BiometryScript::Match);
+    let error = touch_id_unlock_with_options_impl(&rig.state, UnlockOptions::default())
+        .expect_err("an unlocked vault cannot be unlocked");
+    // The same refusal the unlock itself gives: an illegal transition, which the IPC layer reports as a
+    // persistence error without naming anything sensitive.
+    assert!(matches!(error, IpcError::Persistence(_)), "{error:?}");
+    assert_eq!(
+        rig.store.loads_entered.load(Ordering::SeqCst),
+        0,
+        "no prompt"
+    );
+    assert_eq!(rig.counter(), 0, "no count");
+    assert!(rig.store.counter_seen_at_prompt.lock().unwrap().is_empty());
+}
+
 // ---- K3: 30 days ----------------------------------------------------------------------------------
 
 #[test]
@@ -843,6 +911,42 @@ fn a_key_rotation_removes_the_item() {
     )
     .unwrap();
     assert!(!rig.item_exists());
+}
+
+#[test]
+fn k7_a_wrong_current_password_changes_nothing_and_touch_id_stays_on() {
+    let rig = Rig::new();
+    rig.enable();
+    let error = change_password_impl(
+        &rig.state,
+        ChangePasswordInput {
+            old_password: "not the password".to_owned(),
+            new_password: "a brand new password".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, IpcError::VaultUnlockFailed), "{error:?}");
+    assert!(rig.item_exists(), "a typo must not turn Touch ID off");
+    assert_eq!(rig.status().state, TouchIdStateDto::On);
+    // The old password still opens the vault.
+    rig.lock();
+    rig.password_unlock();
+}
+
+#[test]
+fn k7_a_wrong_password_for_a_rotation_changes_nothing_and_touch_id_stays_on() {
+    let rig = Rig::new();
+    rig.enable();
+    let error = rotate_vault_key_impl(
+        &rig.state,
+        RotateVaultKeyInput {
+            password: "not the password".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, IpcError::VaultUnlockFailed), "{error:?}");
+    assert!(rig.item_exists());
+    assert_eq!(rig.status().state, TouchIdStateDto::On);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! The flows the IPC commands call (`personal-cfo-xuu`). Key-bearing code stays here: the commands in
 //! `src/ipc` take and return only plain values (a password in a `Zeroizing`, a status, a reason code).
 
-use finance_kernel::{Kernel, KernelError, UnlockOptions};
+use finance_kernel::{Kernel, KernelError, UnlockOptions, VaultState};
 use platform_traits::SecretError;
 use zeroize::Zeroizing;
 
@@ -68,6 +68,20 @@ pub fn disable(state: &AppState) -> Result<(), SecretError> {
 
 /// One Touch ID unlock attempt for the locked active vault, with the host's per-vault options.
 pub fn unlock(state: &AppState, options: UnlockOptions) -> Attempt {
+    // A vault that is already unlocked (or in any state the unlock would refuse) gets the same typed
+    // refusal the unlock itself would give, BEFORE anything is prompted or counted.
+    match state.lock_controller() {
+        Ok(guard) => {
+            let from = guard.state();
+            if !from.can_transition_to(VaultState::Unlocking) {
+                return Attempt::Failed(KernelError::IllegalVaultTransition {
+                    from,
+                    to: VaultState::Unlocking,
+                });
+            }
+        }
+        Err(_) => return Attempt::Failed(poisoned()),
+    }
     state
         .touch_id()
         .unlock(&account(state), fingerprint(state), |material| {

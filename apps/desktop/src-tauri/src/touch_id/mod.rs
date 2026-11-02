@@ -530,12 +530,15 @@ impl TouchId {
                 self.restore(key, before, counted);
                 Attempt::PasswordRequired(Reason::SignedBuildNeeded)
             }
-            // Locked, no keychain, a platform error: not the user's finger. Restore and ask for the
-            // password.
-            _ => {
+            // The store could not be reached at all: no prompt was shown. Restore, and ask for the password.
+            SecretError::Unavailable(_) => {
                 self.restore(key, before, counted);
                 Attempt::PasswordRequired(Reason::StoreUnavailable)
             }
+            // Anything else after the prompt may have been shown (a platform status this build does not
+            // map, a code a newer macOS adds): it fails closed. The increment stays, so a failed match
+            // that arrives under a code nobody listed still counts toward the three.
+            _ => Attempt::PasswordRequired(failed_prompt_reason(counted.failed_prompts)),
         }
     }
 }
