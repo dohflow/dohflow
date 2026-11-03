@@ -47,6 +47,8 @@ vi.mock("@/bindings", () => ({
 }));
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
+const recordOk = () =>
+  ok({ transaction_id: "0190b000-0000-7000-8000-0000000000ff", result: { op_seq: 1, replayed: false } });
 const VACATION_TAG = "0190d000-0000-7000-8000-0000000000d1";
 
 const account = (over: Partial<AccountViewDto> = {}): AccountViewDto => ({
@@ -103,6 +105,17 @@ const openDetails = () => {
   }
 };
 
+/// The recurring bill the key test sends: every field the form builds the bill from.
+function fillBill() {
+  fireEvent.click(screen.getByLabelText(/set up as a recurring bill/i));
+  change(/bill name/i, "Mortgage");
+  change(/amount/i, "1500");
+  change(/first due date/i, "2026-07-05");
+  change(/frequency/i, "custom");
+  change("Interval count", "2");
+  change("Interval unit", "months");
+}
+
 async function openAddForm() {
   renderWithClient(<TransactionsView />);
   fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
@@ -121,6 +134,15 @@ describe("the Add transaction key's identity (personal-cfo-56w.8)", () => {
         fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
       },
       keys: () => mocks.recordTransaction.mock.calls.map((c) => c[0].idempotency_key),
+      success: {
+        arrange: () => mocks.recordTransaction.mockResolvedValueOnce(recordOk()),
+        // A saved transaction closes the form: the same draft is typed into a freshly opened one.
+        reopen: async () => {
+          fireEvent.click(await screen.findByRole("button", { name: /^add transaction$/i }));
+          change(/amount/i, "40");
+          change(/date/i, "2026-06-05");
+        },
+      },
       fields: [
         { name: "account", change: () => fireEvent.change(byId("txn-account"), { target: { value: SAVINGS.id } }) },
         { name: "amount", change: () => change(/amount/i, "41") },
@@ -137,18 +159,20 @@ describe("a recurring bill created from the Add form: key identity (personal-cfo
       name: "recurring at add time",
       open: async () => {
         await openAddForm();
-        fireEvent.click(screen.getByLabelText(/set up as a recurring bill/i));
-        change(/bill name/i, "Mortgage");
-        change(/amount/i, "1500");
-        change(/first due date/i, "2026-07-05");
-        change(/frequency/i, "custom");
-        change("Interval count", "2");
-        change("Interval unit", "months");
+        fillBill();
       },
       send: () => {
         fireEvent.click(screen.getByRole("button", { name: /create recurring bill/i }));
       },
       keys: () => mocks.createRecurringBill.mock.calls.map((c) => c[0].idempotency_key),
+      success: {
+        arrange: () => mocks.createRecurringBill.mockResolvedValueOnce(ok({ op_seq: 1, replayed: false })),
+        // A created bill closes the form: the same bill is typed into a freshly opened one.
+        reopen: async () => {
+          fireEvent.click(await screen.findByRole("button", { name: /^add transaction$/i }));
+          fillBill();
+        },
+      },
       fields: [
         { name: "bill name", change: () => change(/bill name/i, "Home loan") },
         { name: "amount", change: () => change(/amount/i, "1600") },

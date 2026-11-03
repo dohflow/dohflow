@@ -35,6 +35,12 @@ export type DraftKeySpec = {
   /// Where a typed refusal counts as a new draft (the convention for a refused write: nothing was
   /// saved, so the next try is a new draft). `arrange` makes the NEXT send come back refused.
   refusal?: { arrange: () => void };
+  /// Where a confirmed success closes the draft: the same figures sent again afterwards are a NEW
+  /// draft and must carry a new key (the bug is a key kept after the write it belonged to succeeded,
+  /// so a second, identical write replays the first). `arrange` makes the NEXT send succeed; the
+  /// helper then sends once, calls `reopen` if the success closed the form (it must put the SAME
+  /// draft back on screen, ready to send), and sends again.
+  success?: { arrange: () => void; reopen?: () => void | Promise<void> };
 };
 
 async function sendOnce(spec: DraftKeySpec): Promise<string> {
@@ -54,9 +60,23 @@ export async function expectDraftKeyIdentity(spec: DraftKeySpec): Promise<void> 
   const again = await sendOnce(spec);
   expect(again, `${spec.name}: an unchanged retry reuses the key`).toBe(first);
 
-  // Changing ANY one field is a new draft, and none of the keys so far may come back.
+  // A confirmed success is final: the same figures sent again are a new draft. This runs on the
+  // draft as first opened, so `reopen` only has to rebuild what `open` built.
   const seen = new Set([first]);
-  let previous = first;
+  let previousKey = first;
+  if (spec.success) {
+    spec.success.arrange();
+    const succeeded = await sendOnce(spec);
+    expect(succeeded, `${spec.name}: the send that succeeds is the same draft`).toBe(first);
+    await spec.success.reopen?.();
+    const next = await sendOnce(spec);
+    expect(next, `${spec.name}: after a confirmed success the same draft gets a new key`).not.toBe(succeeded);
+    seen.add(next);
+    previousKey = next;
+  }
+
+  // Changing ANY one field is a new draft, and none of the keys so far may come back.
+  let previous = previousKey;
   for (const field of spec.fields) {
     await field.change();
     const key = await sendOnce(spec);

@@ -8,14 +8,19 @@ import { expectDraftKeyIdentity } from "./idempotencyIdentity";
 function Form({
   identityFields,
   send,
+  resetOnSuccess = true,
 }: {
   identityFields: ("amount" | "date")[];
-  send: (key: string) => Promise<"unknown" | "refused">;
+  send: (key: string) => Promise<"unknown" | "refused" | "ok">;
+  /// False models the bug: the key outlives the write it belonged to.
+  resetOnSuccess?: boolean;
 }) {
   const [amount, setAmount] = useState("5");
   const [date, setDate] = useState("2026-01-01");
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(true);
   const draft = useRef<{ identity: string; key: string } | null>(null);
+  if (!open) return <button onClick={() => setOpen(true)}>Reopen</button>;
   return (
     <div>
       <input aria-label="amount" value={amount} onChange={(e) => setAmount(e.target.value)} />
@@ -31,6 +36,11 @@ function Form({
           const outcome = await send(draft.current.key);
           // A refusal is a confirmed failure: the next try is a new draft.
           if (outcome === "refused") draft.current = null;
+          // A success is final: the form closes, and (unless the bug is modelled) the draft is over.
+          if (outcome === "ok") {
+            if (resetOnSuccess) draft.current = null;
+            setOpen(false);
+          }
           setError(outcome);
         }}
       >
@@ -41,17 +51,23 @@ function Form({
   );
 }
 
-function harness(identityFields: ("amount" | "date")[]) {
+function harness(identityFields: ("amount" | "date")[], resetOnSuccess = true) {
   const keys: string[] = [];
   let refuseNext = false;
+  let succeedNext = false;
   const spec = {
     name: "fake form",
     open: () => {
       render(
         <Form
           identityFields={identityFields}
+          resetOnSuccess={resetOnSuccess}
           send={async (key) => {
             keys.push(key);
+            if (succeedNext) {
+              succeedNext = false;
+              return "ok";
+            }
             if (refuseNext) {
               refuseNext = false;
               return "refused";
@@ -70,6 +86,10 @@ function harness(identityFields: ("amount" | "date")[]) {
       { name: "date", change: () => { fireEvent.change(screen.getByLabelText("date"), { target: { value: String(Math.random()) } }); } },
     ],
     refusal: { arrange: () => { refuseNext = true; } },
+    success: {
+      arrange: () => { succeedNext = true; },
+      reopen: async () => { fireEvent.click(await screen.findByRole("button", { name: "Reopen" })); },
+    },
   };
   return spec;
 }
@@ -93,6 +113,18 @@ describe("expectDraftKeyIdentity (personal-cfo-56w.8)", () => {
       send();
     };
     await expect(expectDraftKeyIdentity(spec)).rejects.toThrow(/unchanged retry reuses the key/);
+  });
+
+  it("fails a form that keeps its key after a confirmed success, and names the step", async () => {
+    await expect(expectDraftKeyIdentity(harness(["amount", "date"], false))).rejects.toThrow(
+      /after a confirmed success the same draft gets a new key/,
+    );
+  });
+
+  it("passes when no success step is given, even for a form that keeps its key after success", async () => {
+    const { success: _success, ...withoutSuccess } = harness(["amount", "date"], false);
+    void _success;
+    await expectDraftKeyIdentity(withoutSuccess);
   });
 
   it("fails when no identity field is listed", async () => {
