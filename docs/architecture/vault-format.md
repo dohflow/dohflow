@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=26 -->
+<!-- vault-format: spec-version=27 -->
 <!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,7 +270,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 26` (personal-cfo-v98vd, AC27) names the failure for an epoch record whose
+- `spec-version = 27` (personal-cfo-v98vd, AC27) names the failure for an epoch record whose
   `membership_head` is neither installed nor in the same request: `EpochRecordMissing` (the converse
   of an add that no epoch record names), where the reference verifier and the vector
   `invalid_epoch_naming_an_unknown_head` had `BadEpochSequence`. A malformed pairing must not send a
