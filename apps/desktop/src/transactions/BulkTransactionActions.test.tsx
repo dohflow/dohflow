@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type {
   CategoryDto,
@@ -7,6 +7,10 @@ import type {
   TransactionRowDto,
 } from "@/bindings";
 import { BulkTransactionActions } from "./BulkTransactionActions";
+
+const mocks = vi.hoisted(() => ({ transactionRowsByIds: vi.fn() }));
+vi.mock("@/bindings", () => ({ commands: mocks }));
+const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 
 function txn(id: string, over: Partial<TransactionRowDto> = {}): TransactionRowDto {
   return {
@@ -47,19 +51,28 @@ const TAG: TagViewDto = { id: "tag-1", name: "Vacation", color: null, archived: 
 
 const okOp = () => Promise.resolve<IpcError | null>(null);
 
+/// The fresh read returns the rows as selected unless a test says the tags moved.
+beforeEach(() => {
+  mocks.transactionRowsByIds.mockReset();
+  mocks.transactionRowsByIds.mockImplementation(async () => ok(currentRows));
+});
+let currentRows: TransactionRowDto[] = [];
+
 function setup(over: Partial<Parameters<typeof BulkTransactionActions>[0]> = {}) {
   const ops = {
-    recategorize: vi.fn(okOp),
-    setReviewed: vi.fn(okOp),
-    deleteTransaction: vi.fn(okOp),
-    setTags: vi.fn(okOp),
+    recategorize: vi.fn<(id: string, categoryId: string | null) => Promise<IpcError | null>>(okOp),
+    setReviewed: vi.fn<(id: string, reviewed: boolean) => Promise<IpcError | null>>(okOp),
+    deleteTransaction: vi.fn<(id: string) => Promise<IpcError | null>>(okOp),
+    setTags: vi.fn<(id: string, tagIds: string[]) => Promise<IpcError | null>>(okOp),
     createTag: vi.fn<(name: string) => Promise<string | IpcError>>(async () => "tag-new"),
     onSelectAll: vi.fn(),
     onSelectionChange: vi.fn(),
   };
+  const selected = over.selected ?? [txn("t1"), txn("t2")];
+  currentRows = selected;
   render(
     <BulkTransactionActions
-      selected={[txn("t1"), txn("t2")]}
+      selected={selected}
       total={5}
       categories={[CATEGORY]}
       tags={[TAG]}
@@ -155,4 +168,276 @@ test("offers Select all when not everything is selected", () => {
   const ops = setup(); // 2 of 5 selected
   fireEvent.click(screen.getByRole("button", { name: /select all 5 shown/i }));
   expect(ops.onSelectAll).toHaveBeenCalled();
+});
+
+describe("bulk tag is honest (5n4.10)", () => {
+  const tagInput = () => screen.getByLabelText(/add or create tag/i);
+  const enter = (name = "Vacation") => {
+    fireEvent.change(tagInput(), { target: { value: name } });
+    fireEvent.keyDown(tagInput(), { key: "Enter" });
+  };
+
+  test("merges into the tags as they are now, not as the list last saw them", async () => {
+    const ops = setup({ selected: [txn("t1", { tag_ids: ["old"] })] });
+    currentRows = [txn("t1", { tag_ids: ["old", "added-elsewhere"] })];
+    enter();
+    await waitFor(() =>
+      expect(ops.setTags).toHaveBeenCalledWith("t1", ["old", "added-elsewhere", "tag-1"]),
+    );
+  });
+
+  test("a second Enter or click while the fresh read is pending does nothing", async () => {
+    const ops = setup();
+    let release: (value: unknown) => void = () => {};
+    mocks.transactionRowsByIds.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    enter();
+    // Busy from the first keystroke, not only once the writes start.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add" })).toBeDisabled());
+    fireEvent.keyDown(tagInput(), { key: "Enter" });
+    fireEvent.keyDown(tagInput(), { key: "Enter" });
+    expect(mocks.transactionRowsByIds).toHaveBeenCalledTimes(1);
+    release(ok([txn("t1"), txn("t2")]));
+    await waitFor(() => expect(ops.setTags).toHaveBeenCalledTimes(2));
+    expect(mocks.transactionRowsByIds).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["is refused", () => mocks.transactionRowsByIds.mockResolvedValue({ status: "error", error: { Validation: "no" } })],
+    ["throws", () => mocks.transactionRowsByIds.mockRejectedValue(new Error("connection lost"))],
+  ])("a fresh read that %s stops with an error and writes nothing", async (_name, fail) => {
+    const ops = setup({ selected: [txn("t1", { tag_ids: ["old"] }), txn("t2")] });
+    fail();
+    enter();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t read the current tags, so nothing was changed. Try again.",
+    );
+    expect(ops.setTags).not.toHaveBeenCalled();
+    // The selection is untouched and the bar is usable again.
+    expect(ops.onSelectionChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  test("a new tag is only created after the fresh read succeeds, so a failed read leaves nothing behind and keeps the typed name", async () => {
+    const ops = setup({ tags: [] });
+    mocks.transactionRowsByIds.mockRejectedValue(new Error("connection lost"));
+    enter("Travel");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t read the current tags, so nothing was changed. Try again.",
+    );
+    expect(ops.createTag).not.toHaveBeenCalled();
+    expect(ops.setTags).not.toHaveBeenCalled();
+    // Try again does not mean retyping.
+    expect(tagInput()).toHaveValue("Travel");
+
+    mocks.transactionRowsByIds.mockImplementation(async () => ok(currentRows));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(ops.setTags).toHaveBeenCalledTimes(2));
+    expect(ops.createTag).toHaveBeenCalledTimes(1);
+    expect(mocks.transactionRowsByIds.mock.invocationCallOrder[1]!).toBeLessThan(
+      ops.createTag.mock.invocationCallOrder[0]!,
+    );
+    expect(tagInput()).toHaveValue("");
+  });
+
+  test("two starts in the same tick run once: the guard does not wait for a re-render", async () => {
+    const ops = setup();
+    fireEvent.change(tagInput(), { target: { value: "Vacation" } });
+    const add = screen.getByRole("button", { name: "Add" });
+    // One act batches both clicks, so the button is still enabled for the second: only the
+    // synchronous guard can stop it.
+    await act(async () => {
+      add.click();
+      add.click();
+    });
+    await waitFor(() => expect(ops.setTags).toHaveBeenCalledTimes(2));
+    expect(mocks.transactionRowsByIds).toHaveBeenCalledTimes(1);
+  });
+
+  test("a row the fresh read no longer returns is not written, and is counted as not changed", async () => {
+    const ops = setup();
+    currentRows = [txn("t1")];
+    enter();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Tagged 1 of 2 — 1 failed.");
+    expect(ops.setTags).toHaveBeenCalledTimes(1);
+    expect(ops.setTags).toHaveBeenCalledWith("t1", ["tag-1"]);
+    expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2"]);
+  });
+
+  test("a partial result says how many changed and how many did not, whether a row was refused or threw", async () => {
+    const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+    ops.setTags.mockImplementation(async (id: string) => {
+      if (id === "t2") return { Validation: "nope" } as IpcError;
+      if (id === "t3") throw new Error("connection lost");
+      return null;
+    });
+    enter();
+    // A refusal is a failure; a call that threw is unconfirmed, because it may have saved.
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Tagged 1 of 3 — 1 failed, 1 couldn’t be confirmed. Check the unconfirmed rows before trying again.",
+    );
+    // Both stay selected; the saved one drops out.
+    expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2", "t3"]);
+    // Not stuck busy after a row threw.
+    expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  describe("a call that throws is unconfirmed for every bulk verb (5n4.10)", () => {
+    const CHECK = "Check the unconfirmed rows before trying again.";
+
+    test("only a thrown write: no failed count, and the row stays selected", async () => {
+      const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+      ops.setTags.mockImplementation(async (id: string) => {
+        if (id === "t3") throw new Error("connection lost");
+        return null;
+      });
+      enter();
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(`Tagged 2 of 3 — 1 couldn’t be confirmed. ${CHECK}`);
+      expect(alert).not.toHaveTextContent(/failed/);
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t3"]);
+    });
+
+    test("only a typed refusal: counted as failed, no unconfirmed sentence", async () => {
+      const ops = setup({ selected: [txn("t1"), txn("t2")] });
+      ops.setTags.mockImplementation(async (id: string) =>
+        id === "t2" ? ({ Validation: "nope" } as IpcError) : null,
+      );
+      enter();
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("Tagged 1 of 2 — 1 failed.");
+      expect(alert).not.toHaveTextContent(/confirm/);
+    });
+
+    test("Categorize: a rejected write is unconfirmed and stays selected", async () => {
+      const ops = setup();
+      ops.recategorize.mockImplementation(async (id: string) => {
+        if (id === "t1") throw new Error("connection lost");
+        return null;
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Categorize selected" }));
+      fireEvent.pointerDown(screen.getByRole("option", { name: /Groceries/ }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Recategorized 1 of 2 — 1 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1"]);
+    });
+
+    test("Delete: a rejected write is unconfirmed and stays selected", async () => {
+      const ops = setup();
+      ops.deleteTransaction.mockImplementation(async (id: string) => {
+        if (id === "t2") throw new Error("connection lost");
+        return null;
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+      fireEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Deleted 1 of 2 — 1 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2"]);
+    });
+
+    test("Mark reviewed (per row): a rejected write is unconfirmed and stays selected", async () => {
+      const ops = setup();
+      ops.setReviewed.mockImplementation(async (id: string) => {
+        if (id === "t1") throw new Error("connection lost");
+        return null;
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Marked reviewed 1 of 2 — 1 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1"]);
+    });
+
+    describe("when no row saved and one is unconfirmed, the lead says zero confirmed (round 2)", () => {
+      test("Tagged: failed and unconfirmed rows, the same ids stay selected, no new calls", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setTags.mockImplementation(async (id: string) => {
+          if (id === "t1") return { Validation: "nope" } as IpcError;
+          throw new Error("connection lost");
+        });
+        enter();
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Tagged: 0 of 3 confirmed — 1 failed, 2 couldn’t be confirmed. ${CHECK}`,
+        );
+        expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1", "t2", "t3"]);
+        expect(ops.setTags).toHaveBeenCalledTimes(3);
+        expect(ops.createTag).not.toHaveBeenCalled();
+      });
+
+      test("Mark reviewed (per row): every row unconfirmed", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setReviewed.mockRejectedValue(new Error("connection lost"));
+        fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Marked reviewed: 0 of 3 confirmed — 3 couldn’t be confirmed. ${CHECK}`,
+        );
+        expect(ops.onSelectionChange).toHaveBeenCalledWith(["t1", "t2", "t3"]);
+        expect(ops.setReviewed).toHaveBeenCalledTimes(3);
+      });
+
+      test("Delete and Categorize use the same form", async () => {
+        const ops = setup();
+        ops.deleteTransaction.mockRejectedValue(new Error("connection lost"));
+        fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+        fireEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Deleted: 0 of 2 confirmed — 2 couldn’t be confirmed. ${CHECK}`,
+        );
+        ops.recategorize.mockRejectedValue(new Error("connection lost"));
+        fireEvent.click(screen.getByRole("button", { name: "Categorize selected" }));
+        fireEvent.pointerDown(screen.getByRole("option", { name: /Groceries/ }));
+        await waitFor(() =>
+          expect(screen.getByRole("alert")).toHaveTextContent(
+            `Recategorized: 0 of 2 confirmed — 2 couldn’t be confirmed. ${CHECK}`,
+          ),
+        );
+      });
+
+      test("zero saved with only confirmed failures keeps the plain lead", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setTags.mockResolvedValue({ Validation: "nope" } as IpcError);
+        enter();
+        const alert = await screen.findByRole("alert");
+        expect(alert).toHaveTextContent("Tagged 0 of 3 — 3 failed.");
+        expect(alert).not.toHaveTextContent(/confirmed/);
+      });
+
+      test("a summary with at least one saved row keeps the plain lead", async () => {
+        const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3")] });
+        ops.setTags.mockImplementation(async (id: string) => {
+          if (id === "t1") return null;
+          if (id === "t2") return { Validation: "nope" } as IpcError;
+          throw new Error("connection lost");
+        });
+        enter();
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          `Tagged 1 of 3 — 1 failed, 1 couldn’t be confirmed. ${CHECK}`,
+        );
+      });
+    });
+
+    test("Mark reviewed (one call) that throws leaves every row selected and unconfirmed", async () => {
+      const bulk = vi.fn().mockRejectedValue(new Error("connection lost"));
+      const ops = setup({ bulkMarkReviewed: bulk });
+      fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `Marked reviewed: 0 of 2 confirmed — 2 couldn’t be confirmed. ${CHECK}`,
+      );
+      expect(ops.onSelectionChange).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+    });
+  });
+
+  test("other bulk actions are also exclusive while one is running", async () => {
+    let release: (value: IpcError | null) => void = () => {};
+    const ops = setup();
+    ops.recategorize.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    fireEvent.click(screen.getByRole("button", { name: "Categorize selected" }));
+    fireEvent.pointerDown(screen.getByRole("option", { name: /Groceries/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+    expect(ops.setReviewed).not.toHaveBeenCalled();
+    release(null);
+  });
 });
