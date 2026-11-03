@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -95,12 +96,67 @@ describe("CreateCategoryDialog", () => {
     expect(mocks.createCategory).not.toHaveBeenCalled();
   });
 
-  it("lets the emoji panel overflow the dialog instead of clipping it inside a scrolling body", async () => {
+  it("lets the emoji panel and parent list overflow: both the dialog and its body are overflow-visible, not scrolling", async () => {
     renderWithClient(<CreateCategoryDialog onCreated={vi.fn()} onClose={vi.fn()} />);
     const dialog = await screen.findByRole("dialog", { name: "New category" });
-    expect(dialog.className).toMatch(/overflow-visible/);
-    const body = screen.getByLabelText("Category name").closest(".overflow-visible");
-    expect(body).not.toBeNull();
+    expect(dialog.className).toMatch(/\boverflow-visible\b/);
+    // The wrapper the form sits in (DialogBody), by itself: it defaults to scrolling.
+    const body = screen.getByLabelText("Category name").closest("form")!.parentElement!.parentElement!.parentElement!;
+    expect(body.className).toMatch(/\boverflow-visible\b/);
+    expect(body.className).not.toMatch(/overflow-y-auto/);
+  });
+
+  describe("focus returns to the control that opened it (4d8.6.2 R1)", () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <div>
+          <button onClick={() => setOpen(true)}>Create new category…</button>
+          {open && <CreateCategoryDialog onCreated={() => undefined} onClose={() => setOpen(false)} />}
+        </div>
+      );
+    }
+    async function openFromFocusedOpener() {
+      renderWithClient(<Harness />);
+      const opener = screen.getByRole("button", { name: "Create new category…" });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole("dialog", { name: "New category" });
+      // The name field starts focused, as it always has.
+      await waitFor(() => expect(screen.getByLabelText("Category name")).toHaveFocus());
+      return { opener, dialog };
+    }
+    const closed = () => waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    it("on Escape", async () => {
+      const { opener, dialog } = await openFromFocusedOpener();
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      await closed();
+      await waitFor(() => expect(opener).toHaveFocus());
+    });
+
+    it("on Cancel", async () => {
+      const { opener } = await openFromFocusedOpener();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await closed();
+      await waitFor(() => expect(opener).toHaveFocus());
+    });
+
+    it("on Close", async () => {
+      const { opener } = await openFromFocusedOpener();
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      await closed();
+      await waitFor(() => expect(opener).toHaveFocus());
+    });
+
+    it("on success", async () => {
+      const { opener } = await openFromFocusedOpener();
+      fireEvent.change(screen.getByLabelText("Category name"), { target: { value: "Coffee" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create category" }));
+      await waitFor(() => expect(mocks.createCategory).toHaveBeenCalledTimes(1));
+      await closed();
+      await waitFor(() => expect(opener).toHaveFocus());
+    });
   });
 });
 

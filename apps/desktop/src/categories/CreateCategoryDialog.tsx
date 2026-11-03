@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,25 +29,28 @@ export function CreateCategoryDialog({
   onClose: () => void;
 }) {
   const { categories, addCategory } = useCategories();
+  // The control that had focus when this dialog was first rendered: the real opener. It is read
+  // here, in the first render, because the name field's own `autoFocus` runs before the shared
+  // Dialog records "what had focus" and would make the field itself look like the opener.
+  const opener = useRef<HTMLElement | null>(
+    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
 
   return (
     // Shared Dialog shell (personal-cfo-4d8.6.2). An open emoji panel handles its own Escape first
     // (it stops the key before the dialog sees it), so Escape dismisses just that layer; otherwise
-    // Escape closes this dialog and only this dialog (the drawer behind never sees the key). Focus
-    // starts in the name field and returns to the control that opened the dialog.
+    // Escape closes this dialog and only this dialog (the drawer behind never sees the key).
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         // The form is short and its emoji panel and parent list open downward past the dialog edge, so this
         // dialog lets them overflow instead of clipping them inside a scrolling body.
         className="max-w-md gap-0 overflow-visible"
         onEscapeKeyDown={(event) => event.stopPropagation()}
-        onOpenAutoFocus={(event) => {
-          const field = (event.currentTarget as HTMLElement).querySelector<HTMLElement>("input");
-          if (field) {
-            event.preventDefault();
-            field.focus();
-          }
-        }}
+        // The name field starts focused through its own `autoFocus`; on close, whichever way, focus
+        // goes back to the control that opened the dialog.
+        restoreFocusTo={opener}
       >
         <DialogHeader className="flex-row items-center justify-between border-b px-4 pb-3 pt-3">
           <DialogTitle className="text-sm">New category</DialogTitle>
