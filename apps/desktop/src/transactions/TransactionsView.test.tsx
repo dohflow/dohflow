@@ -1505,6 +1505,105 @@ describe("TransactionsView", () => {
     expect(mocks.recordTransfer).not.toHaveBeenCalled();
   });
 
+  describe("a transfer submit in flight owns the form (g3m.39)", () => {
+    const UNKNOWN =
+      "Couldn’t confirm whether the transfer was saved. Submit again and it won’t be added twice.";
+    const transferKey = (call: number) =>
+      mocks.recordTransfer.mock.calls[call]?.[0].idempotency_key;
+    const recurringKey = (call: number) =>
+      mocks.createRecurringTransfer.mock.calls[call]?.[0].idempotency_key;
+
+    async function fillTransfer(amount = "50") {
+      mocks.accountList.mockResolvedValue(ok([account(), SAVINGS]));
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transfer/i }));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: amount } });
+    }
+    const submit = () => fireEvent.click(screen.getByRole("button", { name: "Add transfer" }));
+
+    it("locks the fields and both buttons while pending; Cancel does nothing; the outcome then shows in the same form", async () => {
+      let settle: { reject: (e: unknown) => void } = { reject: () => {} };
+      mocks.recordTransfer.mockReturnValue(new Promise((_, reject) => (settle = { reject })));
+      await fillTransfer();
+      const amount = screen.getByLabelText(/amount/i);
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(amount).toBeDisabled());
+      for (const id of ["transfer-source", "transfer-dest", "transfer-date"]) {
+        expect(document.getElementById(id)).toBeDisabled();
+      }
+      expect(screen.getByRole("button", { name: "One-off" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Recurring" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /adding…/i })).toBeDisabled();
+      // The header's Add buttons stay hidden while the form is open.
+      expect(screen.queryByRole("button", { name: /^add transfer$/i })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      expect(screen.getByLabelText(/amount/i)).toBe(amount);
+
+      await act(async () => settle.reject(new Error("connection lost")));
+      expect(await screen.findByText(UNKNOWN)).toBeInTheDocument();
+      // The same form, with what the person entered, unlocked.
+      expect(screen.getByLabelText(/amount/i)).toBe(amount);
+      expect(amount).toHaveValue("50");
+      expect(amount).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    it("an unchanged resubmit after an unknown outcome reuses the key; a changed amount or date gets a new one", async () => {
+      mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+      await fillTransfer();
+      submit();
+      await screen.findByText(UNKNOWN);
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+      expect(transferKey(1)).toBe(transferKey(0));
+
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "60" } });
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(3));
+      expect(transferKey(2)).not.toBe(transferKey(1));
+
+      fireEvent.change(document.getElementById("transfer-date") as HTMLElement, {
+        target: { value: "2026-01-02" },
+      });
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(4));
+      expect(transferKey(3)).not.toBe(transferKey(2));
+    });
+
+    it("a refusal shows the app's reason and the next try is a new draft with a new key", async () => {
+      mocks.recordTransfer.mockResolvedValue({
+        status: "error",
+        error: { Validation: "That account cannot cover this." },
+      });
+      await fillTransfer();
+      submit();
+      expect(await screen.findByText("That account cannot cover this.")).toBeInTheDocument();
+      expect(screen.queryByText(UNKNOWN)).toBeNull();
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+      expect(transferKey(1)).not.toBe(transferKey(0));
+    });
+
+    it("a recurring transfer that threw is an unknown outcome with the same key on retry; a changed schedule is a new draft", async () => {
+      mocks.createRecurringTransfer.mockRejectedValue(new Error("connection lost"));
+      await fillTransfer("200");
+      fireEvent.click(screen.getByRole("button", { name: "Recurring" }));
+      const schedule = () => fireEvent.click(screen.getByRole("button", { name: /schedule transfer/i }));
+      schedule();
+      await screen.findByText(UNKNOWN);
+      schedule();
+      await waitFor(() => expect(mocks.createRecurringTransfer).toHaveBeenCalledTimes(2));
+      expect(recurringKey(1)).toBe(recurringKey(0));
+      fireEvent.change(screen.getByLabelText(/frequency/i), { target: { value: "weekly" } });
+      schedule();
+      await waitFor(() => expect(mocks.createRecurringTransfer).toHaveBeenCalledTimes(3));
+      expect(recurringKey(2)).not.toBe(recurringKey(1));
+    });
+  });
+
   const BROKERAGE = account({
     id: "0190a000-0000-7000-8000-000000000003",
     name: "Brokerage",

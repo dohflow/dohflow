@@ -1065,6 +1065,11 @@ const BILL_OUTCOME_UNKNOWN =
 const TRANSACTION_OUTCOME_UNKNOWN =
   "Couldn’t confirm whether the transaction was recorded. Submit again and it won’t be added twice.";
 
+/// Shown when the call that saves a transfer (one-off or recurring) threw: nobody knows whether it
+/// was saved. Submitting the same draft again reuses its idempotency key, so it cannot be saved twice.
+const TRANSFER_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the transfer was saved. Submit again and it won’t be added twice.";
+
 // Rust remains authoritative for validation (ADR 0003); this schema only gates
 // the form UI and shapes display copy.
 const transactionFormSchema = z.object({
@@ -1766,6 +1771,10 @@ export function AddTransferForm({
   });
   const [error, setError] = useState<string | null>(null);
   const [recurring, setRecurring] = useState(defaultRecurring);
+  // One idempotency key per draft: submitting the same transfer again (after a call that threw, so
+  // nobody knows whether it was saved) replays instead of saving a second one. A different account,
+  // amount, date, schedule or mode is a different draft with a new key.
+  const draftKey = useRef<{ identity: string; key: string } | null>(null);
   // A recurring transfer must be funded from cash (CreateRecurringTransfer requires a liquid
   // source), so it's only offered when at least one cash account exists — otherwise toggling to
   // Recurring would strip every source option and dead-end the form.
@@ -1833,22 +1842,38 @@ export function AddTransferForm({
       frequency = buildIntervalToken(n, unit);
     }
     if (!recurring && !onCreate) return;
-    const failure = recurring
-      ? await onCreateRecurring({
-          source_account_id: values.source_account_id,
-          dest_account_id: values.dest_account_id,
-          amount,
-          frequency,
-          anchor_date: values.date,
-          idempotency_key: mintIdempotencyKey(),
-        })
-      : await onCreate!({
-          source_account_id: values.source_account_id,
-          dest_account_id: values.dest_account_id,
-          amount,
-          occurred_at: `${values.date}T00:00:00Z`,
-          idempotency_key: mintIdempotencyKey(),
-        });
+    const draft = {
+      source_account_id: values.source_account_id,
+      dest_account_id: values.dest_account_id,
+      amount,
+    };
+    const identity = JSON.stringify({
+      recurring,
+      ...draft,
+      date: values.date,
+      frequency: recurring ? frequency : null,
+    });
+    if (draftKey.current?.identity !== identity) {
+      draftKey.current = { identity, key: mintIdempotencyKey() };
+    }
+    const idempotency_key = draftKey.current.key;
+    let failure: string | null;
+    try {
+      failure = recurring
+        ? await onCreateRecurring({ ...draft, frequency, anchor_date: values.date, idempotency_key })
+        : await onCreate!({
+            ...draft,
+            occurred_at: `${values.date}T00:00:00Z`,
+            idempotency_key,
+          });
+    } catch {
+      // The call itself failed, so the outcome is not known. The key is kept, so submitting this
+      // draft again cannot save a second transfer.
+      setError(TRANSFER_OUTCOME_UNKNOWN);
+      return;
+    }
+    // A refusal is a confirmed failure: nothing was saved, so the next try is a new draft.
+    if (failure) draftKey.current = null;
     if (failure) setError(failure);
   });
 
@@ -1856,159 +1881,168 @@ export function AddTransferForm({
     <Card>
       <CardContent className="pt-6">
         <form onSubmit={submit} className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="transfer-source">From</Label>
-              <select
-                id="transfer-source"
-                className={SELECT_CLASS}
-                {...register("source_account_id")}
-              >
-                {sourceAccounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                    {roleHint(account.cashflow_role)}
-                  </option>
-                ))}
-              </select>
+          {/* A submit in flight owns the form: every field and both buttons are locked until the
+              outcome, and Cancel does nothing, so the form that sent the attempt still holds its
+              values, key and outcome message when the answer arrives. Nothing is cancelled: the
+              write continues either way. */}
+          <fieldset
+            disabled={isSubmitting}
+            className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0"
+          >
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="transfer-source">From</Label>
+                <select
+                  id="transfer-source"
+                  className={SELECT_CLASS}
+                  {...register("source_account_id")}
+                >
+                  {sourceAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
+                      {roleHint(account.cashflow_role)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="transfer-dest">To</Label>
+                <select
+                  id="transfer-dest"
+                  className={SELECT_CLASS}
+                  {...register("dest_account_id")}
+                >
+                  {destAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
+                      {roleHint(account.cashflow_role)}
+                    </option>
+                  ))}
+                </select>
+                {errors.dest_account_id && (
+                  <p className="text-xs text-loss">
+                    {errors.dest_account_id.message}
+                  </p>
+                )}
+              </div>
             </div>
+
+            {destAccounts.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No account this one can move money to. Add a cash account to transfer, pay, or
+                withdraw.
+              </p>
+            ) : (
+              kindHint && <p className="text-xs text-muted-foreground">{kindHint}</p>
+            )}
+
+            {!lockRecurring && (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="transfer-dest">To</Label>
-              <select
-                id="transfer-dest"
-                className={SELECT_CLASS}
-                {...register("dest_account_id")}
-              >
-                {destAccounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                    {roleHint(account.cashflow_role)}
-                  </option>
-                ))}
-              </select>
-              {errors.dest_account_id && (
-                <p className="text-xs text-loss">
-                  {errors.dest_account_id.message}
-                </p>
-              )}
+              <Label>Repeat</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={recurring ? "outline" : "default"}
+                  onClick={() => setRecurring(false)}
+                >
+                  One-off
+                </Button>
+                <Button
+                  type="button"
+                  variant={recurring ? "default" : "outline"}
+                  disabled={!hasLiquidSource}
+                  title={hasLiquidSource ? undefined : "Recurring transfers need a cash account"}
+                  onClick={() => setRecurring(true)}
+                >
+                  Recurring
+                </Button>
+              </div>
             </div>
-          </div>
+            )}
 
-          {destAccounts.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No account this one can move money to. Add a cash account to transfer, pay, or
-              withdraw.
-            </p>
-          ) : (
-            kindHint && <p className="text-xs text-muted-foreground">{kindHint}</p>
-          )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="transfer-amount">Amount</Label>
+                <Input
+                  id="transfer-amount"
+                  inputMode="decimal"
+                  autoFocus
+                  {...register("amount")}
+                  placeholder="0.00"
+                  aria-invalid={!!errors.amount}
+                />
+                {errors.amount && (
+                  <p className="text-xs text-loss">{errors.amount.message}</p>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="transfer-date">
+                  {recurring ? "Starting" : "Date"}
+                </Label>
+                <Input id="transfer-date" type="date" {...register("date")} />
+              </div>
+            </div>
 
-          {!lockRecurring && (
-          <div className="flex flex-col gap-1.5">
-            <Label>Repeat</Label>
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant={recurring ? "outline" : "default"}
-                onClick={() => setRecurring(false)}
-              >
-                One-off
+            {recurring && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="transfer-frequency">Frequency</Label>
+                <select
+                  id="transfer-frequency"
+                  className={SELECT_CLASS}
+                  {...register("frequency")}
+                >
+                  {PAY_FREQUENCIES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                {watch("frequency") === "custom" && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm text-muted-foreground">Every</span>
+                    <Input
+                      aria-label="Interval count"
+                      inputMode="numeric"
+                      className="h-9 w-16"
+                      {...register("interval_count")}
+                    />
+                    <select
+                      aria-label="Interval unit"
+                      className={SELECT_CLASS + " w-auto"}
+                      {...register("interval_unit")}
+                    >
+                      {INTERVAL_UNITS.map((unit) => (
+                        <option key={unit.value} value={unit.value}>
+                          {unit.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {error && (
+              <p role="alert" className="text-sm text-loss">
+                {error}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={onCancel} disabled={isSubmitting}>
+                Cancel
               </Button>
-              <Button
-                type="button"
-                variant={recurring ? "default" : "outline"}
-                disabled={!hasLiquidSource}
-                title={hasLiquidSource ? undefined : "Recurring transfers need a cash account"}
-                onClick={() => setRecurring(true)}
-              >
-                Recurring
+              <Button type="submit" disabled={isSubmitting || destAccounts.length === 0}>
+                {isSubmitting
+                  ? "Adding…"
+                  : recurring
+                    ? dest?.cashflow_role === "investment_asset"
+                      ? "Schedule contribution"
+                      : "Schedule transfer"
+                    : "Add transfer"}
               </Button>
             </div>
-          </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="transfer-amount">Amount</Label>
-              <Input
-                id="transfer-amount"
-                inputMode="decimal"
-                autoFocus
-                {...register("amount")}
-                placeholder="0.00"
-                aria-invalid={!!errors.amount}
-              />
-              {errors.amount && (
-                <p className="text-xs text-loss">{errors.amount.message}</p>
-              )}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="transfer-date">
-                {recurring ? "Starting" : "Date"}
-              </Label>
-              <Input id="transfer-date" type="date" {...register("date")} />
-            </div>
-          </div>
-
-          {recurring && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="transfer-frequency">Frequency</Label>
-              <select
-                id="transfer-frequency"
-                className={SELECT_CLASS}
-                {...register("frequency")}
-              >
-                {PAY_FREQUENCIES.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              {watch("frequency") === "custom" && (
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm text-muted-foreground">Every</span>
-                  <Input
-                    aria-label="Interval count"
-                    inputMode="numeric"
-                    className="h-9 w-16"
-                    {...register("interval_count")}
-                  />
-                  <select
-                    aria-label="Interval unit"
-                    className={SELECT_CLASS + " w-auto"}
-                    {...register("interval_unit")}
-                  >
-                    {INTERVAL_UNITS.map((unit) => (
-                      <option key={unit.value} value={unit.value}>
-                        {unit.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-          )}
-
-          {error && (
-            <p role="alert" className="text-sm text-loss">
-              {error}
-            </p>
-          )}
-
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={isSubmitting || destAccounts.length === 0}>
-              {isSubmitting
-                ? "Adding…"
-                : recurring
-                  ? dest?.cashflow_role === "investment_asset"
-                    ? "Schedule contribution"
-                    : "Schedule transfer"
-                  : "Add transfer"}
-            </Button>
-          </div>
+          </fieldset>
         </form>
       </CardContent>
     </Card>
