@@ -48,7 +48,11 @@ export function useAccounts() {
     mutationFn: (accountId: string) =>
       commands.archiveAccount(accountId, mintIdempotencyKey()),
     onSuccess: (result) => {
-      if (result.status === "ok") invalidate();
+      if (result.status === "ok") {
+        invalidate();
+        // A stale-balance item for an archived account clears without another action.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.moneyInbox });
+      }
     },
   });
   const reinstateMutation = useMutation({
@@ -61,7 +65,11 @@ export function useAccounts() {
   const assertMutation = useMutation({
     mutationFn: (input: AssertBalanceInput) => commands.assertBalance(input),
     onSuccess: (result) => {
-      if (result.status === "ok") invalidate();
+      if (result.status === "ok") {
+        invalidate();
+        // A fresh assertion ends the account's stale-balance item.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.moneyInbox });
+      }
     },
   });
   const subtypeMutation = useMutation({

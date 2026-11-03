@@ -460,19 +460,161 @@ it("renders a stale-balance nudge (r52x)", async () => {
   ).not.toBeInTheDocument();
 });
 
-it("archives the account from a stale-balance item (r52x)", async () => {
-  mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
-  renderWithClient(<MoneyInboxView />);
+const CHECKING_ID = "0190a000-0000-7000-8000-000000000001";
+const archiveButton = () => screen.getByRole("button", { name: /archive account/i });
+const staleRowAccount = (over: Partial<AccountViewDto> = {}) => account({ ...over });
 
-  await openRowDetails();
-  fireEvent.click(screen.getByRole("button", { name: /archive account/i }));
+describe("a stale-balance item's actions are honest (4d8.57)", () => {
+  async function openStale(accounts: AccountViewDto[] = [staleRowAccount()]) {
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockResolvedValue(ok(accounts));
+    renderWithClient(<MoneyInboxView />);
+    await openRowDetails();
+    await waitFor(() => expect(archiveButton()).toBeEnabled());
+  }
 
-  await waitFor(() =>
-    expect(mocks.archiveAccount).toHaveBeenCalledWith(
-      "0190a000-0000-7000-8000-000000000001",
-      expect.stringMatching(/.+/),
-    ),
-  );
+  it("archiving an account that anchors the forecast asks first, naming the effect, and archives on confirm", async () => {
+    await openStale();
+    fireEvent.click(archiveButton());
+    const dialog = await screen.findByRole("alertdialog", { name: /archive checking/i });
+    expect(dialog).toHaveTextContent(/stops counting its \$1,250\.00 toward your forecast/);
+    expect(mocks.archiveAccount).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /confirm archive checking/i }));
+    await waitFor(() =>
+      expect(mocks.archiveAccount).toHaveBeenCalledWith(CHECKING_ID, expect.stringMatching(/.+/)),
+    );
+  });
+
+  it("cancelling the question archives nothing", async () => {
+    await openStale();
+    fireEvent.click(archiveButton());
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(mocks.archiveAccount).not.toHaveBeenCalled();
+  });
+
+  it("an account that moves no forecast archives directly", async () => {
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    fireEvent.click(archiveButton());
+    await waitFor(() =>
+      expect(mocks.archiveAccount).toHaveBeenCalledWith(CHECKING_ID, expect.stringMatching(/.+/)),
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("a failed archive stays on screen after the row is collapsed, and busy is released", async () => {
+    mocks.archiveAccount.mockResolvedValue({ status: "error", error: { Validation: "Cannot archive right now." } });
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    fireEvent.click(archiveButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot archive right now.");
+    fireEvent.click(screen.getByRole("button", { name: /hide details/i }));
+    expect(screen.queryByRole("button", { name: /archive account/i })).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot archive right now.");
+    fireEvent.click(screen.getByRole("button", { name: /show details/i }));
+    expect(archiveButton()).toBeEnabled();
+    expect(archiveButton()).toHaveTextContent("Archive account");
+  });
+
+  it("a thrown archive is an unknown outcome, kept on screen, with busy released", async () => {
+    mocks.archiveAccount.mockRejectedValue(new Error("connection lost"));
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    fireEvent.click(archiveButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t confirm whether the account was archived. Check your accounts before trying again.",
+    );
+    expect(archiveButton()).toBeEnabled();
+  });
+
+  it("while the accounts load, Archive and Update balance are unavailable and the row says why", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockReturnValue(new Promise(() => {}));
+    renderWithClient(<MoneyInboxView />);
+    await openRowDetails();
+    expect(await screen.findByRole("status")).toHaveTextContent("Loading your accounts…");
+    expect(archiveButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeDisabled();
+  });
+
+  it("when the accounts read failed, Archive and Update balance are unavailable and the failure shows", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    renderWithClient(<MoneyInboxView />);
+    await openRowDetails();
+    expect(await screen.findByText("Could not load accounts.")).toBeInTheDocument();
+    expect(archiveButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeDisabled();
+    // The reason is outside the collapsible body.
+    fireEvent.click(screen.getByRole("button", { name: /hide details/i }));
+    expect(screen.getByText("Could not load accounts.")).toBeInTheDocument();
+  });
+
+  it("the inbox is read again after an archive", async () => {
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    const reads = mocks.moneyInboxList.mock.calls.length;
+    fireEvent.click(archiveButton());
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  describe("after a balance update", () => {
+    const outcome = (plug: number) =>
+      ok({
+        balance: { minor_units: 200_000, currency: "USD" },
+        unexplained: plug === 0 ? null : { minor_units: plug, currency: "USD" },
+      });
+
+    async function updateBalance(accounts: AccountViewDto[]) {
+      mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+      mocks.accountList.mockResolvedValue(ok(accounts));
+      renderWithClient(<MoneyInboxView />);
+      await screen.findByText("Checking");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Update balance" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Update balance" }));
+      fireEvent.click(await screen.findByRole("button", { name: /^set balance$/i }));
+    }
+
+    it("the inbox is read again, so the stale item can clear", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(0));
+      mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+      mocks.accountList.mockResolvedValue(ok([staleRowAccount()]));
+      renderWithClient(<MoneyInboxView />);
+      await screen.findByText("Checking");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Update balance" })).toBeEnabled());
+      const reads = mocks.moneyInboxList.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Update balance" }));
+      fireEvent.click(await screen.findByRole("button", { name: /^set balance$/i }));
+      await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(reads));
+    });
+
+    it("Explain with transactions opens the reconcile modal in place for a spending role, with no second assertion", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(5_000));
+      await updateBalance([staleRowAccount()]);
+      fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+      expect(
+        await screen.findByText("Record the transactions that explain the difference."),
+      ).toBeInTheDocument();
+      expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+    });
+
+    it("a credit account gets the same hand-off", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(5_000));
+      await updateBalance([
+        staleRowAccount({ cashflow_role: "credit_facility", balance: { minor_units: -50_000, currency: "USD" } }),
+      ]);
+      fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+      expect(
+        await screen.findByText("Record the transactions that explain the difference."),
+      ).toBeInTheDocument();
+    });
+
+    it("any other role only closes", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(5_000));
+      await updateBalance([staleRowAccount({ cashflow_role: "investment_asset" })]);
+      fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.queryByText("Record the transactions that explain the difference.")).toBeNull();
+    });
+  });
 });
 
 it("snoozes an imported item for a week (ci71)", async () => {

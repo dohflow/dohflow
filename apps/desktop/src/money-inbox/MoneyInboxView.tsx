@@ -42,6 +42,10 @@ import { useAccounts } from "@/accounts/useAccounts";
 import { useCategories } from "@/categories/useCategories";
 import { categoryLabels } from "@/categories/labels";
 import { CategoryCombobox } from "@/categories/CategoryCombobox";
+import { isSpendingRole } from "@/accounts/AccountDetailView";
+import { useArchiveFlow } from "@/accounts/archiveFlow";
+import { ArchiveFailure, ArchiveImpactConfirm } from "@/accounts/ArchiveFlowViews";
+import { ReconcileBalanceModal } from "@/accounts/ReconcileBalanceModal";
 import { SetBalanceModal } from "@/accounts/SetBalanceModal";
 import { useMoneyInbox } from "./useMoneyInbox";
 import { ImportFileDialog } from "./ImportFileDialog";
@@ -391,12 +395,15 @@ export function MoneyInboxView({
     recategorize,
     acceptAllLowConfidence,
   } = useMoneyInbox();
-  const { accounts, archiveAccount } = useAccounts();
+  const { accounts, error: accountsError, archiveAccount } = useAccounts();
   const { categories } = useCategories();
   const [importing, setImporting] = useState(false);
   const [settingBalance, setSettingBalance] = useState<AccountViewDto | null>(
     null,
   );
+  // The account whose gap is being explained with transactions, opened in place from the balance
+  // update (only for the roles the Accounts detail offers it for).
+  const [reconcilingId, setReconcilingId] = useState<string | null>(null);
   // The duplicate inbox item currently open in the side-by-side Review panel.
   const [reviewing, setReviewing] = useState<MoneyInboxItemDto | null>(null);
   // Reviewing means LOOKING at the details — category, tags, notes, splits — then
@@ -733,13 +740,9 @@ export function MoneyInboxView({
                             <StaleBalanceRow
                               key={item.item_id}
                               {...common}
-                              onUpdateBalance={(accountId) => {
-                                const account =
-                                  accounts?.find(
-                                    (candidate) => candidate.id === accountId,
-                                  ) ?? null;
-                                if (account) setSettingBalance(account);
-                              }}
+                              accounts={accounts}
+                              accountsError={accountsError}
+                              onUpdateBalance={setSettingBalance}
                               onArchive={archiveAccount}
                             />,
                           ];
@@ -823,11 +826,27 @@ export function MoneyInboxView({
         <SetBalanceModal
           account={settingBalance}
           onClose={() => setSettingBalance(null)}
-          // The transaction-reconcile handoff lives on the Accounts tab; from the
-          // inbox a plain balance update is enough to clear the stale item.
-          onExplainWithTransactions={() => setSettingBalance(null)}
+          // The same hand-off the Accounts detail offers, for the same roles; any other role
+          // just closes. The reconcile modal records transactions, never an assertion.
+          onExplainWithTransactions={() => {
+            if (isSpendingRole(settingBalance.cashflow_role)) {
+              setReconcilingId(settingBalance.id);
+            }
+            setSettingBalance(null);
+          }}
         />
       )}
+      {reconcilingId !== null &&
+        (() => {
+          // Read from the refreshed accounts list, so the gap shown is what is stored now.
+          const account = accounts?.find((candidate) => candidate.id === reconcilingId);
+          return account ? (
+            <ReconcileBalanceModal
+              account={account}
+              onClose={() => setReconcilingId(null)}
+            />
+          ) : null;
+        })()}
 
       {reviewing &&
         (() => {
@@ -1137,28 +1156,25 @@ function StaleBalanceRow({
   isSelected,
   expanded,
   onToggleExpand,
+  accounts,
+  accountsError,
   onUpdateBalance,
   onArchive,
 }: RowCommon & {
-  onUpdateBalance: (accountId: string) => void;
+  /// The accounts list, or `null` while it has not loaded.
+  accounts: AccountViewDto[] | null;
+  accountsError: string | null;
+  onUpdateBalance: (account: AccountViewDto) => void;
   onArchive: (accountId: string) => Promise<IpcError | null>;
 }) {
-  const [archiving, setArchiving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const payload = parseStalePayload(item.payload_json);
+  // The account comes from the view's accounts list (its role and balance decide whether archiving
+  // moves the forecast), so nothing here can act on it until that read has worked.
+  const account =
+    accounts?.find((candidate) => candidate.id === payload?.account_id) ?? null;
+  const flow = useArchiveFlow(account, onArchive);
   if (payload === null) return null;
-
-  async function archive() {
-    if (payload === null) return;
-    setArchiving(true);
-    setError(null);
-    const failure = await onArchive(payload.account_id);
-    // On success the inbox re-fetches and this row unmounts.
-    if (failure) {
-      setError(describeIpcError(failure));
-      setArchiving(false);
-    }
-  }
+  const unavailable = accountsError !== null || accounts === null;
 
   return (
     <>
@@ -1170,7 +1186,11 @@ function StaleBalanceRow({
         {/* No amount for a stale-balance nudge — keep the cell so columns align. */}
         <TableCell className="w-0 text-right" />
         <TableCell className="w-0">
-          <Button size="sm" onClick={() => onUpdateBalance(payload.account_id)}>
+          <Button
+            size="sm"
+            disabled={account === null}
+            onClick={() => account && onUpdateBalance(account)}
+          >
             Update balance
           </Button>
         </TableCell>
@@ -1180,6 +1200,24 @@ function StaleBalanceRow({
           onToggleExpand={onToggleExpand}
         />
       </TableRow>
+      {/* Outside the collapsible body: what stops this row from acting, and a failed archive, must
+          not be hidden by collapsing it. */}
+      {(unavailable || flow.error !== null) && (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={INBOX_COLUMN_COUNT} className="py-1">
+            {accountsError !== null ? (
+              <p role="alert" className="text-sm text-loss">
+                {accountsError}
+              </p>
+            ) : accounts === null ? (
+              <p role="status" className="text-sm text-muted-foreground">
+                Loading your accounts…
+              </p>
+            ) : null}
+            <ArchiveFailure flow={flow} />
+          </TableCell>
+        </TableRow>
+      )}
       {expanded && (
         <TableRow className="bg-muted/20 hover:bg-transparent">
           <TableCell colSpan={INBOX_COLUMN_COUNT} className="p-0" id={`inbox-x-${item.item_id}`}>
@@ -1198,22 +1236,17 @@ function StaleBalanceRow({
                 </span>
               </div>
 
-              {error && (
-                <p role="alert" className="text-sm text-loss">
-                  {error}
-                </p>
-              )}
-
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={archiving}
-                  onClick={archive}
+                  disabled={account === null || flow.busy}
+                  onClick={flow.request}
                 >
-                  {archiving ? "Archiving…" : "Archive account"}
+                  {flow.busy ? "Archiving…" : "Archive account"}
                 </Button>
               </div>
+              {account && <ArchiveImpactConfirm account={account} flow={flow} />}
             </div>
           </TableCell>
         </TableRow>

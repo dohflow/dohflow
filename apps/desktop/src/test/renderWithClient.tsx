@@ -12,13 +12,17 @@ import { ThemeProvider } from "@/theme/ThemeProvider";
 /// throws outside one (personal-cfo-17u1 review, Finding 1's fix) and any view under
 /// test may render something that reads it (e.g. `SettingsView`'s `AppearanceCard`). It also
 /// supplies the shell's notice provider + region, which any view that shows an Undo needs.
-export function renderWithClient(ui: ReactElement) {
-  const queryClient = new QueryClient({
+export function renderWithClient(
+  ui: ReactElement,
+  /// A client the test keeps hold of, to change cached data from outside the view (for
+  /// example another tab archiving a scenario). Defaults to a fresh one.
+  queryClient: QueryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
       mutations: { retry: false },
     },
-  });
+  }),
+) {
   return render(
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
