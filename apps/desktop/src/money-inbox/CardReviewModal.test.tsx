@@ -87,6 +87,38 @@ describe("CardReviewModal", () => {
     expect(screen.getByText(/1 of 3 reviewed/)).toBeInTheDocument();
   });
 
+  it("the keydown listener acts on the NEW card the moment the DOM shows it (bv6w2 regression guard)", async () => {
+    // The listener closes over the current card, so it must be re-bound inside the same commit that
+    // swaps the card (useLayoutEffect). A passive effect (useEffect) runs after paint, so anything
+    // that reacts to the new DOM at once, as a MutationObserver does, would still reach the listener
+    // bound to the PREVIOUS card and review the wrong transaction.
+    const reviewed: string[] = [];
+    // Resolves on a later turn, so the card change is committed from an async continuation (not
+    // from the key event, whose updates React flushes synchronously, effects included).
+    const onMarkReviewed = vi.fn(async (id: string) => {
+      reviewed.push(id);
+      await Promise.resolve();
+      return null;
+    });
+    setup({ onMarkReviewed });
+    await screen.findByText("Merchant t1");
+
+    let reactedToT2 = false;
+    const observer = new MutationObserver(() => {
+      if (reactedToT2 || !document.body.textContent?.includes("Merchant t2")) return;
+      reactedToT2 = true;
+      // The instant the new card is in the DOM, press the key again.
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await waitFor(() => expect(reviewed).toHaveLength(2));
+    observer.disconnect();
+    // The second press reviewed the card that was on screen, t2, not the t1 it replaced.
+    expect(reviewed).toEqual(["t1", "t2"]);
+  });
+
   it("defers with the left arrow, counts it set aside, and badges the resurfaced card", async () => {
     const props = setup();
     fireEvent.keyDown(window, { key: "ArrowLeft" }); // defer t1
