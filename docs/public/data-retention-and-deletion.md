@@ -40,6 +40,10 @@ expiry or cleanup of your records. In particular:
   DohFlow does not compact or purge it.
 - **Imported data.** Records of where imported transactions came from stay with
   the vault, so you can always trace an entry back to its import.
+- **Removed items.** A bill, income source, recurring transfer or scenario you
+  remove or delete is hidden but not erased. It stays in the vault file and in
+  backups made from it (see "What 'delete' means" below). A scenario you had
+  applied keeps its changes in your forecast until you undo them.
 - **Attachments.** A document attached to a transaction is stored encrypted under
   its own key. Removing the last link to a document destroys its key, which makes
   the stored bytes unreadable (crypto-shredding, ADR 0023).
@@ -60,10 +64,15 @@ Removing something in DohFlow does one of a few different things:
 | --- | --- |
 | A transaction | It is **voided**: DohFlow posts a reversing entry and hides both, so balances and the forecast update as if it never happened. The ledger stays append-only and auditable. |
 | An account | It can only be **archived**, never deleted. Its history stays intact. |
-| A bill or income source | You choose **Archive** (kept, restorable) or **Delete** (removed permanently, behind its own confirmation). |
-| A recurring transfer | Deleting it stops future projections; transfers already posted are untouched. |
+| A bill or income source | You choose **Archive** (kept and restorable from the Archived list) or **Remove** (behind its own confirmation). A removed item disappears everywhere in DohFlow at once and its forecast effect stops. DohFlow offers **Undo** for about ten seconds afterward; after that there is no screen for bringing it back. It is hidden, not erased: the record stays inside the vault file and in every backup made from it. |
+| A recurring transfer | **Remove** works the same way: it disappears everywhere in DohFlow, future projections stop, and transfers already posted are untouched. Undo is offered for about ten seconds, and the record stays inside the vault file and your backups. |
+| A scenario | **Delete** (behind its own confirmation) takes the scenario and its changes out of every view in DohFlow, with no screen for bringing it back. A scenario you never applied does not touch your real forecast. If you had applied it, its changes stay in your forecast, and it stays listed under “Deleted, but still applied” with an Undo until you take them out. A deleted scenario is hidden, not erased: it stays inside the vault file and in every backup made from it. **Archive** keeps a scenario you want to set aside, and you can restore it. |
 | A document attached to a transaction | Removing the last link crypto-shreds it (above). |
-| An entire vault | **Permanent.** It wipes the vault's files from disk. The only way back is restoring a backup you made beforehand. |
+| An entire vault | **Permanent.** It wipes the vault's files from disk, including everything that was hidden inside it. The only way back is restoring a backup you made beforehand. |
+
+Taking something out of view is not the same as erasing it. Items you remove or
+delete in the rows above stay inside the vault file, and inside every backup made
+from it, until you delete the whole vault and those backups.
 
 ## Backups on your Mac
 

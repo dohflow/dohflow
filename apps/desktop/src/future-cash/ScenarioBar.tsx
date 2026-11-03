@@ -4,20 +4,15 @@ import { Archive, FolderPlus, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { todayInTimezone } from "@/lib/format";
+import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
 import { describeIpcError } from "@/vault/useVault";
+import { isExpired } from "./scenarioEligibility";
+import { TimezoneReadNotice } from "./TimezoneReadNotice";
 import { SCENARIO_NAME_MAX, useScenarios } from "./useScenarios";
 
-/// Whether a scenario has passed its expiry — mirrors the backend gate, which compares
-/// `expires_on` against the household-local date (ADR 0051 §3).
-function isExpired(scenario: { expires_on: string | null }): boolean {
-  if (scenario.expires_on === null) return false;
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return (
-    scenario.expires_on <
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
-  );
-}
+/// What a held selection is called when its row is not in the list and the date could not be read.
+const SELECTED_SCENARIO = "Selected scenario";
 
 const STATUS_CLASS = "h-9 rounded-md border bg-background px-3 text-sm";
 
@@ -34,6 +29,12 @@ export function ScenarioBar({
   onSelect: (id: string | null) => void;
 }) {
   const { scenarios, error, addScenario, archiveScenario, updateScenario } = useScenarios();
+  // The backend gate compares `expires_on` against the HOUSEHOLD-local date (ADR 0051 §3),
+  // so the picker does too, not the device's calendar.
+  // Until that date has been read (not the UTC fallback), the picker offers no choices and the
+  // selection is left alone.
+  const tz = useHouseholdTimezone();
+  const today = todayInTimezone(tz.timezone);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,17 +48,36 @@ export function ScenarioBar({
   // gated by the backend (ADR 0051 §1/§3), so offering them would let the user pick a
   // scenario whose changes are silently not applied — the compare banner would read
   // "+$0.00" and look like the plan had no effect.
-  const visible = (scenarios ?? []).filter(
-    (s) => s.status !== "archived" && !isExpired(s),
-  );
-  const selected = visible.find((s) => s.id === selectedId) ?? null;
+  const notArchived = (scenarios ?? []).filter((s) => s.status !== "archived");
+  const visible = tz.verified ? notArchived.filter((s) => !isExpired(s, today)) : [];
+  // While the date is unverified the selection stays as it was, and is shown, not judged.
+  const selected =
+    (tz.verified ? visible : notArchived).find((s) => s.id === selectedId) ?? null;
+  // Until the reads that can judge the selection are in (the date, and the list), the select still
+  // holds that exact scenario, so it never reads as "Base (no scenario)". Its text, in order: the
+  // row's name when it is known (archived or not); the list's own failure; "Selected scenario" when
+  // the date could not be verified but the list is here; "Loading…" only while a read is pending.
+  const listed = tz.verified ? visible : [];
+  const heldSelection =
+    selectedId !== null &&
+    (!tz.verified || scenarios === null) &&
+    !listed.some((s) => s.id === selectedId)
+      ? {
+          id: selectedId,
+          label:
+            (scenarios ?? []).find((s) => s.id === selectedId)?.name ??
+            error ??
+            (tz.failure !== null && scenarios !== null ? SELECTED_SCENARIO : "Loading…"),
+        }
+      : null;
   // A selection that is no longer selectable (archived/expired/deleted elsewhere) falls
-  // back to base, rather than leaving a blank picker over base numbers.
+  // back to base, rather than leaving a blank picker over base numbers. Only a verified date
+  // can say a scenario has expired, so nothing falls back before that.
   useEffect(() => {
-    if (selectedId !== null && scenarios !== null && selected === null) {
+    if (tz.verified && selectedId !== null && scenarios !== null && selected === null) {
       onSelect(null);
     }
-  }, [selectedId, scenarios, selected, onSelect]);
+  }, [tz.verified, selectedId, scenarios, selected, onSelect]);
 
   function startEditing() {
     if (!selected) return;
@@ -121,15 +141,24 @@ export function ScenarioBar({
           id="scenario-select"
           value={selectedId ?? ""}
           onChange={(e) => onSelect(e.target.value || null)}
+          disabled={!tz.verified}
           className="h-9 rounded-md border bg-background px-3 text-sm"
         >
           <option value="">Base (no scenario)</option>
-          {visible.map((scenario) => (
+          {listed.map((scenario) => (
             <option key={scenario.id} value={scenario.id}>
               {scenario.name}
             </option>
           ))}
+          {heldSelection && (
+            <option key={heldSelection.id} value={heldSelection.id}>
+              {heldSelection.label}
+            </option>
+          )}
         </select>
+        {!tz.verified && (
+          <TimezoneReadNotice failure={tz.failure} retry={tz.retry} retrying={tz.retrying} />
+        )}
         {!creating && (
           <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
             <FolderPlus aria-hidden />

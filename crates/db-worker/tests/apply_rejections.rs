@@ -801,7 +801,50 @@ fn scenarios() -> Vec<Step> {
             },
             Fine,
         ),
+        // ---- apply/settings_cmds.rs (personal-cfo-5ymg8.7) ----
+        step(
+            "setting a key outside the household registry",
+            set_user_setting("user.not_a_setting", "1"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting a device key through the household command",
+            set_user_setting("device.window", "1"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting the minimum cash floor to a negative amount",
+            set_user_setting("user.minimum_cash_floor_minor", "-5"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting the reporting currency to an unsupported code",
+            set_user_setting("user.reporting_currency", "XYZ"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting the minimum cash floor",
+            set_user_setting("user.minimum_cash_floor_minor", "250000"),
+            Fine,
+        ),
+        step(
+            "setting the same value again is a no-op write",
+            set_user_setting("user.minimum_cash_floor_minor", "250000"),
+            Fine,
+        ),
+        step(
+            "clearing the comfort band's upper edge with the empty value",
+            set_user_setting("user.comfort_band_upper_minor", ""),
+            Fine,
+        ),
     ]
+}
+
+fn set_user_setting(key: &str, value: &str) -> WriteCommand {
+    WriteCommand::SetUserSetting {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    }
 }
 
 fn anchor(key: &str) -> MerchantAnchor {
@@ -983,6 +1026,7 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/scenario_apply.rs",
         "apply/scenario_cmds.rs",
         "apply/scenario_revert.rs",
+        "apply/settings_cmds.rs",
     ] {
         let path = root.join("src").join(module);
         let source = std::fs::read_to_string(&path).unwrap();

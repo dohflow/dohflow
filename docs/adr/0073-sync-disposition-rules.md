@@ -245,6 +245,7 @@ receives semantic auto-merge treatment.
 | `MarkReviewed` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SetTags` | Set | auto iff strict predicate; queue-choose if touched (replacement payload; no union rewrite) |
 | `SetNote` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `SetUserSetting` | Set | queue-choose (scalar; an identical value is an auto no-op) |
 | `SetSplits` | Set | queue-edit (sum invariant) |
 | `MoveCategory` | Set | queue-edit (cycle invariant) |
 | `SetHouseholdTimezone` | Set | queue-choose (scalar; idempotent no-op is auto) |
@@ -644,3 +645,26 @@ queue with it if it queues.
 `v5(NAMESPACE_OID, "merchant-auto:{key}")` of the payload key, derived in apply and not carried in the
 payload. Vaults already hold identities minted under that formula, so changing it needs a new
 variant; a known-vector test pins one key to one UUID.
+
+## Addendum K — Household settings are a command (2026-11-03, `personal-cfo-5ymg8.7`)
+
+`SetUserSetting` is added as a version 1 command carrying `key` and `value`. That makes **Set 31**
+and 83 appendix rows (**Create 14**, **Toggle 25**, **Base-dependent 8** unchanged).
+
+**The key is a string from a closed registry.** A `user.*` key is one of five household
+preferences (the reporting currency, the minimum cash floor, the comfort band's upper edge, the
+auto-categorize switch and the Future Cash series selection). Any other key, including a `device.*`
+key, is `PayloadInvalid`, so an unknown key is a classified apply site rather than a decode
+failure. Each key has a pure validator and the value is stored verbatim. The comfort band's upper
+edge accepts the empty string, which clears it (the form the UI already writes).
+
+**Disposition: Set, queue-choose, an identical value is an auto no-op.** A preference is one scalar a
+person chose: if two devices set it to different values, the second is the person's call, and
+setting it to the value it already has is not a conflict. No writer enforces that the floor stays
+below the upper edge, so apply reads no other row.
+
+**Engine-version rule.** Once the engine version is pinned (`personal-cfo-32fmp.4`), a change to
+the registry or to any validator (a new key, a newly supported currency, a different size cap)
+changes what a logged command writes and must bump `engine_version`. The rule is in the variant's
+doc comment.
+

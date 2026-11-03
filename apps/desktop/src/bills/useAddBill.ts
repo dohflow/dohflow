@@ -2,7 +2,12 @@ import { useCallback } from "react";
 
 import { useNotices } from "@/components/ui/notice-context";
 
-import { ANSWER_NOT_SAVED_MESSAGE, linkFailedMessage } from "./linkMessages";
+import {
+  ANSWER_NOT_SAVED_MESSAGE,
+  ANSWER_UNCONFIRMED_MESSAGE,
+  linkFailedMessage,
+  linkUnconfirmedMessage,
+} from "./linkMessages";
 import { useBills, type BillFollowUp } from "./useBills";
 
 /// `useBills().addBill` plus the rule that a step after creation never fails silently
@@ -15,7 +20,13 @@ export function useAddBill() {
   return useCallback(
     async (input: Parameters<typeof addBill>[0], follow?: BillFollowUp) => {
       const result = await addBill(input, follow);
-      if (result.followError && follow) {
+      if (result.followUnconfirmed && follow) {
+        notifyError(
+          follow.linkLoanAccountId
+            ? linkUnconfirmedMessage(follow.linkLoanName)
+            : ANSWER_UNCONFIRMED_MESSAGE,
+        );
+      } else if (result.followError && follow) {
         notifyError(
           follow.linkLoanAccountId
             ? linkFailedMessage(follow.linkLoanName)

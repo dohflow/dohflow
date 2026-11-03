@@ -837,19 +837,21 @@ fn comfort_band_wraps_the_floor_and_reads_an_optional_upper_edge() {
 
     // The lower edge tracks the shipped floor; the upper edge is its own setting.
     worker
-        .set_setting(MINIMUM_CASH_FLOOR_KEY, "500000")
+        .set_user_setting(MINIMUM_CASH_FLOOR_KEY, "500000")
         .unwrap();
     worker
-        .set_setting(COMFORT_BAND_UPPER_KEY, "1000000")
+        .set_user_setting(COMFORT_BAND_UPPER_KEY, "1000000")
         .unwrap();
-    worker.set_setting("reporting_currency", "EUR").unwrap();
+    worker
+        .set_user_setting(REPORTING_CURRENCY_KEY, "EUR")
+        .unwrap();
     let band = worker.comfort_band().unwrap();
     assert_eq!(band.currency, Currency::Eur);
     assert_eq!(band.lower, Money::new(500_000, Currency::Eur));
     assert_eq!(band.upper, Some(Money::new(1_000_000, Currency::Eur)));
 
     // Clearing the upper edge (blank) reads back as None; the floor is untouched.
-    worker.set_setting(COMFORT_BAND_UPPER_KEY, "").unwrap();
+    worker.set_user_setting(COMFORT_BAND_UPPER_KEY, "").unwrap();
     let band = worker.comfort_band().unwrap();
     assert_eq!(band.upper, None);
     assert_eq!(band.lower, Money::new(500_000, Currency::Eur));
@@ -912,7 +914,7 @@ fn band_drift_is_none_without_a_below_band_crossing() {
         .unwrap();
     // A $5,000 floor with a flat $10,000 projection (no bills/spend) never crosses below.
     worker
-        .set_setting(MINIMUM_CASH_FLOOR_KEY, "500000")
+        .set_user_setting(MINIMUM_CASH_FLOOR_KEY, "500000")
         .unwrap();
     assert!(worker.band_drift(Utc::now(), 180).unwrap().is_none());
 }
@@ -1159,7 +1161,9 @@ fn future_cash_forecast_on_empty_vault_uses_the_base_currency_setting() {
     // vault's base-currency setting instead of hardcoding USD
     // (personal-cfo-4n3x). This is what makes a EUR vault's Future Cash and
     // scenario amount labels read in EUR before any account exists.
-    worker.set_setting("reporting_currency", "EUR").unwrap();
+    worker
+        .set_user_setting(REPORTING_CURRENCY_KEY, "EUR")
+        .unwrap();
     let view = worker.future_cash_forecast(30, &[]).unwrap();
     assert_eq!(view.currency, Currency::Eur);
     assert_eq!(view.starting_balance, Money::zero(Currency::Eur));

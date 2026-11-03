@@ -336,30 +336,48 @@ fn settings_round_trip_and_upsert() {
     let (_dir, worker) = worker();
 
     // An unset key reads as None.
-    assert_eq!(worker.get_setting("reporting_currency").unwrap(), None);
+    assert_eq!(worker.get_setting(REPORTING_CURRENCY_KEY).unwrap(), None);
 
     // Set, then read back.
-    worker.set_setting("reporting_currency", "USD").unwrap();
+    worker
+        .set_user_setting(REPORTING_CURRENCY_KEY, "USD")
+        .unwrap();
     assert_eq!(
-        worker.get_setting("reporting_currency").unwrap().as_deref(),
+        worker
+            .get_setting(REPORTING_CURRENCY_KEY)
+            .unwrap()
+            .as_deref(),
         Some("USD")
     );
 
     // Re-setting the same key upserts in place (no error, new value).
-    worker.set_setting("reporting_currency", "EUR").unwrap();
+    worker
+        .set_user_setting(REPORTING_CURRENCY_KEY, "EUR")
+        .unwrap();
     assert_eq!(
-        worker.get_setting("reporting_currency").unwrap().as_deref(),
+        worker
+            .get_setting(REPORTING_CURRENCY_KEY)
+            .unwrap()
+            .as_deref(),
         Some("EUR")
     );
 
     // Independent keys coexist.
-    worker.set_setting("locale", "en-US").unwrap();
+    worker
+        .set_user_setting(MINIMUM_CASH_FLOOR_KEY, "250000")
+        .unwrap();
     assert_eq!(
-        worker.get_setting("locale").unwrap().as_deref(),
-        Some("en-US")
+        worker
+            .get_setting(MINIMUM_CASH_FLOOR_KEY)
+            .unwrap()
+            .as_deref(),
+        Some("250000")
     );
     assert_eq!(
-        worker.get_setting("reporting_currency").unwrap().as_deref(),
+        worker
+            .get_setting(REPORTING_CURRENCY_KEY)
+            .unwrap()
+            .as_deref(),
         Some("EUR")
     );
 }

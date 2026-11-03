@@ -170,6 +170,16 @@ record until the first tagged release.
   wordmark follows the theme's text color — in place of a placeholder icon and
   a plain-text name.
 
+### Fixed
+
+- **Reviewing a transaction in the Money Inbox card view could act on the
+  wrong one** (`personal-cfo-bv6w2`, `personal-cfo-q8l5t`). The arrow-key
+  shortcuts (Reviewed, Later) could briefly stay tied to the card you had just
+  finished, so a fast key press right after the card changed could mark that
+  previous card instead of the one on screen, or file an edit against it. The
+  shortcuts are now re-bound in the same step that swaps the card, and a test
+  fails if that ever regresses.
+
 ### Persistence / security
 
 - **Pinned the vault storage engine** (`personal-cfo-7igv`, mitigates risk

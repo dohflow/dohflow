@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, ChevronRight, Columns3, Search } from "lucide-react";
 
 import type { ForecastEventDto, MultiSeriesForecastDto } from "@/bindings";
@@ -18,6 +18,7 @@ import { PaginationControls } from "@/components/ui/pagination";
 import { PAGE_SIZE_OPTIONS, usePagination } from "@/lib/usePagination";
 import { explainEvent } from "./explainEvent";
 import { ForecastRowExplanation } from "./ForecastRowExplanation";
+import { accountLabel, seriesAsLabelled } from "./seriesKeys";
 
 const TIER_LABEL: Record<string, string> = {
   spendable: "Spendable",
@@ -101,10 +102,23 @@ function filterActivityRows(rows: Row[], query: string, kind: string): Row[] {
 /// (personal-cfo-inaw); the feedback asked for accounts hidden by default. Rows expand
 /// to the typed explanation (personal-cfo-vkge).
 export function ProjectedActivityTable({
-  projection,
+  projection: raw,
 }: {
   projection: MultiSeriesForecastDto;
 }) {
+  // Every account is named with `accountLabel`, so two accounts called "Savings" read
+  // differently in the picker, the column headers, "from/to" and the overdraft warning —
+  // and the same as in the Future Cash picker.
+  const projection = useMemo(() => {
+    const all = raw.accounts.map(seriesAsLabelled);
+    return {
+      ...raw,
+      accounts: raw.accounts.map((a) => ({
+        ...a,
+        name: accountLabel(seriesAsLabelled(a), all),
+      })),
+    };
+  }, [raw]);
   const { currency } = projection;
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -361,7 +375,7 @@ function AccountColumnPicker({
                     )
                   }
                 />
-                <span className="truncate">{account.name}</span>
+                <span className="min-w-0 break-words">{account.name}</span>
               </label>
             );
           })}
