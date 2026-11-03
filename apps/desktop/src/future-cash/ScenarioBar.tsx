@@ -11,6 +11,9 @@ import { isExpired } from "./scenarioEligibility";
 import { TimezoneReadNotice } from "./TimezoneReadNotice";
 import { SCENARIO_NAME_MAX, useScenarios } from "./useScenarios";
 
+/// What a held selection is called when its row is not in the list and the date could not be read.
+const SELECTED_SCENARIO = "Selected scenario";
+
 const STATUS_CLASS = "h-9 rounded-md border bg-background px-3 text-sm";
 
 /// The scenario selector (personal-cfo-6zep): pick the base forecast or one of the
@@ -51,8 +54,9 @@ export function ScenarioBar({
   const selected =
     (tz.verified ? visible : notArchived).find((s) => s.id === selectedId) ?? null;
   // Until the reads that can judge the selection are in (the date, and the list), the select still
-  // holds that exact scenario, so it never reads as "Base (no scenario)". It carries the scenario's
-  // name when the row is known (archived or not), else what is happening to the list.
+  // holds that exact scenario, so it never reads as "Base (no scenario)". Its text, in order: the
+  // row's name when it is known (archived or not); the list's own failure; "Selected scenario" when
+  // the date could not be verified but the list is here; "Loading…" only while a read is pending.
   const listed = tz.verified ? visible : [];
   const heldSelection =
     selectedId !== null &&
@@ -62,7 +66,8 @@ export function ScenarioBar({
           id: selectedId,
           label:
             (scenarios ?? []).find((s) => s.id === selectedId)?.name ??
-            (scenarios === null && error ? error : "Loading…"),
+            error ??
+            (tz.failure !== null && scenarios !== null ? SELECTED_SCENARIO : "Loading…"),
         }
       : null;
   // A selection that is no longer selectable (archived/expired/deleted elsewhere) falls

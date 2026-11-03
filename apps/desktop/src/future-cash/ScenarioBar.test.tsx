@@ -1,5 +1,5 @@
 import { QueryClient, onlineManager } from "@tanstack/react-query";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -290,6 +290,73 @@ describe("the picker never shows Base for a selection it cannot judge yet (5ie.1
     await waitFor(() =>
       expect(shown()).toEqual({ value: "s1", text: "Could not load your scenarios." }),
     );
+  });
+
+  test("a failed timezone read with the list here and the row missing says Selected scenario, beside its Retry", async () => {
+    mocks.householdTimezone.mockRejectedValue(new Error("host down"));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s2", "Move")]));
+    const onSelect = vi.fn();
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={onSelect} />, client());
+    await screen.findByRole("alert");
+    await waitFor(() => expect(shown()).toEqual({ value: "s1", text: "Selected scenario" }));
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("the failure is not read as loading while the timezone retry runs", async () => {
+    mocks.householdTimezone.mockRejectedValueOnce(new Error("host down"));
+    mocks.householdTimezone.mockReturnValueOnce(new Promise(() => {}));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s2", "Move")]));
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={vi.fn()} />, client());
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("button", { name: "Retrying…" });
+    expect(shown()).toEqual({ value: "s1", text: "Selected scenario" });
+  });
+
+  test("a failed timezone read does not hide a name that is known", async () => {
+    mocks.householdTimezone.mockRejectedValue(new Error("host down"));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s1", "Old plan", "archived")]));
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={vi.fn()} />, client());
+    await screen.findByRole("alert");
+    await waitFor(() => expect(shown()).toEqual({ value: "s1", text: "Old plan" }));
+  });
+
+  test("a failed timezone read with the list still on its way is Loading…, not a failure", async () => {
+    mocks.householdTimezone.mockRejectedValue(new Error("host down"));
+    mocks.scenarioList.mockReturnValue(new Promise(() => {}));
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={vi.fn()} />, client());
+    await screen.findByRole("alert");
+    expect(shown()).toEqual({ value: "s1", text: "Loading…" });
+  });
+
+  test("a cached list whose refresh failed, with the row missing, names the list failure", async () => {
+    const c = client();
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s2", "Move")]));
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={vi.fn()} />, c);
+    await waitFor(() => expect(c.getQueryData(["scenarios"])).toBeDefined());
+    mocks.scenarioList.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      await c.refetchQueries({ queryKey: ["scenarios"] });
+    });
+    await waitFor(() =>
+      expect(shown()).toEqual({ value: "s1", text: "Could not load your scenarios." }),
+    );
+  });
+
+  test("a cached list whose refresh failed still names a row it knows", async () => {
+    const c = client();
+    mocks.householdTimezone.mockReturnValue(new Promise(() => {}));
+    mocks.scenarioList.mockResolvedValue(ok([scenario("s1", "Old plan", "archived")]));
+    renderWithClient(<ScenarioBar selectedId="s1" onSelect={vi.fn()} />, c);
+    await waitFor(() => expect(shown()).toEqual({ value: "s1", text: "Old plan" }));
+    mocks.scenarioList.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      await c.refetchQueries({ queryKey: ["scenarios"] });
+    });
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(shown()).toEqual({ value: "s1", text: "Old plan" });
   });
 
   test("Base shows as selected for no selection, with or without the timezone", async () => {
