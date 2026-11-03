@@ -234,10 +234,15 @@ export function TransactionDetailDrawer({
 
   // Holds Attach while the list is re-read after a call whose outcome is not known.
   const [settling, setSettling] = useState(false);
+  // An attach is in flight, or its unknown-outcome re-read is. It guards the attach path itself, not
+  // just the button: the real file input can still deliver a second pick (a re-render has not yet
+  // disabled it, or the control is driven directly), and that must not send a second file.
+  const attachBusy = useRef(false);
   async function onPickFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = ""; // let the user re-pick the same file later
-    if (!file) return;
+    if (!file || attachBusy.current) return;
+    attachBusy.current = true;
     setActionError(null);
     try {
       const failure = await attachFile(file);
@@ -252,6 +257,9 @@ export function TransactionDetailDrawer({
       } finally {
         setSettling(false);
       }
+    } finally {
+      // Released after the call and, when it threw, after its re-read has settled.
+      attachBusy.current = false;
     }
   }
 
@@ -612,6 +620,7 @@ export function TransactionDetailDrawer({
             className="sr-only"
             aria-label="Choose a document to attach"
             onChange={onPickFile}
+            disabled={isAttaching || settling}
           />
           <Button
             variant="outline"

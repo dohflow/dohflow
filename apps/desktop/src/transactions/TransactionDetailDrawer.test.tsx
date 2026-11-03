@@ -603,6 +603,46 @@ describe("the attachments list: a failed read and an unknown outcome (4d8.59)", 
     expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
   });
 
+  it("while a thrown Attach's list re-read is pending, the file input is disabled and a second pick sends nothing", async () => {
+    mocks.transactionAttachments.mockResolvedValueOnce(ok([]));
+    mocks.attachDocument.mockRejectedValue(new Error("connection lost"));
+    renderDrawer();
+    await screen.findByText(/no documents attached/i);
+    let finish: (value: unknown) => void = () => {};
+    mocks.transactionAttachments.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    pickFile();
+    expect(await screen.findByRole("alert")).toHaveTextContent(ATTACH_UNKNOWN);
+    const input = screen.getByLabelText(/choose a document/i);
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+
+    // A second pick reaches the real input anyway (the handler is driven directly): nothing is sent.
+    pickFile();
+    await act(async () => {});
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+
+    await act(async () => finish(ok([])));
+    await waitFor(() => expect(input).toBeEnabled());
+    // Released after settlement: a later pick is sent.
+    mocks.attachDocument.mockResolvedValue(ok(doc({ original_filename: "statement.pdf" })));
+    pickFile();
+    await waitFor(() => expect(mocks.attachDocument).toHaveBeenCalledTimes(2));
+  });
+
+  it("a second pick while the first Attach call is still in flight sends nothing", async () => {
+    mocks.transactionAttachments.mockResolvedValue(ok([]));
+    let finish: (value: unknown) => void = () => {};
+    mocks.attachDocument.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    renderDrawer();
+    await screen.findByText(/no documents attached/i);
+    pickFile();
+    await waitFor(() => expect(mocks.attachDocument).toHaveBeenCalledTimes(1));
+    pickFile();
+    await act(async () => {});
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+    await act(async () => finish(ok(doc())));
+  });
+
   it("a typed refusal stays a confirmed failure: its reason, no unknown-outcome message", async () => {
     mocks.transactionAttachments.mockResolvedValue(ok([doc()]));
     mocks.removeAttachment.mockResolvedValue({
