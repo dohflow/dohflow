@@ -17,6 +17,7 @@ Each feature ships with the layers that apply to it. "Applies" means the layer c
 - Pure functions and small structs are covered by table-driven cases including edge cases, boundary values, and adversarial inputs.
 - Use `proptest` (Rust) and fast-check style generators where invariants are obvious — money math, schedules, categorization, rules, balance sums.
 - Frontend unit tests use Vitest + Testing Library for pure components and hooks.
+- A write that carries a **per-draft idempotency key** is covered by `expectDraftKeyIdentity` (`apps/desktop/src/test/idempotencyIdentity.ts`, `docs/agent/FRONTEND.md` section 8), listing every field of the draft's identity, so a field left out of the key cannot go unnoticed.
 
 ### 1.2 Integration tests
 
