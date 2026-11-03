@@ -5,6 +5,7 @@ import type { IpcError, ScenarioDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogError,
   DialogBody,
   DialogContent,
   DialogDescription,
@@ -170,6 +171,11 @@ export function ScenariosView({
   const [formError, setFormError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<ScenarioDto | null>(null);
+  // The Apply or Delete write that is running behind its open dialog, and what it reported. The
+  // dialog stays open until the write has settled: Escape, Cancel and a click outside do nothing
+  // meanwhile, and the outcome shows in the dialog it belongs to.
+  const [pendingWrite, setPendingWrite] = useState<"apply" | "delete" | null>(null);
+  const [dialogError, setDialogError] = useState<string | null>(null);
   // Applying changes the household's real forecast, so it is confirmed and the dialog
   // says exactly what will and will not change (ADR 0055).
   const [confirmApply, setConfirmApply] = useState<ScenarioDto | null>(null);
@@ -223,6 +229,37 @@ export function ScenariosView({
       setFormError("That didn't work. Please try again.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  /// Run the write behind an open Apply or Delete dialog. The dialog is released only once the write
+  /// has settled and the scenarios have been read again, so on success focus lands where it can stay
+  /// (the row's button is gone by then, so the dialog hands focus to the heading). A refusal shows in
+  /// the dialog and leaves it open; so does a call that threw, whose outcome is not known, after the
+  /// scenarios are read again so the screen shows what is stored.
+  async function confirmWrite(
+    kind: "apply" | "delete",
+    action: () => Promise<IpcError | null>,
+    close: () => void,
+  ) {
+    setPendingWrite(kind);
+    setDialogError(null);
+    setBusy(true);
+    try {
+      // Both writes resolve to `IpcError | null`: a value is the refusal, `null` is success.
+      const failure = await action();
+      if (failure) {
+        setDialogError(describeIpcError(failure as IpcError));
+        return;
+      }
+      await refreshScenarios();
+      close();
+    } catch {
+      setDialogError("That didn't work. Please try again.");
+      await refreshScenarios();
+    } finally {
+      setBusy(false);
+      setPendingWrite(null);
     }
   }
 
@@ -528,8 +565,9 @@ export function ScenariosView({
               Scenarios
             </CardTitle>
             <CardDescription>
-              Plans layered over your real forecast. A scenario never changes your
-              actual numbers — you compare it on Cash Flow.
+              Try changes and compare them on Cash Flow before you apply them. Comparing does
+              not change your real forecast. Apply makes those changes part of your real
+              forecast.
             </CardDescription>
           </div>
           <Button size="sm" onClick={() => setCreating((v) => !v)}>
@@ -646,13 +684,16 @@ export function ScenariosView({
       {confirmApply && (
         <ApplyScenarioDialog
           scenario={confirmApply}
-          busy={busy}
+          pending={pendingWrite === "apply"}
+          error={dialogError}
           fallbackFocusTo={headingRef}
-          onCancel={() => setConfirmApply(null)}
-          onConfirm={async () => {
-            const target = confirmApply;
+          onCancel={() => {
+            setDialogError(null);
             setConfirmApply(null);
-            await run(() => applyScenario(target.id));
+          }}
+          onConfirm={() => {
+            const target = confirmApply;
+            void confirmWrite("apply", () => applyScenario(target.id), () => setConfirmApply(null));
           }}
         />
       )}
@@ -668,14 +709,20 @@ export function ScenariosView({
       />
       {confirmDelete && (
         <DeleteScenarioDialog
-          scenario={confirmDelete}
-          busy={busy}
+          // The latest row for the selected scenario, and only while the list read is working: a
+          // row from a failed read, or one that has gone, is not known to be applied or not.
+          scenario={error === null ? (all.find((s) => s.id === confirmDelete.id) ?? null) : null}
+          title={confirmDelete.name}
+          pending={pendingWrite === "delete"}
+          error={dialogError}
           fallbackFocusTo={headingRef}
-          onCancel={() => setConfirmDelete(null)}
-          onConfirm={async () => {
-            const target = confirmDelete;
+          onCancel={() => {
+            setDialogError(null);
             setConfirmDelete(null);
-            await run(() => deleteScenario(target.id));
+          }}
+          onConfirm={() => {
+            const target = confirmDelete;
+            void confirmWrite("delete", () => deleteScenario(target.id), () => setConfirmDelete(null));
           }}
         />
       )}
@@ -688,13 +735,16 @@ export function ScenariosView({
 /// not, because "apply" could reasonably be read as "edit my bills", which it is not.
 function ApplyScenarioDialog({
   scenario,
-  busy,
+  pending,
+  error,
   fallbackFocusTo,
   onCancel,
   onConfirm,
 }: {
   scenario: ScenarioDto;
-  busy: boolean;
+  /// The apply write is running: nothing dismisses the dialog until it has settled.
+  pending: boolean;
+  error: string | null;
   /// Where focus goes when the dialog closes and the button that opened it is gone.
   fallbackFocusTo: React.RefObject<HTMLElement | null>;
   onCancel: () => void;
@@ -702,7 +752,7 @@ function ApplyScenarioDialog({
 }) {
   const safeActionRef = useRef<HTMLButtonElement>(null);
   return (
-    <Dialog open onOpenChange={(open) => !open && onCancel()}>
+    <Dialog open onOpenChange={(open) => !open && !pending && onCancel()}>
       <DialogContent initialFocusRef={safeActionRef} fallbackFocusTo={fallbackFocusTo}>
         <DialogHeader>
           <DialogTitle>Apply “{scenario.name}”?</DialogTitle>
@@ -736,11 +786,12 @@ function ApplyScenarioDialog({
             it removes what applying added and restores anything it superseded.
           </p>
         </DialogBody>
+        <DialogError error={error} />
         <DialogFooter>
-          <Button variant="ghost" ref={safeActionRef} onClick={onCancel}>
+          <Button variant="ghost" ref={safeActionRef} disabled={pending} onClick={onCancel}>
             Cancel
           </Button>
-          <Button disabled={busy} onClick={onConfirm}>
+          <Button disabled={pending} onClick={onConfirm}>
             Apply to my forecast
           </Button>
         </DialogFooter>
@@ -755,44 +806,69 @@ function ApplyScenarioDialog({
 /// rather than a guess. It does not claim permanence: the rows stay in the vault.
 function DeleteScenarioDialog({
   scenario,
-  busy,
+  title,
+  pending,
+  error,
   fallbackFocusTo,
   onCancel,
   onConfirm,
 }: {
-  scenario: ScenarioDto;
-  busy: boolean;
+  /// The latest known row for the scenario being deleted, or `null` when it is not known (the list
+  /// read failed, or the row has gone). Nothing about the forecast is claimed for an unknown row.
+  scenario: ScenarioDto | null;
+  title: string;
+  /// The delete write is running: nothing dismisses the dialog until it has settled.
+  pending: boolean;
+  error: string | null;
   /// Where focus goes when the dialog closes and the button that opened it is gone.
   fallbackFocusTo: React.RefObject<HTMLElement | null>;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const safeActionRef = useRef<HTMLButtonElement>(null);
+  const known = scenario !== null && Number.isInteger(scenario.event_count) && scenario.event_count >= 0;
   return (
-    <Dialog open onOpenChange={(open) => !open && onCancel()}>
+    <Dialog open onOpenChange={(open) => !open && !pending && onCancel()}>
       <DialogContent initialFocusRef={safeActionRef} fallbackFocusTo={fallbackFocusTo}>
         <DialogHeader>
-          <DialogTitle>Delete “{scenario.name}”?</DialogTitle>
+          <DialogTitle>Delete “{title}”?</DialogTitle>
         </DialogHeader>
         <DialogBody>
-          <DialogDescription className="mt-2">
-            This deletes the scenario and its {scenario.event_count}{" "}
-            {scenario.event_count === 1 ? "change" : "changes"}. Your real forecast is not
-            affected. To keep the plan but stop seeing it, archive it instead.
-          </DialogDescription>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Created {formatIsoDate(scenario.created_at.slice(0, 10))}
-          </p>
+          {known && (
+            <>
+              <DialogDescription className="mt-2">{deleteDescription(scenario)}</DialogDescription>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Created {formatIsoDate(scenario.created_at.slice(0, 10))}
+              </p>
+            </>
+          )}
         </DialogBody>
+        <DialogError error={error} />
         <DialogFooter>
-          <Button variant="ghost" ref={safeActionRef} onClick={onCancel}>
+          <Button variant="ghost" ref={safeActionRef} disabled={pending} onClick={onCancel}>
             Cancel
           </Button>
-          <Button variant="destructive" disabled={busy} onClick={onConfirm}>
+          <Button variant="destructive" disabled={pending || !known} onClick={onConfirm}>
             Delete scenario
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+/// What deleting a scenario does, for a scenario whose row is known (Studio's lines, personal-cfo-5ie.19).
+/// An unapplied scenario leaves the real forecast alone; an applied one does not undo what it already
+/// changed there, and Undo apply stays available after deletion. The last sentence is only for a
+/// scenario that can still be archived.
+function deleteDescription(scenario: ScenarioDto): string {
+  const changes = `${scenario.event_count} ${scenario.event_count === 1 ? "change" : "changes"}`;
+  const applied = scenario.applied_at !== null;
+  const head = `This deletes the scenario and its ${changes}.`;
+  const body = applied
+    ? "It does not undo the changes already applied to your real forecast. Use Undo apply to reverse those changes; it remains available after deletion."
+    : "Your real forecast is not affected.";
+  const archive =
+    scenario.status === "archived" ? "" : " To keep the plan but stop seeing it, archive it instead.";
+  return `${head} ${body}${archive}`;
 }

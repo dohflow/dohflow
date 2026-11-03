@@ -1,4 +1,5 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -922,3 +923,217 @@ describe.each([
   });
 });
 
+
+// Studio's lines (personal-cfo-5ie.19): the intro and the Delete dialog never say the real forecast is
+// untouched when it is not, and Apply and Delete keep their dialog open, locked, until the write settles.
+describe("the intro and the Delete dialog tell the truth (personal-cfo-5ie.19)", () => {
+  const INTRO =
+    "Try changes and compare them on Cash Flow before you apply them. Comparing does not change your real forecast. Apply makes those changes part of your real forecast.";
+  const ARCHIVE = "To keep the plan but stop seeing it, archive it instead.";
+  const UNAPPLIED = (n: string) =>
+    `This deletes the scenario and its ${n}. Your real forecast is not affected.`;
+  const APPLIED = (n: string) =>
+    `This deletes the scenario and its ${n}. It does not undo the changes already applied to your real forecast. Use Undo apply to reverse those changes; it remains available after deletion.`;
+
+  async function openDelete(over: Partial<ScenarioDto>, showArchived = false) {
+    mocks.scenarioList.mockResolvedValue(
+      ok(showArchived ? [scenario({ id: "sce-0", name: "Other" }), scenario(over)] : [scenario(over)]),
+    );
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    if (showArchived) fireEvent.click(await screen.findByRole("button", { name: /show 1 archived/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /delete maternity leave/i }));
+    return within(await screen.findByRole("dialog", { name: /^Delete “Maternity leave”\?$/ }));
+  }
+
+  it("the intro says what a scenario does until it is applied, and that Apply changes the real forecast", async () => {
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    expect(await screen.findByText(INTRO)).toBeInTheDocument();
+    expect(screen.queryByText(/never changes your/i)).toBeNull();
+  });
+
+  it("an unapplied scenario keeps the existing sentence, with the archive alternative", async () => {
+    const dialog = await openDelete({ applied_at: null, event_count: 3 });
+    expect(dialog.getByText(`${UNAPPLIED("3 changes")} ${ARCHIVE}`)).toBeInTheDocument();
+  });
+
+  it("an applied scenario says deleting does not undo it, and that Undo apply reverses it", async () => {
+    const dialog = await openDelete({ applied_at: "2026-07-02T00:00:00Z", event_count: 3 });
+    expect(dialog.getByText(`${APPLIED("3 changes")} ${ARCHIVE}`)).toBeInTheDocument();
+    expect(dialog.queryByText(/real forecast is not affected/i)).toBeNull();
+  });
+
+  it.each([
+    [0, "0 changes"],
+    [1, "1 change"],
+    [2, "2 changes"],
+  ])("a count of %i reads “%s”", async (n, phrase) => {
+    const dialog = await openDelete({ applied_at: null, event_count: n });
+    expect(dialog.getByText(`${UNAPPLIED(phrase)} ${ARCHIVE}`)).toBeInTheDocument();
+  });
+
+  it("an archived scenario omits the whole archive sentence, applied or not", async () => {
+    const unapplied = await openDelete({ status: "archived", applied_at: null }, true);
+    expect(unapplied.getByText(UNAPPLIED("3 changes"))).toBeInTheDocument();
+    expect(unapplied.queryByText(/archive it instead/i)).toBeNull();
+  });
+
+  it("an applied archived scenario also omits it", async () => {
+    const dialog = await openDelete({ status: "archived", applied_at: "2026-07-02T00:00:00Z" }, true);
+    expect(dialog.getByText(APPLIED("3 changes"))).toBeInTheDocument();
+    expect(dialog.queryByText(/archive it instead/i)).toBeNull();
+  });
+
+  it("applied is read from applied_at, not the lifecycle: an applied draft and an applied active scenario both say it", async () => {
+    const dialog = await openDelete({ status: "active", applied_at: "2026-07-02T00:00:00Z" });
+    expect(dialog.getByText(`${APPLIED("3 changes")} ${ARCHIVE}`)).toBeInTheDocument();
+  });
+
+  it("when the scenarios read fails the row is not known: no reassurance and no way to confirm", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mocks.scenarioList.mockResolvedValue(ok([scenario()]));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />, client);
+    fireEvent.click(await screen.findByRole("button", { name: /delete maternity leave/i }));
+    const dialog = within(await screen.findByRole("dialog", { name: /^Delete “Maternity leave”\?$/ }));
+    expect(dialog.getByText(/real forecast is not affected/i)).toBeInTheDocument();
+
+    mocks.scenarioList.mockResolvedValue({ status: "error", error: { kind: "Internal", message: "read failed" } });
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["scenarios"] });
+    });
+    await vi.waitFor(() => expect(dialog.queryByText(/real forecast is not affected/i)).toBeNull());
+    expect(dialog.queryByText(/does not undo/i)).toBeNull();
+    expect(dialog.getByRole("button", { name: /^delete scenario$/i })).toBeDisabled();
+    expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("deleting an applied scenario still only tombstones it: nothing is reverted, and its Undo stays reachable", async () => {
+    mocks.scenarioList.mockResolvedValue(ok([scenario({ applied_at: "2026-07-02T00:00:00Z" })]));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /delete maternity leave/i }));
+    const dialog = await screen.findByRole("dialog", { name: /^Delete “Maternity leave”\?$/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete scenario$/i }));
+    await vi.waitFor(() => expect(mocks.deleteScenario).toHaveBeenCalledWith("sce-1"));
+    expect(mocks.revertScenarioApply).not.toHaveBeenCalled();
+  });
+});
+
+describe("Apply and Delete lock while their write runs, and report in the dialog (personal-cfo-5ie.19)", () => {
+  const specs = [
+    {
+      name: "Apply",
+      opener: /apply .* to the forecast/i,
+      title: /^Apply “Maternity leave”\?$/,
+      confirm: /^apply to my forecast$/i,
+      write: () => mocks.applyScenario,
+    },
+    {
+      name: "Delete",
+      opener: /delete maternity leave/i,
+      title: /^Delete “Maternity leave”\?$/,
+      confirm: /^delete scenario$/i,
+      write: () => mocks.deleteScenario,
+    },
+  ];
+
+  describe.each(specs)("$name", (spec) => {
+    async function openPending() {
+      let settle: (value: unknown) => void = () => {};
+      spec.write().mockReturnValue(new Promise((resolve) => (settle = resolve)));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      const opener = await screen.findByRole("button", { name: spec.opener });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole("dialog", { name: spec.title });
+      fireEvent.click(within(dialog).getByRole("button", { name: spec.confirm }));
+      await vi.waitFor(() => expect(spec.write()).toHaveBeenCalledTimes(1));
+      return { dialog, settle };
+    }
+
+    it("Escape, Cancel and a click outside do nothing while the write is running", async () => {
+      const { dialog, settle } = await openPending();
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: spec.confirm })).toBeDisabled();
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      fireEvent.pointerDown(document.body);
+      fireEvent.click(document.body);
+      await act(async () => {});
+      expect(screen.getByRole("dialog", { name: spec.title })).toBeInTheDocument();
+      expect(spec.write()).toHaveBeenCalledTimes(1);
+      await act(async () => settle(ok(null)));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("a refusal shows in the dialog, which stays open and unlocks", async () => {
+      const { dialog, settle } = await openPending();
+      await act(async () => settle({ status: "error", error: { Validation: "Nothing to do." } }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent("Nothing to do.");
+      expect(screen.getByRole("dialog", { name: spec.title })).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("a call that threw reports in the dialog, which stays open and unlocks", async () => {
+      let reject: (error: unknown) => void = () => {};
+      spec.write().mockReturnValue(new Promise((_, r) => (reject = r)));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: spec.opener }));
+      const dialog = within(await screen.findByRole("dialog", { name: spec.title }));
+      fireEvent.click(dialog.getByRole("button", { name: spec.confirm }));
+      await vi.waitFor(() => expect(spec.write()).toHaveBeenCalledTimes(1));
+      await act(async () => reject(new Error("connection lost")));
+      expect(await dialog.findByRole("alert")).toHaveTextContent("That didn't work. Please try again.");
+      expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    it("the row's own actions are locked while it runs", async () => {
+      const { settle } = await openPending();
+      await act(async () => {});
+      // The page behind is hidden, so look at the row through the DOM.
+      const rowButtons = [...document.querySelectorAll("table button[aria-label]")].filter(
+        // Opening Cash Flow is navigation, not a write.
+        (button) => !button.getAttribute("aria-label")?.startsWith("Open "),
+      );
+      expect(rowButtons.length).toBeGreaterThan(3);
+      for (const button of rowButtons) expect(button).toBeDisabled();
+      await act(async () => settle(ok(null)));
+    });
+  });
+
+  it("after a confirmed Delete focus lands on the Scenarios heading, not on a button that is gone", async () => {
+    mocks.scenarioList.mockResolvedValueOnce(ok([scenario()]));
+    // The list read after the delete is held: the dialog is released only once the row is really gone.
+    let listed: (value: unknown) => void = () => {};
+    mocks.scenarioList.mockReturnValue(new Promise((resolve) => (listed = resolve)));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    const opener = await screen.findByRole("button", { name: /delete maternity leave/i });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: /^Delete “Maternity leave”\?$/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete scenario$/i }));
+    await vi.waitFor(() => expect(mocks.deleteScenario).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mocks.scenarioList.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await act(async () => listed(ok([])));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.getByText("Scenarios", { selector: "[tabindex='-1']" })).toHaveFocus());
+  });
+
+  it("after a confirmed Apply focus stays on that row's action, now Undo, never lost to the page", async () => {
+    mocks.scenarioList.mockResolvedValueOnce(ok([scenario()]));
+    mocks.scenarioList.mockResolvedValue(ok([scenario({ applied_at: "2026-07-02T00:00:00Z" })]));
+    mocks.applyScenario.mockResolvedValue(ok(null));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    const opener = await screen.findByRole("button", { name: /apply .* to the forecast/i });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: /^Apply “Maternity leave”\?$/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^apply to my forecast$/i }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await vi.waitFor(() =>
+      expect(screen.getByRole("button", { name: "Undo applying Maternity leave" })).toHaveFocus(),
+    );
+    expect(document.activeElement).not.toBe(document.body);
+  });
+});
