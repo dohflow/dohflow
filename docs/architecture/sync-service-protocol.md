@@ -395,7 +395,9 @@ label "dohflow/sync-credential-claim/v1" ‖ uuid vault_id ‖ uuid device_id �
 fingerprint device_key_fingerprint ‖ i64 issued_at
 ```
 
-(`vault-format.md` C.1.1). `issued_at` is microseconds since the Unix epoch
+(`vault-format.md` C.1.1). The body and the strict check are one implementation,
+`sync_core::claim` (`claim_body` and `verify_claim`), which the client calls to build
+the proof and the server calls to check it. `issued_at` is microseconds since the Unix epoch
 (UTC); the server rejects a value more than `claim_skew_seconds` (section 7.1)
 from its own clock with `ClaimProofInvalid`. A second successful claim for the
 same device issues a new credential and invalidates the previous one, which lets
