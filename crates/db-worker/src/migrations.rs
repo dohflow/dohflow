@@ -2196,6 +2196,12 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // wins, so the DELETE of the legacy row comes FIRST; otherwise the UPDATE would hit the primary
     // key and abort. `locale` is not listed: no build ever wrote it. The migration runs before the
     // write-set capture is installed, so the rename is not captured as a change.
+    //
+    // Why rewriting replicated rows in a migration is safe NOW: no vault has a genesis snapshot yet
+    // (sync is not wired into any build), so no replica holds a copy of these rows under the old
+    // names. Once sync ships, a migration that rewrites rows of a replicated table needs its own
+    // rule (what a replica that has not migrated sees, and how the rewrite reaches it), so this
+    // is not a pattern to repeat after that point.
     Migration {
         version: 64,
         name: "household_settings_user_prefix",

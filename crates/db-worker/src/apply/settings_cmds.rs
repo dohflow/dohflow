@@ -48,7 +48,9 @@ fn is_blank_or_minor_units(value: &str) -> bool {
     value.is_empty() || is_minor_units(value)
 }
 
-/// A supported currency in canonical (upper-case) form.
+/// A supported currency in canonical (upper-case) form. `Currency` is `#[non_exhaustive]` in
+/// `core-money`, so no exhaustive match can force this list to follow it: adding a currency means
+/// updating this check by hand (and, once the engine version is pinned, bumping `engine_version`).
 fn is_supported_currency(value: &str) -> bool {
     matches!(value, "USD" | "EUR")
 }

@@ -1433,3 +1433,110 @@ mod released_dek_race_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod old_backup_settings_tests {
+    //! A backup written by an earlier build, with the unprefixed household settings, restored into
+    //! this one (personal-cfo-5ymg8.7, owner decision D-ST1: an eager rename on open, so the
+    //! restored vault answers from the `user.*` keys and no unprefixed row is left).
+    //!
+    //! The package is built the way a schema-63 build would have built it: the live vault is taken
+    //! to schema 63 (the migration's own down step, the tracker row of 64 removed, `user_version`
+    //! 63) and its snapshot is assembled with a manifest that says schema 63.
+
+    use super::*;
+    use tempfile::TempDir;
+
+    const PASSWORD: &[u8] = b"correct horse battery staple";
+    /// The five household settings, as the earlier build stored them (unprefixed), with a value each.
+    const LEGACY: [(&str, &str); 5] = [
+        ("reporting_currency", "EUR"),
+        ("minimum_cash_floor_minor", "250000"),
+        ("comfort_band_upper_minor", "900000"),
+        ("auto_categorize_on_import", "false"),
+        ("future_cash_series_selection", r#"["total","checking"]"#),
+    ];
+
+    /// A vault holding the five settings under the PREFIXED keys, taken down to schema 63, and a
+    /// package of it whose manifest says schema 63.
+    fn schema_63_package(dir: &Path) -> Vec<u8> {
+        let kernel = Kernel::create_vault(dir.join("source.db"), PASSWORD).unwrap();
+        for (key, value) in LEGACY {
+            kernel
+                .set_user_setting(&format!("user.{key}"), value)
+                .unwrap();
+        }
+        {
+            // What a 63 build had on disk: the unprefixed names, no tracker row for 64.
+            let conn = kernel.worker.read_connection().unwrap();
+            conn.execute_batch(
+                "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
+                 DELETE FROM schema_migrations WHERE version = 64;
+                 PRAGMA user_version = 63;",
+            )
+            .unwrap();
+            let legacy: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key NOT LIKE 'user.%'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                legacy, 5,
+                "the source vault really holds the unprefixed keys"
+            );
+        }
+        let inputs = crate::backup::BackupInputs {
+            db_bytes: kernel.worker.snapshot_bytes().unwrap(),
+            envelope_bytes: std::fs::read(sidecar_path(kernel.worker.db_path())).unwrap(),
+            blobs: Vec::new(),
+            app_version: "0.0.0-test".to_owned(),
+            schema_version: 63,
+            vault_envelope_version: vault_crypto::envelope::ENVELOPE_VERSION,
+            created_at: "2026-11-03T00:00:00Z".to_owned(),
+            backup_id: uuid::Uuid::from_bytes([9u8; 16]),
+        };
+        kernel
+            .worker
+            .with_dek(|dek| crate::backup::assemble_cancellable(dek, &inputs, &|| false))
+            .unwrap()
+            .expect("assemble a schema-63 backup")
+    }
+
+    #[test]
+    fn a_schema_63_backup_is_renamed_on_restore_and_every_reader_answers() {
+        let src = TempDir::new().unwrap();
+        let package = schema_63_package(src.path());
+        let manifest = crate::backup::disassemble(PASSWORD, &package)
+            .unwrap()
+            .manifest;
+        assert_eq!(manifest.schema_version, 63, "the manifest says schema 63");
+
+        let dest = TempDir::new().unwrap();
+        let restored =
+            Kernel::restore_backup_bytes(&package, PASSWORD, &dest.path().join("vault.db"))
+                .expect("restore a schema-63 backup");
+
+        for (key, value) in LEGACY {
+            assert_eq!(
+                restored
+                    .get_setting(&format!("user.{key}"))
+                    .unwrap()
+                    .as_deref(),
+                Some(value),
+                "{key} is read from its renamed key"
+            );
+        }
+        let conn = restored.worker.read_connection().unwrap();
+        let unprefixed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key NOT LIKE 'user.%' AND key NOT LIKE 'device.%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unprefixed, 0, "no unprefixed household row is left behind");
+        assert!(restored.auto_categorize_on_import().is_ok());
+    }
+}
