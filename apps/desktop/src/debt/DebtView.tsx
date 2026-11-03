@@ -90,11 +90,7 @@ export function DebtView() {
           {accounts !== null && scopedDebts !== null && scopedDebts.length > 0 && (
             <>
               <DebtStatRow debts={scopedDebts} currency={currency} />
-              <DebtTermsTable
-                debts={scopedDebts}
-                currency={currency}
-                cards={cards}
-              />
+              <DebtTermsTable debts={scopedDebts} cards={cards} />
             </>
           )}
           {/* The mock puts paydown and payoff ABOVE spending and activity: they answer
