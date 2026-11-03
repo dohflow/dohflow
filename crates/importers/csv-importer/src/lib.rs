@@ -183,6 +183,13 @@ fn valid_grouping(int_part: &str, sep: char) -> bool {
     (1..=3).contains(&first.len()) && groups.all(|g| g.len() == 3)
 }
 
+/// A minus sign: ASCII hyphen-minus, or U+2212 MINUS SIGN, which some locales and spreadsheet exports
+/// write. Treating only the ASCII one as negative dropped the other with the rest of the non-digit
+/// characters and imported the amount as POSITIVE (personal-cfo-pxi.20).
+fn is_minus(c: char) -> bool {
+    c == '-' || c == '\u{2212}'
+}
+
 /// Parse a money string into minor units for a currency with `exponent` decimal
 /// places. Handles a leading currency symbol, thousands separators, surrounding
 /// parentheses (= negative, accounting style), and a leading sign. `None` if it
@@ -200,17 +207,17 @@ fn parse_minor_units(raw: &str, exponent: u8, decimal_comma: bool) -> Option<i64
         negative = true;
         body = inner.trim();
     }
-    if let Some(rest) = body.strip_prefix('-') {
+    if let Some(rest) = body.strip_prefix(is_minus) {
         negative = !negative;
         body = rest.trim_start();
     } else if let Some(rest) = body.strip_prefix('+') {
         body = rest.trim_start();
     }
     // A sign after the currency symbol (`$-12.00`, `-$12.00` handled above).
-    if let Some(pos) = body.find('-') {
+    if let Some((pos, minus)) = body.char_indices().find(|&(_, c)| is_minus(c)) {
         if body[..pos].chars().all(|c| !c.is_ascii_digit()) {
             negative = !negative;
-            body = &body[pos + 1..];
+            body = &body[pos + minus.len_utf8()..];
         }
     }
     let (decimal, thousands) = if decimal_comma {
@@ -790,6 +797,33 @@ mod tests {
         assert_eq!(us("1.2.3"), None);
         // Exponent-0 currency would scale differently (defensive).
         assert_eq!(parse_minor_units("1500", 0, false), Some(1500));
+    }
+
+    #[test]
+    fn a_unicode_minus_is_a_minus_wherever_an_ascii_hyphen_is() {
+        // personal-cfo-pxi.20: U+2212 used to be dropped as a non-digit, flipping the sign.
+        let us = |raw| parse_minor_units(raw, 2, false);
+        assert_eq!(us("\u{2212}12.00"), Some(-1200));
+        assert_eq!(us("$\u{2212}12.00"), Some(-1200));
+        assert_eq!(us("\u{2212}$12.00"), Some(-1200));
+        assert_eq!(us("\u{2212}1,234.56"), Some(-123_456));
+        assert_eq!(us("\u{2212} 12.00"), Some(-1200));
+        assert_eq!(us("(\u{2212}12.00)"), Some(1200)); // a minus inside parentheses flips back, as '-' does
+                                                       // The ASCII spellings are unchanged.
+        assert_eq!(us("-12.00"), Some(-1200));
+        assert_eq!(us("$-12.00"), Some(-1200));
+        // A sign does not rescue a grouping no real amount has: ",234.56" is refused, signed or not.
+        assert_eq!(us(",234.56"), None);
+        assert_eq!(us("\u{2212},234.56"), None);
+        // Decimal-comma files read it too.
+        assert_eq!(
+            parse_minor_units("\u{2212}84,23\u{20ac}", 2, true),
+            Some(-8423)
+        );
+        assert_eq!(
+            parse_minor_units("\u{20ac}\u{2212}0,50", 2, true),
+            Some(-50)
+        );
     }
 
     #[test]
