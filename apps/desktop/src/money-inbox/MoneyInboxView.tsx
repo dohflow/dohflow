@@ -1188,8 +1188,8 @@ function StaleBalanceRow({
         <TableCell className="w-0">
           <Button
             size="sm"
-            disabled={account === null}
-            onClick={() => account && onUpdateBalance(account)}
+            disabled={account === null || unavailable}
+            onClick={() => account && !unavailable && onUpdateBalance(account)}
           >
             Update balance
           </Button>
@@ -1240,7 +1240,7 @@ function StaleBalanceRow({
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={account === null || flow.busy}
+                  disabled={account === null || unavailable || flow.busy}
                   onClick={flow.request}
                 >
                   {flow.busy ? "Archiving…" : "Archive account"}

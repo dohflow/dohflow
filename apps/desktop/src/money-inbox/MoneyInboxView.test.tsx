@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -546,6 +547,24 @@ describe("a stale-balance item's actions are honest (4d8.57)", () => {
     // The reason is outside the collapsible body.
     fireEvent.click(screen.getByRole("button", { name: /hide details/i }));
     expect(screen.getByText("Could not load accounts.")).toBeInTheDocument();
+  });
+
+  it("a failed refresh over a cached accounts list outranks the cache: the failure shows and both actions are unavailable", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockResolvedValue(ok([staleRowAccount()]));
+    renderWithClient(<MoneyInboxView />, client);
+    await openRowDetails();
+    await waitFor(() => expect(archiveButton()).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeEnabled();
+
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["accounts"] });
+    });
+    expect(await screen.findByText("Could not load accounts.")).toBeInTheDocument();
+    expect(archiveButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeDisabled();
   });
 
   it("the inbox is read again after an archive", async () => {
