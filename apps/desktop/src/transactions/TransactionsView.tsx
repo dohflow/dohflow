@@ -47,7 +47,11 @@ import {
 import { PAGE_SIZE_OPTIONS } from "@/lib/usePagination";
 import { cn } from "@/lib/utils";
 import { useTags } from "@/tags/useTags";
-import { useBills } from "@/bills/useBills";
+import { findLoanOverlap } from "@/bills/findLoanOverlap";
+import { LoanOverlapPanel } from "@/bills/LoanOverlapPanel";
+import { useAddBill } from "@/bills/useAddBill";
+import type { BillFollowUp } from "@/bills/useBills";
+import type { LoanOverlapMatchDto } from "@/bindings";
 import { TagChip } from "@/tags/TagChip";
 import { BulkTransactionActions } from "./BulkTransactionActions";
 import type { TransactionSelection } from "./useTransactionSelection";
@@ -185,7 +189,7 @@ export function TransactionsView({
   // (the details stay editable from the drawer). personal-cfo-4d8.24.2.
   const [addWarning, setAddWarning] = useState<string | null>(null);
   const { addRecurringTransfer } = useRecurringTransfers();
-  const { addBill } = useBills();
+  const addBill = useAddBill();
   const { accounts } = useAccounts();
   const { categories } = useCategories();
   const [adding, setAdding] = useState<"transaction" | "transfer" | null>(null);
@@ -642,10 +646,11 @@ export function TransactionsView({
             }
             return null;
           }}
-          onCreateRecurring={async (input) => {
+          onCreateRecurring={async (input, follow) => {
             // Instead of a one-off record, promote to a recurring bill via the shared
-            // create path (personal-cfo-4d8.24.2.2).
-            const { error: failure } = await addBill(input);
+            // create path (personal-cfo-4d8.24.2.2). What the user chose about a loan the bill
+            // may be the payment of (link it, or "it isn't") is applied after the bill exists.
+            const { error: failure } = await addBill(input, follow);
             if (!failure) setAdding(null);
             return failure ? describeIpcError(failure) : null;
           }}
@@ -1050,13 +1055,18 @@ function SplitLinesDetail({
   );
 }
 
-// Rust remains authoritative for validation (ADR 0003); this schema only gates
-// the form UI and shapes display copy.
+/// Shown when the call that creates the recurring bill threw: the bill may or may not exist, and
+/// the same draft keeps its key, so submitting again cannot add a second one.
+const BILL_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the recurring bill was created. Submit again and it won’t be added twice.";
+
 /// Shown when recording a transaction threw: nobody knows whether it was recorded. Submitting the
 /// same draft again reuses its idempotency key, so it cannot be recorded twice.
 const TRANSACTION_OUTCOME_UNKNOWN =
   "Couldn’t confirm whether the transaction was recorded. Submit again and it won’t be added twice.";
 
+// Rust remains authoritative for validation (ADR 0003); this schema only gates
+// the form UI and shapes display copy.
 const transactionFormSchema = z.object({
   account_id: z.string().min(1, "Choose an account."),
   kind: z.enum(["expense", "income"]),
@@ -1080,6 +1090,24 @@ const transactionFormSchema = z.object({
   interval_unit: z.string(),
 });
 type TransactionFormValues = z.infer<typeof transactionFormSchema>;
+
+/// Everything the recurring bill is built from. The loan warning is a confirmation of exactly one
+/// draft, so it stays only while this still reads the same.
+function billDraftSignature(values: TransactionFormValues, recurring: boolean): string {
+  return JSON.stringify([
+    recurring,
+    values.account_id,
+    values.amount,
+    values.date,
+    values.categoryId,
+    values.tagIds,
+    values.note,
+    values.recurringName,
+    values.frequency,
+    values.interval_count,
+    values.interval_unit,
+  ]);
+}
 
 /// The metadata the form assembles for the record→attach one-flow (personal-cfo-4d8.24.2).
 type TransactionMeta = {
@@ -1107,7 +1135,10 @@ function AddTransactionForm({
     meta: TransactionMeta,
     files: File[],
   ) => Promise<string | null>;
-  onCreateRecurring: (input: CreateRecurringBillInput) => Promise<string | null>;
+  onCreateRecurring: (
+    input: CreateRecurringBillInput,
+    follow?: BillFollowUp,
+  ) => Promise<string | null>;
 }) {
   const {
     register,
@@ -1133,6 +1164,7 @@ function AddTransactionForm({
   });
   const kind = watch("kind");
   const tagIds = watch("tagIds");
+  const liveValues = watch();
   const [error, setError] = useState<string | null>(null);
   // When on, submit promotes to a recurring bill (name + cadence) via the shared bill
   // create path instead of recording a one-off transaction (personal-cfo-4d8.24.2.2).
@@ -1141,6 +1173,25 @@ function AddTransactionForm({
   // yet) and attached after the record. Only for a one-off txn — a bill has no id.
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const draftKey = useRef<{ identity: string; key: string } | null>(null);
+  // The recurring bill's own key, kept per draft the same way (personal-cfo-6wk.23): submitting the
+  // same bill again after a call that threw replays it instead of creating a second one.
+  const billKey = useRef<{ identity: string; key: string } | null>(null);
+  // A loan the new bill may be the payment of, found just before creating it: the confirm panel
+  // replaces the form's buttons until the user decides (the same check and warning as the bill form).
+  const [overlap, setOverlap] = useState<{
+    match: LoanOverlapMatchDto;
+    input: CreateRecurringBillInput;
+    /// The draft the check ran on: a change to any field of it ends this confirmation.
+    signature: string;
+  } | null>(null);
+  // An edit to the draft while the warning is open ends it: its Add anyway would create the draft
+  // that was checked, not the one on screen. The next submit checks the current draft again.
+  const activeOverlap =
+    overlap && overlap.signature === billDraftSignature(liveValues, recurring) ? overlap : null;
+  useEffect(() => {
+    if (overlap && !activeOverlap) setOverlap(null);
+  }, [overlap, activeOverlap]);
+  const [creatingBill, setCreatingBill] = useState(false);
   const filePicker = useRef<HTMLInputElement>(null);
   function onPickFiles(event: ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(event.target.files ?? []);
@@ -1189,6 +1240,25 @@ function AddTransactionForm({
     );
   }
 
+  /// Create the recurring bill. A call that throws leaves it unknown whether the bill exists, so the
+  /// form says so and keeps the key: submitting again replays rather than adding a second one.
+  async function createBill(input: CreateRecurringBillInput, follow?: BillFollowUp) {
+    setCreatingBill(true);
+    setError(null);
+    try {
+      const failure = await onCreateRecurring(input, follow);
+      if (failure) {
+        setError(failure);
+        setOverlap(null);
+      }
+    } catch {
+      setError(BILL_OUTCOME_UNKNOWN);
+      setOverlap(null);
+    } finally {
+      setCreatingBill(false);
+    }
+  }
+
   const submit = handleSubmit(async (values) => {
     setError(null);
     const selectedAccount =
@@ -1218,7 +1288,7 @@ function AddTransactionForm({
       const note = values.note.trim();
       // A bill amount is a positive per-occurrence magnitude; the date is its anchor and
       // the account its pay-from. Category/tags/note carry over to the bill.
-      const failure = await onCreateRecurring({
+      const billDraft = {
         name,
         amount: {
           minor_units: magnitude,
@@ -1233,9 +1303,23 @@ function AddTransactionForm({
         source_merchant_key: null,
         category_id: values.categoryId === "" ? null : values.categoryId,
         tag_ids: values.tagIds,
-        idempotency_key: mintIdempotencyKey(),
-      });
-      if (failure) setError(failure);
+      };
+      // One key per draft: the same bill submitted again replays; any change is a new draft.
+      const billIdentity = JSON.stringify(billDraft);
+      if (billKey.current?.identity !== billIdentity) {
+        billKey.current = { identity: billIdentity, key: mintIdempotencyKey() };
+      }
+      const input: CreateRecurringBillInput = {
+        ...billDraft,
+        idempotency_key: billKey.current.key,
+      };
+      // Advisory and fail-open, like on the bill form: a match is shown before anything is created.
+      const match = await findLoanOverlap(billDraft, { sourceMerchantKey: null });
+      if (match) {
+        setOverlap({ match, input, signature: billDraftSignature(values, recurring) });
+        return;
+      }
+      await createBill(input);
       return;
     }
 
@@ -1564,20 +1648,32 @@ function AddTransactionForm({
             </p>
           )}
 
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting
-                ? recurring
-                  ? "Creating…"
-                  : "Adding…"
-                : recurring
-                  ? "Create recurring bill"
-                  : "Add transaction"}
-            </Button>
-          </div>
+          {activeOverlap ? (
+            <LoanOverlapPanel
+              match={activeOverlap.match}
+              autopayAccountId={activeOverlap.input.autopay_account_id}
+              accounts={accounts}
+              saving={creatingBill}
+              submitLabel="Create recurring bill"
+              onCancel={onCancel}
+              onCreate={(follow) => void createBill(activeOverlap.input, follow)}
+            />
+          ) : (
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSubmitting || creatingBill}>
+                {isSubmitting || creatingBill
+                  ? recurring
+                    ? "Creating…"
+                    : "Adding…"
+                  : recurring
+                    ? "Create recurring bill"
+                    : "Add transaction"}
+              </Button>
+            </div>
+          )}
         </form>
       </CardContent>
     </Card>

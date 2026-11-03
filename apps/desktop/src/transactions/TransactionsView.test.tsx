@@ -5,6 +5,7 @@ import { renderWithClient } from "@/test/renderWithClient";
 import type {
   AccountViewDto,
   CategoryDto,
+  CreateRecurringBillInput,
   TransactionPageInput,
   TransactionRowDto,
 } from "@/bindings";
@@ -26,6 +27,9 @@ const mocks = vi.hoisted(() => ({
   deleteRecurringTransfer: vi.fn(),
   recurringBillList: vi.fn(),
   createRecurringBill: vi.fn(),
+  checkLoanOverlap: vi.fn(),
+  linkBillToLoan: vi.fn(),
+  setBillNotLoanPayment: vi.fn(),
   categoryList: vi.fn(),
   recategorizeTransaction: vi.fn(),
   applyMerchantMemory: vi.fn(),
@@ -50,6 +54,9 @@ vi.mock("@/bindings", () => ({
     deleteRecurringTransfer: mocks.deleteRecurringTransfer,
     recurringBillList: mocks.recurringBillList,
     createRecurringBill: mocks.createRecurringBill,
+    checkLoanOverlap: mocks.checkLoanOverlap,
+    linkBillToLoan: mocks.linkBillToLoan,
+    setBillNotLoanPayment: mocks.setBillNotLoanPayment,
     categoryList: mocks.categoryList,
     recategorizeTransaction: mocks.recategorizeTransaction,
     applyMerchantMemory: mocks.applyMerchantMemory,
@@ -204,6 +211,12 @@ beforeEach(() => {
   mocks.recurringBillList.mockResolvedValue(ok([]));
   mocks.createRecurringBill.mockReset();
   mocks.createRecurringBill.mockResolvedValue(mutationOk());
+  mocks.checkLoanOverlap.mockReset();
+  mocks.checkLoanOverlap.mockResolvedValue(ok(null));
+  mocks.linkBillToLoan.mockReset();
+  mocks.linkBillToLoan.mockResolvedValue(mutationOk());
+  mocks.setBillNotLoanPayment.mockReset();
+  mocks.setBillNotLoanPayment.mockResolvedValue(mutationOk());
   mocks.recordTransfer.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
   // record_transaction returns the new id + the mutation outcome (4d8.24.2.1).
   mocks.recordTransaction.mockResolvedValue(recordOk());
@@ -457,6 +470,322 @@ describe("TransactionsView", () => {
     expect(bill.amount.minor_units).toBe(1099); // positive per-occurrence magnitude
     // Recurring is an alternative, not an addition — no one-off record.
     expect(mocks.recordTransaction).not.toHaveBeenCalled();
+  });
+
+  describe("recurring at add time (personal-cfo-6wk.23)", () => {
+    const LOAN = {
+      loan_account_id: "loan-1",
+      loan_name: "Test Mortgage",
+      strength: "strong",
+      matched_by: "loan_typed",
+    };
+
+    async function fillRecurring(amount = "1500") {
+      mockTransactionPage([]);
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+      fireEvent.click(screen.getByLabelText(/set up as a recurring bill/i));
+      fireEvent.change(screen.getByLabelText(/bill name/i), { target: { value: "Mortgage" } });
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: amount } });
+      fireEvent.change(screen.getByLabelText(/first due date/i), { target: { value: "2026-07-05" } });
+    }
+    const create = () => fireEvent.click(screen.getByRole("button", { name: /create recurring bill/i }));
+    const keyOf = (call: number) => mocks.createRecurringBill.mock.calls[call]?.[0].idempotency_key;
+
+    it("runs the loan-overlap check on exactly what would be created, and creates when nothing matches", async () => {
+      await fillRecurring();
+      create();
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+      expect(mocks.checkLoanOverlap).toHaveBeenCalledTimes(1);
+      expect(mocks.checkLoanOverlap.mock.calls[0]?.[0]).toMatchObject({
+        name: "Mortgage",
+        frequency: "monthly",
+        anchor_date: "2026-07-05",
+        autopay_account_id: account().id,
+        source_merchant_key: null,
+      });
+      expect(mocks.checkLoanOverlap.mock.calls[0]?.[0].amount.minor_units).toBe(150_000);
+    });
+
+    it("a payment into a loan shows the same warning and creates nothing until the person decides", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+      await fillRecurring();
+      create();
+      expect(
+        await screen.findByText("This is Test Mortgage's payment — don't add a second one."),
+      ).toBeInTheDocument();
+      expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Add anyway" }));
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+      expect(mocks.linkBillToLoan).not.toHaveBeenCalled();
+    });
+
+    it("Add and link creates the bill and links it to the loan", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+      mocks.createRecurringBill.mockResolvedValue(ok({ op_seq: 1, replayed: false, event_id: "bill-new" }));
+      await fillRecurring();
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "Add and link to Test Mortgage" }));
+      await waitFor(() =>
+        expect(mocks.linkBillToLoan).toHaveBeenCalledWith("bill-new", "loan-1", expect.any(String)),
+      );
+    });
+
+    it("Don’t add closes the form and creates nothing", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+      await fillRecurring();
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "Don't add" }));
+      expect(screen.queryByLabelText(/bill name/i)).not.toBeInTheDocument();
+      expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+    });
+
+    it("a declared-terms match asks, naming the paying account", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(
+        ok({ ...LOAN, strength: "possible", matched_by: "declared_terms" }),
+      );
+      mocks.createRecurringBill.mockResolvedValue(ok({ op_seq: 1, replayed: false, event_id: "bill-new" }));
+      await fillRecurring();
+      create();
+      expect(await screen.findByText("Is this Test Mortgage's payment?")).toBeInTheDocument();
+      expect(screen.getByText(/It's paid from Checking around Test Mortgage's due date/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "No, it's a different bill" }));
+      await waitFor(() =>
+        expect(mocks.setBillNotLoanPayment).toHaveBeenCalledWith(expect.any(String), "loan-1", expect.any(String)),
+      );
+    });
+
+    it.each([
+      ["an error result", () => mocks.checkLoanOverlap.mockResolvedValue(err("check broke"))],
+      ["a throw", () => mocks.checkLoanOverlap.mockRejectedValue(new Error("check broke"))],
+    ])("fails open: %s from the check still saves the bill", async (_name, fail) => {
+      fail();
+      await fillRecurring();
+      create();
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText(/don't add a second one/)).not.toBeInTheDocument();
+    });
+
+    it("a first submit that threw says it could not confirm, and submitting again sends the same key and creates one bill", async () => {
+      mocks.createRecurringBill.mockRejectedValueOnce(new Error("connection lost"));
+      await fillRecurring();
+      create();
+      expect(
+        await screen.findByText(
+          "Couldn’t confirm whether the recurring bill was created. Submit again and it won’t be added twice.",
+        ),
+      ).toBeInTheDocument();
+      // The form stays open, with the person's input.
+      expect(screen.getByLabelText(/bill name/i)).toHaveValue("Mortgage");
+      create();
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(2));
+      expect(keyOf(1)).toBe(keyOf(0));
+      await waitFor(() => expect(screen.queryByLabelText(/bill name/i)).not.toBeInTheDocument());
+    });
+
+    it("a typed refusal resubmits with the same key, and a changed amount is a new draft with a new key", async () => {
+      mocks.createRecurringBill.mockResolvedValue({
+        status: "error",
+        error: { Validation: "Pick an account." },
+      });
+      await fillRecurring();
+      create();
+      expect(await screen.findByText("Pick an account.")).toBeInTheDocument();
+      create();
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(2));
+      expect(keyOf(1)).toBe(keyOf(0));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1600" } });
+      create();
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(3));
+      expect(keyOf(2)).not.toBe(keyOf(0));
+    });
+
+    it("the key is the same when the bill is created from the warning after a throw", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+      mocks.createRecurringBill.mockRejectedValueOnce(new Error("connection lost"));
+      await fillRecurring();
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+      await screen.findByText(/couldn’t confirm whether the recurring bill was created/i);
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(2));
+      expect(keyOf(1)).toBe(keyOf(0));
+    });
+
+    it("a link that threw after the bill was created closes the form, says so, and never creates the bill again", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+      mocks.createRecurringBill.mockResolvedValue(ok({ op_seq: 1, replayed: false, event_id: "bill-new" }));
+      mocks.linkBillToLoan.mockRejectedValue(new Error("connection lost"));
+      await fillRecurring();
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "Add and link to Test Mortgage" }));
+      expect(
+        await screen.findByText(
+          "The bill was added, but we couldn’t confirm that it was linked to Test Mortgage. Check the warning on the bill before trying again.",
+        ),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByLabelText(/bill name/i)).not.toBeInTheDocument());
+      expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+    });
+
+    it("an answer that threw after the bill was created closes the form, says so, and never creates the bill again", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(
+        ok({ ...LOAN, strength: "possible", matched_by: "declared_terms" }),
+      );
+      mocks.createRecurringBill.mockResolvedValue(ok({ op_seq: 1, replayed: false, event_id: "bill-new" }));
+      mocks.setBillNotLoanPayment.mockRejectedValue(new Error("connection lost"));
+      await fillRecurring();
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "No, it's a different bill" }));
+      expect(
+        await screen.findByText(
+          "The bill was added, but we couldn’t confirm that your answer was saved, so DohFlow may ask again.",
+        ),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByLabelText(/bill name/i)).not.toBeInTheDocument());
+      expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+    });
+
+    describe("an edit while the warning is open ends that confirmation", () => {
+      const openDetails = () => {
+        if (!screen.queryByLabelText("Note")) {
+          fireEvent.click(screen.getByRole("button", { name: /add details/i }));
+        }
+      };
+      const edits: [string, () => unknown, (bill: CreateRecurringBillInput) => unknown, unknown][] = [
+        [
+          "the amount",
+          () => fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1600" } }),
+          (bill) => bill.amount.minor_units,
+          160_000,
+        ],
+        [
+          "the bill name",
+          () => fireEvent.change(screen.getByLabelText(/bill name/i), { target: { value: "Home loan" } }),
+          (bill) => bill.name,
+          "Home loan",
+        ],
+        [
+          "the first due date",
+          () =>
+            fireEvent.change(screen.getByLabelText(/first due date/i), { target: { value: "2026-08-05" } }),
+          (bill) => bill.anchor_date,
+          "2026-08-05",
+        ],
+        [
+          "the frequency",
+          () => fireEvent.change(screen.getByLabelText(/frequency/i), { target: { value: "weekly" } }),
+          (bill) => bill.frequency,
+          "weekly",
+        ],
+        [
+          "the note",
+          () => {
+            openDetails();
+            fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Home loan" } });
+          },
+          (bill) => bill.description,
+          "Home loan",
+        ],
+        [
+          "the category",
+          () => {
+            openDetails();
+            fireEvent.change(screen.getByLabelText("Category"), { target: { value: CATEGORY.id } });
+          },
+          (bill) => bill.category_id,
+          CATEGORY.id,
+        ],
+        [
+          "a tag",
+          async () => {
+            openDetails();
+            const input = screen.getByLabelText("Add a tag");
+            fireEvent.change(input, { target: { value: "Vacation" } });
+            fireEvent.keyDown(input, { key: "Enter" });
+            await waitFor(() => expect(mocks.createTag).toHaveBeenCalled());
+          },
+          (bill) => bill.tag_ids,
+          [VACATION_TAG],
+        ],
+      ];
+
+      it.each(edits)(
+        "%s: the warning goes, nothing is created, and the next submit checks and creates the current draft with a new key",
+        async (_field, edit, read, expected) => {
+          mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+          mocks.createRecurringBill.mockRejectedValueOnce(new Error("connection lost"));
+          await fillRecurring();
+          // A first attempt that threw leaves the 1500 draft's key behind.
+          create();
+          fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+          await screen.findByText(/couldn’t confirm whether the recurring bill was created/i);
+          expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+
+          create();
+          await screen.findByRole("button", { name: "Add anyway" });
+          await edit();
+          // The stale confirmation is gone: the form is back to its submit state.
+          await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+          expect(screen.getByRole("button", { name: /create recurring bill/i })).toBeEnabled();
+          expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1);
+
+          create();
+          const checks = mocks.checkLoanOverlap.mock.calls;
+          await waitFor(() => expect(checks.length).toBe(3));
+          expect(read(checks[2]?.[0])).toEqual(expected);
+          fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+          await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(2));
+          expect(read(mocks.createRecurringBill.mock.calls[1]?.[0])).toEqual(expected);
+          expect(keyOf(1)).not.toBe(keyOf(0));
+        },
+      );
+
+      it("an edit that is put back still ends the confirmation, and the unchanged draft keeps its key", async () => {
+        mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+        mocks.createRecurringBill.mockRejectedValueOnce(new Error("connection lost"));
+        await fillRecurring();
+        create();
+        fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+        await screen.findByText(/couldn’t confirm whether the recurring bill was created/i);
+
+        create();
+        await screen.findByRole("button", { name: "Add anyway" });
+        fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1600" } });
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+        fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1500" } });
+        expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull();
+
+        create();
+        fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+        await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(2));
+        expect(keyOf(1)).toBe(keyOf(0));
+      });
+
+      it("turning recurring off ends the confirmation", async () => {
+        mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+        await fillRecurring();
+        create();
+        await screen.findByRole("button", { name: "Add anyway" });
+        fireEvent.click(screen.getByLabelText(/set up as a recurring bill/i));
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+        expect(screen.getByRole("button", { name: /add transaction/i })).toBeInTheDocument();
+        expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+      });
+    });
+
+    it("a link the app refused keeps its existing message", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+      mocks.createRecurringBill.mockResolvedValue(ok({ op_seq: 1, replayed: false, event_id: "bill-new" }));
+      mocks.linkBillToLoan.mockResolvedValue({ status: "error", error: { Validation: "nope" } });
+      await fillRecurring();
+      create();
+      fireEvent.click(await screen.findByRole("button", { name: "Add and link to Test Mortgage" }));
+      expect(
+        await screen.findByText(/The bill was added, but linking it to Test Mortgage didn't work/),
+      ).toBeInTheDocument();
+    });
   });
 
   it("requires a name before creating a recurring bill (4d8.24.2.2)", async () => {
