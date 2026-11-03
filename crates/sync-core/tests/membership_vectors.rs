@@ -1803,11 +1803,11 @@ fn an_epoch_naming_a_head_that_is_not_there_is_a_malformed_pairing_not_a_retry_o
     let t = build();
     let state = extend(
         &VerifiedState::empty(VAULT),
-        &slices(&[t.m1.clone()]),
-        &slices(&[t.e1.clone()]),
+        &slices(std::slice::from_ref(&t.m1)),
+        &slices(std::slice::from_ref(&t.e1)),
     )
     .unwrap();
-    let error = extend(&state, &[], &slices(&[t.e2.clone()])).unwrap_err();
+    let error = extend(&state, &[], &slices(std::slice::from_ref(&t.e2))).unwrap_err();
     assert_eq!(error.kind().name(), "EpochRecordMissing");
     assert!(!error.is_retryable());
     assert!(!error.halts_sync());
