@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 
@@ -271,5 +272,107 @@ describe("every opened state can be left, with focus back on Pay card (6wk.24)",
     outside.focus();
     fireEvent.click(outside);
     expect(await screen.findByRole("button", { name: "Outside 1" })).toHaveFocus();
+  });
+});
+
+const CHECKING = {
+  id: "chk",
+  name: "Checking",
+  cashflow_role: "liquid_cash",
+  subtype: "checking",
+  active: true,
+  balance: usd(500_000),
+} as AccountViewDto;
+const NO_SOURCE = /no liquid account holds funds/i;
+
+describe("what the opened tool says about the accounts it pays from (6wk.24)", () => {
+  test("while the accounts load it says so, not that nothing can pay, and can still be left", async () => {
+    mocks.accountList.mockReturnValue(new Promise(() => {}));
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(screen.getByRole("button", { name: /pay card/i }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Loading your accounts…");
+    expect(screen.queryByText(NO_SOURCE)).toBeNull();
+    expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /pay card/i })).toHaveFocus());
+  });
+
+  test("a failed read shows the existing message with Retry, never 'no account', and can be left", async () => {
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(screen.getByRole("button", { name: /pay card/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load accounts.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.queryByText(NO_SOURCE)).toBeNull();
+    expect(screen.queryByText("Loading your accounts…")).toBeNull();
+    expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /pay card/i })).toHaveFocus());
+  });
+
+  test("Retry reads Retrying… and keeps the failure while it runs, keeps it if it fails again, and opens the tool when it works", async () => {
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(screen.getByRole("button", { name: /pay card/i }));
+    await screen.findByRole("alert");
+
+    let fail: (reason: unknown) => void = () => {};
+    mocks.accountList.mockReturnValueOnce(new Promise((_, reject) => (fail = reject)));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const pending = await screen.findByRole("button", { name: "Retrying…" });
+    expect(pending).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load accounts.");
+    expect(screen.queryByText("Loading your accounts…")).toBeNull();
+    await act(async () => fail(new Error("still down")));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load accounts.");
+
+    mocks.accountList.mockResolvedValue(ok([CHECKING]));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: /confirm payment/i })).toBeInTheDocument();
+  });
+
+  test("accounts read earlier do not stand in for a read that just failed", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<PayCardAction card={card} />, client);
+    await openTool();
+
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["accounts"] });
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load accounts.");
+    expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull();
+    expect(screen.queryByText(NO_SOURCE)).toBeNull();
+  });
+
+  test("no account to pay from is said only after a read that worked", async () => {
+    mocks.accountList.mockResolvedValue(ok([] as AccountViewDto[]));
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(screen.getByRole("button", { name: /pay card/i }));
+    expect(await screen.findByText(NO_SOURCE)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Loading your accounts…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  test("an eligible account opens the payment form", async () => {
+    renderWithClient(<PayCardAction card={card} />);
+    expect(await openTool()).toBeEnabled();
+    expect(screen.queryByText(NO_SOURCE)).toBeNull();
+    expect(screen.queryByText("Loading your accounts…")).toBeNull();
+  });
+
+  test("an unknown payment outcome stays on screen when the accounts re-read then fails", async () => {
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(<PayCardAction card={card} />);
+    const confirm = await openTool();
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    expect(screen.getByText(UNKNOWN)).toBeInTheDocument();
+    expect(screen.getByText("Could not load accounts.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
 });

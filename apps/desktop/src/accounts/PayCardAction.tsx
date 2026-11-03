@@ -33,7 +33,7 @@ function minorToInput(minorUnits: number): string {
 /// and the payment is only recorded on confirm. Descriptive copy only (ADR 0018).
 export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
   const next = card.cycles[0];
-  const { accounts } = useAccounts();
+  const { accounts, error: accountsError } = useAccounts();
   const { transfer } = useTransactions();
   const queryClient = useQueryClient();
 
@@ -45,6 +45,11 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
   const panel = useRef<HTMLDivElement>(null);
   const payButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
+  // A retry of an accounts read that never produced data puts the query back to pending, which clears
+  // its error and would flip the panel to "Loading…" and hide the Retrying… button; the failure being
+  // retried stays on screen.
+  const [retrying, setRetrying] = useState(false);
+  const [retriedFailure, setRetriedFailure] = useState<string | null>(null);
   // One idempotency key per draft: confirming the same payment again (after a call that threw, so
   // nobody knows whether it was recorded) replays instead of recording a second transfer. A
   // different amount or source is a different draft.
@@ -132,6 +137,16 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
     }
   }
 
+  async function retryAccounts() {
+    setRetriedFailure(accountsError);
+    setRetrying(true);
+    try {
+      await queryClient.refetchQueries({ queryKey: queryKeys.accounts });
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   function closeTool() {
     returnFocus.current = true;
     setOpen(false);
@@ -157,7 +172,11 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
     );
   }
 
-  if (sources.length === 0) {
+  // What the tool says about the accounts it pays from, in order: a failed read (which outranks a
+  // cached list, since nothing here can be confirmed on accounts that could not just be read), a read
+  // still on its way, and only after a read that worked, no account to pay from.
+  const accountsFailure = accountsError ?? (retrying ? retriedFailure : null);
+  if (accountsFailure !== null || accounts === null || sources.length === 0) {
     return (
       <div
         ref={panel}
@@ -167,10 +186,36 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
           if (e.key === "Escape") dismiss();
         }}
       >
-        <p className="text-sm text-muted-foreground">
-          No liquid account holds funds in {currency} to pay from.
-        </p>
-        <Button variant="ghost" size="sm" onClick={dismiss}>
+        {error === PAYMENT_OUTCOME_UNKNOWN && (
+          <p role="alert" className="w-full text-sm text-loss">
+            {error}
+          </p>
+        )}
+        {accountsFailure !== null ? (
+          <p role="alert" className="text-sm text-loss">
+            {accountsFailure}
+          </p>
+        ) : accounts === null ? (
+          <p role="status" className="text-sm text-muted-foreground">
+            Loading your accounts…
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No liquid account holds funds in {currency} to pay from.
+          </p>
+        )}
+        {accountsFailure !== null && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void retryAccounts()}
+            disabled={retrying}
+          >
+            {retrying ? <Loader2 className="animate-spin" aria-hidden /> : null}
+            {retrying ? "Retrying…" : "Retry"}
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" onClick={dismiss} disabled={saving}>
           Cancel
         </Button>
       </div>
