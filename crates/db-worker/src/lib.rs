@@ -124,33 +124,29 @@ pub use forecast::{
 /// The `settings` key holding the household minimum-cash-floor in minor units — the
 /// buffer the user wants to keep (ADR 0029, personal-cfo-fqbm). Default `0`. This is the
 /// comfort band's LOWER edge (ADR 0018 addendum 915.1 wraps, not replaces, the floor).
-pub const MINIMUM_CASH_FLOOR_KEY: &str = "minimum_cash_floor_minor";
+pub const MINIMUM_CASH_FLOOR_KEY: &str = "user.minimum_cash_floor_minor";
 /// The `settings` key holding the comfort band's UPPER edge in minor units — cash above it
 /// is excess the user may choose to deploy (ADR 0018 addendum 915.1, personal-cfo-3v6d).
 /// Absent means no upper edge is set.
-pub const COMFORT_BAND_UPPER_KEY: &str = "comfort_band_upper_minor";
+pub const COMFORT_BAND_UPPER_KEY: &str = "user.comfort_band_upper_minor";
 /// The `settings` key gating auto-apply of merchant memory after an import (ADR 0030
 /// addendum, personal-cfo-5n4.2). `"true"`/`"false"`; **absent means on** (default ON).
-pub const AUTO_CATEGORIZE_ON_IMPORT_KEY: &str = "auto_categorize_on_import";
+pub const AUTO_CATEGORIZE_ON_IMPORT_KEY: &str = "user.auto_categorize_on_import";
 /// The `settings` key holding the Future Cash chart's series-selection preference
 /// (personal-cfo-4d8.25.26): an opaque JSON array of series keys the frontend
 /// serializes. Absent means the default (the three aggregate tiers).
-pub const FUTURE_CASH_SERIES_KEY: &str = "future_cash_series_selection";
-/// Legacy household settings keys retained while personal-cfo-5ymg8 performs the
-/// backwards-compatible `user.*` prefix migration. They are inventory metadata only;
-/// this bead does not rename, route, or reject writes for them.
-pub const LOCALE_KEY: &str = "locale";
+pub const FUTURE_CASH_SERIES_KEY: &str = "user.future_cash_series_selection";
+/// The `settings` key holding the household's reporting (base) currency code, canonical upper case.
+/// Absent means USD.
+pub const REPORTING_CURRENCY_KEY: &str = "user.reporting_currency";
 /// The longest `settings.key`, in UTF-8 bytes. Settings keys are application-defined names
-/// (`device.*`, `user.*` and six legacy names); the key is a replicated primary key whose
-/// canonical encoding is capped at 256 bytes (vault-format.md C.1.5), so the writer bounds it
-/// well inside that.
+/// (`device.*` and `user.*`); the key is a replicated primary key whose canonical encoding is
+/// capped at 256 bytes (vault-format.md C.1.5), so the writer bounds it well inside that.
 pub const MAX_SETTING_KEY_BYTES: usize = 128;
-pub const REPORTING_CURRENCY_KEY: &str = "reporting_currency";
-/// Every currently defined setting key that can be persisted in the settings KV.
-/// New keys must be added with an explicit `device.*` or `user.*` prefix by the
-/// owning migration/write-path bead.
+/// Every household setting a build writes, all `user.*` (class 1, written only by
+/// [`WriteCommand::SetUserSetting`]). A new key is a new row of the registry in
+/// `apply/settings_cmds.rs` and, once the engine version is pinned, an engine-version bump.
 pub const PERSISTED_SETTING_KEYS: &[&str] = &[
-    LOCALE_KEY,
     REPORTING_CURRENCY_KEY,
     MINIMUM_CASH_FLOOR_KEY,
     COMFORT_BAND_UPPER_KEY,
@@ -158,6 +154,7 @@ pub const PERSISTED_SETTING_KEYS: &[&str] = &[
     FUTURE_CASH_SERIES_KEY,
 ];
 pub use apply::merchant_cmds::{MAX_MERCHANT_COMMAND_ENTRIES, MAX_MERCHANT_DISPLAY_NAME_BYTES};
+pub use apply::settings_cmds::MAX_USER_SETTING_VALUE_BYTES;
 pub use categorization::RecurringCandidate;
 pub use connectors::MAX_LINK_EXTERNAL_ID_BYTES;
 pub use debt::{DebtTermsInput, DebtTermsView, RepaymentPhilosophy};
@@ -942,6 +939,20 @@ pub enum WriteCommand {
         /// The fills, strictly ascending by transaction id, at most 5,000.
         assignments: Vec<MerchantAssignment>,
     },
+    /// Set one household preference (ADR 0074 Decision 5, personal-cfo-5ymg8.7). Class 1: it
+    /// follows the person to another device. `key` is the full stored key (`user.<name>`), one of
+    /// the closed registry in `apply/settings_cmds.rs`; `value` is stored verbatim after that key's
+    /// validator accepts it. **Engine-version rule:** once the engine version is pinned
+    /// (personal-cfo-32fmp.4), any change to the registry or a validator (a new key, a newly
+    /// supported currency, a different size cap) changes what a logged command writes and MUST bump
+    /// `engine_version`. `device.*` settings are class 3 and never use this command.
+    SetUserSetting {
+        /// The stored key, `user.<name>`.
+        key: String,
+        /// The value, in the form the writers already produce (the empty string clears the comfort
+        /// band's upper edge).
+        value: String,
+    },
     /// Set the household's IANA timezone (`personal-cfo-g3m.8`, ADR 0021 section 1).
     /// It sets the calendar boundary of the forecast horizon, so it is a class-1 logical
     /// field that changes only through this logged command (`vault-format.md` B.2 rule 6),
@@ -1189,6 +1200,7 @@ impl WriteCommand {
             WriteCommand::SetSplits { .. } => "set_splits",
             WriteCommand::MintMerchantAnchors { .. } => "mint_merchant_anchors",
             WriteCommand::ApplyMerchantMemory { .. } => "apply_merchant_memory",
+            WriteCommand::SetUserSetting { .. } => "set_user_setting",
         }
     }
 }
@@ -1629,6 +1641,10 @@ pub enum DbError {
         /// The table whose key was too wide.
         table: &'static str,
     },
+    /// `set_device_setting` was given a key that is not a `device.*` key: a household preference
+    /// (`user.*`) is class 1 and is set through `SetUserSetting` (ADR 0074 Decision 5).
+    #[error("only device.* settings are written directly; a household setting goes through SetUserSetting")]
+    SettingScope,
 }
 
 impl DbError {
@@ -3401,15 +3417,39 @@ impl DbWorker {
         Ok(u64::try_from(n).unwrap_or(0))
     }
 
-    /// Upsert an app-level setting (personal-cfo-p5g). `value` is a JSON or scalar
-    /// string. Settings are configuration, not ledger mutations, so — like
-    /// `vault_metadata` and `audit_events` — they bypass the `WriteCommand` bus.
+    /// Set one household preference through [`WriteCommand::SetUserSetting`] (ADR 0074 Decision 5,
+    /// personal-cfo-5ymg8.7): `key` is a `user.*` key of the registry (the `*_KEY` constants) and
+    /// `value` is in the form its writer produces. This is the only way a `user.*` row is written.
     ///
     /// # Errors
+    /// [`DbError::Rejected`] (`PayloadInvalid`) for a key outside the registry or a value it does
+    /// not accept.
+    pub fn set_user_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::SetUserSetting {
+                key: key.to_owned(),
+                value: value.to_owned(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Upsert a DEVICE setting (personal-cfo-p5g; ADR 0074 Decision 5). `device.*` settings are
+    /// class 3: node-local configuration that never replicates, so — like `vault_metadata` and
+    /// `audit_events` — they bypass the `WriteCommand` bus. A household preference (`user.*`) is
+    /// class 1 and goes through [`DbWorker::set_user_setting`]; this refuses any key that does not
+    /// begin with `device.`.
+    ///
+    /// # Errors
+    /// [`DbError::SettingScope`] if `key` does not begin with `device.`;
     /// [`DbError::ReplicatedKeyTooLong`] if `key` is longer than [`MAX_SETTING_KEY_BYTES`]
-    /// (the key is the table's primary key and part of the replicated user settings, so its
-    /// width is bounded; it is never truncated), or [`DbError::Sqlite`] on a write failure.
-    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+    /// (the key is the table's primary key, so its width is bounded; it is never truncated), or
+    /// [`DbError::Sqlite`] on a write failure.
+    pub fn set_device_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        if !key.starts_with("device.") {
+            return Err(DbError::SettingScope);
+        }
         if key.len() > MAX_SETTING_KEY_BYTES {
             return Err(DbError::ReplicatedKeyTooLong { table: "settings" });
         }
@@ -8015,6 +8055,9 @@ fn apply_command(
         WriteCommand::ApplyMerchantMemory { assignments } => {
             apply::merchant_cmds::write_merchant_assignments(&tx, meta, assignments)?
         }
+        WriteCommand::SetUserSetting { key, value } => {
+            apply::settings_cmds::apply_set_user_setting(&tx, meta, key, value)?
+        }
     };
 
     fault.maybe_panic(FaultPoint::AfterMutation);
@@ -8076,6 +8119,7 @@ fn apply_command(
         WriteCommand::SetSplits { .. } => "split_lines",
         WriteCommand::MintMerchantAnchors { .. } => "merchant_identities",
         WriteCommand::ApplyMerchantMemory { .. } => "transaction_categorizations",
+        WriteCommand::SetUserSetting { .. } => "settings",
         WriteCommand::CreateRecurringTransfer { .. }
         | WriteCommand::DeleteRecurringTransfer(_)
         | WriteCommand::ReinstateRecurringTransfer(_) => "recurring_transfers",

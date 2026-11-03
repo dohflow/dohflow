@@ -387,15 +387,12 @@ replay_owned_queued_disposition = "remove dispatchable replay evidence and retai
 [[table]]
 table = "settings"
 class = "3"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current direct-write table is class 3 for device.* keys; the six existing unprefixed keys are explicit legacy user preferences pending the backwards-compatible prefix migration/dual-read rollout owned by personal-cfo-5ymg8; ADR 0074 / SYNC-2 decide routing without a rename in this bead."
+owner_bead = "personal-cfo-5ymg8.7"
+note = "device.* keys are class 3, node-local, written by DbWorker::set_device_setting. The five user.* keys are the household's preferences (class 1, ADR 0074 Decision 5): they follow the person and are written only by SetUserSetting. The row is one table with two scopes, so its class stays 3 and the write set is a projection onto the user.* rows."
 rebase_phase = "stable"
-rebase_preservation = "preserve device.* values from the live vault and retain legacy user values until their prefixed dual-read migration completes"
-reference_validation = "key scope is validated by the device.* / user.* convention; legacy keys remain readable and are not treated as device-local"
-legacy_settings_keys = "locale,reporting_currency"
-legacy_persisted_keys = "locale,reporting_currency,minimum_cash_floor_minor,comfort_band_upper_minor,auto_categorize_on_import,future_cash_series_selection"
-legacy_key_scope = "locale=user,reporting_currency=user,minimum_cash_floor_minor=user,comfort_band_upper_minor=user,auto_categorize_on_import=user,future_cash_series_selection=user"
-prefix_migration_bead = "personal-cfo-5ymg8"
+rebase_preservation = "preserve device.* values from the live vault; user.* rows are replicated state"
+reference_validation = "key scope is the device.* / user.* convention; a user.* key outside the registry is refused by SetUserSetting"
+user_setting_keys = "user.reporting_currency,user.minimum_cash_floor_minor,user.comfort_band_upper_minor,user.auto_categorize_on_import,user.future_cash_series_selection"
 new_setting_keys = ""
 
 [[table]]
@@ -536,9 +533,9 @@ note = "Transaction categorizations; RecategorizeTransaction, the import commit 
 [[table]]
 table = "settings_user_keys"
 kind = "pseudo"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Key-scope marker only: user.* is the class-4 candidate; ADR 0074 and SYNC-2 decide routing while this bead makes no rename or migration."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.7"
+note = "Key-scope marker only: the user.* keys of settings are class 1 and are written by SetUserSetting (ADR 0074 Decision 5)."
 
 [[table]]
 table = "attachment_blobs"

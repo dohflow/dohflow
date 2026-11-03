@@ -27,7 +27,9 @@ fn raw_keyed() -> (tempfile::TempDir, std::path::PathBuf, DbWorker) {
 fn a_checkpoint_empties_the_wal() {
     let (_dir, path, worker) = raw_keyed();
     for n in 0..5 {
-        worker.set_setting(&format!("user.k{n}"), "v").unwrap();
+        worker
+            .set_device_setting(&format!("device.k{n}"), "v")
+            .unwrap();
     }
     assert!(wal_len(&path) > 0, "the test must start with a live -wal");
     worker.checkpoint_truncate().unwrap();
@@ -46,7 +48,9 @@ fn a_reader_that_pins_an_old_snapshot_makes_the_checkpoint_say_busy_not_clean() 
     let _: i64 = reader
         .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
         .unwrap();
-    worker.set_setting("user.after_reader", "v").unwrap();
+    worker
+        .set_device_setting("device.after_reader", "v")
+        .unwrap();
 
     match worker.checkpoint_truncate() {
         Err(DbError::CheckpointBusy) => {}
@@ -85,7 +89,7 @@ fn sealed_vault() -> (tempfile::TempDir, std::path::PathBuf, Dek) {
     let worker = DbWorker::open_with_raw_key(&path, duplicate(&dek)).unwrap();
     for n in 0..30 {
         worker
-            .set_setting(&format!("user.k{n}"), &"v".repeat(200))
+            .set_device_setting(&format!("device.k{n}"), &"v".repeat(200))
             .unwrap();
     }
     worker.checkpoint_truncate().unwrap();

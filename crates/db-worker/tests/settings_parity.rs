@@ -28,11 +28,11 @@ const PREFERENCES: &[(&str, &str)] = &[
 
 /// The two places this test writes a setting, so a change of entry point edits only these.
 fn set_household_preference(worker: &DbWorker, key: &str, value: &str) {
-    worker.set_setting(key, value).unwrap();
+    worker.set_user_setting(key, value).unwrap();
 }
 fn set_device_preference(worker: &DbWorker, name: &str, value: &str) {
     worker
-        .set_setting(&format!("device.{name}"), value)
+        .set_device_setting(&format!("device.{name}"), value)
         .unwrap();
 }
 fn get_device_preference(worker: &DbWorker, name: &str) -> Option<String> {

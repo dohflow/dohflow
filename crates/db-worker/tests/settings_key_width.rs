@@ -10,7 +10,7 @@ use chrono::NaiveDate;
 use common::worker;
 use db_worker::{
     DbError, AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, FUTURE_CASH_SERIES_KEY,
-    LOCALE_KEY, MAX_SETTING_KEY_BYTES, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
+    MAX_SETTING_KEY_BYTES, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
 use sync_core::row_digest::{primary_key, Kind, Value};
 
@@ -47,7 +47,6 @@ fn the_manifest_records_the_bounds_the_code_enforces() {
 #[test]
 fn every_known_settings_key_fits_the_bound() {
     for key in [
-        LOCALE_KEY,
         REPORTING_CURRENCY_KEY,
         MINIMUM_CASH_FLOOR_KEY,
         COMFORT_BAND_UPPER_KEY,
@@ -59,13 +58,13 @@ fn every_known_settings_key_fits_the_bound() {
 }
 
 #[test]
-fn set_setting_rejects_a_key_over_the_bound_and_never_truncates() {
+fn set_device_setting_rejects_a_key_over_the_bound_and_never_truncates() {
     let (_dir, worker) = worker();
-    let fits = format!("user.{}", "k".repeat(MAX_SETTING_KEY_BYTES - 5));
+    let fits = format!("device.{}", "k".repeat(MAX_SETTING_KEY_BYTES - 7));
     assert_eq!(fits.len(), MAX_SETTING_KEY_BYTES);
-    worker.set_setting(&fits, "v").unwrap();
-    let over = format!("user.{}", "k".repeat(MAX_SETTING_KEY_BYTES - 4));
-    let err = worker.set_setting(&over, "v").unwrap_err();
+    worker.set_device_setting(&fits, "v").unwrap();
+    let over = format!("device.{}", "k".repeat(MAX_SETTING_KEY_BYTES - 6));
+    let err = worker.set_device_setting(&over, "v").unwrap_err();
     assert!(
         matches!(err, DbError::ReplicatedKeyTooLong { table: "settings" }),
         "{err:?}"
@@ -75,7 +74,7 @@ fn set_setting_rejects_a_key_over_the_bound_and_never_truncates() {
     let conn = worker.read_connection().unwrap();
     let stored: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM settings WHERE key LIKE 'user.kkkk%'",
+            "SELECT COUNT(*) FROM settings WHERE key LIKE 'device.kkkk%'",
             [],
             |r| r.get(0),
         )

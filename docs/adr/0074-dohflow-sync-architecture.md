@@ -398,6 +398,14 @@ link-alias writers had no caller outside tests and were removed: a user-correcti
 own commands with its UI, and any "unlink" it adds must leave a tombstone, because an uncategorize or
 unlink with no tombstone lets a later automatic pass fill the row again.
 
+*Routing note (2026-11-03, `personal-cfo-5ymg8.7`).* The `user.*` rows of `settings` are written
+only by `SetUserSetting`; `DbWorker::set_device_setting` is the one raw setter left, and it refuses a
+key that does not begin with `device.`. Five household preferences exist, all `user.*` (the
+reporting currency, the minimum cash floor, the comfort band's upper edge, the auto-categorize
+switch and the Future Cash series selection), in a closed registry whose validators are pure. The
+`settings` table stays class 3 as a table with a projection onto its `user.*` rows, because it holds
+both scopes. The convention at `lib.rs:2595` that this decision reversed is gone.
+
 Class 1 covers user-facing canonical intent; class 1b covers artifact bytes;
 class 2 is rebuilt; class 3 includes connector credentials, refresh
 watermarks, staged rows, idempotency keys, audit events, node-local values,
