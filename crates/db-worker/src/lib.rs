@@ -2134,8 +2134,36 @@ impl DbWorker {
         amount: Money,
         as_of: NaiveDate,
     ) -> Result<(), DbError> {
+        self.record_balance_assertion_keyed(
+            &new_idempotency_key(),
+            id,
+            account_id,
+            amount,
+            as_of,
+        )
+    }
+
+    /// [`Self::record_balance_assertion`] under a caller-supplied idempotency key. Assertions are
+    /// append-only, so a retry of the same key must not append a second observation: the bus
+    /// already answers a repeated key with the original result and writes nothing
+    /// (ADR 0012), which is what makes the retry safe once the caller reuses the key.
+    ///
+    /// # Errors
+    /// [`DbError::InvalidIdempotencyKey`] if `idempotency_key` is not a canonical UUID version 4,
+    /// otherwise as [`Self::record_balance_assertion`].
+    pub fn record_balance_assertion_keyed(
+        &self,
+        idempotency_key: &str,
+        id: Uuid,
+        account_id: AccountId,
+        amount: Money,
+        as_of: NaiveDate,
+    ) -> Result<(), DbError> {
+        validate_idempotency_key(idempotency_key)?;
+        let mut meta = connectors::local_meta(ActorType::User, "user");
+        idempotency_key.clone_into(&mut meta.idempotency_key);
         self.dispatch(
-            connectors::local_meta(ActorType::User, "user"),
+            meta,
             WriteCommand::RecordBalanceAssertion {
                 id,
                 account_id,

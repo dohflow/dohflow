@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -273,6 +273,124 @@ test("inline batch edit saves through assertBalance with the as-of date (persona
   const arg = mocks.assertBalance.mock.calls[0]?.[0];
   expect(arg.amount.minor_units).toBe(250_000);
   expect(arg.as_of_date).toBeTruthy();
+});
+
+describe("saving several balances reports each row truthfully (g3m.37)", () => {
+  const UNKNOWN =
+    "Couldn’t confirm whether this balance was saved. Save again and it won’t be added twice.";
+  const UNCONFIRMED = "Saved, but the new balance couldn’t be confirmed yet.";
+  const confirmed = (minor: number) =>
+    ok({ balance: money(minor), unexplained: null });
+  const keyOf = (call: number) => mocks.assertBalance.mock.calls[call]?.[0].idempotency_key;
+  const saveButton = () => screen.getByRole("button", { name: /^save/i });
+
+  async function editBoth(checkingValue = "2500", propertyValue = "60000") {
+    renderWithClient(<AccountsView />);
+    await screen.findByText("Checking");
+    fireEvent.click(screen.getByRole("button", { name: /update balances/i }));
+    fireEvent.change(await screen.findByLabelText("New balance for Checking"), {
+      target: { value: checkingValue },
+    });
+    fireEvent.change(screen.getByLabelText("New balance for Our house"), {
+      target: { value: propertyValue },
+    });
+  }
+
+  it("a row whose call threw is an unknown outcome and keeps its draft; the other row's result stands", async () => {
+    mocks.assertBalance.mockImplementation(async (input: { account_id: string }) => {
+      if (input.account_id === CHECKING.id) throw new Error("connection lost");
+      return confirmed(6_000_000);
+    });
+    await editBoth();
+    fireEvent.click(saveButton());
+
+    expect(await screen.findByText(UNKNOWN)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(UNKNOWN);
+    // The row that was saved drops its draft and shows its result; the unknown one keeps what was typed.
+    await waitFor(() =>
+      expect(screen.getByLabelText("New balance for Our house")).toHaveValue("50000"),
+    );
+    expect(screen.getByLabelText("New balance for Checking")).toHaveValue("2500");
+    expect(screen.getByLabelText("Updated")).toBeInTheDocument();
+    // Saving is released and the unknown row can be saved again.
+    expect(saveButton()).toBeEnabled();
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(2);
+  });
+
+  it("saving the same row again after an unknown outcome reuses its key; a changed amount or date gets a new one", async () => {
+    mocks.assertBalance.mockRejectedValue(new Error("connection lost"));
+    renderWithClient(<AccountsView />);
+    await screen.findByText("Checking");
+    fireEvent.click(screen.getByRole("button", { name: /update balances/i }));
+    fireEvent.change(await screen.findByLabelText("New balance for Checking"), {
+      target: { value: "2500" },
+    });
+    fireEvent.click(saveButton());
+    await screen.findByText(UNKNOWN);
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(2));
+    expect(keyOf(1)).toBe(keyOf(0));
+
+    fireEvent.change(screen.getByLabelText("New balance for Checking"), {
+      target: { value: "2600" },
+    });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(3));
+    expect(keyOf(2)).not.toBe(keyOf(1));
+
+    fireEvent.change(screen.getByLabelText("As of"), { target: { value: "2026-01-02" } });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(4));
+    expect(keyOf(3)).not.toBe(keyOf(2));
+  });
+
+  it("a refusal keeps the draft but is a confirmed failure: the next try is a new draft with a new key", async () => {
+    mocks.assertBalance.mockResolvedValue({
+      status: "error",
+      error: { Validation: "That date is not valid." },
+    });
+    renderWithClient(<AccountsView />);
+    await screen.findByText("Checking");
+    fireEvent.click(screen.getByRole("button", { name: /update balances/i }));
+    fireEvent.change(await screen.findByLabelText("New balance for Checking"), {
+      target: { value: "2500" },
+    });
+    fireEvent.click(saveButton());
+    expect(await screen.findByText("That date is not valid.")).toBeInTheDocument();
+    expect(screen.getByLabelText("New balance for Checking")).toHaveValue("2500");
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(2));
+    expect(keyOf(1)).not.toBe(keyOf(0));
+  });
+
+  it("the rows and the As-of date are locked while saving, and released after", async () => {
+    let finish: (value: unknown) => void = () => {};
+    mocks.assertBalance.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    await editBoth();
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(screen.getByLabelText("As of")).toBeDisabled());
+    expect(screen.getByLabelText("New balance for Checking")).toBeDisabled();
+    expect(screen.getByLabelText("New balance for Our house")).toBeDisabled();
+    await act(async () => finish(confirmed(250_000)));
+    await waitFor(() => expect(screen.getByLabelText("As of")).toBeEnabled());
+  });
+
+  it("a saved row whose balance could not be read back is saved but unconfirmed, not failed", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    renderWithClient(<AccountsView />);
+    await screen.findByText("Checking");
+    fireEvent.click(screen.getByRole("button", { name: /update balances/i }));
+    fireEvent.change(await screen.findByLabelText("New balance for Checking"), {
+      target: { value: "2500" },
+    });
+    fireEvent.click(saveButton());
+    expect(await screen.findByText(UNCONFIRMED)).toBeInTheDocument();
+    expect(screen.queryByText(/couldn’t confirm whether/i)).toBeNull();
+    // Saved: its draft is gone.
+    await waitFor(() =>
+      expect(screen.getByLabelText("New balance for Checking")).not.toHaveValue("2500"),
+    );
+  });
 });
 
 test("debt analysis is NOT on Accounts — it moved to the Debt page", async () => {

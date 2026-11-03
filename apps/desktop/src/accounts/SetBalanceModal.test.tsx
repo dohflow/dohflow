@@ -118,4 +118,64 @@ describe("SetBalanceModal", () => {
     expect(screen.queryByText(/fully explained/i)).not.toBeInTheDocument();
     expect(await screen.findByText(/unexplained adjustment/i)).toBeInTheDocument();
   });
+
+  describe("outcomes that are not a clean save (g3m.37)", () => {
+    const UNKNOWN =
+      "Couldn’t confirm whether this balance was saved. Save again and it won’t be added twice.";
+    const open = () => {
+      renderWithClient(
+        <SetBalanceModal
+          account={account()}
+          onClose={() => {}}
+          onExplainWithTransactions={() => {}}
+        />,
+      );
+      fireEvent.change(screen.getByLabelText(/new balance/i), { target: { value: "500" } });
+    };
+    const save = () => fireEvent.click(screen.getByRole("button", { name: /set balance/i }));
+    const keyOf = (call: number) => mocks.assertBalance.mock.calls[call]?.[0].idempotency_key;
+
+    it("a call that threw is an unknown outcome, busy is released, and saving again reuses the key", async () => {
+      mocks.assertBalance.mockRejectedValue(new Error("connection lost"));
+      open();
+      save();
+      expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+      await waitFor(() => expect(screen.getByRole("button", { name: /set balance/i })).toBeEnabled());
+      save();
+      await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(2));
+      expect(keyOf(1)).toBe(keyOf(0));
+      // A changed figure is a new draft.
+      fireEvent.change(screen.getByLabelText(/new balance/i), { target: { value: "510" } });
+      save();
+      await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(3));
+      expect(keyOf(2)).not.toBe(keyOf(0));
+    });
+
+    it("a refusal is a confirmed failure: the next try gets a new key", async () => {
+      mocks.assertBalance.mockResolvedValueOnce({
+        status: "error",
+        error: { Validation: "No such account." },
+      });
+      open();
+      save();
+      expect(await screen.findByRole("alert")).toHaveTextContent("No such account.");
+      save();
+      await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(2));
+      expect(keyOf(1)).not.toBe(keyOf(0));
+    });
+
+    it("a saved balance that could not be read back says so, claims nothing about the gap, and offers only Done", async () => {
+      mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+      open();
+      save();
+      expect(
+        await screen.findByText("Saved, but the new balance couldn’t be confirmed yet."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("New balance")).toBeNull();
+      expect(screen.queryByText(/fully explained/i)).toBeNull();
+      expect(screen.queryByRole("button", { name: /explain with transactions/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /record as a transaction/i })).toBeNull();
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    });
+  });
 });

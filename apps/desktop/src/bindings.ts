@@ -454,14 +454,23 @@ export type AssertBalanceInput = {
 	amount: MoneyDto,
 	/**  The "as of" date the balance applies to, `YYYY-MM-DD`. */
 	as_of_date: string,
+	/**
+	 *  The draft's idempotency key (a canonical UUID version 4). Assertions are append-only, so
+	 *  the caller reuses one key for retries of the same draft and mints a new one when the
+	 *  amount or date changes; repeating a key returns the original result and appends nothing.
+	 */
+	idempotency_key: string,
 };
 
 /**
- *  The result of asserting a balance: the new (assertion-anchored) balance and the
- *  still-unexplained adjustment (the "plug"), `None` when fully explained or absent.
+ *  The result of asserting a balance. The assertion has been **saved** whenever this is returned;
+ *  the figures are read back afterwards, and a failed read-back is not a failed save:
+ *  - `balance` is the new (assertion-anchored) balance, or `None` when it could not be read back;
+ *  - `unexplained` is the still-unexplained adjustment (the "plug"), `None` when fully explained,
+ *    absent, or when `balance` is `None` (nothing is claimed about it then).
  */
 export type AssertBalanceResult = {
-	balance: MoneyDto,
+	balance: MoneyDto | null,
 	unexplained: MoneyDto | null,
 };
 

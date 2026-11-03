@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, X } from "lucide-react";
 
 import { commands } from "@/bindings";
@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { describeIpcError } from "@/vault/useVault";
 import { dollarsToMinorUnits, formatMoney, formatSignedMoney } from "@/lib/format";
+import { mintIdempotencyKey } from "@/lib/idempotency";
+import { BALANCE_OUTCOME_UNKNOWN, BALANCE_SAVED_UNCONFIRMED } from "./balanceMessages";
 import { useAccounts } from "./useAccounts";
 import {
   enteredToStoredMinor,
@@ -60,7 +62,8 @@ export function SetBalanceModal({
   // `null` until the balance has been asserted; afterwards holds the new balance
   // and the unexplained plug so the body can switch to the outcome view.
   const [outcome, setOutcome] = useState<{
-    balance: MoneyDto;
+    /// `null` when the assertion was saved but the new balance could not be read back.
+    balance: MoneyDto | null;
     unexplained: MoneyDto | null;
   } | null>(null);
 
@@ -73,6 +76,9 @@ export function SetBalanceModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // One idempotency key per draft: saving the same figure again after a call that threw (so nobody
+  // knows whether it was saved) replays instead of appending a second observation.
+  const draftKey = useRef<{ identity: string; key: string } | null>(null);
   async function save() {
     const entered = dollarsToMinorUnits(balance);
     if (entered === null) {
@@ -80,19 +86,31 @@ export function SetBalanceModal({
       return;
     }
     const minorUnits = enteredToStoredMinor(role, entered);
+    const identity = `${minorUnits}|${date}|${currency}`;
+    if (draftKey.current?.identity !== identity) {
+      draftKey.current = { identity, key: mintIdempotencyKey() };
+    }
     setBusy(true);
     setError(null);
-    const { result, error: failure } = await assertBalance({
-      account_id: account.id,
-      amount: { minor_units: minorUnits, currency },
-      as_of_date: date,
-    });
-    setBusy(false);
-    if (failure || result === null) {
-      setError(failure ? describeIpcError(failure) : "Could not set the balance.");
-      return;
+    try {
+      const { result, error: failure } = await assertBalance({
+        account_id: account.id,
+        amount: { minor_units: minorUnits, currency },
+        as_of_date: date,
+        idempotency_key: draftKey.current.key,
+      });
+      if (failure || result === null) {
+        // A refusal: nothing was saved, so the next try is a new draft.
+        draftKey.current = null;
+        setError(failure ? describeIpcError(failure) : "Could not set the balance.");
+        return;
+      }
+      setOutcome({ balance: result.balance, unexplained: result.unexplained });
+    } catch {
+      setError(BALANCE_OUTCOME_UNKNOWN);
+    } finally {
+      setBusy(false);
     }
-    setOutcome({ balance: result.balance, unexplained: result.unexplained });
   }
 
   return (
@@ -220,12 +238,15 @@ function SetBalanceOutcome({
   onDone,
 }: {
   role: string;
-  outcome: { balance: MoneyDto; unexplained: MoneyDto | null };
+  outcome: { balance: MoneyDto | null; unexplained: MoneyDto | null };
   onExplainWithTransactions: () => void;
   onConvert: () => Promise<IpcError | null>;
   onDone: () => void;
 }) {
-  const explained = isExplained(outcome.unexplained);
+  // Saved, but the new figures could not be read back: nothing is claimed about the balance or the
+  // gap, and the follow-ups that depend on the gap are not offered.
+  const unconfirmed = outcome.balance === null;
+  const explained = !unconfirmed && isExplained(outcome.unexplained);
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
 
@@ -239,17 +260,23 @@ function SetBalanceOutcome({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm">
-        <span className="text-muted-foreground">New balance</span>
-        <span className="font-medium tabular-nums">
-          {formatMoney({
-            minor_units: storedToShownMinor(role, outcome.balance.minor_units),
-            currency: outcome.balance.currency,
-          })}
-        </span>
-      </div>
+      {outcome.balance === null ? (
+        <p role="status" className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+          {BALANCE_SAVED_UNCONFIRMED}
+        </p>
+      ) : (
+        <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm">
+          <span className="text-muted-foreground">New balance</span>
+          <span className="font-medium tabular-nums">
+            {formatMoney({
+              minor_units: storedToShownMinor(role, outcome.balance.minor_units),
+              currency: outcome.balance.currency,
+            })}
+          </span>
+        </div>
+      )}
 
-      {explained ? (
+      {unconfirmed ? null : explained ? (
         <p className="text-sm text-gain">Fully explained by your transactions ✓</p>
       ) : (
         <div className="flex flex-col gap-2">
@@ -280,7 +307,7 @@ function SetBalanceOutcome({
       )}
 
       <div className="flex flex-wrap justify-end gap-2">
-        {!explained && (
+        {!unconfirmed && !explained && (
           <>
             <Button
               type="button"

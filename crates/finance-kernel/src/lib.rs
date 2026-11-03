@@ -4056,8 +4056,10 @@ impl Kernel {
 
     /// Record a manual balance assertion (ADR 0027, personal-cfo-ueg6): set the
     /// account's balance directly as of a date, with no transaction. The currency
-    /// must match the account's. A forecast input, so it bypasses the
-    /// [`KernelCommand`] bus.
+    /// must match the account's. It is a `WriteCommand::RecordBalanceAssertion` on
+    /// the database worker's bus, not a [`KernelCommand`], and each call carries a
+    /// fresh idempotency key; use [`Self::record_balance_assertion_keyed`] to make a
+    /// retry safe.
     ///
     /// # Errors
     /// Returns [`KernelError`] if the account does not exist, the currency
@@ -4071,6 +4073,25 @@ impl Kernel {
     ) -> Result<(), KernelError> {
         self.worker
             .record_balance_assertion(id, account_id, amount, as_of)?;
+        Ok(())
+    }
+
+    /// [`Self::record_balance_assertion`] under the caller's idempotency key: repeating the same
+    /// key returns the original result and appends nothing (ADR 0012), so a retry after a call
+    /// whose outcome is unknown cannot add a second observation.
+    ///
+    /// # Errors
+    /// As [`Self::record_balance_assertion`], plus an invalid idempotency key.
+    pub fn record_balance_assertion_keyed(
+        &self,
+        idempotency_key: &str,
+        id: Uuid,
+        account_id: AccountId,
+        amount: Money,
+        as_of: NaiveDate,
+    ) -> Result<(), KernelError> {
+        self.worker
+            .record_balance_assertion_keyed(idempotency_key, id, account_id, amount, as_of)?;
         Ok(())
     }
 
