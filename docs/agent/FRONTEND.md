@@ -108,7 +108,7 @@ to** archive, which has its own Archive and Restore affordances and an Archived 
 a delete.
 
 1. **The inline confirm.** Asking to remove shows **"Remove `<name>`?"** with the secondary line
-   **"You can bring it back."** The confirm button repeats the verb (**Remove**); the other is
+   **"After removal, you can bring it back only through the Undo notice."** The confirm button repeats the verb (**Remove**); the other is
    **Cancel**. The prompt names the thing being removed, so a screen reader hears what it is
    confirming. Do not use "Delete" here: it promises something the app does not do.
 2. **The notice.** After the removal succeeds, a transient notice reads **"Removed `<name>`. Undo"**,

@@ -126,7 +126,7 @@ describe("RecurringTransfersView", () => {
     // A transfer used to be removed on the first click; now it is confirmed first.
     expect(mocks.deleteRecurringTransfer).not.toHaveBeenCalled();
     const confirm = screen.getByRole("group", { name: "Remove transfer from Checking to Savings?" });
-    expect(within(confirm).getByText("You can bring it back.")).toBeInTheDocument();
+    expect(within(confirm).getByText("After removal, you can bring it back only through the Undo notice.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /confirm remove transfer/i }));
     await waitFor(() =>
