@@ -2894,7 +2894,7 @@ pub fn set_minimum_cash_floor_impl(state: &AppState, floor: MoneyDto) -> Result<
         ));
     }
     with_kernel(state, |kernel| {
-        kernel.set_setting(MINIMUM_CASH_FLOOR_KEY, &floor.minor_units.to_string())?;
+        kernel.set_user_setting(MINIMUM_CASH_FLOOR_KEY, &floor.minor_units.to_string())?;
         Ok(())
     })
 }
@@ -2961,7 +2961,7 @@ pub fn set_comfort_band_upper_impl(
     }
     with_kernel(state, |kernel| {
         let value = upper.map(|u| u.minor_units.to_string()).unwrap_or_default();
-        kernel.set_setting(COMFORT_BAND_UPPER_KEY, &value)?;
+        kernel.set_user_setting(COMFORT_BAND_UPPER_KEY, &value)?;
         Ok(())
     })
 }
@@ -4814,7 +4814,7 @@ pub fn base_currency(state: tauri::State<'_, AppState>) -> Result<String, IpcErr
 pub fn set_base_currency_impl(state: &AppState, code: String) -> Result<(), IpcError> {
     let currency = parse_currency(&code)?;
     with_kernel(state, |kernel| {
-        kernel.set_setting(REPORTING_CURRENCY_KEY, currency.code())?;
+        kernel.set_user_setting(REPORTING_CURRENCY_KEY, currency.code())?;
         Ok(())
     })
 }

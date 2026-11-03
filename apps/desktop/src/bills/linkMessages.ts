@@ -17,3 +17,13 @@ export function linkFailedMessage(loanName: string): string {
 /// Shown when a bill was added but the answer "this isn't that loan's payment" could not be saved.
 export const ANSWER_NOT_SAVED_MESSAGE =
   "The bill was added, but your answer wasn't saved, so DohFlow may ask again.";
+
+/// Shown when a bill was added but the call that links it to the loan threw, so nobody knows whether
+/// the link was made. The warning on the bill says whether it is linked and offers "Link it" if not.
+export function linkUnconfirmedMessage(loanName: string): string {
+  return `The bill was added, but we couldn’t confirm that it was linked to ${loanName}. Check the warning on the bill before trying again.`;
+}
+
+/// The same for the answer "this isn't that loan's payment".
+export const ANSWER_UNCONFIRMED_MESSAGE =
+  "The bill was added, but we couldn’t confirm that your answer was saved, so DohFlow may ask again.";

@@ -29,18 +29,20 @@ function months(n: number | null) {
 /// Consolidates what was previously split between the card-statement forecast and the
 /// account editor — the terms that decide what a debt costs were only visible one account at
 /// a time, in a drawer you had to open.
+///
+/// Each row is formatted in its own account's currency: the table lists debts across currencies
+/// side by side and converts nothing, so a euro debt never takes the first debt's dollar sign.
 export function DebtTermsTable({
   debts,
-  currency,
   cards,
 }: {
   debts: ScopedDebt[];
-  currency: string;
   /// Card statement forecasts, for the projected-statement column. A loan has no statement,
   /// and a card with no billing cycle recorded has none to project.
   cards?: CardStatementForecastDto[] | null;
 }) {
-  const money = (minor: number) => formatMoney({ minor_units: minor, currency });
+  const money = (minor: number, debt: ScopedDebt) =>
+    formatMoney({ minor_units: minor, currency: debt.account.balance.currency });
   // The NEXT cycle's statement per card. Cycles arrive in date order, so the first is the
   // one about to close — a later one would answer a question nobody asked.
   const nextStatement = new Map<string, number>();
@@ -61,7 +63,7 @@ export function DebtTermsTable({
       align: "right",
       width: "min",
       // Positive amount owed, never a negative balance (ADR 0044 / balanceSign).
-      cell: (d) => <span className="tabular-nums">{money(d.owedMinor)}</span>,
+      cell: (d) => <span className="tabular-nums">{money(d.owedMinor, d)}</span>,
     },
     {
       key: "apr",
@@ -112,7 +114,7 @@ export function DebtTermsTable({
         return projected === undefined ? (
           <span className="text-muted-foreground">—</span>
         ) : (
-          <span className="tabular-nums">{money(projected)}</span>
+          <span className="tabular-nums">{money(projected, d)}</span>
         );
       },
     },
@@ -123,7 +125,7 @@ export function DebtTermsTable({
       width: "min",
       cell: (d) => {
         const payment = monthlyPaymentMinor(d);
-        return payment === null ? UNKNOWN : <span className="tabular-nums">{money(payment)}</span>;
+        return payment === null ? UNKNOWN : <span className="tabular-nums">{money(payment, d)}</span>;
       },
     },
     {

@@ -555,6 +555,13 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "set_user_setting",
+            WriteCommand::SetUserSetting {
+                key: "user.minimum_cash_floor_minor".into(),
+                value: "250000".into(),
+            },
+        ),
+        (
             "set_household_timezone",
             WriteCommand::SetHouseholdTimezone {
                 timezone: "America/Chicago".into(),
