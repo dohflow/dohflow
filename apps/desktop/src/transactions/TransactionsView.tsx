@@ -1192,6 +1192,8 @@ function AddTransactionForm({
     if (overlap && !activeOverlap) setOverlap(null);
   }, [overlap, activeOverlap]);
   const [creatingBill, setCreatingBill] = useState(false);
+  // Checking, recording or creating: anything the person sent that has not answered yet.
+  const pending = isSubmitting || creatingBill;
   const filePicker = useRef<HTMLInputElement>(null);
   function onPickFiles(event: ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(event.target.files ?? []);
@@ -1360,320 +1362,329 @@ function AddTransactionForm({
     <Card>
       <CardContent className="pt-6">
         <form onSubmit={submit} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="txn-account">Account</Label>
-            <select
-              id="txn-account"
-              className={SELECT_CLASS}
-              {...register("account_id")}
-            >
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <label className="flex items-center gap-2 self-start text-sm font-medium">
-            <input
-              type="checkbox"
-              className="size-4 accent-primary"
-              checked={recurring}
-              onChange={(event) => setRecurring(event.target.checked)}
-            />
-            Set up as a recurring bill
-          </label>
-
-          {recurring ? (
+          {/* A submit in flight owns the form: every field, the staged-file controls and both buttons
+              are locked until the outcome comes back, and Cancel does nothing, so the form that
+              sent the attempt still holds its values, files, key and outcome message when the
+              answer arrives. Nothing is cancelled: the write continues either way. */}
+          <fieldset
+            disabled={pending}
+            className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0"
+          >
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="txn-bill-name">Bill name</Label>
-              <Input
-                id="txn-bill-name"
-                {...register("recurringName")}
-                placeholder="e.g. Rent, Spotify"
-              />
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              <Label>Type</Label>
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  type="button"
-                  variant={kind === "expense" ? "default" : "outline"}
-                  onClick={() => setValue("kind", "expense")}
-                >
-                  Expense
-                </Button>
-                <Button
-                  type="button"
-                  variant={kind === "income" ? "default" : "outline"}
-                  onClick={() => setValue("kind", "income")}
-                >
-                  Income
-                </Button>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="txn-amount">Amount</Label>
-              <Input
-                id="txn-amount"
-                inputMode="decimal"
-                autoFocus
-                {...register("amount")}
-                placeholder="0.00"
-                aria-invalid={!!errors.amount}
-              />
-              {errors.amount && (
-                <p className="text-xs text-loss">{errors.amount.message}</p>
-              )}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="txn-date">
-                {recurring ? "First due date" : "Date"}
-              </Label>
-              <Input id="txn-date" type="date" {...register("date")} />
-            </div>
-          </div>
-
-          {recurring && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="txn-frequency">Frequency</Label>
+              <Label htmlFor="txn-account">Account</Label>
               <select
-                id="txn-frequency"
+                id="txn-account"
                 className={SELECT_CLASS}
-                {...register("frequency")}
+                {...register("account_id")}
               >
-                {PAY_FREQUENCIES.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.name}
                   </option>
                 ))}
               </select>
-              {watch("frequency") === "custom" && (
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm text-muted-foreground">Every</span>
-                  <Input
-                    aria-label="Interval count"
-                    inputMode="numeric"
-                    className="h-9 w-16"
-                    {...register("interval_count")}
-                  />
-                  <select
-                    aria-label="Interval unit"
-                    className={SELECT_CLASS + " w-auto"}
-                    {...register("interval_unit")}
-                  >
-                    {INTERVAL_UNITS.map((unit) => (
-                      <option key={unit.value} value={unit.value}>
-                        {unit.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
             </div>
-          )}
 
-          {/* Category / tags / note, set right here at add time (personal-cfo-4d8.24.2)
-              instead of only after in the drawer. Behind a disclosure so the fast path
-              (amount + date) stays uncluttered; collapsed values are still submitted. */}
-          <div className="flex flex-col gap-3 border-t pt-3">
-            <button
-              type="button"
-              onClick={() => setShowDetails((open) => !open)}
-              aria-expanded={showDetails}
-              className="flex items-center gap-1.5 self-start text-sm font-medium text-muted-foreground hover:text-foreground"
-            >
-              <ChevronDown
-                className={cn(
-                  "size-4 transition-transform",
-                  showDetails && "rotate-180",
-                )}
-                aria-hidden
+            <label className="flex items-center gap-2 self-start text-sm font-medium">
+              <input
+                type="checkbox"
+                className="size-4 accent-primary"
+                checked={recurring}
+                onChange={(event) => setRecurring(event.target.checked)}
               />
-              Add details
-              {(watch("categoryId") !== "" ||
-                tagIds.length > 0 ||
-                watch("note").trim() !== "" ||
-                stagedFiles.length > 0) && (
-                <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
-                  Set
-                </span>
-              )}
-            </button>
+              Set up as a recurring bill
+            </label>
 
-            {showDetails && (
-              <div className="flex flex-col gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="txn-category">Category</Label>
-                  <select
-                    id="txn-category"
-                    className={SELECT_CLASS}
-                    {...register("categoryId")}
+            {recurring ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="txn-bill-name">Bill name</Label>
+                <Input
+                  id="txn-bill-name"
+                  {...register("recurringName")}
+                  placeholder="e.g. Rent, Spotify"
+                />
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <Label>Type</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    type="button"
+                    variant={kind === "expense" ? "default" : "outline"}
+                    onClick={() => setValue("kind", "expense")}
                   >
-                    <option value="">Uncategorized</option>
-                    {categoryOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    Expense
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={kind === "income" ? "default" : "outline"}
+                    onClick={() => setValue("kind", "income")}
+                  >
+                    Income
+                  </Button>
                 </div>
+              </div>
+            )}
 
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="txn-tags">Tags</Label>
-                  {tagIds.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {tagIds.map((id) => {
-                        const tag = tags?.find((candidate) => candidate.id === id);
-                        return tag ? (
-                          <TagChip
-                            key={id}
-                            tag={tag}
-                            onRemove={() => removeTag(id)}
-                          />
-                        ) : null;
-                      })}
-                    </div>
-                  )}
-                  <input
-                    id="txn-tags"
-                    list="add-txn-tag-options"
-                    value={tagInput}
-                    onChange={(event) => setTagInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        void addTagFromInput();
-                      }
-                    }}
-                    placeholder="Add a tag…"
-                    aria-label="Add a tag"
-                    className={SELECT_CLASS}
-                  />
-                  <datalist id="add-txn-tag-options">
-                    {(tags ?? [])
-                      .filter(
-                        (tag) => !tag.archived && !tagIds.includes(tag.id),
-                      )
-                      .map((tag) => (
-                        <option key={tag.id} value={tag.name} />
-                      ))}
-                  </datalist>
-                  {tagError && (
-                    <p role="alert" className="text-sm text-loss">
-                      {tagError}
-                    </p>
-                  )}
-                </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="txn-amount">Amount</Label>
+                <Input
+                  id="txn-amount"
+                  inputMode="decimal"
+                  autoFocus
+                  {...register("amount")}
+                  placeholder="0.00"
+                  aria-invalid={!!errors.amount}
+                />
+                {errors.amount && (
+                  <p className="text-xs text-loss">{errors.amount.message}</p>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="txn-date">
+                  {recurring ? "First due date" : "Date"}
+                </Label>
+                <Input id="txn-date" type="date" {...register("date")} />
+              </div>
+            </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="txn-note">Note</Label>
-                  <textarea
-                    id="txn-note"
-                    {...register("note")}
-                    maxLength={4096}
-                    rows={3}
-                    placeholder="Add a note…"
-                    className={cn(SELECT_CLASS, "h-auto resize-y")}
-                  />
-                </div>
-
-                {/* Attach documents at add time (personal-cfo-4d8.24.2.3): staged locally,
-                    copied into the encrypted vault (ADR 0023) after the record. Only for a
-                    one-off txn — a recurring bill has no transaction id to attach to. */}
-                {!recurring && (
-                  <div className="flex flex-col gap-1.5">
-                    <Label>Attachments</Label>
-                    {stagedFiles.length > 0 && (
-                      <ul className="flex flex-col gap-1">
-                        {stagedFiles.map((file, index) => (
-                          <li
-                            key={`${file.name}-${index}`}
-                            className="flex items-center justify-between rounded-md border px-3 py-2"
-                          >
-                            <div className="flex min-w-0 items-center gap-2">
-                              <FileText
-                                className="size-4 shrink-0 text-muted-foreground"
-                                aria-hidden
-                              />
-                              <span className="truncate text-sm">{file.name}</span>
-                              <span className="shrink-0 text-xs text-muted-foreground">
-                                {formatBytes(file.size)}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removeStaged(index)}
-                              aria-label={`Remove ${file.name}`}
-                              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-loss"
-                            >
-                              <Trash2 className="size-4" aria-hidden />
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <input
-                      ref={filePicker}
-                      type="file"
-                      multiple
-                      className="sr-only"
-                      aria-label="Attach documents"
-                      onChange={onPickFiles}
+            {recurring && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="txn-frequency">Frequency</Label>
+                <select
+                  id="txn-frequency"
+                  className={SELECT_CLASS}
+                  {...register("frequency")}
+                >
+                  {PAY_FREQUENCIES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                {watch("frequency") === "custom" && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm text-muted-foreground">Every</span>
+                    <Input
+                      aria-label="Interval count"
+                      inputMode="numeric"
+                      className="h-9 w-16"
+                      {...register("interval_count")}
                     />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="self-start"
-                      onClick={() => filePicker.current?.click()}
+                    <select
+                      aria-label="Interval unit"
+                      className={SELECT_CLASS + " w-auto"}
+                      {...register("interval_unit")}
                     >
-                      <Paperclip aria-hidden />
-                      Attach documents
-                    </Button>
+                      {INTERVAL_UNITS.map((unit) => (
+                        <option key={unit.value} value={unit.value}>
+                          {unit.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 )}
               </div>
             )}
-          </div>
 
-          {error && (
-            <p role="alert" className="text-sm text-loss">
-              {error}
-            </p>
-          )}
+            {/* Category / tags / note, set right here at add time (personal-cfo-4d8.24.2)
+                instead of only after in the drawer. Behind a disclosure so the fast path
+                (amount + date) stays uncluttered; collapsed values are still submitted. */}
+            <div className="flex flex-col gap-3 border-t pt-3">
+              <button
+                type="button"
+                onClick={() => setShowDetails((open) => !open)}
+                aria-expanded={showDetails}
+                className="flex items-center gap-1.5 self-start text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                <ChevronDown
+                  className={cn(
+                    "size-4 transition-transform",
+                    showDetails && "rotate-180",
+                  )}
+                  aria-hidden
+                />
+                Add details
+                {(watch("categoryId") !== "" ||
+                  tagIds.length > 0 ||
+                  watch("note").trim() !== "" ||
+                  stagedFiles.length > 0) && (
+                  <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                    Set
+                  </span>
+                )}
+              </button>
 
-          {activeOverlap ? (
-            <LoanOverlapPanel
-              match={activeOverlap.match}
-              autopayAccountId={activeOverlap.input.autopay_account_id}
-              accounts={accounts}
-              saving={creatingBill}
-              submitLabel="Create recurring bill"
-              onCancel={onCancel}
-              onCreate={(follow) => void createBill(activeOverlap.input, follow)}
-            />
-          ) : (
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={onCancel}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={isSubmitting || creatingBill}>
-                {isSubmitting || creatingBill
-                  ? recurring
-                    ? "Creating…"
-                    : "Adding…"
-                  : recurring
-                    ? "Create recurring bill"
-                    : "Add transaction"}
-              </Button>
+              {showDetails && (
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="txn-category">Category</Label>
+                    <select
+                      id="txn-category"
+                      className={SELECT_CLASS}
+                      {...register("categoryId")}
+                    >
+                      <option value="">Uncategorized</option>
+                      {categoryOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="txn-tags">Tags</Label>
+                    {tagIds.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {tagIds.map((id) => {
+                          const tag = tags?.find((candidate) => candidate.id === id);
+                          return tag ? (
+                            <TagChip
+                              key={id}
+                              tag={tag}
+                              onRemove={() => removeTag(id)}
+                            />
+                          ) : null;
+                        })}
+                      </div>
+                    )}
+                    <input
+                      id="txn-tags"
+                      list="add-txn-tag-options"
+                      value={tagInput}
+                      onChange={(event) => setTagInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void addTagFromInput();
+                        }
+                      }}
+                      placeholder="Add a tag…"
+                      aria-label="Add a tag"
+                      className={SELECT_CLASS}
+                    />
+                    <datalist id="add-txn-tag-options">
+                      {(tags ?? [])
+                        .filter(
+                          (tag) => !tag.archived && !tagIds.includes(tag.id),
+                        )
+                        .map((tag) => (
+                          <option key={tag.id} value={tag.name} />
+                        ))}
+                    </datalist>
+                    {tagError && (
+                      <p role="alert" className="text-sm text-loss">
+                        {tagError}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="txn-note">Note</Label>
+                    <textarea
+                      id="txn-note"
+                      {...register("note")}
+                      maxLength={4096}
+                      rows={3}
+                      placeholder="Add a note…"
+                      className={cn(SELECT_CLASS, "h-auto resize-y")}
+                    />
+                  </div>
+
+                  {/* Attach documents at add time (personal-cfo-4d8.24.2.3): staged locally,
+                      copied into the encrypted vault (ADR 0023) after the record. Only for a
+                      one-off txn — a recurring bill has no transaction id to attach to. */}
+                  {!recurring && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Attachments</Label>
+                      {stagedFiles.length > 0 && (
+                        <ul className="flex flex-col gap-1">
+                          {stagedFiles.map((file, index) => (
+                            <li
+                              key={`${file.name}-${index}`}
+                              className="flex items-center justify-between rounded-md border px-3 py-2"
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                <FileText
+                                  className="size-4 shrink-0 text-muted-foreground"
+                                  aria-hidden
+                                />
+                                <span className="truncate text-sm">{file.name}</span>
+                                <span className="shrink-0 text-xs text-muted-foreground">
+                                  {formatBytes(file.size)}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeStaged(index)}
+                                aria-label={`Remove ${file.name}`}
+                                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-loss"
+                              >
+                                <Trash2 className="size-4" aria-hidden />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <input
+                        ref={filePicker}
+                        type="file"
+                        multiple
+                        className="sr-only"
+                        aria-label="Attach documents"
+                        onChange={onPickFiles}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="self-start"
+                        onClick={() => filePicker.current?.click()}
+                      >
+                        <Paperclip aria-hidden />
+                        Attach documents
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          )}
+
+            {error && (
+              <p role="alert" className="text-sm text-loss">
+                {error}
+              </p>
+            )}
+
+            {activeOverlap ? (
+              <LoanOverlapPanel
+                match={activeOverlap.match}
+                autopayAccountId={activeOverlap.input.autopay_account_id}
+                accounts={accounts}
+                saving={creatingBill}
+                submitLabel="Create recurring bill"
+                onCancel={onCancel}
+                onCreate={(follow) => void createBill(activeOverlap.input, follow)}
+              />
+            ) : (
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" onClick={onCancel} disabled={pending}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={pending}>
+                  {pending
+                    ? recurring
+                      ? "Creating…"
+                      : "Adding…"
+                    : recurring
+                      ? "Create recurring bill"
+                      : "Add transaction"}
+                </Button>
+              </div>
+            )}
+          </fieldset>
         </form>
       </CardContent>
     </Card>
