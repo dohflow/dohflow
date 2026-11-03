@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -86,5 +87,31 @@ describe("NewLoanDialog on the shared Dialog (personal-cfo-4d8.6.2)", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Create loan" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Enter a name for the loan.");
     expect(mocks.createAccount).not.toHaveBeenCalled();
+  });
+
+  it("returns focus to the button that opened it", async () => {
+    function Harness() {
+      const [creating, setCreating] = useState(false);
+      return (
+        <div>
+          <button onClick={() => setCreating(true)}>New loan</button>
+          {creating && (
+            <NewLoanDialog
+              currency="USD"
+              onCreated={() => undefined}
+              onClose={() => setCreating(false)}
+            />
+          )}
+        </div>
+      );
+    }
+    renderWithClient(<Harness />);
+    const opener = screen.getByRole("button", { name: "New loan" });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "New loan" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "New loan" })).toHaveFocus());
   });
 });

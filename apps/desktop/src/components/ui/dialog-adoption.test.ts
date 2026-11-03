@@ -12,12 +12,12 @@ import sourceTree from "virtual:source-tree";
 
 const ALLOWLIST: Record<string, number> = {
   "accounts/AccountEditorDrawer.tsx": 1,
-  "accounts/NewLoanDialog.tsx": 1,
   "accounts/ReconcileBalanceModal.tsx": 1,
   "accounts/SetBalanceModal.tsx": 1,
   "bills/BillDetailDrawer.tsx": 1,
-  "categories/CreateCategoryDialog.tsx": 1,
   "dashboard/ReadinessCard.tsx": 1,
+  // Not a modal: an anchored, non-modal popover for toggling chart series (no overlay, the page stays
+  // live). It needs a Popover primitive, not the modal Dialog, so it stays here until that exists.
   "future-cash/SeriesPicker.tsx": 1,
   "money-inbox/CardReviewModal.tsx": 1,
   "money-inbox/DuplicateReviewPanel.tsx": 1,
@@ -64,8 +64,13 @@ describe("hand-rolled dialogs (personal-cfo-4d8.6.2)", () => {
     expect(stale, "these are allowlisted but no longer have that many role=\"dialog\"; remove or lower them").toEqual([]);
   });
 
-  it("the scenario Apply and Delete confirmations are on the shared Dialog", () => {
-    const text = sourceTree.find((f) => f.path === "scenarios/ScenariosView.tsx")?.text ?? "";
+  it.each([
+    "scenarios/ScenariosView.tsx",
+    "accounts/NewLoanDialog.tsx",
+    "categories/CreateCategoryDialog.tsx",
+  ])("%s is on the shared Dialog", (path) => {
+    const text = sourceTree.find((f) => f.path === path)?.text ?? "";
+    expect(text.length).toBeGreaterThan(0); // guards the guard
     expect(text).not.toMatch(ROLE_DIALOG);
     expect(text).toContain('from "@/components/ui/dialog"');
   });
