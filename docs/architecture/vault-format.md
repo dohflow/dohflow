@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=25 -->
+<!-- vault-format: spec-version=26 -->
 <!-- vault-format: schema-version=63 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -270,6 +270,13 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 26` (personal-cfo-v98vd, AC27) names the failure for an epoch record whose
+  `membership_head` is neither installed nor in the same request: `EpochRecordMissing` (the converse
+  of an add that no epoch record names), where the reference verifier and the vector
+  `invalid_epoch_naming_an_unknown_head` had `BadEpochSequence`. A malformed pairing must not send a
+  client into the "fetch the chain and rebuild" loop that `BadEpochSequence` means. The vector's
+  expected name is corrected and `invalid_grant_without_the_add_it_names` is added. No wire layout
+  changes; the error stays non-retryable and not a halt.
 - `spec-version = 25` (personal-cfo-5ymg8.5) adds the version 1 commands `MintMerchantAnchors` and
   `ApplyMerchantMemory` and records `merchant_aliases`, `merchant_identities` and
   `transaction_categorizations` as class 1 now that no raw writer remains (the genesis seed is the
@@ -1494,7 +1501,9 @@ Every membership record after the genesis is installed by the service in the
 `membership_head`: an `add` with a grant (`reason 3`) and a `revoke` with a
 cutover (`reason 2`). The genesis membership record is installed with the genesis
 epoch record. A membership record that no epoch record names is
-`EpochRecordMissing`. An added device therefore receives the current `K_e` and `S`
+`EpochRecordMissing`, and so is an epoch record that names a membership record that is neither
+installed nor in the same request (a malformed pairing; `BadEpochSequence` is a head that exists
+and is no longer current). An added device therefore receives the current `K_e` and `S`
 from a grant, with **no key rotation and no new snapshot**: it unseals the grant
 and bootstraps from the latest snapshot of the current epoch, whose AEAD key it
 can derive. A revocation cutover and a forced rotation are the only events that
