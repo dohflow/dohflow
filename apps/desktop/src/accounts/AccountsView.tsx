@@ -184,6 +184,8 @@ export function AccountsView() {
             size="sm"
             variant={batchMode ? "secondary" : "outline"}
             aria-pressed={batchMode}
+            // Not while a save is pending: leaving would discard the drafts it is still saving.
+            disabled={batchMode && batch.saving}
             onClick={() => {
               // Leaving batch mode discards any unsaved drafts (the flat surface
               // used to unmount) so they can't resurrect on re-entry (4d8.25.24 review).

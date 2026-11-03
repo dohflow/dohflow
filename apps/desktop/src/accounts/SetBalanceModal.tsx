@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, X } from "lucide-react";
 
 import { commands } from "@/bindings";
@@ -67,14 +67,21 @@ export function SetBalanceModal({
     unexplained: MoneyDto | null;
   } | null>(null);
 
+  // While the balance is being asserted nothing dismisses the modal (Cancel, Close, the backdrop,
+  // Escape): the draft it sent, its key and its result stay with this modal until the call settles.
+  // Nothing is cancelled; the write goes on either way.
+  const dismiss = useCallback(() => {
+    if (!busy) onClose();
+  }, [busy, onClose]);
+
   // Close on Escape — this is a modal surface over the app shell.
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") dismiss();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [dismiss]);
 
   // One idempotency key per draft: saving the same figure again after a call that threw (so nobody
   // knows whether it was saved) replays instead of appending a second observation.
@@ -118,7 +125,7 @@ export function SetBalanceModal({
       <div
         className="absolute inset-0 bg-foreground/40"
         aria-hidden
-        onClick={onClose}
+        onClick={dismiss}
       />
       <div
         role="dialog"
@@ -136,9 +143,10 @@ export function SetBalanceModal({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={dismiss}
+            disabled={busy}
             aria-label="Close"
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
           >
             <X className="size-4" aria-hidden />
           </button>
@@ -182,6 +190,7 @@ export function SetBalanceModal({
                 inputMode="decimal"
                 value={balance}
                 onChange={(event) => setBalance(event.target.value)}
+                disabled={busy}
                 placeholder="0.00"
                 autoFocus
               />
@@ -202,6 +211,7 @@ export function SetBalanceModal({
                 type="date"
                 value={date}
                 onChange={(event) => setDate(event.target.value)}
+                disabled={busy}
               />
             </div>
 
@@ -212,7 +222,7 @@ export function SetBalanceModal({
             )}
 
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={onClose}>
+              <Button type="button" variant="ghost" onClick={dismiss} disabled={busy}>
                 Cancel
               </Button>
               <Button type="button" disabled={busy} onClick={save}>

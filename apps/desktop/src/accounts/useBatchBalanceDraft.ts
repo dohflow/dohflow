@@ -51,6 +51,9 @@ export function useBatchBalanceDraft() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, RowResult>>({});
   const [saving, setSaving] = useState(false);
+  // True from the moment a save starts until every row has settled. Read by `reset` and `setDraft`
+  // (which can run from a stale closure), so nothing can clear or replace what a pending save owns.
+  const savingRef = useRef(false);
   // One idempotency key per row draft: saving the same row again (after a call that threw, so
   // nobody knows whether it was saved) replays instead of appending a second observation. A
   // different amount, date or currency is a different draft with a new key.
@@ -66,6 +69,7 @@ export function useBatchBalanceDraft() {
     a.active && BALANCE_ROLES.has(a.cashflow_role);
 
   function setDraft(id: string, value: string) {
+    if (savingRef.current) return; // the rows are locked while a save is pending
     setDrafts((d) => ({ ...d, [id]: value }));
     setResults((r) => {
       if (!(id in r)) return r;
@@ -79,8 +83,11 @@ export function useBatchBalanceDraft() {
   /// cleanly (the account list refetches and the row falls back to the new balance).
   async function saveAll(editable: AccountViewDto[]) {
     const edited = editable.filter(isEdited);
-    if (edited.length === 0) return;
+    if (edited.length === 0 || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
+    // What each row sent, so a settled save drops only the draft it actually saved.
+    const submitted = Object.fromEntries(edited.map((a) => [a.id, valueOf(a)]));
     try {
       const outcomes = await Promise.all(
         edited.map(async (a): Promise<[string, RowResult]> => {
@@ -121,10 +128,13 @@ export function useBatchBalanceDraft() {
       // Only a confirmed save drops its draft; a refusal or an unknown outcome keeps what was typed.
       setDrafts((d) => {
         const next = { ...d };
-        for (const [id, res] of outcomes) if (res.kind === "ok") delete next[id];
+        for (const [id, res] of outcomes) {
+          if (res.kind === "ok" && next[id] === submitted[id]) delete next[id];
+        }
         return next;
       });
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -138,9 +148,11 @@ export function useBatchBalanceDraft() {
   /// now outlives batch mode, leaving it must clear state so a stale draft can't
   /// resurrect and silently overwrite a balance changed by another path.
   function reset() {
+    // Not while a save is pending: the submitted drafts and the results stay until it settles, and a
+    // draft typed afterwards must not be deleted when that save resolves.
+    if (savingRef.current) return;
     setDrafts({});
     setResults({});
-    setSaving(false);
     setDate(today());
   }
 

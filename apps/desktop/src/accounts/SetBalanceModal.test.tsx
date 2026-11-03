@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -164,12 +164,70 @@ describe("SetBalanceModal", () => {
       expect(keyOf(1)).not.toBe(keyOf(0));
     });
 
+    describe("while the balance is being asserted (R2)", () => {
+      const onClose = vi.fn();
+      let finish: (value: unknown) => void = () => {};
+      function openPending() {
+        onClose.mockReset();
+        mocks.assertBalance.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+        renderWithClient(
+          <SetBalanceModal
+            account={account()}
+            onClose={onClose}
+            onExplainWithTransactions={() => {}}
+          />,
+        );
+        fireEvent.change(screen.getByLabelText(/new balance/i), { target: { value: "500" } });
+        save();
+      }
+
+      it("locks the amount and date, and Cancel, Close, the backdrop and Escape all do nothing", async () => {
+        openPending();
+        await waitFor(() => expect(screen.getByLabelText(/new balance/i)).toBeDisabled());
+        expect(screen.getByLabelText("As of")).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+        fireEvent.click(screen.getByRole("button", { name: "Close" }));
+        fireEvent.click(document.querySelector('[aria-hidden="true"].absolute') as HTMLElement);
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(onClose).not.toHaveBeenCalled();
+        // The modal, its draft and (once it lands) its result are still here.
+        expect(screen.getByLabelText(/new balance/i)).toHaveValue("500");
+        await act(async () => finish(ok({ balance: { minor_units: 50_000, currency: "USD" }, unexplained: null })));
+        expect(await screen.findByText(/fully explained/i)).toBeInTheDocument();
+        // After the outcome lands, dismissing works again.
+        fireEvent.click(screen.getByRole("button", { name: "Close" }));
+        expect(onClose).toHaveBeenCalledTimes(1);
+      });
+
+      it("is released after a refusal and after an unknown outcome, the same draft keeping its key after the unknown one", async () => {
+        openPending();
+        await act(async () => finish({ status: "error", error: { Validation: "No such account." } }));
+        expect(await screen.findByRole("alert")).toHaveTextContent("No such account.");
+        expect(screen.getByLabelText(/new balance/i)).toBeEnabled();
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(onClose).toHaveBeenCalledTimes(1);
+
+        onClose.mockReset();
+        mocks.assertBalance.mockReset();
+        mocks.assertBalance.mockRejectedValue(new Error("connection lost"));
+        save();
+        expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+        expect(screen.getByLabelText(/new balance/i)).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+        save();
+        await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(2));
+        expect(keyOf(1)).toBe(keyOf(0));
+      });
+    });
+
     it("a saved balance that could not be read back says so, claims nothing about the gap, and offers only Done", async () => {
       mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
       open();
       save();
       expect(
-        await screen.findByText("Saved, but the new balance couldn’t be confirmed yet."),
+        await screen.findByText("Saved, but the new balance couldn’t be confirmed."),
       ).toBeInTheDocument();
       expect(screen.queryByText("New balance")).toBeNull();
       expect(screen.queryByText(/fully explained/i)).toBeNull();

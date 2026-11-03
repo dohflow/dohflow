@@ -6,4 +6,4 @@ export const BALANCE_OUTCOME_UNKNOWN =
 
 /// Shown for a balance that was saved but whose new figure could not be read back.
 export const BALANCE_SAVED_UNCONFIRMED =
-  "Saved, but the new balance couldn’t be confirmed yet.";
+  "Saved, but the new balance couldn’t be confirmed.";

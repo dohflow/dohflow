@@ -5343,8 +5343,9 @@ pub fn delete_forecast_assumption(
 /// new assertion-anchored balance and the still-unexplained adjustment.
 ///
 /// Once the assertion has committed this never reports failure: the balance and the plug are read
-/// back afterwards, and a read that fails there leaves them `None` in an `Ok` result rather than
-/// turning a saved assertion into an error. Repeating the same key writes nothing new.
+/// back afterwards, and when EITHER read fails both are `None` in an `Ok` result (the unconfirmed
+/// view) rather than turning a saved assertion into an error, or a failed gap read into "no gap".
+/// Repeating the same key writes nothing new.
 pub fn assert_balance_impl(
     state: &AppState,
     input: AssertBalanceInput,
@@ -5361,16 +5362,12 @@ pub fn assert_balance_impl(
             amount,
             as_of,
         )?;
-        // Committed. From here nothing may fail the call.
-        let balance = kernel.account_balance(account).ok().flatten();
-        let unexplained = match balance {
-            Some(_) => kernel.account_unexplained(account).ok().flatten(),
-            None => None,
-        };
-        Ok(AssertBalanceResult {
-            balance: balance.map(MoneyDto::from),
-            unexplained: unexplained.map(MoneyDto::from),
-        })
+        // Committed. From here nothing may fail the call, and a read that fails leaves BOTH figures
+        // unconfirmed rather than letting a failed gap read pass for "no gap".
+        Ok(AssertBalanceResult::read_back(
+            kernel.account_balance(account),
+            || kernel.account_unexplained(account),
+        ))
     })
 }
 
