@@ -10,9 +10,13 @@ import type { ArchiveFlow } from "./archiveFlow";
 export function ArchiveImpactConfirm({
   account,
   flow,
+  confirmDisabled = false,
 }: {
   account: AccountViewDto;
   flow: ArchiveFlow;
+  /// Holds the Archive button while the account figure shown above cannot be trusted (a read of the
+  /// accounts that failed after the question opened). Cancel stays available.
+  confirmDisabled?: boolean;
 }) {
   if (!flow.confirming) return null;
   const shown = formatMoney({
@@ -33,6 +37,7 @@ export function ArchiveImpactConfirm({
           size="sm"
           variant="ghost"
           onClick={flow.confirm}
+          disabled={confirmDisabled}
           aria-label={`Confirm archive ${account.name}`}
         >
           Archive

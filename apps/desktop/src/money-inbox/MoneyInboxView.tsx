@@ -843,6 +843,7 @@ export function MoneyInboxView({
           return account ? (
             <ReconcileBalanceModal
               account={account}
+              verifyResidual
               onClose={() => setReconcilingId(null)}
             />
           ) : null;
@@ -1246,7 +1247,9 @@ function StaleBalanceRow({
                   {flow.busy ? "Archiving…" : "Archive account"}
                 </Button>
               </div>
-              {account && <ArchiveImpactConfirm account={account} flow={flow} />}
+              {account && (
+                <ArchiveImpactConfirm account={account} flow={flow} confirmDisabled={unavailable} />
+              )}
             </div>
           </TableCell>
         </TableRow>
