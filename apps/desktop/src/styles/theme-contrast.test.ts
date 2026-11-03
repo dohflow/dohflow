@@ -397,3 +397,83 @@ describe("hover state of the shared controls (personal-cfo-4d8.35)", () => {
     expect(contrast(old, fill)).toBeLessThan(NON_TEXT_FLOOR);
   });
 });
+
+// ── personal-cfo-4d8.56: the provenance badge label on every transaction-row state ─────────────────
+//
+// The badge sits on its own `bg-info/10` tint, which sits on a table row: idle (--card), hovered
+// (`hover:bg-muted/50` over --card) or selected (`bg-muted`). Informational-blue 11px text was 4.61:1
+// idle but 4.26 hovered and 3.92 selected in the light theme. The light label is now the foreground;
+// the mark, tint and outline stay informational, and dark keeps its blue label.
+
+const TXN_VIEW_SRC =
+  sourceTree.find((f) => f.path === "transactions/TransactionsView.tsx")?.text ?? "";
+const TABLE_SRC = sourceTree.find((f) => f.path === "components/ui/table.tsx")?.text ?? "";
+/// The class strings of the badge's outer span and its mark, as written in the component.
+function provenanceBadge(): { label: string; mark: string } {
+  const body = /function CategoryProvenanceBadge[\s\S]*?\n}\n/.exec(TXN_VIEW_SRC)?.[0] ?? "";
+  return {
+    label: /<span[^>]*?className="([^"]*)"/.exec(body)?.[1] ?? "",
+    mark: /<Sparkles className="([^"]*)"/.exec(body)?.[1] ?? "",
+  };
+}
+const ROW_TEXT_FLOOR = 4.6;
+
+describe("provenance badge label on transaction-row states (personal-cfo-4d8.56)", () => {
+  it("reads the real badge and row classes", () => {
+    const { label, mark } = provenanceBadge();
+    expect(label.length).toBeGreaterThan(40); // guards the guard
+    expect(mark).toContain("size-3");
+    expect(TABLE_SRC).toContain("hover:bg-muted/50");
+    expect(TABLE_SRC).toContain("data-[state=selected]:bg-muted");
+  });
+
+  it("the label is the foreground in light and the informational blue in dark; mark, tint and outline stay informational", () => {
+    const { label, mark } = provenanceBadge();
+    expect(label).toMatch(/(^|\s)text-foreground(\s|$)/);
+    expect(label).toMatch(/(^|\s)dark:text-info(\s|$)/);
+    expect(label).not.toMatch(/(^|\s)text-info(\s|$)/);
+    expect(label).toContain("bg-info/10");
+    expect(label).toContain("border-info/40");
+    expect(mark).toMatch(/(^|\s)text-info(\s|$)/);
+  });
+
+  it("clears the floor plus headroom on the idle, hovered and selected row, in both themes", () => {
+    const { label } = provenanceBadge();
+    // The colour each theme's label really gets from the shipped classes: the base text colour, and
+    // in dark the `dark:` override when there is one.
+    const baseText = /(^|\s)text-(foreground|info)(\s|$)/.exec(label)?.[2];
+    const darkText = /(^|\s)dark:text-(foreground|info)(\s|$)/.exec(label)?.[2] ?? baseText;
+    expect(baseText, "a base label colour").toBeDefined();
+    let checked = 0;
+    for (const theme of THEMES) {
+      const card = token(theme.block, "card")!;
+      const muted = token(theme.block, "muted")!;
+      const info = token(theme.block, "info")!;
+      const text = token(theme.block, (theme.name === "dark" ? darkText : baseText)!)!;
+      const surfaces = {
+        idle: card,
+        hover: over(muted, card, 0.5),
+        selected: muted,
+      };
+      for (const [state, surface] of Object.entries(surfaces)) {
+        const ratio = contrast(text, over(info, surface, 0.1));
+        checked++;
+        expect(
+          ratio,
+          `${theme.name} ${state} row: badge label = ${ratio.toFixed(2)}:1 (need ${ROW_TEXT_FLOOR + HEADROOM}:1)`,
+        ).toBeGreaterThanOrEqual(ROW_TEXT_FLOOR + HEADROOM);
+      }
+    }
+    expect(checked).toBe(6); // guards the guard
+  });
+
+  it("would FAIL with the old informational label in light on a hovered or selected row: the change is needed", () => {
+    const card = token(LIGHT, "card")!;
+    const muted = token(LIGHT, "muted")!;
+    const info = token(LIGHT, "info")!;
+    const hover = contrast(info, over(info, over(muted, card, 0.5), 0.1));
+    const selected = contrast(info, over(info, muted, 0.1));
+    expect(hover).toBeLessThan(TEXT_PAIR_FLOOR);
+    expect(selected).toBeLessThan(TEXT_PAIR_FLOOR);
+  });
+});
