@@ -2134,13 +2134,7 @@ impl DbWorker {
         amount: Money,
         as_of: NaiveDate,
     ) -> Result<(), DbError> {
-        self.record_balance_assertion_keyed(
-            &new_idempotency_key(),
-            id,
-            account_id,
-            amount,
-            as_of,
-        )
+        self.record_balance_assertion_keyed(&new_idempotency_key(), id, account_id, amount, as_of)
     }
 
     /// [`Self::record_balance_assertion`] under a caller-supplied idempotency key. Assertions are

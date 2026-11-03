@@ -198,7 +198,11 @@ fn a_keyed_assertion_repeated_under_its_key_appends_nothing_a_new_key_appends() 
     worker
         .record_balance_assertion_keyed(key, u(81), account, usd(500_000), day(2026, 10, 19))
         .unwrap();
-    assert_eq!(rows(&worker, "2026-10-19").len(), 1, "the retry appended nothing");
+    assert_eq!(
+        rows(&worker, "2026-10-19").len(),
+        1,
+        "the retry appended nothing"
+    );
     // A different draft (a new key) is a new observation.
     worker
         .record_balance_assertion_keyed(
@@ -215,9 +219,17 @@ fn a_keyed_assertion_repeated_under_its_key_appends_nothing_a_new_key_appends() 
 #[test]
 fn a_keyed_assertion_refuses_a_key_that_is_not_a_canonical_uuid_v4() {
     let (_dir, worker, account) = vault();
-    let refused =
-        worker.record_balance_assertion_keyed("not-a-key", u(83), account, usd(1), day(2026, 10, 19));
-    assert!(matches!(refused, Err(DbError::InvalidIdempotencyKey)), "{refused:?}");
+    let refused = worker.record_balance_assertion_keyed(
+        "not-a-key",
+        u(83),
+        account,
+        usd(1),
+        day(2026, 10, 19),
+    );
+    assert!(
+        matches!(refused, Err(DbError::InvalidIdempotencyKey)),
+        "{refused:?}"
+    );
     assert!(rows(&worker, "2026-10-19").is_empty());
 }
 

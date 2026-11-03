@@ -4090,8 +4090,13 @@ impl Kernel {
         amount: Money,
         as_of: NaiveDate,
     ) -> Result<(), KernelError> {
-        self.worker
-            .record_balance_assertion_keyed(idempotency_key, id, account_id, amount, as_of)?;
+        self.worker.record_balance_assertion_keyed(
+            idempotency_key,
+            id,
+            account_id,
+            amount,
+            as_of,
+        )?;
         Ok(())
     }
 

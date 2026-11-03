@@ -5354,7 +5354,13 @@ pub fn assert_balance_impl(
     let as_of = input.as_of()?;
     let id = Uuid::now_v7();
     with_kernel(state, |kernel| {
-        kernel.record_balance_assertion_keyed(&input.idempotency_key, id, account, amount, as_of)?;
+        kernel.record_balance_assertion_keyed(
+            &input.idempotency_key,
+            id,
+            account,
+            amount,
+            as_of,
+        )?;
         // Committed. From here nothing may fail the call.
         let balance = kernel.account_balance(account).ok().flatten();
         let unexplained = match balance {

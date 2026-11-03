@@ -1763,13 +1763,16 @@ fn assert_balance_repeated_under_one_key_writes_once_and_a_bad_key_is_refused() 
         100_000,
     );
     // A new key is a new assertion.
-    let next = assert_balance_impl(&state, draft(250_000, &uuid::Uuid::new_v4().to_string()))
-        .unwrap();
+    let next =
+        assert_balance_impl(&state, draft(250_000, &uuid::Uuid::new_v4().to_string())).unwrap();
     assert_eq!(next.balance.expect("read back").minor_units, 250_000);
 
     // A key that is not a canonical UUID v4 is refused before anything is written.
     let refused = assert_balance_impl(&state, draft(1, "not-a-key"));
-    assert!(matches!(refused, Err(IpcError::Validation(_))), "{refused:?}");
+    assert!(
+        matches!(refused, Err(IpcError::Validation(_))),
+        "{refused:?}"
+    );
 }
 
 #[test]
