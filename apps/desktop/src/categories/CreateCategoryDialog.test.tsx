@@ -57,4 +57,50 @@ describe("CreateCategoryDialog", () => {
     fireEvent.keyDown(screen.getByLabelText("Category name"), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("starts in the name field, keeps Tab inside, and hides the page behind it (shared Dialog, 4d8.6.2)", async () => {
+    renderWithClient(
+      <div>
+        <button>Opener</button>
+        <CreateCategoryDialog onCreated={vi.fn()} onClose={vi.fn()} />
+      </div>,
+    );
+    const dialog = await screen.findByRole("dialog", { name: "New category" });
+    await waitFor(() => expect(screen.getByLabelText("Category name")).toHaveFocus());
+    const create = screen.getByRole("button", { name: "Create category" });
+    create.focus();
+    fireEvent.keyDown(create, { key: "Tab" });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    expect(screen.queryByRole("button", { name: "Opener" })).not.toBeInTheDocument();
+  });
+
+  it("Escape closes only this dialog: a listener on the window behind never sees the key", async () => {
+    const onClose = vi.fn();
+    renderWithClient(<CreateCategoryDialog onCreated={vi.fn()} onClose={onClose} />);
+    const behind = vi.fn();
+    window.addEventListener("keydown", behind);
+    const dialog = await screen.findByRole("dialog", { name: "New category" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    window.removeEventListener("keydown", behind);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(behind).not.toHaveBeenCalled();
+  });
+
+  it("the Close button and Cancel close it without creating a category", async () => {
+    const onClose = vi.fn();
+    renderWithClient(<CreateCategoryDialog onCreated={vi.fn()} onClose={onClose} />);
+    await screen.findByRole("dialog", { name: "New category" });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mocks.createCategory).not.toHaveBeenCalled();
+  });
+
+  it("lets the emoji panel overflow the dialog instead of clipping it inside a scrolling body", async () => {
+    renderWithClient(<CreateCategoryDialog onCreated={vi.fn()} onClose={vi.fn()} />);
+    const dialog = await screen.findByRole("dialog", { name: "New category" });
+    expect(dialog.className).toMatch(/overflow-visible/);
+    const body = screen.getByLabelText("Category name").closest(".overflow-visible");
+    expect(body).not.toBeNull();
+  });
 });
+
