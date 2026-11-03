@@ -300,6 +300,8 @@ export function TransactionsView({
     rows,
     total,
     error,
+    retry: retryPage,
+    retrying: retryingPage,
     pagination: transactionPages,
   } = usePagedTransactions(filters, sort, "pcfo.pageSize.transactions");
   // Whether anything narrows the list — distinguishes "vault has no transactions"
@@ -674,12 +676,6 @@ export function TransactionsView({
         />
       )}
 
-      {error && (
-        <p role="alert" className="text-sm text-loss">
-          {error}
-        </p>
-      )}
-
       {autoCatResult && (
         <p role="status" className="text-sm text-muted-foreground">
           {autoCatResult}
@@ -823,10 +819,13 @@ export function TransactionsView({
                 // `total` stays undefined on error — so the screen showed an error message
                 // AND an endless "loading" list, which reads as "still trying".
                 status={error ? "error" : total === undefined ? "loading" : "ready"}
-                error={
-                  error
-                    ? "Couldn’t read this page of transactions. Your data is fine — this read failed."
-                    : null
+                // One message, in the table that could not be filled (the screen used to show it
+                // twice, with a claim about the data that a failed read cannot back up).
+                error={error ? pageReadMessage(error) : null}
+                errorAction={
+                  <Button variant="outline" size="sm" onClick={() => void retryPage()} disabled={retryingPage}>
+                    {retryingPage ? "Retrying…" : "Retry"}
+                  </Button>
                 }
                 empty={{
                   icon: Search,
@@ -1053,6 +1052,13 @@ function SplitLinesDetail({
       ))}
     </ul>
   );
+}
+
+/// The message for a page of transactions that could not be read: the scope, then the read's own
+/// reason when it gave one (the generic fallback adds nothing).
+const PAGE_READ_FAILED = "Couldn’t read this page of transactions.";
+function pageReadMessage(reason: string): string {
+  return reason === "Could not load transactions." ? PAGE_READ_FAILED : `${PAGE_READ_FAILED} ${reason}`;
 }
 
 /// Shown when the call that creates the recurring bill threw: the bill may or may not exist, and
