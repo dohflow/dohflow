@@ -192,14 +192,13 @@ fn split_field_tables_name_every_real_column() {
 }
 
 #[test]
-fn legacy_setting_keys_match_the_manifest_count() {
-    // The inventory says "the six legacy unprefixed user keys".
-    let legacy = MANIFEST
+fn the_inventory_names_the_user_prefix_and_no_legacy_keys() {
+    // The inventory says only `user.` keys travel, and the manifest has no legacy field left
+    // (personal-cfo-5ymg8.7 renamed the unprefixed keys).
+    assert!(!MANIFEST
         .lines()
-        .map(str::trim)
-        .find_map(|line| line.strip_prefix("legacy_persisted_keys = "))
-        .expect("manifest lists the legacy keys")
-        .trim_matches('"');
-    assert_eq!(legacy.split(',').count(), 6);
-    assert!(inventory()["settings"].rule.contains("six legacy"));
+        .any(|line| line.trim().starts_with("legacy_")));
+    let rule = &inventory()["settings"].rule;
+    assert!(rule.contains("user."), "{rule}");
+    assert!(!rule.contains("legacy"), "{rule}");
 }

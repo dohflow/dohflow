@@ -126,7 +126,7 @@ fn memory_security_is_never_enabled_on_a_raw_keyed_vault() {
     let worker = DbWorker::open_with_raw_key(&path, generate_dek().unwrap()).unwrap();
     assert_eq!(memory_security(&worker), "0");
     // Real work on the vault does not turn it on either.
-    worker.set_setting("user.theme", "dark").unwrap();
+    worker.set_device_setting("device.theme", "dark").unwrap();
     assert_eq!(memory_security(&worker), "0");
 }
 
@@ -154,7 +154,9 @@ fn a_passphrase_with_quotes_and_unicode_round_trips() {
         let _ = std::fs::remove_file(&path);
         {
             let worker = DbWorker::open(&path, passphrase).unwrap();
-            worker.set_setting("user.round_trip", "yes").unwrap();
+            worker
+                .set_device_setting("device.round_trip", "yes")
+                .unwrap();
         }
         let reopened =
             DbWorker::open(&path, passphrase).unwrap_or_else(|e| panic!("{passphrase:?}: {e}"));

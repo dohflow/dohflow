@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=25 -->
-<!-- vault-format: schema-version=63 -->
+<!-- vault-format: spec-version=26 -->
+<!-- vault-format: schema-version=64 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -169,7 +169,9 @@ These are **Sync planning classifications**, not a claim that every class-1
 table is already synced or that class-4 user data may be silently omitted from
 a future portable export. `attachments` and `attachment_links` are currently
 class 4; the manifest splits their user metadata from local blob keys, storage
-IDs, and paths. Settings still include documented legacy unprefixed keys.
+IDs, and paths. Settings are `device.*` (never exported) and `user.*`; the five household
+preferences `user.<name>` travel in a portable export (schema version 64 renamed the former
+unprefixed names).
 
 ### Canonical state and audit history
 
@@ -270,6 +272,19 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 26` (personal-cfo-5ymg8.7) adds the version 1 command `SetUserSetting` (`key` and
+  `value`) and makes the five household preferences, all `user.*` keys of `settings`, class 1
+  rows written only by it: a closed registry (the reporting currency, the minimum cash floor, the
+  comfort band's upper edge, the auto-categorize switch and the Future Cash series selection), each
+  with a pure validator, the value stored verbatim and `updated_at` taken from `issued_at`.
+  `device.*` keys stay class 3 and raw. The `settings` projection filter is the `user.` prefix
+  alone; the six unprefixed legacy names (and `locale`, which no build wrote) are no longer
+  replicated. Schema version 64 renames the five unprefixed names every earlier build wrote
+  (`reporting_currency`, `minimum_cash_floor_minor`, `comfort_band_upper_minor`,
+  `auto_categorize_on_import`, `future_cash_series_selection`) to `user.<name>` once, on open,
+  keeping value and `updated_at`; a prefixed row already present wins; there is no dual-read
+  fallback (owner decision D-ST1). ADR 0073 Addendum K gives the disposition (Set, queue-choose).
+  The version 1 payload fixtures gain one file.
 - `spec-version = 25` (personal-cfo-5ymg8.5) adds the version 1 commands `MintMerchantAnchors` and
   `ApplyMerchantMemory` and records `merchant_aliases`, `merchant_identities` and
   `transaction_categorizations` as class 1 now that no raw writer remains (the genesis seed is the
@@ -505,7 +520,7 @@ therefore requires reviewing this inventory.
 | `vault_metadata` | 3 | exclude | exclude | Device-local state: `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. The household timezone lives on the class-1 `households` row since schema version 61. |
 | `schema_migrations` | 3 | exclude | exclude | Device-local state. |
 | `audit_events` | 3 | exclude | exclude | Device-local security evidence and replay-owned planned-command rows; not a user-owned financial record. |
-| `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
+| `settings` | 3 | fields | fields | Keys with the `user.` prefix travel; `device.*` keys never do. The `user.*` rows are the household's preferences, written only by `SetUserSetting`. |
 | `connector_connections` | 1 | include | include | Connection identity only: id, provider (`adapter_id`), display hint, created and updated times, and the `deleted_at` tombstone. No credential, refresh time or error: those are in `connector_connection_secrets`. |
 | `connector_account_links` | 1 | include | include | The external-account to ledger-account mapping and currency, per connection. The per-account refresh watermark is device-local (`connector_link_cursors`). |
 | `connector_connection_secrets` | 3 | exclude | exclude | Device-local provider credential, last refresh time and last error; never leaves the device. |
@@ -526,7 +541,7 @@ therefore requires reviewing this inventory.
 | `merchant_identities` | 1 | include | include | A canonical merchant. Written by the genesis seed and by `MintMerchantAnchors` (id `v5("merchant-auto:{key}")`, frozen). Routed to class 1 by ADR 0074 Decision 5. |
 | `manual_entry_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `transaction_categorizations` | 1 | include | include | A transaction's category and its source. Written by `RecategorizeTransaction`, the import commit and `ApplyMerchantMemory`, all through the command bus. Routed to class 1 by ADR 0074 Decision 5. |
-| `settings_user_keys` | 4 | fields | fields | Key-scope marker for the `user.*` keys carried from `settings`. |
+| `settings_user_keys` | 1 | fields | fields | Key-scope marker for the `user.*` keys carried from `settings`, class 1 now that `SetUserSetting` writes them. |
 | `attachment_blobs` | 1b | artifact | artifact | Document bytes: plaintext inside the portable bundle; an opaque, epoch-scoped artifact object under Sync. |
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |
 | `backup_history` | 3 | exclude | exclude | Device-local state. |
@@ -908,8 +923,8 @@ encoding). It uses CBE1 (C.1.1).
   fields B.2 names, as a logical record, so that a device-local or rebuilt column never
   enters a digest. These are `attachments` (`id`, `plaintext_size`, `mime_type`,
   `original_filename`, `created_at`; never `storage_id`, wrapped keys or nonces, and not
-  the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys and the
-  six legacy user keys, never `device.*`). The household timezone is NOT a projection since
+  the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys,
+  never `device.*`). The household timezone is NOT a projection since
   schema version 61: it is a column of the fully captured class-1 `households` row, so
   `SetHouseholdTimezone` writes the `households` entry (and its `updated_at`, which moves only
   when the zone does), and `vault_metadata` has no replicated field.
