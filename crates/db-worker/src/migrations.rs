@@ -2189,6 +2189,36 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // personal-cfo-5ymg8.7 (ADR 0074 Decision 5): the household's preferences are `user.*` keys,
+    // written only by `SetUserSetting`. The five unprefixed names every earlier build wrote are
+    // renamed once, here, in the migration transaction (the owner chose an eager rename over a
+    // dual-read fallback, D-ST1): value and `updated_at` are kept. A prefixed row already present
+    // wins, so the DELETE of the legacy row comes FIRST; otherwise the UPDATE would hit the primary
+    // key and abort. `locale` is not listed: no build ever wrote it. The migration runs before the
+    // write-set capture is installed, so the rename is not captured as a change.
+    Migration {
+        version: 64,
+        name: "household_settings_user_prefix",
+        up: "DELETE FROM settings
+                 WHERE key IN ('reporting_currency', 'minimum_cash_floor_minor',
+                               'comfort_band_upper_minor', 'auto_categorize_on_import',
+                               'future_cash_series_selection')
+                   AND EXISTS (SELECT 1 FROM settings AS prefixed
+                                WHERE prefixed.key = 'user.' || settings.key);
+             UPDATE settings SET key = 'user.' || key
+                 WHERE key IN ('reporting_currency', 'minimum_cash_floor_minor',
+                               'comfort_band_upper_minor', 'auto_categorize_on_import',
+                               'future_cash_series_selection');",
+        // Reverse: drop the prefix of the five keys (a vault being taken down to schema 63).
+        down: Some(
+            "UPDATE settings SET key = substr(key, 6)
+                 WHERE key IN ('user.reporting_currency', 'user.minimum_cash_floor_minor',
+                               'user.comfort_band_upper_minor', 'user.auto_categorize_on_import',
+                               'user.future_cash_series_selection');",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -3343,6 +3373,123 @@ mod tests {
         // And up again yields the same rows.
         apply(&mut conn, MIGRATIONS).unwrap();
         assert_eq!(household_rows(&conn).len(), 2);
+    }
+
+    /// The five legacy household names, in the order the migration renames them.
+    const LEGACY_SETTING_KEYS: [&str; 5] = [
+        "reporting_currency",
+        "minimum_cash_floor_minor",
+        "comfort_band_upper_minor",
+        "auto_categorize_on_import",
+        "future_cash_series_selection",
+    ];
+
+    fn setting_rows(conn: &Connection) -> Vec<(String, String, String)> {
+        conn.prepare("SELECT key, value, updated_at FROM settings ORDER BY key")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn plant_setting(conn: &Connection, key: &str, value: &str, updated_at: &str) {
+        conn.execute(
+            "INSERT INTO settings (key, value, value_schema_version, updated_at)
+             VALUES (?1, ?2, 1, ?3)",
+            [key, value, updated_at],
+        )
+        .unwrap();
+    }
+
+    /// 64 renames the five legacy names to `user.<name>` once, keeping value and `updated_at`, and
+    /// leaves every other row alone: a `device.*` key, and `locale`, which no build ever wrote.
+    #[test]
+    fn v64_renames_the_five_household_keys_and_nothing_else() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..63]).unwrap();
+        for (n, key) in LEGACY_SETTING_KEYS.iter().enumerate() {
+            plant_setting(&conn, key, &format!("v{n}"), &format!("t{n}"));
+        }
+        plant_setting(&conn, "device.window", "1", "td");
+        plant_setting(&conn, "locale", "en-US", "tl");
+
+        apply(&mut conn, &MIGRATIONS[63..64]).unwrap();
+
+        let mut expected: Vec<(String, String, String)> = LEGACY_SETTING_KEYS
+            .iter()
+            .enumerate()
+            .map(|(n, key)| (format!("user.{key}"), format!("v{n}"), format!("t{n}")))
+            .collect();
+        expected.push(("device.window".into(), "1".into(), "td".into()));
+        expected.push(("locale".into(), "en-US".into(), "tl".into()));
+        expected.sort();
+        assert_eq!(setting_rows(&conn), expected);
+    }
+
+    /// A prefixed row that already exists wins, and the legacy row goes: the DELETE runs before the
+    /// UPDATE, so the rename does not hit the primary key and abort.
+    #[test]
+    fn v64_keeps_an_existing_prefixed_row_and_drops_the_legacy_one() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..63]).unwrap();
+        plant_setting(&conn, "minimum_cash_floor_minor", "100", "old");
+        plant_setting(&conn, "user.minimum_cash_floor_minor", "200", "new");
+        plant_setting(&conn, "reporting_currency", "EUR", "t");
+
+        apply(&mut conn, &MIGRATIONS[63..64]).unwrap();
+
+        assert_eq!(
+            setting_rows(&conn),
+            vec![
+                (
+                    "user.minimum_cash_floor_minor".into(),
+                    "200".into(),
+                    "new".into()
+                ),
+                ("user.reporting_currency".into(), "EUR".into(), "t".into()),
+            ]
+        );
+    }
+
+    /// Running the migration's SQL again changes nothing, and a fresh vault has no settings rows.
+    #[test]
+    fn v64_is_idempotent_and_adds_nothing_to_a_fresh_vault() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert!(setting_rows(&conn).is_empty());
+        plant_setting(&conn, "user.reporting_currency", "USD", "t");
+        conn.execute_batch(MIGRATIONS[63].up).unwrap();
+        assert_eq!(
+            setting_rows(&conn),
+            vec![("user.reporting_currency".into(), "USD".into(), "t".into())]
+        );
+    }
+
+    /// Down returns the five names to their unprefixed form, and up renames them again.
+    #[test]
+    fn v64_down_restores_the_unprefixed_names_and_up_renames_them_again() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        for (n, key) in LEGACY_SETTING_KEYS.iter().enumerate() {
+            plant_setting(&conn, &format!("user.{key}"), &format!("v{n}"), "t");
+        }
+        plant_setting(&conn, "device.window", "1", "t");
+
+        assert_eq!(migrate_down(&mut conn, 63).unwrap(), 1);
+        let down: Vec<String> = setting_rows(&conn).into_iter().map(|r| r.0).collect();
+        let mut want: Vec<String> = LEGACY_SETTING_KEYS
+            .iter()
+            .map(|k| (*k).to_owned())
+            .collect();
+        want.push("device.window".into());
+        want.sort();
+        assert_eq!(down, want);
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let up: Vec<String> = setting_rows(&conn).into_iter().map(|r| r.0).collect();
+        assert!(up.contains(&"user.reporting_currency".to_owned()));
+        assert!(!up.contains(&"reporting_currency".to_owned()));
     }
 
     fn hex_upper(bytes: &[u8]) -> String {

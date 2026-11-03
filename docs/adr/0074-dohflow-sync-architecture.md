@@ -404,7 +404,10 @@ key that does not begin with `device.`. Five household preferences exist, all `u
 reporting currency, the minimum cash floor, the comfort band's upper edge, the auto-categorize
 switch and the Future Cash series selection), in a closed registry whose validators are pure. The
 `settings` table stays class 3 as a table with a projection onto its `user.*` rows, because it holds
-both scopes. The convention at `lib.rs:2595` that this decision reversed is gone.
+both scopes. The convention at `lib.rs:2595` that this decision reversed is gone. The five unprefixed
+names earlier builds wrote are renamed to `user.<name>` once, on open, by schema version 64 (the
+owner chose an eager rename over a dual-read fallback): an older build refuses the renamed vault
+(`NewerSchema`), and the old raw writes never replicated, so no replica holds a legacy key.
 
 Class 1 covers user-facing canonical intent; class 1b covers artifact bytes;
 class 2 is rebuilt; class 3 includes connector credentials, refresh

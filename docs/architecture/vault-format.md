@@ -24,7 +24,7 @@ and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
 <!-- vault-format: spec-version=26 -->
-<!-- vault-format: schema-version=63 -->
+<!-- vault-format: schema-version=64 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -169,7 +169,9 @@ These are **Sync planning classifications**, not a claim that every class-1
 table is already synced or that class-4 user data may be silently omitted from
 a future portable export. `attachments` and `attachment_links` are currently
 class 4; the manifest splits their user metadata from local blob keys, storage
-IDs, and paths. Settings still include documented legacy unprefixed keys.
+IDs, and paths. Settings are `device.*` (never exported) and `user.*`; the five household
+preferences `user.<name>` travel in a portable export (schema version 64 renamed the former
+unprefixed names).
 
 ### Canonical state and audit history
 
@@ -277,8 +279,12 @@ synthetic no-app recovery test before any such public claim.
   with a pure validator, the value stored verbatim and `updated_at` taken from `issued_at`.
   `device.*` keys stay class 3 and raw. The `settings` projection filter is the `user.` prefix
   alone; the six unprefixed legacy names (and `locale`, which no build wrote) are no longer
-  replicated. ADR 0073 Addendum K gives the disposition (Set, queue-choose). The version 1
-  payload fixtures gain one file.
+  replicated. Schema version 64 renames the five unprefixed names every earlier build wrote
+  (`reporting_currency`, `minimum_cash_floor_minor`, `comfort_band_upper_minor`,
+  `auto_categorize_on_import`, `future_cash_series_selection`) to `user.<name>` once, on open,
+  keeping value and `updated_at`; a prefixed row already present wins; there is no dual-read
+  fallback (owner decision D-ST1). ADR 0073 Addendum K gives the disposition (Set, queue-choose).
+  The version 1 payload fixtures gain one file.
 - `spec-version = 25` (personal-cfo-5ymg8.5) adds the version 1 commands `MintMerchantAnchors` and
   `ApplyMerchantMemory` and records `merchant_aliases`, `merchant_identities` and
   `transaction_categorizations` as class 1 now that no raw writer remains (the genesis seed is the
