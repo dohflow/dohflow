@@ -391,7 +391,7 @@ describe("BillsView", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^remove netflix$/i }));
     expect(mocks.deleteRecurringBill).not.toHaveBeenCalled();
     const confirm = screen.getByRole("group", { name: "Remove Netflix?" });
-    expect(within(confirm).getByText("You can bring it back.")).toBeInTheDocument();
+    expect(within(confirm).getByText("After removal, you can bring it back only through the Undo notice.")).toBeInTheDocument();
     // Cancel takes focus (the safe choice is the default) and removes nothing.
     expect(within(confirm).getByRole("button", { name: "Cancel" })).toHaveFocus();
 
