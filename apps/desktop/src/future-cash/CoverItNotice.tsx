@@ -58,7 +58,12 @@ export function CoverItNotice({
   // The forecast re-read after an unknown outcome failed: its message, until a retry succeeds.
   const [forecastFailure, setForecastFailure] = useState<string | null>(null);
   // Which read a Retry is re-running right now.
-  const [retrying, setRetrying] = useState<"accounts" | "forecast" | null>(null);
+  const [retrying, setRetrying] = useState<"accounts" | "forecast" | "both" | null>(null);
+  // After a transfer call that threw, Confirm is offered again only once BOTH re-reads (accounts and
+  // forecast) have actually succeeded. This stays true until they have: a read that was paused
+  // (the app is offline while a key rotation holds it), skipped or cancelled, or cached data whose
+  // status says success, is not a read-back.
+  const [unverified, setUnverified] = useState(false);
   // A retry of a read that never produced data puts the query back to pending, which would flip the
   // panel to "Loading…" and hide the Retrying… button; the failure being retried stays on screen.
   const [retriedFailure, setRetriedFailure] = useState<string | null>(null);
@@ -137,10 +142,46 @@ export function CoverItNotice({
     return (failed.state.error as Error | null)?.message || FORECAST_READ_FAILED;
   }
 
-  async function retry(which: "accounts" | "forecast") {
+  /// Re-reads accounts and forecast, and says whether BOTH ran and succeeded. A refetch that was
+  /// paused (the app is offline while a key rotation holds it), skipped or cancelled resolves
+  /// without reading anything, and a cached success is not a read-back, so the proof is the query's
+  /// own count of successful updates having gone up since before this ran, with nothing in flight.
+  async function rereadBoth(): Promise<boolean> {
+    const cache = queryClient.getQueryCache();
+    const shown = () => [
+      ...cache.findAll({ queryKey: queryKeys.accounts, exact: true }),
+      ...cache.findAll({ queryKey: ["forecast"] }).filter((q) => q.getObserversCount() > 0),
+    ];
+    const before = new Map(shown().map((q) => [q.queryHash, q.state.dataUpdateCount]));
+    await Promise.allSettled([
+      queryClient.refetchQueries({ queryKey: queryKeys.accounts }),
+      queryClient.refetchQueries({ queryKey: ["forecast"] }),
+    ]);
+    const after = shown();
+    // The accounts read is always on screen here, so it must exist; a forecast that nothing is
+    // showing has nothing to re-read.
+    return (
+      cache.findAll({ queryKey: queryKeys.accounts, exact: true }).length > 0 &&
+      after.every(
+        (q) =>
+          q.state.status === "success" &&
+          q.state.fetchStatus === "idle" &&
+          q.state.dataUpdateCount > (before.get(q.queryHash) ?? -1),
+      )
+    );
+  }
+
+  async function retry(which: "accounts" | "forecast" | "both") {
     if (which === "accounts") setRetriedFailure(accountsError);
     setRetrying(which);
     try {
+      if (unverified) {
+        // Whichever Retry was pressed, what is owed is both reads, so both are run and checked.
+        const verified = await rereadBoth();
+        setForecastFailure(currentForecastFailure());
+        setUnverified(!verified);
+        return;
+      }
       await queryClient.refetchQueries({
         queryKey: which === "accounts" ? queryKeys.accounts : ["forecast"],
       });
@@ -178,13 +219,12 @@ export function CoverItNotice({
       // Confirm stays disabled (`saving`) until that is done.
       setError(TRANSFER_OUTCOME_UNKNOWN);
       // Settling only means the reads were attempted. Confirm comes back only once both succeeded:
-      // a failed accounts read shows as such (`accountsError`), and a failed forecast read is
-      // looked up here.
-      await Promise.allSettled([
-        queryClient.refetchQueries({ queryKey: queryKeys.accounts }),
-        queryClient.refetchQueries({ queryKey: ["forecast"] }),
-      ]);
+      // a failed accounts read shows as such (`accountsError`), a failed forecast read is looked up
+      // here, and a read that never ran leaves `unverified` set.
+      setUnverified(true);
+      const verified = await rereadBoth();
       setForecastFailure(currentForecastFailure());
+      setUnverified(!verified);
       setSaving(false);
       return;
     }
@@ -281,6 +321,24 @@ export function CoverItNotice({
                 <RetryButton
                   pending={retrying === "forecast"}
                   onClick={() => void retry("forecast")}
+                />
+                <CancelButton disabled={saving} onClick={close} />
+              </div>
+            </>
+          ) : unverified && !saving ? (
+            // The re-reads after an unknown outcome have finished without both succeeding (one was
+            // paused or skipped), so nothing here can be confirmed yet. While they are still
+            // running the form shows, with Confirm disabled.
+            <>
+              {error === TRANSFER_OUTCOME_UNKNOWN && (
+                <p role="alert" className="text-sm text-loss">
+                  {error}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <RetryButton
+                  pending={retrying === "both"}
+                  onClick={() => void retry("both")}
                 />
                 <CancelButton disabled={saving} onClick={close} />
               </div>

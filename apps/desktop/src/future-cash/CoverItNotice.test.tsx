@@ -1,4 +1,4 @@
-import { QueryClient, useQuery } from "@tanstack/react-query";
+import { QueryClient, onlineManager, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -525,6 +525,79 @@ describe("after an unknown transfer outcome Confirm returns only when both re-re
     mocks.forecast.mockResolvedValue("forecast");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("button", { name: /confirm transfer/i })).toBeEnabled();
+  });
+
+  describe("a re-read that never ran is not a read-back", () => {
+    afterEach(() => onlineManager.setOnline(true));
+
+    /// The transfer call throws and the app goes offline with it (a key rotation holds the network),
+    /// so the re-reads that follow are paused rather than run.
+    const goOfflineWhenItThrows = () => {
+      mocks.recordTransfer.mockReset(); // drops the plain rejection `throwTransfer` queued
+      mocks.recordTransfer.mockImplementationOnce(async () => {
+        onlineManager.setOnline(false);
+        throw new Error("connection lost");
+      });
+    };
+
+    test("with the app offline both re-reads are paused: Confirm stays unavailable on cached data, with the warning and Retry", async () => {
+      await throwTransfer();
+      const reads = mocks.forecast.mock.calls.length;
+      const accountReads = mocks.accountList.mock.calls.length;
+      goOfflineWhenItThrows();
+      fireEvent.click(screen.getByRole("button", { name: /confirm transfer/i }));
+      expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+      // Neither read ran, and the cached lists (status success) do not stand in for them.
+      expect(mocks.forecast.mock.calls.length).toBe(reads);
+      expect(mocks.accountList.mock.calls.length).toBe(accountReads);
+      expect(screen.getByText(UNKNOWN)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /confirm transfer/i })).toBeNull();
+      expect(screen.queryByLabelText("Amount to transfer")).toBeNull();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    test("Retry while still offline reads nothing and keeps Confirm away; once online it re-reads both and Confirm returns", async () => {
+      await throwTransfer();
+      goOfflineWhenItThrows();
+      fireEvent.click(screen.getByRole("button", { name: /confirm transfer/i }));
+      fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled());
+      expect(screen.queryByRole("button", { name: /confirm transfer/i })).toBeNull();
+
+      const reads = mocks.forecast.mock.calls.length;
+      const accountReads = mocks.accountList.mock.calls.length;
+      await act(async () => onlineManager.setOnline(true));
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(await screen.findByRole("button", { name: /confirm transfer/i })).toBeEnabled();
+      expect(mocks.forecast.mock.calls.length).toBeGreaterThan(reads);
+      expect(mocks.accountList.mock.calls.length).toBeGreaterThan(accountReads);
+      expect(screen.getByText(UNKNOWN)).toBeInTheDocument();
+    });
+
+    test("a forecast read that is skipped (its query is disabled) leaves cached success that is not a read-back", async () => {
+      mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+      function DisabledForecast() {
+        // Cached data with status success, and a query that refetching skips.
+        useQuery({ queryKey: ["forecast", "multi"], queryFn: mocks.forecast, enabled: false, initialData: "cached" });
+        return <CoverItNotice projection={projection(SHORT)} />;
+      }
+      renderWithClient(<DisabledForecast />, newClient());
+      await openTool();
+      fireEvent.click(await screen.findByRole("button", { name: /confirm transfer/i }));
+      expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+      expect(mocks.forecast).not.toHaveBeenCalled();
+      expect(screen.getByText(UNKNOWN)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /confirm transfer/i })).toBeNull();
+    });
+
+    test("only the forecast paused is still unverified: the accounts read alone is not enough", async () => {
+      await throwTransfer();
+      // The accounts read works; the forecast read is held (never resolves).
+      mocks.forecast.mockReturnValue(new Promise(() => {}));
+      fireEvent.click(screen.getByRole("button", { name: /confirm transfer/i }));
+      await waitFor(() => expect(mocks.forecast.mock.calls.length).toBeGreaterThan(1));
+      expect(screen.getByRole("button", { name: /confirm transfer/i })).toBeDisabled();
+    });
   });
 
   test("a failed accounts re-read shows that failure with Retry and no Confirm, and keeps the warning", async () => {
