@@ -618,6 +618,53 @@ describe("ConnectionsCard", () => {
     expect(queryByText("Needs attention")).toBeNull();
     expect(queryByText(/· USD/)).toBeNull();
   });
+
+  // The select is described by the line on screen that explains its state (pxi.28).
+  describe("the account select's description is on screen in every state that has one", () => {
+    const describedBy = (select: HTMLElement) => {
+      const id = select.getAttribute("aria-describedby");
+      expect(id).toBeTruthy();
+      const element = document.getElementById(id ?? "");
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    };
+
+    it("Blocked: the refusal", async () => {
+      mocks.connectorConnections.mockResolvedValue(ok([linkWith({})]));
+      const { findByLabelText } = renderWithClient(<ConnectionsCard />);
+      const select = await findByLabelText("Account for Euro Savings");
+      expect(describedBy(select)).toHaveTextContent(EUR_REFUSAL);
+    });
+
+    it("Held: the refusal", async () => {
+      mocks.connectorConnections.mockResolvedValue(ok([linkWith({ account_id: account.id })]));
+      const { findByLabelText, getByText } = renderWithClient(<ConnectionsCard />);
+      const select = await findByLabelText("Account for Euro Savings");
+      expect(getByText(/Held — this account/)).toBeInTheDocument();
+      expect(describedBy(select)).toHaveTextContent(EUR_REFUSAL);
+    });
+
+    it("Currency not confirmed yet: the visible helper line, though the link carries a refusal that is not shown", async () => {
+      mocks.connectorConnections.mockResolvedValue(
+        ok([linkWith({ account_id: account.id, currency: null, currency_refusal: UNKNOWN_REFUSAL })]),
+      );
+      const { findByLabelText } = renderWithClient(<ConnectionsCard />);
+      const select = await findByLabelText("Account for Euro Savings");
+      const helper = describedBy(select);
+      expect(helper).toHaveTextContent(/Currency not confirmed yet — the next refresh records it/);
+      expect(helper).not.toHaveTextContent(UNKNOWN_REFUSAL);
+      // Still its own state: mapped and not disabled, not held.
+      expect(select).not.toBeDisabled();
+    });
+
+    it("an ordinary mapped or unmapped row has no description to point at", async () => {
+      mocks.connectorConnections.mockResolvedValue(ok([connection()]));
+      const { findByLabelText } = renderWithClient(<ConnectionsCard />);
+      const select = await findByLabelText("Account for Demo Checking");
+      expect(select.getAttribute("aria-describedby")).toBeNull();
+    });
+  });
+
   // ---- one account, one feed by default (personal-cfo-6evt) ----
 
   const ALREADY_FED = {

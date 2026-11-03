@@ -85,9 +85,9 @@ note = "Canonical recurring-event rules; replicated through the command bus."
 
 [[table]]
 table = "recurring_event_instances"
-class = "1"
-owner_bead = "personal-cfo-rxw"
-note = "Canonical materialized recurring occurrences and user outcomes; replicated through the command bus."
+class = "2"
+owner_bead = "personal-cfo-5ymg8.9"
+note = "Derived occurrences of the active schedules, linked to ledger postings; rebuilt locally on read from the schedules and the ledger, and dependent on today, so never shipped. It stores no user outcome (confirmations are class-1 confirmed_obligations); override_amount_minor and the skipped and overridden statuses are dead. Corrected from class 1 by ADR 0074 Addendum F."
 
 [[table]]
 table = "recurring_event_tags"
@@ -387,15 +387,12 @@ replay_owned_queued_disposition = "remove dispatchable replay evidence and retai
 [[table]]
 table = "settings"
 class = "3"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current direct-write table is class 3 for device.* keys; the six existing unprefixed keys are explicit legacy user preferences pending the backwards-compatible prefix migration/dual-read rollout owned by personal-cfo-5ymg8; ADR 0074 / SYNC-2 decide routing without a rename in this bead."
+owner_bead = "personal-cfo-5ymg8.7"
+note = "device.* keys are class 3, node-local, written by DbWorker::set_device_setting. The five user.* keys are the household's preferences (class 1, ADR 0074 Decision 5): they follow the person and are written only by SetUserSetting. The row is one table with two scopes, so its class stays 3 and the write set is a projection onto the user.* rows."
 rebase_phase = "stable"
-rebase_preservation = "preserve device.* values from the live vault and retain legacy user values until their prefixed dual-read migration completes"
-reference_validation = "key scope is validated by the device.* / user.* convention; legacy keys remain readable and are not treated as device-local"
-legacy_settings_keys = "locale,reporting_currency"
-legacy_persisted_keys = "locale,reporting_currency,minimum_cash_floor_minor,comfort_band_upper_minor,auto_categorize_on_import,future_cash_series_selection"
-legacy_key_scope = "locale=user,reporting_currency=user,minimum_cash_floor_minor=user,comfort_band_upper_minor=user,auto_categorize_on_import=user,future_cash_series_selection=user"
-prefix_migration_bead = "personal-cfo-5ymg8"
+rebase_preservation = "preserve device.* values from the live vault; user.* rows are replicated state"
+reference_validation = "key scope is the device.* / user.* convention; a user.* key outside the registry is refused by SetUserSetting"
+user_setting_keys = "user.reporting_currency,user.minimum_cash_floor_minor,user.comfort_band_upper_minor,user.auto_categorize_on_import,user.future_cash_series_selection"
 new_setting_keys = ""
 
 [[table]]
@@ -511,15 +508,15 @@ note = "Per-run attribution (an assumption event to a forecast row of one run). 
 
 [[table]]
 table = "merchant_aliases"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current merchant-alias writer is direct; ADR 0074 and SYNC-2 decide the class-1 user-correction route."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.5"
+note = "Merchant alias mappings; the genesis seed and MintMerchantAnchors write them, and a user correction follows the user (ADR 0074 Decision 5). Routed from class 4 by personal-cfo-5ymg8.5."
 
 [[table]]
 table = "merchant_identities"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Current merchant-identity writer is direct; ADR 0074 and SYNC-2 decide the class-1 identity route."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.5"
+note = "Merchant identities; the genesis seed and MintMerchantAnchors write them (ADR 0074 Decision 5). Routed from class 4 by personal-cfo-5ymg8.5."
 
 [[table]]
 table = "manual_entry_links"
@@ -529,16 +526,16 @@ note = "Current manual-entry link writer is direct; ADR 0074 and SYNC-2 decide c
 
 [[table]]
 table = "transaction_categorizations"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "The apply path is a class-1 writer but merchant_memory.rs is currently a class-4 writer; ADR 0074 and SYNC-2 decide the single routed command path."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.5"
+note = "Transaction categorizations; RecategorizeTransaction, the import commit and ApplyMerchantMemory write them, all through the command bus (ADR 0074 Decision 5). Routed from class 4 by personal-cfo-5ymg8.5."
 
 [[table]]
 table = "settings_user_keys"
 kind = "pseudo"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "Key-scope marker only: user.* is the class-4 candidate; ADR 0074 and SYNC-2 decide routing while this bead makes no rename or migration."
+class = "1"
+owner_bead = "personal-cfo-5ymg8.7"
+note = "Key-scope marker only: the user.* keys of settings are class 1 and are written by SetUserSetting (ADR 0074 Decision 5)."
 
 [[table]]
 table = "attachment_blobs"

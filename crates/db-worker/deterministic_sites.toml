@@ -50,6 +50,24 @@ bead = "personal-cfo-5ymg8.4"
 note = "ApplyScenario and RevertScenarioApply: the scenario is not already applied and has an active change to promote (apply), and it is applied (revert), all read from class-1 scenario and event state; a missing or deleted scenario is refused by apply/scenario_cmds.rs."
 
 [[site]]
+module = "apply/settings_cmds.rs"
+statements = 2
+bead = "personal-cfo-5ymg8.7"
+note = "SetUserSetting: the key is one of the household registry and the value is one its validator accepts (both payload; the validators are pure functions of the value). Reads no other row."
+
+[[site]]
+module = "apply/merchant_cmds.rs"
+statements = 9
+bead = "personal-cfo-5ymg8.5"
+note = "MintMerchantAnchors and ApplyMerchantMemory: the list is non-empty and within the bound, strictly ascending, each key and display name is within its width, each confidence is within 0 to 10000 (all payload), and each named transaction and category exists (class-1 ledger and category rows). The skips (a key an alias holds, a voided or already-categorized transaction) are not rejections."
+
+[[site]]
+module = "apply/scenario_revert.rs"
+statements = 5
+bead = "personal-cfo-5ie.12"
+note = "RevertScenarioApplyConfirmed: the confirmed ids are strictly ascending (payload), the scenario exists and is applied, no later apply sits on top of it (a promoted row's chain, or a base event's key, held by another scenario's promoted row), and the active descendants of the promoted rows equal the confirmed list; all read from class-1 scenario and event state."
+
+[[site]]
 module = "apply/scenario_cmds.rs"
 statements = 11
 bead = "personal-cfo-5ymg8.4"

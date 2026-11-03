@@ -48,9 +48,10 @@ const NOT_REPLICATED: &[&str] = &["operation_log", "provenance_links"];
 /// Every covered text key must appear here (no unbounded key remains), and the widest
 /// possible key must fit the 256-byte limit of C.1.5.
 const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
-    // `link_merchant_alias` rejects a longer key (merchant_alias_key_width.rs).
+    // `MintMerchantAnchors` rejects a longer key (merchant_alias_key_width.rs).
     ("merchant_aliases", "normalized_key", 251, "writer"),
-    // `set_setting` rejects a longer key (settings_key_width.rs).
+    // `set_device_setting` rejects a longer key; every user.* key is a fixed registry name
+    // (settings_key_width.rs).
     ("settings", "key", 128, "writer"),
     // `NaiveDate::to_string()` is `YYYY-MM-DD`, or at most 13 bytes for the extreme years
     // (settings_key_width.rs checks the extremes).
@@ -80,7 +81,7 @@ struct Projection {
     /// A constant key for a singleton source row, as `int` (none today; the household record is
     /// the class-1 `households` table since schema version 61).
     constant_key: Option<i64>,
-    /// `settings` only: the row filter, a key prefix and the legacy unprefixed key names.
+    /// `settings` only: the row filter, the replicated key prefixes.
     key_prefixes: &'static [&'static str],
 }
 
@@ -131,15 +132,6 @@ fn classes() -> BTreeMap<String, String> {
         out.insert(field("table").unwrap(), field("class").unwrap());
     }
     out
-}
-
-fn legacy_settings_keys() -> Vec<String> {
-    let line = CLASSES
-        .lines()
-        .find(|l| l.starts_with("legacy_persisted_keys"))
-        .expect("legacy_persisted_keys");
-    let value = line.split_once('=').unwrap().1.trim().trim_matches('"');
-    value.split(',').map(str::to_owned).collect()
 }
 
 fn live_schema() -> BTreeMap<String, (Vec<Col>, bool)> {
@@ -269,7 +261,6 @@ fn generate() -> String {
         writeln!(out, "max_bytes = {max}").unwrap();
         writeln!(out, "mechanism = \"{mechanism}\"\n").unwrap();
     }
-    let legacy = legacy_settings_keys();
     for p in PROJECTIONS {
         writeln!(out, "[[projection]]").unwrap();
         writeln!(out, "source = \"{}\"", p.source).unwrap();
@@ -284,8 +275,6 @@ fn generate() -> String {
         if !p.key_prefixes.is_empty() {
             let prefixes: Vec<String> = p.key_prefixes.iter().map(|c| format!("\"{c}\"")).collect();
             writeln!(out, "key_prefixes = [{}]", prefixes.join(", ")).unwrap();
-            let names: Vec<String> = legacy.iter().map(|c| format!("\"{c}\"")).collect();
-            writeln!(out, "legacy_key_names = [{}]", names.join(", ")).unwrap();
         }
         out.push('\n');
     }
@@ -928,7 +917,7 @@ fn replicated_state(conn: &rusqlite::Connection) -> BTreeMap<(String, Vec<u8>), 
                         let rusqlite::types::Value::Text(k) = &row[&spec.key[0]] else {
                             continue;
                         };
-                        if !(prefixes.iter().any(|x| k.starts_with(x)) || p.legacy.contains(k)) {
+                        if !prefixes.iter().any(|x| k.starts_with(x)) {
                             continue;
                         }
                     }
@@ -973,7 +962,6 @@ struct ProjectionInfo {
     columns: Vec<String>,
     constant_key: Option<i64>,
     key_prefixes: Option<Vec<String>>,
-    legacy: Vec<String>,
 }
 
 fn manifest_projection(source: &str) -> ProjectionInfo {
@@ -994,9 +982,6 @@ fn manifest_projection(source: &str) -> ProjectionInfo {
         constant_key: field("constant_key_int")
             .map(|l| l.split_once('=').unwrap().1.trim().parse().unwrap()),
         key_prefixes: field("key_prefixes").map(|l| quoted_list(&l)),
-        legacy: field("legacy_key_names")
-            .map(|l| quoted_list(&l))
-            .unwrap_or_default(),
     }
 }
 
@@ -1116,9 +1101,9 @@ fn full_capture_tables() -> Vec<String> {
 /// * delete (`bd`) is absent where the table is only ever tombstoned or archived (an UPDATE) or
 ///   never deleted by a command;
 /// * the rows of `category_aliases`, `credit_card_cycles`,
-///   `manual_entry_links`, `merchant_aliases`, `merchant_identities` and
-///   `recurring_event_instances` are written by raw (non-command) APIs today and reach the command
-///   bus with `personal-cfo-5ymg8`;
+///   `manual_entry_links` is written by raw (non-command) APIs today and reaches the command bus
+///   with `personal-cfo-5ymg8`; `merchant_aliases` and `merchant_identities` are only ever
+///   inserted (a mint never updates or deletes one);
 /// * the rest need a second command on the same row (an update after a create).
 ///
 /// `ledger_transactions` insert IS exercised but its trigger is an equivalent mutant: the folded
@@ -1148,10 +1133,9 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("ledger_accounts", &["bu", "bd"]),
     ("ledger_transactions", &["bd"]),
     ("manual_entry_links", &["bi", "bu", "bd"]),
-    ("merchant_aliases", &["bi", "bu", "bd"]),
-    ("merchant_identities", &["bi", "bu", "bd"]),
+    ("merchant_aliases", &["bu", "bd"]),
+    ("merchant_identities", &["bu", "bd"]),
     ("profiles", &["bu", "bd"]),
-    ("recurring_event_instances", &["bi", "bu", "bd"]),
     ("recurring_event_tags", &["bu", "bd"]),
     ("recurring_events", &["bd"]),
     ("recurring_transfers", &["bd"]),
@@ -1159,7 +1143,7 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("split_line_tags", &["bu", "bd"]),
     ("split_lines", &["bu", "bd"]),
     ("tags", &["bu", "bd"]),
-    ("transaction_categorizations", &["bu", "bd"]),
+    ("transaction_categorizations", &["bd"]),
     ("transaction_details", &["bu", "bd"]),
     ("transaction_reviews", &["bu", "bd"]),
     ("transaction_tags", &["bu", "bd"]),
@@ -1203,6 +1187,9 @@ mod all_variants {
         "archive_category",
         "reinstate_category",
         "create_tag",
+        "mint_merchant_anchors",
+        "apply_merchant_memory",
+        "set_user_setting",
         "recategorize_transaction",
         "mark_reviewed",
         "set_tags",
@@ -1244,6 +1231,7 @@ mod all_variants {
         "dismiss_inbox_item",
         "dismiss_recurring_suggestion",
         "apply_scenario",
+        "revert_scenario_apply_confirmed",
         "revert_scenario_apply",
         "void_transaction",
         "set_household_timezone",
@@ -1520,6 +1508,11 @@ mod all_variants {
                     .expect("setup: assumption event");
                 vec![]
             }
+            // The confirmed undo just unapplied the scenario; apply it again for the retired one.
+            "revert_scenario_apply" => vec![(
+                "setup: apply the scenario again",
+                WriteCommand::ApplyScenario { scenario_id: u(25) },
+            )],
             _ => vec![],
         }
     }
@@ -1548,6 +1541,18 @@ mod all_variants {
                     to_member_id,
                 }
             }
+            // The sample names a second transaction that this vault does not hold.
+            ("apply_merchant_memory", _) => WriteCommand::ApplyMerchantMemory {
+                assignments: vec![db_worker::MerchantAssignment {
+                    transaction_id: txn(10),
+                    category_id: category(16),
+                    confidence_bps: 9_000,
+                }],
+            },
+            ("revert_scenario_apply_confirmed", _) => WriteCommand::RevertScenarioApplyConfirmed {
+                scenario_id: u(25),
+                confirmed_descendants: Vec::new(),
+            },
             ("remove_household_member", _) => {
                 WriteCommand::RemoveHouseholdMember { member_id: primary }
             }
@@ -1767,7 +1772,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 79, "every variant ran");
+        assert_eq!(checked, 83, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

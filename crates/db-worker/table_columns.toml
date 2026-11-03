@@ -295,14 +295,14 @@ columns = ["assumption_event_id:uuid", "linked_transaction_id:uuid", "matched_on
 
 [[table]]
 name = "merchant_aliases"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["normalized_key"]
 columns = ["normalized_key:text", "merchant_identity_id:uuid", "source:text", "confidence_bps:int", "created_at:text", "match_type:text"]
 
 [[table]]
 name = "merchant_identities"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["id"]
 columns = ["id:uuid", "display_name:text", "default_category_id:uuid", "is_ambiguous:int", "source:text", "created_at:text"]
@@ -365,8 +365,8 @@ columns = ["read_model_name:text", "current_checksum:int", "computed_at:text"]
 
 [[table]]
 name = "recurring_event_instances"
-class = "1"
-write_set = "full"
+class = "2"
+write_set = "none"
 primary_key = ["id"]
 columns = ["id:uuid", "recurring_event_id:uuid", "scheduled_date:text", "expected_amount_minor:int", "currency:text", "status:text", "override_amount_minor:int", "linked_transaction_id:uuid", "created_at:text"]
 
@@ -498,7 +498,7 @@ columns = ["id:uuid", "name:text", "color:text", "archived_at:text", "created_at
 
 [[table]]
 name = "transaction_categorizations"
-class = "4"
+class = "1"
 write_set = "full"
 primary_key = ["transaction_id"]
 columns = ["transaction_id:uuid", "category_id:uuid", "source:text", "confidence_bps:int", "assigned_at:text"]
@@ -593,4 +593,3 @@ logical_table = "settings"
 columns = ["key", "value"]
 key = ["key"]
 key_prefixes = ["user."]
-legacy_key_names = ["locale", "reporting_currency", "minimum_cash_floor_minor", "comfort_band_upper_minor", "auto_categorize_on_import", "future_cash_series_selection"]

@@ -155,7 +155,15 @@ export function BulkTransactionActions({
       return;
     }
     await exclusive(async () => {
-      const result = await bulkMarkReviewed(selected.map((t) => t.transaction_id));
+      let result: Awaited<ReturnType<typeof bulkMarkReviewed>>;
+      try {
+        result = await bulkMarkReviewed(selected.map((t) => t.transaction_id));
+      } catch {
+        // The one call threw: none of the rows is known to have changed, none is known not to.
+        // The whole selection stays selected.
+        reportBatch("Marked reviewed", 0, 0, count);
+        return;
+      }
       if ("error" in result) {
         setNote("Could not mark the selection reviewed.");
         return;
@@ -173,25 +181,47 @@ export function BulkTransactionActions({
     return exclusive(() => runBatch(op, verb));
   }
 
-  /// The batch itself, for a caller that already holds the bar busy (see `exclusive`). A call
-  /// that THROWS counts as a failed row, like a refusal, so one bad row never hides how the
-  /// others went or leaves the bar stuck busy.
+  /// The batch itself, for a caller that already holds the bar busy (see `exclusive`). Each row
+  /// ends in one of three ways: saved (the call returned no error), failed (it returned a typed
+  /// refusal, or the row was gone), or unconfirmed (the call threw or rejected, so the write may
+  /// or may not have happened). One bad row never hides how the others went or leaves the bar
+  /// stuck busy.
   async function runBatch(
     op: (txn: TransactionRowDto) => Promise<IpcError | null>,
     verb: string,
   ) {
     const settled = await Promise.allSettled(selected.map(op));
-    const changed = (r: PromiseSettledResult<IpcError | null>) =>
+    const saved = (r: PromiseSettledResult<IpcError | null>) =>
       r.status === "fulfilled" && r.value === null;
-    // Keep only the rows that failed selected, so the succeeded (and now-changed or removed) rows
-    // drop out and a retry acts only on the failures. An all-clean run leaves `[]` → cleared.
-    const failedIds = selected
-      .filter((_, i) => !changed(settled[i]!))
+    // Keep the rows that did not save selected (failed and unconfirmed alike), so the saved (and
+    // now-changed or removed) rows drop out and a retry acts only on the rest. An all-clean run
+    // leaves `[]` → cleared.
+    const unsavedIds = selected
+      .filter((_, i) => !saved(settled[i]!))
       .map((t) => t.transaction_id);
-    onSelectionChange(failedIds);
-    if (failedIds.length > 0) {
-      setNote(`${verb} ${count - failedIds.length} of ${count} — ${failedIds.length} failed.`);
-    }
+    onSelectionChange(unsavedIds);
+    const unconfirmed = settled.filter((r) => r.status === "rejected").length;
+    reportBatch(verb, count - unsavedIds.length, unsavedIds.length - unconfirmed, unconfirmed);
+  }
+
+  /// The summary after a bulk run, when anything did not save: "Tagged 1 of 3 — 1 failed, 1
+  /// couldn’t be confirmed. Check the unconfirmed rows before trying again." Nothing is said when
+  /// every row saved. When no row saved and any is unconfirmed, the lead says zero *confirmed*
+  /// ("Tagged: 0 of 3 confirmed — ..."), since the unconfirmed rows may have changed.
+  function reportBatch(verb: string, savedCount: number, failed: number, unconfirmed: number) {
+    if (failed === 0 && unconfirmed === 0) return;
+    const parts = [
+      failed > 0 ? `${failed} failed` : null,
+      unconfirmed > 0 ? `${unconfirmed} couldn’t be confirmed` : null,
+    ].filter(Boolean);
+    const lead =
+      savedCount === 0 && unconfirmed > 0
+        ? `${verb}: 0 of ${count} confirmed`
+        : `${verb} ${savedCount} of ${count}`;
+    setNote(
+      `${lead} — ${parts.join(", ")}.` +
+        (unconfirmed > 0 ? " Check the unconfirmed rows before trying again." : ""),
+    );
   }
 
   return (

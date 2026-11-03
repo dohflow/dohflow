@@ -388,6 +388,27 @@ as local.
 | `transaction_categorizations` | 1 | `merchant_memory.rs` is routed through the command bus by SYNC-2, eliminating the present split writer and preserving the user's category decision. |
 | `settings` keys under `user.*` | 1 | Household-level settings follow the user through the command bus. This explicitly reverses the direct `set_setting` convention at `lib.rs:2595`; `device.*` settings remain class 3. |
 
+*Routing note (2026-11-03, `personal-cfo-5ymg8.5`).* `merchant_aliases`, `merchant_identities` and
+`transaction_categorizations` are class 1 in the manifest now that no raw writer remains. The genesis
+seed writes the canonical merchants in the vault-creating transaction (seeds at creation only,
+Addendum "Seeds happen at vault creation only"); earned brands and learned categories reach the tables
+through `MintMerchantAnchors` and `ApplyMerchantMemory`, which carry the outcome of the grouping and
+merchant-memory heuristics rather than re-running them (ADR 0073 Addendum J). The create-identity and
+link-alias writers had no caller outside tests and were removed: a user-correction feature brings its
+own commands with its UI, and any "unlink" it adds must leave a tombstone, because an uncategorize or
+unlink with no tombstone lets a later automatic pass fill the row again.
+
+*Routing note (2026-11-03, `personal-cfo-5ymg8.7`).* The `user.*` rows of `settings` are written
+only by `SetUserSetting`; `DbWorker::set_device_setting` is the one raw setter left, and it refuses a
+key that does not begin with `device.`. Five household preferences exist, all `user.*` (the
+reporting currency, the minimum cash floor, the comfort band's upper edge, the auto-categorize
+switch and the Future Cash series selection), in a closed registry whose validators are pure. The
+`settings` table stays class 3 as a table with a projection onto its `user.*` rows, because it holds
+both scopes. The convention at `lib.rs:2595` that this decision reversed is gone. The five unprefixed
+names earlier builds wrote are renamed to `user.<name>` once, on open, by schema version 64 (the
+owner chose an eager rename over a dual-read fallback): an older build refuses the renamed vault
+(`NewerSchema`), and the old raw writes never replicated, so no replica holds a legacy key.
+
 Class 1 covers user-facing canonical intent; class 1b covers artifact bytes;
 class 2 is rebuilt; class 3 includes connector credentials, refresh
 watermarks, staged rows, idempotency keys, audit events, node-local values,
@@ -1059,8 +1080,12 @@ reached is never "invalid"; for any deterministic reason; the void's `reason` by
 and see the same `command_id` and `envelope_digest` in the void. Anything else is
 inert: kept for diagnosis, skipping nothing. The service cannot make this decision (it cannot read
 the plaintext), so it never refuses a void because an earlier void's range would cover it; it
-dedupes only an identical void or a second void for the exact same position. Otherwise a member
-could append a void for a *valid* envelope and block every later genuine void inside its range.
+dedupes only an identical void (the same body id) and keeps every distinct void, including a second
+one for the exact same position. Otherwise a member could append a void for a *valid* envelope and
+block every later genuine void inside its range, and a void that is inert for a signer-controlled
+reason would block the genuine one for the same position. (Corrected 2026-11-02, `personal-cfo-g3m.33`:
+the earlier text also deduped a second void for the same position. The finding is `03a-escalation`'s
+from the `personal-cfo-g3m.26` pre-read, item 4, adopted as `personal-cfo-v98vd` AC22.)
 The signer must be an authorized member at the membership head in force at the void's position. A
 malicious member therefore cannot void a **valid** envelope (this is recovery, not censorship),
 and spam is inert. A replica stopped at `N` always evaluates `N` before it can read a void
@@ -1191,6 +1216,28 @@ and the read `dependency_edges_for_row`) have no production caller, only tests. 
 inventory and the write set; the scenario cascade that deletes a scenario's edges becomes a local
 cleanup of a rebuildable table. No command is written for it. The inventory row (vault-format.md,
 spec-version 18) and the manifests follow.
+
+**`recurring_event_instances` is class 2 (2026-11-02, `personal-cfo-5ymg8.9`).** It was recorded as
+class 1 outside Decision 5: the CLASS-0 manifest (owner `personal-cfo-rxw`) called it "canonical
+materialized recurring occurrences and user outcomes" and the inventory called it canonical user
+intent, which suggests splitting it into derived occurrences and class-1 user outcomes. The code
+shows the split has nothing to carry. Its one writer, `rebuild_in`, deletes every row and re-inserts
+the occurrences on a read connection; every column is derived from the active schedules and the
+ledger (`status` is `paid` exactly when a realized posting was linked, else `scheduled`); and the
+rows depend on the day they are rebuilt (the window starts at `today` and `created_at` is the
+rebuild day), so two devices on different days hold different rows and links and no single value
+exists to replicate. The household's confirmations are not stored here: they are
+`confirmed_obligations`, class 1, written by commands. The whole table is therefore class 2: it
+leaves the Sync and genesis inventory and the write set, and no command is written for it. The
+inventory row (vault-format.md, spec-version 23) and the manifests follow. No schema change:
+`override_amount_minor` and the `skipped` and `overridden` status values are dead (no code writes or
+reads them) and stay in place.
+
+Two rules follow for later work. An occurrence outcome (a skip or an adjusted amount) must never be
+stored on this table, because the next rebuild deletes it; a future feature of that kind gets its own
+class-1 table keyed `(recurring_event_id, scheduled_date)` and its own commands, and the projection
+reads it. And a class-1 decision, and so any command's apply, never reads this table, for the reason
+ADR 0073 Addendum D gives for class 3: its outcome would vary by device and day.
 
 ## Addendum G — The system-account map is class 1 (2026-10-31, `personal-cfo-32fmp.3`)
 

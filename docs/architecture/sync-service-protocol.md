@@ -65,7 +65,8 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in
   slash.
 - `{vault_id}`, `{device_id}` and `{snapshot_id}` are UUIDs in lowercase,
   hyphenated text. `{artifact_id}` is a `sync_artifact_id` as 64 lowercase hex
-  characters.
+  characters. `{part_number}` is an unsigned decimal in the syntax of section 2.2
+  (`0|[1-9][0-9]*`), from `1` to `10000`.
 - Request and response bodies are `application/json` (UTF-8) except where an
   operation says `application/octet-stream`, which carries one container exactly
   as defined in `vault-format.md` (`DFSY` for envelopes and snapshots, `DFSA`
@@ -85,7 +86,9 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in
 A server MUST reject a request body with an unknown member, a duplicate member,
 or a value outside these forms with `MalformedRequest`. A client MUST ignore
 unknown members in a **response** (section 11 explains which additions may
-appear within one protocol version).
+appear within one protocol version), except the members this document defines
+and requires a version-1 client to process: `voids` and `void_claims`
+(sections 4.7 and 4.11).
 
 ### 2.3 Versioning
 
@@ -150,8 +153,10 @@ interprets. `message` is for display and logs and MUST NOT be parsed.
 unknown `code` treats it by HTTP status class (4xx: do not retry unchanged; 5xx:
 retry with backoff).
 
-A failure mutates nothing, with one stated exception: an upload that completed
-before the failing step stays staged for the grace period of section 7.3.
+A failure mutates nothing, with two stated exceptions: an upload that completed
+before the failing step stays staged for the grace period of section 7.3, and a
+`completeSnapshotUpload` whose assembled container does not match what was declared
+discards the upload it was completing (section 4.13).
 
 ### 2.6 Retry, rate and availability
 
@@ -181,6 +186,9 @@ opaque to the server except the clear fields named.
 | Artifacts | Immutable `DFSA` containers by `(key_epoch, sync_artifact_id)`, with receipts and pins. |
 | Enrollments | Per device: `device_id`, fingerprint, credential state, last acked `seq`. |
 | Nonce record | The first `(key_epoch, device_key_fingerprint, object_type, nonce)` tuple seen, for the duplicate-detection backstop (section 5.4). |
+| Void entries | Member-signed void records (`vault-format.md` C.10 "Void records"), each in the same log as the envelopes and each holding the next `seq` (section 4.11). Every distinct void is kept. |
+| Void claims | In the accepted-envelope index, against the position a void names: `void claimed by <void id>`. Permanent, like the index (section 5.3). |
+| Halt record | Per enrolled device, at most one position: where the device last reported being stopped (section 4.12). |
 
 A snapshot publication does **not** consume a `seq`: it is accepted at head `h`,
 carries `base_seq = h`, and the next envelope is `h + 1`.
@@ -201,18 +209,24 @@ authenticated operation can also return the common errors of section 8.2.
 | `getInfo` | GET | `/info` | none | 200 | - |
 | `getStatus` | GET | `/vaults/{vault_id}/status` | device | 200 | VaultNotFound |
 | `getChain` | GET | `/vaults/{vault_id}/chain` | device | 200 | VaultNotFound |
-| `installEpoch` | POST | `/vaults/{vault_id}/epochs` | account/device | 201/200 | VaultExists, VaultNotFound, WritesSuspended, MembershipChainInvalid, EpochRecordInvalid, EpochRecordMissing, CutoverHeadNotRevoke, GrantHeadNotAdd, BadEpochSequence, KeyCommitmentMismatch, StaleMembershipHead, HeadMismatch, SnapshotNotFound, ArtifactMissing, QuotaExceeded, MalformedObject, UnsupportedSuite |
+| `installEpoch` | POST | `/vaults/{vault_id}/epochs` | account/device | 201/200 | VaultExists, VaultNotFound, ReplicaHalted, WritesSuspended, MembershipChainInvalid, EpochRecordInvalid, EpochRecordMissing, CutoverHeadNotRevoke, GrantHeadNotAdd, BadEpochSequence, KeyCommitmentMismatch, StaleMembershipHead, HeadMismatch, SnapshotNotFound, ArtifactMissing, QuotaExceeded, MalformedObject, UnsupportedSuite |
 | `claimCredential` | POST | `/vaults/{vault_id}/devices/{device_id}/credential` | account | 200 | VaultNotFound, DeviceNotFound, ClaimProofInvalid |
 | `pushEnvelopes` | POST | `/vaults/{vault_id}/envelopes` | device | 200 | VaultNotFound, WritesSuspended, MalformedObject, UnsupportedSuite, ProtocolFork, EpochRejected, ArtifactMissing, NonceTupleReused, HeadMismatch, QuotaExceeded, PayloadTooLarge |
 | `pullEnvelopes` | GET | `/vaults/{vault_id}/envelopes` | device | 200 | VaultNotFound, TailTruncated |
 | `ack` | POST | `/vaults/{vault_id}/acks` | device | 200 | VaultNotFound, AckBeyondHead |
-| `stageSnapshot` | PUT | `/vaults/{vault_id}/snapshots/{snapshot_id}` | account/device | 201/200 | VaultNotFound, WritesSuspended, MalformedObject, UnsupportedSuite, EpochRejected, NonceTupleReused, ObjectConflict, SnapshotTooLarge, QuotaExceeded |
-| `publishSnapshot` | POST | `/vaults/{vault_id}/snapshots/{snapshot_id}/publish` | device | 200 | VaultNotFound, WritesSuspended, SnapshotNotFound, MalformedObject, EpochRejected, HeadMismatch, ArtifactMissing, QuotaExceeded |
+| `stageSnapshot` | PUT | `/vaults/{vault_id}/snapshots/{snapshot_id}` | account/device | 201/200 | VaultNotFound, ReplicaHalted, WritesSuspended, PayloadTooLarge, MalformedObject, UnsupportedSuite, EpochRejected, NonceTupleReused, ObjectConflict, SnapshotTooLarge, QuotaExceeded |
+| `publishSnapshot` | POST | `/vaults/{vault_id}/snapshots/{snapshot_id}/publish` | device | 200 | VaultNotFound, ReplicaHalted, WritesSuspended, SnapshotNotFound, MalformedObject, EpochRejected, HeadMismatch, ArtifactMissing, QuotaExceeded |
 | `getLatestSnapshot` | GET | `/vaults/{vault_id}/snapshots/latest` | device | 200 | VaultNotFound, SnapshotNotFound |
 | `getSnapshot` | GET | `/vaults/{vault_id}/snapshots/{snapshot_id}` | device | 200 | VaultNotFound, SnapshotNotFound |
 | `putArtifact` | PUT | `/vaults/{vault_id}/artifacts/{artifact_id}` | account/device | 201/200 | VaultNotFound, WritesSuspended, MalformedObject, EpochRejected, ObjectConflict, PayloadTooLarge, QuotaExceeded |
 | `getArtifact` | GET | `/vaults/{vault_id}/artifacts/{artifact_id}` | device | 200 | VaultNotFound, ArtifactNotFound |
 | `getArtifactStatus` | POST | `/vaults/{vault_id}/artifacts/status` | device | 200 | VaultNotFound |
+| `appendVoid` | POST | `/vaults/{vault_id}/voids` | device | 201/200 | VaultNotFound, WritesSuspended, MalformedObject, UnsupportedSuite, VoidSignerNotAuthorized, VoidSignatureInvalid, VoidTargetMismatch, QuotaExceeded |
+| `reportHalt` | PUT | `/vaults/{vault_id}/devices/{device_id}/halt` | device | 200 | VaultNotFound |
+| `beginSnapshotUpload` | POST | `/vaults/{vault_id}/snapshots/{snapshot_id}/uploads` | account/device | 201/200 | VaultNotFound, ReplicaHalted, WritesSuspended, SnapshotTooLarge, PayloadTooLarge, ObjectConflict, QuotaExceeded |
+| `putSnapshotPart` | PUT | `/vaults/{vault_id}/snapshots/{snapshot_id}/uploads/parts/{part_number}` | account/device | 201/200 | VaultNotFound, ReplicaHalted, WritesSuspended, UploadNotFound, PartOutOfSequence, ObjectConflict, MalformedObject, UnsupportedSuite, EpochRejected, PayloadTooLarge |
+| `completeSnapshotUpload` | POST | `/vaults/{vault_id}/snapshots/{snapshot_id}/uploads/complete` | account/device | 201/200 | VaultNotFound, ReplicaHalted, WritesSuspended, UploadNotFound, UploadIncomplete, MalformedObject, EpochRejected |
+| `abortSnapshotUpload` | DELETE | `/vaults/{vault_id}/snapshots/{snapshot_id}/uploads` | account/device | 200 | VaultNotFound |
 
 <!-- /table:operations -->
 
@@ -235,7 +249,10 @@ decide whether it can use it, before it sends any vault data:
     "pull_page_max_entries": 500,
     "pull_page_max_bytes": "33554432",
     "orphan_grace_seconds": 604800,
-    "superseded_root_window_seconds": 2592000
+    "superseded_root_window_seconds": 2592000,
+    "snapshot_single_request_max_bytes": "67108864",
+    "snapshot_part_max_bytes": "67108864",
+    "snapshot_upload_expiry_seconds": 604800
   }
 }
 ```
@@ -243,7 +260,10 @@ decide whether it can use it, before it sends any vault data:
 The values shown are examples. The members of `limits` are the **operator
 limits** of section 7.2: each server advertises its own, and a client reads them
 rather than assuming them. `protocol_versions` and `suites` list the versions
-the server implements. `getInfo` needs no credential and carries no vault data.
+the server implements. The last three members are optional (section 7.2): a server
+that does not send `snapshot_single_request_max_bytes` accepts a snapshot of any
+size within section 7.1 through `stageSnapshot`. `getInfo` needs no credential and
+carries no vault data.
 
 ### 4.2 `getStatus`
 
@@ -375,7 +395,9 @@ label "dohflow/sync-credential-claim/v1" ‖ uuid vault_id ‖ uuid device_id �
 fingerprint device_key_fingerprint ‖ i64 issued_at
 ```
 
-(`vault-format.md` C.1.1). `issued_at` is microseconds since the Unix epoch
+(`vault-format.md` C.1.1). The body and the strict check are one implementation,
+`sync_core::claim` (`claim_body` and `verify_claim`), which the client calls to build
+the proof and the server calls to check it. `issued_at` is microseconds since the Unix epoch
 (UTC); the server rejects a value more than `claim_skew_seconds` (section 7.1)
 from its own clock with `ClaimProofInvalid`. A second successful claim for the
 same device issues a new credential and invalidates the previous one, which lets
@@ -486,10 +508,20 @@ whose `seq` equals its `position` and before `position + 1`: that is how a clien
 learns an epoch's position `h` (`vault-format.md` C.7). A client treats an
 envelope past the last authenticated epoch position as pending until it has
 fetched that epoch's snapshot and checked `base_seq` against `position`. A page
-holds at least one entry whenever any exists past `after_seq`, so a client always
-makes progress. If `after_seq` is below `floor_seq`, the server returns
+holds at least one log object (an envelope, an epoch entry or a void, section
+4.11) whenever any exists past `after_seq`, so a client always makes progress. If `after_seq` is below `floor_seq`, the server returns
 `TailTruncated` (HTTP 410) with `details.latest_snapshot` as in `getStatus`; the
 client bootstraps from that snapshot.
+
+A page can also carry the optional member `voids`: the void records that sit in
+the same log (section 4.11). A log without a void has the response shown above
+and no `voids`. **A version-1 client MUST process `voids`, and `void_claims` on
+push results (section 4.11).** A void takes a `seq`, so without `voids` a client
+would see gaps in the envelope sequence, and a page can hold only voids: an empty
+`entries` does not mean the log is exhausted, `has_more` and `head_seq` do. A
+client that finds a `seq` between `floor_seq + 1` and `head_seq` that is neither
+an envelope in `entries` nor a void in `voids` has an incomplete page and treats
+it as a failed pull, never as a gap to skip.
 
 ### 4.8 `ack`
 
@@ -515,7 +547,11 @@ is two steps, to keep a large upload out of the compare-and-swap:
    that the container is well formed, and that the plaintext bound is respected
    (`SnapshotTooLarge`, HTTP 413). It stores the bytes as **staged**. Response
    `201` (or `200` for an exact retry): `{ "snapshot_id": "<uuid>", "size": "n" }`.
-   A different byte string for the same `snapshot_id` is `ObjectConflict`.
+   A different byte string for the same `snapshot_id` is `ObjectConflict`. A
+   container larger than the server's `snapshot_single_request_max_bytes` (section
+   7.2) is `PayloadTooLarge` here, with `details.single_request_max_bytes`, and is
+   staged through the upload operations of section 4.13 instead; the result, a
+   staged snapshot, is the same.
 2. `publishSnapshot`: `POST /vaults/{vault_id}/snapshots/{snapshot_id}/publish`:
 
    ```json
@@ -575,6 +611,274 @@ An artifact is an immutable `DFSA` container (`vault-format.md` C.9).
 A **pin** is the server's record that a retained snapshot or an accepted
 envelope references an artifact. Pins are created inside the transaction that
 accepts the reference; the client never creates one directly.
+
+### 4.11 Voids: `appendVoid` and the `voids` member
+
+*Added to protocol version 1 on 2026-11-02 under section 11.1
+(`personal-cfo-g3m.33`; section 11.4 answers each limit of 11.1).*
+
+A **void record** (`vault-format.md` C.10 "Void records") is how a vault moves
+past a log position that every honest replica rejects (ADR 0074 Addendum D). The
+server only orders it. It checks the record's structure, that the signer is a
+member, and that the record names the envelope the server holds at that position.
+It never decides whether that envelope is invalid, and it never says that a
+position *is* voided: that is each replica's own verdict (Addendum D rule 3 and
+Addendum E). A void is an ordinary log object. It takes the next `seq`: appended
+at `V`, it makes `V` the head, and a replica that honors it skips the command
+envelopes at positions `seq` through `V - 1` (C.10 "Range").
+
+`appendVoid`: `POST /vaults/{vault_id}/voids`, device credential:
+
+```json
+{ "record": "<base64url signed void record>" }
+```
+
+The record is exactly the bytes of C.10 (`u32 body_len ‖ body ‖ 64-byte
+signature`). `vault_id` in the body MUST equal the path. Response `201`, or `200`
+for an exact retry:
+
+```json
+{ "void_id": "<64 hex>", "position": "1007", "head_seq": "1007" }
+```
+
+`void_id` is `SHA-256(body)`. `position` is the `seq` the void took (`V`); a
+retry returns the original. For each request the server decides in this order,
+and the first failing step answers:
+
+1. **Authenticate** the device credential (`Unauthorized`, `DeviceRevoked`,
+   `Forbidden`). The signer of the record need not be the credential's device.
+2. **Parse** the record: framing, body, a protocol version inside the body other
+   than `1`, or another vault than the path's is `MalformedObject`; a suite other
+   than `1` is `UnsupportedSuite`.
+3. **Exact retry.** If a void with this `void_id` is already in the log, answer
+   `200` with its `position`, whatever the signer's state is now.
+4. **Writes permitted?** `WritesSuspended`.
+5. **Signer.** The signer MUST be an authorized, unrevoked member at the
+   membership head in force at the position the void would take (`V = head + 1`),
+   verified under the key the chain holds for `signer_fingerprint`, never a key
+   carried in the record (`VoidSignerNotAuthorized`), and the Ed25519 signature
+   MUST verify strictly (`VoidSignatureInvalid`). This is the check
+   `verify_void` of `sync-core` makes, and a server SHOULD call it rather than
+   reimplement it, or it refuses voids that replicas would honor. `issued_at` is
+   audit only and is never compared with a clock.
+6. **Target.** The body's `seq` MUST be a command-envelope position in the
+   accepted-envelope index, and the body's `command_id` and `envelope_digest`
+   MUST equal that record's (`VoidTargetMismatch`). The index is never truncated
+   (section 5.3), so a position below `floor_seq` still answers.
+7. **Quota** (`QuotaExceeded`).
+8. **Append**, in one transaction: assign `V = head + 1`, make `V` the head, store
+   the record, and record `void claimed by <void_id>` against the named position.
+
+**Every distinct void is kept.** Two voids with different bodies are two entries
+even when they name the same `seq`. The server dedupes only an exact retry
+(step 3), and it never refuses a void because an earlier void's range would cover
+its position. A member can append a void for a *valid* envelope; replicas ignore
+it, and it must not block a later genuine void. A server MAY answer `RateLimited`,
+because a member can append voids without limit.
+
+**Void claims on a replay.** An exact replay of an accepted envelope returns the
+original `seq` and `result_ref` and, when voids name its position, the optional
+member `void_claims`: the `void_id` of each, in the order they were appended. It
+appears on an entry of `results` in `pushEnvelopes` (`duplicate` is `true`) and on
+an entry of `accepted` in the `HeadMismatch` details, and is omitted when there is
+none. A claim is a claim, not a verdict; the client decides from its own verdict
+whether to roll back and re-issue (Addendum D rule 6), and a position's
+`command_id` and idempotency-key tag are never reusable. A version-1 client MUST
+process `void_claims` where it appears (section 4.7).
+
+**Voids in a pull.** `pullEnvelopes`, and the `HeadMismatch` details, carry the
+optional member `voids`, in log order, present only when the page holds a void:
+
+```json
+"voids": [ { "position": "1007", "void_id": "<64 hex>", "record": "<base64url signed void record>" } ]
+```
+
+- A void's `position` is the `seq` it occupies. Envelopes and voids share one
+  sequence of `seq` values: across the pages of a log, every `seq` from
+  `floor_seq + 1` to `head_seq` is an envelope in `entries` or a void in `voids`,
+  once. (A void takes a `seq`; an epoch entry does not, section 3.)
+- `entries` and `voids` together are one page, taken in `seq` order. The page
+  bounds of section 7.2 count a void as one entry. A page holds at least one log
+  object (an envelope, an epoch entry or a void) whenever any exists past
+  `after_seq`, and `has_more` is `true` exactly when log objects remain past the
+  last one in the page. The next `after_seq` is the highest envelope `seq` or void
+  `position` in the page.
+- An `epoch` entry whose `position` is the `seq` of a void sits after that void,
+  as it does after an envelope.
+- A client that receives `voids` MUST verify each record under
+  `vault-format.md` C.10 and offer it to its honor rule, in position order; it
+  applies ADR 0074 Addendum D and Addendum E. The server's order and presence are
+  evidence, not a verdict (section 1, principle 5).
+
+A void record and the envelope it names are retained as section 7.3 says.
+
+### 4.12 Halt report: `reportHalt` and `ReplicaHalted`
+
+*Added to protocol version 1 on 2026-11-02 under section 11.1
+(`personal-cfo-g3m.33`).*
+
+A replica stopped at a poisoned position publishes no snapshot, performs no
+key-epoch cutover and pushes nothing (ADR 0074 Addendum D rule 5). The replica
+enforces that itself. `reportHalt` lets it tell the server, so the server can
+refuse the same three requests from that device as a backstop, in the way the
+nonce backstop of section 5.4 backs the client's counter register.
+
+`reportHalt`: `PUT /vaults/{vault_id}/devices/{device_id}/halt`, device credential:
+
+```json
+{ "stopped_at": "1003" }
+```
+
+`stopped_at` is the log position (`seq` of the envelope, form of section 2.2,
+at least `1`) at which the replica is stopped, or `null` to report that it is no
+longer halted. Response `200`: `{ "device_id": "<uuid>", "stopped_at": "1003" }`
+(`null` after a clear). For each request the server decides in this order:
+
+1. **Authenticate** (`Unauthorized`, `DeviceRevoked`). `{device_id}` MUST be the
+   credential's device, or the request is `Forbidden`: a device reports only its
+   own state.
+2. **Parse** the body (`MalformedRequest`).
+3. **Store.** Replace the device's halt record with `stopped_at`, or remove it for
+   `null`. The same report again changes nothing.
+
+The server stores one position per device, and nothing about why. It cannot read
+the envelope, so the report is not evidence and the server does not check it
+against the head. Reporting needs no write entitlement. The record ends when the
+device reports `null` (it honored a void and resumes, or it re-bootstrapped), or
+when the device is revoked.
+
+**The halt gate.** A device credential whose device has a recorded halt is refused
+by `stageSnapshot`, `publishSnapshot` and `installEpoch` with `ReplicaHalted`
+(HTTP 409), `details: { "stopped_at": "1003" }`. The refusal changes nothing
+(section 2.5), applies to every `reason` of `installEpoch`, and is a statement
+about that device's own report, never an instruction to change any local feature.
+The gate runs after authentication and before the operation's own decision
+procedure; it is not a step of section 5 or 6, and a vault with no recorded halt
+passes it, so those procedures run exactly as written. An account credential
+(before the genesis) has no device and passes. `pushEnvelopes` has no gate, since
+the replica holds back its own pushes (Addendum D rule 5), and `appendVoid` and
+`reportHalt` must work for a halted device, because they are how it leaves. The
+gate also applies to `beginSnapshotUpload`, `putSnapshotPart` and
+`completeSnapshotUpload` (section 4.13), which stage a snapshot as `stageSnapshot`
+does. The gate stops only the reporting device: other members are not affected.
+
+**Operator order.** If the device that poisoned the log should be revoked, the void
+comes first and the cutover after it; no cutover can happen while its author is
+halted (Addendum D rule 5).
+
+### 4.13 Snapshot upload in parts
+
+*Added to protocol version 1 on 2026-11-03 under section 11.1
+(`personal-cfo-g3m.36`; section 11.4 lists it).*
+
+A snapshot container can be as large as `max_snapshot_container_bytes` (section
+7.1), and a server's front end may accept less than that in one request. The four
+operations below stage the same container in parts. A server MUST accept every
+well-formed snapshot within section 7.1 through `stageSnapshot` or through these
+operations; a client uses these when the container is larger than the server's
+`snapshot_single_request_max_bytes` and MAY use them for any size. Nothing else
+changes: the staged snapshot, `publishSnapshot`, `installEpoch` and every check
+they make are as in sections 4.4, 4.9 and 6.1, and how a server stores the parts is
+its own business (section 1).
+
+Like `stageSnapshot`, all four accept an account credential before the vault's
+genesis is installed and a device credential after it, and the first request that
+names a `vault_id` binds it to the calling account (section 2.4). **The sizes.**
+Every part has the size `part_size` the client chose at the beginning, except the
+last, which holds the rest. `part_size` is at least **5,242,880** bytes (5 MiB), at
+most the server's `snapshot_part_max_bytes`, and the number of parts,
+`ceil(size / part_size)`, is at most **10,000**. (These two numbers are those of the
+object stores servers commonly sit on; a protocol that promises them can be
+implemented on any of them.)
+
+**`beginSnapshotUpload`:** `POST /vaults/{vault_id}/snapshots/{snapshot_id}/uploads`
+
+```json
+{ "size": "1073742104", "sha256": "<64 hex>", "part_size": "67108864" }
+```
+
+`size` is the exact length of the whole container in bytes and `sha256` is the
+SHA-256 of all of it. Response `201`, or `200` for an exact retry:
+
+```json
+{ "snapshot_id": "<uuid>", "state": "uploading", "part_size": "67108864", "part_count": "17", "next_part": "1", "expires_at": "2026-11-10T12:00:00Z" }
+```
+
+`state` is `uploading`, or `staged` when a snapshot with this id and this `size` and
+`sha256` is already staged (then `next_part` and `expires_at` are `null` and nothing
+more is sent). The server decides in this order, and the first failing step answers:
+
+1. **Authenticate** (`Unauthorized`, `DeviceRevoked`, `Forbidden`).
+2. **The halt gate** of section 4.12 (`ReplicaHalted`): this operation stages a
+   snapshot like `stageSnapshot`, so a device with a recorded halt is refused.
+3. **Parse** the body (`MalformedRequest`): `size` a positive 64-bit decimal,
+   `sha256` 64 lowercase hex characters, `part_size` a 64-bit decimal.
+4. **Size.** `size` above `max_snapshot_container_bytes` is `SnapshotTooLarge`.
+   A `part_size` above `snapshot_part_max_bytes` is `PayloadTooLarge`; one below
+   5,242,880, or giving more than 10,000 parts, is `MalformedRequest`.
+5. **Exact retry.** An upload in progress for this `snapshot_id` with the same
+   `size`, `sha256` and `part_size` answers `200` with its state; a staged or
+   published snapshot with the same `size` and `sha256` answers `200` with
+   `state: staged`. Any other snapshot or upload under this id is `ObjectConflict`.
+6. **Writes permitted?** `WritesSuspended`.
+7. **Quota.** `size` is reserved against the vault's storage at once, so uploads in
+   progress cannot together exceed it: `QuotaExceeded`.
+8. **Begin.** At most one upload is in progress per `snapshot_id`. The server
+   records it with an expiry (section 7.3) and answers `201`.
+
+**`putSnapshotPart`:** `PUT /vaults/{vault_id}/snapshots/{snapshot_id}/uploads/parts/{part_number}`,
+the part as `application/octet-stream`. `{part_number}` is a decimal from `1`.
+Parts are sent in order, one at a time. Response `201`, or `200` for a retry:
+`{ "part_number": "3", "next_part": "4" }` (`null` after the last). The order:
+
+1. **Authenticate**, then **the halt gate** (`ReplicaHalted`).
+2. **Forms.** A `{part_number}` that is not a decimal in `1` to `10000` is
+   `MalformedRequest`.
+3. **The upload exists** for this `snapshot_id`: `UploadNotFound` (never begun,
+   aborted, expired, discarded after a failed completion, or already completed).
+4. **Sequence.** A part already received (`part_number` below `next_part`) with the
+   same length and bytes answers `200`; with other bytes it is `ObjectConflict`. A
+   `part_number` above `next_part`, or above `part_count`, is `PartOutOfSequence`
+   with `details.next_part`.
+5. **Writes permitted?** `WritesSuspended`.
+6. **Size.** A body longer than `snapshot_part_max_bytes` is `PayloadTooLarge`; one
+   whose length is not exactly the size this part must have (`part_size`, or the
+   remainder for the last part) is `MalformedObject`.
+7. **The header, on part 1 only.** Part 1 holds the whole clear header. The server
+   checks it as `stageSnapshot` does (`MalformedObject`, `UnsupportedSuite`,
+   `EpochRejected`), and refuses the upload before any more is sent. A refused part
+   1 leaves the upload at `next_part` `1`.
+8. **Store** the part and advance `next_part`.
+
+**`completeSnapshotUpload`:** `POST /vaults/{vault_id}/snapshots/{snapshot_id}/uploads/complete`
+with an empty JSON object. Response `201`, or `200` for a retry, the same as
+`stageSnapshot`'s: `{ "snapshot_id": "<uuid>", "size": "n" }`. **Nothing counts as
+staged until the whole container has been checked.** The order:
+
+1. **Authenticate**, then **the halt gate** (`ReplicaHalted`).
+2. **The upload exists, or this is a retry.** A snapshot already staged from this
+   upload answers `200` with its original result; no upload and no such snapshot is
+   `UploadNotFound`.
+3. **Writes permitted?** `WritesSuspended`.
+4. **All parts received:** otherwise `UploadIncomplete` with `details.next_part`.
+5. **The container.** The assembled length must equal `size` and its SHA-256 must
+   equal `sha256`; otherwise `MalformedObject`, and the server **discards the
+   upload** (the client begins again): a mismatch means the bytes sent are not the
+   container that was declared, and no part of it is kept.
+6. **The epoch.** The header's `key_epoch` is checked again against the epoch in
+   force now, since it can have changed during a long upload: `EpochRejected`.
+7. **Stage** the snapshot, turn the reservation of `size` into stored bytes, and
+   answer `201`.
+
+**`abortSnapshotUpload`:** `DELETE /vaults/{vault_id}/snapshots/{snapshot_id}/uploads`.
+It removes an upload in progress and releases its reservation. Response `200`:
+`{ "snapshot_id": "<uuid>", "aborted": true }`, or `false` when there was no upload
+in progress (it is idempotent). It never removes a staged or published snapshot, and
+the halt gate does not apply to it, so a halted device can clean up.
+
+An upload that is not completed within `snapshot_upload_expiry_seconds` is aborted
+by the server (section 7.3). Until completion the parts count toward `usage` only
+through the reservation.
 
 ## 5. Push: the compare-and-swap and retry procedure
 
@@ -771,7 +1075,10 @@ malicious server can still order its own log (`vault-format.md` C.6, "Residual")
 ### 7.1 Protocol constants and format maxima
 
 These numbers are fixed by protocol version 1. A server MUST accept every
-well-formed object within the format maxima, and a client MUST NOT exceed them.
+well-formed object within the format maxima, and a client MUST NOT exceed them. (A
+snapshot is accepted through `stageSnapshot` up to the server's
+`snapshot_single_request_max_bytes`, and above that through the upload operations of
+section 4.13.)
 They are derived from the field maxima of `vault-format.md` C.1.1 to C.9.
 
 <!-- table:limits -->
@@ -798,9 +1105,12 @@ client reads them and does not assume a default.
 | --- | --- |
 | `max_artifact_bytes` | largest artifact container the server stores; a larger artifact is `PayloadTooLarge` |
 | `push_batch_max_envelopes` | most envelopes in one `pushEnvelopes`; at least 1 |
-| `pull_page_max_entries`, `pull_page_max_bytes` | page bounds for pulls and `HeadMismatch` tails; a page still holds at least one entry |
+| `pull_page_max_entries`, `pull_page_max_bytes` | page bounds for pulls and `HeadMismatch` tails; a page still holds at least one log object (an envelope, an epoch entry or a void) |
 | `orphan_grace_seconds` | how long an upload not referenced by an accepted publication is kept |
 | `superseded_root_window_seconds` | how long a superseded snapshot and its tail stay available to an offline device |
+| `snapshot_single_request_max_bytes` | optional: the largest snapshot `stageSnapshot` accepts in one request (a larger one is `PayloadTooLarge`); absent means any size within section 7.1 |
+| `snapshot_part_max_bytes` | optional: the largest part `putSnapshotPart` accepts, and the largest `part_size` `beginSnapshotUpload` accepts; at least 5,242,880 when sent; absent means the server offers no upload in parts |
+| `snapshot_upload_expiry_seconds` | optional: how long an upload in parts may stay incomplete before the server aborts it (section 7.3); absent means seven days |
 
 Quotas (storage, devices, seats) are not protocol values: a server reports use
 through `getStatus` and refuses with `QuotaExceeded`. Request-rate limits are
@@ -820,6 +1130,15 @@ protocol-visible consequences:
   published snapshot's `base_seq`. A device that returns below `floor_seq`
   bootstraps from the latest snapshot and rebases (`TailTruncated`).
 - **The accepted-envelope index is never truncated** (section 5.3).
+- **Evidence of a void.** A server does not drop the envelope at a position a void
+  names, or the void, until a snapshot whose `base_seq` is at or after the void's
+  `position` has been published (Addendum D rule 8). The void claims in the index
+  are permanent.
+- **Incomplete uploads in parts.** An upload begun with `beginSnapshotUpload` that
+  is not completed within `snapshot_upload_expiry_seconds` is aborted by the
+  server, its parts are discarded and its reservation is released. The expiry is
+  fixed when the upload begins (the rule above for announced windows). Seven days is
+  the usual default of the object stores servers sit on.
 - **Collection.** An artifact is collectible only if no active or retained
   snapshot or tail pins it and a newer retained recovery root excludes it. An
   uploaded object that no accepted publication references is collected after
@@ -855,13 +1174,16 @@ server can produce the failure. C.11 failures that only a client can detect
 | `CutoverHeadNotRevoke` | 400 | A `reason 2` record does not name a `revoke` record. |
 | `GrantHeadNotAdd` | 400 | A `reason 3` record does not name an `add` record. |
 | `KeyCommitmentMismatch` | 400 | A key commitment is not the one C.6 requires. |
+| `VoidSignatureInvalid` | 400 | The void record's signature does not verify strictly under the chain's key for its signer (C.10). |
 | `Unauthorized` | 401 | No valid credential. |
 | `Forbidden` | 403 | The credential may not act on this vault or operation. |
 | `DeviceRevoked` | 403 | The device behind the credential was revoked. The client tells the user; local data is untouched. |
+| `VoidSignerNotAuthorized` | 403 | The void record's signer is not an authorized member at the position the void would take. Never resent unchanged. |
 | `WritesSuspended` | 403 | The credential no longer permits writes at this endpoint. Reads continue through the grace period. A statement about this endpoint only. |
 | `QuotaExceeded` | 403 | A server quota would be exceeded. |
 | `VaultNotFound` | 404 | The server has no such vault. |
 | `DeviceNotFound` | 404 | The device is not currently authorized in the chain. |
+| `UploadNotFound` | 404 | No snapshot upload in progress for this snapshot id (never begun, aborted, expired, discarded after a failed completion, or already completed). Begin again. |
 | `SnapshotNotFound` | 404 | No such published or staged snapshot. |
 | `ArtifactNotFound` | 404 | No such artifact. |
 | `VaultExists` | 409 | Genesis for a known `vault_id`: bootstrap as a replica instead. |
@@ -874,6 +1196,10 @@ server can produce the failure. C.11 failures that only a client can detect
 | `ObjectConflict` | 409 | Different bytes for an existing artifact address or snapshot id. |
 | `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. `details.missing` lists the ids. Upload, then retry. |
 | `AckBeyondHead` | 409 | The acked `seq` is above the head. |
+| `PartOutOfSequence` | 409 | A snapshot part other than the next one expected. `details.next_part` is the one to send. |
+| `UploadIncomplete` | 409 | A snapshot upload was completed before every part arrived. `details.next_part` is the first missing one. |
+| `VoidTargetMismatch` | 409 | The void names a position that is not a command envelope in the index, or a `command_id` or `envelope_digest` other than the index's. |
+| `ReplicaHalted` | 409 | This device reported a halt (section 4.12), so this request is refused until it reports that it is no longer halted. `details.stopped_at` is the reported position. A statement about this device's own report only. |
 | `TailTruncated` | 410 | `after_seq` is below `floor_seq`. Bootstrap from the latest snapshot. |
 | `PayloadTooLarge` | 413 | An object exceeds a size limit. |
 | `SnapshotTooLarge` | 413 | A snapshot exceeds the plaintext bound of C.8. |
@@ -941,6 +1267,12 @@ no cryptographic primitive other than hashing and strict Ed25519 verification
   change an existing operation's request, an existing member's meaning, a status
   code, the decision order of sections 5 and 6, or a number in section 7.1.
   Anything else is a new `protocol_version`.
+- **Pre-release** (ruled 2026-11-02, `personal-cfo-g3m.33`). Protocol version 1
+  is pre-release until the first deploy of a conforming Sync server to the
+  operator's production environment; staging does not count. Until then version
+  1 may change in ways the rules above forbid, and every change is listed with
+  its date and bead in the pre-release list of section 11.4. From that deploy the
+  rules above govern strictly, and anything else is a new `protocol_version`.
 - A change to this document that alters the operation, error or limit lists
   changes `sync-service-protocol.json` in the same commit and bumps the version
   marker only when the rule above requires a new protocol version. A new
@@ -954,6 +1286,20 @@ no cryptographic primitive other than hashing and strict Ed25519 verification
 `scripts/tests/sync-service-protocol-contract.test.sh` pins the protocol version
 and checks that the operation, error and limit tables here equal
 `sync-service-protocol.json`, which the client and the server both consume. The
+`docs/architecture/vectors/sync-service-void-v1.json` (`vectors_version` 1) pins
+the void additions of sections 4.11 and 4.12 as public conformance vectors, each
+case a sequence of requests to a server in a stated state with the status, error
+code and result it must give (`appendVoid` accepted, kept twice for one position,
+retried, and refused at each step of its order; the `voids` member of a pull; the
+halt gate), generated and checked by
+`crates/sync-core/tests/sync_service_void_vectors.rs`.
+`docs/architecture/vectors/sync-service-snapshot-parts-v1.json` (`vectors_version` 1)
+does the same for the upload in parts of section 4.13 (a container staged in
+parts, the maximum and one byte over, the part-size bounds, a part of the wrong
+size or out of sequence, a retried part, a completion with a missing part or a digest
+that does not match, abort, the decision order of begin, part and complete, the halt
+gate, and a snapshot too large for one request), generated and checked by
+`crates/sync-core/tests/sync_service_snapshot_parts_vectors.rs`. The
 behavioral contract suite is owned by `personal-cfo-v98vd`: the simulator's
 in-memory sequencer (`personal-cfo-tp2ln`) is the reference implementation, and
 one suite runs against it and against the real server. A disagreement between an
@@ -965,3 +1311,65 @@ document through the change control above.
 Account sign-in and the issuance of account credentials, billing and
 entitlement, hosting, region and sub-processors, storage layout, quota and rate
 numbers, and the service's internal design are outside this protocol.
+
+### 11.4 Pre-release changes and additions within protocol version 1
+
+Each row is a change made to version 1, with its date and bead. The version stays
+`1`; `sync-service-protocol.json` changed in the same commit. The **basis** says
+which rule of section 11.1 allows it: an *addition* (the second bullet) or a
+*pre-release amendment* (the pre-release bullet, valid only before the first
+production deploy).
+
+| Date | Bead | Basis | Change |
+| --- | --- | --- | --- |
+| 2026-11-02 | `personal-cfo-g3m.33` | pre-release amendment | The optional response members `voids` (on `pullEnvelopes` and the `HeadMismatch` details) and `void_claims` (on `pushEnvelopes` results and `HeadMismatch` `accepted` entries), which a version-1 client MUST process (4.7, 4.11), and the shared sequence of `seq` values they imply: a void takes a `seq`; and the page rule that follows from it: a page holds at least one log object (an envelope, an epoch entry or a void), not at least one entry, because a page can hold only voids. |
+| 2026-11-02 | `personal-cfo-g3m.33` | addition | Operations `appendVoid` (4.11) and `reportHalt` (4.12); errors `VoidSignatureInvalid`, `VoidSignerNotAuthorized`, `VoidTargetMismatch` and `ReplicaHalted`, the last of which the halt gate (4.12) returns to `stageSnapshot`, `publishSnapshot` and `installEpoch`; the void evidence rule of 7.3. |
+| 2026-11-03 | `personal-cfo-g3m.36` | addition | Operations `beginSnapshotUpload`, `putSnapshotPart`, `completeSnapshotUpload` and `abortSnapshotUpload` (4.13), which stage a snapshot in parts; errors `UploadNotFound`, `PartOutOfSequence` and `UploadIncomplete`; the optional `getInfo` limits `snapshot_single_request_max_bytes`, `snapshot_part_max_bytes` and `snapshot_upload_expiry_seconds` (7.2); the incomplete-upload expiry of 7.3; the halt gate (4.12) also applies to the three operations that stage; and the second exception to the failure rule of 2.5, the discard of an upload whose container does not match what was declared (4.13). |
+| 2026-11-03 | `personal-cfo-g3m.36` | pre-release amendment | What 7.1's acceptance rule means for a snapshot: a server accepts it through `stageSnapshot` up to its `snapshot_single_request_max_bytes` and above that through the operations of 4.13, so `stageSnapshot` can answer `PayloadTooLarge` (a code it did not list before) for a container over that limit. |
+| 2026-11-03 | `personal-cfo-v98vd` (AC27) | pre-release amendment | The failure name for an epoch record that names a membership record that is neither installed nor in the request is `EpochRecordMissing` (400, a malformed pairing), as 6.1 step 4 already said, and no longer `BadEpochSequence` (409, "fetch the chain and rebuild"), which sent a client with a malformed request into a rebuild loop. The membership-chain verifier named it `BadEpochSequence`, and the public vector `invalid_epoch_naming_an_unknown_head` pinned that name; both are corrected (vault-format.md spec-version 27), and `invalid_grant_without_the_add_it_names` is added (`vectors_version` stays 1: 60 cases). Section 6.1 and the error registry are unchanged. |
+
+**Why `voids` is a pre-release amendment and not an addition.** A response member
+that a client may ignore is an addition. `voids` cannot be ignored: a void takes a
+`seq` and a page can hold only voids, so a client that ignored it would see gaps
+in the envelope sequence and pages with an empty `entries`, and would loop on
+`HeadMismatch` or skip a void (ADR 0074 Addendum D needs every replica to see
+every void). No client or server implements version 1 yet, so requiring clients to
+process it breaks nothing, and the alternative, a second protocol version before
+the first has shipped, would add cost and no safety. The rule is fixed by the
+pre-release bullet of 11.1 and ends at the first production deploy.
+
+That change against the five things section 11.1 forbids a change to within a
+version, for the **additions** of the second row and for the pre-release row where
+it says so:
+
+1. **An existing operation's request:** not changed. No existing request gains a
+   member, a query parameter or a header; the two new operations are new paths.
+2. **An existing member's meaning:** `entries`, `has_more`, `head_seq`,
+   `floor_seq` and `results` mean what they did, and a log with no void gives
+   byte-for-byte the responses it gave before, with no `voids` and no
+   `void_claims`. For a log **with** a void, a page can hold only voids and the
+   envelope sequence has gaps that `voids` fills; that is the pre-release
+   amendment of the first row, not an addition.
+3. **A status code:** not changed. The four new codes have their own statuses; no
+   existing code moved.
+4. **The decision order of sections 5 and 6:** not changed. No step is added,
+   removed or reordered in either list. The halt gate is defined outside them
+   (4.12) and passes for every device with no recorded halt.
+5. **A number in section 7.1:** not changed. No row of the limits table changed,
+   and none was added.
+
+For `personal-cfo-g3m.36` (the third row), against the same five things:
+
+1. **An existing operation's request:** not changed. `stageSnapshot` takes the
+   request it took; the four new operations are new paths.
+2. **An existing member's meaning:** not changed. `getInfo` gains three optional
+   members and a client that does not read them still works against a server that
+   offers `stageSnapshot` up to the 7.1 maximum.
+3. **A status code:** not changed. The three new codes have their own statuses, and
+   `PayloadTooLarge` keeps its `413`.
+4. **The decision order of sections 5 and 6:** not changed. The new operations have
+   their own orders (4.13), and the halt gate they join is defined outside both lists.
+5. **A number in section 7.1:** not changed. No row of the limits table changed, and
+   none was added: the 5 MiB and 10,000 of 4.13 are stated in that section, not in the
+   table. The one rule of 7.1 whose reading is narrowed, that a server MUST accept every
+   well-formed object, is the pre-release amendment of the fourth row.

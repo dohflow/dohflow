@@ -164,4 +164,20 @@ describe("DashboardView", () => {
     renderWithClient(<DashboardView />);
     expect(await screen.findByRole("alert")).toBeInTheDocument();
   });
+
+  it("offers Retry on a failed read, which reads again and replaces the error (5ie.18)", async () => {
+    mocks.futureCashForecast.mockResolvedValueOnce({
+      status: "error",
+      error: "VaultLocked",
+    });
+    mocks.futureCashForecast.mockResolvedValue(ok(forecast()));
+    renderWithClient(<DashboardView />);
+    // The reason is the app's sentence for the error, not the raw token.
+    expect(await screen.findByRole("alert")).toHaveTextContent("The vault is locked.");
+    const reads = mocks.futureCashForecast.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await vi.waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(mocks.futureCashForecast.mock.calls.length).toBeGreaterThan(reads);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
 });

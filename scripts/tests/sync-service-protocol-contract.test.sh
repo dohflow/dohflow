@@ -180,6 +180,88 @@ need "forged grant may surface as either code" 'a conformance test accepts eithe
 need "compatible-with naming rule" '"Compatible with DohFlow"'
 need "no official-service naming without agreement" 'MUST NOT present itself as the official DohFlow Sync'
 
+case_start "the void additions (personal-cfo-g3m.33) stay stated"
+need "appendVoid keeps every distinct void" 'Two voids with different bodies are two entries'
+need "an exact retry is the only dedupe" 'The server dedupes only an exact retry'
+need "a void takes the next seq" 'It takes the next `seq`'
+need "the server never says a position is voided" 'it never says that a position *is* voided'
+need "signer is checked by verify_void" 'This is the check `verify_void` of `sync-core` makes'
+need "void claims are claims, not verdicts" 'A claim is a claim, not a verdict'
+need "voids and envelopes share one sequence" 'Envelopes and voids share one sequence of `seq` values'
+need "a client applies Addendum D and E to voids" 'it applies ADR 0074 Addendum D and Addendum E'
+need "halt report is the device's own" 'a device reports only its own state'
+need "the halt gate is outside sections 5 and 6" 'it is not a step of section 5 or 6'
+need "appendVoid works for a halted device" '`appendVoid` and `reportHalt` must work for a halted device'
+need "void evidence is retained" 'A server does not drop the envelope at a position a void'
+need "additions are recorded with their date" '| 2026-11-02 | `personal-cfo-g3m.33` |'
+GATED="installEpoch stageSnapshot publishSnapshot beginSnapshotUpload putSnapshotPart completeSnapshotUpload"
+refused="$(jq -r --arg ops "$GATED" '($ops | split(" ")) as $g | [.operations[] | select(.op as $o | $g | index($o)) | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
+[ "$refused" = "6" ] && pass "the three operations that stage a snapshot or install an epoch, and the three that stage in parts, can all return ReplicaHalted" || fail "ReplicaHalted is not on all six gated operations"
+other="$(jq -r '[.operations[] | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
+[ "$other" = "6" ] && pass "no other operation returns ReplicaHalted" || fail "ReplicaHalted appears on an operation that the halt gate does not cover"
+abort_gated="$(jq -r '[.operations[] | select(.op == "abortSnapshotUpload") | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
+[ "$abort_gated" = "0" ] && pass "abortSnapshotUpload is not gated, so a halted device can clean up" || fail "abortSnapshotUpload must not return ReplicaHalted"
+SEC114="$(awk '/^### 11.4 /{on=1;next} /^### /{on=0} on' "$DOC")"
+answers="$(grep -c '^[1-5]\. \*\*.*:\*\* not changed' <<<"$SEC114")"
+[ "$answers" = "9" ] && pass "section 11.4 answers four limits of 11.1 for g3m.33 and all five for g3m.36 with 'not changed'" || fail "section 11.4 does not answer 4 + 5 limits of 11.1 with 'not changed' (found $answers)"
+item2="$(grep -c '^2\. \*\*An existing member.s meaning:\*\*' <<<"$SEC114")"
+[ "$item2" = "2" ] && pass "section 11.4 answers item 2 of 11.1 for both beads" || fail "section 11.4 lost its answer to item 2 of 11.1 for one of the beads (found $item2)"
+need "item 2 names the pre-release amendment" 'that is the pre-release amendment of the first row, not an addition'
+need "11.1 states the pre-release rule" 'Protocol version 1 is pre-release until the first deploy of a conforming Sync server to the operator'"'"'s production environment'
+need "staging does not count as release" 'staging does not count'
+need "a v1 client must process voids on pulls" '**A version-1 client MUST process `voids`, and `void_claims` on push results'
+need "a v1 client must process void_claims" 'A version-1 client MUST process `void_claims` where it appears'
+need "4.7 promises a log object per page" 'holds at least one log object (an envelope, an epoch entry or a void, section 4.11) whenever any exists past `after_seq`'
+need "7.2 promises a log object per page" 'a page still holds at least one log object (an envelope, an epoch entry or a void)'
+need "11.4 lists the page rule with the amendment" 'a page holds at least one log object (an envelope, an epoch entry or a void), not at least one entry'
+if grep -Eq 'holds at least one entry' "$FLAT"; then
+  fail "a page is still promised to hold 'at least one entry', which a void-only page contradicts"
+else
+  pass "no wording promises a page at least one entry"
+fi
+need "parts: a server accepts every snapshot through one of two paths" 'A server MUST accept every well-formed snapshot within section 7.1 through `stageSnapshot` or through these'
+need "parts: complete checks the whole container before it counts as staged" '**Nothing counts as staged until the whole container has been checked.**'
+need "parts: a digest mismatch discards the upload" 'and the server **discards the upload**'
+need "parts: 4.13 says an incomplete upload expires" 'An upload that is not completed within `snapshot_upload_expiry_seconds` is aborted by the server (section 7.3)'
+need "parts: 7.3 says an incomplete upload expires" 'An upload begun with `beginSnapshotUpload` that is not completed within `snapshot_upload_expiry_seconds` is aborted by the server'
+need "parts: 2.5 names the discard as an exception to the failure rule" 'A failure mutates nothing, with two stated exceptions'
+need "parts: 2.5 says which upload is discarded" 'whose assembled container does not match what was declared discards the upload it was completing'
+need "parts: 11.4 lists the discard exception" 'the second exception to the failure rule of 2.5, the discard of an upload whose container does not match what was declared'
+need "parts: 2.1 gives the part number its form" '`{part_number}` is an unsigned decimal in the syntax of section 2.2'
+need "parts: the part size floor" 'at least **5,242,880** bytes'
+need "parts: the part count ceiling" 'is at most **10,000**'
+need "parts: the 7.1 clarification is a listed pre-release amendment" '| 2026-11-03 | `personal-cfo-g3m.36` | pre-release amendment |'
+need "an incomplete page is a failed pull" 'treats it as a failed pull, never as a gap to skip'
+need "the response-member rule excepts voids" 'except the members this document defines'
+need "the pre-release changes are listed with a basis" '| pre-release amendment |'
+VOID_VECTORS="$REPO_ROOT/docs/architecture/vectors/sync-service-void-v1.json"
+if [ -f "$VOID_VECTORS" ] && [ "$(jq -r '.vectors_version' "$VOID_VECTORS")" = "1" ] && grep -Fq 'sync-service-void-v1.json' "$DOC"; then
+  pass "the void conformance vectors exist and the document names them"
+else
+  fail "the void conformance vectors are missing, unversioned, or not named by section 11.2"
+fi
+PARTS_VECTORS="$REPO_ROOT/docs/architecture/vectors/sync-service-snapshot-parts-v1.json"
+if [ -f "$PARTS_VECTORS" ] && [ "$(jq -r '.vectors_version' "$PARTS_VECTORS")" = "1" ] && grep -Fq 'sync-service-snapshot-parts-v1.json' "$DOC"; then
+  pass "the snapshot-parts conformance vectors exist and the document names them"
+else
+  fail "the snapshot-parts conformance vectors are missing, unversioned, or not named by section 11.2"
+fi
+
+# The service dedupes only an identical void (spec-version 24): no passage may still say it dedupes a second void for the same position.
+ADR="$REPO_ROOT/docs/adr/0074-dohflow-sync-architecture.md"
+FLAT_FORMAT="$(tr '\n' ' ' < "$FORMAT" | tr -s ' ')"
+if grep -Eq 'second void for (the )?(exact )?same' <<<"$FLAT_FORMAT"; then
+  fail "vault-format.md still says the service dedupes a second void for the same position"
+else
+  pass "vault-format.md keeps every distinct void"
+fi
+FLAT_ADR="$(tr '\n' ' ' < "$ADR" | tr -s ' ')"
+if grep -Eq 'second void for the exact same position\.? Otherwise|or a second void for the exact same position' <<<"$FLAT_ADR"; then
+  fail "ADR 0074 Addendum D still says the service dedupes a second void for the same position"
+else
+  pass "ADR 0074 Addendum D keeps every distinct void"
+fi
+
 case_start "references resolve"
 refs="$(grep -oE 'C\.[0-9]+' "$DOC" | sort -u)"
 missing=""

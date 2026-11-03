@@ -230,15 +230,31 @@ fn a_replace_conflict_is_seen_as_a_change_of_the_replaced_row() {
     // merchant_aliases is written with INSERT OR REPLACE; recursive triggers make the implied
     // delete visible, so the before image is the replaced row.
     let (_dir, worker) = worker();
-    let identity = worker
-        .create_merchant_identity("Cafe", None, false, "user")
-        .unwrap();
+    let plant = |id: Uuid, name: &str| {
+        worker
+            .read_connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO merchant_identities
+                   (id, display_name, default_category_id, is_ambiguous, source, created_at)
+                 VALUES (?1, ?2, NULL, 0, 'user', 'now')",
+                params![id, name],
+            )
+            .unwrap();
+        id
+    };
+    let identity = plant(Uuid::from_u128(1), "Cafe");
     worker
-        .link_merchant_alias("CAFE", identity, "user", 5_000)
+        .read_connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO merchant_aliases
+               (normalized_key, merchant_identity_id, source, confidence_bps, created_at)
+             VALUES ('CAFE', ?1, 'user', 5000, 'now')",
+            params![identity],
+        )
         .unwrap();
-    let other = worker
-        .create_merchant_identity("Other", None, false, "user")
-        .unwrap();
+    let other = plant(Uuid::from_u128(2), "Other");
     let set = command(&worker, |tx| {
         tx.execute(
             "INSERT OR REPLACE INTO merchant_aliases
@@ -290,7 +306,7 @@ fn a_projected_table_enters_the_set_only_through_its_replicated_fields() {
     .unwrap();
     assert!(local.rows.is_empty(), "{:?}", local.rows);
 
-    // settings: a user.* key and a legacy name replicate; a device.* key does not.
+    // settings: a user.* key replicates; an unprefixed name and a device.* key do not.
     let settings = command(&worker, |tx| {
         for (key, value) in [
             ("user.theme", "dark"),
@@ -306,7 +322,7 @@ fn a_projected_table_enters_the_set_only_through_its_replicated_fields() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(tables(&settings), ["settings", "settings"]);
+    assert_eq!(tables(&settings), ["settings"]);
     // updated_at is not a replicated field of a settings row.
     let touch = command(&worker, |tx| {
         tx.execute(
@@ -500,8 +516,9 @@ fn a_rolled_back_command_leaves_the_capture_empty() {
 #[test]
 fn a_direct_write_outside_a_command_does_not_leak_into_the_next_command() {
     let (_dir, worker) = worker();
-    // set_setting is a direct writer: the triggers fire, and the next command must start clean.
-    worker.set_setting("user.theme", "dark").unwrap();
+    // set_device_setting is a direct writer: the triggers fire, and the next command must start
+    // clean.
+    worker.set_device_setting("device.theme", "dark").unwrap();
     let set = command(&worker, |_| Ok(())).unwrap();
     assert!(set.rows.is_empty(), "{:?}", set.rows);
 }
@@ -889,6 +906,111 @@ fn a_command_that_also_rebuilds_a_read_model_has_the_same_write_set_as_one_that_
         Ok(())
     })
     .unwrap();
+    assert_eq!(rebuilt_set.rows, plain_set.rows);
+    assert_eq!(rebuilt_set.hash, plain_set.hash);
+}
+
+/// A vault whose recurring-instance rebuild writes rows: a rent bill with a ledger posting that
+/// links to its first occurrence (personal-cfo-5ymg8.9). Without it the rebuild writes nothing and
+/// the comparison below proves nothing.
+fn seed_a_bill_with_a_linked_posting(worker: &DbWorker) {
+    use chrono::NaiveDate;
+    use core_ledger::{AccountFlags, CashflowRole};
+    use core_money::{Currency, Money};
+
+    let meta = || crate::CommandMeta {
+        command_id: Uuid::now_v7(),
+        correlation_id: Uuid::now_v7(),
+        causation_id: None,
+        actor_type: crate::ActorType::User,
+        actor_id: "tester".to_owned(),
+        idempotency_key: Uuid::new_v4().to_string(),
+        issued_at: crate::IssuedAt::now(),
+    };
+    let checking = crate::AccountId::new();
+    let july_1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+    worker
+        .dispatch(
+            meta(),
+            crate::WriteCommand::CreateAccount {
+                account: Box::new(crate::Account::new(
+                    checking,
+                    crate::LedgerAccountId::new(),
+                    "Checking",
+                    CashflowRole::LiquidCash,
+                    Currency::Usd,
+                    AccountFlags::default(),
+                )),
+                opening_balance: None,
+            },
+        )
+        .unwrap();
+    worker
+        .dispatch(
+            meta(),
+            crate::WriteCommand::CreateRecurringBill {
+                event_id: crate::RecurringEventId::new(),
+                contract_id: crate::BillContractId::new(),
+                name: "Rent".to_owned(),
+                amount: Money::new(180_000, Currency::Usd),
+                bill_type: "rent_mortgage".to_owned(),
+                frequency: pay_schedule::Frequency::Monthly,
+                anchor: july_1,
+                autopay_account_id: Some(checking),
+                description: None,
+                source_merchant_key: None,
+                category_id: None,
+                tag_ids: Vec::new(),
+            },
+        )
+        .unwrap();
+    worker
+        .dispatch(
+            meta(),
+            crate::WriteCommand::RecordTransaction {
+                transaction_id: crate::TransactionId::new(),
+                account_id: checking,
+                amount: Money::new(-180_000, Currency::Usd),
+                occurred_at: july_1.and_hms_opt(12, 0, 0).unwrap().and_utc(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn rebuilding_recurring_instances_rows_inside_a_command_leaves_its_write_set_unchanged() {
+    // Two vaults in the same state; only the second rebuilds the instances inside the command.
+    let (_dir, plain) = worker();
+    seed_a_bill_with_a_linked_posting(&plain);
+    let plain_set = command(&plain, tag_insert).unwrap();
+    assert_eq!(tables(&plain_set), ["tags"]);
+
+    let (_dir, rebuilt) = worker();
+    seed_a_bill_with_a_linked_posting(&rebuilt);
+    let rebuilt_set = command(&rebuilt, |tx| {
+        tag_insert(tx)?;
+        crate::recurring_instances::rebuild_in(
+            tx,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap(),
+        )
+        .map_err(to_sqlite)?;
+        Ok(())
+    })
+    .unwrap();
+
+    // The rebuild really wrote instance rows, and one of them is linked to the posting.
+    let conn = rebuilt.read_connection().unwrap();
+    let (rows, linked): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(linked_transaction_id) FROM recurring_event_instances",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(rows > 0, "the rebuild wrote instance rows");
+    assert!(linked > 0, "an instance is linked to the posting");
+
+    // And none of it is part of the command's write set: the table is class 2.
     assert_eq!(rebuilt_set.rows, plain_set.rows);
     assert_eq!(rebuilt_set.hash, plain_set.hash);
 }

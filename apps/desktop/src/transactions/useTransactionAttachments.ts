@@ -15,7 +15,17 @@ function attachmentsKey(transactionId: string) {
 /// never written outside the vault (ADR 0023). Exported so the add-transaction
 /// one-flow can attach staged files after the record (personal-cfo-4d8.24.2.3).
 export async function attach(transactionId: string, file: File) {
-  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+  return sendAttachment(transactionId, file, await readFileBytes(file));
+}
+
+/// Reading the picked file. A failure here happens before anything is sent, so the file is known
+/// not to be attached (personal-cfo-g3m.35).
+export async function readFileBytes(file: File): Promise<number[]> {
+  return Array.from(new Uint8Array(await file.arrayBuffer()));
+}
+
+/// The call itself. If it throws rather than returns, whether the host stored the file is unknown.
+export function sendAttachment(transactionId: string, file: File, bytes: number[]) {
   return commands.attachDocument(
     transactionId,
     file.name || null,

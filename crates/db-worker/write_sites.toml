@@ -198,49 +198,22 @@ bead = "personal-cfo-5ymg8.6"
 note = "LinkManualEntry writer outside the bus."
 
 [[site]]
-module = "merchant_grouping.rs"
-table = "merchant_aliases"
-class = "4"
-statements = 1
-status = "pending"
-bead = "personal-cfo-5ymg8.5"
-note = "Merchant grouping writes aliases outside the bus."
-
-[[site]]
-module = "merchant_grouping.rs"
-table = "merchant_identities"
-class = "4"
-statements = 1
-status = "pending"
-bead = "personal-cfo-5ymg8.5"
-note = "Merchant grouping writes identities outside the bus."
-
-[[site]]
 module = "merchant_identity.rs"
 table = "merchant_aliases"
-class = "4"
-statements = 2
-status = "pending"
+class = "1"
+statements = 1
+status = "allowed"
 bead = "personal-cfo-5ymg8.5"
-note = "Alias create and re-link (link_merchant_alias) outside the bus."
+note = "seed_alias: the canonical merchants' aliases are seeded with content-derived ids and the vault's creation time, only in the transaction that creates the vault (seed_new_vault); replicas inherit the rows from the genesis snapshot and never seed. Every other alias is written by MintMerchantAnchors (apply/merchant_cmds.rs)."
 
 [[site]]
 module = "merchant_identity.rs"
 table = "merchant_identities"
-class = "4"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.5"
-note = "Identity create and merge outside the bus."
-
-[[site]]
-module = "merchant_memory.rs"
-table = "transaction_categorizations"
-class = "4"
+class = "1"
 statements = 1
-status = "pending"
+status = "allowed"
 bead = "personal-cfo-5ymg8.5"
-note = "The class-4 categorization writer beside apply/'s class-1 writer; route through the existing categorization command."
+note = "seed_merchants: the canonical merchants are seeded with content-derived ids and the vault's creation time, only in the transaction that creates the vault (seed_new_vault); replicas inherit the rows from the genesis snapshot and never seed. Every other identity is written by MintMerchantAnchors (apply/merchant_cmds.rs)."
 
 [[site]]
 module = "money_inbox.rs"
@@ -250,15 +223,6 @@ statements = 1
 status = "bus_internal"
 bead = "personal-cfo-0s0"
 note = "record_snooze / record_dismiss, called only from apply/inbox.rs."
-
-[[site]]
-module = "recurring_instances.rs"
-table = "recurring_event_instances"
-class = "1"
-statements = 2
-status = "pending"
-bead = "personal-cfo-5ymg8.9"
-note = "Materialized occurrences are rebuilt (DELETE + INSERT) on reads outside the bus although the manifest says class 1 with user outcomes. Owned by personal-cfo-5ymg8.9, which splits it: derived occurrences become class 2 and rebuild locally, user outcomes stay class 1 through commands."
 
 [[site]]
 module = "rekey.rs"

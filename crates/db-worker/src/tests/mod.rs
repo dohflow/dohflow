@@ -3,8 +3,10 @@
 //! private `DbWorker` methods). Pub-API-only tests live in `tests/*.rs`;
 //! shared helpers for those live in `tests/common/mod.rs`.
 
+mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;
+mod settings_upgrade;
 
 use super::*;
 use core_ledger::{AccountFlags, CashflowRole};
@@ -6001,6 +6003,13 @@ fn flagging_a_staged_duplicate_surfaces_a_money_inbox_item() {
     assert!(
         item.payload_json.contains("\"merchant\":\"merchant\""),
         "payload carries the merchant: {}",
+        item.payload_json
+    );
+    // personal-cfo-pxi.14: the payload says this one IS a suspected duplicate (from the stored
+    // `dedupe_status`), so the view reviews it instead of calling it unimportable.
+    assert!(
+        item.payload_json.ends_with("\"suspected_duplicate\":true}"),
+        "payload marks the suspected duplicate: {}",
         item.payload_json
     );
 }

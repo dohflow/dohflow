@@ -245,6 +245,7 @@ receives semantic auto-merge treatment.
 | `MarkReviewed` | Set | queue-choose (scalar; idempotent no-op is auto) |
 | `SetTags` | Set | auto iff strict predicate; queue-choose if touched (replacement payload; no union rewrite) |
 | `SetNote` | Set | queue-choose (scalar; idempotent no-op is auto) |
+| `SetUserSetting` | Set | queue-choose (scalar; an identical value is an auto no-op) |
 | `SetSplits` | Set | queue-edit (sum invariant) |
 | `MoveCategory` | Set | queue-edit (cycle invariant) |
 | `SetHouseholdTimezone` | Set | queue-choose (scalar; idempotent no-op is auto) |
@@ -289,7 +290,10 @@ receives semantic auto-merge treatment.
 | `ConfirmObligationEarly` | Base-dependent | auto after idempotent re-evaluation of (event, date) |
 | `ConvertUnexplainedToTransaction` | Base-dependent | auto after residual/assertion re-evaluation |
 | `ApplyScenario` | Base-dependent | queue-choose (reversal handle is command_id) |
-| `RevertScenarioApply` | Base-dependent | queue-choose (reversal handle is command_id) |
+| `RevertScenarioApply` | Base-dependent | queue-choose (reversal handle is command_id); retired, never produced |
+| `RevertScenarioApplyConfirmed` | Base-dependent | auto iff the active descendants equal the confirmed list; queue-choose otherwise |
+| `MintMerchantAnchors` | Base-dependent | auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose |
+| `ApplyMerchantMemory` | Base-dependent | auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose |
 | `DeleteRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `ReinstateRecurringTransfer` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
 | `DeleteIncomeSource` | Toggle | auto iff strict predicate and end state is equal; queue-choose if touched or opposed |
@@ -576,6 +580,29 @@ and never replicates; ADR 0074 Addendum H). **Validation moves into apply:** a s
 `RevertScenarioApply` (no such scenario, already applied, nothing to apply, not applied) are
 classified `ReferenceMissing` and `StateConflict` sites instead of `InvalidCommand`.
 
+## Addendum I — Undoing an apply follows the chain (2026-11-01, `personal-cfo-5ie.12`)
+
+`RevertScenarioApplyConfirmed` is added as a version 1 command carrying `scenario_id` and
+`confirmed_descendants`, strictly ascending (a repeat or a misordered list is `PayloadInvalid`).
+That makes **Base-dependent 6** and 80 appendix rows (**Create 14**, **Set 30**, **Toggle 25**
+unchanged). The frozen `RevertScenarioApply` stays decodable with its apply unchanged, because an
+operation log written since `personal-cfo-t2s4b` can hold it, but no producer builds it any more
+(a test scans the sources for one); its appendix row is marked retired.
+
+**The payload carries what the person confirmed.** The producer reads the active descendants of the
+promoted rows (the edits made to the promoted items since the apply) and sends them, as
+`CloneScenario` sends its source ids. Apply recomputes that set on the current base and compares by
+set equality: a difference is `StateConflict` with no write (another device changed a promoted item
+meanwhile, so the person confirms again). The disposition is Base-dependent: **auto** when the
+active descendants equal the confirmed list, **queue-choose** otherwise.
+
+**What apply does.** It clears exactly the confirmed descendants, restores the base events the
+apply superseded, clears the promoted rows and unmarks the scenario. Two refusals keep applies
+undone last first, both `StateConflict` with no write: a promoted row's chain reaches a row
+promoted from another scenario, or a base event to restore has its key held by a row promoted from
+another scenario that is still applied, or by an edit of one. A key held by a plain base row (the person recorded a newer value) leaves the
+older event superseded, and the confirmation says so. No id is minted and no clock is read.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` — ADR 0074, the CAS/rebase premise
@@ -587,3 +614,57 @@ classified `ReferenceMissing` and `StateConflict` sites instead of `InvalidComma
 - `personal-cfo-g3m.12` — ADR 0074 Addendum B, which defines the `AlreadyPresent` exception
 - `personal-cfo-07u` — SYNC-2a connection identity/secret split (Addendum C)
 - `personal-cfo-32fmp.3` — ADR 0074 Addendum G: the system-account map is class 1 consensus state, so apply may read it
+
+## Addendum J — Merchant grouping and merchant memory travel as outcomes (2026-11-03, `personal-cfo-5ymg8.5`)
+
+`MintMerchantAnchors` and `ApplyMerchantMemory` are added as version 1 commands. That makes
+**Base-dependent 8** and 82 appendix rows (**Create 14**, **Set 30**, **Toggle 25** unchanged).
+
+**The payload carries the outcome of a heuristic, never the heuristic.** The issuing device runs the
+grouping and merchant-memory passes on a read connection (thresholds, `brand_anchor`,
+`normalize_merchant`) and sends what they decided: the brands to mint (`key`, `display_name`) and the
+fills (`transaction_id`, `category_id`, `confidence_bps`). Apply validates and writes; it calls none of
+those rules, so a tuned threshold, or a device on another engine version, cannot change what a logged
+command writes or what an old log replays to. Both lists are strictly ascending (keys, transaction
+ids; a repeat or a misordered list is `PayloadInvalid`), non-empty and at most 5,000 entries (the
+kernel chunks a larger plan), and a confidence is 0 to 10000 basis points. A key must be non-empty and
+within the replicated key width; a display name must be non-blank and at most 128 bytes.
+
+**Disposition: Base-dependent, auto after re-evaluation, never queue-choose.** What each command skips
+depends on the base: `MintMerchantAnchors` skips an anchor whose key any alias already holds (so an
+identity is never left without its alias, and a user's mapping is never clobbered; the first
+`display_name` sequenced wins), and `ApplyMerchantMemory` skips a voided transaction or one that
+already has a categorization of any source (no silent re-tag, ADR 0030). Those skip rules ARE the
+resolution: a recategorization made on another device must not queue a whole run as a user choice, so
+neither command is ever queue-choose. A missing transaction or category refuses the whole command
+(`ReferenceMissing`); an archived category is not a reason to skip, as in `RecategorizeTransaction`.
+When an import commit triggers a run, the commands carry its correlation and `causation_id`, so they
+queue with it if it queues.
+
+**The identity id is derived, and frozen.** An earned brand's identity id is
+`v5(NAMESPACE_OID, "merchant-auto:{key}")` of the payload key, derived in apply and not carried in the
+payload. Vaults already hold identities minted under that formula, so changing it needs a new
+variant; a known-vector test pins one key to one UUID.
+
+## Addendum K — Household settings are a command (2026-11-03, `personal-cfo-5ymg8.7`)
+
+`SetUserSetting` is added as a version 1 command carrying `key` and `value`. That makes **Set 31**
+and 83 appendix rows (**Create 14**, **Toggle 25**, **Base-dependent 8** unchanged).
+
+**The key is a string from a closed registry.** A `user.*` key is one of five household
+preferences (the reporting currency, the minimum cash floor, the comfort band's upper edge, the
+auto-categorize switch and the Future Cash series selection). Any other key, including a `device.*`
+key, is `PayloadInvalid`, so an unknown key is a classified apply site rather than a decode
+failure. Each key has a pure validator and the value is stored verbatim. The comfort band's upper
+edge accepts the empty string, which clears it (the form the UI already writes).
+
+**Disposition: Set, queue-choose, an identical value is an auto no-op.** A preference is one scalar a
+person chose: if two devices set it to different values, the second is the person's call, and
+setting it to the value it already has is not a conflict. No writer enforces that the floor stays
+below the upper edge, so apply reads no other row.
+
+**Engine-version rule.** Once the engine version is pinned (`personal-cfo-32fmp.4`), a change to
+the registry or to any validator (a new key, a newly supported currency, a different size cap)
+changes what a logged command writes and must bump `engine_version`. The rule is in the variant's
+doc comment.
+

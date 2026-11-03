@@ -1,7 +1,10 @@
 //! Recurring-instance projection + transaction linking (ADR 0026 §9; beads
 //! personal-cfo-5ie.4 / -5ie.5).
 //!
-//! `recurring_event_instances` is a **derived read model**: one row per scheduled
+//! `recurring_event_instances` is a **derived read model** (class 2, ADR 0074 Addendum F,
+//! `personal-cfo-5ymg8.9`): rebuilt locally on read, never shipped, and it stores no user outcome
+//! (a confirmation is class-1 `confirmed_obligations`; an outcome stored here would be deleted by
+//! the next rebuild). One row per scheduled
 //! occurrence of an active recurring schedule (income source or recurring
 //! obligation), expanded over a window through the same [`PaySchedule`] the forecast
 //! uses (via [`crate::schedule_sources`]) so an instance and its forecast row share

@@ -581,7 +581,11 @@ pub enum ChainError {
         /// Which epoch record.
         at: usize,
     },
-    /// An epoch record names a membership head that is not in the verified chain.
+    /// An epoch record names a membership head that is not in the chain being verified, neither
+    /// installed before nor in the same request: a malformed pairing, `EpochRecordMissing` (the
+    /// converse of an `add` that no epoch record names), and not a sequencing failure. It is not
+    /// [`is_retryable`](Self::is_retryable): a client that holds an anchor naming a head it has not
+    /// verified first fetches that chain (C.6), so it never reaches this.
     #[error("epoch {at}: unknown membership head")]
     UnknownHead {
         /// Which epoch record.
@@ -671,9 +675,8 @@ impl ChainError {
             Self::EpochEquivocation { .. } => FailureKind::EpochEquivocation,
             Self::CutoverHeadNotRevoke { .. } => FailureKind::CutoverHeadNotRevoke,
             Self::GrantHeadNotAdd { .. } => FailureKind::GrantHeadNotAdd,
-            Self::BadEpochSequence { .. } | Self::UnknownHead { .. } => {
-                FailureKind::BadEpochSequence
-            }
+            Self::BadEpochSequence { .. } => FailureKind::BadEpochSequence,
+            Self::UnknownHead { .. } => FailureKind::EpochRecordMissing,
             Self::RecipientsMismatch { .. }
             | Self::SealerNotAuthorized { .. }
             | Self::EpochBadSignature { .. } => FailureKind::EpochRecordInvalid,

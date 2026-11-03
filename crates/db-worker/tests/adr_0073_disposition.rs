@@ -2,7 +2,7 @@
 //!
 //! The ADR is the product contract; this test keeps its variant appendix from
 //! silently going stale as `WriteCommand` grows. It deliberately parses the
-//! enum declaration rather than constructing all 79 payloads, so a new variant
+//! enum declaration rather than constructing all 83 payloads, so a new variant
 //! without a disposition fails at compile-time test execution before SYNC-2
 //! can ship a command with no rebase rule. It also compares every checked-in
 //! ADR cell against this table and proves that a one-cell outcome drift fails.
@@ -169,6 +169,11 @@ const DISPOSITIONS: &[Disposition] = &[
         "SetNote",
         Shape::Set,
         "queue-choose (scalar; idempotent no-op is auto)",
+    ),
+    d(
+        "SetUserSetting",
+        Shape::Set,
+        "queue-choose (scalar; an identical value is an auto no-op)",
     ),
     d("SetSplits", Shape::Set, "queue-edit (sum invariant)"),
     d("MoveCategory", Shape::Set, "queue-edit (cycle invariant)"),
@@ -393,7 +398,22 @@ const DISPOSITIONS: &[Disposition] = &[
     d(
         "RevertScenarioApply",
         Shape::BaseDependent,
-        "queue-choose (reversal handle is command_id)",
+        "queue-choose (reversal handle is command_id); retired, never produced",
+    ),
+    d(
+        "RevertScenarioApplyConfirmed",
+        Shape::BaseDependent,
+        "auto iff the active descendants equal the confirmed list; queue-choose otherwise",
+    ),
+    d(
+        "MintMerchantAnchors",
+        Shape::BaseDependent,
+        "auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose",
+    ),
+    d(
+        "ApplyMerchantMemory",
+        Shape::BaseDependent,
+        "auto after idempotent re-evaluation; the apply's skip rules are the resolution; never queue-choose",
     ),
     // Exceptions that must be completed before their command can enter the
     // Sync envelope stream.
@@ -558,7 +578,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        79,
+        83,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -587,9 +607,9 @@ fn disposition_appendix_covers_every_write_command_variant() {
 
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
     assert_eq!(shape_count(Shape::Create), 14);
-    assert_eq!(shape_count(Shape::Set), 30);
+    assert_eq!(shape_count(Shape::Set), 31);
     assert_eq!(shape_count(Shape::Toggle), 25);
-    assert_eq!(shape_count(Shape::BaseDependent), 5);
+    assert_eq!(shape_count(Shape::BaseDependent), 8);
     assert_eq!(shape_count(Shape::TombstoneFirst), 0);
     assert_eq!(shape_count(Shape::ReshapeFirst), 4);
     assert_eq!(shape_count(Shape::NeverShips), 1);

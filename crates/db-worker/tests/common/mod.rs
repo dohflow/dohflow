@@ -385,3 +385,81 @@ pub fn sample_debt_terms(paying: Option<AccountId>) -> DebtTermsInput {
         original_principal_minor: None,
     }
 }
+
+/// Test-only access to the merchant tables (personal-cfo-5ymg8.5). Production has no
+/// user-correction writer for identities and aliases (the raw ones were removed with the move onto
+/// the command bus), so a test that needs a mapping the user "made" plants the rows directly, the
+/// way `record_with_counterparty` plants a counterparty.
+pub trait MerchantTestExt {
+    /// Insert an identity, returning its id. `source` is `seed` | `user` | `auto`.
+    fn create_merchant_identity(
+        &self,
+        display_name: &str,
+        default_category_id: Option<CategoryId>,
+        is_ambiguous: bool,
+        source: &str,
+    ) -> Result<Uuid, DbError>;
+
+    /// Point a normalized key at an identity, replacing any mapping the key already had.
+    fn link_merchant_alias(
+        &self,
+        normalized_key: &str,
+        merchant_identity_id: Uuid,
+        source: &str,
+        confidence_bps: i64,
+    ) -> Result<(), DbError>;
+
+    /// Plan the earned brands and mint them through the command; returns how many identities were
+    /// added.
+    fn apply_merchant_grouping(&self) -> Result<u32, DbError>;
+}
+
+impl MerchantTestExt for DbWorker {
+    fn create_merchant_identity(
+        &self,
+        display_name: &str,
+        default_category_id: Option<CategoryId>,
+        is_ambiguous: bool,
+        source: &str,
+    ) -> Result<Uuid, DbError> {
+        let id = Uuid::now_v7();
+        self.read_connection()?.execute(
+            "INSERT INTO merchant_identities
+                (id, display_name, default_category_id, is_ambiguous, source, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '2026-01-01T00:00:00+00:00')",
+            params![
+                id,
+                display_name,
+                default_category_id.map(CategoryId::as_uuid),
+                i64::from(is_ambiguous),
+                source
+            ],
+        )?;
+        Ok(id)
+    }
+
+    fn link_merchant_alias(
+        &self,
+        normalized_key: &str,
+        merchant_identity_id: Uuid,
+        source: &str,
+        confidence_bps: i64,
+    ) -> Result<(), DbError> {
+        self.read_connection()?.execute(
+            "INSERT OR REPLACE INTO merchant_aliases
+                (normalized_key, merchant_identity_id, source, confidence_bps, created_at)
+             VALUES (?1, ?2, ?3, ?4, '2026-01-01T00:00:00+00:00')",
+            params![normalized_key, merchant_identity_id, source, confidence_bps],
+        )?;
+        Ok(())
+    }
+
+    fn apply_merchant_grouping(&self) -> Result<u32, DbError> {
+        let before = self.merchant_identity_count()?;
+        let anchors = self.plan_merchant_anchors()?;
+        if !anchors.is_empty() {
+            self.dispatch(meta(), WriteCommand::MintMerchantAnchors { anchors })?;
+        }
+        Ok(u32::try_from(self.merchant_identity_count()? - before).unwrap())
+    }
+}

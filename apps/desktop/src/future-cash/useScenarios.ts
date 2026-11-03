@@ -5,6 +5,7 @@ import {
   commands,
   type CreateScenarioInput,
   type IpcError,
+  type RevertPreviewDto,
   type ScenarioDto,
   type UpdateScenarioInput,
 } from "@/bindings";
@@ -19,6 +20,11 @@ export type CreateScenarioResult =
   | { status: "ok"; data: ScenarioDto }
   | { status: "error"; error: IpcError };
 
+/// The discriminated result of reading what an undo would do.
+export type RevertPreviewResult =
+  | { status: "ok"; data: RevertPreviewDto }
+  | { status: "error"; error: IpcError };
+
 /// Loads the user's scenarios (TanStack Query, ADR 0020) and exposes create /
 /// delete. Deleting also invalidates the forecast + scenario-event caches (a
 /// deleted scenario stops applying), so the chart and any selection refresh. IPC
@@ -29,6 +35,17 @@ export function useScenarios() {
     queryKey: queryKeys.scenarios,
     queryFn: () =>
       ipcQuery(commands.scenarioList(), "Could not load your scenarios."),
+  });
+
+  // Applied scenarios that were deleted afterwards: deleting hides a scenario but leaves its
+  // apply in the forecast, so they stay reachable to be undone (personal-cfo-5ie.12).
+  const deletedAppliedQuery = useQuery({
+    queryKey: [...queryKeys.scenarios, "deleted-applied"],
+    queryFn: () =>
+      ipcQuery(
+        commands.scenarioDeletedAppliedList(),
+        "Could not load your deleted scenarios.",
+      ),
   });
 
   const addMutation = useMutation({
@@ -72,7 +89,8 @@ export function useScenarios() {
     },
   });
   const revertMutation = useMutation({
-    mutationFn: (id: string) => commands.revertScenarioApply(id),
+    mutationFn: (input: { id: string; confirmed: string[] }) =>
+      commands.revertScenarioApply(input.id, input.confirmed),
     onSuccess: (result) => {
       if (result.status === "ok") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.scenarios });
@@ -157,10 +175,19 @@ export function useScenarios() {
     },
     [applyMutation],
   );
-  /// Undo an apply, restoring base exactly (ADR 0055 §5).
+  /// What undoing an apply would do: the changes made to its items since, a later apply that
+  /// has to be undone first, and the list to send back with the undo (personal-cfo-5ie.12).
+  const previewRevert = useCallback(
+    (id: string): Promise<RevertPreviewResult> =>
+      commands.scenarioRevertPreview(id),
+    [],
+  );
+  /// Undo an apply and the changes made to its items since (ADR 0055 §5). `confirmed` is the
+  /// preview's `confirmed_descendants`, sent back unchanged: the backend refuses, writing
+  /// nothing, if they are no longer the changes on the base.
   const revertScenarioApply = useCallback(
-    async (id: string): Promise<IpcError | null> => {
-      const result = await revertMutation.mutateAsync(id);
+    async (id: string, confirmed: string[]): Promise<IpcError | null> => {
+      const result = await revertMutation.mutateAsync({ id, confirmed });
       return result.status === "ok" ? null : result.error;
     },
     [revertMutation],
@@ -173,13 +200,23 @@ export function useScenarios() {
     [expiryMutation],
   );
 
+  /// Read the scenarios and the forecast again. After a call that failed with an unknown outcome the
+  /// screen must show what is really stored, not what it last saw.
+  const refreshScenarios = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.scenarios });
+    void queryClient.invalidateQueries({ queryKey: ["forecast"] });
+  }, [queryClient]);
+
   return {
+    refreshScenarios,
     scenarios: query.data ?? null,
     error: query.error?.message ?? null,
     addScenario,
     deleteScenario,
     archiveScenario,
+    deletedApplied: deletedAppliedQuery.data ?? [],
     applyScenario,
+    previewRevert,
     revertScenarioApply,
     cloneScenario,
     setScenarioExpiry,

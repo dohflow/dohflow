@@ -327,6 +327,96 @@ it("surfaces a failed Import anyway even with the row expander collapsed (4d8.24
   expect(await screen.findByRole("alert")).toBeInTheDocument();
 });
 
+// personal-cfo-pxi.14: a row the ledger could not accept is labeled apart from a possible duplicate.
+function unimportableItem(over: Record<string, unknown> = {}): MoneyInboxItemDto {
+  return item({
+    payload_json: JSON.stringify({
+      merchant: "Coffee",
+      description: null,
+      amount_minor: 0,
+      currency: "USD",
+      posted_at: "2026-06-20",
+      account_id: "0190a000-0000-7000-8000-000000000001",
+      account_name: "Checking",
+      source_name: "statement.ofx",
+      dedupe_reason: "not imported: the amount is zero",
+      suspected_committed_txn_id: null,
+      suspected_duplicate: false,
+      ...over,
+    }),
+  });
+}
+
+describe("a row the ledger could not accept (personal-cfo-pxi.14)", () => {
+  it("says it could not be imported and is not a duplicate, with the stored reason", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok([unimportableItem()]));
+    renderWithClient(<MoneyInboxView />);
+
+    await openRowDetails();
+    expect(screen.getByText("Couldn't import.")).toBeInTheDocument();
+    expect(screen.getByText(/this isn't a duplicate/i)).toBeInTheDocument();
+    expect(screen.getByText(/the amount is zero\./i)).toBeInTheDocument();
+    expect(screen.queryByText(/possible duplicate/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not imported:/i)).not.toBeInTheDocument();
+  });
+
+  it("offers Skip and never Import anyway", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok([unimportableItem()]));
+    renderWithClient(<MoneyInboxView />);
+
+    const skip = await screen.findByRole("button", { name: /^skip$/i });
+    expect(screen.queryByRole("button", { name: /import anyway/i })).not.toBeInTheDocument();
+    await openRowDetails();
+    expect(screen.queryByRole("button", { name: /import anyway/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^skip$/i })).toHaveLength(1);
+
+    fireEvent.click(skip);
+    await waitFor(() =>
+      expect(mocks.skipStagedTransaction).toHaveBeenCalledWith(
+        "0190a000-0000-7000-8000-0000000000aa",
+        expect.stringMatching(/.+/),
+      ),
+    );
+    expect(mocks.importStagedAnyway).not.toHaveBeenCalled();
+  });
+
+  it("a suspected duplicate renders as before: a possible duplicate with Import anyway", async () => {
+    mocks.moneyInboxList.mockResolvedValue(
+      ok([
+        unimportableItem({
+          amount_minor: -1299,
+          dedupe_reason: "duplicate of an already-committed transaction",
+          suspected_duplicate: true,
+        }),
+      ]),
+    );
+    renderWithClient(<MoneyInboxView />);
+
+    expect(await screen.findByRole("button", { name: /import anyway/i })).toBeInTheDocument();
+    await openRowDetails();
+    expect(screen.getByText("Possible duplicate.")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't import.")).not.toBeInTheDocument();
+  });
+
+  it("a payload from before the field existed is read from the stored reason", async () => {
+    // No `suspected_duplicate` key at all: a `not imported:` reason is unimportable, any other is a duplicate.
+    const legacy = (reason: string) => {
+      const base = JSON.parse(unimportableItem().payload_json) as Record<string, unknown>;
+      delete base.suspected_duplicate;
+      return item({ payload_json: JSON.stringify({ ...base, dedupe_reason: reason }) });
+    };
+    mocks.moneyInboxList.mockResolvedValue(ok([legacy("not imported: no account was matched for this row")]));
+    const first = renderWithClient(<MoneyInboxView />);
+    expect(await first.findByRole("button", { name: /^skip$/i })).toBeInTheDocument();
+    expect(first.queryByRole("button", { name: /import anyway/i })).not.toBeInTheDocument();
+    first.unmount();
+
+    mocks.moneyInboxList.mockResolvedValue(ok([legacy("duplicate of an already-committed transaction")]));
+    const second = renderWithClient(<MoneyInboxView />);
+    expect(await second.findByRole("button", { name: /import anyway/i })).toBeInTheDocument();
+  });
+});
+
 it("skip resolves the item via the staged transaction id", async () => {
   mocks.moneyInboxList.mockResolvedValue(ok([item()]));
   renderWithClient(<MoneyInboxView />);

@@ -126,9 +126,17 @@ export function useBills() {
     async (
       input: CreateRecurringBillInput,
       follow?: BillFollowUp,
-    ): Promise<{ error: IpcError | null; eventId: string | null; followError: IpcError | null }> => {
+    ): Promise<{
+      error: IpcError | null;
+      eventId: string | null;
+      followError: IpcError | null;
+      /// A follow-up call threw instead of answering, so whether it happened is not known.
+      followUnconfirmed: boolean;
+    }> => {
       const result = await addMutation.mutateAsync(input);
-      if (result.status !== "ok") return { error: result.error, eventId: null, followError: null };
+      if (result.status !== "ok") {
+        return { error: result.error, eventId: null, followError: null, followUnconfirmed: false };
+      }
       // The created event id lets callers fetch the bill's retro-attached history
       // right after approval (ADR 0047 §1, personal-cfo-4d8.25.8).
       const eventId = result.data.event_id;
@@ -137,23 +145,30 @@ export function useBills() {
       // bill"). The bill already exists, so a failure here is returned, not thrown: the bill stays,
       // unlinked, and the overlap warning still offers "Link it" afterwards.
       let followError: IpcError | null = null;
-      if (follow?.linkLoanAccountId) {
-        const linked = await commands.linkBillToLoan(
-          eventId,
-          follow.linkLoanAccountId,
-          mintIdempotencyKey(),
-        );
-        if (linked.status !== "ok") followError = linked.error;
-      } else if (follow?.notPaymentOfLoanAccountId) {
-        const answered = await commands.setBillNotLoanPayment(
-          eventId,
-          follow.notPaymentOfLoanAccountId,
-          mintIdempotencyKey(),
-        );
-        if (answered.status !== "ok") followError = answered.error;
+      let followUnconfirmed = false;
+      try {
+        if (follow?.linkLoanAccountId) {
+          const linked = await commands.linkBillToLoan(
+            eventId,
+            follow.linkLoanAccountId,
+            mintIdempotencyKey(),
+          );
+          if (linked.status !== "ok") followError = linked.error;
+        } else if (follow?.notPaymentOfLoanAccountId) {
+          const answered = await commands.setBillNotLoanPayment(
+            eventId,
+            follow.notPaymentOfLoanAccountId,
+            mintIdempotencyKey(),
+          );
+          if (answered.status !== "ok") followError = answered.error;
+        }
+      } catch {
+        // The bill is already created; a call that threw must not escape as a rejection that reads
+        // as "the bill was not created" and invites adding it again.
+        followUnconfirmed = true;
       }
       if (follow) invalidate();
-      return { error: null, eventId, followError };
+      return { error: null, eventId, followError, followUnconfirmed };
     },
     [addMutation, invalidate],
   );

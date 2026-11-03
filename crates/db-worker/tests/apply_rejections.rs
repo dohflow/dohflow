@@ -22,7 +22,8 @@ use core_ledger::{
 use core_money::{Currency, Money};
 use db_worker::{
     ActorType, AssumptionKind, AssumptionSource, CommandMeta, DbError, DbWorker, IssuedAt,
-    NewAssumptionEvent, NewScenario, RejectCode, ScenarioStatus, WriteCommand,
+    MerchantAnchor, MerchantAssignment, NewAssumptionEvent, NewScenario, RejectCode,
+    ScenarioStatus, WriteCommand,
 };
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -630,7 +631,257 @@ fn scenarios() -> Vec<Step> {
             WriteCommand::ReinstateScenario { id: u(110) },
             Fine,
         ),
+        // ---- undoing an apply (personal-cfo-5ie.12) ----
+        step(
+            "undoing with the confirmed changes out of order",
+            revert_confirmed(110, &[902, 901]),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "undoing an unknown scenario",
+            revert_confirmed(114, &[]),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "undoing a scenario that is not applied",
+            revert_confirmed(110, &[]),
+            Reject(StateConflict),
+        ),
+        step(
+            "creating the first of two stacked scenarios",
+            create_scenario(130, "First"),
+            Fine,
+        ),
+        step(
+            "creating the second of two stacked scenarios",
+            create_scenario(131, "Second"),
+            Fine,
+        ),
+        step("recording a base rate", record_rate(140, None, 300), Fine),
+        step(
+            "recording the first scenario's rate",
+            record_rate(141, Some(130), 400),
+            Fine,
+        ),
+        step(
+            "recording the second scenario's rate",
+            record_rate(142, Some(131), 500),
+            Fine,
+        ),
+        step(
+            "applying the first scenario",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(130),
+            },
+            Fine,
+        ),
+        step(
+            "applying the second scenario over it",
+            WriteCommand::ApplyScenario {
+                scenario_id: u(131),
+            },
+            Fine,
+        ),
+        step(
+            "undoing the first scenario while the second sits on top",
+            revert_confirmed(130, &[]),
+            Reject(StateConflict),
+        ),
+        step(
+            "undoing with a change that was never made",
+            revert_confirmed(131, &[901]),
+            Reject(StateConflict),
+        ),
+        step(
+            "undoing the second scenario",
+            revert_confirmed(131, &[]),
+            Fine,
+        ),
+        step(
+            "undoing the first scenario",
+            revert_confirmed(130, &[]),
+            Fine,
+        ),
+        // ---- apply/merchant_cmds.rs (personal-cfo-5ymg8.5) ----
+        step("minting no anchors", mint(&[]), Reject(PayloadInvalid)),
+        step(
+            "minting past the per-command bound",
+            WriteCommand::MintMerchantAnchors {
+                anchors: (0..=db_worker::MAX_MERCHANT_COMMAND_ENTRIES)
+                    .map(|n| anchor(&format!("K{n:05}")))
+                    .collect(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "minting anchors out of key order",
+            mint(&["ZED", "ABC"]),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "minting the same key twice in one command",
+            mint(&["ABC", "ABC"]),
+            Reject(PayloadInvalid),
+        ),
+        step("minting an empty key", mint(&[""]), Reject(PayloadInvalid)),
+        step(
+            "minting a key wider than the replicated key width",
+            WriteCommand::MintMerchantAnchors {
+                anchors: vec![anchor(&"K".repeat(db_worker::MAX_ALIAS_KEY_BYTES + 1))],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "minting an anchor with a blank display name",
+            WriteCommand::MintMerchantAnchors {
+                anchors: vec![MerchantAnchor {
+                    key: "ABC".to_owned(),
+                    display_name: "  ".to_owned(),
+                }],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step("minting two anchors", mint(&["ABC", "ZED"]), Fine),
+        step("minting a held key again skips it", mint(&["ABC"]), Fine),
+        step(
+            "applying memory to no transactions",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: Vec::new(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory past the per-command bound",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: (0..=db_worker::MAX_MERCHANT_COMMAND_ENTRIES as u128)
+                    .map(|n| assignment(3_000 + n, 10, 10_000))
+                    .collect(),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory out of transaction order",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(31, 10, 10_000), assignment(30, 10, 10_000)],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory with a confidence above 100%",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 10, 10_001)],
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "applying memory to an unknown transaction",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(93, 10, 10_000)],
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying memory with an unknown category",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 92, 10_000)],
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "applying memory fills the uncategorized transaction",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 10, 7_500)],
+            },
+            Fine,
+        ),
+        step(
+            "applying memory again skips the categorized transaction",
+            WriteCommand::ApplyMerchantMemory {
+                assignments: vec![assignment(30, 11, 9_000)],
+            },
+            Fine,
+        ),
+        // ---- apply/settings_cmds.rs (personal-cfo-5ymg8.7) ----
+        step(
+            "setting a key outside the household registry",
+            set_user_setting("user.not_a_setting", "1"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting a device key through the household command",
+            set_user_setting("device.window", "1"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting the minimum cash floor to a negative amount",
+            set_user_setting("user.minimum_cash_floor_minor", "-5"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting the reporting currency to an unsupported code",
+            set_user_setting("user.reporting_currency", "XYZ"),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "setting the minimum cash floor",
+            set_user_setting("user.minimum_cash_floor_minor", "250000"),
+            Fine,
+        ),
+        step(
+            "setting the same value again is a no-op write",
+            set_user_setting("user.minimum_cash_floor_minor", "250000"),
+            Fine,
+        ),
+        step(
+            "clearing the comfort band's upper edge with the empty value",
+            set_user_setting("user.comfort_band_upper_minor", ""),
+            Fine,
+        ),
     ]
+}
+
+fn set_user_setting(key: &str, value: &str) -> WriteCommand {
+    WriteCommand::SetUserSetting {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    }
+}
+
+fn anchor(key: &str) -> MerchantAnchor {
+    MerchantAnchor {
+        key: key.to_owned(),
+        display_name: format!("Brand {key}"),
+    }
+}
+
+fn mint(keys: &[&str]) -> WriteCommand {
+    WriteCommand::MintMerchantAnchors {
+        anchors: keys.iter().map(|k| anchor(k)).collect(),
+    }
+}
+
+fn assignment(txn: u128, category_n: u128, confidence_bps: i64) -> MerchantAssignment {
+    MerchantAssignment {
+        transaction_id: TransactionId::from_uuid(u(txn)),
+        category_id: category(category_n),
+        confidence_bps,
+    }
+}
+
+fn revert_confirmed(scenario: u128, confirmed: &[u128]) -> WriteCommand {
+    WriteCommand::RevertScenarioApplyConfirmed {
+        scenario_id: u(scenario),
+        confirmed_descendants: confirmed.iter().copied().map(u).collect(),
+    }
+}
+
+fn record_rate(n: u128, scenario: Option<u128>, bps: u32) -> WriteCommand {
+    WriteCommand::RecordAssumptionEvent {
+        event: NewAssumptionEvent {
+            kind: AssumptionKind::InflationRate,
+            ..event(n, scenario, &format!(r#"{{"annual_bps":{bps}}}"#))
+        },
+    }
 }
 
 fn open(path: &Path) -> DbWorker {
@@ -770,9 +1021,12 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/assumption_cmds.rs",
         "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
+        "apply/merchant_cmds.rs",
         "apply/mod.rs",
         "apply/scenario_apply.rs",
         "apply/scenario_cmds.rs",
+        "apply/scenario_revert.rs",
+        "apply/settings_cmds.rs",
     ] {
         let path = root.join("src").join(module);
         let source = std::fs::read_to_string(&path).unwrap();

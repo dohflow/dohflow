@@ -124,39 +124,37 @@ pub use forecast::{
 /// The `settings` key holding the household minimum-cash-floor in minor units — the
 /// buffer the user wants to keep (ADR 0029, personal-cfo-fqbm). Default `0`. This is the
 /// comfort band's LOWER edge (ADR 0018 addendum 915.1 wraps, not replaces, the floor).
-pub const MINIMUM_CASH_FLOOR_KEY: &str = "minimum_cash_floor_minor";
+pub const MINIMUM_CASH_FLOOR_KEY: &str = "user.minimum_cash_floor_minor";
 /// The `settings` key holding the comfort band's UPPER edge in minor units — cash above it
 /// is excess the user may choose to deploy (ADR 0018 addendum 915.1, personal-cfo-3v6d).
 /// Absent means no upper edge is set.
-pub const COMFORT_BAND_UPPER_KEY: &str = "comfort_band_upper_minor";
+pub const COMFORT_BAND_UPPER_KEY: &str = "user.comfort_band_upper_minor";
 /// The `settings` key gating auto-apply of merchant memory after an import (ADR 0030
 /// addendum, personal-cfo-5n4.2). `"true"`/`"false"`; **absent means on** (default ON).
-pub const AUTO_CATEGORIZE_ON_IMPORT_KEY: &str = "auto_categorize_on_import";
+pub const AUTO_CATEGORIZE_ON_IMPORT_KEY: &str = "user.auto_categorize_on_import";
 /// The `settings` key holding the Future Cash chart's series-selection preference
 /// (personal-cfo-4d8.25.26): an opaque JSON array of series keys the frontend
 /// serializes. Absent means the default (the three aggregate tiers).
-pub const FUTURE_CASH_SERIES_KEY: &str = "future_cash_series_selection";
-/// Legacy household settings keys retained while personal-cfo-5ymg8 performs the
-/// backwards-compatible `user.*` prefix migration. They are inventory metadata only;
-/// this bead does not rename, route, or reject writes for them.
-pub const LOCALE_KEY: &str = "locale";
+pub const FUTURE_CASH_SERIES_KEY: &str = "user.future_cash_series_selection";
+/// The `settings` key holding the household's reporting (base) currency code, canonical upper case.
+/// Absent means USD.
+pub const REPORTING_CURRENCY_KEY: &str = "user.reporting_currency";
 /// The longest `settings.key`, in UTF-8 bytes. Settings keys are application-defined names
-/// (`device.*`, `user.*` and six legacy names); the key is a replicated primary key whose
-/// canonical encoding is capped at 256 bytes (vault-format.md C.1.5), so the writer bounds it
-/// well inside that.
+/// (`device.*` and `user.*`); the key is a replicated primary key whose canonical encoding is
+/// capped at 256 bytes (vault-format.md C.1.5), so the writer bounds it well inside that.
 pub const MAX_SETTING_KEY_BYTES: usize = 128;
-pub const REPORTING_CURRENCY_KEY: &str = "reporting_currency";
-/// Every currently defined setting key that can be persisted in the settings KV.
-/// New keys must be added with an explicit `device.*` or `user.*` prefix by the
-/// owning migration/write-path bead.
+/// Every household setting a build writes, all `user.*` (class 1, written only by
+/// [`WriteCommand::SetUserSetting`]). A new key is a new row of the registry in
+/// `apply/settings_cmds.rs` and, once the engine version is pinned, an engine-version bump.
 pub const PERSISTED_SETTING_KEYS: &[&str] = &[
-    LOCALE_KEY,
     REPORTING_CURRENCY_KEY,
     MINIMUM_CASH_FLOOR_KEY,
     COMFORT_BAND_UPPER_KEY,
     AUTO_CATEGORIZE_ON_IMPORT_KEY,
     FUTURE_CASH_SERIES_KEY,
 ];
+pub use apply::merchant_cmds::{MAX_MERCHANT_COMMAND_ENTRIES, MAX_MERCHANT_DISPLAY_NAME_BYTES};
+pub use apply::settings_cmds::MAX_USER_SETTING_VALUE_BYTES;
 pub use categorization::RecurringCandidate;
 pub use connectors::MAX_LINK_EXTERNAL_ID_BYTES;
 pub use debt::{DebtTermsInput, DebtTermsView, RepaymentPhilosophy};
@@ -176,7 +174,10 @@ pub use projection::{
 };
 pub use recurring_detection::{CandidateObservation, RecurringCandidateView};
 pub use recurring_instances::{RecurringInstanceRow, UnconfirmedOccurrence};
-pub use scenarios::{NewScenario, ScenarioStatus, ScenarioView};
+pub use scenarios::{
+    NewScenario, RevertBlocker, RevertChange, RevertLine, RevertPreview, ScenarioStatus,
+    ScenarioView,
+};
 pub use spend_by_category::{CategorySpend, SpendBreakdown, SpendFilters};
 
 /// 64 MiB cap on the WAL so it cannot grow without bound (plan §3.2).
@@ -310,6 +311,29 @@ pub struct SplitLineInput {
     pub note: Option<String>,
     /// The line's tags.
     pub tag_ids: Vec<TagId>,
+}
+
+/// One earned merchant brand of a [`WriteCommand::MintMerchantAnchors`] (personal-cfo-5ymg8.5): the
+/// outcome of the grouping heuristic, computed by the issuing device. Apply derives the identity id
+/// from `key` (`v5("merchant-auto:{key}")`, frozen) and runs no heuristic of its own.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MerchantAnchor {
+    /// The normalized brand key, which becomes a `prefix` alias.
+    pub key: String,
+    /// The identity's display name, chosen by the issuing device. The first one sequenced wins.
+    pub display_name: String,
+}
+
+/// One learned category of a [`WriteCommand::ApplyMerchantMemory`] (personal-cfo-5ymg8.5): the
+/// outcome of merchant memory for one uncategorized transaction, computed by the issuing device.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MerchantAssignment {
+    /// The uncategorized transaction to fill.
+    pub transaction_id: TransactionId,
+    /// The learned category.
+    pub category_id: CategoryId,
+    /// The agreement ratio behind the choice, in basis points (0 to 10000).
+    pub confidence_bps: i64,
 }
 
 /// A mutating command. The enum is the exhaustive write surface, so the worker's
@@ -851,9 +875,25 @@ pub enum WriteCommand {
         scenario_id: Uuid,
     },
     /// Undo an [`WriteCommand::ApplyScenario`] (ADR 0055 §5).
+    ///
+    /// Retired (personal-cfo-5ie.12): it leaves an edit made after the apply active next to the
+    /// restored base event. It stays decodable so an operation log written before the fix replays
+    /// as it did, and no producer builds it any more; [`WriteCommand::RevertScenarioApplyConfirmed`]
+    /// replaces it.
     RevertScenarioApply {
         /// The applied scenario to roll back.
         scenario_id: Uuid,
+    },
+    /// Undo an [`WriteCommand::ApplyScenario`] and everything done to its promoted items since
+    /// (ADR 0055 §5 as amended by personal-cfo-5ie.12).
+    ///
+    /// The person confirmed a list of changes; the command clears exactly those and refuses, with
+    /// no write, if the active changes on the base are no longer that list.
+    RevertScenarioApplyConfirmed {
+        /// The applied scenario to roll back.
+        scenario_id: Uuid,
+        /// The active changes made to the promoted items since the apply, strictly ascending.
+        confirmed_descendants: Vec<Uuid>,
     },
     /// Create a user-defined tag (ADR 0033, personal-cfo-2ryf).
     CreateTag {
@@ -884,6 +924,34 @@ pub enum WriteCommand {
         transaction_id: TransactionId,
         /// The full desired set of split lines (sum must equal the txn amount).
         lines: Vec<SplitLineInput>,
+    },
+    /// Mint earned merchant identities (ADR 0030 addendum, personal-cfo-5n4.4; routed onto the bus
+    /// by personal-cfo-5ymg8.5). Carries the grouping heuristic's outcome; apply runs no heuristic.
+    /// A key that already has an alias is skipped whole.
+    MintMerchantAnchors {
+        /// The brands to mint, strictly ascending by key, at most 5,000.
+        anchors: Vec<MerchantAnchor>,
+    },
+    /// Fill uncategorized transactions with the category merchant memory learned (ADR 0030 addendum,
+    /// personal-cfo-7yh0; routed onto the bus by personal-cfo-5ymg8.5). Carries the outcome; apply
+    /// skips a voided or already-categorized transaction and never overwrites.
+    ApplyMerchantMemory {
+        /// The fills, strictly ascending by transaction id, at most 5,000.
+        assignments: Vec<MerchantAssignment>,
+    },
+    /// Set one household preference (ADR 0074 Decision 5, personal-cfo-5ymg8.7). Class 1: it
+    /// follows the person to another device. `key` is the full stored key (`user.<name>`), one of
+    /// the closed registry in `apply/settings_cmds.rs`; `value` is stored verbatim after that key's
+    /// validator accepts it. **Engine-version rule:** once the engine version is pinned
+    /// (personal-cfo-32fmp.4), any change to the registry or a validator (a new key, a newly
+    /// supported currency, a different size cap) changes what a logged command writes and MUST bump
+    /// `engine_version`. `device.*` settings are class 3 and never use this command.
+    SetUserSetting {
+        /// The stored key, `user.<name>`.
+        key: String,
+        /// The value, in the form the writers already produce (the empty string clears the comfort
+        /// band's upper edge).
+        value: String,
     },
     /// Set the household's IANA timezone (`personal-cfo-g3m.8`, ADR 0021 section 1).
     /// It sets the calendar boundary of the forecast horizon, so it is a class-1 logical
@@ -1125,10 +1193,14 @@ impl WriteCommand {
             WriteCommand::MarkReviewed { .. } => "mark_reviewed",
             WriteCommand::ApplyScenario { .. } => "apply_scenario",
             WriteCommand::RevertScenarioApply { .. } => "revert_scenario_apply",
+            WriteCommand::RevertScenarioApplyConfirmed { .. } => "revert_scenario_apply_confirmed",
             WriteCommand::CreateTag { .. } => "create_tag",
             WriteCommand::SetTags { .. } => "set_tags",
             WriteCommand::SetNote { .. } => "set_note",
             WriteCommand::SetSplits { .. } => "set_splits",
+            WriteCommand::MintMerchantAnchors { .. } => "mint_merchant_anchors",
+            WriteCommand::ApplyMerchantMemory { .. } => "apply_merchant_memory",
+            WriteCommand::SetUserSetting { .. } => "set_user_setting",
         }
     }
 }
@@ -1569,6 +1641,10 @@ pub enum DbError {
         /// The table whose key was too wide.
         table: &'static str,
     },
+    /// `set_device_setting` was given a key that is not a `device.*` key: a household preference
+    /// (`user.*`) is class 1 and is set through `SetUserSetting` (ADR 0074 Decision 5).
+    #[error("only device.* settings are written directly; a household setting goes through SetUserSetting")]
+    SettingScope,
 }
 
 impl DbError {
@@ -2249,67 +2325,89 @@ impl DbWorker {
     /// **uncategorized** transactions of the same normalized merchant (`source = 'rule'`,
     /// never overwriting a user assignment). Returns the number newly categorized.
     ///
+    /// Earned brands are minted first (the plan must see them). The heuristics run here, on a read
+    /// connection; what they decide travels in [`WriteCommand::MintMerchantAnchors`] and
+    /// [`WriteCommand::ApplyMerchantMemory`] (personal-cfo-5ymg8.5), chunked to the per-command bound.
+    ///
     /// # Errors
     /// [`DbError`] on a read/write failure.
     pub fn apply_merchant_memory(&self) -> Result<u32, DbError> {
-        let guard = self.lock();
-        merchant_memory::apply(&guard.conn)
+        self.apply_merchant_memory_caused_by(None)
     }
 
-    /// Mint canonical identities for unseeded multi-location chains discovered in the user's
-    /// own transactions (ADR 0030 addendum, personal-cfo-5n4.4), returning the count minted.
-    /// `apply_merchant_memory` runs this first; exposed separately for the import path + tests.
+    /// [`DbWorker::apply_merchant_memory`] for a run another command triggered (an import commit):
+    /// the commands it dispatches carry that command's correlation and `causation_id`, so they queue
+    /// with it if it queues (ADR 0073).
     ///
     /// # Errors
-    /// Returns [`DbError`] if the read/write fails.
-    pub fn apply_merchant_grouping(&self) -> Result<u32, DbError> {
-        let guard = self.lock();
-        merchant_grouping::mint_anchors(&guard.conn)
-    }
-
-    /// Create a canonical merchant identity (ADR 0030 addendum, personal-cfo-zrpg),
-    /// returning its id. `source` is `seed` | `user` | `auto`. The write seam the
-    /// merchant-entity consumers (seeding, the ambiguous-merchant beads) build on.
-    ///
-    /// # Errors
-    /// Returns [`DbError`] if the insert fails (e.g. an out-of-domain `source`).
-    pub fn create_merchant_identity(
+    /// [`DbError`] on a read/write failure.
+    pub fn apply_merchant_memory_caused_by(
         &self,
-        display_name: &str,
-        default_category_id: Option<CategoryId>,
-        is_ambiguous: bool,
-        source: &str,
-    ) -> Result<Uuid, DbError> {
-        let guard = self.lock();
-        merchant_identity::create_identity(
-            &guard.conn,
-            display_name,
-            default_category_id.map(CategoryId::as_uuid),
-            is_ambiguous,
-            source,
-        )
+        cause: Option<&CommandMeta>,
+    ) -> Result<u32, DbError> {
+        let meta = || {
+            let mut meta = connectors::local_meta(ActorType::User, "user");
+            if let Some(cause) = cause {
+                meta.correlation_id = cause.correlation_id;
+                meta.causation_id = Some(cause.command_id);
+                meta.actor_type = cause.actor_type;
+                meta.actor_id.clone_from(&cause.actor_id);
+            }
+            meta
+        };
+        for chunk in self
+            .plan_merchant_anchors()?
+            .chunks(apply::merchant_cmds::MAX_MERCHANT_COMMAND_ENTRIES)
+        {
+            self.dispatch(
+                meta(),
+                WriteCommand::MintMerchantAnchors {
+                    anchors: chunk.to_vec(),
+                },
+            )?;
+        }
+        let mut applied = 0u32;
+        for chunk in self
+            .plan_merchant_assignments()?
+            .chunks(apply::merchant_cmds::MAX_MERCHANT_COMMAND_ENTRIES)
+        {
+            let meta = meta();
+            let assigned_at = apply::issued_at_text(&meta);
+            self.dispatch(
+                meta,
+                WriteCommand::ApplyMerchantMemory {
+                    assignments: chunk.to_vec(),
+                },
+            )?;
+            // What the command wrote, not what it was asked to: it skips a transaction that was
+            // voided or categorized between the plan and the apply.
+            let written: i64 = self.read_connection()?.query_row(
+                "SELECT COUNT(*) FROM transaction_categorizations
+                  WHERE source = 'rule' AND assigned_at = ?1",
+                [assigned_at],
+                |r| r.get(0),
+            )?;
+            applied += u32::try_from(written).unwrap_or(0);
+        }
+        Ok(applied)
     }
 
-    /// Point a normalized merchant key (`categorization::normalize_merchant` output) at an
-    /// identity (ADR 0030 addendum, personal-cfo-zrpg). Re-linking a key moves it.
+    /// The earned merchant brands the grouping heuristic would mint now (ADR 0030 addendum,
+    /// personal-cfo-5n4.4), ascending by key. Read-only.
     ///
     /// # Errors
-    /// Returns [`DbError`] if the insert fails.
-    pub fn link_merchant_alias(
-        &self,
-        normalized_key: &str,
-        merchant_identity_id: Uuid,
-        source: &str,
-        confidence_bps: i64,
-    ) -> Result<(), DbError> {
-        let guard = self.lock();
-        merchant_identity::link_alias(
-            &guard.conn,
-            normalized_key,
-            merchant_identity_id,
-            source,
-            confidence_bps,
-        )
+    /// Returns [`DbError`] if the read fails.
+    pub fn plan_merchant_anchors(&self) -> Result<Vec<MerchantAnchor>, DbError> {
+        merchant_grouping::plan_anchors(&self.read_connection()?)
+    }
+
+    /// The fills merchant memory would make now, ascending by transaction id. Read-only; plan after
+    /// the anchors are minted.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if the read fails.
+    pub fn plan_merchant_assignments(&self) -> Result<Vec<MerchantAssignment>, DbError> {
+        merchant_memory::plan_assignments(&self.read_connection()?)
     }
 
     /// Resolve a normalized merchant key to its canonical identity, if mapped (ADR 0030
@@ -3319,15 +3417,39 @@ impl DbWorker {
         Ok(u64::try_from(n).unwrap_or(0))
     }
 
-    /// Upsert an app-level setting (personal-cfo-p5g). `value` is a JSON or scalar
-    /// string. Settings are configuration, not ledger mutations, so — like
-    /// `vault_metadata` and `audit_events` — they bypass the `WriteCommand` bus.
+    /// Set one household preference through [`WriteCommand::SetUserSetting`] (ADR 0074 Decision 5,
+    /// personal-cfo-5ymg8.7): `key` is a `user.*` key of the registry (the `*_KEY` constants) and
+    /// `value` is in the form its writer produces. This is the only way a `user.*` row is written.
     ///
     /// # Errors
+    /// [`DbError::Rejected`] (`PayloadInvalid`) for a key outside the registry or a value it does
+    /// not accept.
+    pub fn set_user_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        self.dispatch(
+            connectors::local_meta(ActorType::User, "user"),
+            WriteCommand::SetUserSetting {
+                key: key.to_owned(),
+                value: value.to_owned(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Upsert a DEVICE setting (personal-cfo-p5g; ADR 0074 Decision 5). `device.*` settings are
+    /// class 3: node-local configuration that never replicates, so — like `vault_metadata` and
+    /// `audit_events` — they bypass the `WriteCommand` bus. A household preference (`user.*`) is
+    /// class 1 and goes through [`DbWorker::set_user_setting`]; this refuses any key that does not
+    /// begin with `device.`.
+    ///
+    /// # Errors
+    /// [`DbError::SettingScope`] if `key` does not begin with `device.`;
     /// [`DbError::ReplicatedKeyTooLong`] if `key` is longer than [`MAX_SETTING_KEY_BYTES`]
-    /// (the key is the table's primary key and part of the replicated user settings, so its
-    /// width is bounded; it is never truncated), or [`DbError::Sqlite`] on a write failure.
-    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+    /// (the key is the table's primary key, so its width is bounded; it is never truncated), or
+    /// [`DbError::Sqlite`] on a write failure.
+    pub fn set_device_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        if !key.starts_with("device.") {
+            return Err(DbError::SettingScope);
+        }
         if key.len() > MAX_SETTING_KEY_BYTES {
             return Err(DbError::ReplicatedKeyTooLong { table: "settings" });
         }
@@ -4182,6 +4304,81 @@ impl DbWorker {
             out.push(ScenarioView::from_row(row)?);
         }
         Ok(out)
+    }
+
+    /// The applied scenarios that were deleted afterwards, oldest first. Deleting hides a scenario
+    /// but leaves its apply in the real forecast, so these stay listed (marked deleted) for as
+    /// long as there is an apply to undo (personal-cfo-5ie.12).
+    ///
+    /// # Errors
+    /// [`DbError`] on a read failure or an unrecognized stored token.
+    pub fn deleted_applied_scenarios(&self) -> Result<Vec<ScenarioView>, DbError> {
+        let conn = self.read_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.name, s.description, s.status, s.base_run_id, s.created_at,
+                    s.updated_at, s.expires_on,
+                    (SELECT COUNT(*) FROM forecast_assumption_events e
+                      WHERE e.scenario_id = s.id AND e.status = 'active'),
+                    s.applied_at
+             FROM scenarios s
+             WHERE s.deleted_at IS NOT NULL AND s.applied_at IS NOT NULL
+             ORDER BY s.created_at, s.id",
+        )?;
+        let mut out = Vec::new();
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            out.push(ScenarioView::from_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// What undoing an applied scenario would do: the changes made to its promoted items since
+    /// (to list in the confirmation), a later apply that has to be undone first, and the ids the
+    /// confirmation must send back (personal-cfo-5ie.12).
+    ///
+    /// A scenario that is missing or not applied has nothing to list: the preview is empty and the
+    /// revert command refuses it.
+    ///
+    /// # Errors
+    /// [`DbError::Sqlite`] on a read failure.
+    pub fn revert_preview(&self, scenario_id: Uuid) -> Result<RevertPreview, DbError> {
+        let conn = self.read_connection()?;
+        let applied: Option<Option<String>> = conn
+            .query_row(
+                "SELECT applied_at FROM scenarios WHERE id = ?1",
+                params![scenario_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // A preview is advice: a scenario that is missing or not applied has nothing to list, and
+        // the revert command itself refuses it with the typed reason.
+        if !matches!(applied, Some(Some(_))) {
+            return Ok(RevertPreview {
+                lines: Vec::new(),
+                blocker: None,
+                confirmed_descendants: Vec::new(),
+            });
+        }
+        let plan = apply::scenario_revert::plan_revert(&conn, scenario_id)?;
+        let blocker = match plan.blocker {
+            Some(id) => Some(RevertBlocker {
+                scenario_id: id,
+                scenario_name: conn
+                    .query_row(
+                        "SELECT name FROM scenarios WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or_default(),
+            }),
+            None => None,
+        };
+        Ok(RevertPreview {
+            lines: plan.lines,
+            blocker,
+            confirmed_descendants: plan.descendants.into_iter().collect(),
+        })
     }
 
     /// Update a scenario's lifecycle status (draft → active → archived) through
@@ -7828,6 +8025,15 @@ fn apply_command(
                 &apply::issued_at_text(meta),
             )?
         }
+        WriteCommand::RevertScenarioApplyConfirmed {
+            scenario_id,
+            confirmed_descendants,
+        } => apply::scenario_revert::revert_scenario_apply_confirmed(
+            &tx,
+            *scenario_id,
+            confirmed_descendants,
+            &apply::issued_at_text(meta),
+        )?,
         WriteCommand::CreateTag { id, name, color } => {
             apply::transactions::apply_create_tag(&tx, meta, id, name, color)?
         }
@@ -7843,6 +8049,15 @@ fn apply_command(
             transaction_id,
             lines,
         } => apply::transactions::apply_set_splits(&tx, &mut ids, transaction_id, lines)?,
+        WriteCommand::MintMerchantAnchors { anchors } => {
+            apply::merchant_cmds::write_merchant_anchors(&tx, meta, anchors)?
+        }
+        WriteCommand::ApplyMerchantMemory { assignments } => {
+            apply::merchant_cmds::write_merchant_assignments(&tx, meta, assignments)?
+        }
+        WriteCommand::SetUserSetting { key, value } => {
+            apply::settings_cmds::apply_set_user_setting(&tx, meta, key, value)?
+        }
     };
 
     fault.maybe_panic(FaultPoint::AfterMutation);
@@ -7883,6 +8098,7 @@ fn apply_command(
         // are recoverable from it via `promoted_from_scenario_id` (ADR 0055).
         WriteCommand::ApplyScenario { .. }
         | WriteCommand::RevertScenarioApply { .. }
+        | WriteCommand::RevertScenarioApplyConfirmed { .. }
         | WriteCommand::CreateScenario { .. }
         | WriteCommand::SetScenarioStatus { .. }
         | WriteCommand::RenameScenario { .. }
@@ -7901,6 +8117,9 @@ fn apply_command(
         WriteCommand::SetTags { .. } => "transaction_tags",
         WriteCommand::SetNote { .. } => "transaction_details",
         WriteCommand::SetSplits { .. } => "split_lines",
+        WriteCommand::MintMerchantAnchors { .. } => "merchant_identities",
+        WriteCommand::ApplyMerchantMemory { .. } => "transaction_categorizations",
+        WriteCommand::SetUserSetting { .. } => "settings",
         WriteCommand::CreateRecurringTransfer { .. }
         | WriteCommand::DeleteRecurringTransfer(_)
         | WriteCommand::ReinstateRecurringTransfer(_) => "recurring_transfers",

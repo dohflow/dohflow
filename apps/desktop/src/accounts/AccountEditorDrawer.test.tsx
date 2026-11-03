@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 import type { AccountViewDto } from "@/bindings";
@@ -220,4 +220,162 @@ test("a loan account offers Original principal, not Credit limit", () => {
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByText(/original principal/i)).toBeInTheDocument();
   expect(within(dialog).queryByText(/credit limit/i)).not.toBeInTheDocument();
+});
+
+describe("a save that stops part-way (g3m.35)", () => {
+  const refusal = { status: "error", error: { Validation: "That note is too long." } } as const;
+
+  function fillCard() {
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Sapphire" } });
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "CreditFacility" } });
+    fireEvent.change(screen.getByPlaceholderText(/anything you want to remember/i), {
+      target: { value: "Travel card" },
+    });
+  }
+
+  test("a retry continues the account that was created and never creates a second", async () => {
+    mocks.setDebtTerms.mockResolvedValueOnce(refusal);
+    mocks.setDebtTerms.mockResolvedValue(ok({ op_seq: 3, replayed: false }));
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={onClose} />,
+    );
+    fillCard();
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    await screen.findByRole("button", { name: /try again/i });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(mocks.createAccount).toHaveBeenCalledTimes(1);
+    expect(mocks.setAccountNote).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.createAccount).toHaveBeenCalledTimes(1); // still one account
+    expect(mocks.setAccountNote).toHaveBeenCalledTimes(1); // the saved step is not repeated
+    expect(mocks.setDebtTerms).toHaveBeenCalledTimes(2);
+    expect(mocks.setDebtTerms.mock.calls[1]?.[0].account_id).toBe("new-id");
+  });
+
+  test("says which steps saved and which did not, with the reason, and promises no undo", async () => {
+    mocks.setDebtTerms.mockResolvedValue(refusal);
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={vi.fn()} />,
+    );
+    fillCard();
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    const alert = await screen.findByText(/the account was added, but not everything saved/i);
+    const block = alert.parentElement as HTMLElement;
+    expect(within(block).getByText("Saved: Account, Notes.")).toBeInTheDocument();
+    expect(within(block).getByText(/Didn’t save: Debt\. That note is too long\./)).toBeInTheDocument();
+    expect(screen.queryByText(/undo/i)).toBeNull();
+    // The drawer now edits the account it created.
+    expect(screen.getByRole("dialog", { name: /edit sapphire/i })).toBeInTheDocument();
+    expect(screen.getByLabelText("Type")).toBeDisabled();
+  });
+
+  test("a step that threw is listed as unconfirmed, never as not saved", async () => {
+    mocks.setAccountNote.mockRejectedValueOnce(new Error("connection lost"));
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={onClose} />,
+    );
+    fillCard();
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    const heading = await screen.findByText(/the account was added, but not everything could be confirmed/i);
+    const block = heading.parentElement as HTMLElement;
+    expect(within(block).getByText("Saved: Account.")).toBeInTheDocument();
+    expect(within(block).getByText("Couldn’t confirm: Notes. It may or may not have saved.")).toBeInTheDocument();
+    expect(within(block).queryByText(/Didn’t save/)).toBeNull();
+    expect(within(block).getByText("Not tried yet: Debt.")).toBeInTheDocument();
+
+    // Trying again repeats the unconfirmed step and the rest, and never creates a second account.
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.createAccount).toHaveBeenCalledTimes(1);
+    expect(mocks.setAccountNote).toHaveBeenCalledTimes(2);
+  });
+
+  test("a refused step and a thrown step never share a bucket", async () => {
+    mocks.setDebtTerms.mockResolvedValue(refusal);
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={vi.fn()} />,
+    );
+    fillCard();
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    const heading = await screen.findByText(/the account was added, but not everything saved/i);
+    expect(within(heading.parentElement as HTMLElement).queryByText(/Couldn’t confirm/)).toBeNull();
+  });
+
+  test("a create call that threw is retried with the same key", async () => {
+    mocks.createAccount.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Roth IRA" } });
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    expect(await screen.findByText(/couldn’t confirm whether this saved/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    await waitFor(() => expect(mocks.createAccount).toHaveBeenCalledTimes(2));
+    const keys = mocks.createAccount.mock.calls.map((c) => c[0].idempotency_key);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  test("Escape, the backdrop and Close do nothing while a save is in flight", async () => {
+    let finish: (value: unknown) => void = () => {};
+    mocks.createAccount.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer account={null} defaultCurrency="USD" onClose={onClose} />,
+    );
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Roth IRA" } });
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /cancel/i })).toBeDisabled());
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(screen.getByRole("dialog").firstElementChild as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => finish(ok({ account_id: "new-id", mutation: { op_seq: 1, replayed: false } })));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  test("editing an account: a retry repeats only the steps that did not save", async () => {
+    mocks.updateAccount.mockResolvedValue(ok({ op_seq: 4, replayed: false }));
+    mocks.setAccountNote.mockResolvedValueOnce(refusal);
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 5, replayed: false }));
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer
+        account={{
+          id: "chk-1",
+          name: "Checking",
+          cashflow_role: "liquid_cash",
+          subtype: null,
+          active: true,
+          balance: { minor_units: 0, currency: "USD" },
+          notes: null,
+          linked_account_id: null,
+          linked_account_name: null,
+        }}
+        defaultCurrency="USD"
+        onClose={onClose}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Everyday" } });
+    fireEvent.change(screen.getByPlaceholderText(/anything you want to remember/i), {
+      target: { value: "Main account" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save account/i }));
+    expect(await screen.findByText(/some changes saved and some didn’t/i)).toBeInTheDocument();
+    expect(screen.getByText(/Saved: Name\./)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.updateAccount).toHaveBeenCalledTimes(1); // the rename is not sent twice
+    expect(mocks.setAccountNote).toHaveBeenCalledTimes(2);
+  });
 });

@@ -30,6 +30,11 @@ fix this doc.
   never a bespoke `refresh()` or a tab remount to force a refetch.
 - The `QueryClient` cache is **cleared on vault lock** (ADR 0003: "the cache is
   cleared on lock").
+- Reads and writes are local IPC, so the query client ignores the OS's connectivity:
+  `onlineManager` means "the vault can take a command", and the key rotation in
+  `VaultProvider` is its only writer (ADR 0083 §5). A future network-backed query
+  (Sync, connectors) must set its own `networkMode` and must not rely on
+  `onlineManager` reflecting the OS.
 - **Until o9cz lands**, the existing pattern is a `useX` hook holding
   `data | null`, `error`, and a `refresh()` (see `useBills.ts`, `useDashboard.ts`).
   Match it for new screens, then migrate the whole set together.

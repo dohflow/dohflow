@@ -40,6 +40,7 @@
       "errors": [
         "VaultExists",
         "VaultNotFound",
+        "ReplicaHalted",
         "WritesSuspended",
         "MembershipChainInvalid",
         "EpochRecordInvalid",
@@ -119,7 +120,9 @@
       "success": "201/200",
       "errors": [
         "VaultNotFound",
+        "ReplicaHalted",
         "WritesSuspended",
+        "PayloadTooLarge",
         "MalformedObject",
         "UnsupportedSuite",
         "EpochRejected",
@@ -137,6 +140,7 @@
       "success": "200",
       "errors": [
         "VaultNotFound",
+        "ReplicaHalted",
         "WritesSuspended",
         "SnapshotNotFound",
         "MalformedObject",
@@ -204,6 +208,94 @@
       "errors": [
         "VaultNotFound"
       ]
+    },
+    {
+      "op": "appendVoid",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/voids",
+      "auth": "device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "WritesSuspended",
+        "MalformedObject",
+        "UnsupportedSuite",
+        "VoidSignerNotAuthorized",
+        "VoidSignatureInvalid",
+        "VoidTargetMismatch",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "reportHalt",
+      "method": "PUT",
+      "path": "/vaults/{vault_id}/devices/{device_id}/halt",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound"
+      ]
+    },
+    {
+      "op": "beginSnapshotUpload",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "ReplicaHalted",
+        "WritesSuspended",
+        "SnapshotTooLarge",
+        "PayloadTooLarge",
+        "ObjectConflict",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "putSnapshotPart",
+      "method": "PUT",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads/parts/{part_number}",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "ReplicaHalted",
+        "WritesSuspended",
+        "UploadNotFound",
+        "PartOutOfSequence",
+        "ObjectConflict",
+        "MalformedObject",
+        "UnsupportedSuite",
+        "EpochRejected",
+        "PayloadTooLarge"
+      ]
+    },
+    {
+      "op": "completeSnapshotUpload",
+      "method": "POST",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads/complete",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "ReplicaHalted",
+        "WritesSuspended",
+        "UploadNotFound",
+        "UploadIncomplete",
+        "MalformedObject",
+        "EpochRejected"
+      ]
+    },
+    {
+      "op": "abortSnapshotUpload",
+      "method": "DELETE",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/uploads",
+      "auth": "account/device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound"
+      ]
     }
   ],
   "common_errors": [
@@ -262,6 +354,10 @@
       "status": 400
     },
     {
+      "code": "VoidSignatureInvalid",
+      "status": 400
+    },
+    {
       "code": "Unauthorized",
       "status": 401
     },
@@ -271,6 +367,10 @@
     },
     {
       "code": "DeviceRevoked",
+      "status": 403
+    },
+    {
+      "code": "VoidSignerNotAuthorized",
       "status": 403
     },
     {
@@ -295,6 +395,10 @@
     },
     {
       "code": "ArtifactNotFound",
+      "status": 404
+    },
+    {
+      "code": "UploadNotFound",
       "status": 404
     },
     {
@@ -335,6 +439,22 @@
     },
     {
       "code": "AckBeyondHead",
+      "status": 409
+    },
+    {
+      "code": "VoidTargetMismatch",
+      "status": 409
+    },
+    {
+      "code": "PartOutOfSequence",
+      "status": 409
+    },
+    {
+      "code": "UploadIncomplete",
+      "status": 409
+    },
+    {
+      "code": "ReplicaHalted",
       "status": 409
     },
     {

@@ -1,18 +1,27 @@
 //! `merchant_aliases.normalized_key` is a replicated primary key, so its width is bounded by the
 //! canonical row encoding (vault-format.md C.1.5, 256 bytes; personal-cfo-t2s4b part 5b). The
-//! schema bounds nothing, so the writer does: a key that would be too wide is rejected with a
-//! typed error and never truncated.
+//! schema bounds nothing, so the writer does: `MintMerchantAnchors` is the one command that writes
+//! an alias (personal-cfo-5ymg8.5), and it refuses a key that would be too wide with a typed
+//! rejection and never truncates it.
 
 mod common;
 
-use common::worker;
-use db_worker::{DbError, MAX_ALIAS_KEY_BYTES};
+use common::{meta, worker};
+use db_worker::{DbError, MerchantAnchor, RejectCode, WriteCommand, MAX_ALIAS_KEY_BYTES};
 use sync_core::row_digest::{primary_key, Kind, RowDigestError, Value};
 
-fn identity(worker: &db_worker::DbWorker) -> uuid::Uuid {
+fn mint(worker: &db_worker::DbWorker, key: &str) -> Result<(), DbError> {
     worker
-        .create_merchant_identity("Coffee Shop", None, false, "user")
-        .unwrap()
+        .dispatch(
+            meta(),
+            WriteCommand::MintMerchantAnchors {
+                anchors: vec![MerchantAnchor {
+                    key: key.to_owned(),
+                    display_name: "Coffee Shop".to_owned(),
+                }],
+            },
+        )
+        .map(|_| ())
 }
 
 #[test]
@@ -29,25 +38,23 @@ fn the_constant_is_exactly_the_widest_key_the_encoder_accepts() {
 #[test]
 fn a_key_at_the_limit_is_stored_and_one_byte_over_is_rejected_not_truncated() {
     let (_dir, worker) = worker();
-    let id = identity(&worker);
     let fits = "K".repeat(MAX_ALIAS_KEY_BYTES);
-    worker
-        .link_merchant_alias(&fits, id, "user", 10_000)
-        .unwrap();
-    assert_eq!(
-        worker.resolve_merchant_identity(&fits).unwrap().unwrap().id,
-        id
-    );
+    mint(&worker, &fits).unwrap();
+    let id = worker
+        .resolve_merchant_identity(&fits)
+        .unwrap()
+        .expect("the at-limit key is stored")
+        .id;
 
     let over = "K".repeat(MAX_ALIAS_KEY_BYTES + 1);
-    let err = worker
-        .link_merchant_alias(&over, id, "user", 10_000)
-        .unwrap_err();
+    let identities = worker.merchant_identity_count().unwrap();
+    let err = mint(&worker, &over).unwrap_err();
     assert!(
         matches!(
             err,
-            DbError::ReplicatedKeyTooLong {
-                table: "merchant_aliases"
+            DbError::Rejected {
+                code: RejectCode::PayloadInvalid,
+                ..
             }
         ),
         "{err:?}"
@@ -57,7 +64,7 @@ fn a_key_at_the_limit_is_stored_and_one_byte_over_is_rejected_not_truncated() {
         "the error never carries the key"
     );
     // Nothing was stored, and no truncated prefix was stored either.
-    assert!(worker.resolve_merchant_identity(&over).unwrap().is_none());
+    assert_eq!(worker.merchant_identity_count().unwrap(), identities);
     let prefix = &over[..MAX_ALIAS_KEY_BYTES];
     assert_eq!(
         worker
@@ -73,16 +80,16 @@ fn a_key_at_the_limit_is_stored_and_one_byte_over_is_rejected_not_truncated() {
 #[test]
 fn width_is_counted_in_utf8_bytes_not_characters() {
     let (_dir, worker) = worker();
-    let id = identity(&worker);
     // 126 two-byte characters is 252 bytes: over the limit though only 126 characters long.
     let wide = "\u{e9}".repeat(126);
     assert!(wide.chars().count() < MAX_ALIAS_KEY_BYTES && wide.len() > MAX_ALIAS_KEY_BYTES);
     assert!(matches!(
-        worker
-            .link_merchant_alias(&wide, id, "user", 1)
-            .unwrap_err(),
-        DbError::ReplicatedKeyTooLong { .. }
+        mint(&worker, &wide).unwrap_err(),
+        DbError::Rejected {
+            code: RejectCode::PayloadInvalid,
+            ..
+        }
     ));
     let ok = "\u{e9}".repeat(125); // 250 bytes
-    worker.link_merchant_alias(&ok, id, "user", 1).unwrap();
+    mint(&worker, &ok).unwrap();
 }

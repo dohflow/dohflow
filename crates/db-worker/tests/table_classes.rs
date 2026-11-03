@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::worker;
 use db_worker::{
-    AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, FUTURE_CASH_SERIES_KEY, LOCALE_KEY,
+    AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, FUTURE_CASH_SERIES_KEY,
     MINIMUM_CASH_FLOOR_KEY, PERSISTED_SETTING_KEYS, REPORTING_CURRENCY_KEY,
 };
 use rusqlite::Connection;
@@ -222,59 +222,35 @@ fn validate_manifest(rows: &[ManifestRow]) -> Result<(), String> {
 }
 
 fn validate_settings_keys(row: &ManifestRow) -> Result<(), String> {
-    let legacy = row.get("legacy_settings_keys").unwrap_or("");
-    let legacy: BTreeSet<&str> = legacy
+    // The legacy unprefixed names are gone (personal-cfo-5ymg8.7): every household preference is a
+    // `user.*` key written by `SetUserSetting`, so no legacy inventory field may linger.
+    for retired in [
+        "legacy_settings_keys",
+        "legacy_persisted_keys",
+        "legacy_key_scope",
+        "prefix_migration_bead",
+    ] {
+        if row.get(retired).is_some() {
+            return Err(format!(
+                "the settings row still carries the retired legacy field {retired:?}"
+            ));
+        }
+    }
+
+    let declared = row.required("user_setting_keys")?;
+    let declared: BTreeSet<&str> = declared
         .split(',')
         .map(str::trim)
         .filter(|key| !key.is_empty())
         .collect();
-    if legacy != BTreeSet::from(["locale", "reporting_currency"]) {
+    let expected: BTreeSet<&str> = PERSISTED_SETTING_KEYS.iter().copied().collect();
+    if declared != expected {
         return Err(format!(
-            "settings legacy allowlist must be locale/reporting_currency, got {legacy:?}"
+            "settings user_setting_keys must be exactly the registry {expected:?}, got {declared:?}"
         ));
     }
-
-    let persisted = row.required("legacy_persisted_keys")?;
-    let persisted: BTreeSet<&str> = persisted
-        .split(',')
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .collect();
-    let expected = BTreeSet::from([
-        "locale",
-        "reporting_currency",
-        "minimum_cash_floor_minor",
-        "comfort_band_upper_minor",
-        "auto_categorize_on_import",
-        "future_cash_series_selection",
-    ]);
-    if persisted != expected {
-        return Err(format!(
-            "settings persisted inventory must enumerate the six current keys, got {persisted:?}"
-        ));
-    }
-
-    let scopes = row.required("legacy_key_scope")?;
-    let scopes: BTreeSet<_> = scopes
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .collect();
-    let expected_scopes = BTreeSet::from([
-        "locale=user",
-        "reporting_currency=user",
-        "minimum_cash_floor_minor=user",
-        "comfort_band_upper_minor=user",
-        "auto_categorize_on_import=user",
-        "future_cash_series_selection=user",
-    ]);
-    if scopes != expected_scopes {
-        return Err(format!(
-            "settings legacy scope inventory must mark each current preference user-scoped, got {scopes:?}"
-        ));
-    }
-    if row.required("prefix_migration_bead")? != "personal-cfo-5ymg8" {
-        return Err("settings prefix migration must be owned by personal-cfo-5ymg8".to_owned());
+    if let Some(key) = declared.iter().find(|key| !key.starts_with("user.")) {
+        return Err(format!("household setting {key:?} must begin with user."));
     }
 
     for key in row
@@ -645,7 +621,7 @@ fn mixed_audit_rebase_selects_the_declared_runtime_branch() {
 }
 
 #[test]
-fn settings_key_convention_allows_only_declared_legacy_names() {
+fn settings_key_convention_allows_only_prefixed_keys_and_no_legacy_fields() {
     let rows = manifest_rows();
     let settings = rows
         .iter()
@@ -670,6 +646,13 @@ fn settings_key_convention_allows_only_declared_legacy_names() {
         "device.new_cache,user.new_preference".to_owned(),
     );
     validate_settings_keys(&prefixed).unwrap();
+
+    let mut legacy = settings.clone();
+    legacy
+        .fields
+        .insert("legacy_persisted_keys".to_owned(), "locale".to_owned());
+    let error = validate_settings_keys(&legacy).unwrap_err();
+    assert!(error.contains("retired legacy field"), "{error}");
 }
 
 #[test]
@@ -680,7 +663,6 @@ fn settings_manifest_matches_the_actual_persisted_key_inventory() {
         .find(|row| row.get("table") == Some("settings"))
         .unwrap();
     let expected: BTreeSet<String> = [
-        LOCALE_KEY,
         REPORTING_CURRENCY_KEY,
         MINIMUM_CASH_FLOOR_KEY,
         COMFORT_BAND_UPPER_KEY,
@@ -690,9 +672,11 @@ fn settings_manifest_matches_the_actual_persisted_key_inventory() {
     .into_iter()
     .map(str::to_owned)
     .collect();
-    assert_eq!(source_unprefixed_setting_keys(DB_WORKER_SOURCE), expected);
+    // Every key constant in the source is a prefixed household key of the registry.
+    assert_eq!(source_defined_setting_keys(DB_WORKER_SOURCE), expected);
+    assert!(source_unprefixed_setting_keys(DB_WORKER_SOURCE).is_empty());
     let declared: BTreeSet<_> = settings
-        .required("legacy_persisted_keys")
+        .required("user_setting_keys")
         .unwrap()
         .split(',')
         .map(str::trim)
@@ -701,9 +685,16 @@ fn settings_manifest_matches_the_actual_persisted_key_inventory() {
         .collect();
     assert_eq!(declared, expected);
 
+    // Setting each registry key through the command stores exactly the declared rows.
     let (_dir, worker) = worker();
     for key in PERSISTED_SETTING_KEYS {
-        worker.set_setting(key, "inventory-test").unwrap();
+        let value = match *key {
+            k if k == AUTO_CATEGORIZE_ON_IMPORT_KEY => "true",
+            k if k == REPORTING_CURRENCY_KEY => "USD",
+            k if k == FUTURE_CASH_SERIES_KEY => "[]",
+            _ => "1",
+        };
+        worker.set_user_setting(key, value).unwrap();
     }
     let conn = worker.read_connection().unwrap();
     let persisted: BTreeSet<String> = conn
@@ -721,16 +712,11 @@ fn settings_inventory_rejects_a_new_unprefixed_constant() {
     let source =
         format!("{DB_WORKER_SOURCE}\npub const NEW_UNPREFIXED_KEY: &str = \"new_unprefixed\";\n");
     let actual = source_unprefixed_setting_keys(&source);
-    let expected: BTreeSet<String> = PERSISTED_SETTING_KEYS
-        .iter()
-        .map(|key| (*key).to_owned())
-        .collect();
     assert!(actual.contains("new_unprefixed"));
-    assert!(!actual.is_subset(&expected));
 
     let prefixed_source =
         format!("{DB_WORKER_SOURCE}\npub const NEW_DEVICE_KEY: &str = \"device.new_cache\";\n");
-    assert_eq!(source_unprefixed_setting_keys(&prefixed_source), expected);
+    assert!(source_unprefixed_setting_keys(&prefixed_source).is_empty());
 }
 
 #[test]
@@ -813,9 +799,10 @@ fn every_class4_row_records_the_pending_disposition() {
         .iter()
         .filter(|row| row.get("class") == Some("4"))
         .collect();
-    // Shrinks as SYNC-2 routes each class-4 table to class 1: seven remain after the scenario
-    // and assumption-event commands (personal-cfo-5ymg8.4).
-    assert!(class4.len() >= 7);
+    // Shrinks as SYNC-2 routes each class-4 table to class 1: four remain after the scenario and
+    // assumption-event commands (personal-cfo-5ymg8.4), the merchant tables and categorizations
+    // (personal-cfo-5ymg8.5) and the household settings marker (personal-cfo-5ymg8.7).
+    assert!(class4.len() >= 4);
     for row in class4 {
         let note = row.required("note").unwrap();
         assert!(
@@ -846,7 +833,6 @@ fn starting_assignment_rows_are_not_silently_dropped() {
         "split_lines",
         "split_line_tags",
         "recurring_events",
-        "recurring_event_instances",
         "recurring_event_tags",
         "recurring_transfers",
         "bill_contracts",
@@ -867,6 +853,7 @@ fn starting_assignment_rows_are_not_silently_dropped() {
         // Class 2 projections.
         "money_inbox_read_model",
         "commitments",
+        "recurring_event_instances",
         "forecast_actuals",
         "forecast_diffs",
         "forecast_dirty_ranges",

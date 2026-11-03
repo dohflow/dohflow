@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=21 -->
-<!-- vault-format: schema-version=63 -->
+<!-- vault-format: spec-version=27 -->
+<!-- vault-format: schema-version=64 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -169,7 +169,9 @@ These are **Sync planning classifications**, not a claim that every class-1
 table is already synced or that class-4 user data may be silently omitted from
 a future portable export. `attachments` and `attachment_links` are currently
 class 4; the manifest splits their user metadata from local blob keys, storage
-IDs, and paths. Settings still include documented legacy unprefixed keys.
+IDs, and paths. Settings are `device.*` (never exported) and `user.*`; the five household
+preferences `user.<name>` travel in a portable export (schema version 64 renamed the former
+unprefixed names).
 
 ### Canonical state and audit history
 
@@ -270,6 +272,62 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 27` (personal-cfo-v98vd, AC27) names the failure for an epoch record whose
+  `membership_head` is neither installed nor in the same request: `EpochRecordMissing` (the converse
+  of an add that no epoch record names), where the reference verifier and the vector
+  `invalid_epoch_naming_an_unknown_head` had `BadEpochSequence`. A malformed pairing must not send a
+  client into the "fetch the chain and rebuild" loop that `BadEpochSequence` means. The vector's
+  expected name is corrected and `invalid_grant_without_the_add_it_names` is added. No wire layout
+  changes; the error stays non-retryable and not a halt.
+- `spec-version = 26` (personal-cfo-5ymg8.7) adds the version 1 command `SetUserSetting` (`key` and
+  `value`) and makes the five household preferences, all `user.*` keys of `settings`, class 1
+  rows written only by it: a closed registry (the reporting currency, the minimum cash floor, the
+  comfort band's upper edge, the auto-categorize switch and the Future Cash series selection), each
+  with a pure validator, the value stored verbatim and `updated_at` taken from `issued_at`.
+  `device.*` keys stay class 3 and raw. The `settings` projection filter is the `user.` prefix
+  alone; the six unprefixed legacy names (and `locale`, which no build wrote) are no longer
+  replicated. Schema version 64 renames the five unprefixed names every earlier build wrote
+  (`reporting_currency`, `minimum_cash_floor_minor`, `comfort_band_upper_minor`,
+  `auto_categorize_on_import`, `future_cash_series_selection`) to `user.<name>` once, on open,
+  keeping value and `updated_at`; a prefixed row already present wins; there is no dual-read
+  fallback (owner decision D-ST1). ADR 0073 Addendum K gives the disposition (Set, queue-choose).
+  The version 1 payload fixtures gain one file.
+- `spec-version = 25` (personal-cfo-5ymg8.5) adds the version 1 commands `MintMerchantAnchors` and
+  `ApplyMerchantMemory` and records `merchant_aliases`, `merchant_identities` and
+  `transaction_categorizations` as class 1 now that no raw writer remains (the genesis seed is the
+  one non-command writer, in the vault-creating transaction). Each command carries the OUTCOME of a
+  heuristic the issuing device ran (the brands to mint, the fills to make) and apply runs no
+  heuristic. A mint skips a key any alias holds; a fill skips a voided or already-categorized
+  transaction and never overwrites; a missing transaction or category refuses the whole command. An
+  earned brand's identity id is `v5(NAMESPACE_OID, "merchant-auto:{key}")`, frozen. ADR 0073
+  Addendum J gives the dispositions (Base-dependent, auto after re-evaluation). No schema version,
+  wire layout or existing vector changes; the version 1 payload fixtures gain two files.
+- `spec-version = 24` (personal-cfo-g3m.33) corrects what the service dedupes when it appends a void
+  (C.10 "Void records", two passages): it dedupes only an identical void (the same body id) and keeps
+  every distinct void, including a second one that names the exact same `seq`. The earlier text also
+  deduped any second void naming the same `seq`; that let a void which is inert for a
+  signer-controlled reason (it names a valid envelope, or one a replica cannot yet judge)
+  permanently block the genuine one, which contradicts the invariant that a malicious member cannot
+  block recovery. The finding is `03a-escalation`'s from the `personal-cfo-g3m.26` pre-read (item 4),
+  adopted as `personal-cfo-v98vd` AC22 and `personal-cfo-g3m.33` AC1; ADR 0074 Addendum D rule 3
+  carries the same correction. No wire layout and no existing vector changes: the replica-side
+  honor rule (`void-honor-v1.json`) never depended on the service dedupe. The service-side wire
+  form is in the Sync service protocol 4.11.
+- `spec-version = 23` (personal-cfo-5ymg8.9) corrects the class of `recurring_event_instances` in the
+  inventory from 1 to 2 (derived, rebuilt locally): the rows are rebuilt on read from the active
+  schedules and the ledger and depend on the day they are rebuilt, so two devices hold different
+  rows and no single value exists to replicate, and the table stores no user outcome (confirmations
+  are class-1 `confirmed_obligations`). The table leaves the Sync and genesis inventory and the
+  write set; no command writes it, and an occurrence outcome must never be stored on it, because a
+  rebuild deletes it. No wire layout, vector or schema change.
+- `spec-version = 22` (personal-cfo-5ie.12) adds the version 1 command `RevertScenarioApplyConfirmed`
+  (`scenario_id` and `confirmed_descendants`, strictly ascending) and retires `RevertScenarioApply`:
+  it stays decodable and replays as before, and no producer builds it. Apply clears the confirmed
+  active descendants of the promoted rows, restores what the apply superseded and clears the
+  promoted rows; it refuses with `StateConflict` and writes nothing when a later apply sits on top
+  or when the active descendants differ from the confirmed list. ADR 0073 Addendum I gives the
+  disposition (Base-dependent). No schema version, wire layout or existing vector changes; the
+  version 1 payload fixtures gain one file.
 - `spec-version = 21` (personal-cfo-g3m.31) adds `durable_jobs.committed_at` and
   `durable_jobs.committed_outcome` (schema version 63): a device-local marker, set in the same
   transaction as a running job's durable effect, with what committed (`succeeded`, or `failed` for a
@@ -429,7 +487,6 @@ therefore requires reviewing this inventory.
 | `profiles` | 1 | include | include | Per-member non-secret display preferences (initials, color). No secret-bearing column. |
 | `income_sources` | 1 | include | include | Canonical user intent. |
 | `recurring_events` | 1 | include | include | Canonical user intent. |
-| `recurring_event_instances` | 1 | include | include | Canonical user intent. |
 | `recurring_event_tags` | 1 | include | include | Canonical user intent. |
 | `recurring_transfers` | 1 | include | include | Canonical user intent. |
 | `bill_contracts` | 1 | include | include | Canonical user intent. |
@@ -470,7 +527,7 @@ therefore requires reviewing this inventory.
 | `vault_metadata` | 3 | exclude | exclude | Device-local state: `vault_id`, `schema_version`, `envelope_version`, `kdf_algorithm`, `kdf_memory_kib`, `kdf_time_cost`, `kdf_parallelism`, `manifest_pointer` and `created_at` never leave the vault; an imported vault gets its own. The household timezone lives on the class-1 `households` row since schema version 61. |
 | `schema_migrations` | 3 | exclude | exclude | Device-local state. |
 | `audit_events` | 3 | exclude | exclude | Device-local security evidence and replay-owned planned-command rows; not a user-owned financial record. |
-| `settings` | 3 | fields | fields | Keys with the `user.` prefix and the six legacy unprefixed user keys travel; `device.*` keys never do. |
+| `settings` | 3 | fields | fields | Keys with the `user.` prefix travel; `device.*` keys never do. The `user.*` rows are the household's preferences, written only by `SetUserSetting`. |
 | `connector_connections` | 1 | include | include | Connection identity only: id, provider (`adapter_id`), display hint, created and updated times, and the `deleted_at` tombstone. No credential, refresh time or error: those are in `connector_connection_secrets`. |
 | `connector_account_links` | 1 | include | include | The external-account to ledger-account mapping and currency, per connection. The per-account refresh watermark is device-local (`connector_link_cursors`). |
 | `connector_connection_secrets` | 3 | exclude | exclude | Device-local provider credential, last refresh time and last error; never leaves the device. |
@@ -486,11 +543,12 @@ therefore requires reviewing this inventory.
 | `scenarios` | 1 | include | include | A named scenario and its lifecycle. Written only by the scenario commands; a delete is a tombstone (`deleted_at`), and `base_run_id` is NULL on every command-written row. Recorded as class 1 by ADR 0074 Addendum H. |
 | `forecast_assumption_events` | 1 | include | include | A base override or scenario overlay row, immutable once written except for `status` and `superseded_by`. Written only by the assumption-event and scenario commands; `origin_run_id` is NULL on every command-written row. Recorded as class 1 by ADR 0074 Addendum H. |
 | `forecast_dependency_edges` | 2 | rebuild | rebuild | Derived per-run attribution (an assumption event to a forecast row of one run); rebuilt locally, never shipped. Corrected from class 4 by ADR 0074 Addendum F. |
-| `merchant_aliases` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `merchant_identities` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
+| `recurring_event_instances` | 2 | rebuild | rebuild | Derived occurrences of the active schedules, linked to ledger postings; rebuilt locally from the schedules and the ledger and dependent on today, so never shipped. Stores no user outcome (confirmations are class-1 `confirmed_obligations`); an outcome must never be stored here, because a rebuild deletes it. Corrected from class 1 by ADR 0074 Addendum F. |
+| `merchant_aliases` | 1 | include | include | A key's mapping to a merchant identity. Written by the genesis seed and by `MintMerchantAnchors`, never by a raw write. Routed to class 1 by ADR 0074 Decision 5. |
+| `merchant_identities` | 1 | include | include | A canonical merchant. Written by the genesis seed and by `MintMerchantAnchors` (id `v5("merchant-auto:{key}")`, frozen). Routed to class 1 by ADR 0074 Decision 5. |
 | `manual_entry_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `transaction_categorizations` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
-| `settings_user_keys` | 4 | fields | fields | Key-scope marker for the `user.*` keys carried from `settings`. |
+| `transaction_categorizations` | 1 | include | include | A transaction's category and its source. Written by `RecategorizeTransaction`, the import commit and `ApplyMerchantMemory`, all through the command bus. Routed to class 1 by ADR 0074 Decision 5. |
+| `settings_user_keys` | 1 | fields | fields | Key-scope marker for the `user.*` keys carried from `settings`, class 1 now that `SetUserSetting` writes them. |
 | `attachment_blobs` | 1b | artifact | artifact | Document bytes: plaintext inside the portable bundle; an opaque, epoch-scoped artifact object under Sync. |
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |
 | `backup_history` | 3 | exclude | exclude | Device-local state. |
@@ -872,8 +930,8 @@ encoding). It uses CBE1 (C.1.1).
   fields B.2 names, as a logical record, so that a device-local or rebuilt column never
   enters a digest. These are `attachments` (`id`, `plaintext_size`, `mime_type`,
   `original_filename`, `created_at`; never `storage_id`, wrapped keys or nonces, and not
-  the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys and the
-  six legacy user keys, never `device.*`). The household timezone is NOT a projection since
+  the class-2 `ref_count`), `settings` (the `key` and `value` of the `user.` keys,
+  never `device.*`). The household timezone is NOT a projection since
   schema version 61: it is a column of the fully captured class-1 `households` row, so
   `SetHouseholdTimezone` writes the `households` entry (and its `updated_at`, which moves only
   when the zone does), and `vault_metadata` has no replicated field.
@@ -1458,7 +1516,9 @@ Every membership record after the genesis is installed by the service in the
 `membership_head`: an `add` with a grant (`reason 3`) and a `revoke` with a
 cutover (`reason 2`). The genesis membership record is installed with the genesis
 epoch record. A membership record that no epoch record names is
-`EpochRecordMissing`. An added device therefore receives the current `K_e` and `S`
+`EpochRecordMissing`, and so is an epoch record that names a membership record that is neither
+installed nor in the same request (a malformed pairing; `BadEpochSequence` is a head that exists
+and is no longer current). An added device therefore receives the current `K_e` and `S`
 from a grant, with **no key rotation and no new snapshot**: it unseals the grant
 and bootstraps from the latest snapshot of the current epoch, whose AEAD key it
 can derive. A revocation cutover and a forced rotation are the only events that
@@ -1835,8 +1895,11 @@ log position `V` the service assigns when it appends the void is not in the body
 - **What the service checks.** The signature and the signer (an authorized member at the
   membership head in force at the position `V` it assigns); that the vault matches; and that `seq`
   is an existing command-envelope position and that `command_id` and `envelope_digest` equal the
-  index's record for it. It dedupes only an identical void (the same body id) or a second void for
-  the exact same `seq`. It cannot check that the envelope is actually invalid (that needs the
+  index's record for it. It dedupes only an identical void (the same body id) and keeps every
+  distinct void, including a second one for the exact same `seq` (corrected 2026-11-02, spec-version
+  24: a same-`seq` dedupe would let a void that is inert for a signer-controlled reason block the
+  genuine one for good; `03a-escalation` on `personal-cfo-g3m.26`, `personal-cfo-v98vd` AC22). It
+  cannot check that the envelope is actually invalid (that needs the
   plaintext) and does not try. **It never refuses a void because an earlier void's range would
   cover it**: whether a void is honored, and so what a range covers, is decided only by replicas.
   A malicious member can append a void for a *valid* envelope; replicas ignore it, and a later
@@ -1890,8 +1953,8 @@ log position `V` the service assigns when it appends the void is not in the body
   rooted inside a voided range is never an exit, and EVERY exit (for every kind of stop) requires a
   snapshot of this build's `engine_version` that is not rooted inside any void range the replica
   holds. The ranges counted are those of every verified void, honored or not (an update-required
-  replica cannot judge them), and the service dedupes only a second void for the same position,
-  so a member can keep appending voids for early positions and keep recent roots inside some
+  replica cannot judge them), and the service keeps every distinct void (it dedupes only an
+  identical one), so a member can keep appending voids for early positions and keep recent roots inside some
   range: the snapshot exit is best-effort under such spam. The other exit, a build whose
   `engine_version` equals the envelope's, is unaffected; until one of them is available the
   replica shows "update required" at that position and applies nothing past it. A snapshot is installed only against a permit
