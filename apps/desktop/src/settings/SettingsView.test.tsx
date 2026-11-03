@@ -29,7 +29,11 @@ const mocks = vi.hoisted(() => ({
   runBackupNow: vi.fn(),
   exportBackup: vi.fn(),
   save: vi.fn(),
+  updaterCheck: vi.fn(),
 }));
+
+// The release updater plugin (personal-cfo-4d8.39.1: it must not run when the build cannot self-update).
+vi.mock("@tauri-apps/plugin-updater", () => ({ check: mocks.updaterCheck }));
 
 vi.mock("@tauri-apps/api/path", () => ({
   homeDir: vi.fn().mockResolvedValue("/Users/test"),
@@ -174,6 +178,8 @@ beforeEach(() => {
   mocks.runBackupNow.mockReset();
   mocks.exportBackup.mockReset();
   mocks.save.mockReset();
+  mocks.updaterCheck.mockReset();
+  mocks.updaterCheck.mockResolvedValue(null);
   mocks.backupScheduleSettings.mockResolvedValue(
     ok({
       cadence: "weekly",
@@ -217,7 +223,8 @@ describe("SettingsView", () => {
 
   it("renders the Appearance card (personal-cfo-17u1)", async () => {
     renderWithClient(<SettingsView />);
-    expect(await screen.findByText("Appearance")).toBeInTheDocument();
+    // The section's wrapper title and the card's own title (4d8.39.1: cards are unchanged inside it).
+    expect((await screen.findAllByText("Appearance")).length).toBeGreaterThanOrEqual(2);
     expect(
       screen.getByRole("radiogroup", { name: "Appearance" }),
     ).toBeInTheDocument();
@@ -229,7 +236,8 @@ describe("SettingsView", () => {
 
   it("renders the Connections card", async () => {
     renderWithClient(<SettingsView />);
-    expect(await screen.findByText("Connections")).toBeInTheDocument();
+    // The section's wrapper title and the card's own title (4d8.39.1: cards are unchanged inside it).
+    expect((await screen.findAllByText("Connections")).length).toBeGreaterThanOrEqual(2);
     expect(await screen.findByText("No connections yet")).toBeInTheDocument();
   });
 
@@ -275,7 +283,8 @@ describe("SettingsView", () => {
 
   it("renders the About card with the build identity and the Support row (n76x.18)", async () => {
     renderWithClient(<SettingsView />);
-    expect(await screen.findByText("About")).toBeInTheDocument();
+    // The section's wrapper title and the card's own title (4d8.39.1: cards are unchanged inside it).
+    expect((await screen.findAllByText("About")).length).toBeGreaterThanOrEqual(2);
     expect(
       await screen.findByText("Version 0.1.0 · Release build · commit abc1234"),
     ).toBeInTheDocument();
@@ -294,3 +303,223 @@ describe("SettingsView", () => {
     expect(rerun).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── the Settings sections (personal-cfo-4d8.39.1) ────────────────────────────────────────────────
+
+/// How many of the grid's six tracks a section spans at a container width `c`, from the literal
+/// classes it ships: `col-span-N`, widened by `@min-[Wpx]:col-span-M` once `c >= W`.
+function spanAt(classes: string, c: number): number {
+  let span = 6;
+  let from = -1;
+  for (const token of classes.split(/\s+/)) {
+    const base = /^col-span-(\d+)$/.exec(token);
+    if (base) {
+      span = Number(base[1]);
+      from = 0;
+      continue;
+    }
+    const wide = /^@min-\[(\d+)px\]:col-span-(\d+)$/.exec(token);
+    if (wide && c >= Number(wide[1]) && Number(wide[1]) > from) {
+      span = Number(wide[2]);
+      from = Number(wide[1]);
+    }
+  }
+  return span;
+}
+
+const sectionNames = () =>
+  Array.from(document.querySelectorAll("[data-settings-section]")).map((el) =>
+    el.getAttribute("data-settings-section"),
+  );
+const sectionEl = (name: string) =>
+  document.querySelector(`[data-settings-section="${name}"]`) as HTMLElement | null;
+const spansAt = (names: string[], c: number) =>
+  names.map((name) => spanAt(sectionEl(name)?.className ?? "", c));
+/// Names of the sections' triggers in DOM (Tab) order.
+const triggerNames = () =>
+  Array.from(document.querySelectorAll("[data-settings-section] h3 button")).map(
+    (el) => el.textContent,
+  );
+
+describe("the Settings sections (personal-cfo-4d8.39.1)", () => {
+  const FULL_ORDER = [
+    "Household",
+    "General",
+    "Appearance",
+    "Backups",
+    "Comfort band",
+    "Auto-categorize imported transactions",
+    "Connections",
+    "Vault health",
+    "Software update",
+    "Diagnostics",
+    "Vaults",
+    "Setup guide",
+    "Change master password",
+    "Rotate encryption key",
+    "Delete this vault",
+    "About",
+  ];
+
+  async function render(over: { setup?: boolean; selfUpdate?: boolean | null } = {}) {
+    if (over.selfUpdate === false) {
+      mocks.buildInfo.mockResolvedValue({
+        ...(await mocks.buildInfo()),
+        self_update_available: false,
+      });
+    }
+    if (over.selfUpdate === null) mocks.buildInfo.mockReturnValue(new Promise(() => {}));
+    renderWithClient(<SettingsView onRerunSetup={over.setup ? vi.fn() : undefined} />);
+    await screen.findByText("Base currency");
+  }
+
+  it("lists every section in the approved order, all open, with the wrapper titles", async () => {
+    await render({ setup: true });
+    await waitFor(() => expect(sectionNames()).toEqual(FULL_ORDER));
+    expect(triggerNames()).toEqual(FULL_ORDER);
+    for (const trigger of document.querySelectorAll("[data-settings-section] h3 button")) {
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+    }
+  });
+
+  describe("the Setup guide", () => {
+    it("is absent without the callback: no section, no placeholder, and Vaults has the whole row", async () => {
+      await render({ setup: false });
+      expect(sectionEl("Setup guide")).toBeNull();
+      expect(screen.queryByText(/run the setup guide again/i)).toBeNull();
+      for (const c of [368, 655, 656, 991, 992, 1176]) {
+        expect(spansAt(["Vaults"], c), `Vaults at C=${c}`).toEqual([6]);
+      }
+    });
+
+    it("is present with the callback: Vaults and Setup are halves from 656, whole rows below", async () => {
+      await render({ setup: true });
+      expect(spansAt(["Vaults", "Setup guide"], 655)).toEqual([6, 6]);
+      expect(spansAt(["Vaults", "Setup guide"], 656)).toEqual([3, 3]);
+      expect(spansAt(["Vaults", "Setup guide"], 991)).toEqual([3, 3]);
+      expect(spansAt(["Vaults", "Setup guide"], 992)).toEqual([3, 3]); // two equal tracks across the whole width
+    });
+  });
+
+  describe("the updater", () => {
+    it("true: Software update is present; Health is a whole row, then Update and Diagnostics are halves from 656", async () => {
+      await render({ selfUpdate: true });
+      await waitFor(() => expect(sectionEl("Software update")).not.toBeNull());
+      const group = ["Vault health", "Software update", "Diagnostics"];
+      expect(spansAt(group, 655)).toEqual([6, 6, 6]);
+      expect(spansAt(group, 656)).toEqual([6, 3, 3]);
+      expect(spansAt(group, 992)).toEqual([6, 3, 3]);
+      expect(triggerNames().slice(triggerNames().indexOf("Vault health"), triggerNames().indexOf("Vaults"))).toEqual(group);
+    });
+
+    it("false: there is no Software update section, no updater command runs, and Health then Diagnostics are whole rows at every width", async () => {
+      await render({ selfUpdate: false });
+      await waitFor(() => expect(sectionEl("Software update")).toBeNull());
+      expect(screen.queryByText("Software update")).toBeNull();
+      for (const c of [368, 655, 656, 991, 992, 1176]) {
+        expect(spansAt(["Vault health", "Diagnostics"], c), `C=${c}`).toEqual([6, 6]);
+      }
+      const names = triggerNames();
+      expect(names[names.indexOf("Vault health") + 1]).toBe("Diagnostics");
+      expect(mocks.checkForUpdate).not.toHaveBeenCalled();
+      expect(mocks.updaterCheck).not.toHaveBeenCalled();
+    });
+
+    it("unknown (the capability has not been read): the section is absent and no updater command runs", async () => {
+      await render({ selfUpdate: null });
+      expect(sectionEl("Software update")).toBeNull();
+      expect(spansAt(["Vault health", "Diagnostics"], 1176)).toEqual([6, 6]);
+      expect(mocks.checkForUpdate).not.toHaveBeenCalled();
+      expect(mocks.updaterCheck).not.toHaveBeenCalled();
+    });
+  });
+
+  it("Backups, Comfort band and Auto-categorize: one, two, whole row from 992; every one whole below", async () => {
+    await render();
+    const group = ["Backups", "Comfort band", "Auto-categorize imported transactions"];
+    expect(spansAt(group, 991)).toEqual([6, 6, 6]);
+    expect(spansAt(group, 992)).toEqual([2, 4, 6]);
+    expect(spansAt(group, 1176)).toEqual([2, 4, 6]);
+    expect(spansAt(group, 656)).toEqual([6, 6, 6]);
+  });
+
+  it("Household, General, Appearance, Connections, About and the destructive cards are whole rows at every width", async () => {
+    await render({ setup: true });
+    const wholeRows = [
+      "Household", "General", "Appearance", "Connections", "About",
+      "Change master password", "Rotate encryption key", "Delete this vault",
+    ];
+    for (const c of [368, 655, 656, 991, 992, 1176]) {
+      expect(spansAt(wholeRows, c), `C=${c}`).toEqual(wholeRows.map(() => 6));
+    }
+  });
+
+  it("the page is a container and the grid is six tracks, so spans answer to the pane, not the window", async () => {
+    await render();
+    const grid = sectionEl("Household")!.parentElement!;
+    expect(grid.className).toMatch(/\bgrid-cols-6\b/);
+    expect(grid.parentElement!.className).toMatch(/@container/);
+  });
+
+  it("an open section keeps its natural height; a collapsed one stretches to its row", async () => {
+    await render();
+    const grid = sectionEl("Household")!.parentElement!;
+    expect(grid.className).toMatch(/\bitems-start\b/);
+    expect(sectionEl("About")!.className).toMatch(/\bself-start\b/);
+    fireEvent.click(screen.getByRole("button", { name: "About" }));
+    expect(sectionEl("About")!.className).toMatch(/\bself-stretch\b/);
+    expect(sectionEl("About")!.className).not.toMatch(/\bself-start\b/);
+  });
+
+  it("collapsing hides and inerts a section but keeps its draft; expanding brings it back", async () => {
+    await render();
+    const lower = (await screen.findByLabelText(/lower/i)) as HTMLInputElement;
+    fireEvent.change(lower, { target: { value: "1234" } });
+    const trigger = screen.getByRole("button", { name: "Comfort band" });
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    const body = document.getElementById(trigger.getAttribute("aria-controls")!)!;
+    expect(body).toHaveAttribute("hidden");
+    expect(body).toHaveAttribute("inert");
+    // The card stays mounted, so the draft is still there.
+    expect(lower.isConnected).toBe(true);
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(lower).toHaveValue("1234");
+  });
+
+  it("a section is not remembered: it opens again on the next visit", async () => {
+    const first = renderWithClient(<SettingsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "About" }));
+    first.unmount();
+    renderWithClient(<SettingsView />);
+    expect(await screen.findByRole("button", { name: "About" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  describe("summaries come from real data only", () => {
+    it("shows the approved lines while collapsed, once each read has loaded", async () => {
+      mocks.backupHistory.mockResolvedValue(ok([{ backup_id: "b1", vault_id: "v", created_at: "2026-11-01T00:00:00Z", kind: "scheduled", destination: "/b", format_version: 1, size_bytes: 1, verified: true, error: null }]));
+      mocks.comfortBand.mockResolvedValue(ok({ currency: "USD", lower: { minor_units: 500_000, currency: "USD" }, upper: { minor_units: 1_500_000, currency: "USD" } }));
+      await render();
+      for (const name of ["Backups", "Comfort band", "Auto-categorize imported transactions", "About"]) {
+        fireEvent.click(await screen.findByRole("button", { name }));
+      }
+      expect(await screen.findByText("Weekly · last backup verified")).toBeInTheDocument();
+      expect(await screen.findByText("$5,000.00–$15,000.00")).toBeInTheDocument();
+      expect(await screen.findByText("On")).toBeInTheDocument();
+      expect(await screen.findByText("DohFlow · version 0.1.0")).toBeInTheDocument();
+    });
+
+    it("shows no line when the data does not say it: no verified backup, no upper edge, setting off, unread build", async () => {
+      mocks.autoCategorizeOnImport.mockResolvedValue(ok(false));
+      await render();
+      for (const name of ["Backups", "Comfort band", "Auto-categorize imported transactions"]) {
+        fireEvent.click(await screen.findByRole("button", { name }));
+      }
+      expect(screen.queryByText(/last backup verified/)).toBeNull();
+      expect(screen.queryByText(/–/)).toBeNull();
+      expect(screen.queryByText("On")).toBeNull();
+    });
+  });
+});
+
