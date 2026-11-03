@@ -607,9 +607,9 @@ describe("accept-all reports a truthful partial outcome (5n4.12)", () => {
     lowConfidenceItem({ item_id: LC1, target_id: LC1 }),
     lowConfidenceItem({ item_id: LC2, target_id: LC2 }),
   ];
-  const MAY_BE_PARTLY = "Some may already be accepted; the list shows which.";
+  const MAY_BE_PARTLY = "Some may already be accepted. Check the refreshed list before trying again.";
   const UNKNOWN =
-    "Couldn’t confirm whether they were accepted. Some may already be; the list shows which.";
+    "Couldn’t confirm whether they were accepted. Some may already be. Check the refreshed list before trying again.";
 
   async function acceptAll() {
     mocks.categoryList.mockResolvedValue(ok([GROCERIES]));
@@ -675,6 +675,57 @@ describe("accept-all reports a truthful partial outcome (5n4.12)", () => {
     fireEvent.click(screen.getByRole("button", { name: /accept all 2/i }));
     await waitFor(() => expect(mocks.acceptLowConfidenceCategories).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("a typed failure followed by a FAILED refresh of the inbox keeps the full outcome alert beside the cached list", async () => {
+    mocks.moneyInboxList.mockResolvedValueOnce(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockResolvedValue({
+      status: "error",
+      error: { Validation: "The second transaction could not be marked." },
+    });
+    // The refresh after the failure fails too: the cached list stays on screen.
+    mocks.moneyInboxList.mockRejectedValue(new Error("boom"));
+    await acceptAll();
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(1));
+    const outcome = await screen.findByText(
+      `The second transaction could not be marked. ${MAY_BE_PARTLY}`,
+    );
+    expect(outcome).toHaveAttribute("role", "alert");
+    // The failed read is reported on its own, and the outcome alert is still there.
+    expect(await screen.findByText("Could not load your Money Inbox.")).toBeInTheDocument();
+    expect(screen.getByText(/2 transactions were auto-categorized/i)).toBeInTheDocument();
+    expect(outcome).toBeInTheDocument();
+  });
+
+  it("a thrown call followed by a FAILED refresh of the inbox keeps the full unknown-outcome alert", async () => {
+    mocks.moneyInboxList.mockResolvedValueOnce(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockRejectedValue(new Error("connection lost"));
+    mocks.moneyInboxList.mockRejectedValue(new Error("boom"));
+    await acceptAll();
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(1));
+    expect(await screen.findByText(UNKNOWN)).toHaveAttribute("role", "alert");
+    expect(await screen.findByText("Could not load your Money Inbox.")).toBeInTheDocument();
+    expect(screen.getByText(UNKNOWN)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["a success", () => mocks.acceptLowConfidenceCategories.mockResolvedValue(ok(2))],
+    [
+      "a typed failure",
+      () =>
+        mocks.acceptLowConfidenceCategories.mockResolvedValue({
+          status: "error",
+          error: { Validation: "No." },
+        }),
+    ],
+    ["a thrown call", () => mocks.acceptLowConfidenceCategories.mockRejectedValue(new Error("lost"))],
+  ])("%s also reads the transactions again", async (_name, arrange) => {
+    mocks.moneyInboxList.mockResolvedValue(ok(two()));
+    arrange();
+    await acceptAll();
+    const reads = mocks.transactionList.mock.calls.length;
+    await waitFor(() => expect(mocks.acceptLowConfidenceCategories).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.transactionList.mock.calls.length).toBeGreaterThan(reads));
   });
 
   it("a success refreshes the inbox and shows no alert", async () => {

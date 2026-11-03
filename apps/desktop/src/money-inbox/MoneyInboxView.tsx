@@ -1338,11 +1338,11 @@ function UnreviewedTransactionRow({
 /// After "Accept all" failed with a reason: the kernel marks one transaction at a time and stops at
 /// the first failure, keeping what it already marked, so some may be accepted.
 const ACCEPT_ALL_MAY_HAVE_PARTLY_WORKED =
-  "Some may already be accepted; the list shows which.";
+  "Some may already be accepted. Check the refreshed list before trying again.";
 
 /// After "Accept all" threw: nobody knows how many were accepted.
 const ACCEPT_ALL_OUTCOME_UNKNOWN =
-  "Couldn’t confirm whether they were accepted. Some may already be; the list shows which.";
+  "Couldn’t confirm whether they were accepted. Some may already be. Check the refreshed list before trying again.";
 
 /// A bulk "accept all" banner for the low-confidence-category queue (personal-cfo-j5ij): it
 /// confirms in two steps (the first click reveals Confirm/Cancel) and reports the count, so a
