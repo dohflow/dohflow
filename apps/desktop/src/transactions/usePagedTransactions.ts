@@ -54,6 +54,23 @@ export function usePagedTransactions(
     setPage(0);
   }, [contextKey]);
 
+  // A retry of a read that never produced data puts the query back to pending, which clears its error
+  // and would flip the table to "loading" under the person's hand; the failure being retried stays on
+  // screen until the read answers.
+  const [retriedFailure, setRetriedFailure] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const failure = query.error?.message ?? (retrying ? retriedFailure : null);
+  /// Read this page again.
+  const retry = async () => {
+    setRetriedFailure(query.error?.message ?? null);
+    setRetrying(true);
+    try {
+      await query.refetch();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   const total = query.data?.total;
   const knownTotal = total ?? 0;
   const pageCount = Math.max(1, Math.ceil(knownTotal / pageSize));
@@ -91,7 +108,10 @@ export function usePagedTransactions(
     rows: query.data?.rows ?? [],
     /// Total matches across all pages; `undefined` until the first page lands.
     total,
-    error: query.error?.message ?? null,
+    error: failure,
+    /// Read the failed page again; `retrying` is true while that read runs.
+    retry,
+    retrying,
     pagination,
   };
 }

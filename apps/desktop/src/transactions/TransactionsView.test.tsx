@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -1497,24 +1497,68 @@ describe("the scope strip is the one place scope is stated (personal-cfo-3tbn)",
 });
 
 describe("the four states say which thing happened (personal-cfo-xu32)", () => {
-  it("stops pretending to load when the page read fails", async () => {
+  it("stops pretending to load when the page read fails, with one message that claims nothing about the data", async () => {
     // The defect this fixes: `total` stays undefined on error, so the table skeletonised
     // forever — the screen showed an error message AND an endless loading list, which
     // reads as "still trying".
-    mocks.transactionPage.mockResolvedValue({
-      status: "error",
-      error: { kind: "Internal", message: "disk gone" },
-    });
+    mocks.transactionPage.mockRejectedValue(new Error("host down"));
     renderWithClient(<TransactionsView />);
 
-    const alerts = await screen.findAllByRole("alert");
-    expect(
-      alerts.some((a) => /couldn’t read this page of transactions/i.test(a.textContent ?? "")),
-    ).toBe(true);
-    // …and it says the data itself is fine.
-    expect(
-      alerts.some((a) => /your data is fine/i.test(a.textContent ?? "")),
-    ).toBe(true);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/^Couldn’t read this page of transactions\.$/);
+    // One message: not a banner and a table message.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    // A failed read cannot say the data is fine.
+    expect(screen.queryByText(/your data is fine/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  });
+
+  it("adds the read's own reason when it gave one", async () => {
+    mocks.transactionPage.mockResolvedValue({
+      status: "error",
+      error: { Validation: "That date range is not valid." },
+    });
+    renderWithClient(<TransactionsView />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t read this page of transactions. That date range is not valid.",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("Retry reads the page again, reads Retrying… with the message kept while it runs, and recovers", async () => {
+    mocks.transactionPage.mockRejectedValueOnce(new Error("host down"));
+    let finish: (value: unknown) => void = () => {};
+    mocks.transactionPage.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = resolve)),
+    );
+    renderWithClient(<TransactionsView />);
+    await screen.findByRole("alert");
+    const calls = mocks.transactionPage.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const pending = await screen.findByRole("button", { name: "Retrying…" });
+    expect(pending).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t read this page of transactions.");
+    expect(mocks.transactionPage.mock.calls.length).toBe(calls + 1);
+
+    await act(async () =>
+      finish(pageResult([txn({ transaction_id: "t1", memo: "Lunch" })], mocks.transactionPage.mock.calls.at(-1)?.[0])),
+    );
+    expect(await screen.findByText("Lunch")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  });
+
+  it("a second failure keeps the message and Retry", async () => {
+    mocks.transactionPage.mockRejectedValue(new Error("host down"));
+    renderWithClient(<TransactionsView />);
+    await screen.findByRole("alert");
+    const calls = mocks.transactionPage.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.transactionPage.mock.calls.length).toBe(calls + 1));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t read this page of transactions.");
   });
 
   it("distinguishes an aggregate failure from a vault failure", async () => {
