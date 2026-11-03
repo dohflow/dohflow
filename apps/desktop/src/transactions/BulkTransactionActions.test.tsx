@@ -8,6 +8,9 @@ import type {
 } from "@/bindings";
 import { BulkTransactionActions } from "./BulkTransactionActions";
 
+/// What the host says when a row's tags moved between the read and the write (ipc/commands.rs).
+const TAGS_CHANGED = "These tags changed while you were adding the tag. Try adding the tag again.";
+
 const mocks = vi.hoisted(() => ({ transactionRowsByIds: vi.fn() }));
 vi.mock("@/bindings", () => ({ commands: mocks }));
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
@@ -438,12 +441,42 @@ describe("bulk tag is honest (5n4.10)", () => {
     const ops = setup({ selected: [txn("t1"), txn("t2")] });
     ops.setTags.mockImplementation(async (id: string) =>
       id === "t2"
-        ? ({ Validation: "These tags changed since you last read them. Read them again and retry." } as IpcError)
+        ? ({ Validation: TAGS_CHANGED } as IpcError)
         : null,
     );
     enter();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Tagged 1 of 2 — 1 failed.");
+    // The count clause and the refused row's own reason, in the one persistent alert.
+    expect(await screen.findByRole("alert")).toHaveTextContent(`Tagged 1 of 2 — 1 failed. ${TAGS_CHANGED}`);
     expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2"]);
+  });
+
+  test("the reasons ride in the same alert as the unconfirmed clause, once each, and a refusal is never called unknown", async () => {
+    const ops = setup({ selected: [txn("t1"), txn("t2"), txn("t3"), txn("t4")] });
+    ops.setTags.mockImplementation(async (id: string) => {
+      if (id === "t2" || id === "t3") return { Validation: TAGS_CHANGED } as IpcError;
+      if (id === "t4") throw new Error("connection lost");
+      return null;
+    });
+    enter();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      `Tagged 1 of 4 — 2 failed, 1 couldn’t be confirmed. Check the unconfirmed rows before trying again. ${TAGS_CHANGED}`,
+    );
+    // Said once for two refused rows, and no blanket "nothing changed".
+    expect((alert.textContent ?? "").split(TAGS_CHANGED).length).toBe(2);
+    expect(alert).not.toHaveTextContent(/nothing (was )?changed/i);
+    expect(ops.onSelectionChange).toHaveBeenCalledWith(["t2", "t3", "t4"]);
+  });
+
+  test("different reasons are each said, and a row that has gone says so", async () => {
+    const ops = setup({ selected: [txn("t1"), txn("t2")] });
+    ops.setTags.mockImplementation(async (id: string) =>
+      id === "t1" ? ({ Validation: TAGS_CHANGED } as IpcError) : ({ Validation: "That transaction no longer exists." } as IpcError),
+    );
+    enter();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `Tagged 0 of 2 — 2 failed. ${TAGS_CHANGED} That transaction no longer exists.`,
+    );
   });
 
   test("other bulk actions are also exclusive while one is running", async () => {

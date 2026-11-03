@@ -914,7 +914,7 @@ mod set_tags_expected_set {
         )
         .unwrap_err();
         assert!(
-            matches!(&err, IpcError::Validation(m) if m.contains("changed since you last read")),
+            matches!(&err, IpcError::Validation(m) if m == "These tags changed while you were adding the tag. Try adding the tag again."),
             "{err:?}"
         );
         assert_eq!(

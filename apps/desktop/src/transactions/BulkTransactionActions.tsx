@@ -10,6 +10,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { CategoryCombobox } from "@/categories/CategoryCombobox";
 import { commands } from "@/bindings";
+import { describeIpcError } from "@/vault/useVault";
 
 const SELECT_CLASS =
   "h-8 rounded-md border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -201,14 +202,36 @@ export function BulkTransactionActions({
       .map((t) => t.transaction_id);
     onSelectionChange(unsavedIds);
     const unconfirmed = settled.filter((r) => r.status === "rejected").length;
-    reportBatch(verb, count - unsavedIds.length, unsavedIds.length - unconfirmed, unconfirmed);
+    // Why each refused row was refused, as the app worded it: a refusal is a confirmed failure and
+    // says what happened, where an unconfirmed row cannot. The same reason is said once.
+    const reasons = [
+      ...new Set(
+        settled.flatMap((r) =>
+          r.status === "fulfilled" && r.value !== null ? [describeIpcError(r.value)] : [],
+        ),
+      ),
+    ];
+    reportBatch(
+      verb,
+      count - unsavedIds.length,
+      unsavedIds.length - unconfirmed,
+      unconfirmed,
+      reasons,
+    );
   }
 
   /// The summary after a bulk run, when anything did not save: "Tagged 1 of 3 — 1 failed, 1
-  /// couldn’t be confirmed. Check the unconfirmed rows before trying again." Nothing is said when
+  /// couldn’t be confirmed. Check the unconfirmed rows before trying again. <why the refused rows
+  /// were refused>" Nothing is said when
   /// every row saved. When no row saved and any is unconfirmed, the lead says zero *confirmed*
   /// ("Tagged: 0 of 3 confirmed — ..."), since the unconfirmed rows may have changed.
-  function reportBatch(verb: string, savedCount: number, failed: number, unconfirmed: number) {
+  function reportBatch(
+    verb: string,
+    savedCount: number,
+    failed: number,
+    unconfirmed: number,
+    reasons: string[] = [],
+  ) {
     if (failed === 0 && unconfirmed === 0) return;
     const parts = [
       failed > 0 ? `${failed} failed` : null,
@@ -220,7 +243,9 @@ export function BulkTransactionActions({
         : `${verb} ${savedCount} of ${count}`;
     setNote(
       `${lead} — ${parts.join(", ")}.` +
-        (unconfirmed > 0 ? " Check the unconfirmed rows before trying again." : ""),
+        (unconfirmed > 0 ? " Check the unconfirmed rows before trying again." : "") +
+        // The refusal reasons come last, so the approved count clauses read as they always have.
+        (reasons.length > 0 ? ` ${reasons.join(" ")}` : ""),
     );
   }
 

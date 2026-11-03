@@ -2208,7 +2208,7 @@ pub fn create_tag(
 /// What a refused `set_tags` tells the person: someone else's edit landed between their read
 /// and their write. Fixed text: the IPC layer shows it as it is.
 const TAGS_CHANGED: &str =
-    "These tags changed since you last read them. Read them again and retry.";
+    "These tags changed while you were adding the tag. Try adding the tag again.";
 
 /// A tag set as a sorted list of ids, so two sets compare without caring about order.
 fn tag_set(tags: &[TagId]) -> Vec<String> {
