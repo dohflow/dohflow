@@ -549,3 +549,75 @@ describe("provenance badge label on transaction-row states (personal-cfo-4d8.56)
     expect(selected).toBeLessThan(TEXT_PAIR_FLOOR);
   });
 });
+
+// ── personal-cfo-4d8.52: the shared Button's disabled label ───────────────────────────────────────
+//
+// A disabled Button used to fade the WHOLE control to half opacity, which left the filled variants'
+// labels at about 2.2 to 2.7:1 (light) and 2.3:1 (dark primary). A disabled control is exempt from
+// WCAG's text contrast, so this is craft, not a failure claim: the treatment keeps the native disabled
+// semantics and gives the label a readable `muted-foreground`, on a neutral fill for the filled
+// variants so enabled and disabled still read as different controls.
+
+const BUTTON_SRC = sourceTree.find((f) => f.path === "components/ui/button.tsx")?.text ?? "";
+const BUTTON_VARIANTS = ["default", "secondary", "outline", "ghost", "destructive", "link"] as const;
+/// The class string of one `variant:` entry in button.tsx (written either on one line or wrapped).
+function buttonVariantClasses(name: string): string {
+  return new RegExp(`\\b${name}:\\s*"([^"]*)"`).exec(BUTTON_SRC)?.[1] ?? "";
+}
+const classToken = (classes: string, re: RegExp) => re.exec(classes)?.[1];
+
+describe("shared Button disabled label (personal-cfo-4d8.52)", () => {
+  it("reads the real button.tsx and no longer fades the whole control", () => {
+    expect(BUTTON_SRC.length).toBeGreaterThan(500); // guards the guard
+    for (const name of BUTTON_VARIANTS) expect(buttonVariantClasses(name), name).not.toBe("");
+    expect(BUTTON_SRC).not.toMatch(/disabled:opacity/);
+    expect(BUTTON_SRC).toContain("disabled:pointer-events-none");
+  });
+
+  it("every variant's disabled label is muted-foreground", () => {
+    for (const name of BUTTON_VARIANTS) {
+      expect(buttonVariantClasses(name), name).toMatch(/disabled:text-muted-foreground/);
+    }
+  });
+
+  it("a disabled label clears 4.5:1 plus headroom on its own fill, or the surface, in both themes on both surfaces", () => {
+    let checked = 0;
+    for (const theme of THEMES) {
+      for (const surfaceName of SURFACES) {
+        const surface = token(theme.block, surfaceName)!;
+        for (const name of BUTTON_VARIANTS) {
+          const classes = buttonVariantClasses(name);
+          const labelToken = classToken(classes, /disabled:text-([a-z-]+)/)!;
+          const fillToken =
+            classToken(classes, /disabled:bg-([a-z-]+)/) ??
+            classToken(classes, /(?:^|\s)bg-([a-z-]+)(?=\s|$)/);
+          const ground = fillToken ? token(theme.block, fillToken)! : surface;
+          const ratio = contrast(token(theme.block, labelToken)!, ground);
+          checked++;
+          expect(
+            ratio,
+            `${theme.name} ${name} disabled label on ${fillToken ?? `--${surfaceName}`} = ${ratio.toFixed(2)}:1 (need ${TEXT_PAIR_FLOOR + HEADROOM}:1)`,
+          ).toBeGreaterThanOrEqual(TEXT_PAIR_FLOOR + HEADROOM);
+        }
+      }
+    }
+    expect(checked).toBe(THEMES.length * SURFACES.length * BUTTON_VARIANTS.length); // guards the guard
+  });
+
+  it("the filled variants that are brand or destructive swap to a neutral fill when disabled, so the state is visible", () => {
+    for (const name of ["default", "destructive"] as const) {
+      const classes = buttonVariantClasses(name);
+      expect(classToken(classes, /disabled:bg-([a-z-]+)/), `${name} disabled fill`).toBe("muted");
+      expect(classToken(classes, /(?:^|\s)bg-([a-z-]+)(?=\s|$)/), `${name} enabled fill`).not.toBe("muted");
+    }
+  });
+
+  it("would FAIL with the old half-opacity fade on the filled variants: the change is needed", () => {
+    const faded = (fgHex: string, bgHex: string, surface: string) =>
+      contrast(over(fgHex, surface, 0.5), over(bgHex, surface, 0.5));
+    const surface = token(LIGHT, "card")!;
+    expect(faded(token(LIGHT, "primary-foreground")!, token(LIGHT, "primary")!, surface)).toBeLessThan(3);
+    expect(faded(token(LIGHT, "destructive-foreground")!, token(LIGHT, "destructive")!, surface)).toBeLessThan(3);
+  });
+});
+
