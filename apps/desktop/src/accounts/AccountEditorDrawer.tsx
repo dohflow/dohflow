@@ -715,7 +715,9 @@ export function AccountEditorDrawer({
           </Button>
           <Button
             type="button"
-            onClick={() => void onSave()}
+            // Done closes without running the save path: the save path rebuilds its steps from the
+            // form (a debt account always has its terms step), so it would write again.
+            onClick={() => (everythingSaved ? requestClose() : void onSave())}
             disabled={busy || debtBlocked}
           >
             {busy && <Loader2 className="animate-spin" aria-hidden />}

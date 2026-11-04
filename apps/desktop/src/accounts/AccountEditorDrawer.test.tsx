@@ -521,6 +521,44 @@ describe("the balance step keeps one idempotency key per draft (g3m.40)", () => 
     expect(mocks.setAccountNote).not.toHaveBeenCalled();
   });
 
+  test("on a debt account Done also sends nothing: no debt terms, no write of any kind, and it closes", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer
+        account={{
+          id: "card-1",
+          name: "Sapphire",
+          cashflow_role: "credit_facility",
+          subtype: "credit_card",
+          active: true,
+          balance: { minor_units: -1_000_000, currency: "USD" },
+          notes: null,
+          linked_account_id: null,
+          linked_account_name: null,
+        }}
+        defaultCurrency="USD"
+        onClose={onClose}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Amount owed"), { target: { value: "1234" } });
+    // Saving waits until the debt terms have loaded.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save account" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await screen.findByText(SAVED_UNCONFIRMED);
+    const writes = () => [
+      mocks.assertBalance.mock.calls.length,
+      mocks.setDebtTerms.mock.calls.length,
+      mocks.updateAccount.mock.calls.length,
+      mocks.setAccountNote.mock.calls.length,
+    ];
+    const before = writes();
+    expect(before[1]).toBe(1); // the debt terms were stored by the save itself
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(writes()).toEqual(before);
+  });
+
   test("an edit after the unconfirmed result resumes normal saving: the label is Save account and the change is written", async () => {
     mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
     mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
