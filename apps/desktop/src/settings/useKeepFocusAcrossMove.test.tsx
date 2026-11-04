@@ -174,4 +174,45 @@ describe("useKeepFocusAcrossMove", () => {
     rerender(<Open shown={false} />);
     expect(document.activeElement).toBe(document.body);
   });
+
+  it("an unrelated render while focus is intact does not use up the hand-over", () => {
+    const { rerender } = render(<Harness />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action); // arms it, and the button moves into the slot (focus is lost with the old node)
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "action" }));
+    // The button now sits in the slot with focus. An unrelated render happens, still settled ...
+    rerender(<Harness />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "action" }));
+  });
+
+  it("stays armed through renders where the button still has focus, and acts when focus is lost", () => {
+    function Stay({ shown, tick }: { shown: boolean; tick: number }) {
+      const keep = useKeepFocusAcrossMove({ fallback: () => document.getElementById("elsewhere") });
+      return (
+        <>
+          <span data-tick={tick} />
+          {shown ? (
+            <button ref={keep.ref} type="button" onClick={() => keep.remember()}>
+              action
+            </button>
+          ) : null}
+          <button id="elsewhere" type="button">
+            elsewhere
+          </button>
+        </>
+      );
+    }
+    const { rerender } = render(<Stay shown tick={0} />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action);
+    // Unrelated renders while the button still has focus: nothing to hand over, and still armed.
+    rerender(<Stay shown tick={1} />);
+    rerender(<Stay shown tick={2} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "action" }));
+    // Now the button goes away and focus is lost: the armed hand-over acts.
+    rerender(<Stay shown={false} tick={3} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "elsewhere" }));
+  });
 });

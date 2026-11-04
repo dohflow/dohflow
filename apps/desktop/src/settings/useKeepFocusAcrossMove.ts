@@ -43,6 +43,9 @@ export function useKeepFocusAcrossMove<T extends HTMLButtonElement | HTMLSelectE
     // Still settling (the write, or the read that follows it): where the button ends up is not
     // known yet, so focus is not handed anywhere.
     if (!settled) return;
+    // Focus is still on the button and it can keep it: nothing has moved yet, so there is nothing to
+    // hand over. Stay armed until focus is actually lost (an unrelated render must not use it up).
+    if (button !== null && active === button && canTakeFocus(button)) return;
     if (button !== null && canTakeFocus(button)) {
       pending.current = false;
       button.focus();

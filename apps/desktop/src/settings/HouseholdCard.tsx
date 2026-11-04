@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Combobox, type ComboboxItem } from "@/components/ui/combobox";
 import { describeIpcError } from "@/vault/useVault";
 import { PersistentNotice } from "./PersistentSlot";
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { useHouseholdTimezone } from "./useHouseholdTimezone";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
@@ -95,6 +96,23 @@ export function HouseholdCard() {
   } = useHouseholdTimezone();
   const [draft, setDraft] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again.
+  const [saveAttempt, nextSaveAttempt] = useAttemptCount();
+  const [readAttempt, nextReadAttempt] = useAttemptCount();
+  const saveAlert = useReannounced(saveError, saveAttempt);
+  const readAlert = useReannounced(readFailure, readAttempt);
+  // A Retry that was pressed and has settled with the read still failing counts as an attempt (the
+  // first load settling is not one).
+  const retryPressed = useRef(false);
+  const wasRetrying = useRef(false);
+  useEffect(() => {
+    if (wasRetrying.current && !retrying && retryPressed.current) {
+      retryPressed.current = false;
+      nextReadAttempt();
+    }
+    wasRetrying.current = retrying;
+  }, [retrying, nextReadAttempt]);
   const [saved, setSaved] = useState(false);
 
   const items = useMemo(() => supportedTimezones().map(timezoneItem), []);
@@ -120,6 +138,7 @@ export function HouseholdCard() {
     const failure = await setTimezone(value);
     if (failure) {
       setSaveError(describeIpcError(failure));
+      nextSaveAttempt();
     } else {
       setSaveError(null);
       setDraft(null);
@@ -192,7 +211,7 @@ export function HouseholdCard() {
             {saveError !== null && (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p role="alert" className="text-xs text-loss">
-                  {saveError}
+                  {saveAlert}
                 </p>
                 {saveButton}
               </div>
@@ -201,14 +220,17 @@ export function HouseholdCard() {
               // A failed read is read again: this never writes, and never saves the UTC fallback.
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p role="alert" className="text-xs text-loss">
-                  {readFailure}
+                  {readAlert}
                 </p>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   disabled={retrying}
-                  onClick={retry}
+                  onClick={() => {
+                    retryPressed.current = true;
+                    retry();
+                  }}
                 >
                   {retrying ? "Retrying…" : "Retry"}
                 </Button>
