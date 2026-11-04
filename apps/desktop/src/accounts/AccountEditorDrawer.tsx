@@ -728,7 +728,12 @@ export function AccountEditorDrawer({
       {creatingLoan && (
         <NewLoanDialog
           currency={currency}
-          onCreated={(id) => setLinkedLiabilityId(id)}
+          onCreated={(id) => {
+            setLinkedLiabilityId(id);
+            // The dialog sits outside the form, so its result raises no form change event; it is
+            // still a change to the draft, and it leaves the finished-and-only-unconfirmed state.
+            if (everythingSaved) setPartial(null);
+          }}
           onClose={() => setCreatingLoan(false)}
         />
       )}

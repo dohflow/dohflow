@@ -559,6 +559,49 @@ describe("the balance step keeps one idempotency key per draft (g3m.40)", () => 
     expect(writes()).toEqual(before);
   });
 
+  test("creating a New loan after the unconfirmed result leaves Done: the link is a change, so the footer saves it", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    mocks.createAccount.mockResolvedValue(
+      ok({ account_id: "loan-new", mutation: { op_seq: 1, replayed: false } }),
+    );
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer
+        account={{
+          id: "house-1",
+          name: "House",
+          cashflow_role: "real_asset",
+          subtype: null,
+          active: true,
+          balance: { minor_units: 30_000_000, currency: "USD" },
+          notes: null,
+          linked_account_id: null,
+          linked_account_name: null,
+        }}
+        defaultCurrency="USD"
+        onClose={onClose}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "310000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await screen.findByText(SAVED_UNCONFIRMED);
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+
+    // The loan dialog sits outside the form: its result changes the draft without a form event.
+    fireEvent.click(screen.getByRole("button", { name: /new loan/i }));
+    const dialog = await screen.findByRole("dialog", { name: /new loan/i });
+    fireEvent.change(within(dialog).getByLabelText("Loan name"), { target: { value: "Mortgage" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /create loan/i }));
+    await waitFor(() => expect(mocks.createAccount).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Done" })).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await waitFor(() => expect(mocks.setAccountLink).toHaveBeenCalledWith("house-1", "loan-new", expect.anything()));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // The stored balance is not asserted a second time.
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+  });
+
   test("an edit after the unconfirmed result resumes normal saving: the label is Save account and the change is written", async () => {
     mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
     mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
