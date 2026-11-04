@@ -62,24 +62,51 @@ fn randomness_comes_from_the_operating_system_only() {
     assert_eq!(code(KEYSET).matches("CryptoRng for").count(), 1);
 }
 
+/// Every `.rs` file under `dir` that is not under a `tests` directory, with its text.
+fn production_sources(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if !["tests", "target", "node_modules", ".git"].contains(&name.as_str()) {
+                production_sources(&path, out);
+            }
+        } else if name.ends_with(".rs") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                out.push((path.display().to_string(), text));
+            }
+        }
+    }
+}
+
 #[test]
 fn the_seed_taking_seal_and_the_raw_open_are_used_nowhere_but_the_keyset_module() {
-    for (name, source) in [
-        ("sync_keys.rs", KEYS),
-        ("sync_records.rs", RECORDS),
-        ("sync_custody.rs", CUSTODY),
-        ("sync.rs", SYNC),
-        ("sync_envelope.rs", ENVELOPE),
-    ] {
-        let code = code(source);
-        assert!(
-            !code.contains("seal_with_seed"),
-            "{name} calls seal_with_seed"
-        );
-        assert!(
-            !code.contains("open_with_key"),
-            "{name} calls open_with_key"
-        );
+    // `seal_with_seed` takes the ephemeral seed from its caller, so any caller outside the keyset
+    // module could seal with a fixed seed and reuse an ephemeral key. They are public only so the
+    // known-answer tests can reach them, so the guard covers EVERY workspace crate's production
+    // sources, the desktop crate included, not only this one.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut sources = Vec::new();
+    production_sources(&root.join("crates"), &mut sources);
+    production_sources(&root.join("apps"), &mut sources);
+    assert!(
+        sources.len() > 50,
+        "the scan must actually see the workspace ({} files)",
+        sources.len()
+    );
+    assert!(sources
+        .iter()
+        .any(|(path, _)| path.ends_with("vault-crypto/src/sync_keyset.rs")));
+    for (path, text) in &sources {
+        if path.ends_with("vault-crypto/src/sync_keyset.rs") {
+            continue;
+        }
+        for forbidden in ["seal_with_seed", "open_with_key", "SeedRng"] {
+            assert!(!text.contains(forbidden), "{path} uses {forbidden}");
+        }
     }
 }
 

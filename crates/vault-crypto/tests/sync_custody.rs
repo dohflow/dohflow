@@ -6,7 +6,7 @@ mod common;
 
 use std::sync::Mutex;
 
-use common::{chain, refs, Chain, VAULT};
+use common::{chain, dev, refs, Chain, VAULT};
 use platform_mock::MockSecretStore;
 use platform_traits::{
     AccessPolicy, AuthPrompt, PublicTag, SecretError, SecretKey, SecretStore, SecretValue,
@@ -215,12 +215,13 @@ fn a_missing_key_is_a_typed_error_and_is_never_regenerated() {
         CustodyError::Missing(Item::AgreementKey)
     );
     assert!(!custody.has_device_keys().unwrap());
+    let chain_state = accepted_for(&chain(), &dev(0xa1).keys).state;
     assert_eq!(
-        custody.load_epoch_key(1).unwrap_err(),
+        custody.load_epoch_key(&chain_state, 1).unwrap_err(),
         CustodyError::Missing(Item::EpochKey(1))
     );
     assert_eq!(
-        custody.load_tag_secret().unwrap_err(),
+        custody.load_tag_secret(&chain_state).unwrap_err(),
         CustodyError::Missing(Item::TagSecret)
     );
 }
@@ -293,7 +294,7 @@ fn an_accepted_walk_installs_one_item_per_epoch_and_one_for_s() {
         .all(|w| w.1 == AccessPolicy::DeviceOnly));
     // The keys load back through their commitments, and are the ones the chain sealed.
     for epoch in 1..=3 {
-        let key = custody.load_epoch_key(epoch).unwrap();
+        let key = custody.load_epoch_key(&accepted.state, epoch).unwrap();
         assert_eq!(key.key_epoch(), epoch);
         assert_eq!(
             aead_key(&key, &c.a.fingerprint(), ObjectType::Envelope).expose(),
@@ -305,7 +306,7 @@ fn an_accepted_walk_installs_one_item_per_epoch_and_one_for_s() {
             .expose()
         );
     }
-    let s = custody.load_tag_secret().unwrap();
+    let s = custody.load_tag_secret(&accepted.state).unwrap();
     let tag = vault_crypto::sync::idempotency_tag_key(&s, &VAULT);
     let expected = vault_crypto::sync::idempotency_tag_key(&common::tag_secret(0x77), &VAULT);
     assert_eq!(tag.expose(), expected.expose());
@@ -376,15 +377,16 @@ fn a_lost_key_item_comes_back_by_unsealing_the_records_again() {
     let c = chain();
     let store = MockSecretStore::new();
     let custody = SyncKeyCustody::new(&store, VAULT);
-    custody.install(&accepted_for(&c, &c.b.keys)).unwrap();
+    let accepted = accepted_for(&c, &c.b.keys);
+    custody.install(&accepted).unwrap();
     store.delete_secret(&account("ke.2")).unwrap();
     assert_eq!(
-        custody.load_epoch_key(2).unwrap_err(),
+        custody.load_epoch_key(&accepted.state, 2).unwrap_err(),
         CustodyError::Missing(Item::EpochKey(2))
     );
     // The store is a cache: the records and the device's agreement key are the root.
     custody.install(&accepted_for(&c, &c.b.keys)).unwrap();
-    assert!(custody.load_epoch_key(2).is_ok());
+    assert!(custody.load_epoch_key(&accepted.state, 2).is_ok());
 }
 
 #[test]
@@ -392,7 +394,8 @@ fn a_key_that_fails_its_stored_commitment_is_corrupt() {
     let c = chain();
     let store = MockSecretStore::new();
     let custody = SyncKeyCustody::new(&store, VAULT);
-    custody.install(&accepted_for(&c, &c.a.keys)).unwrap();
+    let accepted = accepted_for(&c, &c.a.keys);
+    custody.install(&accepted).unwrap();
     // Replace the value, keep the tag: the value no longer matches its commitment.
     let item = account("ke.1");
     let tag = store.public_tag(&item).unwrap().unwrap();
@@ -405,7 +408,7 @@ fn a_key_that_fails_its_stored_commitment_is_corrupt() {
         )
         .unwrap();
     assert_eq!(
-        custody.load_epoch_key(1).unwrap_err(),
+        custody.load_epoch_key(&accepted.state, 1).unwrap_err(),
         CustodyError::Corrupt(Item::EpochKey(1))
     );
 }
@@ -484,7 +487,7 @@ fn enabling_sync_generates_and_stores_every_key_and_installs_them_by_accepting_t
         &keys,
     )
     .unwrap();
-    let stored = custody.load_epoch_key(1).unwrap();
+    let stored = custody.load_epoch_key(&again.state, 1).unwrap();
     assert_eq!(
         aead_key(&stored, &keys.public().fingerprint, ObjectType::Envelope).expose(),
         aead_key(
@@ -494,7 +497,7 @@ fn enabling_sync_generates_and_stores_every_key_and_installs_them_by_accepting_t
         )
         .expose()
     );
-    custody.load_tag_secret().unwrap();
+    custody.load_tag_secret(&again.state).unwrap();
 }
 
 #[test]
@@ -532,4 +535,238 @@ fn enabling_on_an_unavailable_store_fails_and_stores_no_key_anywhere_else() {
     let custody = SyncKeyCustody::new(&store, VAULT);
     assert!(custody.enable_sync([0xa1; 16], 1).is_err());
     assert!(store.is_empty());
+}
+
+// ---- the store is the chain's cache, checked against the chain ---------------------------------------
+
+#[test]
+fn a_value_and_tag_replaced_together_are_refused_against_the_chain() {
+    let c = chain();
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    let accepted = accepted_for(&c, &c.a.keys);
+    custody.install(&accepted).unwrap();
+    // Someone with write access to the store swaps K_1 for another key and writes the matching
+    // tag: the item is self-consistent, so only the verified chain can refuse it.
+    let other = SecretBytes::new([0xd1; 32]);
+    store
+        .store_secret_tagged(
+            &account("ke.1"),
+            &SecretValue::new(other.expose()).unwrap(),
+            AccessPolicy::DeviceOnly,
+            Some(&PublicTag::new(&epoch_key_commitment(&other)).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(
+        custody.load_epoch_key(&accepted.state, 1).unwrap_err(),
+        CustodyError::Conflict(Item::EpochKey(1))
+    );
+    // The same for S.
+    let other_s = SecretBytes::new([0xd2; 32]);
+    store
+        .store_secret_tagged(
+            &account("s"),
+            &SecretValue::new(other_s.expose()).unwrap(),
+            AccessPolicy::DeviceOnly,
+            Some(&PublicTag::new(&vault_crypto::sync_keys::tag_key_commitment(&other_s)).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(
+        custody.load_tag_secret(&accepted.state).unwrap_err(),
+        CustodyError::Conflict(Item::TagSecret)
+    );
+    // An epoch the chain does not contain cannot be checked, and is said so.
+    assert_eq!(
+        custody.load_epoch_key(&accepted.state, 9).unwrap_err(),
+        CustodyError::NotInChain(Item::EpochKey(9))
+    );
+    assert_eq!(
+        custody
+            .load_tag_secret(&sync_core::membership::VerifiedState::empty(VAULT))
+            .unwrap_err(),
+        CustodyError::NotInChain(Item::TagSecret)
+    );
+}
+
+// ---- a failed store write cannot strand enabling ------------------------------------------------------
+
+/// A store that fails exactly one `store_secret_tagged` call (counted from 1), then behaves.
+struct FailsOnce {
+    inner: MockSecretStore,
+    calls: Mutex<usize>,
+    fail_at: Mutex<Option<usize>>,
+}
+
+impl FailsOnce {
+    fn failing_call(n: usize) -> Self {
+        Self {
+            inner: MockSecretStore::new(),
+            calls: Mutex::new(0),
+            fail_at: Mutex::new(Some(n)),
+        }
+    }
+}
+
+impl SecretStore for FailsOnce {
+    fn store_secret_tagged(
+        &self,
+        key: &SecretKey,
+        value: &SecretValue,
+        policy: AccessPolicy,
+        tag: Option<&PublicTag>,
+    ) -> Result<(), SecretError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        if *self.fail_at.lock().unwrap() == Some(*calls) {
+            *self.fail_at.lock().unwrap() = None;
+            return Err(SecretError::Unavailable(UnavailableReason::Locked));
+        }
+        drop(calls);
+        self.inner.store_secret_tagged(key, value, policy, tag)
+    }
+    fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
+        self.inner.public_tag(key)
+    }
+    fn load_secret(
+        &self,
+        key: &SecretKey,
+        prompt: &AuthPrompt,
+    ) -> Result<SecretValue, SecretError> {
+        self.inner.load_secret(key, prompt)
+    }
+    fn update_public_tag(
+        &self,
+        key: &SecretKey,
+        tag: Option<&PublicTag>,
+    ) -> Result<(), SecretError> {
+        self.inner.update_public_tag(key, tag)
+    }
+    fn delete_secret(&self, key: &SecretKey) -> Result<(), SecretError> {
+        self.inner.delete_secret(key)
+    }
+    fn capabilities(&self) -> StoreCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+#[test]
+fn a_store_write_that_fails_at_any_position_can_be_retried_to_a_complete_enable() {
+    // The writes are, in order: the signing key, the agreement key, K_1, S.
+    for position in 1..=4 {
+        let store = FailsOnce::failing_call(position);
+        let custody = SyncKeyCustody::new(&store, VAULT);
+        let first = custody.enable_sync([0xa1; 16], 1);
+        assert_eq!(
+            first.unwrap_err(),
+            vault_crypto::sync_custody::EnableError::Custody(CustodyError::Store(
+                SecretError::Unavailable(UnavailableReason::Locked)
+            )),
+            "write {position}"
+        );
+        // Whatever the failed attempt left is reused, never regenerated against.
+        let kept_k1 = custody.has_epoch_key(1).unwrap().then(|| {
+            let prompt = AuthPrompt::new("test").unwrap();
+            store
+                .inner
+                .load_secret(&account("ke.1"), &prompt)
+                .unwrap()
+                .expose()
+                .to_vec()
+        });
+        let genesis = custody
+            .enable_sync([0xa1; 16], 1)
+            .expect("the retry completes");
+        // All four items are present and valid, against the chain the records describe.
+        let state =
+            sync_core::membership::verify_chain(&VAULT, &[&genesis.membership], &[&genesis.epoch])
+                .unwrap();
+        let keys = custody.load_device_keys().unwrap();
+        let again = accept_records(
+            &VerifiedState::empty(VAULT),
+            &[&genesis.membership],
+            &[&genesis.epoch],
+            &keys,
+        )
+        .unwrap();
+        let stored = custody.load_epoch_key(&state, 1).unwrap();
+        assert_eq!(
+            aead_key(&stored, &keys.public().fingerprint, ObjectType::Envelope).expose(),
+            aead_key(
+                &again.installs[0].epoch_key,
+                &keys.public().fingerprint,
+                ObjectType::Envelope
+            )
+            .expose(),
+            "write {position}: the records seal the stored K_1"
+        );
+        custody.load_tag_secret(&state).unwrap();
+        if let Some(kept) = kept_k1 {
+            let prompt = AuthPrompt::new("test").unwrap();
+            let now = store.inner.load_secret(&account("ke.1"), &prompt).unwrap();
+            assert_eq!(
+                now.expose(),
+                kept.as_slice(),
+                "write {position}: K_1 is the one that was left"
+            );
+        }
+        // And it is enabled exactly once.
+        assert_eq!(
+            custody.enable_sync([0xa1; 16], 1).unwrap_err(),
+            vault_crypto::sync_custody::EnableError::AlreadyEnabled,
+            "write {position}"
+        );
+    }
+}
+
+#[test]
+fn a_lost_k1_item_is_regenerated_and_s_is_kept() {
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    let first = custody.enable_sync([0xa1; 16], 1).unwrap();
+    let state =
+        sync_core::membership::verify_chain(&VAULT, &[&first.membership], &[&first.epoch]).unwrap();
+    let s_before =
+        vault_crypto::sync::idempotency_tag_key(&custody.load_tag_secret(&state).unwrap(), &VAULT);
+    store.delete_secret(&account("ke.1")).unwrap();
+    // Only S is held, so the attempt is unfinished: the retry keeps S and makes a new K_1.
+    let second = custody.enable_sync([0xa1; 16], 1).unwrap();
+    let state =
+        sync_core::membership::verify_chain(&VAULT, &[&second.membership], &[&second.epoch])
+            .unwrap();
+    let s_after =
+        vault_crypto::sync::idempotency_tag_key(&custody.load_tag_secret(&state).unwrap(), &VAULT);
+    assert_eq!(s_before.expose(), s_after.expose());
+    custody.load_epoch_key(&state, 1).unwrap();
+}
+
+#[test]
+fn a_lone_half_of_the_device_keys_does_not_block_enabling() {
+    for lone in ["sign", "kem"] {
+        let store = MockSecretStore::new();
+        let custody = SyncKeyCustody::new(&store, VAULT);
+        let keys = DeviceKeys::generate().unwrap();
+        custody.store_device_keys(&keys).unwrap();
+        let other = if lone == "sign" { "kem" } else { "sign" };
+        store.delete_secret(&account(other)).unwrap();
+        assert!(!custody.has_device_keys().unwrap());
+        let genesis = custody.enable_sync([0xa1; 16], 1).expect(lone);
+        let state =
+            sync_core::membership::verify_chain(&VAULT, &[&genesis.membership], &[&genesis.epoch])
+                .unwrap();
+        assert!(custody.has_device_keys().unwrap());
+        custody.load_device_keys().unwrap();
+        custody.load_epoch_key(&state, 1).unwrap();
+    }
+}
+
+#[test]
+fn a_complete_pair_is_still_never_replaced() {
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    let first = DeviceKeys::generate().unwrap();
+    custody.store_device_keys(&first).unwrap();
+    assert!(custody
+        .store_device_keys(&DeviceKeys::generate().unwrap())
+        .is_err());
+    assert_eq!(custody.load_device_keys().unwrap().public(), first.public());
 }

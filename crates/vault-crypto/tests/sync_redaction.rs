@@ -210,8 +210,8 @@ fn a_genesis_a_grant_and_a_custody_round_trip_log_no_key() {
             let shown = format!("{accepted:?} {loaded:?}");
             tracing::info!(accepted = %shown, "debug forms are redacted");
             custody.install(&accepted).unwrap();
-            custody.load_epoch_key(1).unwrap();
-            custody.load_tag_secret().unwrap();
+            custody.load_epoch_key(&accepted.state, 1).unwrap();
+            custody.load_tag_secret(&accepted.state).unwrap();
         }
     });
     assert!(

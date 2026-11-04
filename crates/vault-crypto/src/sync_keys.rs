@@ -70,10 +70,14 @@ pub enum DeviceKeyError {
     /// The system random source failed.
     #[error("the system random source failed")]
     Rng,
-    /// A public key is one the chain would refuse (C.6 key acceptance). With random keys this is
-    /// astronomically unlikely, and with stored keys it means the stored bytes are damaged.
-    #[error("a public key is not acceptable to the membership chain")]
-    UnacceptablePublicKey,
+    /// The signing key's public key is one the chain would refuse (C.6 key acceptance). With a
+    /// random key this is astronomically unlikely, and with a stored one it means the stored bytes
+    /// are damaged.
+    #[error("the signing key's public key is not acceptable to the membership chain")]
+    UnacceptableSigningKey,
+    /// The agreement key's public key is one the chain would refuse (see above).
+    #[error("the agreement key's public key is not acceptable to the membership chain")]
+    UnacceptableAgreementKey,
 }
 
 impl From<VaultCryptoError> for DeviceKeyError {
@@ -104,7 +108,7 @@ impl DeviceKeys {
     /// Generate a fresh pair of independent keys.
     ///
     /// # Errors
-    /// [`DeviceKeyError::Rng`] or [`DeviceKeyError::UnacceptablePublicKey`].
+    /// [`DeviceKeyError`].
     pub fn generate() -> Result<Self, DeviceKeyError> {
         Self::from_secrets(generate_secret()?, generate_secret()?)
     }
@@ -113,17 +117,18 @@ impl DeviceKeys {
     /// re-screened, so damaged storage cannot become an enrollment.
     ///
     /// # Errors
-    /// [`DeviceKeyError::UnacceptablePublicKey`].
+    /// [`DeviceKeyError::UnacceptableSigningKey`] or [`DeviceKeyError::UnacceptableAgreementKey`].
     pub fn from_secrets(
         signing: SecretBytes<32>,
         agreement: SecretBytes<32>,
     ) -> Result<Self, DeviceKeyError> {
         let keys = Self { signing, agreement };
         let public = keys.public();
-        if !ed25519_public_key_acceptable(&public.ed25519_pk)
-            || !x25519_public_key_acceptable(&public.kem_public_key)
-        {
-            return Err(DeviceKeyError::UnacceptablePublicKey);
+        if !ed25519_public_key_acceptable(&public.ed25519_pk) {
+            return Err(DeviceKeyError::UnacceptableSigningKey);
+        }
+        if !x25519_public_key_acceptable(&public.kem_public_key) {
+            return Err(DeviceKeyError::UnacceptableAgreementKey);
         }
         Ok(keys)
     }

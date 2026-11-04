@@ -49,8 +49,8 @@ const HPKE_AAD_LABEL: &str = "dohflow/sync-hpke-aad/v1";
 const FINGERPRINT_LABEL: &str = "dohflow/device-fpr/v1";
 /// A membership body is at most a label, fixed fields and a 32-byte KEM key: well under this.
 const MAX_MEMBERSHIP_BODY: usize = 2560;
-/// An epoch body: a header and at most 1024 recipients of at most 2,364 bytes each.
-const MAX_EPOCH_BODY: usize = 512 + MAX_RECIPIENTS * 2364;
+/// The longest epoch body: a header and at most 1024 recipients of at most 2,364 bytes each.
+pub const MAX_EPOCH_BODY: usize = 512 + MAX_RECIPIENTS * 2364;
 const SIGNATURE_LEN: usize = 64;
 
 /// A fingerprint of a device's keys (C.3): `SHA-256(label "dohflow/device-fpr/v1" ‖ u16 suite_id ‖
@@ -938,6 +938,24 @@ impl VerifiedState {
     #[must_use]
     pub fn head_version(&self) -> u64 {
         self.steps.len() as u64
+    }
+
+    /// The commitment to `K_e` that the verified chain holds for `key_epoch`, from the epoch
+    /// record(s) of that epoch, or `None` for an epoch the chain does not have. A device that
+    /// loads a stored key checks it against this, not against anything the store says about it.
+    #[must_use]
+    pub fn epoch_key_commitment(&self, key_epoch: u64) -> Option<[u8; 32]> {
+        self.epochs
+            .iter()
+            .find(|e| e.key_epoch == key_epoch)
+            .map(|e| e.key_commitment_ke)
+    }
+
+    /// The commitment to `S` that every epoch record of the verified chain repeats, or `None`
+    /// before the first epoch record.
+    #[must_use]
+    pub fn tag_key_commitment(&self) -> Option<[u8; 32]> {
+        self.key_commitment_s
     }
 
     /// The version (1-based position) of the membership record with this id, or `None` if the

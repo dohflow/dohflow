@@ -26,7 +26,7 @@
 use sha2::{Digest, Sha256};
 use sync_core::membership::{
     extend, Action, ChainError, EpochBody, FailureKind, MembershipBody, Reason, Recipient,
-    SignedRecord, VerifiedState, KEM_ID, MAX_RECIPIENTS, SUITE_ID,
+    SignedRecord, VerifiedState, KEM_ID, MAX_EPOCH_BODY, MAX_RECIPIENTS, SUITE_ID,
 };
 
 use crate::sync::TagSecret;
@@ -35,10 +35,6 @@ use crate::sync_keys::{
     epoch_key_commitment, generate_secret, tag_key_commitment, DeviceKeys, DevicePublic,
 };
 use crate::sync_keyset::{seal_key_set, unseal_key_set, KeySetError, SealedKeySet};
-
-/// An epoch body is at most a header and 1,024 recipients of at most 2,364 bytes each; the same
-/// bound `sync-core` parses under.
-const MAX_EPOCH_BODY: usize = 512 + MAX_RECIPIENTS * 2364;
 
 /// Why a record was not built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -59,6 +55,9 @@ pub enum BuildError {
     /// The record cannot be encoded within the format's bounds.
     #[error("the record cannot be encoded")]
     Unencodable,
+    /// A key handed to the builder does not match its own commitment (a caller bug).
+    #[error("a key does not match its commitment")]
+    KeyMismatch,
     /// The sealer's own recipient path refused the record it just built: a bug, or a request that
     /// no verifier would accept. Nothing is offered.
     #[error("the sealer's own acceptance of its record failed: {0}")]
@@ -256,6 +255,56 @@ pub fn create_genesis(
     keys: &DeviceKeys,
     issued_at: i64,
 ) -> Result<GenesisRecords, BuildError> {
+    let epoch_key = fresh_epoch_key(vault_id, 1)?;
+    let tag_secret = fresh_tag_secret()?;
+    create_genesis_with(
+        vault_id,
+        device_id,
+        keys,
+        issued_at,
+        &epoch_key,
+        &tag_secret,
+    )
+}
+
+/// A fresh `K_e` for `key_epoch`, checked against its own commitment.
+///
+/// # Errors
+/// [`BuildError::Rng`].
+pub fn fresh_epoch_key(vault_id: [u8; 16], key_epoch: u64) -> Result<EpochKey, BuildError> {
+    let root = generate_secret().map_err(|_| BuildError::Rng)?;
+    let commitment = epoch_key_commitment(&root);
+    EpochKey::from_verified(vault_id, key_epoch, root, &commitment)
+        .map_err(|_| BuildError::KeyMismatch)
+}
+
+/// A fresh tag secret `S`, checked against its own commitment.
+///
+/// # Errors
+/// [`BuildError::Rng`].
+pub fn fresh_tag_secret() -> Result<TagSecret, BuildError> {
+    let root = generate_secret().map_err(|_| BuildError::Rng)?;
+    let commitment = tag_key_commitment(&root);
+    TagSecret::from_verified(root, &commitment).map_err(|_| BuildError::KeyMismatch)
+}
+
+/// [`create_genesis`] with the keys supplied, for a caller that must reuse the `K_1` and `S` an
+/// earlier, unfinished attempt left behind (no record of that attempt was ever returned, so
+/// nothing was published). `epoch_key` must be a key of epoch 1 of `vault_id`.
+///
+/// # Errors
+/// [`BuildError`].
+pub fn create_genesis_with(
+    vault_id: [u8; 16],
+    device_id: [u8; 16],
+    keys: &DeviceKeys,
+    issued_at: i64,
+    epoch_key: &EpochKey,
+    tag_secret: &TagSecret,
+) -> Result<GenesisRecords, BuildError> {
+    if epoch_key.vault_id() != &vault_id || epoch_key.key_epoch() != 1 {
+        return Err(BuildError::KeyMismatch);
+    }
     let public = keys.public();
     let membership_body = MembershipBody {
         suite_id: SUITE_ID,
@@ -272,21 +321,13 @@ pub fn create_genesis(
     };
     let membership = sign_membership(keys, &membership_body)?;
     let head = record_id(&membership).ok_or(BuildError::Unencodable)?;
-    let epoch_root = generate_secret().map_err(|_| BuildError::Rng)?;
-    let epoch_commitment = epoch_key_commitment(&epoch_root);
-    let epoch_key = EpochKey::from_verified(vault_id, 1, epoch_root, &epoch_commitment)
-        .map_err(|_| BuildError::Rng)?;
-    let tag_root = generate_secret().map_err(|_| BuildError::Rng)?;
-    let tag_commitment = tag_key_commitment(&tag_root);
-    let tag_secret =
-        TagSecret::from_verified(tag_root, &tag_commitment).map_err(|_| BuildError::Rng)?;
     let epoch = seal_epoch_record(&SealSpec {
         reason: Reason::Genesis,
         membership_head: head,
         prev_epoch_id: None,
         sealer: keys,
-        epoch_key: &epoch_key,
-        tag_secret: &tag_secret,
+        epoch_key,
+        tag_secret,
         recipients: &[RecipientKeys { device_id, public }],
     })?;
     accept_records(
@@ -376,8 +417,8 @@ pub fn accept_records(
             }
             continue;
         };
-        // Step 2: unseal. `info` and `aad` are rebuilt from the verified header, never taken from
-        // the entry.
+        // Step 2: unseal. `info` and `aad` are rebuilt from the verified header and the entry's
+        // device id and fingerprint, which `extend` has already checked against the chain.
         let unsealed = unseal_key_set(
             device,
             &SealedKeySet {

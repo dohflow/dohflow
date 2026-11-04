@@ -15,7 +15,10 @@
 //! `<vault_id>` is the 32 lowercase hex digits of the vault id. Every item is stored with
 //! [`AccessPolicy::DeviceOnly`]: never synchronized, never restored to another device (two devices
 //! sharing a fingerprint would reuse AES-GCM nonces, C.2). A tag is public routing data, read
-//! without authentication; it is what lets a load notice a damaged or swapped item.
+//! without authentication. It is a **damage check only**: a value and its tag replaced together
+//! agree with each other. What a stored `K_e` or `S` must match is the **verified chain's**
+//! commitment, so [`SyncKeyCustody::load_epoch_key`] and [`SyncKeyCustody::load_tag_secret`] take
+//! the `VerifiedState` and refuse a self-consistent swap as a conflict.
 //!
 //! # The store is a cache of the records
 //!
@@ -46,9 +49,10 @@ use platform_traits::{
 use crate::secret::SecretBytes;
 use crate::sync::TagSecret;
 use crate::sync_envelope::EpochKey;
-use crate::sync_keys::{epoch_key_commitment, tag_key_commitment, DeviceKeys};
+use crate::sync_keys::{epoch_key_commitment, tag_key_commitment, DeviceKeyError, DeviceKeys};
 use crate::sync_records::{
-    accept_records, create_genesis, AcceptError, Accepted, BuildError, GenesisRecords,
+    accept_records, create_genesis_with, fresh_epoch_key, fresh_tag_secret, AcceptError, Accepted,
+    BuildError, GenesisRecords,
 };
 use sync_core::membership::VerifiedState;
 
@@ -96,6 +100,10 @@ pub enum CustodyError {
     /// its commitment.
     #[error("{0} in the secret store is damaged")]
     Corrupt(Item),
+    /// The verified chain has no commitment for the item (an epoch it does not contain, or no
+    /// epoch record at all), so a stored key cannot be checked against it.
+    #[error("{0} is not in the verified chain")]
+    NotInChain(Item),
     /// The platform store failed.
     #[error("the secret store failed: {0}")]
     Store(SecretError),
@@ -207,19 +215,33 @@ impl<'a> SyncKeyCustody<'a> {
         Ok(present(Item::SigningKey)? && present(Item::AgreementKey)?)
     }
 
-    /// Store a freshly generated device's keys. Refuses to replace existing ones: a device that
-    /// already holds keys for the vault keeps them, because replacing them would change its
+    /// Store a freshly generated device's keys. Refuses to replace a complete pair: a device that
+    /// already holds both keys for the vault keeps them, because replacing them would change its
     /// fingerprint under a chain that already names the old one.
+    ///
+    /// A **lone half** (one of the two items present, left by a store that failed between the two
+    /// writes and then failed to clean up) is not a pair and cannot sign or unseal anything, so it
+    /// is removed and the new pair written. Without that, such a device could never enable Sync
+    /// again.
     ///
     /// # Errors
     /// [`CustodyError::AlreadyPresent`] or [`CustodyError::Store`]. If the second write fails the
-    /// first is removed, so a failed call leaves no half of a pair behind.
+    /// first is removed (best effort), so a failed call leaves no half of a pair behind.
     pub fn store_device_keys(&self, keys: &DeviceKeys) -> Result<(), CustodyError> {
-        for item in [Item::SigningKey, Item::AgreementKey] {
-            match self.store.public_tag(&self.key(item)) {
-                Ok(_) => return Err(CustodyError::AlreadyPresent(item)),
-                Err(SecretError::NotFound) => {}
-                Err(error) => return Err(CustodyError::Store(error)),
+        let present = |item| match self.store.public_tag(&self.key(item)) {
+            Ok(_) => Ok(true),
+            Err(SecretError::NotFound) => Ok(false),
+            Err(error) => Err(CustodyError::Store(error)),
+        };
+        let (signing, agreement) = (present(Item::SigningKey)?, present(Item::AgreementKey)?);
+        if signing && agreement {
+            return Err(CustodyError::AlreadyPresent(Item::SigningKey));
+        }
+        for (item, held) in [(Item::SigningKey, signing), (Item::AgreementKey, agreement)] {
+            if held {
+                self.store
+                    .delete_secret(&self.key(item))
+                    .map_err(CustodyError::Store)?;
             }
         }
         let public = keys.public();
@@ -239,11 +261,20 @@ impl<'a> SyncKeyCustody<'a> {
     /// Enable Sync for the vault on this, the founding, device (AC: `K_e` and `S` are generated at
     /// sync-enable and held in the secret store).
     ///
-    /// Generates the device's two keys (or reuses a pair a failed earlier attempt left, which no
-    /// chain has seen yet), creates the genesis records, and installs `K_1` and `S` **by accepting
-    /// the device's own genesis record**, never from the values that sealed it. Returns the records
-    /// for the caller to publish; publishing them, and refusing a vault the service already knows
-    /// (R39), are the enable path's (`personal-cfo-1cltt.4`).
+    /// Generates the device's two keys, `K_1` and `S`, creates the genesis records, and installs
+    /// `K_1` and `S` **by accepting the device's own genesis record**, never from the values that
+    /// sealed it. Returns the records for the caller to publish; publishing them, persisting
+    /// them until they are published, and refusing a vault the service already knows (R39) are the
+    /// enable path's (`personal-cfo-1cltt.4`).
+    ///
+    /// **Resumable.** If an earlier attempt failed part-way (a store write failed after the device
+    /// keys, `K_1` or `S` were stored), no record of it was ever returned, so nothing was published.
+    /// The retry reuses whatever that attempt left and generates only what is missing, so a failed
+    /// write never leaves a vault that can neither finish enabling nor be re-enabled. A lone half
+    /// of the device keys is replaced (see [`Self::store_device_keys`]). It is
+    /// [`EnableError::AlreadyEnabled`] only when `K_1` **and** `S` are both held: an enable that
+    /// completed has returned its records, and a second genesis with new ephemeral keys would be a
+    /// different genesis for the same vault.
     ///
     /// # Errors
     /// [`EnableError`].
@@ -252,7 +283,9 @@ impl<'a> SyncKeyCustody<'a> {
         device_id: [u8; 16],
         issued_at: i64,
     ) -> Result<GenesisRecords, EnableError> {
-        if self.has_epoch_key(1)? {
+        let epoch_key = self.unfinished_epoch_key()?;
+        let tag_secret = self.unfinished_tag_secret()?;
+        if epoch_key.is_some() && tag_secret.is_some() {
             return Err(EnableError::AlreadyEnabled);
         }
         let keys = if self.has_device_keys()? {
@@ -262,7 +295,22 @@ impl<'a> SyncKeyCustody<'a> {
             self.store_device_keys(&keys)?;
             keys
         };
-        let genesis = create_genesis(self.vault_id, device_id, &keys, issued_at)?;
+        let epoch_key = match epoch_key {
+            Some(key) => key,
+            None => fresh_epoch_key(self.vault_id, 1)?,
+        };
+        let tag_secret = match tag_secret {
+            Some(secret) => secret,
+            None => fresh_tag_secret()?,
+        };
+        let genesis = create_genesis_with(
+            self.vault_id,
+            device_id,
+            &keys,
+            issued_at,
+            &epoch_key,
+            &tag_secret,
+        )?;
         let accepted = accept_records(
             &VerifiedState::empty(self.vault_id),
             &[&genesis.membership],
@@ -288,6 +336,11 @@ impl<'a> SyncKeyCustody<'a> {
     /// Load the device's keys, only when needed. A missing half is a typed error naming it; a half
     /// whose public key no longer matches its tag is damaged.
     ///
+    /// The tag is the store's own claim, so before using the keys for anything that matters the
+    /// caller compares the loaded `public().fingerprint` with the fingerprint the **verified
+    /// chain** holds for this device (`VerifiedState::members`): keys the chain does not name are
+    /// not this device's enrollment.
+    ///
     /// # Errors
     /// [`CustodyError::Missing`], [`CustodyError::Corrupt`] or [`CustodyError::Store`].
     pub fn load_device_keys(&self) -> Result<DeviceKeys, CustodyError> {
@@ -297,8 +350,10 @@ impl<'a> SyncKeyCustody<'a> {
         let (agreement, agreement_tag) = self
             .read(Item::AgreementKey)?
             .ok_or(CustodyError::Missing(Item::AgreementKey))?;
-        let keys = DeviceKeys::from_secrets(signing, agreement)
-            .map_err(|_| CustodyError::Corrupt(Item::SigningKey))?;
+        let keys = DeviceKeys::from_secrets(signing, agreement).map_err(|error| match error {
+            DeviceKeyError::UnacceptableAgreementKey => CustodyError::Corrupt(Item::AgreementKey),
+            _ => CustodyError::Corrupt(Item::SigningKey),
+        })?;
         let public = keys.public();
         if signing_tag.as_bytes() != public.ed25519_pk {
             return Err(CustodyError::Corrupt(Item::SigningKey));
@@ -360,35 +415,92 @@ impl<'a> SyncKeyCustody<'a> {
         }
     }
 
-    /// Load `K_e` of one key epoch. It becomes an [`EpochKey`] only through the commitment the
-    /// item's tag carries (the one the verified record committed to at install).
+    /// Load `K_e` of one key epoch, checked against **the verified chain's** commitment for that
+    /// epoch. The item's own public tag is only a damage check: a value and a tag replaced together
+    /// agree with each other, so the tag alone proves nothing about which key it is.
     ///
     /// # Errors
-    /// [`CustodyError::Missing`], [`CustodyError::Corrupt`] or [`CustodyError::Store`].
-    pub fn load_epoch_key(&self, key_epoch: u64) -> Result<EpochKey, CustodyError> {
+    /// [`CustodyError::Missing`], [`CustodyError::Corrupt`] (the value does not match its own tag),
+    /// [`CustodyError::Conflict`] (it does not match the chain), [`CustodyError::NotInChain`] or
+    /// [`CustodyError::Store`].
+    pub fn load_epoch_key(
+        &self,
+        chain: &VerifiedState,
+        key_epoch: u64,
+    ) -> Result<EpochKey, CustodyError> {
         let item = Item::EpochKey(key_epoch);
+        let expected = chain
+            .epoch_key_commitment(key_epoch)
+            .ok_or(CustodyError::NotInChain(item))?;
         let (secret, tag) = self.read(item)?.ok_or(CustodyError::Missing(item))?;
+        Self::check_tag(item, &secret, &tag, epoch_key_commitment)?;
+        EpochKey::from_verified(self.vault_id, key_epoch, secret, &expected)
+            .map_err(|_| CustodyError::Conflict(item))
+    }
+
+    /// Load the tag secret `S`, checked against the verified chain's commitment (see
+    /// [`Self::load_epoch_key`]).
+    ///
+    /// # Errors
+    /// As [`Self::load_epoch_key`].
+    pub fn load_tag_secret(&self, chain: &VerifiedState) -> Result<TagSecret, CustodyError> {
+        let expected = chain
+            .tag_key_commitment()
+            .ok_or(CustodyError::NotInChain(Item::TagSecret))?;
+        let (secret, tag) = self
+            .read(Item::TagSecret)?
+            .ok_or(CustodyError::Missing(Item::TagSecret))?;
+        Self::check_tag(Item::TagSecret, &secret, &tag, tag_key_commitment)?;
+        TagSecret::from_verified(secret, &expected)
+            .map_err(|_| CustodyError::Conflict(Item::TagSecret))
+    }
+
+    /// The item's value must hash to the commitment its own tag carries; otherwise the item is
+    /// damaged.
+    fn check_tag(
+        item: Item,
+        secret: &SecretBytes<32>,
+        tag: &PublicTag,
+        commit: fn(&SecretBytes<32>) -> [u8; 32],
+    ) -> Result<(), CustodyError> {
+        if tag.as_bytes() == commit(secret) {
+            Ok(())
+        } else {
+            Err(CustodyError::Corrupt(item))
+        }
+    }
+
+    /// `K_1` as a failed, unfinished enable left it, if it did. No chain exists yet to check it
+    /// against; the item's own tag is the only check, which is enough because this key has never
+    /// left the device and is only ever reused by the same device's own retry.
+    fn unfinished_epoch_key(&self) -> Result<Option<EpochKey>, CustodyError> {
+        let item = Item::EpochKey(1);
+        let Some((secret, tag)) = self.read(item)? else {
+            return Ok(None);
+        };
+        Self::check_tag(item, &secret, &tag, epoch_key_commitment)?;
         let commitment: [u8; 32] = tag
             .as_bytes()
             .try_into()
             .map_err(|_| CustodyError::Corrupt(item))?;
-        EpochKey::from_verified(self.vault_id, key_epoch, secret, &commitment)
+        EpochKey::from_verified(self.vault_id, 1, secret, &commitment)
+            .map(Some)
             .map_err(|_| CustodyError::Corrupt(item))
     }
 
-    /// Load the tag secret `S`, through the commitment its tag carries.
-    ///
-    /// # Errors
-    /// [`CustodyError::Missing`], [`CustodyError::Corrupt`] or [`CustodyError::Store`].
-    pub fn load_tag_secret(&self) -> Result<TagSecret, CustodyError> {
-        let (secret, tag) = self
-            .read(Item::TagSecret)?
-            .ok_or(CustodyError::Missing(Item::TagSecret))?;
+    /// `S` as a failed, unfinished enable left it, if it did (see [`Self::unfinished_epoch_key`]).
+    fn unfinished_tag_secret(&self) -> Result<Option<TagSecret>, CustodyError> {
+        let item = Item::TagSecret;
+        let Some((secret, tag)) = self.read(item)? else {
+            return Ok(None);
+        };
+        Self::check_tag(item, &secret, &tag, tag_key_commitment)?;
         let commitment: [u8; 32] = tag
             .as_bytes()
             .try_into()
-            .map_err(|_| CustodyError::Corrupt(Item::TagSecret))?;
+            .map_err(|_| CustodyError::Corrupt(item))?;
         TagSecret::from_verified(secret, &commitment)
-            .map_err(|_| CustodyError::Corrupt(Item::TagSecret))
+            .map(Some)
+            .map_err(|_| CustodyError::Corrupt(item))
     }
 }
