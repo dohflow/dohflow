@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
+import { applyUtilityStyles } from "@/test/renderedStyle";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { DebtPayoffPlanDto } from "@/bindings";
@@ -207,6 +208,27 @@ describe("the result of adding the scenario is announced (6wk.26)", () => {
     renderWithClient(<DebtPayoffCompare />);
     expect(await screen.findByRole("status")).toBeEmptyDOMElement();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("the empty region is rendered and exposed, not display:none, hidden or aria-hidden", async () => {
+    mocks.debtPayoffComparison.mockResolvedValue(ok([plan()]));
+    renderWithClient(<DebtPayoffCompare />);
+    const region = await screen.findByRole("status");
+    const remove = await applyUtilityStyles(region);
+    try {
+      expect(region).toBeEmptyDOMElement();
+      const style = getComputedStyle(region);
+      expect(style.display).not.toBe("none");
+      expect(style.visibility).not.toBe("hidden");
+      expect(region).not.toHaveAttribute("hidden");
+      expect(region.closest("[aria-hidden='true']")).toBeNull();
+      // The accessibility tree (role query that ignores nothing hidden) still finds it.
+      expect(screen.getByRole("status", { hidden: false })).toBe(region);
+      // It adds no gap to the card's flex column while empty, and is normal flow once it has text.
+      expect(style.position).toBe("absolute");
+    } finally {
+      remove();
+    }
   });
 
   test("a success is announced politely, with no alert, and focus stays put", async () => {

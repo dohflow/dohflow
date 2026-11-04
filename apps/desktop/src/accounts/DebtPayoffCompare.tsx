@@ -166,9 +166,12 @@ export function DebtPayoffCompare({ accountIds }: { accountIds?: string[] } = {}
             Add to Cash Flow
           </Button>
         </div>
-        {/* The polite region is always mounted, so its text arriving is what gets announced; an
-            alert is announced as it appears. Only one of them holds the result at a time. */}
-        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        {/* The polite region is always mounted and stays in the accessibility tree while empty (a
+            hidden or display:none region is not a live region until it is shown, so the first
+            text can go unannounced), so its text arriving is what gets announced; an alert is
+            announced as it appears. Only one of them holds the result at a time. Empty, it is
+            taken out of the layout flow instead of hidden, so it adds no gap. */}
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
           {scenarioNote?.kind === "added" ? scenarioNote.text : null}
         </p>
         {scenarioNote?.kind === "failed" && (
