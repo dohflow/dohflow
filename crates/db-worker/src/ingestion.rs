@@ -95,6 +95,11 @@ pub(crate) struct NewStagedTransaction<'a> {
     /// date + amount + normalized merchant + account, the transaction-level
     /// dedupe key (ADR 0014 §3).
     pub txn_fingerprint: &'a str,
+    /// The 1-based position of this transaction among its batch's staged transactions, in staging
+    /// order (personal-cfo-0g528.1). The ledger transaction an import commits derives its id from
+    /// (batch, ordinal), so the same ordinal in the same batch is the same transaction on every
+    /// device. Class 3: it never leaves the device that staged the row.
+    pub row_ordinal: i64,
 }
 
 /// An external account observed in the source, to be matched to a real account.
@@ -189,6 +194,9 @@ pub(crate) struct StagedTransaction {
     pub commit_status: String,
     pub committed_transaction_id: Option<Uuid>,
     pub created_at: String,
+    /// The 1-based position within the batch (`None` only for a row staged by a build that
+    /// predates the column and never migrated, which migration 65 rules out).
+    pub row_ordinal: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,8 +345,8 @@ pub(crate) fn stage_transaction(
         "INSERT INTO staged_transactions
             (id, source_record_id, proposed_account_id, posted_at, transaction_date,
              amount_minor, currency, normalized_merchant, description, imported_category,
-             txn_fingerprint, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             txn_fingerprint, created_at, row_ordinal)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             id,
             txn.source_record_id,
@@ -352,9 +360,22 @@ pub(crate) fn stage_transaction(
             txn.imported_category,
             txn.txn_fingerprint,
             Utc::now().to_rfc3339(),
+            txn.row_ordinal,
         ],
     )?;
     Ok(id)
+}
+
+/// The highest row ordinal already staged under `batch` (0 when none), so a staging pass numbers
+/// its rows from the next one even if the batch is staged in more than one pass.
+pub(crate) fn last_row_ordinal(conn: &Connection, batch: Uuid) -> Result<i64, DbError> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(st.row_ordinal), 0) FROM staged_transactions st
+           JOIN source_records sr ON sr.id = st.source_record_id
+          WHERE sr.source_batch_id = ?1",
+        [batch],
+        |r| r.get(0),
+    )?)
 }
 
 /// Stage an external account, returning its id.
@@ -558,7 +579,7 @@ pub(crate) fn list_staged_for_batch(
                 t.amount_minor, t.currency, t.normalized_merchant, t.description,
                 t.txn_fingerprint, t.dedupe_status, t.commit_status,
                 t.committed_transaction_id, t.created_at, t.transaction_date,
-                t.imported_category
+                t.imported_category, t.row_ordinal
            FROM staged_transactions t
            JOIN source_records r ON r.id = t.source_record_id
           WHERE r.source_batch_id = ?1
@@ -581,6 +602,7 @@ pub(crate) fn list_staged_for_batch(
             created_at: r.get(12)?,
             transaction_date: r.get(13)?,
             imported_category: r.get(14)?,
+            row_ordinal: r.get(15)?,
         })
     })?;
     let mut out = Vec::new();
@@ -599,7 +621,7 @@ pub(crate) fn read_staged_transaction(
         "SELECT id, source_record_id, proposed_account_id, posted_at, amount_minor,
                 currency, normalized_merchant, description, txn_fingerprint,
                 dedupe_status, commit_status, committed_transaction_id, created_at,
-                transaction_date, imported_category
+                transaction_date, imported_category, row_ordinal
            FROM staged_transactions WHERE id = ?1",
         params![id],
         |r| {
@@ -619,6 +641,7 @@ pub(crate) fn read_staged_transaction(
                 created_at: r.get(12)?,
                 transaction_date: r.get(13)?,
                 imported_category: r.get(14)?,
+                row_ordinal: r.get(15)?,
             })
         },
     )
@@ -1014,6 +1037,7 @@ mod tests {
                 description: Some("CAFE"),
                 imported_category: None,
                 txn_fingerprint: "2026-06-20|-1299|coffee",
+                row_ordinal: 1,
             },
         )
         .unwrap();

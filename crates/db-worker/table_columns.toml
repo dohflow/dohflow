@@ -480,7 +480,7 @@ name = "staged_transactions"
 class = "3"
 write_set = "none"
 primary_key = ["id"]
-columns = ["id:uuid", "source_record_id:uuid", "proposed_account_id:uuid", "posted_at:text", "amount_minor:int", "currency:text", "normalized_merchant:text", "description:text", "txn_fingerprint:text", "dedupe_status:text", "commit_status:text", "committed_transaction_id:uuid", "created_at:text", "transaction_date:text", "imported_category:text"]
+columns = ["id:uuid", "source_record_id:uuid", "proposed_account_id:uuid", "posted_at:text", "amount_minor:int", "currency:text", "normalized_merchant:text", "description:text", "txn_fingerprint:text", "dedupe_status:text", "commit_status:text", "committed_transaction_id:uuid", "created_at:text", "transaction_date:text", "imported_category:text", "row_ordinal:int"]
 
 [[table]]
 name = "system_ledger_accounts"

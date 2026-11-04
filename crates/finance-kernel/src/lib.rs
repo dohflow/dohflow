@@ -48,8 +48,8 @@ pub use db_worker::{
     NewScenario, Outcome, PayoffDebtSeries, PayoffPlanView, ReadinessFactor, RecurringBillView,
     RecurringCandidateView, RecurringInstanceRow, RecurringTransferView, RepaymentPhilosophy,
     RevertBlocker, RevertChange, RevertLine, RevertPreview, ReviewStatus, ScenarioStatus,
-    ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput, SplitLineView, TagView,
-    TransactionDisplayRow, TransactionPage, TransactionPageQuery, TransactionRow,
+    ScenarioView, SpendBreakdown, SpendFilters, SplitLineInput, SplitLineView, StagedDecision,
+    TagView, TransactionDisplayRow, TransactionPage, TransactionPageQuery, TransactionRow,
     TransactionSortOrder, UnconfirmedOccurrence, VaultMetadata, WorkerState,
     AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
     FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
@@ -1955,94 +1955,6 @@ impl KernelCommand for UpdateBatchState {
     }
 }
 
-/// Commit one staged transaction to the ledger (ADR 0008/0014, personal-cfo-cmx):
-/// promote it to a balanced ledger transaction + FK-strict import provenance, or
-/// — if its fingerprint duplicates an already-committed import — flag it for the
-/// Money Inbox (never a silent drop). Idempotent via the command bus.
-#[derive(Debug, Clone, Copy)]
-pub struct CommitStaged {
-    staged_transaction_id: StagedTransactionId,
-    force: bool,
-}
-
-impl CommitStaged {
-    /// Build a `CommitStaged` for the staged transaction `id` — the normal
-    /// pipeline path, where the transaction-level dedupe check applies.
-    #[must_use]
-    pub const fn new(staged_transaction_id: StagedTransactionId) -> Self {
-        Self {
-            staged_transaction_id,
-            force: false,
-        }
-    }
-
-    /// Commit `id` unconditionally, skipping the dedupe check — the Money Inbox
-    /// "import anyway" resolution for a flagged duplicate (ADR 0014 §7,
-    /// personal-cfo-asqy).
-    #[must_use]
-    pub const fn import_anyway(staged_transaction_id: StagedTransactionId) -> Self {
-        Self {
-            staged_transaction_id,
-            force: true,
-        }
-    }
-}
-
-impl sealed::Sealed for CommitStaged {}
-
-impl KernelCommand for CommitStaged {
-    fn kind(&self) -> &'static str {
-        "commit_staged"
-    }
-
-    fn validate(&self) -> Result<(), KernelError> {
-        Ok(())
-    }
-
-    fn lower(self) -> WriteCommand {
-        WriteCommand::CommitStaged {
-            staged_transaction_id: self.staged_transaction_id,
-            force: self.force,
-        }
-    }
-}
-
-/// Skip a flagged staged transaction without committing it — the Money Inbox
-/// "skip" resolution (ADR 0014 §7, personal-cfo-asqy). Marks the row `skipped`
-/// so the next inbox rebuild drops it; no ledger write. Idempotent via the bus.
-#[derive(Debug, Clone, Copy)]
-pub struct SkipStaged {
-    staged_transaction_id: StagedTransactionId,
-}
-
-impl SkipStaged {
-    /// Build a `SkipStaged` for the staged transaction `id`.
-    #[must_use]
-    pub const fn new(staged_transaction_id: StagedTransactionId) -> Self {
-        Self {
-            staged_transaction_id,
-        }
-    }
-}
-
-impl sealed::Sealed for SkipStaged {}
-
-impl KernelCommand for SkipStaged {
-    fn kind(&self) -> &'static str {
-        "skip_staged"
-    }
-
-    fn validate(&self) -> Result<(), KernelError> {
-        Ok(())
-    }
-
-    fn lower(self) -> WriteCommand {
-        WriteCommand::SkipStaged {
-            staged_transaction_id: self.staged_transaction_id,
-        }
-    }
-}
-
 /// Confirm a recurring bill occurrence as paid early (personal-cfo-5ie.9, ADR 5ie.7): post a real
 /// outflow from `paying_account_id` dated `actual_date` for the occurrence scheduled on
 /// `scheduled_date`, so the balance moves now and the forecast stops projecting that occurrence.
@@ -3458,11 +3370,15 @@ impl Kernel {
             }
         };
         for staged_id in &staged_ids {
-            self.dispatch(CommandEnvelope::new(
+            self.worker.commit_staged(
                 next_meta(meta),
-                CommitStaged::new(StagedTransactionId::from_uuid(*staged_id)),
-            ))?;
+                StagedTransactionId::from_uuid(*staged_id),
+                false,
+            )?;
         }
+        // One rebuild for the batch, on this device: the commit command does not rebuild the
+        // Money Inbox (a replica has no staging rows to rebuild it from).
+        self.worker.rebuild_money_inbox()?;
 
         let (total, committed, flagged) = self.worker.staged_commit_tally(batch_id.as_uuid())?;
         let status = if flagged == 0 {
@@ -3618,17 +3534,12 @@ impl Kernel {
             )?;
             let staged = StagedTransactionId::from_uuid(row.staged_id);
             if duplicate {
-                self.dispatch(CommandEnvelope::new(
-                    next_meta(meta),
-                    SkipStaged::new(staged),
-                ))?;
+                self.worker.skip_staged(staged)?;
             } else {
-                self.dispatch(CommandEnvelope::new(
-                    next_meta(meta),
-                    CommitStaged::new(staged),
-                ))?;
+                self.worker.commit_staged(next_meta(meta), staged, false)?;
             }
         }
+        self.worker.rebuild_money_inbox()?;
 
         let (total, committed, flagged) = self.worker.staged_commit_tally(batch_id.as_uuid())?;
         let status = if flagged == 0 {
@@ -4419,6 +4330,38 @@ impl Kernel {
         transaction_id: TransactionId,
     ) -> Result<Vec<SplitLineView>, KernelError> {
         Ok(self.worker.transaction_splits(transaction_id)?)
+    }
+
+    /// Money Inbox "import anyway": commit a flagged staged transaction to the ledger despite the
+    /// suspected duplicate (ADR 0014 §7, personal-cfo-asqy). The commit is
+    /// `CommitImportedTransaction`, dispatched with `meta`; the staged row leaves `flagged` and the
+    /// Money Inbox is rebuilt, so the item clears.
+    ///
+    /// # Errors
+    /// [`KernelError::Validation`] for a row that does not exist, is already committed, or that the
+    /// ledger cannot accept (a zero amount, a currency other than the account's); a persistence
+    /// error otherwise.
+    pub fn import_staged_anyway(
+        &self,
+        meta: CommandMeta,
+        staged: StagedTransactionId,
+    ) -> Result<StagedDecision, KernelError> {
+        let decision = self.worker.commit_staged(meta, staged, true)?;
+        self.worker.rebuild_money_inbox()?;
+        Ok(decision)
+    }
+
+    /// Money Inbox "skip": mark a flagged staged transaction skipped without a ledger write
+    /// (ADR 0014 §7, personal-cfo-asqy). Device-local, so it writes no operation-log entry and
+    /// nothing replicates. The Money Inbox is rebuilt, so the item clears.
+    ///
+    /// # Errors
+    /// [`KernelError::Validation`] for a row that does not exist or is already committed; a
+    /// persistence error otherwise.
+    pub fn skip_staged(&self, staged: StagedTransactionId) -> Result<(), KernelError> {
+        self.worker.skip_staged(staged)?;
+        self.worker.rebuild_money_inbox()?;
+        Ok(())
     }
 
     /// The committed counterpart(s) a flagged staged transaction may duplicate, for the

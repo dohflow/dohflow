@@ -38,6 +38,12 @@ bead = "personal-cfo-g3m.26"
 note = "Payload-domain and class-1 reference checks of the category and recategorization commands."
 
 [[site]]
+module = "apply/ingestion_cmds.rs"
+statements = 7
+bead = "personal-cfo-0g528.1"
+note = "CommitImportedTransaction: the amount is non-zero, the memo and counterparty are within their bound and the date is within the supported years (all payload); the amount is in the account's currency, and the account, the category (when named) and the source record exist (class-1 account and category rows, class-1b source record). The heuristics that decided to commit ran on the issuing device and are not re-run. The retired CommitStaged and SkipStaged keep their InvalidCommand errors: they read class-3 staging and are never a verdict."
+
+[[site]]
 module = "apply/mod.rs"
 statements = 1
 bead = "personal-cfo-g3m.26"

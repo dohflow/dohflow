@@ -1471,7 +1471,8 @@ mod old_backup_settings_tests {
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version = 64;
+                 DELETE FROM schema_migrations WHERE version IN (64, 65);
+                 ALTER TABLE staged_transactions DROP COLUMN row_ordinal;
                  PRAGMA user_version = 63;",
             )
             .unwrap();

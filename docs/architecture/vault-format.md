@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=27 -->
-<!-- vault-format: schema-version=64 -->
+<!-- vault-format: spec-version=28 -->
+<!-- vault-format: schema-version=65 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,20 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 28` (personal-cfo-0g528.1) adds the version 1 command `CommitImportedTransaction` and
+  retires `CommitStaged` and `SkipStaged` (they stay decodable and apply as before; nothing produces
+  them). The new command carries the MATERIALIZED import (transaction id, account, instant, signed
+  amount, merchant, description, secondary date, the category the source named as an id, and whether the
+  person forced it) and the logical id of the class-1b source record; it carries no staging id, storage
+  id or file digest, and apply reads no class-3 row. The dedupe and row checks run in a read-only
+  planner on the issuing device and travel as the command or as device-local bookkeeping; apply runs
+  none. The transaction id is a content id (tag `txn.import`) of (source batch id, row ordinal), the
+  provenance link and the committed dedupe decision are content ids (`import.provenance-link`,
+  `import.dedupe-decision`) of the transaction id, and the decision carries no staged id. A transaction
+  that already exists is left alone. Schema version 65 adds the class-3 column
+  `staged_transactions.row_ordinal` (numbered 1.. per batch in insertion order for rows staged
+  earlier). ADR 0073 Addendum L gives the disposition (Create). The version 1 payload fixtures gain one
+  file.
 - `spec-version = 27` (personal-cfo-v98vd, AC27) names the failure for an epoch record whose
   `membership_head` is neither installed nor in the same request: `EpochRecordMissing` (the converse
   of an add that no epoch record names), where the reference verifier and the vector

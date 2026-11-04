@@ -464,13 +464,18 @@ const DISPOSITIONS: &[Disposition] = &[
     ),
     d(
         "CommitStaged",
-        Shape::ReshapeFirst,
-        "reshape to materialized transaction in SYNC-2c",
+        Shape::NeverShips,
+        "retired; replaced by CommitImportedTransaction, decodable and never produced (Addendum L)",
     ),
     d(
         "SkipStaged",
         Shape::NeverShips,
         "never enters an envelope; device-local staging only",
+    ),
+    d(
+        "CommitImportedTransaction",
+        Shape::Create,
+        "base-dependent: a transaction that already exists is left alone, so a re-delivery and a voided transaction write nothing (Addendum L)",
     ),
 ];
 
@@ -578,7 +583,7 @@ fn disposition_appendix_covers_every_write_command_variant() {
     let variants = write_command_variants();
     assert_eq!(
         variants.len(),
-        83,
+        84,
         "the ADR count must track the current enum"
     );
     assert_eq!(
@@ -606,13 +611,13 @@ fn disposition_appendix_covers_every_write_command_variant() {
     }
 
     let shape_count = |shape| DISPOSITIONS.iter().filter(|row| row.shape == shape).count();
-    assert_eq!(shape_count(Shape::Create), 14);
+    assert_eq!(shape_count(Shape::Create), 15);
     assert_eq!(shape_count(Shape::Set), 31);
     assert_eq!(shape_count(Shape::Toggle), 25);
     assert_eq!(shape_count(Shape::BaseDependent), 8);
     assert_eq!(shape_count(Shape::TombstoneFirst), 0);
-    assert_eq!(shape_count(Shape::ReshapeFirst), 4);
-    assert_eq!(shape_count(Shape::NeverShips), 1);
+    assert_eq!(shape_count(Shape::ReshapeFirst), 3);
+    assert_eq!(shape_count(Shape::NeverShips), 2);
 
     println!("| WriteCommand variant | Shape | Default disposition |");
     println!("| --- | --- | --- |");
