@@ -7,6 +7,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { BackupScheduleCard } from "@/backup/BackupScheduleCard";
+import { watchAlert } from "@/test/alertChanges";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { VaultHealthDto } from "@/bindings";
@@ -427,5 +428,107 @@ describe("resolved while collapsed (Studio R1)", () => {
     );
     await waitFor(() => expect(document.activeElement).toBe(trigger("Vault health")));
     expect(trigger("Vault health")).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("kept errors (04b review of the R1 repair)", () => {
+  const trigger = (title: string) => screen.getByRole("button", { name: title });
+  const renderBackups = () =>
+    renderWithClient(
+      <SettingsSection title="Backups" span="oneOfThree">
+        <BackupScheduleCard />
+      </SettingsSection>,
+    );
+
+  it("a Back up now retry keeps its error and its button while pending, collapsed, and announces a repeat failure again", async () => {
+    mocks.runBackupNow.mockRejectedValueOnce(new Error("The destination is read-only."));
+    renderBackups();
+    fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
+    const alert = await screen.findByText("The destination is read-only.");
+    toggle("Backups");
+    let release!: (value: unknown) => void;
+    mocks.runBackupNow.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const pending = watchAlert(alert);
+    const button = within(slotOf("Backups")).getByRole("button", { name: "Back up now" });
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(mocks.runBackupNow).toHaveBeenCalledTimes(2));
+    // Pending: the same alert element, unchanged, and the slot's Back up now still there.
+    expect(screen.getByText("The destination is read-only.")).toBe(alert);
+    expect(pending.stop()).toBe(0);
+    expect(within(slotOf("Backups")).getByRole("button", { name: /Back up now/ })).toBeInTheDocument();
+    const again = watchAlert(alert);
+    await act(async () => release(Promise.reject(new Error("The destination is read-only."))));
+    await waitFor(() => expect(alert).toHaveTextContent("The destination is read-only."));
+    expect(screen.getByText("The destination is read-only.")).toBe(alert);
+    expect(again.stop()).toBeGreaterThanOrEqual(2);
+    expect(trigger("Backups")).toBeInTheDocument();
+  });
+
+  it("a Save retry that fails the same way announces again", async () => {
+    mocks.configureBackup.mockRejectedValue(new Error("That folder cannot be used."));
+    mocks.open.mockResolvedValue("/Users/test/Elsewhere");
+    renderBackups();
+    await screen.findByRole("button", { name: "Save backup settings" });
+    fireEvent.click(screen.getByRole("button", { name: /choose folder/i }));
+    await screen.findByText("/Users/test/Elsewhere");
+    fireEvent.click(screen.getByRole("button", { name: "Save backup settings" }));
+    const alert = await screen.findByText("That folder cannot be used.");
+    const watch = watchAlert(alert);
+    fireEvent.click(within(slotOf("Backups")).getByRole("button", { name: "Save backup settings" }));
+    await waitFor(() => expect(mocks.configureBackup).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(watch.count()).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText("That folder cannot be used.")).toBe(alert);
+  });
+
+  it("a folder-picker error is cleared once the picker opens, even if the person cancels", async () => {
+    mocks.open.mockRejectedValueOnce(new Error("no dialog"));
+    renderBackups();
+    await screen.findByRole("button", { name: "Save backup settings" });
+    fireEvent.click(screen.getByRole("button", { name: /choose folder/i }));
+    await screen.findByText("Could not open the folder picker.");
+    expectOnlyInSlot("Backups", /choose folder/i);
+    // The picker works this time and the person cancels.
+    mocks.open.mockResolvedValueOnce(null);
+    fireEvent.click(within(slotOf("Backups")).getByRole("button", { name: /choose folder/i }));
+    await waitFor(() => expect(screen.queryByText("Could not open the folder picker.")).toBeNull());
+  });
+
+  it("a Rebuild retry that fails the same way announces again, and its error stays while pending", async () => {
+    mocks.vaultHealth.mockResolvedValue(ok(health({ read_models_current: false, is_healthy: false })));
+    mocks.rebuildReadModels.mockResolvedValueOnce(failed("The rebuild was interrupted."));
+    renderWithClient(
+      <SettingsSection title="Vault health" span="full">
+        <VaultHealthCard />
+      </SettingsSection>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Rebuild data views" }));
+    const alert = await screen.findByText("The rebuild was interrupted.");
+    let release!: (value: unknown) => void;
+    mocks.rebuildReadModels.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const pending = watchAlert(alert);
+    fireEvent.click(within(slotOf("Vault health")).getByRole("button", { name: "Rebuild data views" }));
+    await waitFor(() => expect(mocks.rebuildReadModels).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("The rebuild was interrupted.")).toBe(alert);
+    expect(pending.stop()).toBe(0);
+    const again = watchAlert(alert);
+    await act(async () => release(failed("The rebuild was interrupted.")));
+    await waitFor(() => expect(alert).toHaveTextContent("The rebuild was interrupted."));
+    expect(again.stop()).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a Re-check that fails the same way announces again", async () => {
+    mocks.vaultHealth.mockResolvedValue(failed("The health check could not run."));
+    renderWithClient(
+      <SettingsSection title="Vault health" span="full">
+        <VaultHealthCard />
+      </SettingsSection>,
+    );
+    const alert = await screen.findByText("The health check could not run.");
+    const watch = watchAlert(alert);
+    fireEvent.click(within(slotOf("Vault health")).getByRole("button", { name: "Re-check" }));
+    await waitFor(() => expect(mocks.vaultHealth.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(watch.count()).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText("The health check could not run.")).toBe(alert);
   });
 });
