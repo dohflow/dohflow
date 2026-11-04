@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { describeIpcError } from "@/vault/useVault";
 
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { PersistentNotice } from "./PersistentSlot";
 import { useBaseCurrency } from "./useBaseCurrency";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
@@ -36,9 +37,13 @@ export function GeneralCard() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const select = useKeepFocusAcrossMove<HTMLSelectElement>({ settled: !saving });
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [attempt, nextAttempt] = useAttemptCount();
 
   const value = selected ?? baseCurrency;
   const message = error ?? loadError;
+  const alertText = useReannounced(message, attempt);
 
   async function onChange(code: string) {
     select.remember();
@@ -51,6 +56,7 @@ export function GeneralCard() {
     if (failure) {
       setSelected(null);
       setError(describeIpcError(failure));
+      nextAttempt();
     } else {
       setError(null);
       setSaved(true);
@@ -102,7 +108,7 @@ export function GeneralCard() {
           {message !== null && (
             <div className="flex flex-col gap-2">
               <p role="alert" className="text-xs text-loss">
-                {message}
+                {alertText}
               </p>
               {currencySelect}
             </div>

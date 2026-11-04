@@ -42,6 +42,7 @@ import { SharedFeedDialog } from "./connections/SharedFeedDialog";
 import { useConnectorAdapters } from "./connections/useConnectorAdapters";
 import { syncOutcomeCopy, syncOutcomeTone } from "./connectorSync";
 import { NewMappedAccountDialog } from "./NewMappedAccountDialog";
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { PersistentNotice } from "./PersistentSlot";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { useBaseCurrency } from "./useBaseCurrency";
@@ -423,8 +424,10 @@ export function ConnectionRow({
 /// rendered once. The connection's name leads the entry so it is clear which one it is for.
 function ConnectionItem({
   syncError,
+  actionAttempt,
   ...row
-}: ComponentProps<typeof ConnectionRow> & { syncError: string | null }) {
+}: ComponentProps<typeof ConnectionRow> & { syncError: string | null; actionAttempt: number }) {
+  const syncAlert = useReannounced(syncError, actionAttempt);
   const refresh = useKeepFocusAcrossMove({ settled: !row.syncPending });
   const inSlot = needsRefresh(row.connection) || syncError !== null;
   const onSync = () => {
@@ -443,7 +446,7 @@ function ConnectionItem({
             <ConnectionMessages connection={row.connection} />
             {syncError !== null && (
               <p role="alert" className="text-sm text-loss">
-                {syncError}
+                {syncAlert}
               </p>
             )}
             <div>
@@ -511,9 +514,14 @@ export function ConnectionsCard({
   // connection's Refresh now in the persistent slot; any other action's error is shown on its own.
   const [syncFailedId, setSyncFailedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [actionAttempt, nextActionAttempt] = useAttemptCount();
+  const actionAlert = useReannounced(actionError, actionAttempt);
   const setOtherError = (message: string | null) => {
     setSyncFailedId(null);
     setActionError(message);
+    if (message !== null) nextActionAttempt();
   };
 
   const submitLink = async (adapterId: string, credential: string) => {
@@ -543,6 +551,7 @@ export function ConnectionsCard({
     const failSync = (message: string) => {
       setSyncFailedId(connectionId);
       setActionError(message);
+      nextActionAttempt();
     };
     try {
       const result = await sync(connectionId);
@@ -685,6 +694,7 @@ export function ConnectionsCard({
             <ConnectionItem
               key={connection.id}
               syncError={syncFailedId === connection.id ? actionError : null}
+              actionAttempt={actionAttempt}
               connection={connection}
               providerName={providers.displayName(connection.adapter_id)}
               credentialNoun={
@@ -732,7 +742,7 @@ export function ConnectionsCard({
           ) : null}
           {actionError && syncFailedId === null ? (
             <p role="alert" className="text-sm text-loss">
-              {actionError}
+              {actionAlert}
             </p>
           ) : null}
         </PersistentNotice>

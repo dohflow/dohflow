@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/card";
 import { describeIpcError } from "@/vault/useVault";
 
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { PersistentNotice } from "./PersistentSlot";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
@@ -43,6 +44,14 @@ export function DiagnosticsCard() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [noteAttempt, nextNoteAttempt] = useAttemptCount();
+  const alertText = useReannounced(note?.kind === "alert" ? note.text : null, noteAttempt);
+  function failWith(text: string) {
+    setNote({ kind: "alert", text });
+    nextNoteAttempt();
+  }
   const previewRegion = useRef<HTMLPreElement>(null);
   // Preview and Save each move between the body and the persistent slot (rendered once, wherever
   // the error needs them), so each keeps focus across the move.
@@ -86,6 +95,7 @@ export function DiagnosticsCard() {
     returnFocus.current = true;
     setPreview(null);
     setNote(message ?? null);
+    if (message?.kind === "alert") nextNoteAttempt();
   }
 
   async function onPreview() {
@@ -99,7 +109,7 @@ export function DiagnosticsCard() {
       setNote(null);
       setPreview(result.data);
     } else {
-      setNote({ kind: "alert", text: describeIpcError(result.error) });
+      failWith(describeIpcError(result.error));
     }
   }
 
@@ -131,7 +141,7 @@ export function DiagnosticsCard() {
       closePreview({ kind: "alert", text: SAVE_MESSAGES.preview_expired });
     } else {
       // The preview is still pending: the user can pick another destination.
-      setNote({ kind: "alert", text: SAVE_MESSAGES[result.data] });
+      failWith(SAVE_MESSAGES[result.data]);
     }
   }
 
@@ -229,7 +239,7 @@ export function DiagnosticsCard() {
           {alert && (
             <div className="flex flex-col gap-2">
               <p role="alert" className="text-xs text-loss">
-                {alert.text}
+                {alertText}
               </p>
               <div>{previewInSlot ? previewDiagnosticsButton : saveButton}</div>
             </div>

@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { PersistentNotice } from "./PersistentSlot";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { hasUpdate, isDevUpdate, isReleaseUpdate, useSoftwareUpdate } from "./useSoftwareUpdate";
@@ -45,6 +46,10 @@ export function SoftwareUpdateCard() {
     useSoftwareUpdate();
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [applyAttempt, nextApplyAttempt] = useAttemptCount();
+  const applyAlert = useReannounced(applyError, applyAttempt);
   // Check and Update each move between the body and the persistent slot (rendered once, wherever
   // the error needs them), so each keeps focus across the move.
   const checkFocus = useKeepFocusAcrossMove({ settled: !checking });
@@ -62,6 +67,7 @@ export function SoftwareUpdateCard() {
     } else {
       setApplying(false);
       setApplyError(result.message);
+      nextApplyAttempt();
     }
   }
 
@@ -259,7 +265,7 @@ export function SoftwareUpdateCard() {
                 className="flex flex-col gap-1 rounded-md bg-warning/10 p-2 text-xs text-warning"
               >
                 <p className="font-medium">The update didn't complete.</p>
-                <pre className="whitespace-pre-wrap font-mono">{applyError}</pre>
+                <pre className="whitespace-pre-wrap font-mono">{applyAlert}</pre>
                 {dev && (
                   <p>
                     You can also run{" "}

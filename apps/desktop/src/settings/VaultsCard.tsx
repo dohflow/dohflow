@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { describeIpcError, useVault } from "@/vault/useVault";
 
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { PersistentNotice } from "./PersistentSlot";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
@@ -40,6 +41,17 @@ export function VaultsCard() {
   const saveFocus = useKeepFocusAcrossMove({ settled: !busy });
   const createFocus = useKeepFocusAcrossMove({ settled: !busy });
 
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [failureAttempt, nextFailureAttempt] = useAttemptCount();
+  const [loadAttempt, nextLoadAttempt] = useAttemptCount();
+  const failureAlert = useReannounced(failure?.message ?? null, failureAttempt);
+  const loadAlert = useReannounced(vaultsError, loadAttempt);
+  function fail(next: Failure) {
+    setFailure(next);
+    nextFailureAttempt();
+  }
+
   if (vaults.length === 0 && !vaultsError) return null;
 
   async function onSwitch(id: string) {
@@ -47,7 +59,7 @@ export function VaultsCard() {
     // An earlier error stays, with its Switch, until this try settles.
     const result = await switchVault(id);
     setBusy(false);
-    if (result) setFailure({ action: "switch", id, message: describeIpcError(result) });
+    if (result) fail({ action: "switch", id, message: describeIpcError(result) });
     else setFailure(null);
     // On success the status flips to Locked and the vault gate shows the unlock screen.
   }
@@ -59,7 +71,7 @@ export function VaultsCard() {
     const result = await renameVault(id, renameValue.trim());
     setBusy(false);
     if (result) {
-      setFailure({ action: "rename", id, message: describeIpcError(result) });
+      fail({ action: "rename", id, message: describeIpcError(result) });
     } else {
       setFailure(null);
       setRenamingId(null);
@@ -69,18 +81,18 @@ export function VaultsCard() {
   async function onCreate() {
     createFocus.remember();
     if (!newName.trim()) {
-      setFailure({ action: "create", message: "Name the vault." });
+      fail({ action: "create", message: "Name the vault." });
       return;
     }
     if (!newPassword) {
-      setFailure({ action: "create", message: "Choose a password." });
+      fail({ action: "create", message: "Choose a password." });
       return;
     }
     setBusy(true);
     const result = await createNamedVault(newName.trim(), newPassword);
     setBusy(false);
     if (result) {
-      setFailure({ action: "create", message: describeIpcError(result) });
+      fail({ action: "create", message: describeIpcError(result) });
     } else {
       setFailure(null);
       setCreating(false);
@@ -104,7 +116,7 @@ export function VaultsCard() {
       disabled={busy}
       onClick={() => {
         retry.remember();
-        void reloadVaults();
+        void reloadVaults().then(nextLoadAttempt);
       }}
     >
       Retry
@@ -113,7 +125,7 @@ export function VaultsCard() {
   const loadNotice = vaultsError ? (
     <div className="flex flex-col gap-2">
       <p role="alert" className="text-sm text-loss">
-        {vaultsError}
+        {loadAlert}
       </p>
       <div>{retryButton}</div>
     </div>
@@ -268,7 +280,7 @@ export function VaultsCard() {
           {failure && (
             <div className="flex flex-col gap-2">
               <p role="alert" className="text-sm text-loss">
-                {failure.message}
+                {failureAlert}
               </p>
               <div className="flex items-center gap-2">
                 {failure.action === "switch" && switchTarget && (
