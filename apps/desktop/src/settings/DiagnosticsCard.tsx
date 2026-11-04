@@ -76,7 +76,7 @@ export function DiagnosticsCard() {
       returnFocus.current = false;
       previewButton.current?.focus();
     }
-  }, [preview]);
+  }, [preview, previewButton]);
 
   function closePreview(message?: Note) {
     if (pending.current !== null) void commands.diagnosticsDiscard(pending.current);

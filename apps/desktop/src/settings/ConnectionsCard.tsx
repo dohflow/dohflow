@@ -11,7 +11,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Cable, Loader2, Plug } from "lucide-react";
-import { useState } from "react";
+import { forwardRef, useState, type ComponentProps, type Ref } from "react";
 
 import {
   commands,
@@ -42,6 +42,8 @@ import { SharedFeedDialog } from "./connections/SharedFeedDialog";
 import { useConnectorAdapters } from "./connections/useConnectorAdapters";
 import { syncOutcomeCopy, syncOutcomeTone } from "./connectorSync";
 import { NewMappedAccountDialog } from "./NewMappedAccountDialog";
+import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { useBaseCurrency } from "./useBaseCurrency";
 import { useConnections } from "./useConnections";
 
@@ -64,6 +66,12 @@ function isHeld(link: ConnectorAccountLinkDto): boolean {
     (link.currency ?? null) !== null &&
     (link.currency_refusal ?? null) !== null
   );
+}
+
+/// A connection whose last refresh failed, or that holds a foreign-currency account: it has a
+/// message that has to stay on screen with its one recovery action, Refresh now.
+function needsRefresh(connection: ConnectorConnectionDto): boolean {
+  return Boolean(connection.last_error) || connection.links.some(isHeld);
 }
 
 /// The status badge may wrap its complete label when the lane is narrower than the stamp is long.
@@ -222,6 +230,50 @@ const CADENCE_OPTIONS: { value: string; label: string }[] = [
   { value: "manual", label: "Only when I press Refresh now" },
 ];
 
+const RefreshNowButton = forwardRef<
+  HTMLButtonElement,
+  { syncPending: boolean; onSync: () => void }
+>(function RefreshNowButton({ syncPending, onSync }, ref) {
+  return (
+    <Button
+      ref={ref}
+      size="sm"
+      variant="secondary"
+      className="shrink-0"
+      disabled={syncPending}
+      onClick={onSync}
+    >
+      {syncPending ? <Loader2 className="animate-spin" /> : null}
+      Refresh now
+    </Button>
+  );
+});
+
+/// A connection's refresh failure and its held-account message, in full.
+function ConnectionMessages({
+  connection,
+  className,
+}: {
+  connection: ConnectorConnectionDto;
+  className?: string;
+}) {
+  return (
+    <>
+      {connection.last_error ? (
+        <p role="alert" className={`${className ?? ""} text-sm text-loss`}>
+          Last refresh failed: {connection.last_error}
+        </p>
+      ) : null}
+      {connection.links.some(isHeld) ? (
+        <p role="status" className={`${className ?? ""} text-sm text-warning`}>
+          An account on this connection is in a currency other than your base
+          currency. Its transactions are held and not imported.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 export function ConnectionRow({
   connection,
   providerName,
@@ -234,6 +286,8 @@ export function ConnectionRow({
   onSync,
   syncPending,
   onForget,
+  messagesInSlot = false,
+  refreshRef,
 }: {
   connection: ConnectorConnectionDto;
   /// The provider's display name, from the registry.
@@ -252,6 +306,12 @@ export function ConnectionRow({
   onSync: () => void;
   syncPending: boolean;
   onForget: () => void;
+  /// The card shows this connection's refresh failure, held-account message and Refresh now in the
+  /// section's persistent slot (`ConnectionAttention`); the row then omits all three, so each is
+  /// rendered once.
+  messagesInSlot?: boolean;
+  /// For the card to hand focus back to Refresh now when it moves into the slot and out again.
+  refreshRef?: Ref<HTMLButtonElement>;
 }) {
   const [confirmingForget, setConfirmingForget] = useState(false);
   const cadenceId = `refresh-cadence-${connection.id}`;
@@ -275,16 +335,9 @@ export function ConnectionRow({
           className="flex min-w-0 items-center justify-between gap-3 @lg:justify-end"
         >
           <HealthBadge connection={connection} />
-          <Button
-            size="sm"
-            variant="secondary"
-            className="shrink-0"
-            disabled={syncPending}
-            onClick={onSync}
-          >
-            {syncPending ? <Loader2 className="animate-spin" /> : null}
-            Refresh now
-          </Button>
+          {messagesInSlot ? null : (
+            <RefreshNowButton ref={refreshRef} syncPending={syncPending} onSync={onSync} />
+          )}
         </div>
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -304,17 +357,9 @@ export function ConnectionRow({
           ))}
         </NativeSelect>
       </div>
-      {connection.last_error ? (
-        <p role="alert" className="mt-2 text-sm text-loss">
-          Last refresh failed: {connection.last_error}
-        </p>
-      ) : null}
-      {connection.links.some(isHeld) ? (
-        <p role="status" className="mt-2 text-sm text-warning">
-          An account on this connection is in a currency other than your base
-          currency. Its transactions are held and not imported.
-        </p>
-      ) : null}
+      {messagesInSlot ? null : (
+        <ConnectionMessages connection={connection} className="mt-2" />
+      )}
       <div className="mt-3 flex flex-col gap-2">
         {connection.links.length === 0 ? (
           <p className="text-sm text-muted-foreground">
@@ -372,6 +417,45 @@ export function ConnectionRow({
   );
 }
 
+/// One connection in the list, with its message and recovery action in the persistent slot. A
+/// refresh failure, a held-account message, or a failed Refresh now stays on screen, open or closed,
+/// with the one Refresh now that recovers from it; the row then leaves all of those out, so each is
+/// rendered once. The connection's name leads the entry so it is clear which one it is for.
+function ConnectionItem({
+  syncError,
+  ...row
+}: ComponentProps<typeof ConnectionRow> & { syncError: string | null }) {
+  const refresh = useKeepFocusAcrossMove({ settled: !row.syncPending });
+  const inSlot = needsRefresh(row.connection) || syncError !== null;
+  const onSync = () => {
+    refresh.remember();
+    row.onSync();
+  };
+  return (
+    <>
+      <ConnectionRow {...row} onSync={onSync} messagesInSlot={inSlot} refreshRef={refresh.ref} />
+      <PersistentNotice>
+        {inSlot && (
+          <div className="flex flex-col gap-2 rounded-md border p-3">
+            <p className="break-words text-sm font-medium">
+              {row.connection.display_hint ?? `${row.providerName} connection`}
+            </p>
+            <ConnectionMessages connection={row.connection} />
+            {syncError !== null && (
+              <p role="alert" className="text-sm text-loss">
+                {syncError}
+              </p>
+            )}
+            <div>
+              <RefreshNowButton ref={refresh.ref} syncPending={row.syncPending} onSync={onSync} />
+            </div>
+          </div>
+        )}
+      </PersistentNotice>
+    </>
+  );
+}
+
 const VAULT_UNREACHABLE = "Could not reach the vault service.";
 
 export function ConnectionsCard({
@@ -423,10 +507,17 @@ export function ConnectionsCard({
 
   const [linking, setLinking] = useState(startLinking);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The connection whose Refresh now produced `actionError`, so the message sits with that
+  // connection's Refresh now in the persistent slot; any other action's error is shown on its own.
+  const [syncFailedId, setSyncFailedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const setOtherError = (message: string | null) => {
+    setSyncFailedId(null);
+    setActionError(message);
+  };
 
   const submitLink = async (adapterId: string, credential: string) => {
-    setActionError(null);
+    setOtherError(null);
     setNotice(null);
     try {
       const result = await link(adapterId, credential);
@@ -438,27 +529,32 @@ export function ConnectionsCard({
             : `Connected — ${result.accounts.length} account(s) discovered. Map them below.`,
         );
       } else {
-        setActionError(describeIpcError(result));
+        setOtherError(describeIpcError(result));
       }
     } catch {
-      setActionError(VAULT_UNREACHABLE);
+      setOtherError(VAULT_UNREACHABLE);
     }
   };
 
   const runSync = async (connectionId: string) => {
-    setActionError(null);
+    setOtherError(null);
+    setSyncFailedId(null);
     setNotice(null);
+    const failSync = (message: string) => {
+      setSyncFailedId(connectionId);
+      setActionError(message);
+    };
     try {
       const result = await sync(connectionId);
       if (isRecord(result) && "connection_id" in result) {
         const copy = syncOutcomeCopy(result.status, result.message);
         if (syncOutcomeTone(result.status) === "notice") setNotice(copy);
-        else setActionError(copy);
+        else failSync(copy);
       } else {
-        setActionError(describeIpcError(result));
+        failSync(describeIpcError(result));
       }
     } catch {
-      setActionError(VAULT_UNREACHABLE);
+      failSync(VAULT_UNREACHABLE);
     }
   };
 
@@ -468,7 +564,7 @@ export function ConnectionsCard({
     accountId: string | null,
     allowSharedFeed = false,
   ): Promise<boolean> => {
-    setActionError(null);
+    setOtherError(null);
     try {
       const outcome = await setAccountLink(
         connectionId,
@@ -477,7 +573,7 @@ export function ConnectionsCard({
         allowSharedFeed,
       );
       if (outcome.kind === "error") {
-        setActionError(describeIpcError(outcome.error));
+        setOtherError(describeIpcError(outcome.error));
         return false;
       }
       if (outcome.kind === "already_fed" && accountId !== null) {
@@ -491,7 +587,7 @@ export function ConnectionsCard({
       }
       return true;
     } catch {
-      setActionError(VAULT_UNREACHABLE);
+      setOtherError(VAULT_UNREACHABLE);
       return false;
     }
   };
@@ -539,23 +635,23 @@ export function ConnectionsCard({
   };
 
   const runSetCadence = async (connectionId: string, cadence: string) => {
-    setActionError(null);
+    setOtherError(null);
     try {
       const failure = await setRefreshCadence(connectionId, cadence);
-      if (failure) setActionError(describeIpcError(failure));
+      if (failure) setOtherError(describeIpcError(failure));
     } catch {
-      setActionError(VAULT_UNREACHABLE);
+      setOtherError(VAULT_UNREACHABLE);
     }
   };
 
   const runForget = async (connectionId: string) => {
-    setActionError(null);
+    setOtherError(null);
     setNotice(null);
     try {
       const failure = await forget(connectionId);
-      if (failure) setActionError(describeIpcError(failure));
+      if (failure) setOtherError(describeIpcError(failure));
     } catch {
-      setActionError(VAULT_UNREACHABLE);
+      setOtherError(VAULT_UNREACHABLE);
     }
   };
 
@@ -570,11 +666,7 @@ export function ConnectionsCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {loadError ? (
-          <p role="alert" className="text-sm text-loss">
-            {loadError}
-          </p>
-        ) : connections === null ? (
+        {loadError ? null : connections === null ? (
           <div className="flex flex-col gap-2">
             <Skeleton className="h-16 w-full" />
           </div>
@@ -584,14 +676,11 @@ export function ConnectionsCard({
             title="No connections yet"
             description="Link a bank connection to refresh transactions automatically."
           />
-        ) : accountsQuery.error ? (
-          <p role="alert" className="text-sm text-loss">
-            {accountsQuery.error.message}
-          </p>
-        ) : (
+        ) : accountsQuery.error ? null : (
           connections.map((connection) => (
-            <ConnectionRow
+            <ConnectionItem
               key={connection.id}
+              syncError={syncFailedId === connection.id ? actionError : null}
               connection={connection}
               providerName={providers.displayName(connection.adapter_id)}
               credentialNoun={
@@ -624,11 +713,25 @@ export function ConnectionsCard({
             {notice}
           </p>
         ) : null}
-        {actionError ? (
-          <p role="alert" className="text-sm text-loss">
-            {actionError}
-          </p>
-        ) : null}
+        {/* Every error and its message stay in the section's persistent slot, open or closed. A
+            failed read, and a failed map, cadence, forget or link, show their message there; a failed
+            Refresh now shows it with that connection's Refresh now. */}
+        <PersistentNotice>
+          {loadError ? (
+            <p role="alert" className="text-sm text-loss">
+              {loadError}
+            </p>
+          ) : accountsQuery.error ? (
+            <p role="alert" className="text-sm text-loss">
+              {accountsQuery.error.message}
+            </p>
+          ) : null}
+          {actionError && syncFailedId === null ? (
+            <p role="alert" className="text-sm text-loss">
+              {actionError}
+            </p>
+          ) : null}
+        </PersistentNotice>
 
         {linking ? (
           <ConnectProviderFlow
@@ -679,7 +782,7 @@ export function ConnectionsCard({
           onCreate={(account) =>
             createMappedAccount(creatingFor.connectionId, creatingFor.externalId, account)
           }
-          onCreated={() => setActionError(null)}
+          onCreated={() => setOtherError(null)}
           onClose={() => {
             const selectId = `map-${creatingFor.connectionId}-${creatingFor.externalId}`;
             setCreatingFor(null);
