@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -15,6 +15,7 @@ import { useComfortBand } from "@/dashboard/useComfortBand";
 import { dollarsToMinorUnits, formatMoney } from "@/lib/format";
 import { describeIpcError } from "@/vault/useVault";
 import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
 /// A wire minor-units amount as an editable major-unit string (USD/EUR are 2-dp).
 function minorUnitsToInput(minorUnits: number): string {
@@ -43,29 +44,14 @@ export function ComfortBandCard() {
   const upperValue = upperDraft ?? storedUpper;
 
   // While an error is on screen, the Save lives in the section's persistent slot with it and is not
-  // rendered in the body; it comes back when the error clears. One ref follows whichever one is
-  // rendered, so focus can be handed back after the move.
-  const saveRef = useRef<HTMLButtonElement>(null);
-  const refocusSave = useRef(false);
+  // rendered in the body; it comes back when the error clears. The hand-over keeps focus across
+  // that move (see useKeepFocusAcrossMove): to the Save, else (collapsed) the section's heading.
   const saveInSlot = error !== null;
-  // Runs after every render: the Save is disabled while the write settles, and a disabled button
-  // cannot take focus, so the hand-over waits for it to be enabled. If the person has moved focus to
-  // another control meanwhile, nothing is taken from them.
-  useEffect(() => {
-    if (!refocusSave.current) return;
-    const save = saveRef.current;
-    const active = document.activeElement;
-    if (active && active !== document.body && active !== save) {
-      refocusSave.current = false;
-    } else if (save && !save.disabled) {
-      refocusSave.current = false;
-      save.focus();
-    }
-  });
+  const save = useKeepFocusAcrossMove({ settled: !saving });
 
   async function onSubmit(event?: React.FormEvent) {
     event?.preventDefault();
-    refocusSave.current = document.activeElement === saveRef.current;
+    save.remember();
     const lowerMinor = dollarsToMinorUnits(lowerValue);
     if (lowerMinor === null || lowerMinor < 0) {
       setError("Enter a lower edge of zero or more.");
@@ -88,7 +74,7 @@ export function ComfortBandCard() {
 
     setSaving(true);
     setSaved(false);
-    setError(null);
+    // The earlier error and its Save stay on screen until this try settles (see the Household card).
     // Two independent settings. If the lower fails, nothing changed; if the upper fails after the
     // lower saved, say so specifically and keep the drafts so the user can retry the upper.
     const lowerFailure = await setLower({ minor_units: lowerMinor, currency });
@@ -107,6 +93,7 @@ export function ComfortBandCard() {
       );
       return;
     }
+    setError(null);
     setLowerDraft(null);
     setUpperDraft(null);
     setSaved(true);
@@ -115,7 +102,7 @@ export function ComfortBandCard() {
   // A button of type "button" in the slot (it sits outside the form) runs the same submit.
   const saveButton = (
     <Button
-      ref={saveRef}
+      ref={save.ref}
       type={saveInSlot ? "button" : "submit"}
       aria-label="Save"
       disabled={saving}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -14,6 +14,7 @@ import { Combobox, type ComboboxItem } from "@/components/ui/combobox";
 import { describeIpcError } from "@/vault/useVault";
 import { PersistentNotice } from "./PersistentSlot";
 import { useHouseholdTimezone } from "./useHouseholdTimezone";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
 /// A short, curated set of IANA zones for the rare WebView build that lacks
 /// `Intl.supportedValuesOf` (personal-cfo-q329) — WKWebView on macOS 14 supports it, so
@@ -101,40 +102,26 @@ export function HouseholdCard() {
   const suggestion = timezone === "UTC" ? machineTimezone() : null;
 
   // While a failed write is on screen its Save lives in the section's persistent slot with the error,
-  // and is not rendered in the body; the Save comes back to the body when the error clears. One ref
-  // follows whichever one is rendered, so focus can be handed back after the move.
-  const saveRef = useRef<HTMLButtonElement>(null);
-  const refocusSave = useRef(false);
+  // and is not rendered in the body; the Save comes back to the body when the error clears. The
+  // hand-over keeps focus across that move (see useKeepFocusAcrossMove): to the Save, else the
+  // timezone picker, else (collapsed) the section's heading.
   const saveInSlot = saveError !== null;
-  // Runs after every render: the Save is disabled while the write settles, and a disabled button
-  // cannot take focus, so the hand-over waits for it to be enabled. If the person has moved focus to
-  // another control meanwhile, nothing is taken from them.
-  useEffect(() => {
-    if (!refocusSave.current) return;
-    const save = saveRef.current;
-    const active = document.activeElement;
-    if (active && active !== document.body && active !== save) {
-      refocusSave.current = false;
-    } else if (save && !save.disabled) {
-      refocusSave.current = false;
-      save.focus();
-    } else if (!isSaving) {
-      // Saved: there is nothing left to save, so the Save stays disabled and cannot take focus.
-      // The timezone picker is where the person was working.
-      refocusSave.current = false;
-      document.getElementById("household-timezone")?.focus();
-    }
+  const save = useKeepFocusAcrossMove({
+    settled: !isSaving,
+    fallback: () => document.getElementById("household-timezone"),
   });
 
   async function onSave() {
     if (value === timezone) return;
-    refocusSave.current = document.activeElement === saveRef.current;
-    setSaveError(null);
+    save.remember();
     setSaved(false);
+    // The earlier error and its Save stay on screen until this try settles: clearing them now would
+    // move the Save into the body, which is hidden when the section is collapsed.
     const failure = await setTimezone(value);
     if (failure) {
       setSaveError(describeIpcError(failure));
     } else {
+      setSaveError(null);
       setDraft(null);
       setSaved(true);
     }
@@ -142,7 +129,7 @@ export function HouseholdCard() {
 
   const saveButton = (
     <Button
-      ref={saveRef}
+      ref={save.ref}
       type="button"
       aria-label="Save"
       onClick={onSave}

@@ -1,9 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Disclosure } from "@/components/ui/disclosure";
 import { cn } from "@/lib/utils";
 
 import { PersistentSlotContext } from "./persistentSlotContext";
+import { SectionFocusContext } from "./sectionFocusContext";
 import { PREFERENCE_LANES, SPAN, type SpanName } from "./settingsLayout";
 
 /// The Settings page grid (personal-cfo-4d8.39.1): six equal tracks, 16px gap, laid out against the
@@ -50,9 +51,18 @@ export function SettingsSection({
   // Where the cards in this section put what must outlive a collapse. It is set once the slot has
   // mounted (a callback ref, so the portal target exists before the first paint).
   const [slot, setSlot] = useState<HTMLElement | null>(null);
+  // The section's own heading trigger is the one control that is always visible; a card hands focus
+  // to it when its own targets are hidden by a collapse (useKeepFocusAcrossMove).
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const trigger = useCallback(
+    () => sectionRef.current?.querySelector<HTMLElement>("h3 > button[aria-expanded]") ?? null,
+    [],
+  );
+  const focus = useMemo(() => ({ open, trigger }), [open, trigger]);
   return (
     // The grid item. The disclosure fills it, so a collapsed section is as tall as its row.
     <div
+      ref={sectionRef}
       data-settings-section={title}
       className={cn("min-w-0", SPAN[span], open ? "self-start" : "self-stretch")}
     >
@@ -71,7 +81,9 @@ export function SettingsSection({
         className="h-full"
         bodyClassName="px-0 pb-0"
       >
-        <PersistentSlotContext.Provider value={slot}>{children}</PersistentSlotContext.Provider>
+        <SectionFocusContext.Provider value={focus}>
+          <PersistentSlotContext.Provider value={slot}>{children}</PersistentSlotContext.Provider>
+        </SectionFocusContext.Provider>
       </Disclosure>
     </div>
   );
