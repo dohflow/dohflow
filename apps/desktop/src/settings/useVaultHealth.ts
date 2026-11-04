@@ -40,6 +40,9 @@ export function useVaultHealth() {
     error: query.error?.message ?? null,
     refresh: () => void query.refetch(),
     checking: query.isFetching,
+    /// How many reads have settled as a failure, so a caller can tell that a Re-check failed AGAIN
+    /// with the same message (monotonic; `checking` can flip in one batch and miss it).
+    failures: query.errorUpdateCount,
     rebuild,
     rebuilding: rebuildMutation.isPending,
   };

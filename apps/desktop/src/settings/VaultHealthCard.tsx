@@ -86,7 +86,7 @@ const CHECKS: {
 /// a non-destructive read-model rebuild for drift. Genuine corruption (integrity /
 /// missing attachments) is steered to backup restore — a rebuild can't fix it.
 export function VaultHealthCard() {
-  const { health, error, refresh, checking, rebuild, rebuilding } =
+  const { health, error, refresh, checking, failures, rebuild, rebuilding } =
     useVaultHealth();
   const [repairError, setRepairError] = useState<string | null>(null);
   const [repaired, setRepaired] = useState(false);
@@ -98,14 +98,15 @@ export function VaultHealthCard() {
   const repairAlert = useReannounced(repairError, repairAttempt);
   const readAlert = useReannounced(error, readAttempt);
   const recheckPressed = useRef(false);
-  const wasChecking = useRef(false);
+  const seenFailures = useRef(failures);
   useEffect(() => {
-    if (wasChecking.current && !checking && recheckPressed.current) {
+    if (failures === seenFailures.current) return;
+    seenFailures.current = failures;
+    if (recheckPressed.current) {
       recheckPressed.current = false;
       nextReadAttempt();
     }
-    wasChecking.current = checking;
-  }, [checking, nextReadAttempt]);
+  }, [failures, nextReadAttempt]);
 
   // A failed read puts Re-check in the section's persistent slot with the error; the data-views drift
   // puts Rebuild there with its message. Each button is rendered in one place only.
