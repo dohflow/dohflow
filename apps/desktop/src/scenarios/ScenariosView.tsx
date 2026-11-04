@@ -27,7 +27,7 @@ import { RevertScenarioDialog, type RevertPlan } from "./RevertScenarioDialog";
 import { cn } from "@/lib/utils";
 import { SCENARIO_NAME_MAX, useScenarios } from "@/future-cash/useScenarios";
 import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
-import { describeIpcError } from "@/vault/useVault";
+import { describeIpcError, isIpcError } from "@/vault/useVault";
 
 /// What a failed undo says. A typed refusal means the command ran and wrote nothing, so the dialog
 /// says so. That is proven in the db-worker, not assumed: `apply_command` runs the whole command, the
@@ -261,11 +261,9 @@ export function ScenariosView({
     setFormError(null);
     try {
       const result = await action();
-      // The mutations resolve to `IpcError | null` (or `{ id } | IpcError` for clone);
-      // an object carrying `kind` is the error shape.
-      if (result && typeof result === "object" && "kind" in result) {
-        setFormError(describeIpcError(result as unknown as IpcError));
-      }
+      // The mutations resolve to `IpcError | null` (or `{ id } | IpcError` for clone); an
+      // `IpcError` is recognized by the generated type's shape, and anything else is success.
+      if (isIpcError(result)) setFormError(describeIpcError(result));
     } catch {
       setFormError("That didn't work. Please try again.");
     } finally {
