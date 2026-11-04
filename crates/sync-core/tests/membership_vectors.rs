@@ -1058,6 +1058,12 @@ fn all_cases() -> Vec<Case> {
         refs(&[&t.m1, &t.m2, &t.m3]),
         refs(&[&t.e1, &t.e2, &t.e3, &unknown_head]),
     ));
+    cases.push(one(
+        "invalid_grant_without_the_add_it_names",
+        "a grant whose add is not in the request: a malformed pairing, not a sequencing failure",
+        refs(&[&t.m1]),
+        refs(&[&t.e1, &t.e2]),
+    ));
     let grant_to_old = epoch(
         a,
         1,
@@ -1520,6 +1526,7 @@ fn every_invalid_case_fails_for_its_intended_reason() {
         ("invalid_sealer_not_a_member", "SealerNotAuthorized"),
         ("invalid_epoch_signed_with_another_key", "EpochBadSignature"),
         ("invalid_epoch_naming_an_unknown_head", "UnknownHead"),
+        ("invalid_grant_without_the_add_it_names", "UnknownHead"),
         (
             "invalid_grant_sealed_to_an_existing_member",
             "RecipientsMismatch",
@@ -1787,4 +1794,22 @@ fn the_epoch_and_membership_at_a_position_come_from_the_newest_epoch_record_befo
     assert!(state.authorized_member_at_version(&b, 1).is_none());
     assert!(state.authorized_member_at_version(&a, 1).is_some());
     assert!(state.authorized_member_at_version(&c, 2).is_none());
+}
+
+#[test]
+fn an_epoch_naming_a_head_that_is_not_there_is_a_malformed_pairing_not_a_retry_or_a_halt() {
+    // personal-cfo-v98vd AC27: `EpochRecordMissing` by name, but not the retryable "an add that no
+    // epoch names" (a client fetches the chain first, so it never meets this), and not a halt.
+    let t = build();
+    let state = extend(
+        &VerifiedState::empty(VAULT),
+        &slices(std::slice::from_ref(&t.m1)),
+        &slices(std::slice::from_ref(&t.e1)),
+    )
+    .unwrap();
+    let error = extend(&state, &[], &slices(std::slice::from_ref(&t.e2))).unwrap_err();
+    assert_eq!(error.kind().name(), "EpochRecordMissing");
+    assert!(!error.is_retryable());
+    assert!(!error.halts_sync());
+    assert_eq!(error.position(), Some(0));
 }

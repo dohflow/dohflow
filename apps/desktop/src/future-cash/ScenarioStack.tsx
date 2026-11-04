@@ -2,6 +2,9 @@ import { Layers, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
+import { todayInTimezone } from "@/lib/format";
+import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
+import { isInForecast } from "./scenarioEligibility";
 import { useScenarios } from "./useScenarios";
 
 /// Stack further scenarios on top of the selected one (personal-cfo-4d8.27.6.4, ADR 0059).
@@ -25,18 +28,21 @@ export function ScenarioStack({
   onChange: (next: string[]) => void;
 }) {
   const { scenarios } = useScenarios();
+  const tz = useHouseholdTimezone();
+  const today = todayInTimezone(tz.timezone);
 
   const nameOf = (id: string) =>
     scenarios?.find((s) => s.id === id)?.name ?? "a deleted scenario";
-  // Archived and expired scenarios are excluded: the backend drops them from the
-  // selection anyway (ADR 0051), so offering one would promise a change that never lands.
+  // Archived and expired scenarios are excluded (by the household date): the backend drops
+  // them from the selection anyway (ADR 0051), so offering one would promise a change that
+  // never lands.
   const available = (scenarios ?? []).filter(
-    (s) =>
-      s.id !== primaryId &&
-      !stacked.includes(s.id) &&
-      (s.status === "draft" || s.status === "active"),
+    (s) => s.id !== primaryId && !stacked.includes(s.id) && isInForecast(s, today),
   );
 
+  // Which scenarios are in the forecast depends on the household date, so nothing is offered or
+  // listed before that has been read (the bar above says what it is waiting for).
+  if (!tz.verified) return null;
   if (available.length === 0 && stacked.length === 0) return null;
 
   return (

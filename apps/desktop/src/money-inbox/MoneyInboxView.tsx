@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -417,6 +417,20 @@ export function MoneyInboxView({
   } = useTransactions();
   const { tags, createTag, setTags, setNote } = useTags();
   const [detailId, setDetailId] = useState<string | null>(null);
+  // What the last "Accept all" for low-confidence categories reported. Owned here, not by the
+  // banner, so a later read that drops the queue below the banner's threshold, or collapsing the
+  // section, cannot take a failure off the screen.
+  const [acceptAllFailure, setAcceptAllFailure] = useState<string | null>(null);
+  const runAcceptAll = useCallback(async () => {
+    setAcceptAllFailure(null);
+    const result = await acceptAllLowConfidence();
+    if ("error" in result) {
+      setAcceptAllFailure(`${describeIpcError(result.error)} ${ACCEPT_ALL_MAY_HAVE_PARTLY_WORKED}`);
+    } else if ("unknown" in result) {
+      setAcceptAllFailure(ACCEPT_ALL_OUTCOME_UNKNOWN);
+    }
+    return result;
+  }, [acceptAllLowConfidence]);
   // The whole section collapses to a single header row (personal-cfo-4d8.24.12). Not
   // persisted — kept dep-free/minimal (a localStorage mirror is a possible follow-up).
   const [sectionOpen, setSectionOpen] = useState(true);
@@ -634,13 +648,18 @@ export function MoneyInboxView({
           {inboxFetchError}
         </p>
       )}
+      {acceptAllFailure && (
+        <p role="alert" className="text-sm text-loss">
+          {acceptAllFailure}
+        </p>
+      )}
 
       {sectionOpen && (
         <>
           {lowConfidenceCount >= 2 && (
             <LowConfidenceBanner
               count={lowConfidenceCount}
-              onAcceptAll={acceptAllLowConfidence}
+              onAcceptAll={runAcceptAll}
             />
           )}
 
@@ -1352,6 +1371,15 @@ function UnreviewedTransactionRow({
   );
 }
 
+/// After "Accept all" failed with a reason: the kernel marks one transaction at a time and stops at
+/// the first failure, keeping what it already marked, so some may be accepted.
+const ACCEPT_ALL_MAY_HAVE_PARTLY_WORKED =
+  "Some may already be accepted. Check the refreshed list before trying again.";
+
+/// After "Accept all" threw: nobody knows how many were accepted.
+const ACCEPT_ALL_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether they were accepted. Some may already be. Check the refreshed list before trying again.";
+
 /// A bulk "accept all" banner for the low-confidence-category queue (personal-cfo-j5ij): it
 /// confirms in two steps (the first click reveals Confirm/Cancel) and reports the count, so a
 /// sweeping mark-reviewed is never a single misclick.
@@ -1360,19 +1388,20 @@ function LowConfidenceBanner({
   onAcceptAll,
 }: {
   count: number;
-  onAcceptAll: () => Promise<{ count: number } | { error: IpcError }>;
+  /// Reports its own outcome to the view that owns it; the banner only needs it to settle.
+  onAcceptAll: () => Promise<unknown>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   async function acceptAll() {
     setBusy(true);
-    setError(null);
-    const result = await onAcceptAll();
-    setBusy(false);
-    setConfirming(false);
-    if ("error" in result) setError(describeIpcError(result.error));
+    try {
+      await onAcceptAll();
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
   }
 
   return (
@@ -1382,7 +1411,6 @@ function LowConfidenceBanner({
         {count} transactions were auto-categorized with low confidence.
       </span>
       <div className="flex items-center gap-2">
-        {error && <span className="text-xs text-loss">{error}</span>}
         {confirming ? (
           <>
             <Button size="sm" disabled={busy} onClick={acceptAll}>

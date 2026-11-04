@@ -881,6 +881,143 @@ it("bulk-accepts the low-confidence queue after confirmation (j5ij)", async () =
   );
 });
 
+describe("accept-all reports a truthful partial outcome (5n4.12)", () => {
+  const LC1 = "0190b000-0000-7000-8000-0000000000d1";
+  const LC2 = "0190b000-0000-7000-8000-0000000000d2";
+  const two = () => [
+    lowConfidenceItem({ item_id: LC1, target_id: LC1 }),
+    lowConfidenceItem({ item_id: LC2, target_id: LC2 }),
+  ];
+  const MAY_BE_PARTLY = "Some may already be accepted. Check the refreshed list before trying again.";
+  const UNKNOWN =
+    "Couldn’t confirm whether they were accepted. Some may already be. Check the refreshed list before trying again.";
+
+  async function acceptAll() {
+    mocks.categoryList.mockResolvedValue(ok([GROCERIES]));
+    renderWithClient(<MoneyInboxView />);
+    await screen.findByText(/2 transactions were auto-categorized/i);
+    fireEvent.click(screen.getByRole("button", { name: /^accept all$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /accept all 2/i }));
+  }
+
+  it("a failure partway through refreshes the inbox and shows one persistent alert that says some may already be accepted", async () => {
+    mocks.moneyInboxList.mockResolvedValueOnce(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockResolvedValue({
+      status: "error",
+      error: { Validation: "The second transaction could not be marked." },
+    });
+    // The refreshed list: the first row was accepted before the failure.
+    mocks.moneyInboxList.mockResolvedValue(ok([lowConfidenceItem({ item_id: LC2, target_id: LC2 })]));
+    await acceptAll();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The second transaction could not be marked.");
+    expect(alert).toHaveTextContent(MAY_BE_PARTLY);
+    await waitFor(() => expect(mocks.moneyInboxList).toHaveBeenCalledTimes(2));
+    // No claim that nothing happened, and nothing is retried.
+    expect(screen.queryByText(/nothing (was|has been) (accepted|changed)/i)).toBeNull();
+    expect(mocks.acceptLowConfidenceCategories).toHaveBeenCalledTimes(1);
+  });
+
+  it("the alert survives the queue dropping below the banner's threshold and the section collapsing", async () => {
+    mocks.moneyInboxList.mockResolvedValueOnce(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockResolvedValue({
+      status: "error",
+      error: { Validation: "The second transaction could not be marked." },
+    });
+    mocks.moneyInboxList.mockResolvedValue(ok([lowConfidenceItem({ item_id: LC2, target_id: LC2 })]));
+    await acceptAll();
+    await screen.findByRole("alert");
+    // The refreshed queue has one item, so the banner is gone; the alert is not.
+    await waitFor(() => expect(screen.queryByText(/transactions were auto-categorized/i)).toBeNull());
+    expect(screen.getByRole("alert")).toHaveTextContent(MAY_BE_PARTLY);
+    fireEvent.click(screen.getByRole("button", { name: /money inbox/i, expanded: true }));
+    expect(screen.getByRole("alert")).toHaveTextContent(MAY_BE_PARTLY);
+  });
+
+  it("a thrown call is an unknown outcome: busy is released, the inbox is read again, and the alert says some may be accepted", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockRejectedValue(new Error("connection lost"));
+    await acceptAll();
+    expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(1));
+    // Busy is released: the confirm step is closed and Accept all is offered again.
+    expect(await screen.findByRole("button", { name: /^accept all$/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /accepting…/i })).toBeNull();
+  });
+
+  it("a new attempt clears the earlier outcome, and a success leaves none", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockRejectedValueOnce(new Error("connection lost"));
+    mocks.acceptLowConfidenceCategories.mockResolvedValue(ok(2));
+    await acceptAll();
+    await screen.findByRole("alert");
+    fireEvent.click(await screen.findByRole("button", { name: /^accept all$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /accept all 2/i }));
+    await waitFor(() => expect(mocks.acceptLowConfidenceCategories).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("a typed failure followed by a FAILED refresh of the inbox keeps the full outcome alert beside the cached list", async () => {
+    mocks.moneyInboxList.mockResolvedValueOnce(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockResolvedValue({
+      status: "error",
+      error: { Validation: "The second transaction could not be marked." },
+    });
+    // The refresh after the failure fails too: the cached list stays on screen.
+    mocks.moneyInboxList.mockRejectedValue(new Error("boom"));
+    await acceptAll();
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(1));
+    const outcome = await screen.findByText(
+      `The second transaction could not be marked. ${MAY_BE_PARTLY}`,
+    );
+    expect(outcome).toHaveAttribute("role", "alert");
+    // The failed read is reported on its own, and the outcome alert is still there.
+    expect(await screen.findByText("Could not load your Money Inbox.")).toBeInTheDocument();
+    expect(screen.getByText(/2 transactions were auto-categorized/i)).toBeInTheDocument();
+    expect(outcome).toBeInTheDocument();
+  });
+
+  it("a thrown call followed by a FAILED refresh of the inbox keeps the full unknown-outcome alert", async () => {
+    mocks.moneyInboxList.mockResolvedValueOnce(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockRejectedValue(new Error("connection lost"));
+    mocks.moneyInboxList.mockRejectedValue(new Error("boom"));
+    await acceptAll();
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(1));
+    expect(await screen.findByText(UNKNOWN)).toHaveAttribute("role", "alert");
+    expect(await screen.findByText("Could not load your Money Inbox.")).toBeInTheDocument();
+    expect(screen.getByText(UNKNOWN)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["a success", () => mocks.acceptLowConfidenceCategories.mockResolvedValue(ok(2))],
+    [
+      "a typed failure",
+      () =>
+        mocks.acceptLowConfidenceCategories.mockResolvedValue({
+          status: "error",
+          error: { Validation: "No." },
+        }),
+    ],
+    ["a thrown call", () => mocks.acceptLowConfidenceCategories.mockRejectedValue(new Error("lost"))],
+  ])("%s also reads the transactions again", async (_name, arrange) => {
+    mocks.moneyInboxList.mockResolvedValue(ok(two()));
+    arrange();
+    await acceptAll();
+    const reads = mocks.transactionList.mock.calls.length;
+    await waitFor(() => expect(mocks.acceptLowConfidenceCategories).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.transactionList.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  it("a success refreshes the inbox and shows no alert", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok(two()));
+    mocks.acceptLowConfidenceCategories.mockResolvedValue(ok(2));
+    await acceptAll();
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
 it("reviews a duplicate side-by-side and skips it from the panel (4d8.8)", async () => {
   mocks.moneyInboxList.mockResolvedValue(ok([duplicateItem()]));
   mocks.duplicateCandidates.mockResolvedValue(ok([counterpart()]));

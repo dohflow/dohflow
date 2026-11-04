@@ -32,5 +32,7 @@ export function useDashboard() {
   return {
     forecast: query.data ?? null,
     error: query.error?.message ?? null,
+    retry: () => void query.refetch(),
+    retrying: query.isFetching,
   };
 }

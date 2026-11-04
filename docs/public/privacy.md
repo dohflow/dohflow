@@ -84,10 +84,13 @@ Within a vault, nothing is ever deleted silently or automatically — every
 removal is a choice you make explicitly. Accounts can only be archived, never
 deleted, so your account history always stays intact. Bills and income
 sources give you a choice: Archive keeps the record and lets you restore it
-later; Delete removes it permanently, and always sits behind its own
-confirmation step rather than a single click. Deleting an entire vault is
-different from any of that, and is permanent — it wipes that vault's files
-from disk, and the only way back is restoring a backup you made beforehand. For
+later; Remove hides it everywhere in DohFlow, always sits behind its own
+confirmation step rather than a single click, and offers an Undo for a few
+seconds. A removed item is hidden, not erased: it stays inside the vault file
+and in backups made from it, as do deleted scenarios and removed recurring
+transfers. Deleting an entire vault is different from any of that, and is
+permanent — it wipes that vault's files from disk, and the only way back is
+restoring a backup you made beforehand. For
 the full picture, including what each kind of removal does and how to remove
 DohFlow and its data completely, see
 [What DohFlow keeps, and how to delete it](data-retention-and-deletion.md).

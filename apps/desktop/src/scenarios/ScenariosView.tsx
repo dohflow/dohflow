@@ -3,6 +3,15 @@ import { Archive, Check, Copy, FolderPlus, LineChart, RotateCcw, Trash2, Undo2 }
 
 import type { IpcError, ScenarioDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ApplyConflictNotice } from "@/future-cash/ApplyConflictNotice";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -638,6 +647,7 @@ export function ScenariosView({
         <ApplyScenarioDialog
           scenario={confirmApply}
           busy={busy}
+          fallbackFocusTo={headingRef}
           onCancel={() => setConfirmApply(null)}
           onConfirm={async () => {
             const target = confirmApply;
@@ -660,6 +670,7 @@ export function ScenariosView({
         <DeleteScenarioDialog
           scenario={confirmDelete}
           busy={busy}
+          fallbackFocusTo={headingRef}
           onCancel={() => setConfirmDelete(null)}
           onConfirm={async () => {
             const target = confirmDelete;
@@ -678,65 +689,63 @@ export function ScenariosView({
 function ApplyScenarioDialog({
   scenario,
   busy,
+  fallbackFocusTo,
   onCancel,
   onConfirm,
 }: {
   scenario: ScenarioDto;
   busy: boolean;
+  /// Where focus goes when the dialog closes and the button that opened it is gone.
+  fallbackFocusTo: React.RefObject<HTMLElement | null>;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const safeActionRef = useRef<HTMLButtonElement>(null);
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-6"
-      onClick={onCancel}
-      role="presentation"
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Apply scenario"
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-lg border bg-card p-5 shadow-lg"
-      >
-        <h2 className="text-base font-semibold">Apply “{scenario.name}”?</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Your real forecast will start using this scenario&apos;s {scenario.event_count}{" "}
-          {scenario.event_count === 1 ? "change" : "changes"}, instead of only showing them
-          when the scenario is selected.
-        </p>
-        {/* What does NOT move, immediately after what does. This is a FACT, not
+    <Dialog open onOpenChange={(open) => !open && onCancel()}>
+      <DialogContent initialFocusRef={safeActionRef} fallbackFocusTo={fallbackFocusTo}>
+        <DialogHeader>
+          <DialogTitle>Apply “{scenario.name}”?</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <DialogDescription className="mt-2">
+            Your real forecast will start using this scenario&apos;s {scenario.event_count}{" "}
+            {scenario.event_count === 1 ? "change" : "changes"}, instead of only showing them
+            when the scenario is selected.
+          </DialogDescription>
+          {/* What does NOT move, immediately after what does. This is a FACT, not
             reassurance: ADR 0055 promotes assumption events into base and touches no ledger
             rows at all, so nothing here can alter a balance or a transaction. Naming it
             straight after the change is what stops a reversible action reading as a
             dangerous one. */}
-        <p className="mt-2 text-sm text-muted-foreground">
-          Your bills, income and transactions are not edited — the forecast&apos;s
-          assumptions are.
-        </p>
-        {/* The diff, before the write. Composition is a read-time overlay you can undo by
+          <p className="mt-2 text-sm text-muted-foreground">
+            Your bills, income and transactions are not edited — the forecast&apos;s
+            assumptions are.
+          </p>
+          {/* The diff, before the write. Composition is a read-time overlay you can undo by
             deselecting; applying PROMOTES events into base and supersedes what they collide
             with (ADR 0055), so a conflict stops being a view and becomes durable here. */}
-        <ApplyConflictNotice scenarioId={scenario.id} />
-        {/* Undo LAST, and unconditional. It used to sit before the supersedes block and
+          <ApplyConflictNotice scenarioId={scenario.id} />
+          {/* Undo LAST, and unconditional. It used to sit before the supersedes block and
             only said "you can undo this" — while the sentence naming the MECHANISM lived
             inside the conflict notice, which renders only when there IS a conflict. So a
             clean apply told the user it was undoable without ever saying how. Superseding
             is the part that sounds permanent, so the answer belongs directly after it. */}
-        <p className="mt-3 text-sm text-muted-foreground">
-          To undo, use <span className="text-foreground">Revert</span> on this scenario —
-          it removes what applying added and restores anything it superseded.
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onCancel}>
+          <p className="mt-3 text-sm text-muted-foreground">
+            To undo, use <span className="text-foreground">Revert</span> on this scenario —
+            it removes what applying added and restores anything it superseded.
+          </p>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="ghost" ref={safeActionRef} onClick={onCancel}>
             Cancel
           </Button>
           <Button disabled={busy} onClick={onConfirm}>
             Apply to my forecast
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -747,45 +756,43 @@ function ApplyScenarioDialog({
 function DeleteScenarioDialog({
   scenario,
   busy,
+  fallbackFocusTo,
   onCancel,
   onConfirm,
 }: {
   scenario: ScenarioDto;
   busy: boolean;
+  /// Where focus goes when the dialog closes and the button that opened it is gone.
+  fallbackFocusTo: React.RefObject<HTMLElement | null>;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const safeActionRef = useRef<HTMLButtonElement>(null);
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-6"
-      onClick={onCancel}
-      role="presentation"
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Delete scenario"
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-lg border bg-card p-5 shadow-lg"
-      >
-        <h2 className="text-base font-semibold">Delete “{scenario.name}”?</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          This deletes the scenario and its {scenario.event_count}{" "}
-          {scenario.event_count === 1 ? "change" : "changes"}. Your real forecast is not
-          affected. To keep the plan but stop seeing it, archive it instead.
-        </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Created {formatIsoDate(scenario.created_at.slice(0, 10))}
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onCancel}>
+    <Dialog open onOpenChange={(open) => !open && onCancel()}>
+      <DialogContent initialFocusRef={safeActionRef} fallbackFocusTo={fallbackFocusTo}>
+        <DialogHeader>
+          <DialogTitle>Delete “{scenario.name}”?</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <DialogDescription className="mt-2">
+            This deletes the scenario and its {scenario.event_count}{" "}
+            {scenario.event_count === 1 ? "change" : "changes"}. Your real forecast is not
+            affected. To keep the plan but stop seeing it, archive it instead.
+          </DialogDescription>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Created {formatIsoDate(scenario.created_at.slice(0, 10))}
+          </p>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="ghost" ref={safeActionRef} onClick={onCancel}>
             Cancel
           </Button>
           <Button variant="destructive" disabled={busy} onClick={onConfirm}>
             Delete scenario
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

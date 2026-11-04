@@ -414,6 +414,7 @@ fn seed_demo_vault(root: &Path, anchor: NaiveDate) -> SeededVault {
                 account_id: account_id.to_owned(),
                 amount: usd(minor),
                 as_of_date: as_of.to_string(),
+                idempotency_key: Uuid::new_v4().to_string(),
             },
         )
         .expect("assert balance");
