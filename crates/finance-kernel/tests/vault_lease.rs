@@ -61,7 +61,11 @@ impl Owner {
         let ready = dir.join(format!("{mode}.ready"));
         let release = dir.join(format!("{mode}.release"));
         let child = Command::new(env::current_exe().unwrap())
-            .args(["--exact", "child_owns_the_vault_for_a_parent_test", "--nocapture"])
+            .args([
+                "--exact",
+                "child_owns_the_vault_for_a_parent_test",
+                "--nocapture",
+            ])
             .env(CHILD_VAULT, vault)
             .env(CHILD_READY, &ready)
             .env(CHILD_RELEASE, &release)
@@ -121,7 +125,9 @@ fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
             if path.is_dir() {
                 stack.push(path);
             } else if !path.to_string_lossy().ends_with(".runner.lock")
-                && path.extension().is_none_or(|e| e != "ready" && e != "release")
+                && path
+                    .extension()
+                    .is_none_or(|e| e != "ready" && e != "release")
             {
                 found.push((path.clone(), fs::read(&path).unwrap()));
             }
@@ -161,7 +167,10 @@ fn create_is_refused_while_another_process_owns_the_path_and_leaves_nothing() {
     let path = dir.path().join("vault.db");
     let owner = Owner::spawn(dir.path(), &path, "lease");
     assert_in_use(Kernel::create_vault(&path, PASSWORD));
-    assert!(!sidecar(&path).exists(), "a refused create leaves no envelope");
+    assert!(
+        !sidecar(&path).exists(),
+        "a refused create leaves no envelope"
+    );
     assert!(!path.exists());
     owner.release();
 }
@@ -204,7 +213,12 @@ fn restore_is_refused_while_another_process_owns_the_destination_and_writes_noth
     let backup = dir.path().join("vault.pcfobk");
     let kernel = Kernel::unlock_vault(&path, PASSWORD).unwrap();
     kernel
-        .export_unattended(&backup, "0.0.0-test", "2026-11-04T00:00:00Z".to_owned(), uuid::Uuid::now_v7())
+        .export_unattended(
+            &backup,
+            "0.0.0-test",
+            "2026-11-04T00:00:00Z".to_owned(),
+            uuid::Uuid::now_v7(),
+        )
         .unwrap();
     kernel.lock();
 
@@ -216,7 +230,9 @@ fn restore_is_refused_while_another_process_owns_the_destination_and_writes_noth
     assert!(!sidecar(&target).exists());
     owner.release();
     // Once the owner is gone the same restore succeeds.
-    Kernel::restore_backup(&backup, PASSWORD, &target).unwrap().lock();
+    Kernel::restore_backup(&backup, PASSWORD, &target)
+        .unwrap()
+        .lock();
 }
 
 #[test]
@@ -225,11 +241,19 @@ fn startup_recovery_touches_no_file_while_another_process_owns_the_vault() {
     // A stray rotation artifact: what recovery would delete if it ran.
     let stray = dir.path().join("vault.db.rekey-new");
     fs::write(&stray, b"half-written copy").unwrap();
+    // A rotation journal too: the owner's live rotation, which a second process must not mistake
+    // for a fault or act on.
+    let journal = dir.path().join("vault.db.rekey");
+    fs::write(&journal, b"the owner's journal").unwrap();
     let before = snapshot(dir.path());
 
     let owner = Owner::spawn(dir.path(), &path, "lease");
     let controller = VaultController::open(&path);
     assert_eq!(controller.rekey_recovery(), RekeyRecovery::Deferred);
+    assert!(
+        journal.exists(),
+        "recovery must not touch the owner's journal"
+    );
     assert!(stray.exists(), "recovery must not delete the owner's file");
     assert_eq!(snapshot(dir.path()), before);
     // The vault is not reported corrupt just because its owner is mid-step.
@@ -237,10 +261,11 @@ fn startup_recovery_touches_no_file_while_another_process_owns_the_vault() {
     drop(controller);
     owner.release();
 
-    // With the owner gone, the same open recovers.
+    // With the owner gone, the same open looks at the journal: this one is not readable, so
+    // nothing is deleted and the vault needs recovery.
     let controller = VaultController::open(&path);
-    assert_eq!(controller.rekey_recovery(), RekeyRecovery::RolledBack);
-    assert!(!stray.exists());
+    assert_eq!(controller.rekey_recovery(), RekeyRecovery::Contradiction);
+    assert_eq!(controller.state(), VaultState::CorruptNeedsRecovery);
 }
 
 #[test]
@@ -265,7 +290,10 @@ fn a_lock_file_left_by_a_crash_never_blocks_the_next_open() {
         owner.kill();
         let mut lock = path.as_os_str().to_owned();
         lock.push(".runner.lock");
-        assert!(Path::new(&lock).exists(), "{mode}: the dead owner left its lock file");
+        assert!(
+            Path::new(&lock).exists(),
+            "{mode}: the dead owner left its lock file"
+        );
         Kernel::unlock_vault(&path, PASSWORD).unwrap().lock();
     }
 }

@@ -132,7 +132,9 @@ is.
 
 **Apply** (every step idempotent, so it can be re-run after a crash):
 
-1. Close the kernel. This drops every connection and releases the runner lock.
+1. Close the kernel, keeping the vault lease. This drops every connection but
+   not the runner lock: the controller holds the lease from here through step 7
+   and hands it to the reopened kernel (Addendum B).
 2. Remove the old database's `-wal` and `-shm` files. This comes before the
    swap so that an old side file can never sit beside the new `vault.db`. Their
    contents are not needed: the export read a checkpointed database, and the
@@ -302,9 +304,40 @@ is unchanged: the copy is one closed file under the new DEK alone. `rekey_copy.r
 do not). The reasons and the accepted trade-off are in
 [encryption-design.md](../security/encryption-design.md).
 
+## Addendum B — The vault lease across the apply steps (2026-11-04, `personal-cfo-bxsbz.2`)
+
+The runner lock (ADR 0070) is released when a worker closes. Apply step 1 closed the kernel and
+so left the vault unowned from step 1 until the reopen: a second process that started in that
+window could unlock it, or run startup recovery (section 4) against files the first process was
+still swapping.
+
+The lock is now held as a **vault lease** (`VaultLease`, the same advisory lock on
+`<vault>.runner.lock`), and the controller holds it whenever it renames or removes vault files
+with no worker running:
+
+- **Apply step 1** closes the kernel into a lease (`Kernel::close_into_lease`). Steps 2 to 7 run
+  under it, and the reopen takes it over (`Kernel::unlock_vault_leased`) instead of locking
+  again, so the lock is never released between the swap and the reopen. A failure partway through
+  recovers under the same lease and releases it on return.
+- **Startup recovery** (section 4), run by `VaultController::open` and `switch_to`, takes the lease
+  first. If another process holds it, recovery does not run and no file is touched: the result is
+  `RekeyRecovery::Deferred` and the controller classifies from the files alone, ignoring the
+  journal (which then belongs to that process's live rotation, not to a fault). A lock that cannot
+  be taken for another reason (no directory yet) does not stop recovery: there is no owner to
+  protect.
+- **Delete** and **restore** hold the lease from the first file change to the last (restore hands
+  it to the verifying unlock).
+- A later rebase swap (`personal-cfo-bxsbz.7`) takes the same lease; there is no second lock.
+
+The OS releases the lock on close and on process exit, so a crash never leaves a lock behind; a
+leftover `.runner.lock` file never blocks the next open. A second process that is refused gets the
+typed `VaultInUse` the desktop already maps to "vault is already open in another DohFlow
+instance". Section 5's controller state machine is unchanged.
+
 ## Linked beads
 
 - `personal-cfo-7ie.17` (keys through `sqlite3_key_v2`; Addendum A)
+- `personal-cfo-bxsbz.2` (the vault lease across apply, recovery, delete and restore; Addendum B)
 - `personal-cfo-2y8` (implementation)
 - `personal-cfo-g3m.5` (engine remediation; implementation follows it)
 - `personal-cfo-zxq` (password change — the KEK-only re-wrap this extends)

@@ -1154,6 +1154,103 @@ mod protocol_tests {
         drop(controller);
     }
 
+    /// Records, at every observation point, whether another opener is refused (the vault is leased).
+    /// Clears itself from the thread when it is dropped.
+    struct LeaseWatch {
+        seen: std::rc::Rc<std::cell::RefCell<Vec<(String, bool)>>>,
+    }
+
+    impl LeaseWatch {
+        fn on(path: &Path) -> Self {
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let (path, log) = (path.to_path_buf(), std::rc::Rc::clone(&seen));
+            observe::install(move |label| {
+                let refused = matches!(
+                    db_worker::VaultLease::acquire(&path),
+                    Err(db_worker::DbError::VaultInUse)
+                );
+                log.borrow_mut().push((label.to_owned(), refused));
+            });
+            Self { seen }
+        }
+
+        fn labels(&self) -> Vec<String> {
+            self.seen
+                .borrow()
+                .iter()
+                .map(|(label, _)| label.clone())
+                .collect()
+        }
+
+        fn unrefused(&self) -> Vec<String> {
+            self.seen
+                .borrow()
+                .iter()
+                .filter(|(_, refused)| !refused)
+                .map(|(label, _)| label.clone())
+                .collect()
+        }
+    }
+
+    impl Drop for LeaseWatch {
+        fn drop(&mut self) {
+            observe::clear();
+        }
+    }
+
+    #[test]
+    fn the_vault_stays_leased_at_every_step_of_a_rotation() {
+        let (_dir, path, mut controller, _) = seeded();
+        let watch = LeaseWatch::on(&path);
+        controller.rotate_key(PASSWORD).unwrap();
+        // Every step from the first copy to the last file removal was observed ...
+        for point in BEFORE_COMMIT.into_iter().chain(AFTER_COMMIT) {
+            assert!(
+                watch.labels().contains(&format!("{point:?}")),
+                "{point:?} was not observed"
+            );
+        }
+        assert!(
+            watch.labels().contains(&"reopen-leased".to_owned()),
+            "the reopen must take the held lease over"
+        );
+        // ... and at each of them a second opener was refused: before the commit by the open
+        // worker, after it (kernel closed, files being swapped) by the controller's lease.
+        assert_eq!(watch.unrefused(), Vec::<String>::new());
+        // The reopened kernel owns the vault again.
+        assert!(matches!(
+            db_worker::VaultLease::acquire(&path),
+            Err(db_worker::DbError::VaultInUse)
+        ));
+    }
+
+    #[test]
+    fn delete_holds_the_lease_until_the_last_file_is_gone() {
+        let (_dir, path, mut controller, _) = seeded();
+        let watch = LeaseWatch::on(&path);
+        controller.delete().unwrap();
+        // At the point just after the kernel closed and before any file was removed ...
+        assert_eq!(watch.labels(), vec!["delete".to_owned()]);
+        assert_eq!(watch.unrefused(), Vec::<String>::new());
+        drop(watch);
+        // ... and once delete returns the lease is released.
+        assert!(db_worker::VaultLease::acquire(&path).is_ok());
+    }
+
+    #[test]
+    fn a_failed_rotation_swap_still_holds_the_lease_while_it_recovers() {
+        let (_dir, path, mut controller, _) = seeded();
+        let watch = LeaseWatch::on(&path);
+        let error = controller
+            .rotate_key_with(PASSWORD, Some(CrashPoint::DbSwapped))
+            .unwrap_err();
+        assert!(is_simulated_crash(&error));
+        assert_eq!(watch.unrefused(), Vec::<String>::new());
+        // The process "dies" with the call: nothing is left holding the vault.
+        drop(watch);
+        assert!(db_worker::VaultLease::acquire(&path).is_ok());
+    }
+
     #[test]
     fn delete_removes_rotation_artifacts() {
         let (_dir, path, mut controller, _) = seeded();

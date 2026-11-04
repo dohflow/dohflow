@@ -175,7 +175,12 @@ impl Kernel {
         password: &[u8],
         lease: VaultLease,
     ) -> Result<Self, KernelError> {
-        Self::unlock_vault_inner(path.as_ref(), password, UnlockOptions::default(), Some(lease))
+        Self::unlock_vault_inner(
+            path.as_ref(),
+            password,
+            UnlockOptions::default(),
+            Some(lease),
+        )
     }
 
     fn unlock_vault_inner(
@@ -207,7 +212,11 @@ impl Kernel {
             }
         }
         let worker = match lease {
-            Some(lease) => DbWorker::open_existing_with_raw_key_leased(db_path, dek, lease)?,
+            Some(lease) => {
+                #[cfg(test)]
+                rekey::observe::at("reopen-leased");
+                DbWorker::open_existing_with_raw_key_leased(db_path, dek, lease)?
+            }
             None => DbWorker::open_existing_with_raw_key(db_path, dek)?,
         };
         Ok(Self::with_worker(worker))

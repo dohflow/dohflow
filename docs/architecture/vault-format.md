@@ -82,7 +82,7 @@ or service-facing identifier.
 | `vault.db` | SQLCipher database, keyed with the raw DEK |
 | `vault.db.envelope` | plaintext sidecar (layout below) |
 | `blobs/` | encrypted attachment blobs under opaque storage IDs |
-| `vault.db.runner.lock` | advisory exclusive lock held while a vault is unlocked; a second opener fails with a typed vault-in-use error |
+| `vault.db.runner.lock` | advisory exclusive lock (the vault lease) held while a vault is unlocked, and across every step that renames or removes the vault's files with no worker running: startup rotation recovery, the rotation swap, delete, restore. A second opener fails with a typed vault-in-use error and touches no file. The OS releases it on close, exit or crash; a leftover file never blocks the next open |
 | `vault.db-wal`, `vault.db-shm`, `vault.db-journal` | SQLite side files: the WAL files while the vault is open, and a rollback journal if the database briefly uses that mode |
 | `vault.db.rekey`, `vault.db.rekey.tmp`, `vault.db.rekey-new`, `vault.db.envelope.rekey-new`, `vault.db.rekey-old` | transient files of an in-progress or interrupted key rotation: the journal (`preparing`, `prepared`, `committed`), its temp file, the re-encrypted copy, the new envelope and the old database |
 
