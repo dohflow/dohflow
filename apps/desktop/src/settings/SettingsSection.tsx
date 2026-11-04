@@ -28,15 +28,19 @@ export function SettingsGrid({ children }: { children: ReactNode }) {
 /// reads as healthy or verified while a read is loading or has failed. Pass `undefined` then.
 ///
 /// Errors inside the card body can be hidden by collapsing; lifting them outside the body is a
-/// separate slice, which is why this one opens every section.
+/// separate slice, which is why this one opens every section. `persistent` is the slot that slice
+/// will use: it is passed to the disclosure as is and sits outside the hidden body, so whatever
+/// it holds stays visible and announced while the section is collapsed. No section fills it yet.
 export function SettingsSection({
   title,
   summary,
+  persistent,
   span,
   children,
 }: {
   title: string;
   summary?: ReactNode;
+  persistent?: ReactNode;
   span: SpanName;
   children: ReactNode;
 }) {
@@ -50,6 +54,7 @@ export function SettingsSection({
       <Disclosure
         title={title}
         summary={summary}
+        persistent={persistent}
         open={open}
         onOpenChange={setOpen}
         headingLevel={3}

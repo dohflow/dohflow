@@ -1,10 +1,14 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
+import { QueryClient } from "@tanstack/react-query";
+
+import { queryKeys } from "@/lib/query";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import { SettingsView } from "./SettingsView";
 
 const mocks = vi.hoisted(() => ({
+  vault: { vaults: [] as unknown[], loadError: null as string | null },
   connectorConnections: vi.fn(),
   accountList: vi.fn(),
   baseCurrency: vi.fn(),
@@ -49,7 +53,8 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 vi.mock("@/vault/useVault", () => ({
   useVault: () => ({
     deleteVault: vi.fn(),
-    vaults: [],
+    vaults: mocks.vault.vaults,
+    loadError: mocks.vault.loadError,
     createNamedVault: vi.fn(),
     switchVault: vi.fn(),
     renameVault: vi.fn(),
@@ -87,6 +92,8 @@ vi.mock("@/bindings", () => ({
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 
 beforeEach(() => {
+  mocks.vault.vaults = [];
+  mocks.vault.loadError = null;
   // SettingsView now also renders ConnectionsCard (personal-cfo-ul5d).
   mocks.connectorConnections.mockReset();
   mocks.connectorConnections.mockResolvedValue(ok([]));
@@ -520,6 +527,95 @@ describe("the Settings sections (personal-cfo-4d8.39.1)", () => {
       expect(screen.queryByText(/last backup verified/)).toBeNull();
       expect(screen.queryByText(/–/)).toBeNull();
       expect(screen.queryByText("On")).toBeNull();
+    });
+  });
+
+  describe("a summary never outlives its read (Studio R2)", () => {
+    const verified = ok([{ backup_id: "b1", vault_id: "v", created_at: "2026-11-01T00:00:00Z", kind: "scheduled", destination: "/b", format_version: 1, size_bytes: 1, verified: true, error: null }]);
+    const band = ok({ currency: "USD", lower: { minor_units: 500_000, currency: "USD" }, upper: { minor_units: 1_500_000, currency: "USD" } });
+    const twoConnections = ok([
+      { id: "c1", adapter_id: "lunchflow", display_hint: null, last_synced_at: null, last_error: null, needs_token: false, refresh_cadence: "manual", attention: [], links: [] },
+      { id: "c2", adapter_id: "lunchflow", display_hint: null, last_synced_at: null, last_error: null, needs_token: false, refresh_cadence: "manual", attention: [], links: [] },
+    ]);
+
+    async function collapsed(names: string[]) {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderWithClient(<SettingsView />, client);
+      for (const name of names) {
+        fireEvent.click(await screen.findByRole("button", { name }));
+      }
+      return client;
+    }
+    const failedRefresh = async (client: QueryClient, queryKey: readonly unknown[]) => {
+      await client.refetchQueries({ queryKey });
+    };
+
+    it("backups: a failed history refresh over a cached verified backup drops the line, and the next good read brings it back", async () => {
+      mocks.backupHistory.mockResolvedValue(verified);
+      const client = await collapsed(["Backups"]);
+      expect(await screen.findByText("Weekly · last backup verified")).toBeInTheDocument();
+
+      mocks.backupHistory.mockRejectedValue(new Error("history unavailable"));
+      await failedRefresh(client, queryKeys.backupHistory);
+      await waitFor(() => expect(screen.queryByText(/last backup verified/)).toBeNull());
+
+      mocks.backupHistory.mockResolvedValue(verified);
+      await failedRefresh(client, queryKeys.backupHistory);
+      expect(await screen.findByText("Weekly · last backup verified")).toBeInTheDocument();
+    });
+
+    it("backups: a failed schedule refresh drops the line too", async () => {
+      mocks.backupHistory.mockResolvedValue(verified);
+      const client = await collapsed(["Backups"]);
+      expect(await screen.findByText("Weekly · last backup verified")).toBeInTheDocument();
+      mocks.backupScheduleSettings.mockRejectedValue(new Error("settings unavailable"));
+      await failedRefresh(client, queryKeys.backupSchedule);
+      await waitFor(() => expect(screen.queryByText(/last backup verified/)).toBeNull());
+    });
+
+    it("backups: nothing is said while the history is still loading", async () => {
+      mocks.backupHistory.mockReturnValue(new Promise(() => {}));
+      await collapsed(["Backups"]);
+      await screen.findByRole("button", { name: "Backups" });
+      expect(screen.queryByText(/last backup verified/)).toBeNull();
+    });
+
+    it("comfort band: a failed refresh drops the range", async () => {
+      mocks.comfortBand.mockResolvedValue(band);
+      const client = await collapsed(["Comfort band"]);
+      expect(await screen.findByText("$5,000.00–$15,000.00")).toBeInTheDocument();
+      mocks.comfortBand.mockRejectedValue(new Error("band unavailable"));
+      await failedRefresh(client, queryKeys.comfortBand);
+      await waitFor(() => expect(screen.queryByText("$5,000.00–$15,000.00")).toBeNull());
+    });
+
+    it("auto-categorize: a failed refresh drops On", async () => {
+      const client = await collapsed(["Auto-categorize imported transactions"]);
+      expect(await screen.findByText("On")).toBeInTheDocument();
+      mocks.autoCategorizeOnImport.mockRejectedValue(new Error("setting unavailable"));
+      await failedRefresh(client, queryKeys.autoCategorizeOnImport);
+      await waitFor(() => expect(screen.queryByText("On")).toBeNull());
+    });
+
+    it("connections: a failed refresh drops the count", async () => {
+      mocks.connectorConnections.mockResolvedValue(twoConnections);
+      const client = await collapsed(["Connections"]);
+      expect(await screen.findByText("2 connections")).toBeInTheDocument();
+      mocks.connectorConnections.mockRejectedValue(new Error("connections unavailable"));
+      await failedRefresh(client, queryKeys.connections);
+      await waitFor(() => expect(screen.queryByText("2 connections")).toBeNull());
+    });
+
+    it("vaults: a vault status that could not be read drops the active name", async () => {
+      mocks.vault.vaults = [{ id: "v1", name: "Home", is_active: true }];
+      const first = await collapsed(["Vaults"]);
+      expect(await screen.findByText("Home · active")).toBeInTheDocument();
+      first.clear();
+      cleanup();
+      mocks.vault.loadError = "The vault service is unavailable.";
+      await collapsed(["Vaults"]);
+      await screen.findByRole("button", { name: "Vaults" });
+      expect(screen.queryByText(/active$/)).toBeNull();
     });
   });
 });
