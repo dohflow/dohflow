@@ -16,7 +16,7 @@ use sync_core::membership::VerifiedState;
 use vault_crypto::sync_custody::{CustodyError, Item, SyncKeyCustody, SERVICE};
 use vault_crypto::sync_envelope::{aead_key, ObjectType};
 use vault_crypto::sync_keys::{epoch_key_commitment, DeviceKeys};
-use vault_crypto::sync_records::{accept_records, Accepted};
+use vault_crypto::sync_records::{accept_records, Accepted, GenesisRecords};
 use vault_crypto::SecretBytes;
 
 const HEX_VAULT: &str = "11111111111111111111111111111111";
@@ -445,15 +445,13 @@ fn errors_name_the_item_and_never_a_value() {
 fn enabling_sync_generates_and_stores_every_key_and_installs_them_by_accepting_the_genesis() {
     let store = Recording::new();
     let custody = SyncKeyCustody::new(&store, VAULT);
-    let genesis = custody
-        .enable_sync([0xa1; 16], 1_700_000_000_000_000)
-        .unwrap();
+    let genesis = enable(&custody, 1_700_000_000_000_000);
     // The records verify as a chain.
     let state =
         sync_core::membership::verify_chain(&VAULT, &[&genesis.membership], &[&genesis.epoch])
             .unwrap();
     assert_eq!(state.key_epoch(), 1);
-    // Four items, all device-only: the two device keys, K_1 and S.
+    // Five items, all device-only: the two device keys, the genesis marker, K_1 and S.
     let mut written: Vec<String> = store
         .writes
         .lock()
@@ -465,6 +463,7 @@ fn enabling_sync_generates_and_stores_every_key_and_installs_them_by_accepting_t
     assert_eq!(
         written,
         [
+            format!("{SERVICE}/{HEX_VAULT}.genesis"),
             format!("{SERVICE}/{HEX_VAULT}.ke.1"),
             format!("{SERVICE}/{HEX_VAULT}.kem"),
             format!("{SERVICE}/{HEX_VAULT}.s"),
@@ -504,10 +503,10 @@ fn enabling_sync_generates_and_stores_every_key_and_installs_them_by_accepting_t
 fn enabling_twice_is_refused_and_changes_nothing() {
     let store = Recording::new();
     let custody = SyncKeyCustody::new(&store, VAULT);
-    custody.enable_sync([0xa1; 16], 1).unwrap();
+    enable(&custody, 1);
     let writes = store.writes.lock().unwrap().len();
     assert_eq!(
-        custody.enable_sync([0xa1; 16], 1).unwrap_err(),
+        custody.prepare_genesis([0xa1; 16], 1).unwrap_err(),
         vault_crypto::sync_custody::EnableError::AlreadyEnabled
     );
     assert_eq!(store.writes.lock().unwrap().len(), writes);
@@ -519,7 +518,7 @@ fn enabling_after_a_failed_attempt_reuses_the_device_keys_it_left() {
     let custody = SyncKeyCustody::new(&store, VAULT);
     let keys = DeviceKeys::generate().unwrap();
     custody.store_device_keys(&keys).unwrap();
-    let genesis = custody.enable_sync([0xa1; 16], 1).unwrap();
+    let genesis = enable(&custody, 1);
     let body = sync_core::membership::EpochBody::decode(
         &sync_core::membership::SignedRecord::parse(&genesis.epoch, 1 << 22)
             .unwrap()
@@ -533,7 +532,7 @@ fn enabling_after_a_failed_attempt_reuses_the_device_keys_it_left() {
 fn enabling_on_an_unavailable_store_fails_and_stores_no_key_anywhere_else() {
     let store = MockSecretStore::unavailable(UnavailableReason::Locked);
     let custody = SyncKeyCustody::new(&store, VAULT);
-    assert!(custody.enable_sync([0xa1; 16], 1).is_err());
+    assert!(custody.prepare_genesis([0xa1; 16], 1).is_err());
     assert!(store.is_empty());
 }
 
@@ -649,39 +648,126 @@ impl SecretStore for FailsOnce {
     }
 }
 
+/// Enabling as the engine will do it: prepare, (persist the records), install.
+fn enable(custody: &SyncKeyCustody<'_>, issued_at: i64) -> GenesisRecords {
+    let genesis = custody.prepare_genesis([0xa1; 16], issued_at).unwrap();
+    custody.install_genesis(&genesis).unwrap();
+    genesis
+}
+
+fn chain_of(genesis: &GenesisRecords) -> VerifiedState {
+    sync_core::membership::verify_chain(&VAULT, &[&genesis.membership], &[&genesis.epoch]).unwrap()
+}
+
 #[test]
-fn a_store_write_that_fails_at_any_position_can_be_retried_to_a_complete_enable() {
-    // The writes are, in order: the signing key, the agreement key, K_1, S.
-    for position in 1..=4 {
+fn preparing_a_genesis_writes_no_k1_and_no_s() {
+    let store = Recording::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    let genesis = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+    // Only the device keys were stored. K_1 and S live only in the records, which the caller
+    // persists before anything installs them.
+    let written: Vec<String> = store
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|w| w.0.clone())
+        .collect();
+    assert_eq!(
+        written,
+        [
+            format!("{SERVICE}/{HEX_VAULT}.sign"),
+            format!("{SERVICE}/{HEX_VAULT}.kem"),
+        ]
+    );
+    assert!(!custody.has_epoch_key(1).unwrap());
+    chain_of(&genesis);
+}
+
+#[test]
+fn a_crash_before_the_records_are_persisted_loses_nothing_and_enabling_finishes() {
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    let lost = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+    drop(lost); // the process died before the records were persisted
+                // The next attempt prepares another genesis under the same device keys and completes.
+    let genesis = enable(&custody, 2);
+    let state = chain_of(&genesis);
+    custody.load_epoch_key(&state, 1).unwrap();
+    custody.load_tag_secret(&state).unwrap();
+}
+
+#[test]
+fn a_crash_after_the_records_are_persisted_is_finished_by_installing_them() {
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    let persisted = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+    // The process died here: the records are persisted, nothing is installed. A fresh custody
+    // (a restart) installs them.
+    let restarted = SyncKeyCustody::new(&store, VAULT);
+    restarted.install_genesis(&persisted).unwrap();
+    let state = chain_of(&persisted);
+    restarted.load_epoch_key(&state, 1).unwrap();
+    restarted.load_tag_secret(&state).unwrap();
+    // Installing again writes nothing and still succeeds.
+    restarted.install_genesis(&persisted).unwrap();
+}
+
+#[test]
+fn installing_a_genesis_whose_keys_differ_from_the_stored_ones_is_a_conflict() {
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    // Two geneses prepared under the same device keys carry different K_1 and S.
+    let first = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+    let second = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+    custody.install_genesis(&first).unwrap();
+    assert_eq!(
+        custody.install_genesis(&second).unwrap_err(),
+        vault_crypto::sync_custody::EnableError::Custody(CustodyError::Conflict(
+            Item::GenesisMarker
+        ))
+    );
+    // The first install is untouched.
+    custody.load_epoch_key(&chain_of(&first), 1).unwrap();
+}
+
+#[test]
+fn a_store_write_that_fails_at_any_position_is_finished_by_a_retry() {
+    // The writes are, in order: the signing key, the agreement key, the genesis marker, K_1, S.
+    // The first two happen in prepare, the last three in install, so the retry is the matching
+    // half.
+    for position in 1..=5 {
         let store = FailsOnce::failing_call(position);
         let custody = SyncKeyCustody::new(&store, VAULT);
-        let first = custody.enable_sync([0xa1; 16], 1);
-        assert_eq!(
-            first.unwrap_err(),
-            vault_crypto::sync_custody::EnableError::Custody(CustodyError::Store(
-                SecretError::Unavailable(UnavailableReason::Locked)
-            )),
-            "write {position}"
-        );
-        // Whatever the failed attempt left is reused, never regenerated against.
-        let kept_k1 = custody.has_epoch_key(1).unwrap().then(|| {
-            let prompt = AuthPrompt::new("test").unwrap();
-            store
-                .inner
-                .load_secret(&account("ke.1"), &prompt)
-                .unwrap()
-                .expose()
-                .to_vec()
-        });
-        let genesis = custody
-            .enable_sync([0xa1; 16], 1)
-            .expect("the retry completes");
-        // All four items are present and valid, against the chain the records describe.
-        let state =
-            sync_core::membership::verify_chain(&VAULT, &[&genesis.membership], &[&genesis.epoch])
-                .unwrap();
+        let locked = SecretError::Unavailable(UnavailableReason::Locked);
+        let genesis = if position <= 2 {
+            assert_eq!(
+                custody.prepare_genesis([0xa1; 16], 1).unwrap_err(),
+                vault_crypto::sync_custody::EnableError::Custody(CustodyError::Store(locked)),
+                "write {position}"
+            );
+            // The retry builds the genesis (a lone half left by the failure is replaced).
+            let genesis = custody
+                .prepare_genesis([0xa1; 16], 1)
+                .expect("prepare retries");
+            custody.install_genesis(&genesis).unwrap();
+            genesis
+        } else {
+            let genesis = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+            assert_eq!(
+                custody.install_genesis(&genesis).unwrap_err(),
+                vault_crypto::sync_custody::EnableError::Custody(CustodyError::Store(locked)),
+                "write {position}"
+            );
+            // The same persisted records finish the install: no key is regenerated.
+            custody.install_genesis(&genesis).expect("install retries");
+            genesis
+        };
+        // All four items are present and valid against the chain the records describe, and the
+        // records seal the stored K_1.
+        let state = chain_of(&genesis);
         let keys = custody.load_device_keys().unwrap();
-        let again = accept_records(
+        let accepted = accept_records(
             &VerifiedState::empty(VAULT),
             &[&genesis.membership],
             &[&genesis.epoch],
@@ -692,26 +778,17 @@ fn a_store_write_that_fails_at_any_position_can_be_retried_to_a_complete_enable(
         assert_eq!(
             aead_key(&stored, &keys.public().fingerprint, ObjectType::Envelope).expose(),
             aead_key(
-                &again.installs[0].epoch_key,
+                &accepted.installs[0].epoch_key,
                 &keys.public().fingerprint,
                 ObjectType::Envelope
             )
             .expose(),
-            "write {position}: the records seal the stored K_1"
+            "write {position}"
         );
         custody.load_tag_secret(&state).unwrap();
-        if let Some(kept) = kept_k1 {
-            let prompt = AuthPrompt::new("test").unwrap();
-            let now = store.inner.load_secret(&account("ke.1"), &prompt).unwrap();
-            assert_eq!(
-                now.expose(),
-                kept.as_slice(),
-                "write {position}: K_1 is the one that was left"
-            );
-        }
-        // And it is enabled exactly once.
+        // And it is enabled once.
         assert_eq!(
-            custody.enable_sync([0xa1; 16], 1).unwrap_err(),
+            custody.prepare_genesis([0xa1; 16], 1).unwrap_err(),
             vault_crypto::sync_custody::EnableError::AlreadyEnabled,
             "write {position}"
         );
@@ -719,43 +796,62 @@ fn a_store_write_that_fails_at_any_position_can_be_retried_to_a_complete_enable(
 }
 
 #[test]
-fn a_lost_k1_item_is_regenerated_and_s_is_kept() {
+fn a_lost_k1_item_comes_back_by_installing_the_persisted_records_again() {
     let store = MockSecretStore::new();
     let custody = SyncKeyCustody::new(&store, VAULT);
-    let first = custody.enable_sync([0xa1; 16], 1).unwrap();
-    let state =
-        sync_core::membership::verify_chain(&VAULT, &[&first.membership], &[&first.epoch]).unwrap();
-    let s_before =
-        vault_crypto::sync::idempotency_tag_key(&custody.load_tag_secret(&state).unwrap(), &VAULT);
+    let genesis = enable(&custody, 1);
+    let state = chain_of(&genesis);
     store.delete_secret(&account("ke.1")).unwrap();
-    // Only S is held, so the attempt is unfinished: the retry keeps S and makes a new K_1.
-    let second = custody.enable_sync([0xa1; 16], 1).unwrap();
-    let state =
-        sync_core::membership::verify_chain(&VAULT, &[&second.membership], &[&second.epoch])
-            .unwrap();
-    let s_after =
-        vault_crypto::sync::idempotency_tag_key(&custody.load_tag_secret(&state).unwrap(), &VAULT);
-    assert_eq!(s_before.expose(), s_after.expose());
+    assert_eq!(
+        custody.load_epoch_key(&state, 1).unwrap_err(),
+        CustodyError::Missing(Item::EpochKey(1))
+    );
+    custody.install_genesis(&genesis).unwrap();
     custody.load_epoch_key(&state, 1).unwrap();
 }
 
 #[test]
-fn a_lone_half_of_the_device_keys_does_not_block_enabling() {
+fn the_public_store_refuses_any_present_half_and_deletes_nothing() {
     for lone in ["sign", "kem"] {
         let store = MockSecretStore::new();
         let custody = SyncKeyCustody::new(&store, VAULT);
-        let keys = DeviceKeys::generate().unwrap();
-        custody.store_device_keys(&keys).unwrap();
+        let original = DeviceKeys::generate().unwrap();
+        custody.store_device_keys(&original).unwrap();
+        let other = if lone == "sign" { "kem" } else { "sign" };
+        store.delete_secret(&account(other)).unwrap();
+        let before = store.len();
+        let error = custody
+            .store_device_keys(&DeviceKeys::generate().unwrap())
+            .unwrap_err();
+        let held = if lone == "sign" {
+            Item::SigningKey
+        } else {
+            Item::AgreementKey
+        };
+        assert_eq!(error, CustodyError::AlreadyPresent(held));
+        assert_eq!(store.len(), before, "nothing was deleted or written");
+        assert!(
+            store.public_tag(&account(lone)).is_ok(),
+            "the surviving half is untouched"
+        );
+    }
+}
+
+#[test]
+fn only_preparing_a_genesis_replaces_a_lone_half() {
+    for lone in ["sign", "kem"] {
+        let store = MockSecretStore::new();
+        let custody = SyncKeyCustody::new(&store, VAULT);
+        custody
+            .store_device_keys(&DeviceKeys::generate().unwrap())
+            .unwrap();
         let other = if lone == "sign" { "kem" } else { "sign" };
         store.delete_secret(&account(other)).unwrap();
         assert!(!custody.has_device_keys().unwrap());
-        let genesis = custody.enable_sync([0xa1; 16], 1).expect(lone);
-        let state =
-            sync_core::membership::verify_chain(&VAULT, &[&genesis.membership], &[&genesis.epoch])
-                .unwrap();
+        let genesis = enable(&custody, 1);
         assert!(custody.has_device_keys().unwrap());
         custody.load_device_keys().unwrap();
-        custody.load_epoch_key(&state, 1).unwrap();
+        custody.load_epoch_key(&chain_of(&genesis), 1).unwrap();
     }
 }
 
@@ -769,4 +865,178 @@ fn a_complete_pair_is_still_never_replaced() {
         .store_device_keys(&DeviceKeys::generate().unwrap())
         .is_err());
     assert_eq!(custody.load_device_keys().unwrap().public(), first.public());
+}
+
+// ---- F1: a completed enable never mints a second genesis ------------------------------------------------
+
+#[test]
+fn a_lost_s_or_k1_after_a_completed_enable_is_recovered_only_from_the_published_records() {
+    for lost in ["s", "ke.1", "both"] {
+        let store = MockSecretStore::new();
+        let custody = SyncKeyCustody::new(&store, VAULT);
+        let published = enable(&custody, 1);
+        let state = chain_of(&published);
+        let keys = custody.load_device_keys().unwrap();
+        let k1_before = aead_key(
+            &custody.load_epoch_key(&state, 1).unwrap(),
+            &keys.public().fingerprint,
+            ObjectType::Envelope,
+        );
+        for item in if lost == "both" {
+            vec!["s", "ke.1"]
+        } else {
+            vec![lost]
+        } {
+            store.delete_secret(&account(item)).unwrap();
+        }
+        // A re-enable must not return a new genesis, whatever was lost.
+        assert_eq!(
+            custody.prepare_genesis([0xa1; 16], 2).unwrap_err(),
+            vault_crypto::sync_custody::EnableError::AlreadyEnabled,
+            "lost {lost}"
+        );
+        // No new S or K_1 was written by the refused call.
+        for item in if lost == "both" {
+            vec!["s", "ke.1"]
+        } else {
+            vec![lost]
+        } {
+            assert_eq!(
+                store.public_tag(&account(item)).unwrap_err(),
+                SecretError::NotFound,
+                "lost {lost}: {item} must stay missing until the records are installed"
+            );
+        }
+        // The original records restore the item, and the chain loads succeed.
+        custody.install_genesis(&published).unwrap();
+        custody.load_tag_secret(&state).unwrap();
+        let restored = aead_key(
+            &custody.load_epoch_key(&state, 1).unwrap(),
+            &keys.public().fingerprint,
+            ObjectType::Envelope,
+        );
+        assert_eq!(restored.expose(), k1_before.expose(), "lost {lost}");
+    }
+}
+
+#[test]
+fn losing_the_marker_too_still_blocks_a_second_genesis_while_a_key_is_held() {
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    enable(&custody, 1);
+    store.delete_secret(&account("genesis")).unwrap();
+    assert_eq!(
+        custody.prepare_genesis([0xa1; 16], 2).unwrap_err(),
+        vault_crypto::sync_custody::EnableError::AlreadyEnabled
+    );
+}
+
+#[test]
+fn a_different_genesis_cannot_be_installed_over_the_marker() {
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    let first = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+    let second = custody.prepare_genesis([0xa1; 16], 1).unwrap();
+    custody.install_genesis(&first).unwrap();
+    // Even with K_1 and S gone, the marker names the first genesis.
+    store.delete_secret(&account("ke.1")).unwrap();
+    store.delete_secret(&account("s")).unwrap();
+    assert_eq!(
+        custody.install_genesis(&second).unwrap_err(),
+        vault_crypto::sync_custody::EnableError::Custody(CustodyError::Conflict(
+            Item::GenesisMarker
+        ))
+    );
+    assert_eq!(
+        store.public_tag(&account("ke.1")).unwrap_err(),
+        SecretError::NotFound
+    );
+    custody.install_genesis(&first).unwrap();
+}
+
+// ---- F2: the RFC 9180 A.1 vector, both ways ----------------------------------------------------------------
+
+#[test]
+fn the_rfc_9180_a1_vector_opens_and_reproduces_with_aes_128_gcm() {
+    use hpke::aead::AesGcm128;
+    use hpke::kdf::HkdfSha256;
+    use hpke::kem::X25519HkdfSha256;
+    use hpke::{
+        single_shot_open, single_shot_seal, Deserializable, OpModeR, OpModeS, Serializable,
+    };
+    use vault_crypto::sync_keyset::SeedRng;
+
+    let file: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/architecture/vectors/hpke-rfc9180-x25519-v1.json"
+    ))
+    .unwrap();
+    let vector = file["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["aead_id"].as_u64() == Some(1))
+        .expect("the A.1 entry");
+    let unhex = |name: &str, v: &serde_json::Value| -> Vec<u8> {
+        let text = v[name].as_str().unwrap();
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    };
+    let encryption = &vector["encryptions"][0];
+    let (info, aad) = (unhex("info", vector), unhex("aad", encryption));
+    let (ct, pt) = (unhex("ct", encryption), unhex("pt", encryption));
+    let private =
+        <X25519HkdfSha256 as hpke::Kem>::PrivateKey::from_bytes(&unhex("skRm", vector)).unwrap();
+    let encapped =
+        <X25519HkdfSha256 as hpke::Kem>::EncappedKey::from_bytes(&unhex("enc", vector)).unwrap();
+
+    // Open the published ciphertext with the published recipient key ...
+    let opened = single_shot_open::<AesGcm128, HkdfSha256, X25519HkdfSha256>(
+        &OpModeR::Base,
+        &private,
+        &encapped,
+        &info,
+        &ct,
+        &aad,
+    )
+    .expect("A.1 opens");
+    assert_eq!(opened, pt);
+    // ... and a one-byte change to the ciphertext, the aad or the info does not.
+    for flip in 0..3 {
+        let (mut c, mut a, mut i) = (ct.clone(), aad.clone(), info.clone());
+        match flip {
+            0 => c[0] ^= 1,
+            1 => a[0] ^= 1,
+            _ => i[0] ^= 1,
+        }
+        assert!(
+            single_shot_open::<AesGcm128, HkdfSha256, X25519HkdfSha256>(
+                &OpModeR::Base,
+                &private,
+                &encapped,
+                &i,
+                &c,
+                &a
+            )
+            .is_err(),
+            "flip {flip}"
+        );
+    }
+    // Reproduce enc and the ciphertext from the published ephemeral seed, through the same
+    // one-shot generator production uses.
+    let public =
+        <X25519HkdfSha256 as hpke::Kem>::PublicKey::from_bytes(&unhex("pkRm", vector)).unwrap();
+    let seed = vault_crypto::SecretBytes::<32>::from_slice(&unhex("ikmE", vector)).unwrap();
+    let mut rng = SeedRng::new(&seed);
+    let (enc, sealed) = single_shot_seal::<AesGcm128, HkdfSha256, X25519HkdfSha256, _>(
+        &OpModeS::Base,
+        &public,
+        &info,
+        &pt,
+        &aad,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(enc.to_bytes().as_slice(), unhex("enc", vector).as_slice());
+    assert_eq!(sealed, ct);
 }

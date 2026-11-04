@@ -11,6 +11,7 @@
 //! | `<vault_id>.kem` | the device's X25519 private key (32 bytes) | its X25519 public key |
 //! | `<vault_id>.ke.<epoch>` | `K_e` of that key epoch (32 bytes) | its commitment (`epoch_key_commitment`) |
 //! | `<vault_id>.s` | the tag secret `S` (32 bytes) | its commitment (`tag_key_commitment`) |
+//! | `<vault_id>.genesis` | the id of the genesis epoch record this device installed | the same id |
 //!
 //! `<vault_id>` is the 32 lowercase hex digits of the vault id. Every item is stored with
 //! [`AccessPolicy::DeviceOnly`]: never synchronized, never restored to another device (two devices
@@ -70,6 +71,8 @@ pub enum Item {
     EpochKey(u64),
     /// The tag secret `S`.
     TagSecret,
+    /// The marker that this device installed a genesis: the id of the genesis epoch record.
+    GenesisMarker,
 }
 
 impl core::fmt::Display for Item {
@@ -79,6 +82,7 @@ impl core::fmt::Display for Item {
             Self::AgreementKey => f.write_str("the device agreement key"),
             Self::EpochKey(epoch) => write!(f, "the epoch {epoch} key"),
             Self::TagSecret => f.write_str("the tag secret"),
+            Self::GenesisMarker => f.write_str("the genesis marker"),
         }
     }
 }
@@ -161,6 +165,7 @@ impl<'a> SyncKeyCustody<'a> {
             Item::AgreementKey => format!("{vault}.kem"),
             Item::EpochKey(epoch) => format!("{vault}.ke.{epoch}"),
             Item::TagSecret => format!("{vault}.s"),
+            Item::GenesisMarker => format!("{vault}.genesis"),
         };
         SecretKey::new(SERVICE, &account).expect("a fixed service and a hex account are valid")
     }
@@ -215,35 +220,33 @@ impl<'a> SyncKeyCustody<'a> {
         Ok(present(Item::SigningKey)? && present(Item::AgreementKey)?)
     }
 
-    /// Store a freshly generated device's keys. Refuses to replace a complete pair: a device that
-    /// already holds both keys for the vault keeps them, because replacing them would change its
-    /// fingerprint under a chain that already names the old one.
-    ///
-    /// A **lone half** (one of the two items present, left by a store that failed between the two
-    /// writes and then failed to clean up) is not a pair and cannot sign or unseal anything, so it
-    /// is removed and the new pair written. Without that, such a device could never enable Sync
-    /// again.
+    /// Store a freshly generated device's keys. Refuses to replace **any** key that is already
+    /// there, a lone half included: a device that holds a key for the vault keeps it, because
+    /// replacing it would change the device's fingerprint under a chain that may already name the
+    /// old one. (Only [`Self::prepare_genesis`], for a vault this device has never published, may
+    /// replace a lone half it left behind itself.)
     ///
     /// # Errors
     /// [`CustodyError::AlreadyPresent`] or [`CustodyError::Store`]. If the second write fails the
     /// first is removed (best effort), so a failed call leaves no half of a pair behind.
     pub fn store_device_keys(&self, keys: &DeviceKeys) -> Result<(), CustodyError> {
-        let present = |item| match self.store.public_tag(&self.key(item)) {
+        for item in [Item::SigningKey, Item::AgreementKey] {
+            if self.holds(item)? {
+                return Err(CustodyError::AlreadyPresent(item));
+            }
+        }
+        self.write_device_keys(keys)
+    }
+
+    fn holds(&self, item: Item) -> Result<bool, CustodyError> {
+        match self.store.public_tag(&self.key(item)) {
             Ok(_) => Ok(true),
             Err(SecretError::NotFound) => Ok(false),
             Err(error) => Err(CustodyError::Store(error)),
-        };
-        let (signing, agreement) = (present(Item::SigningKey)?, present(Item::AgreementKey)?);
-        if signing && agreement {
-            return Err(CustodyError::AlreadyPresent(Item::SigningKey));
         }
-        for (item, held) in [(Item::SigningKey, signing), (Item::AgreementKey, agreement)] {
-            if held {
-                self.store
-                    .delete_secret(&self.key(item))
-                    .map_err(CustodyError::Store)?;
-            }
-        }
+    }
+
+    fn write_device_keys(&self, keys: &DeviceKeys) -> Result<(), CustodyError> {
         let public = keys.public();
         self.write(Item::SigningKey, keys.signing_secret(), &public.ed25519_pk)?;
         if let Err(error) = self.write(
@@ -258,67 +261,99 @@ impl<'a> SyncKeyCustody<'a> {
         Ok(())
     }
 
-    /// Enable Sync for the vault on this, the founding, device (AC: `K_e` and `S` are generated at
-    /// sync-enable and held in the secret store).
+    /// The first half of enabling Sync on this, the founding, device: make the device's keys if it
+    /// has none, and build and self-accept a genesis. **It writes neither `K_1` nor `S`.** The
+    /// records seal a fresh `K_1` and `S` that are not kept anywhere: they are recovered by
+    /// unsealing the records with the device's agreement key, which is the root (see the module
+    /// doc).
     ///
-    /// Generates the device's two keys, `K_1` and `S`, creates the genesis records, and installs
-    /// `K_1` and `S` **by accepting the device's own genesis record**, never from the values that
-    /// sealed it. Returns the records for the caller to publish; publishing them, persisting
-    /// them until they are published, and refusing a vault the service already knows (R39) are the
-    /// enable path's (`personal-cfo-1cltt.4`).
+    /// The order of enabling is: `prepare_genesis`, then the caller **persists the records**
+    /// (`personal-cfo-1cltt.4`: the outbox that holds them until they are published), then
+    /// [`Self::install_genesis`]. A crash before the records are persisted loses nothing that was
+    /// written, so the next `prepare_genesis` simply builds another genesis; a crash after they are
+    /// persisted and before the install is finished by installing the persisted records. At no
+    /// point can `K_1` and `S` be in the store with no record that carries them.
     ///
-    /// **Resumable.** If an earlier attempt failed part-way (a store write failed after the device
-    /// keys, `K_1` or `S` were stored), no record of it was ever returned, so nothing was published.
-    /// The retry reuses whatever that attempt left and generates only what is missing, so a failed
-    /// write never leaves a vault that can neither finish enabling nor be re-enabled. A lone half
-    /// of the device keys is replaced (see [`Self::store_device_keys`]). It is
-    /// [`EnableError::AlreadyEnabled`] only when `K_1` **and** `S` are both held: an enable that
-    /// completed has returned its records, and a second genesis with new ephemeral keys would be a
-    /// different genesis for the same vault.
+    /// A lone half of the device keys, which only an earlier unfinished `prepare_genesis` of this
+    /// device can have left, is replaced: nothing was ever published under it.
     ///
     /// # Errors
-    /// [`EnableError`].
-    pub fn enable_sync(
+    /// [`EnableError::AlreadyEnabled`] if `K_1` or `S` is already held (an install happened, so
+    /// the records were persisted first); otherwise [`EnableError`].
+    pub fn prepare_genesis(
         &self,
         device_id: [u8; 16],
         issued_at: i64,
     ) -> Result<GenesisRecords, EnableError> {
-        let epoch_key = self.unfinished_epoch_key()?;
-        let tag_secret = self.unfinished_tag_secret()?;
-        if epoch_key.is_some() && tag_secret.is_some() {
+        if self.holds(Item::GenesisMarker)?
+            || self.holds(Item::EpochKey(1))?
+            || self.holds(Item::TagSecret)?
+        {
             return Err(EnableError::AlreadyEnabled);
         }
         let keys = if self.has_device_keys()? {
             self.load_device_keys()?
         } else {
             let keys = DeviceKeys::generate().map_err(|_| BuildError::Rng)?;
-            self.store_device_keys(&keys)?;
+            for item in [Item::SigningKey, Item::AgreementKey] {
+                if self.holds(item)? {
+                    self.store
+                        .delete_secret(&self.key(item))
+                        .map_err(CustodyError::Store)?;
+                }
+            }
+            self.write_device_keys(&keys)?;
             keys
         };
-        let epoch_key = match epoch_key {
-            Some(key) => key,
-            None => fresh_epoch_key(self.vault_id, 1)?,
-        };
-        let tag_secret = match tag_secret {
-            Some(secret) => secret,
-            None => fresh_tag_secret()?,
-        };
-        let genesis = create_genesis_with(
+        let epoch_key = fresh_epoch_key(self.vault_id, 1)?;
+        let tag_secret = fresh_tag_secret()?;
+        Ok(create_genesis_with(
             self.vault_id,
             device_id,
             &keys,
             issued_at,
             &epoch_key,
             &tag_secret,
-        )?;
+        )?)
+    }
+
+    /// The second half of enabling: accept the (persisted) genesis records with this device's own
+    /// keys and install `K_1` and `S` from them, never from the values that sealed them. Idempotent:
+    /// installing records already installed writes nothing, so a crash part-way is finished by
+    /// calling it again with the same records. Records whose keys differ from what the store
+    /// already holds are a [`CustodyError::Conflict`].
+    ///
+    /// # Errors
+    /// [`EnableError`].
+    pub fn install_genesis(&self, genesis: &GenesisRecords) -> Result<(), EnableError> {
+        let keys = self.load_device_keys()?;
         let accepted = accept_records(
             &VerifiedState::empty(self.vault_id),
             &[&genesis.membership],
             &[&genesis.epoch],
             &keys,
         )?;
+        // The marker goes first, so any partial install already blocks `prepare_genesis`: from the
+        // moment a key could be in the store, a second genesis cannot be made.
+        let genesis_id: [u8; 32] = accepted
+            .installs
+            .first()
+            .map(|install| install.record_id)
+            .ok_or(CustodyError::Corrupt(Item::GenesisMarker))?;
+        match self.read(Item::GenesisMarker)? {
+            Some((held, _)) if held.expose() != &genesis_id => {
+                return Err(CustodyError::Conflict(Item::GenesisMarker).into());
+            }
+            Some(_) => {}
+            None => self.write(
+                Item::GenesisMarker,
+                &SecretBytes::<32>::from_slice(&genesis_id)
+                    .ok_or(CustodyError::Corrupt(Item::GenesisMarker))?,
+                &genesis_id,
+            )?,
+        }
         self.install(&accepted)?;
-        Ok(genesis)
+        Ok(())
     }
 
     /// Whether `K_e` of `key_epoch` is held, asked without authentication.
@@ -468,39 +503,5 @@ impl<'a> SyncKeyCustody<'a> {
         } else {
             Err(CustodyError::Corrupt(item))
         }
-    }
-
-    /// `K_1` as a failed, unfinished enable left it, if it did. No chain exists yet to check it
-    /// against; the item's own tag is the only check, which is enough because this key has never
-    /// left the device and is only ever reused by the same device's own retry.
-    fn unfinished_epoch_key(&self) -> Result<Option<EpochKey>, CustodyError> {
-        let item = Item::EpochKey(1);
-        let Some((secret, tag)) = self.read(item)? else {
-            return Ok(None);
-        };
-        Self::check_tag(item, &secret, &tag, epoch_key_commitment)?;
-        let commitment: [u8; 32] = tag
-            .as_bytes()
-            .try_into()
-            .map_err(|_| CustodyError::Corrupt(item))?;
-        EpochKey::from_verified(self.vault_id, 1, secret, &commitment)
-            .map(Some)
-            .map_err(|_| CustodyError::Corrupt(item))
-    }
-
-    /// `S` as a failed, unfinished enable left it, if it did (see [`Self::unfinished_epoch_key`]).
-    fn unfinished_tag_secret(&self) -> Result<Option<TagSecret>, CustodyError> {
-        let item = Item::TagSecret;
-        let Some((secret, tag)) = self.read(item)? else {
-            return Ok(None);
-        };
-        Self::check_tag(item, &secret, &tag, tag_key_commitment)?;
-        let commitment: [u8; 32] = tag
-            .as_bytes()
-            .try_into()
-            .map_err(|_| CustodyError::Corrupt(item))?;
-        TagSecret::from_verified(secret, &commitment)
-            .map(Some)
-            .map_err(|_| CustodyError::Corrupt(item))
     }
 }

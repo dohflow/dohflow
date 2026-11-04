@@ -1096,11 +1096,15 @@ form, and the two differ:
 | --- | --- | --- |
 | Sync epoch root `K_e` | 32 random bytes | One per key epoch; sealed only to enrolled devices; never used directly as an AEAD key; distinct from the vault DEK |
 | Tag secret `S` | 32 random bytes | **Non-rotating**, created at Sync genesis, sealed to each device together with `K_e` and re-sealed unchanged at every epoch. It is an equality-tag key, not a confidentiality key. |
-| Device signing key | Ed25519 | One per device; generated in platform-neutral Rust and wrapped at rest by the OS keystore |
-| Device agreement key | the suite's KEM key pair (X25519 in suite 1) | One per device, independent of the signing key |
+| Device signing key | Ed25519 | One per enrollment of a device in a vault; generated in platform-neutral Rust and wrapped at rest by the OS keystore |
+| Device agreement key | the suite's KEM key pair (X25519 in suite 1) | One per enrollment of a device in a vault, independent of the signing key |
 
 The two device keys are generated independently and are not derived from a
-common seed. Hardware P-256 keys are not protocol keys. Key material lives in
+common seed. A device holds one signing key and one agreement key per enrollment of
+it in a vault, never one pair shared across vaults: a shared pair would give every
+vault the same fingerprint, so two vaults' membership chains would be linkable and
+an enrollment's fingerprint would not be its own (no two enrollments may share a
+fingerprint, below). Hardware P-256 keys are not protocol keys. Key material lives in
 zeroizing protected buffers in Rust, is loaded only when needed, and **never
 crosses the IPC boundary** to the frontend.
 
