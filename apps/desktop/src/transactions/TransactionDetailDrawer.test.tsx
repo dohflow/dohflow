@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -53,6 +54,7 @@ const onSetNote = vi.fn();
 function renderDrawer(
   transaction: TransactionRowDto = txn(),
   onClose: () => void = () => {},
+  client?: QueryClient,
 ) {
   return renderWithClient(
     <TransactionDetailDrawer
@@ -67,6 +69,7 @@ function renderDrawer(
       onSetNote={onSetNote}
       onClose={onClose}
     />,
+    client,
   );
 }
 
@@ -489,5 +492,174 @@ describe("TransactionDetailDrawer", () => {
     expect(
       screen.queryByRole("region", { name: "Imported details" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("the attachments list: a failed read and an unknown outcome (4d8.59)", () => {
+  const READ_FAILED = "Could not load attachments.";
+  const ATTACH_UNKNOWN =
+    "Couldn’t confirm whether the document was attached. Check the list above before trying again.";
+  const REMOVE_UNKNOWN =
+    "Couldn’t confirm whether the document was removed. Check the list above before trying again.";
+  const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  function pickFile() {
+    const file = new File([new Uint8Array([1, 2, 3])], "statement.pdf", { type: "application/pdf" });
+    file.arrayBuffer = () => Promise.resolve(new Uint8Array([1, 2, 3]).buffer);
+    fireEvent.change(screen.getByLabelText(/choose a document/i), { target: { files: [file] } });
+  }
+
+  it("a first read that failed shows the error and one Retry, with no Loading…", async () => {
+    mocks.transactionAttachments.mockRejectedValue(new Error("host down"));
+    renderDrawer();
+    expect(await screen.findByRole("alert")).toHaveTextContent(READ_FAILED);
+    expect(screen.getAllByRole("button", { name: /retry/i })).toHaveLength(1);
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(screen.queryByText(/no documents attached/i)).toBeNull();
+  });
+
+  it("Retry reads Retrying… with the failure kept while it runs, then shows the list", async () => {
+    mocks.transactionAttachments.mockRejectedValueOnce(new Error("host down"));
+    let finish: (value: unknown) => void = () => {};
+    mocks.transactionAttachments.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    renderDrawer();
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const pending = await screen.findByRole("button", { name: "Retrying…" });
+    expect(pending).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(READ_FAILED);
+    expect(screen.queryByText("Loading…")).toBeNull();
+
+    await act(async () => finish(ok([doc()])));
+    expect(await screen.findByText("receipt.pdf")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  });
+
+  it("a second failure keeps the error and Retry", async () => {
+    mocks.transactionAttachments.mockRejectedValue(new Error("host down"));
+    renderDrawer();
+    await screen.findByRole("alert");
+    const reads = mocks.transactionAttachments.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.transactionAttachments.mock.calls.length).toBe(reads + 1));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(READ_FAILED);
+  });
+
+  it("a failed refresh over a cached list shows the error above the list, with one Retry", async () => {
+    const client = newClient();
+    mocks.transactionAttachments.mockResolvedValue(ok([doc()]));
+    renderDrawer(txn(), () => {}, client);
+    await screen.findByText("receipt.pdf");
+    mocks.transactionAttachments.mockRejectedValue(new Error("host down"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["attachments"] });
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(READ_FAILED);
+    expect(screen.getAllByRole("button", { name: /retry/i })).toHaveLength(1);
+    expect(screen.getByText("receipt.pdf")).toBeInTheDocument();
+  });
+
+  it("a thrown Remove is an unknown outcome: the message stays, the list is read again, and Remove waits for it", async () => {
+    mocks.transactionAttachments.mockResolvedValueOnce(ok([doc()]));
+    mocks.removeAttachment.mockRejectedValue(new Error("connection lost"));
+    renderDrawer();
+    const remove = await screen.findByRole("button", { name: /remove receipt\.pdf/i });
+    const reads = mocks.transactionAttachments.mock.calls.length;
+    let finish: (value: unknown) => void = () => {};
+    mocks.transactionAttachments.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    fireEvent.click(remove);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(REMOVE_UNKNOWN);
+    await waitFor(() => expect(mocks.transactionAttachments.mock.calls.length).toBe(reads + 1));
+    // The pending guard is not proof of a fresh list: Remove stays held until the read answers.
+    expect(remove).toBeDisabled();
+    await act(async () => finish(ok([])));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /remove receipt\.pdf/i })).toBeNull(),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(REMOVE_UNKNOWN);
+    expect(mocks.removeAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it("a thrown Attach is an unknown outcome: the message stays, the list is read again, Attach waits for it, nothing is retried", async () => {
+    mocks.transactionAttachments.mockResolvedValueOnce(ok([]));
+    mocks.attachDocument.mockRejectedValue(new Error("connection lost"));
+    renderDrawer();
+    await screen.findByText(/no documents attached/i);
+    const reads = mocks.transactionAttachments.mock.calls.length;
+    let finish: (value: unknown) => void = () => {};
+    mocks.transactionAttachments.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    pickFile();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(ATTACH_UNKNOWN);
+    await waitFor(() => expect(mocks.transactionAttachments.mock.calls.length).toBe(reads + 1));
+    expect(screen.getByRole("button", { name: /attach document/i })).toBeDisabled();
+    await act(async () => finish(ok([doc({ original_filename: "statement.pdf" })])));
+    expect(await screen.findByText("statement.pdf")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /attach document/i })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(ATTACH_UNKNOWN);
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("while a thrown Attach's list re-read is pending, the file input is disabled and a second pick sends nothing", async () => {
+    mocks.transactionAttachments.mockResolvedValueOnce(ok([]));
+    mocks.attachDocument.mockRejectedValue(new Error("connection lost"));
+    renderDrawer();
+    await screen.findByText(/no documents attached/i);
+    let finish: (value: unknown) => void = () => {};
+    mocks.transactionAttachments.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    pickFile();
+    expect(await screen.findByRole("alert")).toHaveTextContent(ATTACH_UNKNOWN);
+    const input = screen.getByLabelText(/choose a document/i);
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+
+    // A second pick reaches the real input anyway (the handler is driven directly): nothing is sent.
+    pickFile();
+    await act(async () => {});
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+
+    await act(async () => finish(ok([])));
+    await waitFor(() => expect(input).toBeEnabled());
+    // Released after settlement: a later pick is sent.
+    mocks.attachDocument.mockResolvedValue(ok(doc({ original_filename: "statement.pdf" })));
+    pickFile();
+    await waitFor(() => expect(mocks.attachDocument).toHaveBeenCalledTimes(2));
+  });
+
+  it("a second pick while the first Attach call is still in flight sends nothing", async () => {
+    mocks.transactionAttachments.mockResolvedValue(ok([]));
+    let finish: (value: unknown) => void = () => {};
+    mocks.attachDocument.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    renderDrawer();
+    await screen.findByText(/no documents attached/i);
+    pickFile();
+    await waitFor(() => expect(mocks.attachDocument).toHaveBeenCalledTimes(1));
+    pickFile();
+    await act(async () => {});
+    expect(mocks.attachDocument).toHaveBeenCalledTimes(1);
+    await act(async () => finish(ok(doc())));
+  });
+
+  it("a typed refusal stays a confirmed failure: its reason, no unknown-outcome message", async () => {
+    mocks.transactionAttachments.mockResolvedValue(ok([doc()]));
+    mocks.removeAttachment.mockResolvedValue({
+      status: "error",
+      error: { Validation: "That document is already gone." },
+    });
+    mocks.attachDocument.mockResolvedValue({
+      status: "error",
+      error: { Validation: "That file is too large." },
+    });
+    renderDrawer();
+    fireEvent.click(await screen.findByRole("button", { name: /remove receipt\.pdf/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("That document is already gone.");
+    pickFile();
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("That file is too large."),
+    );
+    expect(screen.queryByText(/couldn’t confirm/i)).toBeNull();
   });
 });
