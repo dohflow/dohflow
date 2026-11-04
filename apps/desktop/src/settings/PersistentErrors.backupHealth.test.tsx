@@ -288,6 +288,42 @@ describe("Vault health", () => {
     );
   });
 
+  it("a rebuild keeps focus off the page while the health re-read is still in flight, then hands it to Re-check", async () => {
+    mocks.vaultHealth.mockResolvedValueOnce(ok(health({ read_models_current: false, is_healthy: false })));
+    let finishReread!: (value: unknown) => void;
+    mocks.vaultHealth.mockReturnValueOnce(new Promise((resolve) => (finishReread = resolve)));
+    render();
+    const rebuild = await screen.findByRole("button", { name: "Rebuild data views" });
+    rebuild.focus();
+    fireEvent.click(rebuild);
+    await waitFor(() => expect(mocks.rebuildReadModels).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.vaultHealth).toHaveBeenCalledTimes(2));
+    // The re-read is held: the old drift is still on screen and Rebuild still has focus. When the
+    // re-read lands Rebuild goes, and focus must go on to Re-check rather than fall to the page.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Rebuild data views" }));
+    finishReread(ok(health()));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Rebuild data views" })).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Re-check" })),
+    );
+  });
+
+  it("a rebuild whose re-read still shows drift hands focus back to Rebuild", async () => {
+    const drifted = ok(health({ read_models_current: false, is_healthy: false }));
+    mocks.vaultHealth.mockResolvedValueOnce(drifted);
+    let finishReread!: (value: unknown) => void;
+    mocks.vaultHealth.mockReturnValueOnce(new Promise((resolve) => (finishReread = resolve)));
+    render();
+    const rebuild = await screen.findByRole("button", { name: "Rebuild data views" });
+    rebuild.focus();
+    fireEvent.click(rebuild);
+    await waitFor(() => expect(mocks.vaultHealth).toHaveBeenCalledTimes(2));
+    finishReread(drifted);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Rebuild data views" })),
+    );
+  });
+
   it("data-views drift keeps its message and its one Rebuild while collapsed, and a failed rebuild its error", async () => {
     mocks.vaultHealth.mockResolvedValue(ok(health({ read_models_current: false, is_healthy: false })));
     mocks.rebuildReadModels.mockResolvedValue(failed("The rebuild was interrupted."));
