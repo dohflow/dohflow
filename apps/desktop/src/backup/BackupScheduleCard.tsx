@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { useBuildInfo } from "@/settings/BuildBadge";
 import { PersistentNotice } from "@/settings/PersistentSlot";
+import { useAttemptCount, useReannounced } from "@/settings/attemptKey";
 import { useKeepFocusAcrossMove } from "@/settings/useKeepFocusAcrossMove";
 import { backupFolderHint } from "./backupFolderHint";
 import { systemBackupDisclosure } from "./systemBackupDisclosure";
@@ -54,6 +55,14 @@ export function BackupScheduleCard() {
   const [failure, setFailure] = useState<{ source: "picker" | "save" | "backup"; message: string } | null>(
     null,
   );
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [failureAttempt, nextFailureAttempt] = useAttemptCount();
+  const failureAlert = useReannounced(failure?.message ?? null, failureAttempt);
+  function fail(next: { source: "picker" | "save" | "backup"; message: string }) {
+    setFailure(next);
+    nextFailureAttempt();
+  }
   const [notice, setNotice] = useState<string | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
 
@@ -105,18 +114,20 @@ export function BackupScheduleCard() {
 
   async function chooseFolder() {
     picker.remember();
-    // An earlier picker error stays, with its Choose folder, until this try settles.
+    // An earlier picker error stays, with its Choose folder, until the picker has opened: once it
+    // has (whether or not a folder is chosen) the picker works and its error no longer applies.
     try {
       const selected = await open({
         title: "Choose a backup folder",
         directory: true,
         multiple: false,
       });
+      setFailure((current) => (current?.source === "picker" ? null : current));
       if (typeof selected === "string") {
         changeDraft({ destination: selected });
       }
     } catch {
-      setFailure({ source: "picker", message: "Could not open the folder picker." });
+      fail({ source: "picker", message: "Could not open the folder picker." });
     }
   }
 
@@ -138,7 +149,7 @@ export function BackupScheduleCard() {
       setDirty(false);
       setNotice("Backup settings saved.");
     } catch (cause) {
-      setFailure({
+      fail({
         source: "save",
         message: cause instanceof Error ? cause.message : "Could not save backup settings.",
       });
@@ -154,7 +165,7 @@ export function BackupScheduleCard() {
       setFailure(null);
       setNotice(`Backup created and verified at ${backup.destination}.`);
     } catch (cause) {
-      setFailure({
+      fail({
         source: "backup",
         message: cause instanceof Error ? cause.message : "Could not create a backup.",
       });
@@ -312,7 +323,7 @@ export function BackupScheduleCard() {
           )}
           {failure !== null && (
             <p role="alert" className="text-sm text-loss">
-              {failure.message}
+              {failureAlert}
             </p>
           )}
           {(pickerInSlot || saveInSlot || backUpInSlot) && (

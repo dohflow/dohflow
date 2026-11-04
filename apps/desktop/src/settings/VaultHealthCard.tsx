@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CircleCheck,
   CircleX,
@@ -21,6 +21,7 @@ import {
 import { describeIpcError } from "@/vault/useVault";
 import { cn } from "@/lib/utils";
 import { PersistentNotice } from "./PersistentSlot";
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { useVaultHealth } from "./useVaultHealth";
 
@@ -89,6 +90,22 @@ export function VaultHealthCard() {
     useVaultHealth();
   const [repairError, setRepairError] = useState<string | null>(null);
   const [repaired, setRepaired] = useState(false);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again. A Re-check pressed and settled with the read still failing counts as one (the
+  // first load settling does not).
+  const [repairAttempt, nextRepairAttempt] = useAttemptCount();
+  const [readAttempt, nextReadAttempt] = useAttemptCount();
+  const repairAlert = useReannounced(repairError, repairAttempt);
+  const readAlert = useReannounced(error, readAttempt);
+  const recheckPressed = useRef(false);
+  const wasChecking = useRef(false);
+  useEffect(() => {
+    if (wasChecking.current && !checking && recheckPressed.current) {
+      recheckPressed.current = false;
+      nextReadAttempt();
+    }
+    wasChecking.current = checking;
+  }, [checking, nextReadAttempt]);
 
   // A failed read puts Re-check in the section's persistent slot with the error; the data-views drift
   // puts Rebuild there with its message. Each button is rendered in one place only.
@@ -106,11 +123,16 @@ export function VaultHealthCard() {
 
   async function onRebuild() {
     rebuildFocus.remember();
-    setRepairError(null);
     setRepaired(false);
+    // An earlier repair error stays, with its Rebuild, until this try settles.
     const failure = await rebuild();
-    if (failure) setRepairError(describeIpcError(failure));
-    else setRepaired(true);
+    if (failure) {
+      setRepairError(describeIpcError(failure));
+      nextRepairAttempt();
+    } else {
+      setRepairError(null);
+      setRepaired(true);
+    }
   }
 
   const recheckButton = (
@@ -121,6 +143,7 @@ export function VaultHealthCard() {
       className="self-start"
       onClick={() => {
         recheck.remember();
+        recheckPressed.current = true;
         refresh();
       }}
       disabled={checking}
@@ -205,7 +228,7 @@ export function VaultHealthCard() {
           {error ? (
             <div className="flex flex-col gap-2">
               <p role="alert" className="text-sm text-loss">
-                {error}
+                {readAlert}
               </p>
               {recheckButton}
             </div>
@@ -229,7 +252,7 @@ export function VaultHealthCard() {
               {repaired && <p className="text-xs text-gain">Rebuilt.</p>}
               {repairError && (
                 <p role="alert" className="text-xs text-loss">
-                  {repairError}
+                  {repairAlert}
                 </p>
               )}
             </div>
