@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=28 -->
-<!-- vault-format: schema-version=65 -->
+<!-- vault-format: spec-version=29 -->
+<!-- vault-format: schema-version=66 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -82,7 +82,7 @@ or service-facing identifier.
 | `vault.db` | SQLCipher database, keyed with the raw DEK |
 | `vault.db.envelope` | plaintext sidecar (layout below) |
 | `blobs/` | encrypted attachment blobs under opaque storage IDs |
-| `vault.db.runner.lock` | advisory exclusive lock held while a vault is unlocked; a second opener fails with a typed vault-in-use error |
+| `vault.db.runner.lock` | advisory exclusive lock (the vault lease) held while a vault is unlocked, and across every step that renames or removes the vault's files with no worker running: startup rotation recovery, the rotation swap, delete, restore. A second opener fails with a typed vault-in-use error and touches no file. The OS releases it on close, exit or crash; a leftover file never blocks the next open |
 | `vault.db-wal`, `vault.db-shm`, `vault.db-journal` | SQLite side files: the WAL files while the vault is open, and a rollback journal if the database briefly uses that mode |
 | `vault.db.rekey`, `vault.db.rekey.tmp`, `vault.db.rekey-new`, `vault.db.envelope.rekey-new`, `vault.db.rekey-old` | transient files of an in-progress or interrupted key rotation: the journal (`preparing`, `prepared`, `committed`), its temp file, the re-encrypted copy, the new envelope and the old database |
 
@@ -272,7 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 28` (personal-cfo-bxsbz.1, schema version 65) adds the device-local Sync state:
+- `spec-version = 29` (personal-cfo-bxsbz.1, schema version 66) adds the device-local Sync state:
   the class-3 tables `sync_base`, `sync_outbox` and `outbox_queue` (inventory rows, all excluded
   from both formats) and two nullable `operation_log` columns, `applied_base_seq` (the server seq
   of the base the row was applied on; for a re-applied local row, the new base's seq) and
@@ -280,6 +280,20 @@ synthetic no-app recovery test before any such public claim.
   `created_at` they are device-local: outside the write set, and excluded from every cross-replica
   and snapshot comparison. No wire layout, write-set rule or vector changes; the append-only
   triggers are unchanged.
+- `spec-version = 28` (personal-cfo-0g528.1) adds the version 1 command `CommitImportedTransaction` and
+  retires `CommitStaged` and `SkipStaged` (they stay decodable and apply as before; nothing produces
+  them). The new command carries the MATERIALIZED import (transaction id, account, instant, signed
+  amount, merchant, description, secondary date, the category the source named as an id, and whether the
+  person forced it) and the logical id of the class-1b source record; it carries no staging id, storage
+  id or file digest, and apply reads no class-3 row. The dedupe and row checks run in a read-only
+  planner on the issuing device and travel as the command or as device-local bookkeeping; apply runs
+  none. The transaction id is a content id (tag `txn.import`) of (source batch id, row ordinal), the
+  provenance link and the committed dedupe decision are content ids (`import.provenance-link`,
+  `import.dedupe-decision`) of the transaction id, and the decision carries no staged id. A transaction
+  that already exists is left alone. Schema version 65 adds the class-3 column
+  `staged_transactions.row_ordinal` (numbered 1.. per batch in insertion order for rows staged
+  earlier). ADR 0073 Addendum L gives the disposition (Create). The version 1 payload fixtures gain one
+  file.
 - `spec-version = 27` (personal-cfo-v98vd, AC27) names the failure for an epoch record whose
   `membership_head` is neither installed nor in the same request: `EpochRecordMissing` (the converse
   of an add that no epoch record names), where the reference verifier and the vector
@@ -763,11 +777,12 @@ recorded on `personal-cfo-klr.4` (2026-10-18).
 The byte-level rules here are checked by a test-only reference implementation,
 `crates/vault-crypto/tests/sync_wire_vectors.rs`, which computes every vector in
 C.14 from the rules below and rejects the malformed inputs listed there. Ed25519
-signatures and HPKE sealing are **not** in that reference, because those
-primitives are not workspace dependencies yet: this part pins every byte that
-feeds them (signed bodies, HPKE `info`, AAD) and requires the implementing bead
-(`personal-cfo-1cltt`) to add the RFC 8032 and RFC 9180 known-answer tests listed
-in C.14.
+signatures and HPKE sealing are **not** in that reference, which has no signing or
+sealing code of its own: this part pins every byte that feeds them (signed bodies,
+HPKE `info`, AAD). The Rust implementation (`vault-crypto`: `sync_keys`,
+`sync_keyset`, `sync_records`, `sync_custody`) runs the RFC 8032 section 7.1 and the
+RFC 9180 known-answer tests listed in C.14, and checks that its `info`, `aad` and
+epoch header bytes equal the vectors here.
 
 ## C.1 Conventions
 
@@ -1106,11 +1121,15 @@ form, and the two differ:
 | --- | --- | --- |
 | Sync epoch root `K_e` | 32 random bytes | One per key epoch; sealed only to enrolled devices; never used directly as an AEAD key; distinct from the vault DEK |
 | Tag secret `S` | 32 random bytes | **Non-rotating**, created at Sync genesis, sealed to each device together with `K_e` and re-sealed unchanged at every epoch. It is an equality-tag key, not a confidentiality key. |
-| Device signing key | Ed25519 | One per device; generated in platform-neutral Rust and wrapped at rest by the OS keystore |
-| Device agreement key | the suite's KEM key pair (X25519 in suite 1) | One per device, independent of the signing key |
+| Device signing key | Ed25519 | One per enrollment of a device in a vault; generated in platform-neutral Rust and wrapped at rest by the OS keystore |
+| Device agreement key | the suite's KEM key pair (X25519 in suite 1) | One per enrollment of a device in a vault, independent of the signing key |
 
 The two device keys are generated independently and are not derived from a
-common seed. Hardware P-256 keys are not protocol keys. Key material lives in
+common seed. A device holds one signing key and one agreement key per enrollment of
+it in a vault, never one pair shared across vaults: a shared pair would give every
+vault the same fingerprint, so two vaults' membership chains would be linkable and
+an enrollment's fingerprint would not be its own (no two enrollments may share a
+fingerprint, below). Hardware P-256 keys are not protocol keys. Key material lives in
 zeroizing protected buffers in Rust, is loaded only when needed, and **never
 crosses the IPC boundary** to the frontend.
 
@@ -2263,8 +2282,8 @@ The vectors `aead_key_a_envelope` and `aead_key_b_envelope`, and
 **same** `K_e` and two device fingerprints: they differ, so two devices sealed the
 same epoch key by a grant never share an AEAD key or a nonce domain.
 
-The 199-byte HPKE `info` should be confirmed against the HPKE crate that
-`personal-cfo-1cltt` selects. The grant sample's `prev_epoch_id` is a declared
+The 199-byte HPKE `info` is confirmed against the HPKE crate that `personal-cfo-1cltt.2`
+selected (`hpke` 0.13.0; see the known-answer vectors file below). The grant sample's `prev_epoch_id` is a declared
 placeholder, so the epoch-chain link has no byte vector here; the implementing
 bead's real-hash tests cover it.
 
@@ -2310,6 +2329,18 @@ a changed artifact descriptor refused before encryption, end to end;
 cross-implementation canonical-JSON vectors for 64-bit integer strings, duplicate
 keys and lone surrogates; and the revocation-cutover simulator suite extended with
 the F5 retry-order case.
+
+`docs/architecture/vectors/hpke-rfc9180-x25519-v1.json` holds the RFC 9180 known-answer
+vectors for the key-set sealing suite. RFC 9180 Appendix A has no DHKEM(X25519, HKDF-SHA256)
+with AES-256-GCM entry (A.1 is AES-128-GCM), so the file vendors the two entries of the CFRG
+vector file (commit `5f503c5`, SHA-256 `61fc662f...3ede6`) with mode 0, KEM `0x0020`, KDF
+`0x0001` and AEAD `0x0001` (A.1) or `0x0002` (suite 1), keeping the sequence-0 encryption of
+each, with the provenance in the file. The Rust test opens the published ciphertext with the
+published recipient key and reproduces `enc` and the ciphertext from the published `ikmE`, both
+through the code that seals in production. The same test file seals and opens the 199-byte
+`hpke_info_recipient_b` of this part, which settles the note above that it should be
+confirmed against the HPKE crate. The RFC 8032 section 7.1 vectors (TEST 1 to 3) are in
+`crates/vault-crypto/tests/sync_records.rs`.
 
 ## Vector listing
 

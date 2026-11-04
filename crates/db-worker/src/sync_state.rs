@@ -1,6 +1,6 @@
 //! The device-local Sync state (personal-cfo-bxsbz.1; ADR 0074 decision 2, ADR 0073 section 4).
 //!
-//! Three class-3 tables (`sync_base`, `sync_outbox`, `outbox_queue`, migration 65) hold what a
+//! Three class-3 tables (`sync_base`, `sync_outbox`, `outbox_queue`, migration 66) hold what a
 //! rebase needs and a replica must never send: which commands are unpushed, which keys each one
 //! wrote, and which were queued for the user. Only the recording lives here; the base image, the
 //! rebase and the swap are later children of the bead.

@@ -56,12 +56,15 @@ deliberate row here, in the same change.
 | `apply/scenario_apply.rs` one promoted event per active scenario event (the count is base state) | keyed | `scenario-event` | scenario id, source event id |
 | `apply/scenario_cmds.rs` `apply_clone_scenario`, one per event id in the payload (the copied set is the payload's, not the base's) | ordinal | `scenario.clone-event` | |
 | `debt.rs` `apply_set_card_statement_balance` (upsert; the id is used only on insert) | keyed | `card-statement` | account id, cycle close |
-| `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (reads class-3 staging; see below) | keyed | `txn.commit-staged` | staged transaction id |
-| `apply/ingestion_cmds.rs` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
+| `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (RETIRED, never produced; kept so an old operation log applies as it did) | keyed | `txn.commit-staged` | staged transaction id |
+| `apply/ingestion_cmds.rs` retired `apply_commit_staged` and `apply_skip_staged` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
+| `apply/ingestion_cmds.rs` `apply_commit_imported_transaction` transaction | none | | carried in the payload: a content id `txn.import` of (source batch id, row ordinal), derived by the issuing device in `staged_import.rs` and never in apply |
+| `apply/ingestion_cmds.rs` `apply_commit_imported_transaction` committed dedupe decision | content | `import.dedupe-decision` | the transaction id, `committed` (independent of the command, so a re-delivery converges on one row) |
 | `apply/balance_cmds.rs` connector balance observation (insert branch of the upsert) | content | `balance-obs.connector` | account id, day (independent of the command: later commands update the row in place) |
 | `ensure_system_ledger_account` (`lib.rs`; from `apply` and the vault-creating transaction), only on a miss in the class-1 map | content | `system-ledger-account` | role, currency code (independent of the command; looked up first, so a legacy vault keeps its random ids; `personal-cfo-32fmp.3`) |
 | `seed_default_categories` (`lib.rs`), in the vault-creating transaction only, never reached from `apply` | content | `category.seed` | group name, or group name and leaf name (never recomputed to find a row: users rename and move seeded categories) |
-| `apply/ingestion_cmds.rs` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
+| `apply/ingestion_cmds.rs` retired `apply_commit_staged` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
+| `apply/ingestion_cmds.rs` `apply_commit_imported_transaction` provenance link | content | `import.provenance-link` | the transaction id, relationship |
 | `apply/household.rs` `SetHouseholdTimezone` audit row (class 3, written once per command: `INSERT OR IGNORE`) | keyed | `audit.household-timezone` | none (the command id is in every keyed id) |
 | `apply/recurring.rs` `apply_dismiss_recurring_suggestion` | none | | the suppression row has a natural key; the affected entity recorded with the command is the command id |
 
@@ -110,12 +113,6 @@ The split-line read orders by `(sort_order, id)`, so the line order never depend
 
 ## Known gaps
 
-* **`CommitStaged` is not replicable as a command.** It reads the device-local (class 3) staging
-  rows to decide what to commit, so its effect depends on state a replica does not have. Its ids
-  are keyed (never ordinals, never a count), but the command itself must be reshaped before Sync
-  ships by `personal-cfo-0g528` (SYNC-2c, import-family payload materialization), which blocks the
-  Sync client engine and genesis; that bead also re-keys these ids on payload-carried identity
-  (never a staged id, which does not cross the service boundary) and removes this row.
 * **SQLite's own clock and random values** are the only other nondeterminism source in SQL:
   `tests/id_mint_inventory.rs` also fails on `'now'`, `randomblob`, `CURRENT_TIMESTAMP` or
   `datetime(` in any SQL the engine runs, except migration 44's two `strftime('now')` stamps. They

@@ -438,6 +438,7 @@ fn stage_a_transaction_dated(
             description: None,
             imported_category: None,
             txn_fingerprint: fingerprint,
+            row_ordinal: 1,
         },
     )
     .unwrap();
@@ -5328,6 +5329,7 @@ fn imported_transaction_fields_returns_the_captured_source_columns() {
                 description: Some("Coffee"),
                 imported_category: None,
                 txn_fingerprint: "fp-imp",
+                row_ordinal: 1,
             },
         )
         .unwrap()
@@ -5446,6 +5448,7 @@ fn stage_with_imported_category(
             description: None,
             imported_category,
             txn_fingerprint: fingerprint,
+            row_ordinal: 1,
         },
     )
     .unwrap();
@@ -6344,6 +6347,7 @@ fn a_committed_import_shows_its_detail_in_the_transactions_list() {
                 description: Some("STARBUCKS STORE 123"),
                 imported_category: None,
                 txn_fingerprint: "fp-detail",
+                row_ordinal: 1,
             },
         )
         .unwrap()

@@ -513,7 +513,7 @@ reference_validation = "cursor names and op sequence references must be valid fo
 table = "dedupe_decisions"
 class = "4"
 owner_bead = "personal-cfo-5ymg8"
-note = "Current import decision writer is outside the bus, so this is a class-4 candidate; ADR 0074 and SYNC-2 decide routing so a dedupe choice follows the related history."
+note = "A committed decision is written by CommitImportedTransaction (no staged id, content-derived id); a flagged or skipped decision names a device-local staging row and is still written outside the bus by the staged-import worker methods, so this stays a class-4 candidate until personal-cfo-5ymg8.6 makes the decision a command; ADR 0074 and SYNC-2 decide routing so a dedupe choice follows the related history."
 
 [[table]]
 table = "balance_observations"

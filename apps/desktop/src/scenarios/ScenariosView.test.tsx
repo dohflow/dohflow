@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 
+import { queryKeys } from "@/lib/query";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { RevertPreviewDto, ScenarioDto } from "@/bindings";
@@ -215,6 +216,187 @@ describe("ScenariosView (personal-cfo-4d8.27.6.1 / .6.6)", () => {
         description: null,
       }),
     );
+  });
+});
+
+describe("a refused row action says so (personal-cfo-5ie.20)", () => {
+  const REASON = "That scenario can't be changed right now.";
+  const refusal = { status: "error", error: { Validation: REASON } } as const;
+
+  type Row = {
+    name: string;
+    arrange: () => void;
+    act: () => Promise<void>;
+    mock: () => ReturnType<typeof vi.fn>;
+  };
+  const rows: Row[] = [
+    {
+      name: "Archive",
+      arrange: () => {},
+      act: async () => {
+        fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+      },
+      mock: () => mocks.archiveScenario,
+    },
+    {
+      name: "Duplicate",
+      arrange: () => {},
+      act: async () => {
+        fireEvent.click(await screen.findByRole("button", { name: /duplicate maternity leave/i }));
+      },
+      mock: () => mocks.cloneScenario,
+    },
+    {
+      name: "Restore",
+      arrange: () => {
+        mocks.scenarioList.mockResolvedValue(
+          ok([scenario(), scenario({ id: "sce-9", name: "Old plan", status: "archived" })]),
+        );
+      },
+      act: async () => {
+        await screen.findByText("Maternity leave");
+        fireEvent.click(screen.getByRole("button", { name: /show 1 archived/i }));
+        fireEvent.click(screen.getByRole("button", { name: /restore old plan/i }));
+      },
+      mock: () => mocks.updateScenario,
+    },
+    {
+      name: "Expiry change",
+      arrange: () => {},
+      act: async () => {
+        const expiry = await screen.findByLabelText(/expiry for maternity leave/i);
+        fireEvent.change(expiry, { target: { value: "2026-12-31" } });
+        fireEvent.blur(expiry);
+      },
+      mock: () => mocks.setScenarioExpiry,
+    },
+  ];
+
+  describe.each(rows)("$name", (row) => {
+    it("shows the reason when the app refuses it, and releases the row", async () => {
+      row.arrange();
+      row.mock().mockResolvedValue(refusal);
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      await row.act();
+      await vi.waitFor(() => expect(row.mock()).toHaveBeenCalledTimes(1));
+      expect(await screen.findByRole("alert")).toHaveTextContent(REASON);
+      // Busy is released: the row's own actions are usable again.
+      await vi.waitFor(() =>
+        expect(screen.getByRole("button", { name: /^open maternity leave/i })).toBeEnabled(),
+      );
+      expect(screen.getByLabelText(/expiry for maternity leave/i)).toBeEnabled();
+      expect(screen.getByRole("button", { name: /duplicate maternity leave/i })).toBeEnabled();
+    });
+
+    it("shows no error when it succeeds", async () => {
+      row.arrange();
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      await row.act();
+      await vi.waitFor(() => expect(row.mock()).toHaveBeenCalledTimes(1));
+      await act(async () => {});
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("keeps today's message when the call itself throws, and releases the row", async () => {
+      row.arrange();
+      row.mock().mockRejectedValue(new Error("connection lost"));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      await row.act();
+      expect(await screen.findByRole("alert")).toHaveTextContent("That didn't work. Please try again.");
+      await vi.waitFor(() =>
+        expect(screen.getByRole("button", { name: /duplicate maternity leave/i })).toBeEnabled(),
+      );
+    });
+  });
+
+  it("a later success clears the earlier refusal", async () => {
+    mocks.archiveScenario.mockResolvedValueOnce(refusal);
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(REASON);
+    fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+    await vi.waitFor(() => expect(mocks.archiveScenario).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  const LOAD_SENTENCE = /couldn.t load your scenarios/i;
+
+  it("a refusal reads as the app's reason alone, never under the failed-load sentence", async () => {
+    mocks.archiveScenario.mockResolvedValue(refusal);
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(REASON);
+    expect(alert).not.toHaveTextContent(LOAD_SENTENCE);
+    expect(alert).not.toHaveTextContent(/unaffected/i);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("the create form's own messages are alone too, not under the failed-load sentence", async () => {
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /new scenario/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Give the scenario a name.");
+    expect(alert).not.toHaveTextContent(LOAD_SENTENCE);
+  });
+
+  it("a refused create is alone too, not under the failed-load sentence", async () => {
+    mocks.createScenario.mockResolvedValue({ status: "error", error: { Validation: "That name is taken." } });
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /new scenario/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Trip" } });
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("That name is taken.");
+    expect(alert).not.toHaveTextContent(LOAD_SENTENCE);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("a failed scenario read still shows the load sentence, and no action alert", async () => {
+    mocks.scenarioList.mockRejectedValue(new Error("db unavailable"));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(LOAD_SENTENCE);
+    expect(alert).toHaveTextContent(/your accounts, transactions and balances are unaffected/i);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("a refusal and a failed read together show both, each as its own alert", async () => {
+    mocks.archiveScenario.mockResolvedValue(refusal);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />, client);
+    fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(REASON);
+    mocks.scenarioList.mockRejectedValue(new Error("db unavailable"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.scenarios });
+    });
+    await vi.waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    const [first, second] = screen.getAllByRole("alert");
+    const texts = [first!.textContent ?? "", second!.textContent ?? ""];
+    expect(texts.filter((t) => LOAD_SENTENCE.test(t))).toHaveLength(1);
+    expect(texts.filter((t) => t.includes(REASON) && !LOAD_SENTENCE.test(t))).toHaveLength(1);
+  });
+
+  it("the deleted-but-applied Undo is locked while another row action is pending, and opens when it settles", async () => {
+    mocks.scenarioDeletedAppliedList.mockResolvedValue(
+      ok([scenario({ id: "sce-gone", name: "Old plan", applied_at: "2026-08-02T10:00:00Z" })]),
+    );
+    let settle: (value: unknown) => void = () => {};
+    mocks.archiveScenario.mockReturnValue(new Promise((resolve) => (settle = resolve)));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    const undo = await screen.findByRole("button", { name: /undo applying deleted scenario old plan/i });
+    expect(undo).toBeEnabled();
+
+    fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+    await vi.waitFor(() => expect(mocks.archiveScenario).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(undo).toBeDisabled());
+    fireEvent.click(undo);
+    expect(mocks.scenarioRevertPreview).not.toHaveBeenCalled();
+
+    await act(async () => settle(ok(null)));
+    await vi.waitFor(() => expect(undo).toBeEnabled());
   });
 });
 

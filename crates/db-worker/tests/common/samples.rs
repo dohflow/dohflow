@@ -387,6 +387,21 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "commit_imported_transaction",
+            WriteCommand::CommitImportedTransaction {
+                transaction_id: txn(24),
+                account_id: account(1),
+                source_record_id: SourceRecordId::from_uuid(u(18)),
+                occurred_at: instant(),
+                amount: usd(-1_299),
+                counterparty: Some("caf\u{e9} corner".into()),
+                memo: Some("CAFE CORNER #4".into()),
+                transaction_date: Some(date(2026, 10, 15)),
+                category_id: Some(category(25)),
+                forced: true,
+            },
+        ),
+        (
             "snooze_inbox_item",
             WriteCommand::SnoozeInboxItem {
                 item_id: u(23),

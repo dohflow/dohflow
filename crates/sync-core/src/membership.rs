@@ -44,11 +44,13 @@ pub const SEALED_KEYS_CIPHERTEXT_LEN: usize = 109;
 
 const MEMBERSHIP_LABEL: &str = "dohflow/sync-membership/v1";
 const EPOCH_LABEL: &str = "dohflow/sync-epoch-record/v1";
+const HPKE_INFO_LABEL: &str = "dohflow/sync-hpke-info/v1";
+const HPKE_AAD_LABEL: &str = "dohflow/sync-hpke-aad/v1";
 const FINGERPRINT_LABEL: &str = "dohflow/device-fpr/v1";
 /// A membership body is at most a label, fixed fields and a 32-byte KEM key: well under this.
 const MAX_MEMBERSHIP_BODY: usize = 2560;
-/// An epoch body: a header and at most 1024 recipients of at most 2,364 bytes each.
-const MAX_EPOCH_BODY: usize = 512 + MAX_RECIPIENTS * 2364;
+/// The longest epoch body: a header and at most 1024 recipients of at most 2,364 bytes each.
+pub const MAX_EPOCH_BODY: usize = 512 + MAX_RECIPIENTS * 2364;
 const SIGNATURE_LEN: usize = 64;
 
 /// A fingerprint of a device's keys (C.3): `SHA-256(label "dohflow/device-fpr/v1" ‖ u16 suite_id ‖
@@ -289,11 +291,8 @@ pub struct EpochBody {
 }
 
 impl EpochBody {
-    /// The body's canonical bytes.
-    ///
-    /// # Errors
-    /// A [`WireError`] for an over-long list or ciphertext.
-    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+    /// The header writer: every field before the recipient list, in order.
+    fn header_writer(&self) -> Writer {
         let mut w = Writer::with_label(EPOCH_LABEL);
         w.u16(PROTOCOL_VERSION)
             .u16(self.suite_id)
@@ -313,6 +312,63 @@ impl EpochBody {
             .fixed(&self.key_commitment_ke)
             .fixed(&self.key_commitment_s)
             .fixed(self.sealer_fingerprint.as_bytes());
+        w
+    }
+
+    /// The header bytes, everything before the recipient list (C.6). The sealed key sets bind
+    /// their hash, so a recipient entry cannot be moved into another record.
+    #[must_use]
+    pub fn header_bytes(&self) -> Vec<u8> {
+        self.header_writer().finish()
+    }
+
+    /// `epoch_header_hash = SHA-256(header bytes)` (C.6).
+    #[must_use]
+    pub fn header_hash(&self) -> [u8; 32] {
+        Sha256::digest(self.header_bytes()).into()
+    }
+
+    /// The HPKE `info` for sealing this record's key set to one recipient (C.6, F1):
+    /// `label "dohflow/sync-hpke-info/v1" ‖ u16 protocol_version ‖ u16 suite_id ‖ uuid vault_id ‖
+    /// u64 key_epoch ‖ uuid recipient_device_id ‖ fingerprint recipient_fingerprint ‖ fingerprint
+    /// sealer_fingerprint ‖ digest membership_head ‖ digest epoch_header_hash`. It depends on the
+    /// header only, never on the recipient list, so it is the same bytes whoever builds or checks
+    /// the record.
+    #[must_use]
+    pub fn hpke_info(
+        &self,
+        recipient_device_id: &[u8; 16],
+        recipient_fingerprint: &Fingerprint,
+    ) -> Vec<u8> {
+        let mut w = Writer::with_label(HPKE_INFO_LABEL);
+        w.u16(PROTOCOL_VERSION)
+            .u16(self.suite_id)
+            .fixed(&self.vault_id)
+            .u64(self.key_epoch)
+            .fixed(recipient_device_id)
+            .fixed(recipient_fingerprint.as_bytes())
+            .fixed(self.sealer_fingerprint.as_bytes())
+            .fixed(&self.membership_head)
+            .fixed(&self.header_hash());
+        w.finish()
+    }
+
+    /// The HPKE `aad` for one recipient (C.6, F1): `label "dohflow/sync-hpke-aad/v1" ‖ digest
+    /// epoch_header_hash ‖ fingerprint recipient_fingerprint`.
+    #[must_use]
+    pub fn hpke_aad(&self, recipient_fingerprint: &Fingerprint) -> Vec<u8> {
+        let mut w = Writer::with_label(HPKE_AAD_LABEL);
+        w.fixed(&self.header_hash())
+            .fixed(recipient_fingerprint.as_bytes());
+        w.finish()
+    }
+
+    /// The body's canonical bytes.
+    ///
+    /// # Errors
+    /// A [`WireError`] for an over-long list or ciphertext.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = self.header_writer();
         if self.recipients.len() > MAX_RECIPIENTS {
             return Err(WireError::TooLong);
         }
@@ -882,6 +938,35 @@ impl VerifiedState {
     #[must_use]
     pub fn head_version(&self) -> u64 {
         self.steps.len() as u64
+    }
+
+    /// The commitment to `K_e` that the verified chain holds for `key_epoch`, from the epoch
+    /// record(s) of that epoch, or `None` for an epoch the chain does not have. A device that
+    /// loads a stored key checks it against this, not against anything the store says about it.
+    #[must_use]
+    pub fn epoch_key_commitment(&self, key_epoch: u64) -> Option<[u8; 32]> {
+        self.epochs
+            .iter()
+            .find(|e| e.key_epoch == key_epoch)
+            .map(|e| e.key_commitment_ke)
+    }
+
+    /// The commitment to `S` that every epoch record of the verified chain repeats, or `None`
+    /// before the first epoch record.
+    #[must_use]
+    pub fn tag_key_commitment(&self) -> Option<[u8; 32]> {
+        self.key_commitment_s
+    }
+
+    /// The version (1-based position) of the membership record with this id, or `None` if the
+    /// chain does not hold it. An epoch record names its head by id; this is how a client turns
+    /// that into the version the authorization queries take.
+    #[must_use]
+    pub fn membership_version_of(&self, id: &[u8; 32]) -> Option<u64> {
+        self.steps
+            .iter()
+            .position(|step| &step.id == id)
+            .map(|index| index as u64 + 1)
     }
 
     /// The id of the newest epoch record (the anchor), if any.

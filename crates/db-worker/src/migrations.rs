@@ -2225,6 +2225,28 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // personal-cfo-0g528.1: the position of a staged transaction within its batch. The materialized
+    // import commit derives its ledger transaction id from (source batch, row ordinal) instead of
+    // the staged row's own id, so the id is the same on every device and a re-upload (a new batch)
+    // gets new ids. Staging is class 3 (scratch), so the column replicates nowhere. Rows staged
+    // before this migration are numbered 1.. per batch in insertion order (rowid), the order the
+    // staging paths wrote them; the staging paths number new rows the same way.
+    Migration {
+        version: 65,
+        name: "staged_transactions_row_ordinal",
+        up: "ALTER TABLE staged_transactions ADD COLUMN row_ordinal INTEGER;
+             UPDATE staged_transactions SET row_ordinal = (
+                 SELECT numbered.n FROM (
+                     SELECT st.id AS id,
+                            ROW_NUMBER() OVER (PARTITION BY sr.source_batch_id ORDER BY st.rowid) AS n
+                       FROM staged_transactions st
+                       JOIN source_records sr ON sr.id = st.source_record_id
+                 ) numbered
+                 WHERE numbered.id = staged_transactions.id);",
+        down: Some("ALTER TABLE staged_transactions DROP COLUMN row_ordinal;"),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
     // SYNC-1c local state (personal-cfo-bxsbz.1; ADR 0074 decision 2, ADR 0073 section 4). The
     // outbox, the queue of commands awaiting a user disposition and the record of the base image
     // are DEVICE-LOCAL class-3 tables: never replicated, never part of a snapshot or a write set.
@@ -2252,7 +2274,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // append-only triggers are unchanged, and both columns are excluded from every cross-replica
     // comparison (see `sync_state::DEVICE_LOCAL_OPERATION_LOG_COLUMNS`).
     Migration {
-        version: 65,
+        version: 66,
         name: "sync_local_state",
         up: "CREATE TABLE sync_base (
                  singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -3582,6 +3604,94 @@ mod tests {
         let up: Vec<String> = setting_rows(&conn).into_iter().map(|r| r.0).collect();
         assert!(up.contains(&"user.reporting_currency".to_owned()));
         assert!(!up.contains(&"reporting_currency".to_owned()));
+    }
+
+    /// A staged row under `batch` (a record of its own), inserted in call order.
+    fn plant_staged(conn: &Connection, batch: u8, n: u8) -> u8 {
+        let record = [batch, n];
+        conn.execute(
+            "INSERT OR IGNORE INTO source_batches
+                (id, source_type, status, created_at, updated_at)
+             VALUES (?1, 'csv', 'staged', 't', 't')",
+            [vec![batch]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO source_records
+                (id, source_batch_id, source_hash, normalized_json, created_at)
+             VALUES (?1, ?2, ?3, '{}', 't')",
+            rusqlite::params![record.to_vec(), vec![batch], format!("h{batch}{n}")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO staged_transactions
+                (id, source_record_id, posted_at, amount_minor, currency, txn_fingerprint,
+                 created_at)
+             VALUES (?1, ?1, '2026-06-01', -100, 'USD', ?2, 't')",
+            rusqlite::params![record.to_vec(), format!("fp{batch}{n}")],
+        )
+        .unwrap();
+        n
+    }
+
+    /// `(batch, n, row_ordinal)` for every staged row.
+    fn ordinals(conn: &Connection) -> Vec<(u8, u8, Option<i64>)> {
+        conn.prepare("SELECT id, row_ordinal FROM staged_transactions ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| {
+                let id: Vec<u8> = r.get(0)?;
+                Ok((id[0], id[1], r.get(1)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// 65 numbers the rows staged before it 1.. within their batch, in insertion order, whatever
+    /// order the batches interleave in.
+    #[test]
+    fn v65_numbers_existing_staged_rows_per_batch_in_insertion_order() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..64]).unwrap();
+        for (batch, n) in [(1, 1), (2, 1), (1, 2), (1, 3), (2, 2)] {
+            plant_staged(&conn, batch, n);
+        }
+
+        apply(&mut conn, &MIGRATIONS[64..65]).unwrap();
+
+        assert_eq!(
+            ordinals(&conn),
+            vec![
+                (1, 1, Some(1)),
+                (2, 1, Some(1)),
+                (1, 2, Some(2)),
+                (1, 3, Some(3)),
+                (2, 2, Some(2)),
+            ]
+        );
+    }
+
+    /// A vault with no staged rows migrates, and down removes the column so up numbers again.
+    #[test]
+    fn v65_down_drops_the_column_and_up_numbers_the_rows_again() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..65]).unwrap();
+        assert!(ordinals(&conn).is_empty());
+        plant_staged(&conn, 1, 1);
+
+        assert_eq!(migrate_down(&mut conn, 64).unwrap(), 1);
+        let has_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('staged_transactions')
+                  WHERE name = 'row_ordinal'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_column, 0);
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(ordinals(&conn), vec![(1, 1, Some(1))]);
     }
 
     fn hex_upper(bytes: &[u8]) -> String {

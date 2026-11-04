@@ -32,9 +32,13 @@ export type DraftKeySpec = {
   keys: () => readonly string[];
   /// EVERY field that is part of the draft's identity. A field missing here is a field nothing pins.
   fields: readonly DraftField[];
-  /// Where a typed refusal counts as a new draft (the convention for a refused write: nothing was
-  /// saved, so the next try is a new draft). `arrange` makes the NEXT send come back refused.
-  refusal?: { arrange: () => void };
+  /// What a typed refusal does to the draft. `arrange` makes the NEXT send come back refused.
+  /// `mode` is how the component treats it (FRONTEND section 8 allows both, because a refused write
+  /// stores no key host-side):
+  /// - `"new-draft"` (the default): nothing was saved, so the next try is a new draft with a new key;
+  /// - `"same-draft"`: the key is kept, so an unchanged send after the refusal reuses it, and a
+  ///   listed field changed afterwards still gives a new key.
+  refusal?: { arrange: () => void; mode?: "new-draft" | "same-draft" };
   /// Where a confirmed success closes the draft: the same figures sent again afterwards are a NEW
   /// draft and must carry a new key (the bug is a key kept after the write it belonged to succeeded,
   /// so a second, identical write replays the first). `arrange` makes the NEXT send succeed; the
@@ -75,6 +79,16 @@ export async function expectDraftKeyIdentity(spec: DraftKeySpec): Promise<void> 
     previousKey = next;
   }
 
+  // A component that keeps its key through a typed refusal is pinned before the fields run, so the
+  // first field changed after it shows that an edit still gives a new key.
+  if (spec.refusal?.mode === "same-draft") {
+    spec.refusal.arrange();
+    const refused = await sendOnce(spec);
+    expect(refused, `${spec.name}: the refused send is the same draft`).toBe(previousKey);
+    const next = await sendOnce(spec);
+    expect(next, `${spec.name}: the send after a refusal keeps the draft, so it reuses the key`).toBe(refused);
+  }
+
   // Changing ANY one field is a new draft, and none of the keys so far may come back.
   let previous = previousKey;
   for (const field of spec.fields) {
@@ -87,7 +101,7 @@ export async function expectDraftKeyIdentity(spec: DraftKeySpec): Promise<void> 
     expect(await sendOnce(spec), `${spec.name}: a retry after changing "${field.name}" reuses its key`).toBe(key);
   }
 
-  if (spec.refusal) {
+  if (spec.refusal && spec.refusal.mode !== "same-draft") {
     // The next send is refused. The draft is unchanged, so it still carries the previous key...
     spec.refusal.arrange();
     const refused = await sendOnce(spec);

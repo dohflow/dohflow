@@ -159,7 +159,12 @@ done
 #     case's plaintext bytes. The file is synthetic (built from the public C.14 sample envelope; no
 #     real value is in it) and is regenerated from `crates/sync-core/tests/check_envelope_vectors.rs`,
 #     which fails if the committed file drifts (personal-cfo-g3m.26 part 2).
-value_fixture_exceptions='docs/architecture/vectors/check-envelope-v1.json|crates/observability/src/lib.rs|crates/finance-kernel/tests/log_redaction.rs|crates/finance-kernel/tests/side_file_leak.rs|crates/db-worker/tests/payload_v1.rs|crates/db-worker/tests/fixtures/payload_v1/set_debt_terms.json'
+#   - docs/architecture/vectors/container-peek-v1.json — a container's lengths are big-endian
+#     u64 fields, so a small length is fourteen hex zeros and two digits: sixteen digits that are
+#     card-number-shaped by construction, in every case's prefix. The file is synthetic (built from
+#     public values by `crates/sync-core/tests/container_peek.rs`, which fails if the committed
+#     file drifts; personal-cfo-v98vd AC29).
+value_fixture_exceptions='docs/architecture/vectors/check-envelope-v1.json|docs/architecture/vectors/container-peek-v1.json|crates/observability/src/lib.rs|crates/finance-kernel/tests/log_redaction.rs|crates/finance-kernel/tests/side_file_leak.rs|crates/db-worker/tests/payload_v1.rs|crates/db-worker/tests/fixtures/payload_v1/set_debt_terms.json'
 
 check "SSN-shaped string" "$SSN_RE" "$value_fixture_exceptions"
 check "card-number-shaped string" "$CARD_RE" "$value_fixture_exceptions"

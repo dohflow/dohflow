@@ -210,7 +210,7 @@ fn the_new_log_columns_are_nullable_and_checked() {
                         operation_type, affected_entities, node_id, vault_schema_version,
                         hlc_timestamp, created_at, {column})
                      VALUES (zeroblob(16), zeroblob(16), 'user', 'u', 'k', 'test', zeroblob(1),
-                             zeroblob(16), 65, 1, '2026-11-04T00:00:00Z', {value})"
+                             zeroblob(16), 66, 1, '2026-11-04T00:00:00Z', {value})"
                 ),
                 [],
             )

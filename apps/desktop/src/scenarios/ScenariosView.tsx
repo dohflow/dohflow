@@ -27,7 +27,7 @@ import { RevertScenarioDialog, type RevertPlan } from "./RevertScenarioDialog";
 import { cn } from "@/lib/utils";
 import { SCENARIO_NAME_MAX, useScenarios } from "@/future-cash/useScenarios";
 import { useHouseholdTimezone } from "@/settings/useHouseholdTimezone";
-import { describeIpcError } from "@/vault/useVault";
+import { describeIpcError, isIpcError } from "@/vault/useVault";
 
 /// What a failed undo says. A typed refusal means the command ran and wrote nothing, so the dialog
 /// says so. That is proven in the db-worker, not assumed: `apply_command` runs the whole command, the
@@ -261,11 +261,9 @@ export function ScenariosView({
     setFormError(null);
     try {
       const result = await action();
-      // The mutations resolve to `IpcError | null` (or `{ id } | IpcError` for clone);
-      // an object carrying `kind` is the error shape.
-      if (result && typeof result === "object" && "kind" in result) {
-        setFormError(describeIpcError(result as unknown as IpcError));
-      }
+      // The mutations resolve to `IpcError | null` (or `{ id } | IpcError` for clone); an
+      // `IpcError` is recognized by the generated type's shape, and anything else is success.
+      if (isIpcError(result)) setFormError(describeIpcError(result));
     } catch {
       setFormError("That didn't work. Please try again.");
     } finally {
@@ -641,7 +639,7 @@ export function ScenariosView({
             </form>
           )}
 
-          {(error ?? formError) && (
+          {error && (
             // A scenario is a set of forecast ASSUMPTIONS, so a failed read here leaves
             // every account, transaction and balance untouched (personal-cfo-m1am, the
             // same distinction drawn for the transactions list in xu32 and the forecast in
@@ -652,7 +650,15 @@ export function ScenariosView({
                 are unaffected — scenarios are forecast assumptions, and only that read
                 failed.
               </span>{" "}
-              <span className="text-muted-foreground">({error ?? formError})</span>
+              <span className="text-muted-foreground">({error})</span>
+            </p>
+          )}
+          {formError && (
+            // What a form or a row action reported, in its own words and alone: a refused Archive is
+            // not a failed read, so it must not sit under the load sentence above, which says only
+            // the read failed.
+            <p role="alert" className="text-sm text-loss">
+              {formError}
             </p>
           )}
 
