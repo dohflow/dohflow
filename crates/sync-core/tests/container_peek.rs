@@ -22,14 +22,6 @@ use sync_core::header::{
 const VECTORS: &str = include_str!("../../../docs/architecture/vectors/container-peek-v1.json");
 const VECTORS_PATH: &str = "../../docs/architecture/vectors/container-peek-v1.json";
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
-const VECTOR_FILES: [&str; 6] = [
-    include_str!("../../../docs/architecture/vectors/check-envelope-v1.json"),
-    include_str!("../../../docs/architecture/vectors/envelope-invalid-v1.json"),
-    include_str!("../../../docs/architecture/vectors/membership-chain-v1.json"),
-    include_str!("../../../docs/architecture/vectors/sync-service-snapshot-parts-v1.json"),
-    include_str!("../../../docs/architecture/vectors/sync-service-void-v1.json"),
-    include_str!("../../../docs/architecture/vectors/void-honor-v1.json"),
-];
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -178,6 +170,13 @@ fn all_cases() -> Vec<Case> {
             description: "A container of no bytes is truncated, not a request for more.",
             prefix: Vec::new(),
             total_len: 0,
+            expect: json!({ "error": "Truncated" }),
+        },
+        Case {
+            name: "total_len_cannot_hold_the_ciphertext_length",
+            description: "The header is in hand and decodes, the prefix is shorter than the total, and the total ends before the eight-byte ciphertext length could: the container is truncated, so this is an error and not a request for more bytes.",
+            prefix: container[..10 + hl + 2].to_vec(),
+            total_len: (10 + hl + 5) as u64,
             expect: json!({ "error": "Truncated" }),
         },
         Case {
@@ -356,8 +355,25 @@ fn vector_containers() -> Vec<Vec<u8>> {
         }
     }
     let mut out = Vec::new();
-    for file in VECTOR_FILES {
-        walk(&serde_json::from_str::<Value>(file).unwrap(), &mut out);
+    // Every JSON file in the vectors directory, so a future vector file joins the agreement test
+    // without anyone remembering to list it. This file's own prefixes are not whole containers.
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/architecture/vectors");
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+        .filter(|path| !path.ends_with("container-peek-v1.json"))
+        .collect();
+    files.sort();
+    assert!(
+        files.len() >= 6,
+        "the vectors directory has {} files",
+        files.len()
+    );
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
+        walk(&serde_json::from_str::<Value>(&text).unwrap(), &mut out);
     }
     for part in SPEC.split("<!-- sync-vector: ").skip(1) {
         if let Some(value) = part.split("-->").next().and_then(|s| s.split_once('=')) {
@@ -475,4 +491,24 @@ fn a_short_prefix_names_exactly_the_bytes_that_decide_it() {
         }
     }
     assert!(peek_container(&container[..frame_end], container.len() as u64).is_ok());
+}
+
+#[test]
+fn parse_container_names_a_wrong_magic_as_soon_as_a_wrong_byte_is_present() {
+    // A whole input shorter than the magic: a byte that cannot start "DFSY" is BadMagic, and a
+    // good start that simply ends is Truncated (the frame reader judges the bytes it has).
+    for bytes in [&b"X"[..], b"DX", b"DFX", b"XYZ"] {
+        assert_eq!(
+            parse_container(bytes).err(),
+            Some(WireError::BadMagic),
+            "{bytes:?}"
+        );
+    }
+    for bytes in [&b""[..], b"D", b"DF", b"DFS"] {
+        assert_eq!(
+            parse_container(bytes).err(),
+            Some(WireError::Truncated),
+            "{bytes:?}"
+        );
+    }
 }

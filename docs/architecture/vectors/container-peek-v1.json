@@ -92,6 +92,15 @@
       "total_len": "0"
     },
     {
+      "description": "The header is in hand and decodes, the prefix is shorter than the total, and the total ends before the eight-byte ciphertext length could: the container is truncated, so this is an error and not a request for more bytes.",
+      "expect": {
+        "error": "Truncated"
+      },
+      "name": "total_len_cannot_hold_the_ciphertext_length",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000",
+      "total_len": "210"
+    },
+    {
       "description": "The first ten bytes are in hand, the header is not: the answer is that more is needed, and how much (the header, then the eight-byte ciphertext length).",
       "expect": {
         "prefix_too_short": {
