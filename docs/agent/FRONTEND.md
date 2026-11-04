@@ -430,6 +430,11 @@ How to use it:
   collapsed and must come from real data.
 - Put the error, its complete remedy and the one relevant action in `persistent`. It renders once,
   outside the hidden body, and is never collapsed away. Keep exactly one active retry.
+  On the Settings page a card does this with `PersistentNotice` (`settings/PersistentSlot.tsx`): it
+  portals the card's error, remedy and recovery action into its `SettingsSection`'s slot while the
+  card's state and form stay mounted. While the error shows, that action is rendered only in the slot
+  (never also in the body), keeps its accessible name while busy, and hands focus over when it moves
+  (`useKeepFocusAcrossMove`).
 - The body stays mounted when collapsed (`hidden` and `inert`), so drafts survive; do not unmount
   it to collapse. Collapse never submits, resets or cancels work.
 - A component that owns a destructive confirmation calls `usePinDisclosures(active)` with `active`
