@@ -9,7 +9,7 @@
 table = "operation_log"
 class = "1"
 owner_bead = "personal-cfo-0s0"
-note = "Canonical command history and accepted-envelope evidence; class-1 rows are ordered by the Sync tail and retained for replay provenance."
+note = "Canonical command history and accepted-envelope evidence; class-1 rows are ordered by the Sync tail and retained for replay provenance. The write-set hash never depends on it, and its created_at (the recording device wall clock), hlc_timestamp and node_id are DEVICE-LOCAL: excluded from every cross-replica and snapshot comparison (tests/replay_property.rs, tests/engine_pin.rs; personal-cfo-32fmp.4 AC2)."
 
 [[table]]
 table = "ledger_accounts"
