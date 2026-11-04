@@ -892,7 +892,15 @@ fn starting_assignment_rows_are_not_silently_dropped() {
 
 /// Words that mark a column as holding a credential or key material a person would not want copied
 /// into a base image or an export.
-const CREDENTIAL_WORDS: &[&str] = &["credential", "secret", "token", "password", "passphrase"];
+const CREDENTIAL_WORDS: &[&str] = &[
+    "credential",
+    "secret",
+    "token",
+    "password",
+    "passphrase",
+    "api_key",
+    "bearer",
+];
 
 #[test]
 fn secret_bearing_tables_are_exactly_the_credential_holders() {
