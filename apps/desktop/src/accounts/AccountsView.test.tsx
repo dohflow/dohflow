@@ -222,6 +222,49 @@ test("archiving a card does not explain a forecast change that will not happen",
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
 });
 
+test("a refused archive shows its reason and releases the button", async () => {
+  mocks.accountList.mockResolvedValue(
+    ok([account({ name: "Old checking", balance: money(0) })]),
+  );
+  mocks.archiveAccount.mockResolvedValue({
+    status: "error",
+    error: { Validation: "Cannot archive right now." },
+  });
+  renderWithClient(<AccountsView />);
+  fireEvent.click(await screen.findByRole("button", { name: /Archive Old checking/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Cannot archive right now.");
+  expect(screen.getByRole("button", { name: /Archive Old checking/i })).toBeEnabled();
+});
+
+test("a thrown archive is an unknown outcome, kept on screen, with the button released", async () => {
+  mocks.accountList.mockResolvedValue(
+    ok([account({ name: "Old checking", balance: money(0) })]),
+  );
+  mocks.archiveAccount.mockRejectedValue(new Error("connection lost"));
+  renderWithClient(<AccountsView />);
+  fireEvent.click(await screen.findByRole("button", { name: /Archive Old checking/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Couldn’t confirm whether the account was archived. Check your accounts before trying again.",
+  );
+  expect(screen.getByRole("button", { name: /Archive Old checking/i })).toBeEnabled();
+});
+
+test("an archive in flight disables its row's Archive button until it answers", async () => {
+  mocks.accountList.mockResolvedValue(
+    ok([account({ name: "Old checking", balance: money(0) })]),
+  );
+  let finish: (value: unknown) => void = () => {};
+  mocks.archiveAccount.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+  renderWithClient(<AccountsView />);
+  const button = await screen.findByRole("button", { name: /Archive Old checking/i });
+  fireEvent.click(button);
+  await waitFor(() => expect(button).toBeDisabled());
+  fireEvent.click(button);
+  expect(mocks.archiveAccount).toHaveBeenCalledTimes(1);
+  await act(async () => finish({ status: "ok", data: { op_seq: 1, replayed: false } }));
+  await waitFor(() => expect(button).toBeEnabled());
+});
+
 test("a row's edit control opens the editor", async () => {
   renderWithClient(<AccountsView />);
   fireEvent.click(await screen.findByRole("button", { name: /Edit Checking/i }));

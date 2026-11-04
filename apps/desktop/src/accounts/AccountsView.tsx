@@ -29,7 +29,8 @@ import { formatMoney, signedAmountClass } from "@/lib/format";
 import { useBaseCurrency } from "@/settings/useBaseCurrency";
 import { useAccounts, useCashTiers } from "./useAccounts";
 import { SUBTYPE_LABELS } from "./subtypes";
-import { archiveMovesTheForecast } from "./archiveNotice";
+import { useArchiveFlow } from "./archiveFlow";
+import { ArchiveFailure, ArchiveImpactConfirm } from "./ArchiveFlowViews";
 import { BALANCE_SAVED_UNCONFIRMED } from "./balanceMessages";
 import { storedToShownMinor } from "./balanceSign";
 import { AccountDetailView, isSpendingRole } from "./AccountDetailView";
@@ -565,7 +566,7 @@ function AccountRow({
   batch: BatchBalanceDraft | null;
 }) {
   const { archiveAccount, reinstateAccount } = useAccounts();
-  const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const archiveFlow = useArchiveFlow(account, archiveAccount);
   // In batch mode an editable account's figure becomes an inline input; everything
   // else in the row (name, subtype, controls) stays put (personal-cfo-4d8.25.24).
   const editing = batch !== null && batch.isEditable(account);
@@ -650,13 +651,10 @@ function AccountRow({
         {account.active ? (
           <button
             type="button"
-            onClick={() => {
-              // A balance that anchors the forecast must not vanish from it silently
-              // (personal-cfo-tiqf, ADR 0056). A zero balance moves nothing, so it keeps
-              // the one-click path.
-              if (archiveMovesTheForecast(account)) setConfirmingArchive(true);
-              else void archiveAccount(account.id);
-            }}
+            // A balance that anchors the forecast must not vanish from it silently
+            // (personal-cfo-tiqf, ADR 0056); the shared flow asks first when it does.
+            onClick={archiveFlow.request}
+            disabled={archiveFlow.busy}
             aria-label={`Archive ${account.name}`}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
@@ -688,40 +686,8 @@ function AccountRow({
       )}
       {/* Sits UNDER the row rather than inside it: the row's own name is a button that
           opens the account, and a button inside a button is invalid HTML. */}
-      {confirmingArchive && (
-        <div
-          role="alertdialog"
-          aria-label={`Archive ${account.name}`}
-          className="mt-2 rounded-md border bg-muted/40 p-3 text-sm"
-        >
-          <p>
-            {`Archiving ${account.name} stops counting its ${money(
-              storedToShownMinor(account.cashflow_role, account.balance.minor_units),
-            )} toward your forecast, so your projected cash will drop by that much. Restoring the account brings it back.`}
-          </p>
-          <div className="mt-2 flex gap-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setConfirmingArchive(false);
-                void archiveAccount(account.id);
-              }}
-              aria-label={`Confirm archive ${account.name}`}
-            >
-              Archive
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              type="button"
-              onClick={() => setConfirmingArchive(false)}
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
+      <ArchiveImpactConfirm account={account} flow={archiveFlow} />
+      <ArchiveFailure flow={archiveFlow} />
     </li>
   );
 }

@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -21,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   listSourcePresets: vi.fn(),
   archiveAccount: vi.fn(),
   assertBalance: vi.fn(),
+  accountUnexplained: vi.fn(),
+  recordTransaction: vi.fn(),
   markReviewed: vi.fn(),
   markInboxReviewedBulk: vi.fn(),
   transactionRowsByIds: vi.fn(),
@@ -47,6 +50,8 @@ vi.mock("@/bindings", () => ({
     listSourcePresets: mocks.listSourcePresets,
     archiveAccount: mocks.archiveAccount,
     assertBalance: mocks.assertBalance,
+    accountUnexplained: mocks.accountUnexplained,
+    recordTransaction: mocks.recordTransaction,
     markReviewed: mocks.markReviewed,
     markInboxReviewedBulk: mocks.markInboxReviewedBulk,
     transactionRowsByIds: mocks.transactionRowsByIds,
@@ -258,6 +263,8 @@ beforeEach(() => {
   mocks.snoozeInboxItem.mockResolvedValue(mutationOk());
   mocks.dismissInboxItem.mockResolvedValue(mutationOk());
   mocks.archiveAccount.mockResolvedValue(mutationOk());
+  mocks.accountUnexplained.mockResolvedValue(ok(null));
+  mocks.recordTransaction.mockResolvedValue(mutationOk());
   mocks.markReviewed.mockResolvedValue(mutationOk());
   mocks.duplicateCandidates.mockResolvedValue(ok([]));
   mocks.categoryList.mockResolvedValue(ok([]));
@@ -460,19 +467,293 @@ it("renders a stale-balance nudge (r52x)", async () => {
   ).not.toBeInTheDocument();
 });
 
-it("archives the account from a stale-balance item (r52x)", async () => {
-  mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
-  renderWithClient(<MoneyInboxView />);
+const CHECKING_ID = "0190a000-0000-7000-8000-000000000001";
+const archiveButton = () => screen.getByRole("button", { name: /archive account/i });
+const staleRowAccount = (over: Partial<AccountViewDto> = {}) => account({ ...over });
 
-  await openRowDetails();
-  fireEvent.click(screen.getByRole("button", { name: /archive account/i }));
+describe("a stale-balance item's actions are honest (4d8.57)", () => {
+  async function openStale(accounts: AccountViewDto[] = [staleRowAccount()]) {
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockResolvedValue(ok(accounts));
+    renderWithClient(<MoneyInboxView />);
+    await openRowDetails();
+    await waitFor(() => expect(archiveButton()).toBeEnabled());
+  }
 
-  await waitFor(() =>
-    expect(mocks.archiveAccount).toHaveBeenCalledWith(
-      "0190a000-0000-7000-8000-000000000001",
-      expect.stringMatching(/.+/),
-    ),
-  );
+  it("archiving an account that anchors the forecast asks first, naming the effect, and archives on confirm", async () => {
+    await openStale();
+    fireEvent.click(archiveButton());
+    const dialog = await screen.findByRole("alertdialog", { name: /archive checking/i });
+    expect(dialog).toHaveTextContent(/stops counting its \$1,250\.00 toward your forecast/);
+    expect(mocks.archiveAccount).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /confirm archive checking/i }));
+    await waitFor(() =>
+      expect(mocks.archiveAccount).toHaveBeenCalledWith(CHECKING_ID, expect.stringMatching(/.+/)),
+    );
+  });
+
+  it("cancelling the question archives nothing", async () => {
+    await openStale();
+    fireEvent.click(archiveButton());
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(mocks.archiveAccount).not.toHaveBeenCalled();
+  });
+
+  it("an account that moves no forecast archives directly", async () => {
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    fireEvent.click(archiveButton());
+    await waitFor(() =>
+      expect(mocks.archiveAccount).toHaveBeenCalledWith(CHECKING_ID, expect.stringMatching(/.+/)),
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("a failed archive stays on screen after the row is collapsed, and busy is released", async () => {
+    mocks.archiveAccount.mockResolvedValue({ status: "error", error: { Validation: "Cannot archive right now." } });
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    fireEvent.click(archiveButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot archive right now.");
+    fireEvent.click(screen.getByRole("button", { name: /hide details/i }));
+    expect(screen.queryByRole("button", { name: /archive account/i })).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot archive right now.");
+    fireEvent.click(screen.getByRole("button", { name: /show details/i }));
+    expect(archiveButton()).toBeEnabled();
+    expect(archiveButton()).toHaveTextContent("Archive account");
+  });
+
+  it("a thrown archive is an unknown outcome, kept on screen, with busy released", async () => {
+    mocks.archiveAccount.mockRejectedValue(new Error("connection lost"));
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    fireEvent.click(archiveButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t confirm whether the account was archived. Check your accounts before trying again.",
+    );
+    expect(archiveButton()).toBeEnabled();
+  });
+
+  it("while the accounts load, Archive and Update balance are unavailable and the row says why", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockReturnValue(new Promise(() => {}));
+    renderWithClient(<MoneyInboxView />);
+    await openRowDetails();
+    expect(await screen.findByRole("status")).toHaveTextContent("Loading your accounts…");
+    expect(archiveButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeDisabled();
+  });
+
+  it("when the accounts read failed, Archive and Update balance are unavailable and the failure shows", async () => {
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    renderWithClient(<MoneyInboxView />);
+    await openRowDetails();
+    expect(await screen.findByText("Could not load accounts.")).toBeInTheDocument();
+    expect(archiveButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeDisabled();
+    // The reason is outside the collapsible body.
+    fireEvent.click(screen.getByRole("button", { name: /hide details/i }));
+    expect(screen.getByText("Could not load accounts.")).toBeInTheDocument();
+  });
+
+  it("a failed refresh over a cached accounts list outranks the cache: the failure shows and both actions are unavailable", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockResolvedValue(ok([staleRowAccount()]));
+    renderWithClient(<MoneyInboxView />, client);
+    await openRowDetails();
+    await waitFor(() => expect(archiveButton()).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeEnabled();
+
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["accounts"] });
+    });
+    expect(await screen.findByText("Could not load accounts.")).toBeInTheDocument();
+    expect(archiveButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Update balance" })).toBeDisabled();
+  });
+
+  it("a failed accounts refresh while the impact question is open holds Archive: cached data cannot authorize the write (R2)", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+    mocks.accountList.mockResolvedValue(ok([staleRowAccount()]));
+    renderWithClient(<MoneyInboxView />, client);
+    await openRowDetails();
+    await waitFor(() => expect(archiveButton()).toBeEnabled());
+    fireEvent.click(archiveButton());
+    const confirm = await screen.findByRole("button", { name: /^confirm archive checking$/i });
+    expect(confirm).toBeEnabled();
+
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["accounts"] });
+    });
+    expect(await screen.findByText("Could not load accounts.")).toBeInTheDocument();
+    // The question stays, Cancel stays, and the write is held.
+    expect(screen.getByRole("button", { name: /^confirm archive checking$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /^confirm archive checking$/i }));
+    expect(mocks.archiveAccount).not.toHaveBeenCalled();
+
+    // Once the accounts read works again, the question can be confirmed.
+    mocks.accountList.mockResolvedValue(ok([staleRowAccount()]));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["accounts"] });
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^confirm archive checking$/i })).toBeEnabled(),
+    );
+  });
+
+  it("the inbox is read again after an archive", async () => {
+    await openStale([staleRowAccount({ balance: { minor_units: 0, currency: "USD" } })]);
+    const reads = mocks.moneyInboxList.mock.calls.length;
+    fireEvent.click(archiveButton());
+    await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  describe("after a balance update", () => {
+    const outcome = (plug: number) =>
+      ok({
+        balance: { minor_units: 200_000, currency: "USD" },
+        unexplained: plug === 0 ? null : { minor_units: plug, currency: "USD" },
+      });
+
+    async function updateBalance(accounts: AccountViewDto[]) {
+      mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+      mocks.accountList.mockResolvedValue(ok(accounts));
+      renderWithClient(<MoneyInboxView />);
+      await screen.findByText("Checking");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Update balance" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Update balance" }));
+      fireEvent.click(await screen.findByRole("button", { name: /^set balance$/i }));
+    }
+
+    it("the inbox is read again, so the stale item can clear", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(0));
+      mocks.moneyInboxList.mockResolvedValue(ok([staleItem()]));
+      mocks.accountList.mockResolvedValue(ok([staleRowAccount()]));
+      renderWithClient(<MoneyInboxView />);
+      await screen.findByText("Checking");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Update balance" })).toBeEnabled());
+      const reads = mocks.moneyInboxList.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Update balance" }));
+      fireEvent.click(await screen.findByRole("button", { name: /^set balance$/i }));
+      await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mocks.moneyInboxList.mock.calls.length).toBeGreaterThan(reads));
+    });
+
+    it("Explain with transactions opens the reconcile modal in place for a spending role, with no second assertion", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(5_000));
+      await updateBalance([staleRowAccount()]);
+      fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+      expect(
+        await screen.findByText("Record the transactions that explain the difference."),
+      ).toBeInTheDocument();
+      expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+    });
+
+    describe("Explain with transactions reads what is actually left (4d8.57 R1)", () => {
+      const roles = [
+        ["a cash account", () => staleRowAccount(), 5_000],
+        [
+          "a credit account",
+          () =>
+            staleRowAccount({
+              cashflow_role: "credit_facility",
+              balance: { minor_units: -50_000, currency: "USD" },
+            }),
+          -5_000,
+        ],
+      ] as const;
+
+      async function explain(account: AccountViewDto, plug: number) {
+        mocks.assertBalance.mockResolvedValue(outcome(plug));
+        await updateBalance([account]);
+        fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+        await screen.findByText("Record the transactions that explain the difference.");
+      }
+      const reconciled = () => screen.queryByText(/reconciled/i);
+
+      it.each(roles)("%s: a nonzero residual shows what remains, keeps the entry path, and never says Reconciled", async (_n, make, plug) => {
+        mocks.accountUnexplained.mockResolvedValue(ok({ minor_units: plug, currency: "USD" }));
+        await explain(make(), plug);
+        expect(await screen.findByText(/\$50\.00/)).toBeInTheDocument();
+        expect(reconciled()).toBeNull();
+        expect(screen.getByRole("button", { name: /add & new/i })).toBeInTheDocument();
+        expect(mocks.accountUnexplained).toHaveBeenCalledTimes(1);
+      });
+
+      it("nothing is claimed while the residual is still being read", async () => {
+        mocks.accountUnexplained.mockReturnValue(new Promise(() => {}));
+        await explain(staleRowAccount(), 5_000);
+        expect(reconciled()).toBeNull();
+        expect(screen.getByText("—")).toBeInTheDocument();
+      });
+
+      it("a failed read claims nothing: its alert and Retry show, never Reconciled, and Retry reads again", async () => {
+        mocks.accountUnexplained.mockResolvedValueOnce({ status: "error", error: { kind: "Internal", message: "boom" } });
+        await explain(staleRowAccount(), 5_000);
+        expect(await screen.findByRole("alert")).toBeInTheDocument();
+        expect(reconciled()).toBeNull();
+        mocks.accountUnexplained.mockResolvedValue(ok({ minor_units: 5_000, currency: "USD" }));
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+        expect(await screen.findByText(/\$50\.00/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+        expect(reconciled()).toBeNull();
+      });
+
+      it("a residual of nothing, read from the host, is the only thing that says Reconciled", async () => {
+        mocks.accountUnexplained.mockResolvedValue(ok(null));
+        await explain(staleRowAccount(), 5_000);
+        expect(await screen.findByText(/reconciled/i)).toBeInTheDocument();
+      });
+
+      it("recording a transaction reads the residual again; Reconciled only once that read says nothing remains", async () => {
+        mocks.recordTransaction.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
+        mocks.accountUnexplained.mockResolvedValueOnce(ok({ minor_units: 5_000, currency: "USD" }));
+        await explain(staleRowAccount(), 5_000);
+        await screen.findByText(/\$50\.00/);
+        // While the read after the transaction is pending, the old figure is not shown as current.
+        let settle: (value: unknown) => void = () => {};
+        mocks.accountUnexplained.mockReturnValueOnce(new Promise((resolve) => (settle = resolve)));
+        fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "50" } });
+        fireEvent.click(screen.getByRole("button", { name: /add & new/i }));
+        await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(mocks.accountUnexplained).toHaveBeenCalledTimes(2));
+        expect(screen.getByText("—")).toBeInTheDocument();
+        expect(screen.queryByText(/\$50\.00/)).toBeNull();
+        // That read fails: nothing is claimed, even though 50 was entered.
+        await act(async () => settle({ status: "error", error: { kind: "Internal", message: "boom" } }));
+        await screen.findByRole("button", { name: "Retry" });
+        expect(reconciled()).toBeNull();
+        // The read then returns a smaller residual: that is what is shown, not the local count.
+        mocks.accountUnexplained.mockResolvedValueOnce(ok({ minor_units: 1_000, currency: "USD" }));
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+        expect(await screen.findByText(/\$10\.00/)).toBeInTheDocument();
+        expect(reconciled()).toBeNull();
+      });
+    });
+
+    it("a credit account gets the same hand-off", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(5_000));
+      await updateBalance([
+        staleRowAccount({ cashflow_role: "credit_facility", balance: { minor_units: -50_000, currency: "USD" } }),
+      ]);
+      fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+      expect(
+        await screen.findByText("Record the transactions that explain the difference."),
+      ).toBeInTheDocument();
+    });
+
+    it("any other role only closes", async () => {
+      mocks.assertBalance.mockResolvedValue(outcome(5_000));
+      await updateBalance([staleRowAccount({ cashflow_role: "investment_asset" })]);
+      fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.queryByText("Record the transactions that explain the difference.")).toBeNull();
+    });
+  });
 });
 
 it("snoozes an imported item for a week (ci71)", async () => {

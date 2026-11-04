@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Loader2, X } from "lucide-react";
 
-import type { AccountViewDto } from "@/bindings";
+import { commands, type AccountViewDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +14,7 @@ import {
   storedToShownMinor,
 } from "./balanceSign";
 import { mintIdempotencyKey } from "@/lib/idempotency";
+import { ipcQuery } from "@/lib/query";
 import { useTransactions } from "@/transactions/useTransactions";
 
 const SELECT_CLASS =
@@ -33,14 +35,44 @@ function minorUnitsToInput(minorUnits: number): string {
 /// it nudges the user to enter the postings they forgot: each one is a genuine
 /// `record_transaction` ledger entry — the reconciling transactions ARE the
 /// record. The remaining delta counts down as they're added.
+/// Shown when the residual cannot be read: nothing is claimed about what is left to explain.
+export const RESIDUAL_READ_FAILED = "Couldn’t check what is left to explain.";
+
 export function ReconcileBalanceModal({
   account,
   onClose,
+  verifyResidual = false,
 }: {
   account: AccountViewDto;
   onClose: () => void;
+  /// Take what is left to explain from the host's own figure (`account_unexplained`, read on open and
+  /// again after each transaction recorded) instead of from a target typed here. The gap is shown only
+  /// once it has been read; "Reconciled" only when that read says nothing remains; a read that is
+  /// missing, pending or failed claims nothing. Used when the modal opens straight after a balance
+  /// was set, where a target prefilled from the balance would read as already reconciled.
+  verifyResidual?: boolean;
 }) {
   const { addTransaction } = useTransactions();
+  // Never served from, or kept in, the cache: a remembered residual must not stand in for the read.
+  const residual = useQuery({
+    queryKey: ["account-unexplained", account.id],
+    queryFn: () =>
+      ipcQuery(commands.accountUnexplained(account.id), RESIDUAL_READ_FAILED),
+    enabled: verifyResidual,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const residualRead =
+    verifyResidual && residual.status === "success" && !residual.isFetching;
+  // A failed read stays on screen through its own retry (the query drops to pending meanwhile), so
+  // the alert and its Retry button do not vanish under a person who just pressed it.
+  const [residualFailure, setResidualFailure] = useState<string | null>(null);
+  useEffect(() => {
+    if (residual.status === "error") setResidualFailure(residual.error.message);
+    else if (residual.status === "success" && !residual.isFetching) setResidualFailure(null);
+  }, [residual.status, residual.isFetching, residual.error]);
   const currency = account.balance.currency;
   const role = account.cashflow_role;
   // Balance at open time; the live balance is `openingMinor + applied`. The
@@ -62,8 +94,13 @@ export function ReconcileBalanceModal({
   const targetEntered = dollarsToMinorUnits(target);
   const targetMinor =
     targetEntered === null ? null : enteredToStoredMinor(role, targetEntered);
-  const remainingMinor =
-    targetMinor === null ? null : targetMinor - openingMinor - applied;
+  const remainingMinor = verifyResidual
+    ? residualRead
+      ? (residual.data?.minor_units ?? 0)
+      : null
+    : targetMinor === null
+      ? null
+      : targetMinor - openingMinor - applied;
   const reconciled = remainingMinor === 0;
 
   // Default the direction to whatever closes the gap; the user can override it.
@@ -102,6 +139,8 @@ export function ReconcileBalanceModal({
     }
     setApplied((prev) => prev + signed);
     setAmount("");
+    // What is left is the host's figure, not a local count: read it again.
+    if (verifyResidual) void residual.refetch();
   }
 
   return (
@@ -141,6 +180,7 @@ export function ReconcileBalanceModal({
             id="reconcile-target"
             inputMode="decimal"
             value={target}
+            readOnly={verifyResidual}
             onChange={(event) => setTarget(event.target.value)}
           />
           <p className="text-xs text-muted-foreground">
@@ -208,6 +248,20 @@ export function ReconcileBalanceModal({
           </div>
         )}
 
+        {verifyResidual && residualFailure !== null && (
+          <div role="alert" className="flex items-center justify-between gap-2 text-sm text-loss">
+            <span>{residualFailure}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={residual.isFetching}
+              onClick={() => void residual.refetch()}
+            >
+              {residual.isFetching ? "Retrying…" : "Retry"}
+            </Button>
+          </div>
+        )}
         {error && (
           <p role="alert" className="text-sm text-loss">
             {error}
