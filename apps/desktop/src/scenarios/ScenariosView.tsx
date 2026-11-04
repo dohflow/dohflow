@@ -39,6 +39,14 @@ import { describeIpcError } from "@/vault/useVault";
 const UNDO_OUTCOME_UNKNOWN =
   "Couldn’t confirm whether the scenario was undone. Check the forecast before trying again.";
 
+/// Shown in the Apply or Delete dialog after the write threw: nobody knows whether it was carried out.
+/// The scenarios are read again behind the dialog, so what the screen shows afterwards is what is
+/// stored. A typed refusal is not this: it says what was refused, in its own words.
+const APPLY_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the scenario was applied. Close this dialog and check its status in Scenarios before applying it again.";
+const DELETE_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the scenario was deleted. Close this dialog and check Scenarios before trying to delete it again.";
+
 function refusedUndo(error: IpcError): string {
   const detail = describeIpcError(error).trim();
   const sentence = detail === "" ? "" : `${detail.charAt(0).toUpperCase()}${detail.slice(1)}${/[.!?]$/.test(detail) ? "" : "."} `;
@@ -191,6 +199,39 @@ export function ScenariosView({
   const visible = showArchived ? all : all.filter((s) => s.status !== "archived");
   const archivedCount = all.filter((s) => s.status === "archived").length;
 
+  // Deleting hides a scenario but leaves its apply in the forecast, so the way back stays here
+  // rather than needing a reinstate first. It is shown with the empty state too: deleting the last
+  // applied scenario leaves nothing to list, but its changes are still in the forecast.
+  const deletedAppliedSection =
+    deletedApplied.length > 0 ? (
+      <div className="flex flex-col gap-2 border-t pt-3">
+        <h3 className="text-sm font-medium">Deleted, but still applied</h3>
+        <p className="text-xs text-muted-foreground">
+          You deleted these after applying them, so their changes are still in your
+          forecast. Undo to take them out.
+        </p>
+        <ul className="flex flex-col gap-1">
+          {deletedApplied.map((deleted) => (
+            <li
+              key={deleted.id}
+              className="flex items-center justify-between gap-2 text-sm"
+            >
+              <span>{deleted.name}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                aria-label={`Undo applying deleted scenario ${deleted.name}`}
+                onClick={(event) => void startRevert(deleted, event.currentTarget)}
+              >
+                <Undo2 aria-hidden className="size-4" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
   async function onCreate(event: FormEvent) {
     event.preventDefault();
     if (!name.trim()) {
@@ -255,7 +296,9 @@ export function ScenariosView({
       await refreshScenarios();
       close();
     } catch {
-      setDialogError("That didn't work. Please try again.");
+      // The call itself failed, so the outcome is not known. The sentence says so, and the dialog
+      // stays locked until the scenarios have been read again.
+      setDialogError(kind === "apply" ? APPLY_OUTCOME_UNKNOWN : DELETE_OUTCOME_UNKNOWN);
       await refreshScenarios();
     } finally {
       setBusy(false);
@@ -620,12 +663,15 @@ export function ScenariosView({
             // slow load could prompt someone to create a scenario they already have.
             <p className="text-sm text-muted-foreground">Loading your scenarios…</p>
           ) : all.length === 0 ? (
-            <NoScenariosYet
-              onStart={(startingPoint) => {
-                setName(startingPoint);
-                setCreating(true);
-              }}
-            />
+            <>
+              <NoScenariosYet
+                onStart={(startingPoint) => {
+                  setName(startingPoint);
+                  setCreating(true);
+                }}
+              />
+              {deletedAppliedSection}
+            </>
           ) : (
             <>
               <DataTable
@@ -635,36 +681,7 @@ export function ScenariosView({
                 rowProps={appliedRowProps}
                 minWidth="min-w-[640px]"
               />
-              {deletedApplied.length > 0 && (
-                // Deleting hides a scenario but leaves its apply in the forecast, so the
-                // way back stays here rather than needing a reinstate first.
-                <div className="flex flex-col gap-2 border-t pt-3">
-                  <h3 className="text-sm font-medium">Deleted, but still applied</h3>
-                  <p className="text-xs text-muted-foreground">
-                    You deleted these after applying them, so their changes are still in your
-                    forecast. Undo to take them out.
-                  </p>
-                  <ul className="flex flex-col gap-1">
-                    {deletedApplied.map((deleted) => (
-                      <li
-                        key={deleted.id}
-                        className="flex items-center justify-between gap-2 text-sm"
-                      >
-                        <span>{deleted.name}</span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          aria-label={`Undo applying deleted scenario ${deleted.name}`}
-                          onClick={(event) => void startRevert(deleted, event.currentTarget)}
-                        >
-                          <Undo2 aria-hidden className="size-4" />
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              {deletedAppliedSection}
               {archivedCount > 0 && (
                 <button
                   type="button"

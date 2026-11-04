@@ -679,6 +679,55 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
     });
   });
 
+  describe("deleting the last applied scenario (personal-cfo-5ie.19, Studio R2)", () => {
+    const gone = () =>
+      scenario({ id: "sce-gone", name: "Old plan", applied_at: "2026-08-02T10:00:00Z" });
+
+    it("keeps Deleted, but still applied and its Undo next to the empty state", async () => {
+      mocks.scenarioList.mockResolvedValue(ok([]));
+      mocks.scenarioDeletedAppliedList.mockResolvedValue(ok([gone()]));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+
+      expect(await screen.findByText(/no scenarios yet/i)).toBeInTheDocument();
+      expect(await screen.findByText("Deleted, but still applied")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /undo applying deleted scenario old plan/i }),
+      ).toBeEnabled();
+    });
+
+    it("after the delete of the only scenario, the deleted-but-applied entry appears and Undo works", async () => {
+      mocks.scenarioList.mockResolvedValueOnce(
+        ok([scenario({ id: "sce-gone", name: "Old plan", applied_at: "2026-08-02T10:00:00Z" })]),
+      );
+      mocks.scenarioList.mockResolvedValue(ok([]));
+      mocks.scenarioDeletedAppliedList.mockResolvedValueOnce(ok([]));
+      mocks.scenarioDeletedAppliedList.mockResolvedValue(ok([gone()]));
+      mocks.revertScenarioApply.mockResolvedValue(ok(null));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /delete old plan/i }));
+      const dialog = await screen.findByRole("dialog", { name: /^Delete “Old plan”\?$/ });
+      fireEvent.click(within(dialog).getByRole("button", { name: /^delete scenario$/i }));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+      expect(await screen.findByText(/no scenarios yet/i)).toBeInTheDocument();
+      expect(await screen.findByText("Deleted, but still applied")).toBeInTheDocument();
+      fireEvent.click(
+        await screen.findByRole("button", { name: /undo applying deleted scenario old plan/i }),
+      );
+      await vi.waitFor(() =>
+        expect(mocks.revertScenarioApply).toHaveBeenCalledWith("sce-gone", []),
+      );
+    });
+
+    it("with nothing deleted-but-applied the empty state stands alone", async () => {
+      mocks.scenarioList.mockResolvedValue(ok([]));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      expect(await screen.findByText(/no scenarios yet/i)).toBeInTheDocument();
+      expect(screen.queryByText("Deleted, but still applied")).toBeNull();
+    });
+  });
+
   it("does not offer apply for a scenario with no changes", async () => {
     // Applying nothing would mark it applied and offer an undo that undoes nothing.
     mocks.scenarioList.mockResolvedValue(ok([scenario({ event_count: 0 })]));
@@ -1025,6 +1074,8 @@ describe("Apply and Delete lock while their write runs, and report in the dialog
       title: /^Apply “Maternity leave”\?$/,
       confirm: /^apply to my forecast$/i,
       write: () => mocks.applyScenario,
+      unknown:
+        "Couldn’t confirm whether the scenario was applied. Close this dialog and check its status in Scenarios before applying it again.",
     },
     {
       name: "Delete",
@@ -1032,6 +1083,8 @@ describe("Apply and Delete lock while their write runs, and report in the dialog
       title: /^Delete “Maternity leave”\?$/,
       confirm: /^delete scenario$/i,
       write: () => mocks.deleteScenario,
+      unknown:
+        "Couldn’t confirm whether the scenario was deleted. Close this dialog and check Scenarios before trying to delete it again.",
     },
   ];
 
@@ -1083,8 +1136,41 @@ describe("Apply and Delete lock while their write runs, and report in the dialog
       fireEvent.click(dialog.getByRole("button", { name: spec.confirm }));
       await vi.waitFor(() => expect(spec.write()).toHaveBeenCalledTimes(1));
       await act(async () => reject(new Error("connection lost")));
-      expect(await dialog.findByRole("alert")).toHaveTextContent("That didn't work. Please try again.");
+      expect(await dialog.findByRole("alert")).toHaveTextContent(spec.unknown);
+      expect(dialog.getByRole("alert")).not.toHaveTextContent("That didn't work");
       expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    it("a call that threw reads the scenarios again, and stays locked until that read settles", async () => {
+      let reject: (error: unknown) => void = () => {};
+      spec.write().mockReturnValue(new Promise((_, r) => (reject = r)));
+      renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: spec.opener }));
+      const dialog = within(await screen.findByRole("dialog", { name: spec.title }));
+      fireEvent.click(dialog.getByRole("button", { name: spec.confirm }));
+      await vi.waitFor(() => expect(spec.write()).toHaveBeenCalledTimes(1));
+
+      // The read that follows the throw is held, so the lock can be looked at while it runs.
+      const readsBefore = mocks.scenarioList.mock.calls.length;
+      let listed: (value: unknown) => void = () => {};
+      mocks.scenarioList.mockReturnValue(new Promise((resolve) => (listed = resolve)));
+      await act(async () => reject(new Error("connection lost")));
+
+      await vi.waitFor(() => expect(mocks.scenarioList.mock.calls.length).toBeGreaterThan(readsBefore));
+      expect(await dialog.findByRole("alert")).toHaveTextContent(spec.unknown);
+      expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(dialog.getByRole("button", { name: spec.confirm })).toBeDisabled();
+      fireEvent.keyDown(screen.getByRole("dialog", { name: spec.title }), { key: "Escape" });
+      fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+      fireEvent.pointerDown(document.body);
+      fireEvent.click(document.body);
+      await act(async () => {});
+      expect(screen.getByRole("dialog", { name: spec.title })).toBeInTheDocument();
+      expect(spec.write()).toHaveBeenCalledTimes(1);
+
+      await act(async () => listed(ok([scenario()])));
+      await vi.waitFor(() => expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled());
+      expect(dialog.getByRole("alert")).toHaveTextContent(spec.unknown);
     });
 
     it("the row's own actions are locked while it runs", async () => {
