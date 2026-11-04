@@ -370,6 +370,13 @@ or was not needed; a runner shortage in one pool costs nothing, `personal-cfo-md
 it is safe to require; adding that name to the branch
 ruleset is a repository-settings step for the owner, not something a PR does.
 
+The other required check that needs macOS gets the same treatment (`personal-cfo-md8h2.25`):
+`Desktop crate (non-desktop target check)` in `ci.yml` is a Linux verdict job in front of a Linux
+gate and two macOS pool jobs (arm64 and Intel), and runs the same `scripts/macos-pools-verdict.sh`
+that the iOS check does. Every other required check runs on Linux, so a macOS runner shortage
+cannot drop a pull request from the merge queue; `scripts/tests/desktop-nondesktop-ci.test.sh`
+audits that.
+
 That automatic check is the primary evidence, but agents still record their
 own gate runs, because CI proves the candidate SHA passes — it does not
 prove the implementation agent understood what it ran or the reviewer

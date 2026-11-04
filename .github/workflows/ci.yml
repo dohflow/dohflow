@@ -1401,19 +1401,44 @@ jobs:
   # `cargo check` of the crate with its default features for aarch64-apple-ios-sim fails on it
   # (shown with a throwaway change: "cannot find `__cmd__apply_update`"). A generic portability
   # check of public code: it names no product. It needs the Apple SDK (SQLCipher and OpenSSL
-  # compile from vendored C), so it runs on a macOS runner. Not a required check yet: whether it
-  # becomes one is the owner's call via 00-overseer.
-  desktop-nondesktop-check:
-    name: Desktop crate (non-desktop target check)
-    runs-on: macos-15
-    timeout-minutes: 45
-    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
-    env:
-      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+  # compile from vendored C), so it runs on macOS runners.
+  #
+  # A REQUIRED check (`Desktop crate (non-desktop target check)`), built to fail CLOSED and to
+  # survive a runner shortage (personal-cfo-md8h2.25, the same design as ios-kernel.yml's
+  # md8h2.24). Four jobs:
+  #
+  #   desktop-nondesktop-gate         a Linux job that decides whether the build is wanted;
+  #   desktop-nondesktop-build-arm64  the build on macos-15 (Apple Silicon);
+  #   desktop-nondesktop-build-intel  the same build on macos-15-intel;
+  #   desktop-nondesktop-check        a Linux verdict job that owns the required name and runs
+  #                                   scripts/macos-pools-verdict.sh, the verdict ios-kernel.yml
+  #                                   uses too.
+  #
+  # Why: a job that is never given a hosted macOS arm64 runner is cancelled by GitHub after
+  # about 15 minutes, and a required check that never ran dropped queued pull requests (#270,
+  # #275 and #279 on 2026-11-04). The verdict passes when the build succeeded on at least one
+  # pool and neither failed, or when it was not wanted and both pools were skipped; a real
+  # failure on either pool, a failed gate, or two builds that are not successes fail it. The
+  # decision to build lives in the gate, never in a step of the build: a job whose steps are
+  # skipped still reports Success, so a path filter inside the macOS job could turn the check
+  # green without a build.
+  #
+  # Separate jobs here rather than extra steps in ios-kernel.yml's pool jobs: this crate is its
+  # own Cargo workspace (its own lockfile and Tauri dependency set), only the one target is
+  # checked, and it is wanted on a different set of changes (a change under apps/desktop alone
+  # does not touch the kernel crates), so folding it in would make each required name wait for
+  # the other's work and let one failure fail both names. The cost is two more macOS runners on a
+  # pull request that touches the paths below; standard macOS runners are free for a public
+  # repository. The Intel label's retirement position is recorded in ios-kernel.yml.
+  desktop-nondesktop-gate:
+    name: Desktop crate gate (visibility and changed paths)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    outputs:
+      check: ${{ steps.decide.outputs.check }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          fetch-depth: 2
+        if: github.event_name == 'pull_request'
 
       # The desktop crate depends on crates/** by path, so a change there runs the check too.
       - name: Detect changed files
@@ -1428,20 +1453,105 @@ jobs:
               - 'crates/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
+              - 'scripts/macos-pools-verdict.sh'
+
+      - name: Decide whether the build runs
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          PRIVATE: ${{ github.event.repository.private }}
+          CODE_CHANGED: ${{ steps.filter.outputs.code }}
+        run: |
+          set -euo pipefail
+          check=false
+          case "$EVENT" in
+            workflow_dispatch)
+              check=true
+              ;;
+            pull_request)
+              if [ "$PRIVATE" = "false" ] && [ "$CODE_CHANGED" = "true" ]; then
+                check=true
+              fi
+              ;;
+            push | merge_group)
+              if [ "$PRIVATE" = "false" ]; then
+                check=true
+              fi
+              ;;
+          esac
+          echo "check=$check" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT check=$check"
+
+  desktop-nondesktop-build-arm64:
+    name: Desktop crate non-desktop build (macOS arm64)
+    needs: desktop-nondesktop-gate
+    if: needs.desktop-nondesktop-gate.outputs.check == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Add the non-desktop target
-        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: rustup target add aarch64-apple-ios-sim
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         with:
           workspaces: apps/desktop/src-tauri
-          key: nondesktop-check
+          key: nondesktop-check-arm64
 
       - name: cargo check, desktop crate, aarch64-apple-ios-sim (default features)
-        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: cargo check --locked --target aarch64-apple-ios-sim --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  desktop-nondesktop-build-intel:
+    name: Desktop crate non-desktop build (macOS intel)
+    needs: desktop-nondesktop-gate
+    if: needs.desktop-nondesktop-gate.outputs.check == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Add the non-desktop target
+        run: rustup target add aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri
+          key: nondesktop-check-intel
+
+      - name: cargo check, desktop crate, aarch64-apple-ios-sim (default features)
+        run: cargo check --locked --target aarch64-apple-ios-sim --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  # The required check: it is this job's name that the branch ruleset lists. The job id stays
+  # `desktop-nondesktop-check` so main-red-alert and main-red-resolve keep waiting for it: it
+  # fails when the gate or either build fails, so a real failure on main still raises the alert.
+  desktop-nondesktop-check:
+    name: Desktop crate (non-desktop target check)
+    needs: [desktop-nondesktop-gate, desktop-nondesktop-build-arm64, desktop-nondesktop-build-intel]
+    if: ${{ always() && github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read # names a cancelled build's cause from the run's jobs (diagnostic only)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_RESULT: ${{ needs.desktop-nondesktop-gate.result }}
+          BUILD_WANTED: ${{ needs.desktop-nondesktop-gate.outputs.check }}
+          ARM64_RESULT: ${{ needs.desktop-nondesktop-build-arm64.result }}
+          INTEL_RESULT: ${{ needs.desktop-nondesktop-build-intel.result }}
+          VERDICT_CHECK: Desktop crate non-desktop target check
+          VERDICT_BUILD: Desktop crate build
+          VERDICT_ARM64_JOB: Desktop crate non-desktop build (macOS arm64)
+          VERDICT_INTEL_JOB: Desktop crate non-desktop build (macOS intel)
+        run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"
 
   # NOTE: Building the macOS release binary (with capability/CSP hardening and a
   # launch smoke test) is owned by bead personal-cfo-rhci and will be added as a

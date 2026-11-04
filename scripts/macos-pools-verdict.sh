@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# The verdict of the iOS cross-compile check (personal-cfo-md8h2.7, md8h2.24).
-#
-# `iOS cross-compile (kernel crates)` is a small Linux job whose only work is to run this
-# script, so that the check fails CLOSED. GitHub reports a skipped job as Success, which
+# The verdict of a macOS build that runs on two runner pools (personal-cfo-md8h2.7, md8h2.24,
+# md8h2.25). Two required checks use it: `iOS cross-compile (kernel crates)` (ios-kernel.yml)
+# and the non-desktop target check of the desktop crate (ci.yml). Each is a small Linux job
+# whose only work is to run this script, so that the check fails CLOSED. GitHub reports a skipped job as Success, which
 # would let a failed `gate` job (a paths-filter or API error) skip the macOS build and
 # still turn a required check green. The macOS build runs on two runner pools in parallel
 # (arm64 and Intel), because a shortage of one pool leaves its job without a runner until
@@ -26,13 +26,18 @@
 # (the verdict job has `actions: read`) and is diagnostic only: it can never change the
 # verdict, and a failed lookup only says so.
 #
-# Usage: ios-kernel-ci-verdict.sh <gate result> <build wanted: true|false|""> \
+# Usage: macos-pools-verdict.sh <gate result> <build wanted: true|false|""> \
 #                                 <arm64 build result> <intel build result>
 # The results are the values of the `needs.<job>.result` expression: success, failure,
 # cancelled or skipped.
 #
+# Naming (all optional; the defaults are the iOS check's): VERDICT_CHECK, the check's name
+# in a failure message; VERDICT_BUILD, what the build is called in a message;
+# VERDICT_ARM64_JOB and VERDICT_INTEL_JOB, the two pool jobs' names, which the cancelled-build
+# lookup matches against the jobs API.
+#
 # Diagnostic inputs (all optional): GITHUB_REPOSITORY, GITHUB_RUN_ID and GH_TOKEN for the
-# jobs API; IOS_KERNEL_JOBS_JSON, a file holding the API's jobs response, which replaces
+# jobs API; VERDICT_JOBS_JSON, a file holding the API's jobs response, which replaces
 # the API call (the contract test uses it).
 
 set -euo pipefail
@@ -42,24 +47,26 @@ build_wanted="${2-}"
 arm64_result="${3:?arm64 build result}"
 intel_result="${4:?intel build result}"
 
-ARM64_JOB="iOS cross-compile (macOS build, arm64)"
-INTEL_JOB="iOS cross-compile (macOS build, intel)"
+check_label="${VERDICT_CHECK:-iOS cross-compile check}"
+build_label="${VERDICT_BUILD:-iOS build}"
+ARM64_JOB="${VERDICT_ARM64_JOB:-iOS cross-compile (macOS build, arm64)}"
+INTEL_JOB="${VERDICT_INTEL_JOB:-iOS cross-compile (macOS build, intel)}"
 
 fail() {
-  echo "::error::iOS cross-compile check failed closed: $1" >&2
+  echo "::error::${check_label} failed closed: $1" >&2
   exit 1
 }
 
 # Says how a cancelled build ended. Never fails the script.
 explain_cancelled() {
   local pool="$1" job_name="$2" jobs_json="" found=""
-  if [ -n "${IOS_KERNEL_JOBS_JSON-}" ]; then
-    jobs_json="$(cat "$IOS_KERNEL_JOBS_JSON" 2>/dev/null)" || jobs_json=""
+  if [ -n "${VERDICT_JOBS_JSON-}" ]; then
+    jobs_json="$(cat "$VERDICT_JOBS_JSON" 2>/dev/null)" || jobs_json=""
   elif [ -n "${GITHUB_REPOSITORY-}" ] && [ -n "${GITHUB_RUN_ID-}" ] && command -v gh >/dev/null 2>&1; then
     jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" 2>/dev/null)" || jobs_json=""
   fi
   if [ -z "$jobs_json" ] || ! command -v jq >/dev/null 2>&1; then
-    echo "iOS build ($pool) was cancelled; the jobs API could not be read, so it is unknown whether a runner was ever assigned."
+    echo "${build_label} ($pool) was cancelled; the jobs API could not be read, so it is unknown whether a runner was ever assigned."
     return 0
   fi
   # A job GitHub never found a runner for has no runner id and no steps.
@@ -70,11 +77,11 @@ explain_cancelled() {
         else "mid-run" end' <<<"$jobs_json" 2>/dev/null)" || found=""
   case "$found" in
     never-acquired)
-      echo "iOS build ($pool) was never acquired: no runner was assigned to it before GitHub cancelled the job (a runner shortage)." ;;
+      echo "${build_label} ($pool) was never acquired: no runner was assigned to it before GitHub cancelled the job (a runner shortage)." ;;
     mid-run)
-      echo "iOS build ($pool) was cancelled mid-run: a runner was assigned and the job started." ;;
+      echo "${build_label} ($pool) was cancelled mid-run: a runner was assigned and the job started." ;;
     *)
-      echo "iOS build ($pool) was cancelled; the jobs API has no record of the job, so it is unknown whether a runner was ever assigned." ;;
+      echo "${build_label} ($pool) was cancelled; the jobs API has no record of the job, so it is unknown whether a runner was ever assigned." ;;
   esac
 }
 
@@ -88,14 +95,14 @@ esac
 
 if [ "$build_wanted" = "false" ]; then
   { [ "$arm64_result" = "skipped" ] && [ "$intel_result" = "skipped" ]; } \
-    || fail "the iOS build was not needed but its results are arm64='$arm64_result' intel='$intel_result' (expected both 'skipped')"
-  echo "iOS build was not needed (no change it depends on) and was skipped."
+    || fail "the ${build_label} was not needed but its results are arm64='$arm64_result' intel='$intel_result' (expected both 'skipped')"
+  echo "${build_label} was not needed (no change it depends on) and was skipped."
   exit 0
 fi
 
 # The build was wanted. A failure on either pool fails the check, whatever the other did.
-[ "$arm64_result" != "failure" ] || fail "the iOS build failed on the arm64 pool (the Intel pool: '$intel_result')"
-[ "$intel_result" != "failure" ] || fail "the iOS build failed on the Intel pool (the arm64 pool: '$arm64_result')"
+[ "$arm64_result" != "failure" ] || fail "the ${build_label} failed on the arm64 pool (the Intel pool: '$intel_result')"
+[ "$intel_result" != "failure" ] || fail "the ${build_label} failed on the Intel pool (the arm64 pool: '$arm64_result')"
 
 built=()
 [ "$arm64_result" != "success" ] || built+=("arm64")
@@ -104,10 +111,10 @@ built=()
 if [ "${#built[@]}" -eq 0 ]; then
   [ "$arm64_result" != "cancelled" ] || explain_cancelled arm64 "$ARM64_JOB"
   [ "$intel_result" != "cancelled" ] || explain_cancelled intel "$INTEL_JOB"
-  fail "the iOS build was needed but neither pool built it (arm64: '$arm64_result', intel: '$intel_result')"
+  fail "the ${build_label} was needed but neither pool built it (arm64: '$arm64_result', intel: '$intel_result')"
 fi
 
-echo "iOS build was needed and succeeded on: ${built[*]}."
+echo "${build_label} was needed and succeeded on: ${built[*]}."
 [ "$arm64_result" != "cancelled" ] || explain_cancelled arm64 "$ARM64_JOB"
 [ "$intel_result" != "cancelled" ] || explain_cancelled intel "$INTEL_JOB"
 exit 0

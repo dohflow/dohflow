@@ -15,7 +15,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 WORKFLOW="$REPO_ROOT/.github/workflows/ios-kernel.yml"
 SCRIPT="$REPO_ROOT/scripts/ios-kernel-sim-tests.sh"
-VERDICT="$REPO_ROOT/scripts/ios-kernel-ci-verdict.sh"
+VERDICT="$REPO_ROOT/scripts/macos-pools-verdict.sh"
 
 for file in "$WORKFLOW" "$SCRIPT" "$VERDICT"; do
   if [ ! -f "$file" ]; then
@@ -132,7 +132,7 @@ require_text "the verdict job passes the gate result" "$WORKFLOW" 'GATE_RESULT: 
 require_text "the verdict job passes whether the build was wanted" "$WORKFLOW" 'BUILD_WANTED: ${{ needs.gate.outputs.check }}'
 require_text "the verdict job passes the arm64 result" "$WORKFLOW" 'ARM64_RESULT: ${{ needs.ios-build-arm64.result }}'
 require_text "the verdict job passes the Intel result" "$WORKFLOW" 'INTEL_RESULT: ${{ needs.ios-build-intel.result }}'
-require_text "the verdict job runs the verdict script" "$WORKFLOW" 'run: scripts/ios-kernel-ci-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"'
+require_text "the verdict job runs the verdict script" "$WORKFLOW" 'run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"'
 require_text "the verdict job may read the run's jobs" "$WORKFLOW" "actions: read"
 require_text "the verdict job hands the token to the jobs lookup" "$WORKFLOW" 'GH_TOKEN: ${{ github.token }}'
 CASES=$((CASES + 1))
@@ -226,17 +226,27 @@ cat >"$JOBS_DIR/mid-run.json" <<'JSON'
   {"name": "iOS cross-compile (macOS build, intel)", "status": "completed", "conclusion": "cancelled", "runner_id": 12, "runner_name": "GitHub Actions 12", "steps": [{"name": "Set up job"}, {"name": "cargo check"}]}
 ]}
 JSON
+cat >"$JOBS_DIR/both-never-acquired.json" <<'JSON'
+{"total_count": 2, "jobs": [
+  {"name": "iOS cross-compile (macOS build, arm64)", "status": "completed", "conclusion": "cancelled", "runner_id": null, "runner_name": null, "steps": []},
+  {"name": "iOS cross-compile (macOS build, intel)", "status": "completed", "conclusion": "cancelled", "runner_id": null, "runner_name": null, "steps": []}
+]}
+JSON
 echo '{"total_count": 0, "jobs": []}' >"$JOBS_DIR/empty.json"
 
 verdict_says() {
-  local label="$1" jobs_file="$2" expected="$3"
-  shift 3
+  local label="$1" jobs_file="$2" want_exit="$3" expected="$4"
+  shift 4
   CASES=$((CASES + 1))
   local out
   set +e
-  out="$(IOS_KERNEL_JOBS_JSON="$jobs_file" bash "$VERDICT" "$@" 2>&1)"
+  out="$(VERDICT_JOBS_JSON="$jobs_file" bash "$VERDICT" "$@" 2>&1)"
   local got=$?
   set -e
+  if [ "$got" -ne "$want_exit" ]; then
+    echo "    FAIL — $label (exit $got, wanted $want_exit; got: $out)" >&2
+    exit 1
+  fi
   if grep -Fq -- "$expected" <<<"$out"; then
     echo "    ok   — $label"
   else
@@ -244,16 +254,20 @@ verdict_says() {
     exit 1
   fi
 }
-verdict_says "a never-acquired arm64 build is named, and the Intel pool is said to have built" "$JOBS_DIR/never-acquired.json" "iOS build (arm64) was never acquired" success true cancelled success
-verdict_says "the pool that built is named" "$JOBS_DIR/never-acquired.json" "succeeded on: intel" success true cancelled success
-verdict_says "a build cancelled mid-run is said to have been mid-run" "$JOBS_DIR/mid-run.json" "iOS build (intel) was cancelled mid-run" success true success cancelled
-verdict_says "a cancelled build the API does not know is reported as unknown" "$JOBS_DIR/empty.json" "the jobs API has no record" success true cancelled success
-verdict_says "an unreadable jobs response is reported as unknown" "$JOBS_DIR/does-not-exist.json" "could not be read" success true cancelled success
-verdict_says "both pools never acquired: both are named before the failure" "$JOBS_DIR/never-acquired.json" "iOS build (intel) was cancelled mid-run" success true cancelled cancelled
+verdict_says "a never-acquired arm64 build is named, and the Intel pool is said to have built" "$JOBS_DIR/never-acquired.json" 0 "iOS build (arm64) was never acquired" success true cancelled success
+verdict_says "the pool that built is named" "$JOBS_DIR/never-acquired.json" 0 "succeeded on: intel" success true cancelled success
+verdict_says "a build cancelled mid-run is said to have been mid-run" "$JOBS_DIR/mid-run.json" 0 "iOS build (intel) was cancelled mid-run" success true success cancelled
+verdict_says "a cancelled build the API does not know is reported as unknown" "$JOBS_DIR/empty.json" 0 "the jobs API has no record" success true cancelled success
+verdict_says "an unreadable jobs response is reported as unknown" "$JOBS_DIR/does-not-exist.json" 0 "could not be read" success true cancelled success
+verdict_says "both builds cancelled, each with its own fixture state: arm64 is named never-acquired and the check fails" "$JOBS_DIR/never-acquired.json" 1 "iOS build (arm64) was never acquired" success true cancelled cancelled
+verdict_says "both builds cancelled, each with its own fixture state: intel is named mid-run" "$JOBS_DIR/mid-run.json" 1 "iOS build (intel) was cancelled mid-run" success true cancelled cancelled
+verdict_says "both pools never acquired: each is named, and the check fails" "$JOBS_DIR/both-never-acquired.json" 1 "iOS build (intel) was never acquired" success true cancelled cancelled
+verdict_says "both pools never acquired: the arm64 pool is named too" "$JOBS_DIR/both-never-acquired.json" 1 "iOS build (arm64) was never acquired" success true cancelled cancelled
+verdict_says "the failure itself is reported when neither pool built" "$JOBS_DIR/both-never-acquired.json" 1 "neither pool built it" success true cancelled cancelled
 # The diagnostic never changes the verdict.
 CASES=$((CASES + 1))
-IOS_KERNEL_JOBS_JSON="$JOBS_DIR/never-acquired.json" bash "$VERDICT" success true cancelled success >/dev/null 2>&1
-if IOS_KERNEL_JOBS_JSON="$JOBS_DIR/never-acquired.json" bash "$VERDICT" success true cancelled cancelled >/dev/null 2>&1; then
+VERDICT_JOBS_JSON="$JOBS_DIR/never-acquired.json" bash "$VERDICT" success true cancelled success >/dev/null 2>&1
+if VERDICT_JOBS_JSON="$JOBS_DIR/never-acquired.json" bash "$VERDICT" success true cancelled cancelled >/dev/null 2>&1; then
   echo "    FAIL — two cancelled builds must fail whatever the jobs API says" >&2
   exit 1
 fi
