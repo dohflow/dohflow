@@ -80,7 +80,9 @@ export function DiagnosticsCard() {
 
   useEffect(() => {
     if (preview) {
-      previewRegion.current?.focus();
+      // Not into a collapsed section's hidden body: there the Preview's hand-over chooses the heading.
+      const region = previewRegion.current;
+      if (region && region.closest("[hidden],[inert]") === null) region.focus();
     } else if (returnFocus.current) {
       returnFocus.current = false;
       // Not into a collapsed section's hidden body: there the Save's hand-over chooses the heading.
