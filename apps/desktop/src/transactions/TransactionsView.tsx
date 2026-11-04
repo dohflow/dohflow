@@ -911,9 +911,12 @@ function CategoryProvenanceBadge({
   return (
     <span
       title={title}
-      className="inline-flex items-center gap-1 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info"
+      // The LABEL is the foreground in the light theme: informational-blue text on its own tint over a
+      // hovered (4.26:1) or selected (3.92:1) row is below 4.5:1 for 11px text (personal-cfo-4d8.56).
+      // The mark, tint and outline stay informational; dark keeps its passing blue label.
+      className="inline-flex items-center gap-1 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-foreground dark:text-info"
     >
-      <Sparkles className="size-3" aria-hidden />
+      <Sparkles className="size-3 text-info" aria-hidden />
       {label}
       {pct !== null && ` · ${pct}%`}
     </span>
