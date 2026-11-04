@@ -365,7 +365,9 @@ nightly or on-demand run of the vault tests on an iOS simulator
 (`scripts/ios-kernel-sim-tests.sh`, which runs the same way locally on a Mac with Xcode).
 Its `iOS cross-compile (kernel crates)` job is a small verdict job that always reports and
 fails closed (it passes only when the path gate succeeded and the macOS build either
-succeeded or was not needed), so it is safe to require; adding that name to the branch
+succeeded on at least one of its two runner pools, arm64 and Intel, with neither pool failing,
+or was not needed; a runner shortage in one pool costs nothing, `personal-cfo-md8h2.24`), so
+it is safe to require; adding that name to the branch
 ruleset is a repository-settings step for the owner, not something a PR does.
 
 That automatic check is the primary evidence, but agents still record their
