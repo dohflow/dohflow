@@ -404,34 +404,162 @@ pub fn parse_container_with_limit(
 }
 
 fn parse_container_inner(bytes: &[u8]) -> Result<ParsedContainer<'_>, WireError> {
-    let mut r = Reader::new(bytes);
-    if &r.fixed::<4>()? != CONTAINER_MAGIC {
-        return Err(WireError::BadMagic);
-    }
-    if r.u16()? != CONTAINER_VERSION {
-        return Err(WireError::UnsupportedContainer);
-    }
-    let header_len = usize::try_from(r.u32()?).map_err(|_| WireError::LengthExceedsInput)?;
-    if header_len > r.remaining() {
-        return Err(WireError::LengthExceedsInput);
-    }
-    let header_start = bytes.len() - r.remaining();
-    let header_bytes = &bytes[header_start..header_start + header_len];
-    let header = ClearHeader::decode(header_bytes)?;
-    let mut r = Reader::new(&bytes[header_start + header_len..]);
-    let ciphertext_len = usize::try_from(r.u64()?).map_err(|_| WireError::LengthExceedsInput)?;
-    if ciphertext_len > r.remaining() {
-        return Err(WireError::LengthExceedsInput);
-    }
-    let ciphertext_start = bytes.len() - r.remaining();
-    if ciphertext_len < MIN_CIPHERTEXT_LEN {
-        return Err(WireError::CiphertextTooShort);
-    }
-    let ciphertext = &bytes[ciphertext_start..ciphertext_start + ciphertext_len];
-    Reader::new(&bytes[ciphertext_start + ciphertext_len..]).finish()?;
+    let frame = match read_frame(bytes, bytes.len() as u64) {
+        Ok(frame) => frame,
+        Err(PeekError::Wire(error)) => return Err(error),
+        // `read_frame` reports a shortage as `Truncated` when it holds the whole object.
+        Err(PeekError::PrefixTooShort { .. }) => return Err(WireError::Truncated),
+    };
+    let header_bytes = &bytes[FRAME_HEAD_LEN..FRAME_HEAD_LEN + frame.header_len as usize];
+    // `read_frame` proved `ciphertext_len` equals what remains, so it fits the input.
+    let ciphertext_start = FRAME_HEAD_LEN + frame.header_len as usize + CIPHERTEXT_LEN_FIELD;
+    let ciphertext = &bytes[ciphertext_start..];
     Ok(ParsedContainer {
-        header,
+        header: frame.header,
         header_bytes,
         ciphertext,
+    })
+}
+
+/// `magic ‖ u16 container_version ‖ u32 header_len`.
+const FRAME_HEAD_LEN: usize = 4 + 2 + 4;
+/// The `u64 ciphertext_len` that follows the header.
+const CIPHERTEXT_LEN_FIELD: usize = 8;
+
+/// What [`peek_container`] reads from the front of a container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerPeek {
+    /// The decoded header, with every rule of [`ClearHeader::decode`].
+    pub header: ClearHeader,
+    /// The header's length in bytes (the container's `header_len`).
+    pub header_len: u32,
+    /// The ciphertext's length in bytes, proven equal to what the container's total length leaves.
+    pub ciphertext_len: u64,
+}
+
+/// Why [`peek_container`] has no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeekError {
+    /// The prefix ends before the header and the ciphertext length do. `needed` is the least
+    /// prefix length (in bytes) that lets the next step run, at most the container's length; a caller with a cap on how much it
+    /// will read refuses a `needed` above it, since a header the format allows is far shorter.
+    PrefixTooShort {
+        /// Bytes of prefix required to continue.
+        needed: u64,
+    },
+    /// The container is malformed; the error is the one [`parse_container`] gives for the whole
+    /// object.
+    Wire(WireError),
+}
+
+/// Read the header of a container from its first bytes, given the container's total length.
+///
+/// `prefix` is the first `prefix.len()` bytes of a container that is `total_len` bytes in all
+/// (a transport knows the length of a request body before it reads it). The framing is checked
+/// against `total_len` exactly as [`parse_container`] checks it against the bytes present:
+/// `10 + header_len + 8 + ciphertext_len` must equal `total_len`, with every sum checked, so
+/// a length near `u64::MAX` is an error and not an overflow. The ciphertext itself is never
+/// read. There is **one** header parser: [`parse_container`] is this function over a prefix
+/// that is the whole object, so on any prefix that holds the header and the ciphertext length
+/// the two agree on the header and on every error.
+///
+/// # Errors
+/// [`PeekError::PrefixTooShort`] when the prefix ends before the answer is decidable, and
+/// [`PeekError::Wire`] with the error [`parse_container`] would give. A `prefix` longer than
+/// `total_len` is [`WireError::LengthExceedsInput`].
+pub fn peek_container(prefix: &[u8], total_len: u64) -> Result<ContainerPeek, PeekError> {
+    let frame = read_frame(prefix, total_len)?;
+    Ok(ContainerPeek {
+        header: frame.header,
+        header_len: frame.header_len,
+        ciphertext_len: frame.ciphertext_len,
+    })
+}
+
+struct Frame {
+    header: ClearHeader,
+    header_len: u32,
+    ciphertext_len: u64,
+}
+
+/// The one reader of a container's frame. `avail` is the bytes in hand and `total_len` the
+/// container's length; `avail.len() == total_len` is the whole object, where a shortage is
+/// [`WireError::Truncated`], and anything shorter reports [`PeekError::PrefixTooShort`].
+fn read_frame(avail: &[u8], total_len: u64) -> Result<Frame, PeekError> {
+    let have = avail.len() as u64;
+    if have > total_len {
+        return Err(PeekError::Wire(WireError::LengthExceedsInput));
+    }
+    let whole = have == total_len;
+    // Never ask for more than the container holds: what a caller can read is bounded by `total_len`.
+    let short = |needed: u64| PeekError::PrefixTooShort {
+        needed: needed.min(total_len),
+    };
+    let wire = PeekError::Wire;
+    // A shortage of an object we hold whole is a truncated object.
+    let lack = |needed: u64| {
+        if whole {
+            wire(WireError::Truncated)
+        } else {
+            short(needed)
+        }
+    };
+
+    // The magic and the version are judged as soon as their bytes are in hand.
+    let magic_len = CONTAINER_MAGIC.len();
+    if avail.len() < magic_len {
+        if avail != &CONTAINER_MAGIC[..avail.len()] {
+            return Err(wire(WireError::BadMagic));
+        }
+        return Err(lack(FRAME_HEAD_LEN as u64));
+    }
+    if &avail[..magic_len] != CONTAINER_MAGIC {
+        return Err(wire(WireError::BadMagic));
+    }
+    if avail.len() < magic_len + 2 {
+        return Err(lack(FRAME_HEAD_LEN as u64));
+    }
+    if u16::from_be_bytes([avail[4], avail[5]]) != CONTAINER_VERSION {
+        return Err(wire(WireError::UnsupportedContainer));
+    }
+    if avail.len() < FRAME_HEAD_LEN {
+        return Err(lack(FRAME_HEAD_LEN as u64));
+    }
+    let header_len = u32::from_be_bytes([avail[6], avail[7], avail[8], avail[9]]);
+    // A header longer than the container leaves is refused by the lengths alone.
+    let after_head = total_len - FRAME_HEAD_LEN as u64;
+    if u64::from(header_len) > after_head {
+        return Err(wire(WireError::LengthExceedsInput));
+    }
+    let header_end = FRAME_HEAD_LEN as u64 + u64::from(header_len);
+    if have < header_end {
+        return Err(lack(header_end + CIPHERTEXT_LEN_FIELD as u64));
+    }
+    let header = ClearHeader::decode(&avail[FRAME_HEAD_LEN..header_end as usize]).map_err(wire)?;
+    // The ciphertext length: eight bytes after the header, within the container.
+    let length_end = header_end + CIPHERTEXT_LEN_FIELD as u64;
+    if total_len < length_end {
+        return Err(wire(WireError::Truncated));
+    }
+    if have < length_end {
+        return Err(lack(length_end));
+    }
+    let mut field = [0_u8; CIPHERTEXT_LEN_FIELD];
+    field.copy_from_slice(&avail[header_end as usize..length_end as usize]);
+    let ciphertext_len = u64::from_be_bytes(field);
+    let remaining = total_len - length_end;
+    if ciphertext_len > remaining {
+        return Err(wire(WireError::LengthExceedsInput));
+    }
+    if ciphertext_len < MIN_CIPHERTEXT_LEN as u64 {
+        return Err(wire(WireError::CiphertextTooShort));
+    }
+    if remaining > ciphertext_len {
+        return Err(wire(WireError::TrailingBytes));
+    }
+    Ok(Frame {
+        header,
+        header_len,
+        ciphertext_len,
     })
 }
