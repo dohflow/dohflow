@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { useComfortBand } from "@/dashboard/useComfortBand";
 import { dollarsToMinorUnits, formatMoney } from "@/lib/format";
 import { describeIpcError } from "@/vault/useVault";
+import { PersistentNotice } from "./PersistentSlot";
 
 /// A wire minor-units amount as an editable major-unit string (USD/EUR are 2-dp).
 function minorUnitsToInput(minorUnits: number): string {
@@ -41,8 +42,22 @@ export function ComfortBandCard() {
   const lowerValue = lowerDraft ?? storedLower;
   const upperValue = upperDraft ?? storedUpper;
 
-  async function onSubmit(event: React.FormEvent) {
-    event.preventDefault();
+  // While an error is on screen, the Save lives in the section's persistent slot with it and is not
+  // rendered in the body; it comes back when the error clears. One ref follows whichever one is
+  // rendered, so focus can be handed back after the move.
+  const saveRef = useRef<HTMLButtonElement>(null);
+  const refocusSave = useRef(false);
+  const saveInSlot = error !== null;
+  useEffect(() => {
+    if (refocusSave.current) {
+      refocusSave.current = false;
+      saveRef.current?.focus();
+    }
+  }, [saveInSlot]);
+
+  async function onSubmit(event?: React.FormEvent) {
+    event?.preventDefault();
+    refocusSave.current = document.activeElement === saveRef.current;
     const lowerMinor = dollarsToMinorUnits(lowerValue);
     if (lowerMinor === null || lowerMinor < 0) {
       setError("Enter a lower edge of zero or more.");
@@ -89,6 +104,19 @@ export function ComfortBandCard() {
     setSaved(true);
   }
 
+  // A button of type "button" in the slot (it sits outside the form) runs the same submit.
+  const saveButton = (
+    <Button
+      ref={saveRef}
+      type={saveInSlot ? "button" : "submit"}
+      aria-label="Save"
+      disabled={saving}
+      onClick={saveInSlot ? () => void onSubmit() : undefined}
+    >
+      {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : "Save"}
+    </Button>
+  );
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -130,13 +158,7 @@ export function ComfortBandCard() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button type="submit" disabled={saving}>
-              {saving ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : (
-                "Save"
-              )}
-            </Button>
+            {!saveInSlot && saveButton}
             {saved && !saving && <span className="text-xs text-gain">Saved.</span>}
           </div>
           <p className="text-xs text-muted-foreground">
@@ -146,11 +168,21 @@ export function ComfortBandCard() {
             the upper edge is optional — cash above it is excess you may choose to deploy.
             {band?.upper && <> Currently up to {formatMoney(band.upper)}.</>}
           </p>
-          {(error ?? loadError) && (
-            <p role="alert" className="text-xs text-loss">
-              {error ?? loadError}
-            </p>
-          )}
+          <PersistentNotice>
+            {error !== null && (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="alert" className="text-xs text-loss">
+                  {error}
+                </p>
+                {saveButton}
+              </div>
+            )}
+            {loadError !== null && (
+              <p role="alert" className="text-xs text-loss">
+                {loadError}
+              </p>
+            )}
+          </PersistentNotice>
         </form>
       </CardContent>
     </Card>

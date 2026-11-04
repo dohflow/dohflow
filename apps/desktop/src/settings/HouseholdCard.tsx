@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Combobox, type ComboboxItem } from "@/components/ui/combobox";
 import { describeIpcError } from "@/vault/useVault";
+import { PersistentNotice } from "./PersistentSlot";
 import { useHouseholdTimezone } from "./useHouseholdTimezone";
 
 /// A short, curated set of IANA zones for the rare WebView build that lacks
@@ -85,7 +86,9 @@ export function HouseholdCard() {
   const {
     timezone,
     isLoading,
-    error: loadError,
+    failure: readFailure,
+    retry,
+    retrying,
     isSaving,
     setTimezone,
   } = useHouseholdTimezone();
@@ -97,8 +100,22 @@ export function HouseholdCard() {
   const value = draft ?? timezone;
   const suggestion = timezone === "UTC" ? machineTimezone() : null;
 
+  // While a failed write is on screen its Save lives in the section's persistent slot with the error,
+  // and is not rendered in the body; the Save comes back to the body when the error clears. One ref
+  // follows whichever one is rendered, so focus can be handed back after the move.
+  const saveRef = useRef<HTMLButtonElement>(null);
+  const refocusSave = useRef(false);
+  const saveInSlot = saveError !== null;
+  useEffect(() => {
+    if (refocusSave.current) {
+      refocusSave.current = false;
+      saveRef.current?.focus();
+    }
+  }, [saveInSlot]);
+
   async function onSave() {
     if (value === timezone) return;
+    refocusSave.current = document.activeElement === saveRef.current;
     setSaveError(null);
     setSaved(false);
     const failure = await setTimezone(value);
@@ -109,6 +126,18 @@ export function HouseholdCard() {
       setSaved(true);
     }
   }
+
+  const saveButton = (
+    <Button
+      ref={saveRef}
+      type="button"
+      aria-label="Save"
+      onClick={onSave}
+      disabled={isSaving || isLoading || value === timezone}
+    >
+      {isSaving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : "Save"}
+    </Button>
+  );
 
   return (
     <Card>
@@ -156,24 +185,36 @@ export function HouseholdCard() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              onClick={onSave}
-              disabled={isSaving || isLoading || value === timezone}
-            >
-              {isSaving ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : (
-                "Save"
-              )}
-            </Button>
+            {!saveInSlot && saveButton}
             {saved && !isSaving && <span className="text-xs text-gain">Saved.</span>}
           </div>
-          {(saveError ?? loadError) && (
-            <p role="alert" className="text-xs text-loss">
-              {saveError ?? loadError}
-            </p>
-          )}
+          <PersistentNotice>
+            {saveError !== null && (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="alert" className="text-xs text-loss">
+                  {saveError}
+                </p>
+                {saveButton}
+              </div>
+            )}
+            {readFailure !== null && (
+              // A failed read is read again: this never writes, and never saves the UTC fallback.
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="alert" className="text-xs text-loss">
+                  {readFailure}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={retrying}
+                  onClick={retry}
+                >
+                  {retrying ? "Retrying…" : "Retry"}
+                </Button>
+              </div>
+            )}
+          </PersistentNotice>
         </div>
       </CardContent>
     </Card>

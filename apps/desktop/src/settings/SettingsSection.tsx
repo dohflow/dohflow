@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import { Disclosure } from "@/components/ui/disclosure";
 import { cn } from "@/lib/utils";
 
+import { PersistentSlotContext } from "./persistentSlotContext";
 import { PREFERENCE_LANES, SPAN, type SpanName } from "./settingsLayout";
 
 /// The Settings page grid (personal-cfo-4d8.39.1): six equal tracks, 16px gap, laid out against the
@@ -27,10 +28,11 @@ export function SettingsGrid({ children }: { children: ReactNode }) {
 /// The summary must come from real data or be left out: it is never a fixed value, and never
 /// reads as healthy or verified while a read is loading or has failed. Pass `undefined` then.
 ///
-/// Errors inside the card body can be hidden by collapsing; lifting them outside the body is a
-/// separate slice, which is why this one opens every section. `persistent` is the slot that slice
-/// will use: it is passed to the disclosure as is and sits outside the hidden body, so whatever
-/// it holds stays visible and announced while the section is collapsed. No section fills it yet.
+/// Errors inside the card body would be hidden by collapsing, so a card puts its error, remedy and
+/// one recovery action in `PersistentNotice`: it lands in a slot the section keeps outside the hidden
+/// body (personal-cfo-4d8.39.2), visible and announced open or collapsed. A card that has not been
+/// moved yet keeps its error in its body. `persistent` lets a section pass its own content as well;
+/// the slot is added after it.
 export function SettingsSection({
   title,
   summary,
@@ -45,6 +47,9 @@ export function SettingsSection({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(true);
+  // Where the cards in this section put what must outlive a collapse. It is set once the slot has
+  // mounted (a callback ref, so the portal target exists before the first paint).
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
   return (
     // The grid item. The disclosure fills it, so a collapsed section is as tall as its row.
     <div
@@ -54,14 +59,19 @@ export function SettingsSection({
       <Disclosure
         title={title}
         summary={summary}
-        persistent={persistent}
+        persistent={
+          <>
+            {persistent}
+            <div ref={setSlot} data-settings-persistent={title} className="flex flex-col gap-2" />
+          </>
+        }
         open={open}
         onOpenChange={setOpen}
         headingLevel={3}
         className="h-full"
         bodyClassName="px-0 pb-0"
       >
-        {children}
+        <PersistentSlotContext.Provider value={slot}>{children}</PersistentSlotContext.Provider>
       </Disclosure>
     </div>
   );
