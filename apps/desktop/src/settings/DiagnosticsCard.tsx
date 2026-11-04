@@ -17,6 +17,9 @@ import {
 } from "@/components/ui/card";
 import { describeIpcError } from "@/vault/useVault";
 
+import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
+
 /// Safe copy for every save result (personal-cfo-lyd). None of it echoes the
 /// path or any OS error text.
 const SAVE_MESSAGES: Record<Exclude<DiagnosticsSaveResult, "saved">, string> = {
@@ -40,8 +43,16 @@ export function DiagnosticsCard() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
-  const previewButton = useRef<HTMLButtonElement>(null);
   const previewRegion = useRef<HTMLPreElement>(null);
+  // Preview and Save each move between the body and the persistent slot (rendered once, wherever
+  // the error needs them), so each keeps focus across the move.
+  const previewFocus = useKeepFocusAcrossMove();
+  const previewButton = previewFocus.ref;
+  const saveFocus = useKeepFocusAcrossMove({
+    settled: !saving,
+    // The preview closed (saved, or expired): the Preview button is where the person goes next.
+    fallback: () => (previewRegion.current ?? previewButton.current)?.focus(),
+  });
   // The pending snapshot, for discarding it when the card goes away (vault lock
   // and switch unmount Settings; the backend has already dropped it by then).
   const pending = useRef<number | null>(null);
@@ -76,6 +87,7 @@ export function DiagnosticsCard() {
   }
 
   async function onPreview() {
+    previewFocus.remember();
     setNote(null);
     setLoading(true);
     const result = await commands.diagnosticsPreview();
@@ -90,6 +102,7 @@ export function DiagnosticsCard() {
 
   async function onSave() {
     if (!preview) return;
+    saveFocus.remember();
     setNote(null);
     const path = await save({
       title: "Save redacted diagnostics",
@@ -121,6 +134,38 @@ export function DiagnosticsCard() {
 
   const empty = preview !== null && preview.records === 0;
 
+  // An error, its full message and its one recovery action stay in the section's persistent slot,
+  // open or closed; the action is rendered once, there while the error shows, else in the body.
+  // With the preview still pending (a save was refused) the action is Save, to pick another
+  // destination; with no preview (it failed, or it expired) it is Preview diagnostics.
+  const alert = note?.kind === "alert" ? note : null;
+  const previewInSlot = alert !== null && preview === null;
+  const saveInSlot = alert !== null && preview !== null;
+  const previewDiagnosticsButton = (
+    <Button
+      ref={previewButton}
+      size="sm"
+      variant="outline"
+      disabled={loading}
+      onClick={() => void onPreview()}
+    >
+      {loading && <Loader2 className="animate-spin" aria-hidden />}
+      Preview diagnostics
+    </Button>
+  );
+  const saveButton = (
+    <Button
+      ref={saveFocus.ref}
+      size="sm"
+      disabled={saving || empty}
+      aria-busy={saving}
+      onClick={() => void onSave()}
+    >
+      {saving ? <Loader2 className="animate-spin" aria-hidden /> : <FileDown aria-hidden />}
+      {saving ? "Saving…" : "Save…"}
+    </Button>
+  );
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -133,20 +178,7 @@ export function DiagnosticsCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {!preview && (
-          <div>
-            <Button
-              ref={previewButton}
-              size="sm"
-              variant="outline"
-              disabled={loading}
-              onClick={() => void onPreview()}
-            >
-              {loading && <Loader2 className="animate-spin" aria-hidden />}
-              Preview diagnostics
-            </Button>
-          </div>
-        )}
+        {!preview && !previewInSlot && <div>{previewDiagnosticsButton}</div>}
 
         {preview && (
           <div
@@ -177,19 +209,7 @@ export function DiagnosticsCard() {
               {preview.text}
             </pre>
             <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                disabled={saving || empty}
-                aria-busy={saving}
-                onClick={() => void onSave()}
-              >
-                {saving ? (
-                  <Loader2 className="animate-spin" aria-hidden />
-                ) : (
-                  <FileDown aria-hidden />
-                )}
-                {saving ? "Saving…" : "Save…"}
-              </Button>
+              {!saveInSlot && saveButton}
               <Button
                 size="sm"
                 variant="ghost"
@@ -202,13 +222,18 @@ export function DiagnosticsCard() {
           </div>
         )}
 
-        {note && (
-          <p
-            role={note.kind}
-            className={
-              note.kind === "alert" ? "text-xs text-loss" : "text-xs text-muted-foreground"
-            }
-          >
+        <PersistentNotice>
+          {alert && (
+            <div className="flex flex-col gap-2">
+              <p role="alert" className="text-xs text-loss">
+                {alert.text}
+              </p>
+              <div>{previewInSlot ? previewDiagnosticsButton : saveButton}</div>
+            </div>
+          )}
+        </PersistentNotice>
+        {note?.kind === "status" && (
+          <p role="status" className="text-xs text-muted-foreground">
             {note.text}
           </p>
         )}
