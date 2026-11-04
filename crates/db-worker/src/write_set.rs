@@ -273,7 +273,7 @@ pub(crate) fn install(conn: &Connection) -> Result<(), DbError> {
 
 /// An owned stored value.
 #[derive(Debug, Clone, PartialEq)]
-enum Owned {
+pub(crate) enum Owned {
     Null,
     Int(i64),
     Text(Vec<u8>),
@@ -281,7 +281,7 @@ enum Owned {
 }
 
 impl Owned {
-    fn from_ref(value: ValueRef<'_>) -> Result<Self, DbError> {
+    pub(crate) fn from_ref(value: ValueRef<'_>) -> Result<Self, DbError> {
         Ok(match value {
             ValueRef::Null => Owned::Null,
             ValueRef::Integer(v) => Owned::Int(v),
@@ -295,7 +295,7 @@ impl Owned {
         })
     }
 
-    fn as_value(&self) -> Value<'_> {
+    pub(crate) fn as_value(&self) -> Value<'_> {
         match self {
             Owned::Null => Value::Null,
             Owned::Int(v) => Value::Int(*v),
@@ -306,7 +306,7 @@ impl Owned {
 }
 
 /// A row: manifest column name to stored value.
-type Row = BTreeMap<String, Owned>;
+pub(crate) type Row = BTreeMap<String, Owned>;
 
 fn encode_error(error: sync_core::row_digest::RowDigestError) -> DbError {
     // The message names the rule broken and never a value.
@@ -337,7 +337,7 @@ fn read_rows(
 }
 
 /// The columns a table (or its projection) contributes to a digest, with kinds.
-fn digest_columns<'a>(
+pub(crate) fn digest_columns<'a>(
     spec: &'a TableSpec,
     projection: Option<&'a Projection>,
 ) -> Vec<&'a (String, Kind)> {
@@ -351,7 +351,7 @@ fn digest_columns<'a>(
     }
 }
 
-fn to_columns<'a>(cols: &[&'a (String, Kind)], row: &'a Row) -> Vec<Column<'a>> {
+pub(crate) fn to_columns<'a>(cols: &[&'a (String, Kind)], row: &'a Row) -> Vec<Column<'a>> {
     cols.iter()
         .map(|(name, kind)| Column {
             name,
@@ -384,7 +384,7 @@ fn key_bytes(
 }
 
 /// Whether a row of a projected table is replicated at all (settings keys are filtered).
-fn replicated(spec: &TableSpec, projection: Option<&Projection>, row: &Row) -> bool {
+pub(crate) fn replicated(spec: &TableSpec, projection: Option<&Projection>, row: &Row) -> bool {
     let Some(p) = projection else { return true };
     if p.key_prefixes.is_empty() {
         return true;

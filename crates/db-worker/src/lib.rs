@@ -71,6 +71,7 @@ mod forecast_overrides;
 mod forecast_persist;
 mod ingestion;
 mod jobs;
+pub mod logical_export;
 pub use jobs::{
     DurableJobView, JobStoreError, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
 };

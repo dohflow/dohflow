@@ -227,6 +227,22 @@ fn columns_section(out: &mut Vec<u8>, columns: &[Column<'_>]) -> Result<(), RowD
     Ok(())
 }
 
+/// The bytes of one folded child row as it enters its parent's digest: `u16 column_count ‖ for
+/// each column sorted by name: text(64) name ‖ tagged value`. Child rows are ordered by these
+/// bytes (C.1.5), and the snapshot's data file for a folded child uses the same order.
+///
+/// # Errors
+/// [`RowDigestError`] naming the first rule broken, [`RowDigestError::ChildRowTooLong`] above
+/// 2^16 bytes.
+pub fn child_row_bytes(columns: &[Column<'_>]) -> Result<Vec<u8>, RowDigestError> {
+    let mut bytes = Vec::new();
+    columns_section(&mut bytes, columns)?;
+    if bytes.len() > MAX_CHILD_ROW {
+        return Err(RowDigestError::ChildRowTooLong);
+    }
+    Ok(bytes)
+}
+
 /// The digest of a parent row that has folded children: the row's message followed by the
 /// child section `u16 child_table_count ‖ for each child table in raw-name order: text(64)
 /// name ‖ u32 count ‖ for each child row: bytes(2^16) child_row`. The child rows of a table

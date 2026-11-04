@@ -596,7 +596,7 @@ dual-identity accepted-index lookup, and the duplicate-detection backstop; and
 ADR 0017, implemented by `personal-cfo-6kn`, defines identity and clock
 details: `device_id` is minted at enrollment, bound to a client-generated
 device-key fingerprint and signed membership record, and stored outside the
-vault; `node_id` is per vault and copied by snapshot or restore; `vault_id` is
+vault; `node_id` is per vault and copied by restore, and is not carried by a Sync snapshot (a replica bootstrapped from one mints its own, because an HLC node id is per device; vault-format C.8); `vault_id` is
 the service storage key. The existing HLC remains advisory. The service
 sequence is the total order.
 

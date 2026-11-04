@@ -15,8 +15,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::canonical_json::{from_canonical_slice, to_canonical_vec, CanonicalJsonError};
+use crate::canonical_json::{node_to_canonical_vec, Node};
 use crate::cbe::{Reader, WireError, Writer};
-use crate::row_digest::MAX_NAME;
+use crate::row_digest::{Column, Kind, Value, MAX_NAME};
 
 /// The label a snapshot plaintext starts with.
 pub const SNAPSHOT_LABEL: &str = "dohflow/sync-snapshot-plaintext/v1";
@@ -68,6 +69,19 @@ pub enum SnapshotError {
     /// The manifest is well formed but breaks a rule of C.8.
     #[error("the manifest breaks a rule: {0}")]
     ManifestInvalid(&'static str),
+    /// A stored value does not have its column's declared kind (a storage-class mismatch, a
+    /// UUID column that is not 16 bytes, or text that is not UTF-8): never coerced.
+    #[error("column {column}: the stored value does not match its declared kind")]
+    KindMismatch {
+        /// The column.
+        column: String,
+    },
+    /// A text value cannot be written as a canonical JSON string (it contains U+0000).
+    #[error("column {column}: the text cannot be written as canonical JSON")]
+    Unrepresentable {
+        /// The column.
+        column: String,
+    },
     /// A file the manifest names is absent, or a file it does not name is present.
     #[error("the files and the manifest name different sets")]
     FileSetMismatch,
@@ -549,4 +563,90 @@ fn check_manifest(manifest: &Manifest) -> Result<(), SnapshotError> {
         return invalid("the artifacts are not strictly ascending");
     }
     Ok(())
+}
+
+// ----------------------------------------------------------------------------------------------
+// Rows
+
+/// One row as a data-file line (B.3 "Row encoding"): a canonical JSON object keyed by column
+/// name, ending in `\n`. By declared kind: `int` a decimal string, `text` a string, `uuid` the
+/// lowercase hyphenated form of the 16 bytes, `bytes` standard padded base64, and NULL is `null`
+/// in any kind. The storage class must match the kind; nothing is coerced.
+///
+/// # Errors
+/// [`SnapshotError::KindMismatch`] or [`SnapshotError::Unrepresentable`] naming the column.
+pub fn row_line(columns: &[Column<'_>]) -> Result<Vec<u8>, SnapshotError> {
+    let mut object = std::collections::BTreeMap::new();
+    for column in columns {
+        let mismatch = || SnapshotError::KindMismatch {
+            column: column.name.to_owned(),
+        };
+        let node = match (column.kind, column.value) {
+            (_, Value::Null) => Node::Null,
+            (Kind::Int, Value::Int(v)) => Node::String(v.to_string()),
+            (Kind::Text, Value::Text(bytes)) => {
+                let text = std::str::from_utf8(bytes).map_err(|_| mismatch())?;
+                if text.contains('\0') {
+                    return Err(SnapshotError::Unrepresentable {
+                        column: column.name.to_owned(),
+                    });
+                }
+                Node::String(text.to_owned())
+            }
+            (Kind::Uuid, Value::Blob(bytes)) => {
+                Node::String(uuid_text(bytes.try_into().map_err(|_| mismatch())?))
+            }
+            (Kind::Bytes, Value::Blob(bytes)) => Node::String(base64(bytes)),
+            _ => return Err(mismatch()),
+        };
+        if object.insert(column.name.to_owned(), node).is_some() {
+            return Err(mismatch());
+        }
+    }
+    let mut line = node_to_canonical_vec(&Node::Object(object))
+        .map_err(SnapshotError::ManifestNotCanonical)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// The lowercase hyphenated text of 16 bytes.
+#[must_use]
+pub fn uuid_text(bytes: [u8; 16]) -> String {
+    let h = hex(&bytes);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// Standard base64 with padding (RFC 4648 section 4).
+#[must_use]
+pub fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(char::from(ALPHABET[(n >> 18) as usize & 63]));
+        out.push(char::from(ALPHABET[(n >> 12) as usize & 63]));
+        out.push(if chunk.len() > 1 {
+            char::from(ALPHABET[(n >> 6) as usize & 63])
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            char::from(ALPHABET[n as usize & 63])
+        } else {
+            '='
+        });
+    }
+    out
 }

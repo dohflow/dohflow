@@ -519,3 +519,116 @@ fn a_bad_table_name_is_refused() {
         assert!(StateDigest::new(name).is_err(), "{name}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rows
+
+mod rows {
+    use sync_core::row_digest::{child_row_bytes, Column, Kind, Value};
+    use sync_core::snapshot::{base64, row_line, uuid_text, SnapshotError};
+
+    fn col<'a>(name: &'a str, kind: Kind, value: Value<'a>) -> Column<'a> {
+        Column { name, kind, value }
+    }
+
+    #[test]
+    fn a_row_is_a_canonical_object_with_each_kind_in_its_b3_encoding() {
+        let id = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
+        ];
+        let line = row_line(&[
+            col("name", Kind::Text, Value::Text("Rent \"main\"".as_bytes())),
+            col("amount", Kind::Int, Value::Int(-1250)),
+            col("id", Kind::Uuid, Value::Blob(&id)),
+            col("blob", Kind::Bytes, Value::Blob(&[0xff, 0x00, 0x10])),
+            col("note", Kind::Text, Value::Null),
+        ])
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(line).unwrap(),
+            "{\"amount\":\"-1250\",\"blob\":\"/wAQ\",\"id\":\"01234567-89ab-cdef-0123-456789abcdef\",\"name\":\"Rent \\\"main\\\"\",\"note\":null}\n"
+        );
+    }
+
+    #[test]
+    fn a_null_is_null_in_every_kind() {
+        for kind in [Kind::Int, Kind::Text, Kind::Uuid, Kind::Bytes] {
+            let line = row_line(&[col("v", kind, Value::Null)]).unwrap();
+            assert_eq!(line, b"{\"v\":null}\n");
+        }
+    }
+
+    #[test]
+    fn a_storage_class_that_does_not_match_the_kind_is_refused_naming_the_column() {
+        let cases: Vec<(Kind, Value<'_>)> = vec![
+            (Kind::Int, Value::Text(b"5")),
+            (Kind::Text, Value::Int(5)),
+            (Kind::Text, Value::Blob(b"x")),
+            (Kind::Text, Value::Text(&[0xff, 0xfe])),
+            (Kind::Uuid, Value::Blob(&[1; 15])),
+            (Kind::Uuid, Value::Blob(&[1; 17])),
+            (Kind::Uuid, Value::Text(b"x")),
+            (Kind::Bytes, Value::Int(1)),
+            (Kind::Bytes, Value::Text(b"x")),
+        ];
+        for (kind, value) in cases {
+            let error = row_line(&[col("the_column", kind, value)]).unwrap_err();
+            assert_eq!(
+                error,
+                SnapshotError::KindMismatch {
+                    column: "the_column".into()
+                },
+                "{kind:?} {value:?}"
+            );
+            // The refusal names the column and never a stored value.
+            assert!(!error.to_string().contains("xfe"));
+        }
+    }
+
+    #[test]
+    fn text_with_a_nul_cannot_be_written() {
+        let error = row_line(&[col("t", Kind::Text, Value::Text(b"a\0b"))]).unwrap_err();
+        assert_eq!(error, SnapshotError::Unrepresentable { column: "t".into() });
+    }
+
+    #[test]
+    fn base64_matches_rfc_4648_vectors() {
+        for (input, want) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(input.as_bytes()), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn a_uuid_is_lowercase_hyphenated() {
+        assert_eq!(
+            uuid_text([0xAB; 16]),
+            "abababab-abab-abab-abab-abababababab"
+        );
+    }
+
+    #[test]
+    fn the_folded_child_row_bytes_sort_columns_by_name() {
+        let a = child_row_bytes(&[
+            col("b", Kind::Int, Value::Int(1)),
+            col("a", Kind::Int, Value::Int(2)),
+        ])
+        .unwrap();
+        let b = child_row_bytes(&[
+            col("a", Kind::Int, Value::Int(2)),
+            col("b", Kind::Int, Value::Int(1)),
+        ])
+        .unwrap();
+        assert_eq!(a, b);
+        // u16 count, then name-sorted (text(64) name, tag, i64) pairs.
+        assert_eq!(&a[..2], &[0, 2]);
+    }
+}
