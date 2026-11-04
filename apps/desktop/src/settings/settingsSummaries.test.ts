@@ -6,7 +6,6 @@ import {
   backupsSummary,
   comfortSummary,
   connectionsSummary,
-  vaultsSummary,
 } from "./settingsSummaries";
 
 const entry = (verified: boolean): BackupHistoryEntryDto => ({
@@ -57,10 +56,7 @@ describe("collapsed section summaries are real data or nothing (personal-cfo-4d8
     expect(connectionsSummary(undefined)).toBeUndefined();
   });
 
-  it("vaults and about: the active vault's name and the build version, or nothing", () => {
-    expect(vaultsSummary("Household")).toBe("Household · active");
-    expect(vaultsSummary("")).toBeUndefined();
-    expect(vaultsSummary(undefined)).toBeUndefined();
+  it("about: the build version, or nothing", () => {
     expect(aboutSummary("0.3.0")).toBe("DohFlow · version 0.3.0");
     expect(aboutSummary(undefined)).toBeUndefined();
     expect(aboutSummary("")).toBeUndefined();

@@ -172,7 +172,7 @@ export function SettingsView({
 
           {/* Vaults; the setup guide sits beside it when the host provides it (kdw6), and Vaults has
               the whole row when it does not (no placeholder). */}
-          <SettingsSection title="Vaults" summary={summaries.vaults} span={onRerunSetup ? "half" : "full"}>
+          <SettingsSection title="Vaults" span={onRerunSetup ? "half" : "full"}>
             <VaultsCard />
           </SettingsSection>
           {onRerunSetup ? (

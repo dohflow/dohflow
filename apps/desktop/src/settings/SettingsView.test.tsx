@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { QueryClient } from "@tanstack/react-query";
 
@@ -8,7 +8,7 @@ import { renderWithClient } from "@/test/renderWithClient";
 import { SettingsView } from "./SettingsView";
 
 const mocks = vi.hoisted(() => ({
-  vault: { vaults: [] as unknown[], loadError: null as string | null },
+  vault: { vaults: [] as unknown[] },
   connectorConnections: vi.fn(),
   accountList: vi.fn(),
   baseCurrency: vi.fn(),
@@ -54,7 +54,6 @@ vi.mock("@/vault/useVault", () => ({
   useVault: () => ({
     deleteVault: vi.fn(),
     vaults: mocks.vault.vaults,
-    loadError: mocks.vault.loadError,
     createNamedVault: vi.fn(),
     switchVault: vi.fn(),
     renameVault: vi.fn(),
@@ -93,7 +92,6 @@ const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 
 beforeEach(() => {
   mocks.vault.vaults = [];
-  mocks.vault.loadError = null;
   // SettingsView now also renders ConnectionsCard (personal-cfo-ul5d).
   mocks.connectorConnections.mockReset();
   mocks.connectorConnections.mockResolvedValue(ok([]));
@@ -606,16 +604,13 @@ describe("the Settings sections (personal-cfo-4d8.39.1)", () => {
       await waitFor(() => expect(screen.queryByText("2 connections")).toBeNull());
     });
 
-    it("vaults: a vault status that could not be read drops the active name", async () => {
+    it("vaults: no summary at all while the vault list has no failure state, whatever it holds (4d8.39.2 AC4 brings it back)", async () => {
       mocks.vault.vaults = [{ id: "v1", name: "Home", is_active: true }];
-      const first = await collapsed(["Vaults"]);
-      expect(await screen.findByText("Home · active")).toBeInTheDocument();
-      first.clear();
-      cleanup();
-      mocks.vault.loadError = "The vault service is unavailable.";
       await collapsed(["Vaults"]);
-      await screen.findByRole("button", { name: "Vaults" });
-      expect(screen.queryByText(/active$/)).toBeNull();
+      const trigger = await screen.findByRole("button", { name: "Vaults" });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByText(/ · active/)).toBeNull();
+      expect(trigger).not.toHaveAttribute("aria-describedby");
     });
   });
 });

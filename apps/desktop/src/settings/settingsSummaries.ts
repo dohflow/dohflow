@@ -5,7 +5,6 @@ import { useBackupHistory, useBackupScheduleSettings } from "@/backup/useBackup"
 import { useComfortBand } from "@/dashboard/useComfortBand";
 import { formatMoney } from "@/lib/format";
 import { queryKeys } from "@/lib/query";
-import { useVault } from "@/vault/useVault";
 
 import { useBuildInfo } from "./BuildBadge";
 import { useConnections } from "./useConnections";
@@ -16,6 +15,10 @@ import { useConnections } from "./useConnections";
 /// loading or has failed, and a line that would say "healthy" or "verified" needs the data that
 /// proves it. A failed refresh counts as a failed read even when an earlier read left data in the
 /// cache, because that data no longer says what is true now.
+///
+/// The Vaults section has no summary on purpose: the vault list read (`listVaults`) has no failure
+/// state in `useVault`, so a list that failed to refresh cannot be told apart from one that is
+/// current. Slice b (personal-cfo-4d8.39.2, AC4) gives it one and brings the summary back.
 
 const CADENCE_LABEL: Record<BackupCadenceDto, string | undefined> = {
   off: undefined,
@@ -52,11 +55,6 @@ export function connectionsSummary(count: number | undefined): string | undefine
   return count !== undefined && count >= 2 ? `${count} connections` : undefined;
 }
 
-/// "[vault name] · active".
-export function vaultsSummary(activeName: string | undefined): string | undefined {
-  return activeName === undefined || activeName === "" ? undefined : `${activeName} · active`;
-}
-
 /// "DohFlow · version [version]".
 export function aboutSummary(version: string | undefined): string | undefined {
   return version === undefined || version === "" ? undefined : `DohFlow · version ${version}`;
@@ -72,7 +70,6 @@ export function useSettingsSummaries() {
     enabled: false,
   });
   const { connections, error: connectionsError } = useConnections();
-  const { vaults, loadError: vaultError } = useVault();
   const build = useBuildInfo();
 
   // `isSuccess` is false while a query has no data yet and after a refresh failed, even though the
@@ -85,7 +82,6 @@ export function useSettingsSummaries() {
     comfort: comfortSummary(bandError === null ? band : null),
     autoCategorize: autoCategorizeSummary(autoCategorize.isSuccess ? autoCategorize.data : undefined),
     connections: connectionsSummary(connectionsError === null ? connections?.length : undefined),
-    vaults: vaultsSummary(vaultError === null ? vaults.find((v) => v.is_active)?.name : undefined),
     about: aboutSummary(build?.version),
   };
 }
