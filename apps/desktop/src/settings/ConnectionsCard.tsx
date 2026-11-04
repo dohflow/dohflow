@@ -121,6 +121,7 @@ function AccountLinkRow({
   // Namespaced by connection: external ids are only connection-scoped.
   const selectId = `map-${connectionId}-${link.external_id}`;
   const refusalId = `${selectId}-currency`;
+  const statusId = `${selectId}-status`;
   const refusal = link.currency_refusal ?? null;
   const currency = link.currency ?? null;
   const mapped = link.account_id !== null;
@@ -131,6 +132,10 @@ function AccountLinkRow({
   const held = isHeld(link);
   const unconfirmed = mapped && currency === null;
   const blocked = !mapped && refusal !== null;
+  // The select is described by the one line that explains its state, and only by a line that is on
+  // screen: the refusal in the Held and Blocked branches, the status line when the currency is
+  // not confirmed yet (a mapped link with an unknown currency carries a refusal that is not shown).
+  const describedBy = held || blocked ? refusalId : unconfirmed ? statusId : undefined;
   const mappedAccount = accounts.find((account) => account.id === link.account_id);
   return (
     <div className="flex items-center justify-between gap-3">
@@ -151,7 +156,7 @@ function AccountLinkRow({
         ) : blocked ? (
           <CurrencyRefusal id={refusalId} message={refusal ?? ""} />
         ) : (
-          <p className="text-xs text-muted-foreground">
+          <p id={statusId} className="text-xs text-muted-foreground">
             {mapped
               ? link.last_synced_on
                 ? `Refreshed through ${formatIsoDate(link.last_synced_on)}`
@@ -170,7 +175,7 @@ function AccountLinkRow({
           size="sm"
           value={link.account_id ?? ""}
           disabled={blocked}
-          aria-describedby={refusal !== null ? refusalId : undefined}
+          aria-describedby={describedBy}
           onChange={(event) => {
             const value = event.target.value;
             if (value === CREATE_NEW) {

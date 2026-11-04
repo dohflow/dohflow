@@ -306,7 +306,7 @@ fn a_projected_table_enters_the_set_only_through_its_replicated_fields() {
     .unwrap();
     assert!(local.rows.is_empty(), "{:?}", local.rows);
 
-    // settings: a user.* key and a legacy name replicate; a device.* key does not.
+    // settings: a user.* key replicates; an unprefixed name and a device.* key do not.
     let settings = command(&worker, |tx| {
         for (key, value) in [
             ("user.theme", "dark"),
@@ -322,7 +322,7 @@ fn a_projected_table_enters_the_set_only_through_its_replicated_fields() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(tables(&settings), ["settings", "settings"]);
+    assert_eq!(tables(&settings), ["settings"]);
     // updated_at is not a replicated field of a settings row.
     let touch = command(&worker, |tx| {
         tx.execute(
@@ -516,8 +516,9 @@ fn a_rolled_back_command_leaves_the_capture_empty() {
 #[test]
 fn a_direct_write_outside_a_command_does_not_leak_into_the_next_command() {
     let (_dir, worker) = worker();
-    // set_setting is a direct writer: the triggers fire, and the next command must start clean.
-    worker.set_setting("user.theme", "dark").unwrap();
+    // set_device_setting is a direct writer: the triggers fire, and the next command must start
+    // clean.
+    worker.set_device_setting("device.theme", "dark").unwrap();
     let set = command(&worker, |_| Ok(())).unwrap();
     assert!(set.rows.is_empty(), "{:?}", set.rows);
 }

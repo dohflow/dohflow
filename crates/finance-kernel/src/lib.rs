@@ -3073,6 +3073,10 @@ impl From<DbError> for KernelError {
             DbError::ReplicatedKeyTooLong { table } => {
                 KernelError::Validation(format!("a key for {table} is too long"))
             }
+            DbError::SettingScope => KernelError::Validation(
+                "only device settings are written directly; a household setting uses its own command"
+                    .to_owned(),
+            ),
         }
     }
 }
@@ -4021,13 +4025,15 @@ impl Kernel {
         Ok(self.worker.get_setting(key)?)
     }
 
-    /// Upsert an app-level setting (personal-cfo-p5g). Settings are configuration,
-    /// not ledger writes, so they bypass the [`KernelCommand`] bus.
+    /// Set one household preference (ADR 0074 Decision 5, personal-cfo-5ymg8.7): a `user.*` key of
+    /// the registry through the `SetUserSetting` command, so it follows the person to another
+    /// device. `device.*` settings are node-local and have no kernel setter.
     ///
     /// # Errors
-    /// Returns [`KernelError`] on a persistence failure.
-    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), KernelError> {
-        self.worker.set_setting(key, value)?;
+    /// Returns [`KernelError`] for a key outside the registry, a value the key does not accept, or
+    /// a persistence failure.
+    pub fn set_user_setting(&self, key: &str, value: &str) -> Result<(), KernelError> {
+        self.worker.set_user_setting(key, value)?;
         Ok(())
     }
 
@@ -4050,8 +4056,10 @@ impl Kernel {
 
     /// Record a manual balance assertion (ADR 0027, personal-cfo-ueg6): set the
     /// account's balance directly as of a date, with no transaction. The currency
-    /// must match the account's. A forecast input, so it bypasses the
-    /// [`KernelCommand`] bus.
+    /// must match the account's. It is a `WriteCommand::RecordBalanceAssertion` on
+    /// the database worker's bus, not a [`KernelCommand`], and each call carries a
+    /// fresh idempotency key; use [`Self::record_balance_assertion_keyed`] to make a
+    /// retry safe.
     ///
     /// # Errors
     /// Returns [`KernelError`] if the account does not exist, the currency
@@ -4065,6 +4073,30 @@ impl Kernel {
     ) -> Result<(), KernelError> {
         self.worker
             .record_balance_assertion(id, account_id, amount, as_of)?;
+        Ok(())
+    }
+
+    /// [`Self::record_balance_assertion`] under the caller's idempotency key: repeating the same
+    /// key returns the original result and appends nothing (ADR 0012), so a retry after a call
+    /// whose outcome is unknown cannot add a second observation.
+    ///
+    /// # Errors
+    /// As [`Self::record_balance_assertion`], plus an invalid idempotency key.
+    pub fn record_balance_assertion_keyed(
+        &self,
+        idempotency_key: &str,
+        id: Uuid,
+        account_id: AccountId,
+        amount: Money,
+        as_of: NaiveDate,
+    ) -> Result<(), KernelError> {
+        self.worker.record_balance_assertion_keyed(
+            idempotency_key,
+            id,
+            account_id,
+            amount,
+            as_of,
+        )?;
         Ok(())
     }
 
@@ -4194,7 +4226,7 @@ impl Kernel {
     /// # Errors
     /// Returns [`KernelError`] on a write failure.
     pub fn set_auto_categorize_on_import(&self, enabled: bool) -> Result<(), KernelError> {
-        self.worker.set_setting(
+        self.worker.set_user_setting(
             AUTO_CATEGORIZE_ON_IMPORT_KEY,
             if enabled { "true" } else { "false" },
         )?;
@@ -4216,7 +4248,8 @@ impl Kernel {
     /// # Errors
     /// Returns [`KernelError`] on a write failure.
     pub fn set_future_cash_series_selection(&self, selection: &str) -> Result<(), KernelError> {
-        self.worker.set_setting(FUTURE_CASH_SERIES_KEY, selection)?;
+        self.worker
+            .set_user_setting(FUTURE_CASH_SERIES_KEY, selection)?;
         Ok(())
     }
 

@@ -60,6 +60,7 @@ export function DataTable<T>({
   rowKey,
   status = "ready",
   error,
+  errorAction,
   empty,
   expandedContent,
   rowProps,
@@ -79,6 +80,8 @@ export function DataTable<T>({
   /// An EMPTY table is `ready` with no rows — emptiness is data, not a status.
   status?: "loading" | "error" | "ready";
   error?: string | null;
+  /// The one action that answers the error (a Retry), shown with it.
+  errorAction?: ReactNode;
   /// Rendered when `status` is `ready` and there are no rows.
   empty?: { icon: LucideIcon; title: string; description?: string; action?: ReactNode };
   /// A row's expanded detail. Returning `null` renders no expander row, so a caller can
@@ -185,9 +188,12 @@ export function DataTable<T>({
           {status === "error" && (
             <TableRow className="hover:bg-transparent">
               <TableCell colSpan={span}>
-                <p role="alert" className="py-6 text-center text-sm text-loss">
-                  {error ?? "Something went wrong loading this."}
-                </p>
+                <div className="flex flex-col items-center gap-3 py-6">
+                  <p role="alert" className="text-center text-sm text-loss">
+                    {error ?? "Something went wrong loading this."}
+                  </p>
+                  {errorAction}
+                </div>
               </TableCell>
             </TableRow>
           )}

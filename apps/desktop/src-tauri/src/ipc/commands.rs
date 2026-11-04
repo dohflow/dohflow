@@ -2894,7 +2894,7 @@ pub fn set_minimum_cash_floor_impl(state: &AppState, floor: MoneyDto) -> Result<
         ));
     }
     with_kernel(state, |kernel| {
-        kernel.set_setting(MINIMUM_CASH_FLOOR_KEY, &floor.minor_units.to_string())?;
+        kernel.set_user_setting(MINIMUM_CASH_FLOOR_KEY, &floor.minor_units.to_string())?;
         Ok(())
     })
 }
@@ -2961,7 +2961,7 @@ pub fn set_comfort_band_upper_impl(
     }
     with_kernel(state, |kernel| {
         let value = upper.map(|u| u.minor_units.to_string()).unwrap_or_default();
-        kernel.set_setting(COMFORT_BAND_UPPER_KEY, &value)?;
+        kernel.set_user_setting(COMFORT_BAND_UPPER_KEY, &value)?;
         Ok(())
     })
 }
@@ -4814,7 +4814,7 @@ pub fn base_currency(state: tauri::State<'_, AppState>) -> Result<String, IpcErr
 pub fn set_base_currency_impl(state: &AppState, code: String) -> Result<(), IpcError> {
     let currency = parse_currency(&code)?;
     with_kernel(state, |kernel| {
-        kernel.set_setting(REPORTING_CURRENCY_KEY, currency.code())?;
+        kernel.set_user_setting(REPORTING_CURRENCY_KEY, currency.code())?;
         Ok(())
     })
 }
@@ -5336,11 +5336,16 @@ pub fn delete_forecast_assumption(
 // ===== Balance assertions (ADR 0027, personal-cfo-ueg6) =====
 //
 // The additive set-balance: assert an account's balance directly (no transaction),
-// stored as a manual balance observation. A forecast/balance input, so it uses the
-// direct-write `with_kernel` shape, not the `WriteCommand` bus.
+// stored as a manual balance observation. It is a `WriteCommand::RecordBalanceAssertion` on
+// the database worker's bus, written under the caller's idempotency key (ADR 0012).
 
 /// Assert an account's balance directly as of a date (no transaction). Returns the
 /// new assertion-anchored balance and the still-unexplained adjustment.
+///
+/// Once the assertion has committed this never reports failure: the balance and the plug are read
+/// back afterwards, and when EITHER read fails both are `None` in an `Ok` result (the unconfirmed
+/// view) rather than turning a saved assertion into an error, or a failed gap read into "no gap".
+/// Repeating the same key writes nothing new.
 pub fn assert_balance_impl(
     state: &AppState,
     input: AssertBalanceInput,
@@ -5350,15 +5355,19 @@ pub fn assert_balance_impl(
     let as_of = input.as_of()?;
     let id = Uuid::now_v7();
     with_kernel(state, |kernel| {
-        kernel.record_balance_assertion(id, account, amount, as_of)?;
-        let balance = kernel
-            .account_balance(account)?
-            .ok_or_else(|| IpcError::Validation("no such account".to_owned()))?;
-        let unexplained = kernel.account_unexplained(account)?;
-        Ok(AssertBalanceResult {
-            balance: MoneyDto::from(balance),
-            unexplained: unexplained.map(MoneyDto::from),
-        })
+        kernel.record_balance_assertion_keyed(
+            &input.idempotency_key,
+            id,
+            account,
+            amount,
+            as_of,
+        )?;
+        // Committed. From here nothing may fail the call, and a read that fails leaves BOTH figures
+        // unconfirmed rather than letting a failed gap read pass for "no gap".
+        Ok(AssertBalanceResult::read_back(
+            kernel.account_balance(account),
+            || kernel.account_unexplained(account),
+        ))
     })
 }
 

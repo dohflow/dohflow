@@ -39,6 +39,14 @@ import { useImportedTransactionFields } from "./useImportedTransactionFields";
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 
+/// Shown when the call that attaches a document threw: nobody knows whether the file was stored.
+const ATTACH_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the document was attached. Check the list above before trying again.";
+
+/// Shown when the call that removes a document threw: nobody knows whether it was removed.
+const REMOVE_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether the document was removed. Check the list above before trying again.";
+
 /// A slide-over panel showing a transaction's detail and its encrypted
 /// attachments (ADR 0023). The app's first entity-detail surface. Attach / list /
 /// remove only — decrypt-to-view is deferred to parser isolation (ADR 0022).
@@ -85,8 +93,16 @@ export function TransactionDetailDrawer({
   ) => Promise<IpcError | null>;
   onClose: () => void;
 }) {
-  const { attachments, error, attachFile, removeAttachment, isAttaching } =
-    useTransactionAttachments(transaction.transaction_id);
+  const {
+    attachments,
+    error,
+    retry: retryAttachments,
+    retrying: retryingAttachments,
+    refresh: refreshAttachments,
+    attachFile,
+    removeAttachment,
+    isAttaching,
+  } = useTransactionAttachments(transaction.transaction_id);
   const { imported } = useImportedTransactionFields(transaction.transaction_id);
   const [importedOpen, setImportedOpen] = useState(false);
   const splitsQuery = useTransactionSplits(transaction.transaction_id);
@@ -216,17 +232,40 @@ export function TransactionDetailDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Holds Attach while the list is re-read after a call whose outcome is not known.
+  const [settling, setSettling] = useState(false);
+  // An attach is in flight, or its unknown-outcome re-read is. It guards the attach path itself, not
+  // just the button: the real file input can still deliver a second pick (a re-render has not yet
+  // disabled it, or the control is driven directly), and that must not send a second file.
+  const attachBusy = useRef(false);
   async function onPickFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = ""; // let the user re-pick the same file later
-    if (!file) return;
+    if (!file || attachBusy.current) return;
+    attachBusy.current = true;
     setActionError(null);
-    const failure = await attachFile(file);
-    if (failure) setActionError(describeIpcError(failure));
+    try {
+      const failure = await attachFile(file);
+      if (failure) setActionError(describeIpcError(failure));
+    } catch {
+      // The call itself failed, so whether the file was stored is not known: say so, and read the
+      // list again so it shows what is there. Nothing is retried or undone on the person's behalf.
+      setActionError(ATTACH_OUTCOME_UNKNOWN);
+      setSettling(true);
+      try {
+        await refreshAttachments();
+      } finally {
+        setSettling(false);
+      }
+    } finally {
+      // Released after the call and, when it threw, after its re-read has settled.
+      attachBusy.current = false;
+    }
   }
 
   // The attachments whose Remove call is in flight: each is disabled until its call returns, so
-  // a second click cannot send the same removal twice.
+  // a second click cannot send the same removal twice. That guard is not proof of a fresh list:
+  // after a call whose outcome is unknown the list is read again before Remove is offered again.
   const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
   async function onRemove(id: string) {
     if (removing.has(id)) return;
@@ -235,6 +274,9 @@ export function TransactionDetailDrawer({
     try {
       const failure = await removeAttachment(id);
       if (failure) setActionError(describeIpcError(failure));
+    } catch {
+      setActionError(REMOVE_OUTCOME_UNKNOWN);
+      await refreshAttachments();
     } finally {
       setRemoving((prev) => {
         const next = new Set(prev);
@@ -513,15 +555,28 @@ export function TransactionDetailDrawer({
           <h3 className="text-sm font-semibold">Attachments</h3>
 
           {error && (
-            <p role="alert" className="text-sm text-loss">
-              {error}
-            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p role="alert" className="text-sm text-loss">
+                {error}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void retryAttachments()}
+                disabled={retryingAttachments}
+              >
+                {retryingAttachments ? "Retrying…" : "Retry"}
+              </Button>
+            </div>
           )}
 
           {attachments === null ? (
-            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" aria-hidden /> Loading…
-            </div>
+            // A read that failed with nothing to show is the error and its Retry, not "Loading…".
+            error ? null : (
+              <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-hidden /> Loading…
+              </div>
+            )
           ) : attachments.length === 0 ? (
             <p className="py-2 text-sm text-muted-foreground">
               No documents attached yet.
@@ -565,12 +620,13 @@ export function TransactionDetailDrawer({
             className="sr-only"
             aria-label="Choose a document to attach"
             onChange={onPickFile}
+            disabled={isAttaching || settling}
           />
           <Button
             variant="outline"
             size="sm"
             className="self-start"
-            disabled={isAttaching}
+            disabled={isAttaching || settling}
             onClick={() => fileInput.current?.click()}
           >
             <Paperclip aria-hidden />

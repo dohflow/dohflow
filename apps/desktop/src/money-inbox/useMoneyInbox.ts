@@ -115,11 +115,12 @@ export function useMoneyInbox() {
   // the UI can confirm "Accepted N".
   const acceptAllLowConfidenceMutation = useMutation({
     mutationFn: () => commands.acceptLowConfidenceCategories(mintIdempotencyKey()),
-    onSuccess: (result) => {
-      if (result.status === "ok") {
-        invalidateInbox();
-        void queryClient.invalidateQueries({ queryKey: queryKeys.transactions });
-      }
+    // The kernel marks one transaction at a time and stops at the first failure, keeping the marks
+    // it already made, so a failed (or lost) call may still have accepted some: refresh on every
+    // outcome or the list keeps showing accepted rows as waiting.
+    onSettled: () => {
+      invalidateInbox();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.transactions });
     },
   });
 
@@ -198,12 +199,17 @@ export function useMoneyInbox() {
   const markReviewedBulk = useMarkReviewedBulk();
 
   const acceptAllLowConfidence = useCallback(async (): Promise<
-    { count: number } | { error: IpcError }
+    { count: number } | { error: IpcError } | { unknown: true }
   > => {
-    const result = await acceptAllLowConfidenceMutation.mutateAsync();
-    return result.status === "ok"
-      ? { count: result.data }
-      : { error: result.error };
+    try {
+      const result = await acceptAllLowConfidenceMutation.mutateAsync();
+      return result.status === "ok"
+        ? { count: result.data }
+        : { error: result.error };
+    } catch {
+      // The call itself failed, so how many were accepted is not known.
+      return { unknown: true };
+    }
   }, [acceptAllLowConfidenceMutation]);
 
   return {

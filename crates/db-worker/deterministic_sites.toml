@@ -50,6 +50,12 @@ bead = "personal-cfo-5ymg8.4"
 note = "ApplyScenario and RevertScenarioApply: the scenario is not already applied and has an active change to promote (apply), and it is applied (revert), all read from class-1 scenario and event state; a missing or deleted scenario is refused by apply/scenario_cmds.rs."
 
 [[site]]
+module = "apply/settings_cmds.rs"
+statements = 2
+bead = "personal-cfo-5ymg8.7"
+note = "SetUserSetting: the key is one of the household registry and the value is one its validator accepts (both payload; the validators are pure functions of the value). Reads no other row."
+
+[[site]]
 module = "apply/merchant_cmds.rs"
 statements = 9
 bead = "personal-cfo-5ymg8.5"

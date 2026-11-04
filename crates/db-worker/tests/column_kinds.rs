@@ -50,7 +50,8 @@ const NOT_REPLICATED: &[&str] = &["operation_log", "provenance_links"];
 const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
     // `MintMerchantAnchors` rejects a longer key (merchant_alias_key_width.rs).
     ("merchant_aliases", "normalized_key", 251, "writer"),
-    // `set_setting` rejects a longer key (settings_key_width.rs).
+    // `set_device_setting` rejects a longer key; every user.* key is a fixed registry name
+    // (settings_key_width.rs).
     ("settings", "key", 128, "writer"),
     // `NaiveDate::to_string()` is `YYYY-MM-DD`, or at most 13 bytes for the extreme years
     // (settings_key_width.rs checks the extremes).
@@ -80,7 +81,7 @@ struct Projection {
     /// A constant key for a singleton source row, as `int` (none today; the household record is
     /// the class-1 `households` table since schema version 61).
     constant_key: Option<i64>,
-    /// `settings` only: the row filter, a key prefix and the legacy unprefixed key names.
+    /// `settings` only: the row filter, the replicated key prefixes.
     key_prefixes: &'static [&'static str],
 }
 
@@ -131,15 +132,6 @@ fn classes() -> BTreeMap<String, String> {
         out.insert(field("table").unwrap(), field("class").unwrap());
     }
     out
-}
-
-fn legacy_settings_keys() -> Vec<String> {
-    let line = CLASSES
-        .lines()
-        .find(|l| l.starts_with("legacy_persisted_keys"))
-        .expect("legacy_persisted_keys");
-    let value = line.split_once('=').unwrap().1.trim().trim_matches('"');
-    value.split(',').map(str::to_owned).collect()
 }
 
 fn live_schema() -> BTreeMap<String, (Vec<Col>, bool)> {
@@ -269,7 +261,6 @@ fn generate() -> String {
         writeln!(out, "max_bytes = {max}").unwrap();
         writeln!(out, "mechanism = \"{mechanism}\"\n").unwrap();
     }
-    let legacy = legacy_settings_keys();
     for p in PROJECTIONS {
         writeln!(out, "[[projection]]").unwrap();
         writeln!(out, "source = \"{}\"", p.source).unwrap();
@@ -284,8 +275,6 @@ fn generate() -> String {
         if !p.key_prefixes.is_empty() {
             let prefixes: Vec<String> = p.key_prefixes.iter().map(|c| format!("\"{c}\"")).collect();
             writeln!(out, "key_prefixes = [{}]", prefixes.join(", ")).unwrap();
-            let names: Vec<String> = legacy.iter().map(|c| format!("\"{c}\"")).collect();
-            writeln!(out, "legacy_key_names = [{}]", names.join(", ")).unwrap();
         }
         out.push('\n');
     }
@@ -928,7 +917,7 @@ fn replicated_state(conn: &rusqlite::Connection) -> BTreeMap<(String, Vec<u8>), 
                         let rusqlite::types::Value::Text(k) = &row[&spec.key[0]] else {
                             continue;
                         };
-                        if !(prefixes.iter().any(|x| k.starts_with(x)) || p.legacy.contains(k)) {
+                        if !prefixes.iter().any(|x| k.starts_with(x)) {
                             continue;
                         }
                     }
@@ -973,7 +962,6 @@ struct ProjectionInfo {
     columns: Vec<String>,
     constant_key: Option<i64>,
     key_prefixes: Option<Vec<String>>,
-    legacy: Vec<String>,
 }
 
 fn manifest_projection(source: &str) -> ProjectionInfo {
@@ -994,9 +982,6 @@ fn manifest_projection(source: &str) -> ProjectionInfo {
         constant_key: field("constant_key_int")
             .map(|l| l.split_once('=').unwrap().1.trim().parse().unwrap()),
         key_prefixes: field("key_prefixes").map(|l| quoted_list(&l)),
-        legacy: field("legacy_key_names")
-            .map(|l| quoted_list(&l))
-            .unwrap_or_default(),
     }
 }
 
@@ -1204,6 +1189,7 @@ mod all_variants {
         "create_tag",
         "mint_merchant_anchors",
         "apply_merchant_memory",
+        "set_user_setting",
         "recategorize_transaction",
         "mark_reviewed",
         "set_tags",
@@ -1786,7 +1772,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 82, "every variant ran");
+        assert_eq!(checked, 83, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

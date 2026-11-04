@@ -6,6 +6,7 @@
 mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;
+mod settings_upgrade;
 
 use super::*;
 use core_ledger::{AccountFlags, CashflowRole};

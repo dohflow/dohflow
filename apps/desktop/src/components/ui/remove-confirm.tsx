@@ -3,8 +3,9 @@ import { useId } from "react";
 import { Button } from "@/components/ui/button";
 
 /// The inline confirm for a REVERSIBLE remove (docs/agent/FRONTEND.md section 6.2): "Remove
-/// <name>?" with "You can bring it back." The prompt names the thing, so a screen reader hears
-/// what it is confirming; Cancel takes focus, so the safe choice is the default.
+/// <name>?" with "After removal, you can bring it back only through the Undo notice." The prompt
+/// names the thing, so a screen reader hears what it is confirming; Cancel takes focus, so the safe
+/// choice is the default.
 export function RemoveConfirm({
   name,
   busy,
@@ -29,7 +30,7 @@ export function RemoveConfirm({
       <div className="text-right text-xs">
         <div id={promptId} className="font-medium text-foreground">{`Remove ${name}?`}</div>
         <div id={hintId} className="text-muted-foreground">
-          You can bring it back.
+          After removal, you can bring it back only through the Undo notice.
         </div>
       </div>
       <Button

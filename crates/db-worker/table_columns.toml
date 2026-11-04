@@ -593,4 +593,3 @@ logical_table = "settings"
 columns = ["key", "value"]
 key = ["key"]
 key_prefixes = ["user."]
-legacy_key_names = ["locale", "reporting_currency", "minimum_cash_floor_minor", "comfort_band_upper_minor", "auto_categorize_on_import", "future_cash_series_selection"]

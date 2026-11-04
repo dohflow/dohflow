@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -42,6 +42,10 @@ import { useAccounts } from "@/accounts/useAccounts";
 import { useCategories } from "@/categories/useCategories";
 import { categoryLabels } from "@/categories/labels";
 import { CategoryCombobox } from "@/categories/CategoryCombobox";
+import { isSpendingRole } from "@/accounts/AccountDetailView";
+import { useArchiveFlow } from "@/accounts/archiveFlow";
+import { ArchiveFailure, ArchiveImpactConfirm } from "@/accounts/ArchiveFlowViews";
+import { ReconcileBalanceModal } from "@/accounts/ReconcileBalanceModal";
 import { SetBalanceModal } from "@/accounts/SetBalanceModal";
 import { useMoneyInbox } from "./useMoneyInbox";
 import { ImportFileDialog } from "./ImportFileDialog";
@@ -391,12 +395,15 @@ export function MoneyInboxView({
     recategorize,
     acceptAllLowConfidence,
   } = useMoneyInbox();
-  const { accounts, archiveAccount } = useAccounts();
+  const { accounts, error: accountsError, archiveAccount } = useAccounts();
   const { categories } = useCategories();
   const [importing, setImporting] = useState(false);
   const [settingBalance, setSettingBalance] = useState<AccountViewDto | null>(
     null,
   );
+  // The account whose gap is being explained with transactions, opened in place from the balance
+  // update (only for the roles the Accounts detail offers it for).
+  const [reconcilingId, setReconcilingId] = useState<string | null>(null);
   // The duplicate inbox item currently open in the side-by-side Review panel.
   const [reviewing, setReviewing] = useState<MoneyInboxItemDto | null>(null);
   // Reviewing means LOOKING at the details — category, tags, notes, splits — then
@@ -410,6 +417,20 @@ export function MoneyInboxView({
   } = useTransactions();
   const { tags, createTag, setTags, setNote } = useTags();
   const [detailId, setDetailId] = useState<string | null>(null);
+  // What the last "Accept all" for low-confidence categories reported. Owned here, not by the
+  // banner, so a later read that drops the queue below the banner's threshold, or collapsing the
+  // section, cannot take a failure off the screen.
+  const [acceptAllFailure, setAcceptAllFailure] = useState<string | null>(null);
+  const runAcceptAll = useCallback(async () => {
+    setAcceptAllFailure(null);
+    const result = await acceptAllLowConfidence();
+    if ("error" in result) {
+      setAcceptAllFailure(`${describeIpcError(result.error)} ${ACCEPT_ALL_MAY_HAVE_PARTLY_WORKED}`);
+    } else if ("unknown" in result) {
+      setAcceptAllFailure(ACCEPT_ALL_OUTCOME_UNKNOWN);
+    }
+    return result;
+  }, [acceptAllLowConfidence]);
   // The whole section collapses to a single header row (personal-cfo-4d8.24.12). Not
   // persisted — kept dep-free/minimal (a localStorage mirror is a possible follow-up).
   const [sectionOpen, setSectionOpen] = useState(true);
@@ -627,13 +648,18 @@ export function MoneyInboxView({
           {inboxFetchError}
         </p>
       )}
+      {acceptAllFailure && (
+        <p role="alert" className="text-sm text-loss">
+          {acceptAllFailure}
+        </p>
+      )}
 
       {sectionOpen && (
         <>
           {lowConfidenceCount >= 2 && (
             <LowConfidenceBanner
               count={lowConfidenceCount}
-              onAcceptAll={acceptAllLowConfidence}
+              onAcceptAll={runAcceptAll}
             />
           )}
 
@@ -733,13 +759,9 @@ export function MoneyInboxView({
                             <StaleBalanceRow
                               key={item.item_id}
                               {...common}
-                              onUpdateBalance={(accountId) => {
-                                const account =
-                                  accounts?.find(
-                                    (candidate) => candidate.id === accountId,
-                                  ) ?? null;
-                                if (account) setSettingBalance(account);
-                              }}
+                              accounts={accounts}
+                              accountsError={accountsError}
+                              onUpdateBalance={setSettingBalance}
                               onArchive={archiveAccount}
                             />,
                           ];
@@ -823,11 +845,28 @@ export function MoneyInboxView({
         <SetBalanceModal
           account={settingBalance}
           onClose={() => setSettingBalance(null)}
-          // The transaction-reconcile handoff lives on the Accounts tab; from the
-          // inbox a plain balance update is enough to clear the stale item.
-          onExplainWithTransactions={() => setSettingBalance(null)}
+          // The same hand-off the Accounts detail offers, for the same roles; any other role
+          // just closes. The reconcile modal records transactions, never an assertion.
+          onExplainWithTransactions={() => {
+            if (isSpendingRole(settingBalance.cashflow_role)) {
+              setReconcilingId(settingBalance.id);
+            }
+            setSettingBalance(null);
+          }}
         />
       )}
+      {reconcilingId !== null &&
+        (() => {
+          // Read from the refreshed accounts list, so the gap shown is what is stored now.
+          const account = accounts?.find((candidate) => candidate.id === reconcilingId);
+          return account ? (
+            <ReconcileBalanceModal
+              account={account}
+              verifyResidual
+              onClose={() => setReconcilingId(null)}
+            />
+          ) : null;
+        })()}
 
       {reviewing &&
         (() => {
@@ -1137,28 +1176,25 @@ function StaleBalanceRow({
   isSelected,
   expanded,
   onToggleExpand,
+  accounts,
+  accountsError,
   onUpdateBalance,
   onArchive,
 }: RowCommon & {
-  onUpdateBalance: (accountId: string) => void;
+  /// The accounts list, or `null` while it has not loaded.
+  accounts: AccountViewDto[] | null;
+  accountsError: string | null;
+  onUpdateBalance: (account: AccountViewDto) => void;
   onArchive: (accountId: string) => Promise<IpcError | null>;
 }) {
-  const [archiving, setArchiving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const payload = parseStalePayload(item.payload_json);
+  // The account comes from the view's accounts list (its role and balance decide whether archiving
+  // moves the forecast), so nothing here can act on it until that read has worked.
+  const account =
+    accounts?.find((candidate) => candidate.id === payload?.account_id) ?? null;
+  const flow = useArchiveFlow(account, onArchive);
   if (payload === null) return null;
-
-  async function archive() {
-    if (payload === null) return;
-    setArchiving(true);
-    setError(null);
-    const failure = await onArchive(payload.account_id);
-    // On success the inbox re-fetches and this row unmounts.
-    if (failure) {
-      setError(describeIpcError(failure));
-      setArchiving(false);
-    }
-  }
+  const unavailable = accountsError !== null || accounts === null;
 
   return (
     <>
@@ -1170,7 +1206,11 @@ function StaleBalanceRow({
         {/* No amount for a stale-balance nudge — keep the cell so columns align. */}
         <TableCell className="w-0 text-right" />
         <TableCell className="w-0">
-          <Button size="sm" onClick={() => onUpdateBalance(payload.account_id)}>
+          <Button
+            size="sm"
+            disabled={account === null || unavailable}
+            onClick={() => account && !unavailable && onUpdateBalance(account)}
+          >
             Update balance
           </Button>
         </TableCell>
@@ -1180,6 +1220,24 @@ function StaleBalanceRow({
           onToggleExpand={onToggleExpand}
         />
       </TableRow>
+      {/* Outside the collapsible body: what stops this row from acting, and a failed archive, must
+          not be hidden by collapsing it. */}
+      {(unavailable || flow.error !== null) && (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={INBOX_COLUMN_COUNT} className="py-1">
+            {accountsError !== null ? (
+              <p role="alert" className="text-sm text-loss">
+                {accountsError}
+              </p>
+            ) : accounts === null ? (
+              <p role="status" className="text-sm text-muted-foreground">
+                Loading your accounts…
+              </p>
+            ) : null}
+            <ArchiveFailure flow={flow} />
+          </TableCell>
+        </TableRow>
+      )}
       {expanded && (
         <TableRow className="bg-muted/20 hover:bg-transparent">
           <TableCell colSpan={INBOX_COLUMN_COUNT} className="p-0" id={`inbox-x-${item.item_id}`}>
@@ -1198,22 +1256,19 @@ function StaleBalanceRow({
                 </span>
               </div>
 
-              {error && (
-                <p role="alert" className="text-sm text-loss">
-                  {error}
-                </p>
-              )}
-
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={archiving}
-                  onClick={archive}
+                  disabled={account === null || unavailable || flow.busy}
+                  onClick={flow.request}
                 >
-                  {archiving ? "Archiving…" : "Archive account"}
+                  {flow.busy ? "Archiving…" : "Archive account"}
                 </Button>
               </div>
+              {account && (
+                <ArchiveImpactConfirm account={account} flow={flow} confirmDisabled={unavailable} />
+              )}
             </div>
           </TableCell>
         </TableRow>
@@ -1316,6 +1371,15 @@ function UnreviewedTransactionRow({
   );
 }
 
+/// After "Accept all" failed with a reason: the kernel marks one transaction at a time and stops at
+/// the first failure, keeping what it already marked, so some may be accepted.
+const ACCEPT_ALL_MAY_HAVE_PARTLY_WORKED =
+  "Some may already be accepted. Check the refreshed list before trying again.";
+
+/// After "Accept all" threw: nobody knows how many were accepted.
+const ACCEPT_ALL_OUTCOME_UNKNOWN =
+  "Couldn’t confirm whether they were accepted. Some may already be. Check the refreshed list before trying again.";
+
 /// A bulk "accept all" banner for the low-confidence-category queue (personal-cfo-j5ij): it
 /// confirms in two steps (the first click reveals Confirm/Cancel) and reports the count, so a
 /// sweeping mark-reviewed is never a single misclick.
@@ -1324,19 +1388,20 @@ function LowConfidenceBanner({
   onAcceptAll,
 }: {
   count: number;
-  onAcceptAll: () => Promise<{ count: number } | { error: IpcError }>;
+  /// Reports its own outcome to the view that owns it; the banner only needs it to settle.
+  onAcceptAll: () => Promise<unknown>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   async function acceptAll() {
     setBusy(true);
-    setError(null);
-    const result = await onAcceptAll();
-    setBusy(false);
-    setConfirming(false);
-    if ("error" in result) setError(describeIpcError(result.error));
+    try {
+      await onAcceptAll();
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
   }
 
   return (
@@ -1346,7 +1411,6 @@ function LowConfidenceBanner({
         {count} transactions were auto-categorized with low confidence.
       </span>
       <div className="flex items-center gap-2">
-        {error && <span className="text-xs text-loss">{error}</span>}
         {confirming ? (
           <>
             <Button size="sm" disabled={busy} onClick={acceptAll}>

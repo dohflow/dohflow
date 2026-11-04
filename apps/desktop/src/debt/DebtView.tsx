@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 
 import { CreditCardsView } from "@/accounts/CreditCardsView";
@@ -11,6 +11,7 @@ import { DebtScopeBar } from "./DebtScopeBar";
 import { DebtStatRow } from "./DebtStatRow";
 import { DebtTermsTable } from "./DebtTermsTable";
 import { DebtVisualizations } from "./DebtVisualizations";
+import { TermsReadNotice } from "./TermsReadNotice";
 import { debtAccounts, effectiveSelection } from "./debtAccounts";
 import { useScopedDebts } from "./useScopedDebts";
 
@@ -34,7 +35,22 @@ export function DebtView() {
   const debts = debtAccounts(accounts ?? []);
   const scope = effectiveSelection(debts, selected);
   const inScope = debts.filter((a) => scope.includes(a.id));
-  const { debts: scopedDebts } = useScopedDebts(inScope);
+  const {
+    debts: scopedDebts,
+    error: termsError,
+    retry: retryTerms,
+    retrying: retryingTerms,
+  } = useScopedDebts(inScope);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // The notice (and its Retry) goes away once a retry works, taking focus with it: focus then moves
+  // to the page heading, but only if it was lost, never from a control the person moved on to.
+  const [refocusAfterRetry, setRefocusAfterRetry] = useState(false);
+  useEffect(() => {
+    if (!refocusAfterRetry || termsError !== null) return;
+    setRefocusAfterRetry(false);
+    const active = document.activeElement;
+    if (!active || active === document.body) heading.current?.focus();
+  }, [refocusAfterRetry, termsError]);
   // Card cycles feed the terms table's projected-statement column.
   const { cards } = useCardStatementForecast();
   const currency = inScope[0]?.balance.currency ?? "USD";
@@ -42,7 +58,9 @@ export function DebtView() {
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
       <div>
-        <h2 className="text-lg font-semibold tracking-tight">Debt</h2>
+        <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold tracking-tight outline-none">
+          Debt
+        </h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
           What you owe, what it costs, and how it pays down.
         </p>
@@ -75,6 +93,15 @@ export function DebtView() {
         </div>
       )}
 
+      {/* The terms read failed: the stat row and the terms table below are absent, not zero. */}
+      {termsError !== null && (
+        <TermsReadNotice
+          message={termsError}
+          retrying={retryingTerms}
+          retry={() => void retryTerms().then((worked) => worked && setRefocusAfterRetry(true))}
+        />
+      )}
+
       {accounts !== null && debts.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No credit cards or loans yet. Add one from Accounts and it will show up here with
@@ -90,11 +117,7 @@ export function DebtView() {
           {accounts !== null && scopedDebts !== null && scopedDebts.length > 0 && (
             <>
               <DebtStatRow debts={scopedDebts} currency={currency} />
-              <DebtTermsTable
-                debts={scopedDebts}
-                currency={currency}
-                cards={cards}
-              />
+              <DebtTermsTable debts={scopedDebts} cards={cards} />
             </>
           )}
           {/* The mock puts paydown and payoff ABOVE spending and activity: they answer

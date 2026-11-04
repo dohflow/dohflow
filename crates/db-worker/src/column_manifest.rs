@@ -57,7 +57,6 @@ pub(crate) struct Projection {
     /// A constant integer key for a singleton source row.
     pub constant_key_int: Option<i64>,
     pub key_prefixes: Vec<String>,
-    pub legacy_key_names: Vec<String>,
 }
 
 impl Projection {
@@ -70,7 +69,6 @@ impl Projection {
         self.key_prefixes
             .iter()
             .any(|p| key.starts_with(p.as_str()))
-            || self.legacy_key_names.iter().any(|n| n == key)
     }
 }
 
@@ -161,7 +159,6 @@ fn parse(text: &str) -> Manifest {
                 key: quoted(field("key").unwrap()),
                 constant_key_int: field("constant_key_int").map(|v| v.trim().parse().unwrap()),
                 key_prefixes: field("key_prefixes").map(quoted).unwrap_or_default(),
-                legacy_key_names: field("legacy_key_names").map(quoted).unwrap_or_default(),
             }),
             _ => {}
         }

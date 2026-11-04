@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { commands, type IpcError } from "@/bindings";
@@ -55,9 +55,34 @@ export function useHouseholdTimezone() {
     [mutation],
   );
 
+  // A retry of a read that never produced data puts the query back to pending and clears its
+  // error; the failure being retried stays visible meanwhile.
+  const [lastFailure, setLastFailure] = useState<string | null>(null);
+  useEffect(() => {
+    if (query.status === "error") setLastFailure(query.error.message);
+    else if (query.status === "success") setLastFailure(null);
+  }, [query.status, query.error]);
+
   return {
     // Fall back to UTC while the query is in flight, matching the backend default.
     timezone: query.data ?? "UTC",
+    /// Whether `timezone` comes from a read that succeeded just now. It is false while the read
+    /// is pending, paused (offline, or key rotation) with nothing cached, and after a failed
+    /// refetch even when an earlier value is cached. A caller that decides which scenarios have
+    /// expired must not act on `timezone` until this is true: the UTC fallback is not the
+    /// household's date, and a UTC the host reported is (personal-cfo-5ie.18, AC8).
+    verified: query.status === "success",
+    /// The failure of the last read that failed, while it is still unresolved (including during a
+    /// retry of it), else null.
+    failure:
+      query.status === "error"
+        ? query.error.message
+        : query.status === "pending"
+          ? lastFailure
+          : null,
+    /// Read again. This is the household-timezone read and nothing else: it never writes.
+    retry: () => void query.refetch(),
+    retrying: query.isFetching,
     isLoading: query.isLoading,
     error: query.error?.message ?? null,
     isSaving: mutation.isPending,

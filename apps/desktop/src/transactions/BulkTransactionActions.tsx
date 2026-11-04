@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Check, Loader2, Trash2, X } from "lucide-react";
 
 import type {
@@ -13,6 +13,9 @@ import { commands } from "@/bindings";
 
 const SELECT_CLASS =
   "h-8 rounded-md border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+/// What a row reports when it vanished between the selection and the write.
+const MISSING_ROW = { Validation: "That transaction no longer exists." } as IpcError;
 
 /// A bulk-action bar for the selected transactions (personal-cfo-j0cg.4): recategorize, add a tag,
 /// mark reviewed, or delete them all in one pass. Composes the existing single-transaction
@@ -55,10 +58,28 @@ export function BulkTransactionActions({
 }) {
   const activeTags = (tags ?? []).filter((t) => !t.archived);
   const [busy, setBusy] = useState(false);
+  // The same flag as `busy`, readable synchronously: state lags a render behind, so a second
+  // click or Enter in the same tick would otherwise start a second run.
+  const running = useRef(false);
   const [note, setNote] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
   const count = selected.length;
+
+  /// Run one bulk action with the bar busy for ALL of it, including any reads before the writes,
+  /// and refuse to start while another run is going.
+  async function exclusive(action: () => Promise<void>) {
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    setNote(null);
+    try {
+      await action();
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  }
 
   /// Apply a tag by name to the whole selection (personal-cfo-4d8.24.8): resolve an existing
   /// tag case-insensitively, else mint one ONCE via `createTag`, then merge it into each
@@ -66,47 +87,54 @@ export function BulkTransactionActions({
   /// is tagged exactly once.
   async function applyTag(rawName: string) {
     const name = rawName.trim();
-    if (!name || busy) return;
-    const existing = activeTags.find(
-      (t) => t.name.toLowerCase() === name.toLowerCase(),
-    );
-    let tagId: string;
-    if (existing) {
-      tagId = existing.id;
-    } else {
-      setBusy(true);
-      const created = await createTag(name);
-      setBusy(false);
-      if (typeof created !== "string") {
-        setNote(`Could not create tag "${name}".`);
+    if (!name) return;
+    await exclusive(async () => {
+      // Read first, create after: a failed read must leave nothing behind, so a tag that does
+      // not exist yet is only minted once the fresh tag sets are in hand.
+      //
+      // Merge against FRESH tag sets: selection snapshots can be stale for rows that
+      // were never re-registered as visible (whole-inbox select-all), and set_tags
+      // REPLACES the set — a stale merge would silently drop tags added since the
+      // snapshot (adversarial review of 4d8.25.16). If the fresh read fails there is
+      // nothing safe to merge into, so stop and write nothing rather than fall back to
+      // the snapshot.
+      let freshTagsById: Map<string, string[]>;
+      try {
+        const fresh = await commands.transactionRowsByIds(
+          selected.map((t) => t.transaction_id),
+        );
+        if (fresh.status !== "ok") throw new Error("read refused");
+        freshTagsById = new Map(fresh.data.map((t) => [t.transaction_id, t.tag_ids]));
+      } catch {
+        // The typed name stays in the box, so Try again does not mean retyping it.
+        setNote("Couldn’t read the current tags, so nothing was changed. Try again.");
         return;
       }
-      tagId = created;
-    }
-    setTagDraft("");
-    // Merge against FRESH tag sets: selection snapshots can be stale for rows that
-    // were never re-registered as visible (whole-inbox select-all), and set_tags
-    // REPLACES the set — a stale merge would silently drop tags added since the
-    // snapshot (adversarial review of 4d8.25.16). Falls back to the snapshot rows
-    // when the refresh fails.
-    let freshTagsById = new Map<string, string[]>();
-    try {
-      const fresh = await commands.transactionRowsByIds(
-        selected.map((t) => t.transaction_id),
+      const existing = activeTags.find(
+        (t) => t.name.toLowerCase() === name.toLowerCase(),
       );
-      if (fresh.status === "ok") {
-        freshTagsById = new Map(fresh.data.map((t) => [t.transaction_id, t.tag_ids]));
+      let tagId: string;
+      if (existing) {
+        tagId = existing.id;
+      } else {
+        const created = await createTag(name);
+        if (typeof created !== "string") {
+          setNote(`Could not create tag "${name}".`);
+          return;
+        }
+        tagId = created;
       }
-    } catch {
-      // snapshot fallback below
-    }
-    await runAll(
-      (t) =>
-        setTags(t.transaction_id, [
-          ...new Set([...(freshTagsById.get(t.transaction_id) ?? t.tag_ids), tagId]),
-        ]),
-      "Tagged",
-    );
+      setTagDraft("");
+      await runBatch(
+        (t) => {
+          const current = freshTagsById.get(t.transaction_id);
+          // A row the fresh read did not return is gone; there is no set to merge into.
+          if (current === undefined) return Promise.resolve<IpcError | null>(MISSING_ROW);
+          return setTags(t.transaction_id, [...new Set([...current, tagId])]);
+        },
+        "Tagged",
+      );
+    });
   }
 
   /// Mark the whole selection reviewed: one bulk round-trip when the fast path is
@@ -116,36 +144,74 @@ export function BulkTransactionActions({
       await runAll((t) => setReviewed(t.transaction_id, true), "Marked reviewed");
       return;
     }
-    setBusy(true);
-    setNote(null);
-    const result = await bulkMarkReviewed(selected.map((t) => t.transaction_id));
-    setBusy(false);
-    if ("error" in result) {
-      setNote("Could not mark the selection reviewed.");
-      return;
-    }
-    onSelectionChange([]);
+    await exclusive(async () => {
+      let result: Awaited<ReturnType<typeof bulkMarkReviewed>>;
+      try {
+        result = await bulkMarkReviewed(selected.map((t) => t.transaction_id));
+      } catch {
+        // The one call threw: none of the rows is known to have changed, none is known not to.
+        // The whole selection stays selected.
+        reportBatch("Marked reviewed", 0, 0, count);
+        return;
+      }
+      if ("error" in result) {
+        setNote("Could not mark the selection reviewed.");
+        return;
+      }
+      onSelectionChange([]);
+    });
   }
 
   /// Apply `op` to every selected transaction; clear the selection on a clean run, else keep it and
   /// surface how many failed so the user can retry.
-  async function runAll(
+  function runAll(
     op: (txn: TransactionRowDto) => Promise<IpcError | null>,
     verb: string,
   ) {
-    setBusy(true);
-    setNote(null);
-    const results = await Promise.all(selected.map(op));
-    setBusy(false);
-    // Keep only the rows that failed selected, so the succeeded (and now-changed or removed) rows
-    // drop out and a retry acts only on the failures. An all-clean run leaves `[]` → cleared.
-    const failedIds = selected
-      .filter((_, i) => results[i] !== null)
+    return exclusive(() => runBatch(op, verb));
+  }
+
+  /// The batch itself, for a caller that already holds the bar busy (see `exclusive`). Each row
+  /// ends in one of three ways: saved (the call returned no error), failed (it returned a typed
+  /// refusal, or the row was gone), or unconfirmed (the call threw or rejected, so the write may
+  /// or may not have happened). One bad row never hides how the others went or leaves the bar
+  /// stuck busy.
+  async function runBatch(
+    op: (txn: TransactionRowDto) => Promise<IpcError | null>,
+    verb: string,
+  ) {
+    const settled = await Promise.allSettled(selected.map(op));
+    const saved = (r: PromiseSettledResult<IpcError | null>) =>
+      r.status === "fulfilled" && r.value === null;
+    // Keep the rows that did not save selected (failed and unconfirmed alike), so the saved (and
+    // now-changed or removed) rows drop out and a retry acts only on the rest. An all-clean run
+    // leaves `[]` → cleared.
+    const unsavedIds = selected
+      .filter((_, i) => !saved(settled[i]!))
       .map((t) => t.transaction_id);
-    onSelectionChange(failedIds);
-    if (failedIds.length > 0) {
-      setNote(`${verb} ${count - failedIds.length} of ${count} — ${failedIds.length} failed.`);
-    }
+    onSelectionChange(unsavedIds);
+    const unconfirmed = settled.filter((r) => r.status === "rejected").length;
+    reportBatch(verb, count - unsavedIds.length, unsavedIds.length - unconfirmed, unconfirmed);
+  }
+
+  /// The summary after a bulk run, when anything did not save: "Tagged 1 of 3 — 1 failed, 1
+  /// couldn’t be confirmed. Check the unconfirmed rows before trying again." Nothing is said when
+  /// every row saved. When no row saved and any is unconfirmed, the lead says zero *confirmed*
+  /// ("Tagged: 0 of 3 confirmed — ..."), since the unconfirmed rows may have changed.
+  function reportBatch(verb: string, savedCount: number, failed: number, unconfirmed: number) {
+    if (failed === 0 && unconfirmed === 0) return;
+    const parts = [
+      failed > 0 ? `${failed} failed` : null,
+      unconfirmed > 0 ? `${unconfirmed} couldn’t be confirmed` : null,
+    ].filter(Boolean);
+    const lead =
+      savedCount === 0 && unconfirmed > 0
+        ? `${verb}: 0 of ${count} confirmed`
+        : `${verb} ${savedCount} of ${count}`;
+    setNote(
+      `${lead} — ${parts.join(", ")}.` +
+        (unconfirmed > 0 ? " Check the unconfirmed rows before trying again." : ""),
+    );
   }
 
   return (
@@ -182,8 +248,7 @@ export function BulkTransactionActions({
       {/* Always available, even with zero tags (personal-cfo-4d8.24.8): type an existing
           tag (suggested via the datalist) or a new name — Enter/Add creates + applies it to
           the whole selection. set_tags REPLACES the tag set, so applyTag merges with each
-          row's current tags from the list snapshot (a tag edited elsewhere in the same
-          instant could be missed until the list refetches — j0cg.4 notes). */}
+          row's current tags, read fresh just before the writes. */}
       <div className="flex items-center gap-1">
         <input
           aria-label="Add or create tag"
