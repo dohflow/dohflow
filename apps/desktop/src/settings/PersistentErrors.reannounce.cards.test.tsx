@@ -35,6 +35,8 @@ const mocks = vi.hoisted(() => ({
   connectorAdapters: vi.fn(),
   connectorConnections: vi.fn(),
   connectorSync: vi.fn(),
+  connectorForget: vi.fn(),
+  reloadVaults: vi.fn(),
   accountList: vi.fn(),
   openUrl: vi.fn(),
   switchVault: vi.fn(),
@@ -46,11 +48,12 @@ vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: mocks.pluginRelaunch })
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 vi.mock("@/bindings", () => ({ commands: mocks }));
 let vaults: VaultSummaryDto[] = [];
+let vaultsError: string | null = null;
 vi.mock("@/vault/useVault", () => ({
   useVault: () => ({
     vaults,
-    vaultsError: null,
-    reloadVaults: vi.fn(),
+    vaultsError,
+    reloadVaults: mocks.reloadVaults,
     createNamedVault: vi.fn(),
     switchVault: mocks.switchVault,
     renameVault: mocks.renameVault,
@@ -90,6 +93,8 @@ async function expectEndsOnHeading(title: string, opts: {
 beforeEach(() => {
   vi.clearAllMocks();
   vaults = [];
+  vaultsError = null;
+  mocks.reloadVaults.mockResolvedValue(undefined);
   mocks.diagnosticsDiscard.mockResolvedValue(ok(null));
   mocks.baseCurrency.mockResolvedValue(ok("USD"));
   mocks.setBaseCurrency.mockResolvedValue(ok(null));
@@ -233,6 +238,55 @@ describe("an identical repeat failure is announced again, and a pending retry ch
     await act(async () => retry.release(result("provider said no")));
     await waitFor(() => expect(again.count()).toBeGreaterThanOrEqual(2));
     expect(screen.getByText("provider said no")).toBe(alert);
+  });
+});
+
+describe("more kept errors announce an identical repeat again", () => {
+  it("Vaults: a Retry of the list read that fails the same way", async () => {
+    vaults = [{ id: "real", name: "Real", is_active: true, created_at: "2026-07-01T00:00:00Z" }];
+    vaultsError = "The vault service is unavailable.";
+    renderWithClient(
+      <SettingsSection title="Vaults" span="full">
+        <VaultsCard />
+      </SettingsSection>,
+    );
+    const alert = await screen.findByText("The vault service is unavailable.");
+    const retry = held<undefined>();
+    mocks.reloadVaults.mockReturnValueOnce(retry.promise);
+    const pending = watchAlert(alert);
+    fireEvent.click(within(slotOf("Vaults")).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.reloadVaults).toHaveBeenCalledTimes(1));
+    expect(pending.stop()).toBe(0);
+    const again = watchAlert(alert);
+    await act(async () => retry.release(undefined));
+    await waitFor(() => expect(again.count()).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText("The vault service is unavailable.")).toBe(alert);
+  });
+
+  it("Connections: a Forget that fails the same way twice is inserted again (these messages clear when the attempt starts)", async () => {
+    const connection = {
+      id: "a", adapter_id: "simplefin", display_hint: "Bank a", last_synced_at: "2026-08-22T10:00:00Z",
+      last_error: null, refresh_cadence: "every_open", attention: [], links: [],
+    };
+    mocks.connectorConnections.mockResolvedValue(ok([connection]));
+    mocks.connectorForget.mockResolvedValueOnce({ status: "error", error: "Persistence failure" });
+    renderWithClient(
+      <SettingsSection title="Connections" span="full">
+        <ConnectionsCard />
+      </SettingsSection>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Forget connection…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+    const first = await screen.findByText("Persistence failure");
+    const retry = held<{ status: "error"; error: string }>();
+    mocks.connectorForget.mockReturnValueOnce(retry.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+    await waitFor(() => expect(mocks.connectorForget).toHaveBeenCalledTimes(2));
+    // Cleared when the attempt started, so the repeat arrives as a new alert and is announced.
+    await waitFor(() => expect(screen.queryByText("Persistence failure")).toBeNull());
+    await act(async () => retry.release({ status: "error", error: "Persistence failure" }));
+    const second = await screen.findByText("Persistence failure");
+    expect(second).not.toBe(first);
   });
 });
 
