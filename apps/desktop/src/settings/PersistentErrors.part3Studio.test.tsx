@@ -182,6 +182,9 @@ describe("R3: Connections", () => {
     const refresh = within(slotOf("Connections")).getByRole("button", { name: /^Refresh now/ });
     refresh.focus();
     fireEvent.click(refresh);
+    // A browser drops focus from a button that was just disabled (jsdom keeps it, so move it).
+    document.body.tabIndex = -1;
+    act(() => document.body.focus());
     await waitFor(() => expect(mocks.connectorSync).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(mocks.connectorConnections.mock.calls.length).toBeGreaterThanOrEqual(2));
     // The sync worked, but the list that still carries the error has not been re-read: the entry and
