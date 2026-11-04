@@ -929,6 +929,7 @@ mod all_variants {
             for (label, setup) in before(name, &worker, &mut rt) {
                 nonempty += usize::from(run_checked(&worker, label, setup, &mut exercised));
             }
+            after_setup(&worker, &mut rt);
             let command = command_for(name, sample, &rt);
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;

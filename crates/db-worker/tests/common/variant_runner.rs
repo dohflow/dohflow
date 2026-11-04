@@ -4,13 +4,12 @@
 //! (`before`), and the sample rewritten to name what the setup created (`command_for`).
 
 use super::samples::{account, category, event, tag, txn, u, usd};
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use core_ledger::{Account, AccountFlags, BillContractId, CashflowRole, LedgerAccountId};
 use core_money::{Currency, Money};
 use db_worker::{
     AssumptionKind, AssumptionSource, DbWorker, NewAssumptionEvent, NewScenario, WriteCommand,
 };
-use importer_core::{ParsedAccount, ParsedBatch, ParsedRecord, ParsedTransaction};
 use pay_schedule::Frequency;
 use uuid::Uuid;
 
@@ -110,6 +109,8 @@ pub struct Runtime {
     pub staged: Vec<Uuid>,
     /// The source record of the first staged row (an import commit names it).
     pub source_record: Option<Uuid>,
+    /// The staged rows `before` named are not inserted until its setup commands have run.
+    pub staged_pending: bool,
     /// The vault's first member, whose id derives from the vault id.
     pub primary: Option<Uuid>,
 }
@@ -132,10 +133,39 @@ pub fn date(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).unwrap()
 }
 
+/// Insert the class-3 staged rows `before` asked for, once its setup commands (which create the
+/// source records they point at) have been dispatched. Fixed ids, and the row ordinal a staging
+/// pass would give them.
+pub fn after_setup(worker: &DbWorker, rt: &mut Runtime) {
+    if !std::mem::take(&mut rt.staged_pending) {
+        return;
+    }
+    let conn = worker.read_connection().unwrap();
+    for (index, staged) in rt.staged.iter().enumerate() {
+        let n = i64::try_from(index).unwrap() + 1;
+        conn.execute(
+            "INSERT INTO staged_transactions
+                (id, source_record_id, proposed_account_id, posted_at, amount_minor, currency,
+                 normalized_merchant, description, txn_fingerprint, created_at, row_ordinal)
+             VALUES (?1, ?2, ?3, '2026-06-01', ?4, 'USD', ?5, ?5, ?6, '2026-11-04T00:00:00+00:00', ?7)",
+            rusqlite::params![
+                staged,
+                u(920 + u128::try_from(n).unwrap()),
+                account(1).as_uuid(),
+                -100 * n,
+                format!("payee {n}"),
+                format!("2026-06-01|{}|payee {n}", -100 * n),
+                n,
+            ],
+        )
+        .expect("setup: a staged transaction");
+    }
+}
+
 /// Commands that satisfy a variant's references, dispatched (and checked) just before it.
 pub fn before(
     name: &str,
-    worker: &DbWorker,
+    _worker: &DbWorker,
     rt: &mut Runtime,
 ) -> Vec<(&'static str, WriteCommand)> {
     match name {
@@ -250,80 +280,57 @@ pub fn before(
                 tag_ids: vec![],
             },
         )],
-        "convert_unexplained_to_transaction" => {
+        "convert_unexplained_to_transaction" => vec![(
             // An asserted balance with nothing explaining it: the residual to convert.
-            worker
-                .record_balance_assertion(
-                    Uuid::now_v7(),
-                    account(1),
-                    Money::new(900_000, Currency::Usd),
-                    Utc::now().date_naive(),
-                )
-                .expect("setup: balance assertion");
-            vec![]
-        }
+            "setup: an asserted balance with nothing explaining it",
+            WriteCommand::RecordBalanceAssertion {
+                id: u(900),
+                account_id: account(1),
+                amount: Money::new(900_000, Currency::Usd),
+                as_of: date(2026, 10, 1),
+            },
+        )],
         "commit_staged" | "commit_imported_transaction" => {
             // Two staged transactions: one to commit, one to skip; the import commit names the
-            // source record of the first.
-            let batch = Uuid::now_v7();
-            worker
-                .read_connection()
-                .unwrap()
-                .execute(
-                    "INSERT INTO source_batches
-                        (id, source_type, source_name, status, created_at, updated_at)
-                     VALUES (?1, 'csv', 'oracle', 'staged', ?2, ?2)",
-                    rusqlite::params![batch, Utc::now().to_rfc3339()],
-                )
-                .unwrap();
-            let record = |n: i64| ParsedRecord {
-                external_id: None,
-                source_hash: format!("sha256:oracle-{n}"),
-                normalized_json: "{}".to_owned(),
-                parse_confidence_bps: Some(10_000),
-                transaction: Some(ParsedTransaction {
-                    posted_date: date(2026, 6, 1),
-                    transaction_date: None,
-                    raw_date: "06/01/2026".to_owned(),
-                    date_confidence_bps: 10_000,
-                    amount: Money::new(-100 * n, Currency::Usd),
-                    description: Some(format!("payee {n}")),
-                    category: None,
-                    normalized_merchant: Some(format!("payee {n}")),
-                    external_account: None,
-                    txn_fingerprint: format!("2026-06-01|{}|payee {n}", -100 * n),
-                }),
-                balance: None,
-            };
-            let batch_data = ParsedBatch {
-                source_format: "csv".to_owned(),
-                accounts: vec![ParsedAccount {
-                    external_id: None,
-                    external_name: None,
-                    external_number_hash: None,
-                    proposed_subtype: None,
-                    currency: None,
-                }],
-                records: vec![record(1), record(2)],
-                warnings: Vec::new(),
-                skipped: Vec::new(),
-            };
-            rt.staged = worker
-                .stage_parsed_batch(batch, &batch_data, account(1).as_uuid())
-                .expect("setup: staged transactions");
-            assert!(rt.staged.len() >= 2, "two staged transactions");
-            rt.source_record = Some(
-                worker
-                    .read_connection()
-                    .unwrap()
-                    .query_row(
-                        "SELECT source_record_id FROM staged_transactions WHERE id = ?1",
-                        [rt.staged[0]],
-                        |r| r.get(0),
-                    )
-                    .expect("setup: the staged row's source record"),
-            );
-            vec![]
+            // source record of the first. Everything has a fixed id, so the same setup yields the
+            // same state in every run (the engine pin hashes it). The batch and the records are
+            // class 1b and go in through commands; the staged rows are class 3 and are inserted
+            // directly, with the row ordinal a staging pass would give them.
+            if !rt.staged.is_empty() {
+                // Set up by the first of the two variants.
+                return vec![];
+            }
+            rt.staged = vec![u(930), u(931)];
+            rt.source_record = Some(u(921));
+            let mut setup = vec![(
+                "setup: the source batch",
+                WriteCommand::CreateSourceBatch {
+                    id: core_ledger::SourceBatchId::from_uuid(u(920)),
+                    source_type: "csv".to_owned(),
+                    source_name: Some("oracle".to_owned()),
+                    file_fingerprint: None,
+                    parser_version: None,
+                    connector_connection_id: None,
+                },
+            )];
+            for (n, label) in [
+                (1_i64, "setup: the first source record"),
+                (2, "setup: the second source record"),
+            ] {
+                setup.push((
+                    label,
+                    WriteCommand::AttachSourceRecord {
+                        id: core_ledger::SourceRecordId::from_uuid(u(920 + n as u128)),
+                        batch_id: core_ledger::SourceBatchId::from_uuid(u(920)),
+                        external_id: None,
+                        source_hash: format!("sha256:oracle-{n}"),
+                        normalized_json: "{}".to_owned(),
+                        parse_confidence_bps: Some(10_000),
+                    },
+                ));
+            }
+            rt.staged_pending = true;
+            setup
         }
         // The clone names two events of its source, so the source needs them first.
         "clone_scenario" => [
@@ -348,28 +355,32 @@ pub fn before(
             )
         })
         .collect(),
-        "apply_scenario" => {
-            let scenario = u(25);
-            worker
-                .create_scenario(&NewScenario {
-                    id: scenario,
-                    name: "Oracle".to_owned(),
-                    description: None,
-                })
-                .expect("setup: scenario");
-            worker
-                .record_assumption_event(&NewAssumptionEvent {
-                    id: Uuid::now_v7(),
-                    kind: AssumptionKind::InflationRate,
-                    target_entity_type: None,
-                    target_entity_id: None,
-                    params_json: r#"{"annual_bps":400}"#.to_owned(),
-                    source: AssumptionSource::UserOverride,
-                    scenario_id: Some(scenario),
-                })
-                .expect("setup: assumption event");
-            vec![]
-        }
+        "apply_scenario" => vec![
+            (
+                "setup: a scenario",
+                WriteCommand::CreateScenario {
+                    scenario: NewScenario {
+                        id: u(25),
+                        name: "Oracle".to_owned(),
+                        description: None,
+                    },
+                },
+            ),
+            (
+                "setup: an assumption event in it",
+                WriteCommand::RecordAssumptionEvent {
+                    event: NewAssumptionEvent {
+                        id: u(903),
+                        kind: AssumptionKind::InflationRate,
+                        target_entity_type: None,
+                        target_entity_id: None,
+                        params_json: r#"{"annual_bps":400}"#.to_owned(),
+                        source: AssumptionSource::UserOverride,
+                        scenario_id: Some(u(25)),
+                    },
+                },
+            ),
+        ],
         // The confirmed undo just unapplied the scenario; apply it again for the retired one.
         "revert_scenario_apply" => vec![(
             "setup: apply the scenario again",
