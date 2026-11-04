@@ -226,12 +226,12 @@ describe("an identical repeat failure is announced again, and a pending retry ch
         <ConnectionsCard />
       </SettingsSection>,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh now" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Refresh now/ }));
     const alert = await screen.findByText("provider said no");
     const retry = held<ReturnType<typeof result>>();
     mocks.connectorSync.mockReturnValueOnce(retry.promise);
     const pending = watchAlert(alert);
-    fireEvent.click(within(slotOf("Connections")).getByRole("button", { name: "Refresh now" }));
+    fireEvent.click(within(slotOf("Connections")).getByRole("button", { name: /^Refresh now/ }));
     await waitFor(() => expect(mocks.connectorSync).toHaveBeenCalledTimes(2));
     expect(pending.stop()).toBe(0);
     const again = watchAlert(alert);
@@ -302,7 +302,7 @@ describe("collapsed retries keep their error and action until they settle", () =
         <VaultsCard />
       </SettingsSection>,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[1]!);
+    fireEvent.click(screen.getAllByRole("button", { name: /^Rename / })[1]!);
     fireEvent.change(screen.getByLabelText("New name for Test"), { target: { value: "Scratch" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText("Persistence failure");

@@ -104,7 +104,7 @@ describe("Vaults", () => {
   it("a failed rename keeps the draft in the body and its one Save in the slot", async () => {
     ops.renameVault.mockResolvedValueOnce("Persistence failure");
     renderCard();
-    fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[1]!);
+    fireEvent.click(screen.getAllByRole("button", { name: /^Rename / })[1]!);
     const input = screen.getByLabelText("New name for Test");
     fireEvent.change(input, { target: { value: "Scratch" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -124,7 +124,7 @@ describe("Vaults", () => {
   it("cancelling a rename clears its error and the Save in the slot", async () => {
     ops.renameVault.mockResolvedValueOnce("Persistence failure");
     renderCard();
-    fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[1]!);
+    fireEvent.click(screen.getAllByRole("button", { name: /^Rename / })[1]!);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText("Persistence failure");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));

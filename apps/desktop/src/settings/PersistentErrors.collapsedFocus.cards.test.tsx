@@ -319,19 +319,19 @@ describe("Connections", () => {
         <ConnectionsCard />
       </SettingsSection>,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh now" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Refresh now/ }));
     await screen.findByText("provider said no");
     const retry = held<ReturnType<typeof result>>();
     mocks.connectorSync.mockReturnValueOnce(retry.promise);
     await expectEndsOnHeading("Connections", {
-      action: () => within(slotOf("Connections")).getByRole("button", { name: "Refresh now" }),
+      action: () => within(slotOf("Connections")).getByRole("button", { name: /^Refresh now/ }),
       pending: () => {
-        fireEvent.click(within(slotOf("Connections")).getByRole("button", { name: "Refresh now" }));
+        fireEvent.click(within(slotOf("Connections")).getByRole("button", { name: /^Refresh now/ }));
       },
       settle: async () => {
         await waitFor(() => expect(mocks.connectorSync).toHaveBeenCalledTimes(2));
         expect(within(slotOf("Connections")).getByText("provider said no")).toBeInTheDocument();
-        expect(within(slotOf("Connections")).getByRole("button", { name: "Refresh now" })).toBeInTheDocument();
+        expect(within(slotOf("Connections")).getByRole("button", { name: /^Refresh now/ })).toBeInTheDocument();
         await act(async () => retry.release(result("synced", null)));
       },
       gone: () => expect(screen.queryByText("provider said no")).toBeNull(),

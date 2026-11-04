@@ -92,7 +92,7 @@ const renderCard = () =>
   );
 const section = () => document.querySelector(`[data-settings-section="Connections"]`) as HTMLElement;
 const slot = () => section().querySelector("[data-settings-persistent]") as HTMLElement;
-const refreshButtons = () => within(section()).queryAllByRole("button", { name: "Refresh now", hidden: true });
+const refreshButtons = () => within(section()).queryAllByRole("button", { name: /^Refresh now/, hidden: true });
 const collapse = () => fireEvent.click(screen.getByRole("button", { name: "Connections" }));
 
 describe("Connections", () => {
@@ -111,7 +111,7 @@ describe("Connections", () => {
     expect(screen.getByText("Last refresh failed: access revoked — re-link required")).toBeVisible();
     expect(mocks.connectorSync).not.toHaveBeenCalled();
     mocks.connectorSync.mockResolvedValue(syncResult("a", "synced", null));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Refresh now/ }));
     await waitFor(() => expect(mocks.connectorSync).toHaveBeenCalledTimes(1));
   });
 
@@ -129,7 +129,7 @@ describe("Connections", () => {
   it("a healthy connection keeps Refresh now in the body, and the slot is empty", async () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection("a")]));
     renderCard();
-    await screen.findByRole("button", { name: "Refresh now" });
+    await screen.findByRole("button", { name: /^Refresh now/ });
     expect(refreshButtons()).toHaveLength(1);
     expect(slot().contains(refreshButtons()[0]!)).toBe(false);
     expect(slot()).toBeEmptyDOMElement();
@@ -150,7 +150,7 @@ describe("Connections", () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection("a")]));
     mocks.connectorSync.mockResolvedValueOnce(syncResult("a", "failed", null));
     renderCard();
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh now" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Refresh now/ }));
     const alert = await screen.findByText("The refresh did not complete.");
     expect(slot().contains(alert)).toBe(true);
     expect(refreshButtons()).toHaveLength(1);
@@ -159,7 +159,7 @@ describe("Connections", () => {
     collapse();
     expect(screen.getByText("The refresh did not complete.")).toBeVisible();
     mocks.connectorSync.mockResolvedValueOnce(syncResult("a", "synced", null));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Refresh now/ }));
     await waitFor(() => expect(mocks.connectorSync).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText("The refresh did not complete.")).not.toBeInTheDocument());
     // Recovered: the one Refresh now is back in the body.
@@ -171,7 +171,7 @@ describe("Connections", () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection("a"), connection("b")]));
     mocks.connectorSync.mockResolvedValueOnce(syncResult("b", "failed", "provider said no"));
     renderCard();
-    const buttons = await screen.findAllByRole("button", { name: "Refresh now" });
+    const buttons = await screen.findAllByRole("button", { name: /^Refresh now/ });
     fireEvent.click(buttons[1]!);
     await screen.findByText("provider said no");
     const after = refreshButtons();
@@ -185,12 +185,12 @@ describe("Connections", () => {
     mocks.connectorConnections.mockResolvedValue(ok([connection("a")]));
     mocks.connectorSync.mockResolvedValueOnce(syncResult("a", "failed", "provider said no"));
     renderCard();
-    const button = await screen.findByRole("button", { name: "Refresh now" });
+    const button = await screen.findByRole("button", { name: /^Refresh now/ });
     button.focus();
     fireEvent.click(button);
     await screen.findByText("provider said no");
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Refresh now" })),
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Refresh now/ })),
     );
     expect(slot().contains(document.activeElement)).toBe(true);
   });

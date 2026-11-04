@@ -78,16 +78,20 @@ export function DiagnosticsCard() {
     [],
   );
 
+  // This card moves focus itself when a preview opens or closes. It does so only while focus is
+  // still where the action left it (on the page, or on the Preview button that was pressed): a
+  // person who has since moved to another control, a later section say, keeps it. And never into a
+  // collapsed section's hidden body, where the hook's hand-over chooses the heading instead.
   useEffect(() => {
+    const active = document.activeElement;
+    const focusIsFree = !active || active === document.body || active === previewButton.current;
     if (preview) {
-      // Not into a collapsed section's hidden body: there the Preview's hand-over chooses the heading.
       const region = previewRegion.current;
-      if (region && region.closest("[hidden],[inert]") === null) region.focus();
+      if (focusIsFree && region && region.closest("[hidden],[inert]") === null) region.focus();
     } else if (returnFocus.current) {
       returnFocus.current = false;
-      // Not into a collapsed section's hidden body: there the Save's hand-over chooses the heading.
       const button = previewButton.current;
-      if (button && button.closest("[hidden],[inert]") === null) button.focus();
+      if (focusIsFree && button && button.closest("[hidden],[inert]") === null) button.focus();
     }
   }, [preview, previewButton]);
 

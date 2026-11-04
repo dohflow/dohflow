@@ -233,8 +233,8 @@ const CADENCE_OPTIONS: { value: string; label: string }[] = [
 
 const RefreshNowButton = forwardRef<
   HTMLButtonElement,
-  { syncPending: boolean; onSync: () => void }
->(function RefreshNowButton({ syncPending, onSync }, ref) {
+  { syncPending: boolean; onSync: () => void; connectionName: string }
+>(function RefreshNowButton({ syncPending, onSync, connectionName }, ref) {
   return (
     <Button
       ref={ref}
@@ -243,6 +243,8 @@ const RefreshNowButton = forwardRef<
       className="shrink-0"
       disabled={syncPending}
       onClick={onSync}
+      // The visible label stays "Refresh now"; the name says which connection.
+      aria-label={`Refresh now, ${connectionName}`}
     >
       {syncPending ? <Loader2 className="animate-spin" /> : null}
       Refresh now
@@ -337,7 +339,12 @@ export function ConnectionRow({
         >
           <HealthBadge connection={connection} />
           {messagesInSlot ? null : (
-            <RefreshNowButton ref={refreshRef} syncPending={syncPending} onSync={onSync} />
+            <RefreshNowButton
+              ref={refreshRef}
+              syncPending={syncPending}
+              onSync={onSync}
+              connectionName={connection.display_hint ?? `${providerName} connection`}
+            />
           )}
         </div>
       </div>
@@ -425,10 +432,18 @@ export function ConnectionRow({
 function ConnectionItem({
   syncError,
   actionAttempt,
+  listRefreshing,
   ...row
-}: ComponentProps<typeof ConnectionRow> & { syncError: string | null; actionAttempt: number }) {
+}: ComponentProps<typeof ConnectionRow> & {
+  syncError: string | null;
+  actionAttempt: number;
+  /// The connections list is being read again. A Refresh now that worked clears the connection's
+  /// error only when that read lands, so the hand-over is not settled until then.
+  listRefreshing: boolean;
+}) {
   const syncAlert = useReannounced(syncError, actionAttempt);
-  const refresh = useKeepFocusAcrossMove({ settled: !row.syncPending });
+  const refresh = useKeepFocusAcrossMove({ settled: !row.syncPending && !listRefreshing });
+  const connectionName = row.connection.display_hint ?? `${row.providerName} connection`;
   const inSlot = needsRefresh(row.connection) || syncError !== null;
   const onSync = () => {
     refresh.remember();
@@ -440,9 +455,7 @@ function ConnectionItem({
       <PersistentNotice>
         {inSlot && (
           <div className="flex flex-col gap-2 rounded-md border p-3">
-            <p className="break-words text-sm font-medium">
-              {row.connection.display_hint ?? `${row.providerName} connection`}
-            </p>
+            <p className="break-words text-sm font-medium">{connectionName}</p>
             <ConnectionMessages connection={row.connection} />
             {syncError !== null && (
               <p role="alert" className="text-sm text-loss">
@@ -450,7 +463,12 @@ function ConnectionItem({
               </p>
             )}
             <div>
-              <RefreshNowButton ref={refresh.ref} syncPending={row.syncPending} onSync={onSync} />
+              <RefreshNowButton
+                ref={refresh.ref}
+                syncPending={row.syncPending}
+                onSync={onSync}
+                connectionName={connectionName}
+              />
             </div>
           </div>
         )}
@@ -479,6 +497,7 @@ export function ConnectionsCard({
     setRefreshCadence,
     sync,
     syncingId,
+    refreshing,
     forget,
   } = useConnections();
   const accountsQuery = useQuery({
@@ -695,6 +714,7 @@ export function ConnectionsCard({
               key={connection.id}
               syncError={syncFailedId === connection.id ? actionError : null}
               actionAttempt={actionAttempt}
+              listRefreshing={refreshing}
               connection={connection}
               providerName={providers.displayName(connection.adapter_id)}
               credentialNoun={

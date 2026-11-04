@@ -139,6 +139,7 @@ export function VaultsCard() {
       ref={switchPressed === id ? switchFocus.ref : undefined}
       size="sm"
       variant="outline"
+      className="shrink-0"
       disabled={busy}
       onClick={(event) => {
         switchFocus.remember(event.currentTarget);
@@ -214,6 +215,8 @@ export function VaultsCard() {
                       setRenameValue(v.name);
                       setFailure(null);
                     }}
+                    // The visible label stays "Rename"; the name says which vault.
+                    aria-label={`Rename ${v.name}`}
                   >
                     Rename
                   </Button>
@@ -282,9 +285,13 @@ export function VaultsCard() {
               <p role="alert" className="text-sm text-loss">
                 {failureAlert}
               </p>
-              <div className="flex items-center gap-2">
+              <div className="flex items-start gap-2">
                 {failure.action === "switch" && switchTarget && (
-                  <span className="truncate text-sm font-medium">{switchTarget.name}</span>
+                  // The full name wraps (a long name keeps its distinguishing suffix), beside a
+                  // Switch that does not shrink.
+                  <span className="min-w-0 flex-1 break-words text-sm font-medium">
+                    {switchTarget.name}
+                  </span>
                 )}
                 {failure.action === "switch" && switchButton(failure.id)}
                 {failure.action === "rename" && saveButton(failure.id)}
