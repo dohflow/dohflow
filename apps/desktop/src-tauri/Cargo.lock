@@ -5494,6 +5494,7 @@ dependencies = [
  "hmac",
  "hpke",
  "libc",
+ "platform-traits",
  "sha2",
  "sync-core",
  "thiserror 2.0.18",

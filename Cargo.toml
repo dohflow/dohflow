@@ -108,8 +108,11 @@ subtle = "2"
 # and hash stack in the tree beside the one the vault already uses, exactly the cost the ed25519-dalek pin
 # above avoids. 0.13.0 resolves to aes-gcm 0.10, hkdf 0.12, sha2 0.10, x25519-dalek 2 (curve25519-dalek 4,
 # already here through ed25519-dalek). Default features are off: P-256 is not a Sync suite. Only
-# vault-crypto uses it. Re-run the RFC 9180 vectors in crates/vault-crypto/tests before any bump.
-hpke = { version = "=0.13.0", default-features = false, features = ["x25519"] }
+# vault-crypto uses it. `alloc` is the single-shot seal and open API (heap buffers; no new package).
+# Re-run the RFC 9180 vectors in crates/vault-crypto/tests before any bump. Reopen this pin only for a
+# RustSec advisory against hpke 0.13 or x25519-dalek 2, or for `suite_id` 2 (the hybrid KEM), which is
+# the moment for a whole-workspace RustCrypto generation move.
+hpke = { version = "=0.13.0", default-features = false, features = ["alloc", "x25519"] }
 # hpke's own x25519-dalek entry leaves zeroize off, so the X25519 secret scalar it builds would not be
 # scrubbed on drop. Named here (and used by vault-crypto) so cargo's feature unification turns it on for
 # the copy hpke links, the same device as aes/ctr/ghash above. Pinned to the version hpke 0.13 resolves.

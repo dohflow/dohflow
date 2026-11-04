@@ -34,6 +34,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use crate::secret::SecretBytes;
+use crate::sync_keys::tag_key_commitment;
 
 /// The label of the tag-key derivation.
 pub const TAG_KEY_LABEL: &str = "dohflow/sync-idem-tag-key/v1";
@@ -55,13 +56,55 @@ pub(crate) fn label_bytes(label: &str) -> Vec<u8> {
     out
 }
 
-/// Derive the vault's idempotency-tag key from the tag secret `S`, in a protected buffer.
+/// Why a tag secret was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TagSecretError {
+    /// The secret does not match the commitment in the epoch record.
+    #[error("the tag secret does not match the epoch record's commitment")]
+    CommitmentMismatch,
+}
+
+/// The verified tag secret `S` of one vault. It cannot be built from a raw secret alone: the
+/// secret must match the epoch record's `key_commitment_s`, so a tag key can never be derived from
+/// a secret that failed its commitment. The counterpart of
+/// [`EpochKey`](crate::sync_envelope::EpochKey) for the non-rotating `S` (C.2).
+pub struct TagSecret(SecretBytes<32>);
+
+impl TagSecret {
+    /// Accept `secret` as `S` if its commitment equals `commitment` (the `key_commitment_s` of the
+    /// verified epoch record).
+    ///
+    /// # Errors
+    /// [`TagSecretError::CommitmentMismatch`].
+    pub fn from_verified(
+        secret: SecretBytes<32>,
+        commitment: &[u8; 32],
+    ) -> Result<Self, TagSecretError> {
+        if &tag_key_commitment(&secret) != commitment {
+            return Err(TagSecretError::CommitmentMismatch);
+        }
+        Ok(Self(secret))
+    }
+
+    /// The protected bytes, for the sealer of a key set and the custody module only.
+    pub(crate) const fn secret(&self) -> &SecretBytes<32> {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for TagSecret {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("TagSecret([REDACTED])")
+    }
+}
+
+/// Derive the vault's idempotency-tag key from the verified tag secret `S`, in a protected buffer.
 ///
 /// # Panics
 /// Never in practice: a 32-byte HKDF-SHA256 output is far inside its limit.
 #[must_use]
-pub fn idempotency_tag_key(secret: &SecretBytes<32>, vault_id: &[u8; 16]) -> SecretBytes<32> {
-    let hk = Hkdf::<Sha256>::from_prk(secret.expose()).expect("a 32-byte secret is a valid PRK");
+pub fn idempotency_tag_key(secret: &TagSecret, vault_id: &[u8; 16]) -> SecretBytes<32> {
+    let hk = Hkdf::<Sha256>::from_prk(secret.0.expose()).expect("a 32-byte secret is a valid PRK");
     let mut info = label_bytes(TAG_KEY_LABEL);
     info.extend_from_slice(vault_id);
     SecretBytes::<32>::init(|out| hk.expand(&info, out).map_err(|_| ()))
