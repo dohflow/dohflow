@@ -419,10 +419,10 @@ The Paper contract **A2** (page `p-7-0`, frozen 2026-10-26 05:24:16 UTC) is a he
 opens and closes a section. Its behavior is specified in
 [`settings-layout-review.md`](../design-system/settings-layout-review.md). The shared component is
 `@/components/ui/disclosure` (`Disclosure` and `usePinDisclosures`, `personal-cfo-4d8.38`),
-hand-authored in the shadcn style (section 7.1) on React primitives with no new dependency. **No
-screen uses it yet**: each existing screen keeps its own until it is migrated, and a migration
-reconciles that screen's differences (the "today" column) rather than changing its behavior in
-passing.
+hand-authored in the shadcn style (section 7.1) on React primitives with no new dependency. The
+Settings page is the first screen to use it (every section open, cards unchanged); every other
+screen keeps its own until it is migrated, and a migration reconciles that screen's differences
+(the "today" column) rather than changing its behavior in passing.
 
 How to use it:
 
@@ -442,12 +442,12 @@ How to use it:
 
 | A2 contract | On `main` today |
 |-------------|-----------------|
-| One native trigger button inside the heading, with a stable name, `aria-expanded` and `aria-controls`; Enter and Space activate; Tab follows source order | `Disclosure` is the shared component; no screen uses it yet. Individual screens implement their own (`accounts/AccountsView.tsx`, `accounts/CreditCardsView.tsx`, `future-cash/NeedsConfirmation.tsx`, `future-cash/ProjectedActivityTable.tsx`, `transactions/TransactionFilterBar.tsx`), with varying semantics; reconcile them before reuse |
+| One native trigger button inside the heading, with a stable name, `aria-expanded` and `aria-controls`; Enter and Space activate; Tab follows source order | `Disclosure` is the shared component. The Settings page uses it through `settings/SettingsSection.tsx`, with every section open and the cards inside unchanged (`personal-cfo-4d8.39.1`). Other screens implement their own (`accounts/AccountsView.tsx`, `accounts/CreditCardsView.tsx`, `future-cash/NeedsConfirmation.tsx`, `future-cash/ProjectedActivityTable.tsx`, `transactions/TransactionFilterBar.tsx`), with varying semantics; reconcile them before reuse |
 | Sections expand independently; the DOM is stable | In `Disclosure`; per screen elsewhere |
 | Focus returns to the trigger **before** focused content is hidden; a hidden body leaves keyboard and accessibility navigation while ordinary drafts survive | In `Disclosure` (focus returns before the hide; the body is `hidden` and `inert` and stays mounted); not provided elsewhere |
-| Errors, complete remedies and the one relevant action stay **outside** the hidden body; exactly one active retry; collapse never submits, discards drafts or cancels work | In `Disclosure` (`persistent` slot); not provided elsewhere |
-| Destructive confirmations that are open, armed or irreversibly busy pin every ancestor open (focusable `aria-disabled` triggers); explicit Cancel resets and returns focus without collapsing; a blocking key rotation makes the rest of the app inert and cannot be dismissed | The rotation card exists (`settings/RotateKeyCard.tsx`) and is not yet inside a disclosure; ancestor pinning is `usePinDisclosures`, which no screen calls yet |
-| Summaries reflect real data and never claim healthy or verified while loading or failed | `Disclosure` has a `summary` slot; no screen supplies one, so no collapsed summary is shipped |
+| Errors, complete remedies and the one relevant action stay **outside** the hidden body; exactly one active retry; collapse never submits, discards drafts or cancels work | In `Disclosure` (`persistent` slot), which `SettingsSection` forwards once as its own `persistent` prop; no Settings section supplies one yet, so a card's error inside a collapsed section is still hidden (which is why every Settings section starts open) |
+| Destructive confirmations that are open, armed or irreversibly busy pin every ancestor open (focusable `aria-disabled` triggers); explicit Cancel resets and returns focus without collapsing; a blocking key rotation makes the rest of the app inert and cannot be dismissed | The rotation card (`settings/RotateKeyCard.tsx`) and the other destructive cards now sit inside Settings sections (`personal-cfo-4d8.39.1`), but no card calls `usePinDisclosures` yet (slice `personal-cfo-4d8.39.3`), so collapsing a section can still hide an armed confirmation; that is a known intermediate limit, and it is why every Settings section starts open |
+| Summaries reflect real data and never claim healthy or verified while loading or failed | `Disclosure` has a `summary` slot; the Settings sections supply one only where the page already holds the data (Backups, Comfort band, Auto-categorize, Connections, About; Vaults has none until its list read has a failure state, `personal-cfo-4d8.39.2`), built in `settings/settingsSummaries.ts` and omitted otherwise. A summary is omitted while its read has no data yet and after a refresh failed, even when an earlier read left data in the cache (`isSuccess`, or the hook's error string, gates each one) |
 | Respect reduced motion; announce a state change once; errors persist | `Disclosure`: the chevron respects reduced motion and the body does not animate; the state change is the native `aria-expanded` (no extra live region); the `persistent` slot keeps errors. Per screen elsewhere |
 
 ## 8. Testing
@@ -460,8 +460,10 @@ How to use it:
 - **A per-draft idempotency key is tested with `expectDraftKeyIdentity`**
   (`apps/desktop/src/test/idempotencyIdentity.ts`), which lists **every** field of the draft's
   identity: an unchanged retry reuses the key, changing each listed field gives a new key, a confirmed
-  success gives the same draft a new key on its next submit, and (where the component treats a typed
-  refusal as a new draft) the send after a refusal gets a new key. A
+  success gives the same draft a new key on its next submit, and the spec pins what the component does
+  after a typed refusal: usually a new draft (the send after it gets a new key), or, where it keeps the
+  key, the same draft (an unchanged send reuses it, an edited field still gets a new one;
+  `refusal.mode: "same-draft"`). A
   field left out of the key's identity still sends the right payload, so nothing else notices it; the
   helper does. Add a field to the draft, add it to the list. Every send in the test must leave the
   form open (mock the call as a lost connection), as it does for the unknown outcome a retry follows.
