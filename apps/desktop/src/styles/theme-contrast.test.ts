@@ -398,6 +398,78 @@ describe("hover state of the shared controls (personal-cfo-4d8.35)", () => {
   });
 });
 
+// ── personal-cfo-4d8.43: warning-coloured text ────────────────────────────────────────────────────
+//
+// `text-warning` is used for small text in about forty places. --warning is 3.74:1 on --card and 3.53:1
+// on --background in light, less on the 5-15% warning tints the callouts and pills sit on, so it fails
+// 4.5:1. Text now takes --warning-ink (a darker amber of the same hue in light, the same colour in dark);
+// the fills, marks, outlines and chart slots keep --warning. Read from the real stylesheet.
+
+const WARNING_TINTS = [0, 0.05, 0.1, 0.15];
+const WARNING_SURFACES = ["card", "background", "muted"] as const;
+
+describe("warning-coloured text (personal-cfo-4d8.43)", () => {
+  it("both themes define the ink, light darker than --warning and dark equal to it", () => {
+    const [lightInk, darkInk] = [token(LIGHT, "warning-ink"), token(DARK, "warning-ink")];
+    expect(lightInk).not.toBeNull();
+    expect(darkInk).not.toBeNull();
+    expect(lightInk).not.toBe(token(LIGHT, "warning"));
+    expect(relLum(lightInk!)).toBeLessThan(relLum(token(LIGHT, "warning")!));
+    expect(darkInk).toBe(token(DARK, "warning"));
+  });
+
+  it("the ink keeps the amber hue of --warning", () => {
+    const hue = (hex: string) => {
+      const [r, g, b] = rgb(hex).map((v) => v / 255) as [number, number, number];
+      const max = Math.max(r, g, b);
+      const d = max - Math.min(r, g, b);
+      return (max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60;
+    };
+    expect(Math.abs(hue(token(LIGHT, "warning-ink")!) - hue(token(LIGHT, "warning")!))).toBeLessThan(3);
+  });
+
+  it("`text-warning` is overridden to the ink, after Tailwind's own utilities, and nothing else is", () => {
+    const rule = /@layer utilities\s*\{\s*\.text-warning\s*\{\s*color:\s*var\(--warning-ink\);\s*\}\s*\}/.exec(globalsCss);
+    expect(rule, "the override rule").not.toBeNull();
+    expect(rule!.index, "after the Tailwind import").toBeGreaterThan(globalsCss.indexOf('@import "tailwindcss"'));
+    // The theme colour (what bg-warning, border-warning and the chart slots resolve) stays --warning.
+    expect(globalsCss).toMatch(/--color-warning:\s*var\(--warning\);/);
+    expect(globalsCss).not.toMatch(/--color-warning:\s*var\(--warning-ink\)/);
+  });
+
+  it("the ink clears 4.5:1 plus headroom on every surface and warning tint it is used on, in both themes", () => {
+    let checked = 0;
+    for (const theme of THEMES) {
+      const ink = token(theme.block, "warning-ink")!;
+      const warning = token(theme.block, "warning")!;
+      for (const surfaceName of WARNING_SURFACES) {
+        const surface = token(theme.block, surfaceName)!;
+        for (const alpha of WARNING_TINTS) {
+          const ground = alpha === 0 ? surface : over(warning, surface, alpha);
+          const ratio = contrast(ink, ground);
+          checked++;
+          expect(
+            ratio,
+            `${theme.name} warning text on --${surfaceName}${alpha ? ` + ${alpha * 100}% warning tint` : ""} = ${ratio.toFixed(2)}:1 (need ${TEXT_PAIR_FLOOR + HEADROOM}:1)`,
+          ).toBeGreaterThanOrEqual(TEXT_PAIR_FLOOR + HEADROOM);
+        }
+      }
+    }
+    expect(checked).toBe(THEMES.length * WARNING_SURFACES.length * WARNING_TINTS.length); // guards the guard
+  });
+
+  it("would FAIL with the plain warning colour in light: the ink is needed", () => {
+    const warning = token(LIGHT, "warning")!;
+    const fails = WARNING_SURFACES.flatMap((name) =>
+      WARNING_TINTS.map((alpha) => {
+        const surface = token(LIGHT, name)!;
+        return contrast(warning, alpha === 0 ? surface : over(warning, surface, alpha));
+      }),
+    ).filter((ratio) => ratio < TEXT_PAIR_FLOOR);
+    expect(fails.length).toBeGreaterThan(0);
+  });
+});
+
 // ── personal-cfo-4d8.56: the provenance badge label on every transaction-row state ─────────────────
 //
 // The badge sits on its own `bg-info/10` tint, which sits on a table row: idle (--card), hovered

@@ -66,6 +66,12 @@
      computed — not eyeballed) while clearing 3.5:1 against BOTH --card
      (3.7448:1) and --background (3.5349:1). */
   --warning: #b3780a;
+  /* personal-cfo-4d8.43: the INK for warning-coloured text (the `text-warning` utility, below), not a
+     fill, mark, outline or chart colour. --warning itself is 3.74:1 on --card and 3.53:1 on
+     --background, and less on the 10% tint the callouts sit on, so small text in it fails 4.5:1.
+     This is the same amber hue, darkened until the worst case in use (15% warning tint over --muted)
+     clears 4.7:1; every surface it appears on is measured in theme-contrast.test.ts. */
+  --warning-ink: #7f5507;
   --info: #3a6fa5;
   /* Categorical chart slots — ADR 0054. FOUR slots, assigned in order and NEVER
      cycled; past four, a chart folds the tail into "Other" or facets. The steps are
@@ -111,6 +117,9 @@
   --gain: #2fb37e;
   --loss: #e06a5e;
   --warning: #e0a82e;
+  /* personal-cfo-4d8.43: dark's warning already clears 4.5:1 as text on every dark surface, so the
+     ink is the same colour. */
+  --warning-ink: #e0a82e;
   --info: #6ba0d8;
   /* Dark is SELECTED against the dark card surface, not flipped from light (ADR 0054). */
   --chart-1: #11a06b; /* emerald */
@@ -169,6 +178,15 @@
   --font-sans: var(--font-ui);
   --font-display: "Nunito Variable", "Nunito", "IBM Plex Sans Variable",
     ui-sans-serif, system-ui, sans-serif;
+}
+
+/* personal-cfo-4d8.43: warning-coloured TEXT uses --warning-ink, the amber darkened to clear 4.5:1 on the
+   surfaces the app's small text sits on. Every other use of the warning colour (bg-warning, border-warning,
+   charts, marks) keeps --warning. Declared here so the ~40 call sites need no edit and none can forget. */
+@layer utilities {
+  .text-warning {
+    color: var(--warning-ink);
+  }
 }
 
 @layer base {

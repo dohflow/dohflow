@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath, URL } from "node:url";
 
 import tailwindcss from "@tailwindcss/vite";
@@ -26,6 +27,28 @@ function globalsCssRaw(): Plugin {
       if (id !== resolvedId) return null;
       this.addWatchFile(file);
       return `export default ${JSON.stringify(readFileSync(file, "utf8"))};`;
+    },
+  };
+}
+
+/// Expose Tailwind's own stylesheets (`index.css` and the three it imports) to tests as raw strings, by
+/// file name, so a test can run the REAL Tailwind compiler over `globals.css` and assert what the browser
+/// is given (personal-cfo-4d8.43). Vitest stubs CSS imports to an empty string (see above), so these are
+/// served under a virtual id too.
+function tailwindSheets(): Plugin {
+  const virtualId = "virtual:tailwind-sheets";
+  const resolvedId = `\0${virtualId}`;
+  const require = createRequire(import.meta.url);
+  const names = ["index.css", "preflight.css", "theme.css", "utilities.css"];
+  return {
+    name: "personal-cfo:tailwind-sheets",
+    resolveId: (id) => (id === virtualId ? resolvedId : null),
+    load(id) {
+      if (id !== resolvedId) return null;
+      const sheets = Object.fromEntries(
+        names.map((name) => [name, readFileSync(require.resolve(`tailwindcss/${name}`), "utf8")]),
+      );
+      return `export default ${JSON.stringify(sheets)};`;
     },
   };
 }
@@ -82,7 +105,7 @@ function sourceSha(): string {
 // navigation) is layered on in bead personal-cfo-rhci. The design system
 // (Tailwind v4 + shadcn/ui tokens) lands in personal-cfo-x99h.
 export default defineConfig({
-  plugins: [react(), tailwindcss(), globalsCssRaw(), sourceTree()],
+  plugins: [react(), tailwindcss(), globalsCssRaw(), tailwindSheets(), sourceTree()],
   define: { __SOURCE_SHA__: JSON.stringify(sourceSha()) },
   resolve: {
     // `@/…` resolves to `src/…` — the shadcn/ui import convention.
