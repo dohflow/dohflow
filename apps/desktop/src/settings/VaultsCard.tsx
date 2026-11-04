@@ -34,13 +34,15 @@ export function VaultsCard() {
   // the body. Moving it must not strand focus.
   const retry = useKeepFocusAcrossMove({ settled: !busy });
   const switchFocus = useKeepFocusAcrossMove({ settled: !busy });
+  // Every non-active vault has its own Switch, but one hand-over serves them all: its ref goes on
+  // the Switch of the vault last pressed, wherever that button is rendered.
+  const [switchPressed, setSwitchPressed] = useState<string | null>(null);
   const saveFocus = useKeepFocusAcrossMove({ settled: !busy });
   const createFocus = useKeepFocusAcrossMove({ settled: !busy });
 
   if (vaults.length === 0 && !vaultsError) return null;
 
   async function onSwitch(id: string) {
-    switchFocus.remember();
     setBusy(true);
     setFailure(null);
     const result = await switchVault(id);
@@ -118,11 +120,15 @@ export function VaultsCard() {
   const switchTarget = vaults.find((v) => v.id === switchInSlot);
   const switchButton = (id: string) => (
     <Button
-      ref={switchFocus.ref}
+      ref={switchPressed === id ? switchFocus.ref : undefined}
       size="sm"
       variant="outline"
       disabled={busy}
-      onClick={() => void onSwitch(id)}
+      onClick={(event) => {
+        switchFocus.remember(event.currentTarget);
+        setSwitchPressed(id);
+        void onSwitch(id);
+      }}
     >
       Switch
     </Button>

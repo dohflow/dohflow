@@ -34,8 +34,11 @@ export function useKeepFocusAcrossMove<T extends HTMLButtonElement | HTMLSelectE
   });
   return {
     ref,
-    remember: () => {
-      pending.current = document.activeElement === ref.current;
+    /// Call as the action starts. When several buttons share one hook (a row each), pass the one
+    /// that was pressed: `ref` is on whichever is rendered for the pressed row, which is not yet
+    /// known at this moment.
+    remember: (pressed?: Element | null) => {
+      pending.current = document.activeElement === (pressed ?? ref.current);
     },
   };
 }

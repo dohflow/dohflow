@@ -139,6 +139,19 @@ describe("Diagnostics", () => {
     expect(slot().contains(document.activeElement)).toBe(true);
   });
 
+  it("focus stays on Preview diagnostics when a failed preview moves it into the slot", async () => {
+    mocks.diagnosticsPreview.mockResolvedValueOnce({ status: "error", error: "VaultLocked" });
+    render();
+    const preview = screen.getByRole("button", { name: "Preview diagnostics" });
+    preview.focus();
+    fireEvent.click(preview);
+    await screen.findByText("The vault is locked.");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Preview diagnostics" })),
+    );
+    expect(slot().contains(document.activeElement)).toBe(true);
+  });
+
   it("a status note (cancelled save) stays in the body, not the slot", async () => {
     mocks.save.mockResolvedValueOnce(null);
     render();

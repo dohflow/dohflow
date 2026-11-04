@@ -175,6 +175,28 @@ describe("Vaults", () => {
     expect(slot().contains(document.activeElement)).toBe(true);
   });
 
+  it.each([0, 1])(
+    "with two other vaults, focus stays on the Switch that was pressed (button %i) when its failure moves it into the slot",
+    async (index) => {
+      vaults = [
+        ...vaults,
+        { id: "third", name: "Third", is_active: false, created_at: "2026-07-01T00:00:00Z" },
+      ];
+      ops.switchVault.mockResolvedValueOnce("Persistence failure");
+      renderCard();
+      const buttons = screen.getAllByRole("button", { name: "Switch" });
+      expect(buttons).toHaveLength(2);
+      buttons[index]!.focus();
+      fireEvent.click(buttons[index]!);
+      await screen.findByText("Persistence failure");
+      await waitFor(() =>
+        expect(slot().contains(document.activeElement)).toBe(true),
+      );
+      expect(document.activeElement).toBe(within(slot()).getByRole("button", { name: "Switch" }));
+      expect(slot()).toHaveTextContent(index === 0 ? "Test" : "Third");
+    },
+  );
+
   it("with no error the slot is empty and every action is in the body", () => {
     renderCard();
     expect(slot()).toBeEmptyDOMElement();
