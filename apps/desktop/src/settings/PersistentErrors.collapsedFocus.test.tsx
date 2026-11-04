@@ -187,4 +187,21 @@ describe("Comfort band, resolved while collapsed", () => {
     );
     expect(slotOf("Comfort band").contains(document.activeElement)).toBe(false);
   });
+
+  it("after a Save that worked and left focus on the Save, a click onto the page is not undone by a later render", async () => {
+    mocks.comfortBand.mockResolvedValue(ok(band(0, null)));
+    render();
+    await waitFor(() => expect(screen.getByLabelText(/lower edge/i)).toBeEnabled());
+    fireEvent.change(screen.getByLabelText(/lower edge/i), { target: { value: "500" } });
+    const save = screen.getByRole("button", { name: "Save" });
+    save.focus();
+    fireEvent.click(save);
+    await screen.findByText("Saved.");
+    // Settled, and the Save never moved: the person clicks a non-focusable area (focus goes to the
+    // page), then something else makes the card render.
+    act(() => (document.activeElement as HTMLElement).blur());
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.change(screen.getByLabelText(/upper edge/i), { target: { value: "900" } });
+    expect(document.activeElement).toBe(document.body);
+  });
 });
