@@ -1824,7 +1824,7 @@ impl DbWorker {
     /// different vault is refused.
     ///
     /// # Errors
-    /// [`DbError::InvalidCommand`] if the lease is for another vault path, otherwise as
+    /// [`DbError::Io`] (invalid input) if the lease is for another vault path, otherwise as
     /// [`DbWorker::open_existing_with_raw_key`] (the exclusive-owner error cannot occur).
     pub fn open_existing_with_raw_key_leased(
         path: impl AsRef<Path>,
@@ -1833,9 +1833,11 @@ impl DbWorker {
     ) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         if lease.path != path {
-            return Err(DbError::InvalidCommand(
-                "the lease is for a different vault".to_owned(),
-            ));
+            // A caller bug, not a rejected command: it stays out of the command-rejection ledger.
+            return Err(DbError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the lease is for a different vault",
+            )));
         }
         let conn = open_existing_keyed_raw(&path, &dek)?;
         Self::bootstrap(path, conn, KeyMaterial::Raw(dek), lease.file)

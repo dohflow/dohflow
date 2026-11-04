@@ -80,8 +80,8 @@ fn a_lease_for_another_vault_is_refused() {
     drop(DbWorker::open_with_raw_key(&path, duplicate(&dek)).unwrap());
     let wrong = VaultLease::acquire(&other).unwrap();
     match DbWorker::open_existing_with_raw_key_leased(&path, dek, wrong) {
-        Err(DbError::InvalidCommand(_)) => {}
-        Err(other) => panic!("expected InvalidCommand, got {other:?}"),
+        Err(DbError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+        Err(other) => panic!("expected an invalid-input error, got {other:?}"),
         Ok(_) => panic!("a lease for another vault must not open this one"),
     }
 }
