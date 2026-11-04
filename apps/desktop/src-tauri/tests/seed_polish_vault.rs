@@ -287,7 +287,7 @@ fn spend(
             .iter()
             .find(|(_, name)| name == wanted)
             .unwrap_or_else(|| panic!("tag {wanted:?} was created above"));
-        set_tags_impl(state, txn_id, vec![id.clone()], String::new()).expect("tag");
+        set_tags_impl(state, txn_id, vec![id.clone()], None, String::new()).expect("tag");
     }
 }
 

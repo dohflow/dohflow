@@ -155,3 +155,24 @@ bill-tag vocabulary would fragment it.
 
 This extends "Revisit if → splits ship" with a third join surface; the `tags` table and the
 `SetTags` clear-then-add pattern are reused unchanged.
+
+## Addendum (2026-11-02, personal-cfo-5n4.10): `set_tags` can refuse to overwrite a concurrent edit
+
+**Decision.** The `set_tags` IPC command takes an optional `expected_tag_ids`: the set the caller
+read and merged its change into. When it is given, the write is refused with a validation error,
+and nothing changes, if the transaction's tags are no longer exactly that set (compared without
+regard to order). A write that would leave the tags exactly as they already are is not refused,
+so a retry of a write that landed comes back as the replay it is. Omitting it keeps the plain
+replace. Bulk tag is the first caller: it reads each row's tags fresh, adds one tag, and passes
+the set it read.
+
+- **Where the check lives.** In the IPC command, under the controller lock that every kernel
+  access goes through (ADR 0083 §5), not in `WriteCommand::SetTags`. The command's payload, the
+  operation log and the Sync wire format do not change, so there is no payload-schema or
+  vault-format bump.
+- **Why not an add/remove command.** ADR 0073 keeps `SetTags` replacement-style and says a
+  delta-tag command needs its own bead and ADR. This does not grant one.
+- **Sync.** Under ADR 0073 a replayed `SetTags` auto-applies only when its write set is untouched,
+  and otherwise goes to the person to choose, so a replay never needs the check. A future Sync
+  receiver that applies a command without the controller lock does not get this check; if it ever
+  needs one, that is the case for moving it into the apply with a payload-version bump.

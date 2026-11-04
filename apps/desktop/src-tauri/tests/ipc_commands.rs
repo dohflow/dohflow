@@ -14,23 +14,24 @@ use app_lib::ipc::commands::{
     convert_unexplained_to_transaction_impl, create_account_impl, create_category_impl,
     create_forecast_assumption_impl, create_income_source_impl, create_manual_future_entry_impl,
     create_recurring_bill_impl, create_recurring_transfer_impl, create_scenario_impl,
-    create_source_batch_impl, delete_forecast_assumption_impl, delete_income_source_impl,
-    delete_manual_future_entry_impl, delete_recurring_bill_impl, delete_recurring_transfer_impl,
-    delete_scenario_impl, dismiss_inbox_item_impl, forecast_assumption_list_impl,
-    forecast_readiness_impl, future_cash_by_account_impl, future_cash_forecast_impl,
-    household_timezone_impl, import_batch_impl, import_staged_anyway_impl, income_source_list_impl,
-    manual_future_entry_list_impl, mark_inbox_reviewed_bulk_impl, money_inbox_list_impl,
-    move_category_impl, rebuild_read_models_impl, recategorize_transaction_impl,
-    record_transaction_impl, record_transfer_impl, recurring_bill_list_impl,
-    recurring_transfer_list_impl, reinstate_account_impl, reinstate_category_impl,
-    reinstate_income_source_impl, reinstate_recurring_bill_impl, reinstate_recurring_transfer_impl,
-    restore_income_source_impl, restore_recurring_bill_impl, scenario_list_impl,
-    set_account_subtype_impl, set_base_currency_impl, set_household_timezone_impl,
-    set_minimum_cash_floor_impl, set_note_impl, skip_staged_transaction_impl,
-    snooze_inbox_item_impl, transaction_list_impl, transaction_page_impl,
-    transaction_rows_by_ids_impl, update_account_impl, update_batch_state_impl,
-    update_category_impl, update_income_source_impl, update_manual_future_entry_impl,
-    update_recurring_bill_impl, update_scenario_impl, vault_health_impl,
+    create_source_batch_impl, create_tag_impl, delete_forecast_assumption_impl,
+    delete_income_source_impl, delete_manual_future_entry_impl, delete_recurring_bill_impl,
+    delete_recurring_transfer_impl, delete_scenario_impl, dismiss_inbox_item_impl,
+    forecast_assumption_list_impl, forecast_readiness_impl, future_cash_by_account_impl,
+    future_cash_forecast_impl, household_timezone_impl, import_batch_impl,
+    import_staged_anyway_impl, income_source_list_impl, manual_future_entry_list_impl,
+    mark_inbox_reviewed_bulk_impl, money_inbox_list_impl, move_category_impl,
+    rebuild_read_models_impl, recategorize_transaction_impl, record_transaction_impl,
+    record_transfer_impl, recurring_bill_list_impl, recurring_transfer_list_impl,
+    reinstate_account_impl, reinstate_category_impl, reinstate_income_source_impl,
+    reinstate_recurring_bill_impl, reinstate_recurring_transfer_impl, restore_income_source_impl,
+    restore_recurring_bill_impl, scenario_list_impl, set_account_subtype_impl,
+    set_base_currency_impl, set_household_timezone_impl, set_minimum_cash_floor_impl,
+    set_note_impl, set_tags_impl, skip_staged_transaction_impl, snooze_inbox_item_impl,
+    transaction_list_impl, transaction_page_impl, transaction_rows_by_ids_impl,
+    update_account_impl, update_batch_state_impl, update_category_impl, update_income_source_impl,
+    update_manual_future_entry_impl, update_recurring_bill_impl, update_scenario_impl,
+    vault_health_impl,
 };
 use app_lib::ipc::dto::{
     AccountFlagsDto, AccountSeriesDto, AssertBalanceInput, AttachSourceRecordInput,
@@ -781,6 +782,259 @@ fn recategorize_a_transaction_through_ipc() {
 
     recategorize_transaction_impl(&state, txn_id, None, String::new()).unwrap();
     assert_eq!(category_of(&state), None, "cleared");
+}
+
+/// personal-cfo-5n4.10: `set_tags` can be told the set it was merged from, and then refuses to
+/// overwrite a concurrent edit instead of silently replacing it.
+mod set_tags_expected_set {
+    use super::*;
+
+    struct Fixture {
+        _dir: TempDir,
+        state: AppState,
+        txn: String,
+        a: String,
+        b: String,
+        c: String,
+    }
+
+    fn fixture() -> Fixture {
+        let (dir, state) = open_state();
+        let account_id = create_account_impl(&state, create_input("Checking"))
+            .unwrap()
+            .account_id;
+        record_transaction_impl(
+            &state,
+            RecordTransactionInput {
+                account_id,
+                amount: MoneyDto {
+                    minor_units: -4_000,
+                    currency: "USD".to_owned(),
+                },
+                occurred_at: "2026-06-05T00:00:00Z".to_owned(),
+                idempotency_key: String::new(),
+            },
+        )
+        .unwrap();
+        let txn = transaction_list_impl(&state).unwrap()[0]
+            .transaction_id
+            .clone();
+        let tag = |name: &str| {
+            create_tag_impl(&state, name.to_owned(), None, String::new())
+                .unwrap()
+                .tag_id
+        };
+        let (a, b, c) = (tag("A"), tag("B"), tag("C"));
+        Fixture {
+            _dir: dir,
+            state,
+            txn,
+            a,
+            b,
+            c,
+        }
+    }
+
+    fn tags_of(f: &Fixture) -> Vec<String> {
+        let mut ids = transaction_rows_by_ids_impl(&f.state, vec![f.txn.clone()]).unwrap()[0]
+            .tag_ids
+            .clone();
+        ids.sort();
+        ids
+    }
+
+    /// Entries in the operation log (the change journal): a refused write must add none.
+    fn journal_len(f: &Fixture) -> u64 {
+        f.state
+            .lock_controller()
+            .unwrap()
+            .kernel()
+            .unwrap()
+            .operation_count()
+            .unwrap()
+    }
+
+    fn sorted(mut ids: Vec<String>) -> Vec<String> {
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn a_matching_expected_set_writes_the_new_set() {
+        let f = fixture();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        let journal_before = journal_len(&f);
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone(), f.b.clone()],
+            Some(vec![f.a.clone()]),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(tags_of(&f), sorted(vec![f.a.clone(), f.b.clone()]));
+        assert!(
+            journal_len(&f) > journal_before,
+            "a matching write is journaled"
+        );
+    }
+
+    #[test]
+    fn a_stale_expected_set_is_refused_and_changes_nothing() {
+        let f = fixture();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        // Someone else added C after the caller read {A}.
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone(), f.c.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        let journal_before = journal_len(&f);
+        let err = set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone(), f.b.clone()],
+            Some(vec![f.a.clone()]),
+            String::new(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, IpcError::Validation(m) if m == "These tags changed while you were adding the tag. Try adding the tag again."),
+            "{err:?}"
+        );
+        assert_eq!(
+            journal_len(&f),
+            journal_before,
+            "a refused write leaves no change-journal entry"
+        );
+        assert_eq!(
+            tags_of(&f),
+            sorted(vec![f.a.clone(), f.c.clone()]),
+            "the concurrent edit is still there"
+        );
+    }
+
+    #[test]
+    fn the_order_of_the_expected_set_does_not_matter() {
+        let f = fixture();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone(), f.b.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone(), f.b.clone(), f.c.clone()],
+            Some(vec![f.b.clone(), f.a.clone()]),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(tags_of(&f).len(), 3);
+    }
+
+    #[test]
+    fn a_write_that_leaves_the_tags_as_they_are_is_not_refused() {
+        let f = fixture();
+        // The concurrent edit already added the very tag the caller was adding.
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone(), f.b.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone(), f.b.clone()],
+            Some(vec![f.a.clone()]),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(tags_of(&f), sorted(vec![f.a.clone(), f.b.clone()]));
+    }
+
+    #[test]
+    fn no_expected_set_keeps_the_plain_replace() {
+        let f = fixture();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.b.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(tags_of(&f), vec![f.b.clone()]);
+    }
+
+    #[test]
+    fn an_empty_expected_set_means_expected_no_tags() {
+        let f = fixture();
+        set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone()],
+            None,
+            String::new(),
+        )
+        .unwrap();
+        let err = set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.b.clone()],
+            Some(vec![]),
+            String::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, IpcError::Validation(_)));
+        assert_eq!(tags_of(&f), vec![f.a.clone()]);
+    }
+
+    #[test]
+    fn a_bad_expected_id_is_a_validation_error_and_writes_nothing() {
+        let f = fixture();
+        let err = set_tags_impl(
+            &f.state,
+            f.txn.clone(),
+            vec![f.a.clone()],
+            Some(vec!["not-a-uuid".to_owned()]),
+            String::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, IpcError::Validation(_)));
+        assert!(tags_of(&f).is_empty());
+    }
 }
 
 #[test]

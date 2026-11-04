@@ -1319,6 +1319,7 @@ describe("TransactionsView", () => {
       expect(mocks.setTags).toHaveBeenCalledWith(
         NEW_TXN_ID,
         [VACATION_TAG],
+        null, // a plain replace: the add form has no earlier set to protect
         expect.stringMatching(/.+/),
       ),
     );
