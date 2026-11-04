@@ -653,8 +653,8 @@ describe("the unresolved payment is held as sent (6wk.24, Studio R1b)", () => {
       },
       keys: () => mocks.recordTransfer.mock.calls.map((c) => c[0].idempotency_key),
       fields: [
-        { name: "amount", change: () => fireEvent.change(amountInput(), { target: { value: "41" } }) },
-        { name: "From account", change: () => fireEvent.change(sourceSelect(), { target: { value: "sav" } }) },
+        { name: "amount", change: () => { fireEvent.change(amountInput(), { target: { value: "41" } }); } },
+        { name: "From account", change: () => { fireEvent.change(sourceSelect(), { target: { value: "sav" } }); } },
       ],
     });
   });
