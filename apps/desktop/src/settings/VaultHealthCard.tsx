@@ -94,8 +94,12 @@ export function VaultHealthCard() {
   // puts Rebuild there with its message. Each button is rendered in one place only.
   const recheckInSlot = Boolean(error);
   const drifted = !error && health !== null && !health.read_models_current;
-  const recheck = useKeepFocusAcrossMove(recheckInSlot);
-  const rebuildFocus = useKeepFocusAcrossMove(drifted);
+  const recheck = useKeepFocusAcrossMove();
+  const rebuildFocus = useKeepFocusAcrossMove({
+    settled: !rebuilding,
+    // A rebuild that worked removes its own button; Re-check is the next thing to press.
+    fallback: () => recheck.ref.current?.focus(),
+  });
 
   async function onRebuild() {
     rebuildFocus.remember();

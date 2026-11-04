@@ -46,7 +46,7 @@ export function ComfortBandCard() {
   // While an error is on screen, the Save lives in the section's persistent slot with it and is not
   // rendered in the body; it comes back when the error clears.
   const saveInSlot = error !== null;
-  const save = useKeepFocusAcrossMove(saveInSlot);
+  const save = useKeepFocusAcrossMove();
 
   async function onSubmit(event?: React.FormEvent) {
     event?.preventDefault();

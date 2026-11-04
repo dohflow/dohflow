@@ -87,9 +87,14 @@ export function BackupScheduleCard() {
   const pickerInSlot = failure?.source === "picker";
   const saveInSlot = failure?.source === "save";
   const backUpInSlot = failure?.source === "backup" || lastError !== null;
-  const picker = useKeepFocusAcrossMove(pickerInSlot);
-  const saveFocus = useKeepFocusAcrossMove(saveInSlot);
-  const backUpFocus = useKeepFocusAcrossMove(backUpInSlot);
+  const picker = useKeepFocusAcrossMove();
+  const saveFocus = useKeepFocusAcrossMove({
+    settled: !configureBackup.isPending,
+    // Saved: nothing is left to save, so Save is disabled and cannot take focus; the schedule is
+    // where the person was working.
+    fallback: () => document.getElementById("backup-cadence")?.focus(),
+  });
+  const backUpFocus = useKeepFocusAcrossMove();
 
   function changeDraft(update: Partial<BackupDraft>) {
     setDraft((current) => ({ ...current, ...update }));

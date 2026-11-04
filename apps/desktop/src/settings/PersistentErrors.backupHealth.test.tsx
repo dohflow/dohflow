@@ -157,6 +157,47 @@ describe("Backups", () => {
     expect(slotOf("Backups").contains(saves[0]!)).toBe(false);
   });
 
+  it("hands focus to the Save in the slot when its error moves it, and to the schedule after it saves", async () => {
+    mocks.configureBackup.mockResolvedValueOnce(failed("That folder cannot be used."));
+    mocks.open.mockResolvedValue("/Users/test/Elsewhere");
+    render();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: /choose folder/i }));
+    await screen.findByText("/Users/test/Elsewhere");
+    const body = screen.getByRole("button", { name: "Save backup settings" });
+    body.focus();
+    fireEvent.click(body);
+    await screen.findByText("That folder cannot be used.");
+    const inSlot = within(slotOf("Backups")).getByRole("button", { name: "Save backup settings" });
+    await waitFor(() => expect(document.activeElement).toBe(inSlot));
+
+    mocks.configureBackup.mockResolvedValue(ok(settings({ destination: "/Users/test/Elsewhere" })));
+    inSlot.focus();
+    fireEvent.click(inSlot);
+    await waitFor(() => expect(screen.queryByText("That folder cannot be used.")).toBeNull());
+    // Saved: Save is disabled again, so focus goes to the schedule, not nowhere.
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById("backup-cadence")));
+  });
+
+  it("hands focus to Back up now in the slot when a backup fails, and back to the body when it works", async () => {
+    mocks.runBackupNow.mockRejectedValueOnce(new Error("The destination is read-only."));
+    render();
+    await ready();
+    const body = screen.getByRole("button", { name: "Back up now" });
+    body.focus();
+    fireEvent.click(body);
+    await screen.findByText("The destination is read-only.");
+    const inSlot = within(slotOf("Backups")).getByRole("button", { name: "Back up now" });
+    await waitFor(() => expect(document.activeElement).toBe(inSlot));
+    mocks.runBackupNow.mockResolvedValue(ok({ destination: `${FOLDER}/new.pcfobk` }));
+    inSlot.focus();
+    fireEvent.click(inSlot);
+    await waitFor(() => expect(screen.queryByText("The destination is read-only.")).toBeNull());
+    const back = everyButton("Backups", "Back up now")[0]!;
+    expect(slotOf("Backups").contains(back)).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(back));
+  });
+
   it("the folder picker error keeps its one Choose folder… in the slot", async () => {
     mocks.open.mockRejectedValue(new Error("no dialog"));
     render();
@@ -219,6 +260,32 @@ describe("Vault health", () => {
     const found = everyButton("Vault health", "Re-check");
     expect(found).toHaveLength(1);
     expect(slotOf("Vault health").contains(found[0]!)).toBe(false);
+  });
+
+  it("hands focus to Re-check in the slot when the read fails, and back to the body when it works", async () => {
+    mocks.vaultHealth.mockResolvedValueOnce(failed("The health check could not run."));
+    render();
+    await screen.findByText("The health check could not run.");
+    const inSlot = within(slotOf("Vault health")).getByRole("button", { name: "Re-check" });
+    inSlot.focus();
+    fireEvent.click(inSlot);
+    await waitFor(() => expect(screen.queryByText("The health check could not run.")).toBeNull());
+    const back = everyButton("Vault health", "Re-check")[0]!;
+    expect(slotOf("Vault health").contains(back)).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(back));
+  });
+
+  it("a rebuild that works hands focus to Re-check, because its own button is gone", async () => {
+    mocks.vaultHealth.mockResolvedValueOnce(ok(health({ read_models_current: false, is_healthy: false })));
+    mocks.vaultHealth.mockResolvedValue(ok(health()));
+    render();
+    const rebuild = await screen.findByRole("button", { name: "Rebuild data views" });
+    rebuild.focus();
+    fireEvent.click(rebuild);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Rebuild data views" })).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Re-check" })),
+    );
   });
 
   it("data-views drift keeps its message and its one Rebuild while collapsed, and a failed rebuild its error", async () => {

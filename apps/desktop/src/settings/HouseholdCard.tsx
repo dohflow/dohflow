@@ -104,7 +104,12 @@ export function HouseholdCard() {
   // While a failed write is on screen its Save lives in the section's persistent slot with the error,
   // and is not rendered in the body; the Save comes back to the body when the error clears.
   const saveInSlot = saveError !== null;
-  const save = useKeepFocusAcrossMove(saveInSlot);
+  const save = useKeepFocusAcrossMove({
+    settled: !isSaving,
+    // Saved: nothing is left to save, so the Save stays disabled and cannot take focus. The picker
+    // is where the person was working.
+    fallback: () => document.getElementById("household-timezone")?.focus(),
+  });
 
   async function onSave() {
     if (value === timezone) return;
