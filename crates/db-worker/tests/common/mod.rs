@@ -3,7 +3,9 @@
 //! what it needs, so unused items here are expected.
 #![allow(dead_code)]
 
+pub mod replicated_state;
 pub mod samples;
+pub mod variant_runner;
 
 use chrono::NaiveDate;
 use core_ledger::{
