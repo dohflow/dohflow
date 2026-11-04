@@ -22,6 +22,7 @@ import {
   figureLabelForRole,
   storedToShownMinor,
 } from "./balanceSign";
+import { BALANCE_OUTCOME_UNKNOWN, BALANCE_SAVED_UNCONFIRMED } from "./balanceMessages";
 import { NewLoanDialog } from "./NewLoanDialog";
 
 /// The account-type (cashflow-role) options, in the DTO enum the create command takes.
@@ -97,6 +98,8 @@ type PartialSave = {
   failed: { label: string; reason: string } | null;
   unconfirmed: string | null;
   untried: string[];
+  /// The balance was stored but its new figure could not be read back. It is in `saved`.
+  balanceUnconfirmed: boolean;
 };
 
 /// A step whose call threw: the app can't say whether it saved. Every step after the account is
@@ -177,6 +180,9 @@ export function AccountEditorDrawer({
   const [savedSteps, setSavedSteps] = useState<string[]>([]);
   const [partial, setPartial] = useState<PartialSave | null>(null);
   const createKey = useRef<{ identity: string; key: string } | null>(null);
+  // The balance step's draft: one key per account, figure, date and currency (personal-cfo-g3m.40).
+  // A retry of an unknown outcome reuses it so the append-only assertion cannot be written twice.
+  const balanceKey = useRef<{ identity: string; key: string } | null>(null);
   // The account exists, whether it was opened for editing or was created by this drawer.
   const exists = base !== null;
 
@@ -320,8 +326,14 @@ export function AccountEditorDrawer({
     }
 
     const acc: Baseline = { ...cur };
-    type Step = { label: string; run: () => Promise<IpcErrorLike | null> };
+    type Step = {
+      label: string;
+      run: () => Promise<IpcErrorLike | null>;
+      /// What a lone step that threw says, when it is more specific than the generic sentence.
+      unknown?: string;
+    };
     const steps: Step[] = [];
+    let balanceUnconfirmed = false;
     if (name.trim() !== acc.name) {
       steps.push({
         label: "Name",
@@ -345,13 +357,28 @@ export function AccountEditorDrawer({
     if (storedFigureMinor !== null && storedFigureMinor !== acc.balanceMinor) {
       steps.push({
         label: figureLabel,
+        unknown: BALANCE_OUTCOME_UNKNOWN,
         run: async () => {
-          const { error: e } = await assertBalance({
+          const asOf = new Date().toLocaleDateString("en-CA");
+          const identity = `${acc.id}|${storedFigureMinor}|${asOf}|${acc.currency}`;
+          if (balanceKey.current?.identity !== identity) {
+            balanceKey.current = { identity, key: mintIdempotencyKey() };
+          }
+          // A call that throws leaves the key in place: the next try is the same draft.
+          const { result, error: e } = await assertBalance({
             account_id: acc.id,
             amount: { minor_units: storedFigureMinor, currency: acc.currency },
-            as_of_date: new Date().toLocaleDateString("en-CA"),
+            as_of_date: asOf,
+            idempotency_key: balanceKey.current.key,
           });
-          if (!e) acc.balanceMinor = storedFigureMinor;
+          // Answered either way, so the draft is closed: a refusal saved nothing (the next try is a
+          // new draft) and a save is final.
+          balanceKey.current = null;
+          if (!e) {
+            acc.balanceMinor = storedFigureMinor;
+            // Stored, but the new figure could not be read back: say so, never "not saved".
+            if (result?.balance === null) balanceUnconfirmed = true;
+          }
           return e;
         },
       });
@@ -400,7 +427,7 @@ export function AccountEditorDrawer({
         setSavedSteps(saved);
         setBusy(false);
         if (saved.length === 0) {
-          setError(threw ? STEP_OUTCOME_UNKNOWN : describeIpcError(e as IpcErrorLike));
+          setError(threw ? (step.unknown ?? STEP_OUTCOME_UNKNOWN) : describeIpcError(e as IpcErrorLike));
         } else {
           setPartial({
             saved,
@@ -409,6 +436,7 @@ export function AccountEditorDrawer({
               : { label: step.label, reason: describeIpcError(e as IpcErrorLike) },
             unconfirmed: threw ? step.label : null,
             untried: steps.slice(i + 1).map((t) => t.label),
+            balanceUnconfirmed,
           });
         }
         return;
@@ -416,6 +444,19 @@ export function AccountEditorDrawer({
       saved.push(step.label);
     }
     setBusy(false);
+    if (balanceUnconfirmed) {
+      // Everything is stored, but the person has not seen the new balance: stay open and say so.
+      setBase(acc);
+      setSavedSteps(saved);
+      setPartial({
+        saved,
+        failed: null,
+        unconfirmed: null,
+        untried: [],
+        balanceUnconfirmed,
+      });
+      return;
+    }
     onClose();
   }
 
@@ -626,15 +667,17 @@ export function AccountEditorDrawer({
             )}
             {partial && (
               <div role="alert" className="flex flex-col gap-1 text-sm sm:col-span-2">
-                <p className="font-medium text-loss">
-                  {partial.unconfirmed !== null
-                    ? account
-                      ? "Some changes saved and some couldn’t be confirmed."
-                      : "The account was added, but not everything could be confirmed."
-                    : account
-                      ? "Some changes saved and some didn’t."
-                      : "The account was added, but not everything saved."}
-                </p>
+                {(partial.failed !== null || partial.unconfirmed !== null) && (
+                  <p className="font-medium text-loss">
+                    {partial.unconfirmed !== null
+                      ? account
+                        ? "Some changes saved and some couldn’t be confirmed."
+                        : "The account was added, but not everything could be confirmed."
+                      : account
+                        ? "Some changes saved and some didn’t."
+                        : "The account was added, but not everything saved."}
+                  </p>
+                )}
                 <p>Saved: {partial.saved.join(", ")}.</p>
                 {partial.failed && (
                   <p className="text-loss">
@@ -647,6 +690,7 @@ export function AccountEditorDrawer({
                   </p>
                 )}
                 {partial.untried.length > 0 && <p>Not tried yet: {partial.untried.join(", ")}.</p>}
+                {partial.balanceUnconfirmed && <p>{BALANCE_SAVED_UNCONFIRMED}</p>}
               </div>
             )}
           </form>
