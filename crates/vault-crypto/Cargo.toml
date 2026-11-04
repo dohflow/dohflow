@@ -32,13 +32,14 @@ zeroize = { workspace = true }
 sync-core = { path = "../sync-core" }
 getrandom = { workspace = true }
 thiserror = { workspace = true }
+# Sync key custody (personal-cfo-1cltt.2): HPKE seals K_e and S to each enrolled device (C.6), and a
+# device's Ed25519 key signs its membership and epoch records. See the pins in the workspace manifest.
+hpke = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 # Best-effort page-locking of secret buffers (personal-cfo-1t0). Unix-only;
 # on other targets the lock is a documented no-op.
 [dev-dependencies]
-# Chain-building for the envelope tests (personal-cfo-g3m.22): real Ed25519 keys sign a real
-# membership chain. ed25519-dalek is already in the tree through sync-core.
-ed25519-dalek = { workspace = true }
 # The pipeline-level envelope vectors file (personal-cfo-g3m.25) is JSON.
 serde_json = { workspace = true }
 
