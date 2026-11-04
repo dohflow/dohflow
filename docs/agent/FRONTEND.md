@@ -434,7 +434,14 @@ How to use it:
   portals the card's error, remedy and recovery action into its `SettingsSection`'s slot while the
   card's state and form stay mounted. While the error shows, that action is rendered only in the slot
   (never also in the body), keeps its accessible name while busy, and hands focus over when it moves
-  (`useKeepFocusAcrossMove`).
+  (`useKeepFocusAcrossMove`). The hand-over never targets anything inside `[hidden]` or `[inert]`
+  content: when the section is collapsed and the card's own targets are hidden, focus goes to the
+  section's own heading trigger (reached through `SectionFocusContext`), without expanding the
+  section and without taking focus from a control the person moved to; an open section keeps the
+  card's own targets. The error and the slot's action are not cleared when a retry starts: they stay
+  until it settles, so the control in use does not move into the hidden body mid-retry. jsdom does not
+  enforce `inert`, so tests assert the chosen target (collapse, resolve, `activeElement` is the
+  heading).
 - The body stays mounted when collapsed (`hidden` and `inert`), so drafts survive; do not unmount
   it to collapse. Collapse never submits, resets or cancels work.
 - A component that owns a destructive confirmation calls `usePinDisclosures(active)` with `active`
