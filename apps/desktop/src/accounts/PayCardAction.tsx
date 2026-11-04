@@ -231,6 +231,10 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
         if (e.key === "Escape") dismiss();
       }}
     >
+      {/* The draft is frozen from Confirm until the outcome, and the re-read after an unknown one,
+          is done (`saving` covers both): what is on screen is what was sent, so confirming again
+          retries that payment with its key. A deliberate edit afterwards is a different payment
+          and gets its own key. */}
       <div className="flex flex-wrap gap-2">
         {quickPicks.map((q) => (
           <Button
@@ -238,6 +242,7 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
             type="button"
             variant="secondary"
             size="sm"
+            disabled={saving}
             onClick={() => setAmountDraft(minorToInput(q.minor))}
           >
             {q.label} ({formatMoney({ minor_units: q.minor, currency })})
@@ -253,6 +258,7 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
             id={`pay-amount-${card.account_id}`}
             inputMode="decimal"
             value={amountValue}
+            disabled={saving}
             onChange={(e) => setAmountDraft(e.target.value)}
           />
         </div>
@@ -264,6 +270,7 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
             id={`pay-source-${card.account_id}`}
             className={SELECT_CLASS}
             value={source}
+            disabled={saving}
             onChange={(e) => setSourceChoice(e.target.value)}
           >
             {sources.map((a) => (

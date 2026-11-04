@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 
+import { queryKeys } from "@/lib/query";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { AccountViewDto, CardStatementForecastDto } from "@/bindings";
@@ -374,5 +375,136 @@ describe("what the opened tool says about the accounts it pays from (6wk.24)", (
     expect(screen.getByText("Could not load accounts.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+});
+
+const SAVINGS = {
+  id: "sav",
+  name: "Savings",
+  cashflow_role: "liquid_cash",
+  subtype: "savings",
+  active: true,
+  balance: usd(300_000),
+} as AccountViewDto;
+const amountInput = () => screen.getByLabelText("Amount") as HTMLInputElement;
+const sourceSelect = () => screen.getByLabelText("From account") as HTMLSelectElement;
+const quickPick = (name: RegExp) => screen.getByRole("button", { name });
+
+describe("the draft is frozen while a payment is being recorded (6wk.24, Studio R1)", () => {
+  test("amount, source and every quick pick are locked while the call is pending, and a retry after an unknown outcome sends the same payment with the same key", async () => {
+    mocks.accountList.mockResolvedValue(ok([CHECKING, SAVINGS]));
+    let fail: (reason: unknown) => void = () => {};
+    mocks.recordTransfer.mockReturnValueOnce(new Promise((_, reject) => (fail = reject)));
+    renderWithClient(<PayCardAction card={card} />);
+    const confirm = await openTool();
+    fireEvent.click(confirm);
+    await waitFor(() => expect(confirm).toBeDisabled());
+
+    // The draft the call carried is on screen, and nothing can change it under that call.
+    expect(amountInput()).toBeDisabled();
+    expect(sourceSelect()).toBeDisabled();
+    for (const name of [/statement balance/i, /minimum due/i, /current balance/i]) {
+      expect(quickPick(name)).toBeDisabled();
+    }
+    fireEvent.click(quickPick(/minimum due/i));
+    expect(amountInput().value).toBe("800");
+    expect(sourceSelect().value).toBe("chk");
+
+    await act(async () => fail(new Error("connection lost")));
+    expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+    await waitFor(() => expect(screen.getByRole("button", { name: /confirm payment/i })).toBeEnabled());
+    expect(amountInput().value).toBe("800");
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].amount.minor_units).toBe(80_000);
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].source_account_id).toBe("chk");
+    expect(keyOf(1)).toBe(keyOf(0));
+  });
+
+  test("the draft stays locked through the outcome re-read, then opens again", async () => {
+    mocks.accountList.mockResolvedValue(ok([CHECKING, SAVINGS]));
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(<PayCardAction card={card} />);
+    const confirm = await openTool();
+    let release: (value: unknown) => void = () => {};
+    const stored = await mocks.accountList();
+    mocks.accountList.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    fireEvent.click(confirm);
+    expect(await screen.findByRole("alert")).toHaveTextContent(UNKNOWN);
+
+    expect(amountInput()).toBeDisabled();
+    expect(sourceSelect()).toBeDisabled();
+    expect(quickPick(/minimum due/i)).toBeDisabled();
+    fireEvent.click(quickPick(/minimum due/i));
+    expect(amountInput().value).toBe("800");
+
+    await act(async () => release(stored));
+    await waitFor(() => expect(amountInput()).toBeEnabled());
+    expect(sourceSelect()).toBeEnabled();
+    expect(quickPick(/minimum due/i)).toBeEnabled();
+  });
+
+  test("a deliberate quick pick after the outcome is a new payment with a new key", async () => {
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(await openTool());
+    await waitFor(() => expect(amountInput()).toBeEnabled());
+    fireEvent.click(quickPick(/minimum due/i));
+    expect(amountInput().value).toBe("25");
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].amount.minor_units).toBe(2_500);
+    expect(keyOf(1)).not.toBe(keyOf(0));
+  });
+
+  test("a changed source after the outcome is a new payment with a new key", async () => {
+    mocks.accountList.mockResolvedValue(ok([CHECKING, SAVINGS]));
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    renderWithClient(<PayCardAction card={card} />);
+    fireEvent.click(await openTool());
+    await waitFor(() => expect(sourceSelect()).toBeEnabled());
+    fireEvent.change(sourceSelect(), { target: { value: "sav" } });
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].source_account_id).toBe("sav");
+    expect(keyOf(1)).not.toBe(keyOf(0));
+  });
+});
+
+describe("what is read again after an unknown outcome, and leaving while it is read (6wk.24 Lows)", () => {
+  test("the forecast is read again as well as the accounts", async () => {
+    mocks.recordTransfer.mockRejectedValueOnce(new Error("connection lost"));
+    const forecastRead = vi.fn().mockResolvedValue("forecast");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await client.prefetchQuery({ queryKey: ["forecast", "probe"], queryFn: forecastRead });
+    expect(forecastRead).toHaveBeenCalledTimes(1);
+    renderWithClient(<PayCardAction card={card} />, client);
+    fireEvent.click(await openTool());
+    await waitFor(() => expect(forecastRead).toHaveBeenCalledTimes(2));
+  });
+
+  test("Cancel and Escape stay refused on the failure panel while the payment is still being recorded", async () => {
+    let finish: (value: unknown) => void = () => {};
+    mocks.recordTransfer.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<PayCardAction card={card} />, client);
+    fireEvent.click(await openTool());
+    mocks.accountList.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.accounts });
+    });
+    expect(await screen.findByText("Could not load accounts.")).toBeInTheDocument();
+
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(cancel).toBeDisabled();
+    fireEvent.click(cancel);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.keyDown(screen.getByText("Could not load accounts."), { key: "Escape" });
+    expect(screen.getByText("Could not load accounts.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pay card/i })).toBeNull();
+
+    await act(async () => finish(ok({ op_seq: 1, replayed: false })));
+    await waitFor(() => expect(screen.getByRole("button", { name: /pay card/i })).toBeInTheDocument());
   });
 });
