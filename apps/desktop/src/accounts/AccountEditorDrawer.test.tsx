@@ -406,7 +406,7 @@ describe("the balance step keeps one idempotency key per draft (g3m.40)", () => 
     );
   const setBalance = (value: string) =>
     fireEvent.change(screen.getByLabelText("Balance"), { target: { value } });
-  const saveButton = () => screen.getByRole("button", { name: /save account|try again/i });
+  const saveButton = () => screen.getByRole("button", { name: /save account|try again|done/i });
   const save = () => fireEvent.click(saveButton());
   /// Waits for the form to be released after the previous send (it is busy until the call settles).
   const saveWhenReady = async () => {
@@ -505,6 +505,57 @@ describe("the balance step keeps one idempotency key per draft (g3m.40)", () => 
     expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
   });
 
+  test("the finished-but-unconfirmed state offers Done, which sends nothing and closes", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    const onClose = vi.fn();
+    view(onClose);
+    setBalance("123");
+    save();
+    await screen.findByText(SAVED_UNCONFIRMED);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save account" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+    expect(mocks.updateAccount).not.toHaveBeenCalled();
+    expect(mocks.setAccountNote).not.toHaveBeenCalled();
+  });
+
+  test("an edit after the unconfirmed result resumes normal saving: the label is Save account and the change is written", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    const onClose = vi.fn();
+    view(onClose);
+    setBalance("123");
+    save();
+    await screen.findByText(SAVED_UNCONFIRMED);
+    fireEvent.change(screen.getByPlaceholderText(/anything you want to remember/i), {
+      target: { value: "Main account" },
+    });
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+    expect(screen.queryByText(SAVED_UNCONFIRMED)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.setAccountNote).toHaveBeenCalledTimes(1);
+    expect(mocks.setAccountNote.mock.calls[0]).toEqual(["chk-1", "Main account", expect.anything()]);
+    // The balance that was stored is not asserted a second time.
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+  });
+
+  test("a real retry keeps Try again: a refused step, an unconfirmed step or an untried step is not Done", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    mocks.setAccountNote.mockResolvedValue({ status: "error", error: { Validation: "That note is too long." } });
+    view();
+    setBalance("123");
+    fireEvent.change(screen.getByPlaceholderText(/anything you want to remember/i), {
+      target: { value: "Main account" },
+    });
+    save();
+    await screen.findByText(/some changes saved and some didn’t/i);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+  });
+
   test("with a rename saved first and notes refused after, the balance outcome lands in its own group", async () => {
     mocks.updateAccount.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
     mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
@@ -535,6 +586,9 @@ describe("the balance step keeps one idempotency key per draft (g3m.40)", () => 
     expect(within(block).getByText("Saved: Name.")).toBeInTheDocument();
     expect(within(block).getByText("Couldn’t confirm: Balance. It may or may not have saved.")).toBeInTheDocument();
     expect(within(block).queryByText(/Didn’t save/)).toBeNull();
+    // A step that may not have saved is a real retry, never Done.
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
 
     mocks.assertBalance.mockResolvedValue(SAVED);
     save();

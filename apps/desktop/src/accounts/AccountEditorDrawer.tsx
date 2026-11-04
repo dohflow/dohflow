@@ -186,6 +186,14 @@ export function AccountEditorDrawer({
   // The account exists, whether it was opened for editing or was created by this drawer.
   const exists = base !== null;
 
+  // Every step is stored and only the new balance could not be read back: nothing is left to retry,
+  // so the one action is to finish (it sends nothing; the baseline already holds the saved figures).
+  const everythingSaved =
+    partial !== null &&
+    partial.failed === null &&
+    partial.unconfirmed === null &&
+    partial.untried.length === 0;
+
   const roleToken = ROLE_DTO_TO_TOKEN[role] ?? "";
   const isDebt = DEBT_ROLES.has(roleToken);
   const isRealAsset = roleToken === "real_asset";
@@ -484,6 +492,11 @@ export function AccountEditorDrawer({
               e.preventDefault();
               void onSave();
             }}
+            // A change after a finished save is new work: the result no longer describes the form,
+            // so the drawer goes back to normal saving instead of treating the next press as done.
+            onChange={() => {
+              if (everythingSaved) setPartial(null);
+            }}
             className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2"
           >
             <Section
@@ -706,7 +719,7 @@ export function AccountEditorDrawer({
             disabled={busy || debtBlocked}
           >
             {busy && <Loader2 className="animate-spin" aria-hidden />}
-            {partial ? "Try again" : exists ? "Save account" : "Add account"}
+            {everythingSaved ? "Done" : partial ? "Try again" : exists ? "Save account" : "Add account"}
           </Button>
         </div>
       </div>
