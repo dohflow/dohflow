@@ -44,15 +44,15 @@ lane: `00-overseer` (routing, notifications, build-machine hygiene),
   Whichever change merges second rebases.
 - **The engine pin is a hotspot** (`personal-cfo-32fmp.4`, vault-format.md C.13).
   `ENGINE_VERSION` (`crates/db-worker/src/lib.rs`) and `crates/db-worker/tests/engine_pins.txt`
-  (checked by `tests/engine_pin.rs`) are edited by exactly one kind of change: one that alters what
+  (checked by `tests/engine_pin.rs`) are edited in two cases only. (1) A change that alters what
   `apply` writes for an unchanged payload and base, or what a receiver accepts, **a new command
-  variant included**. Such a change bumps `dohflow-engine-N` AND appends its `engine` section to
+  variant included**, bumps `dohflow-engine-N` AND appends its `engine` section to
   `engine_pins.txt` (`ENGINE_PIN_UPDATE=1 cargo test -p db-worker --test engine_pin` does the
-  append once `ENGINE_VERSION` is bumped) in the same pull request. An older section is never edited.
-  A change that only moves a test sample or its setup re-pins the current section in place, with no
-  bump; the test says which case applies. Ask `01-planning` before touching either file, and
-  whichever pull request merges second re-runs the pin after rebasing (two bumps in flight take
-  consecutive numbers in merge order).
+  append once `ENGINE_VERSION` is bumped) in the same pull request; an older section is never
+  edited. (2) A change that only moves a test sample or its setup re-pins the current section in
+  place, with no bump. The test says which case applies. Ask `01-planning` before touching either
+  file, and whichever pull request merges second re-runs the pin after rebasing (two bumps in
+  flight take consecutive numbers in merge order).
 - **The two cargo-heavy jobs limit is unchanged and is across all lanes** (see
   "Usage and hardware constraints").
 - **A lane's review session reviews that lane's pull requests.** The review gate,

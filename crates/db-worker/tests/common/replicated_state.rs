@@ -320,8 +320,9 @@ pub fn artifact_state(conn: &rusqlite::Connection) -> BTreeMap<(String, Vec<u8>)
 }
 
 /// Everything two replicas must agree on: the write-set rows and the class-1b artifact rows. The
-/// operation log is deliberately absent: `operation_log.created_at`, the HLC and the node id are
-/// the recording device's own (personal-cfo-32fmp.4 AC2).
+/// operation log is deliberately absent: `created_at` (the recording device's wall clock) and the
+/// HLC timestamp (an advisory per-process counter) are device-local, and the node id is per vault;
+/// none of the three is compared (personal-cfo-32fmp.4 AC2).
 pub fn comparable_state(conn: &rusqlite::Connection) -> BTreeMap<(String, Vec<u8>), [u8; 32]> {
     let mut state = replicated_state(conn);
     state.extend(artifact_state(conn));

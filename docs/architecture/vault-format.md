@@ -488,7 +488,7 @@ therefore requires reviewing this inventory.
 <!-- inventory:start -->
 | Table | Class | Portable | Sync genesis | Rule |
 | --- | --- | --- | --- | --- |
-| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. `created_at` (the recording device's wall clock), `hlc_timestamp` and `node_id` are device-local and enter no cross-replica or snapshot comparison. |
+| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. `created_at` (the recording device's wall clock) and `hlc_timestamp` (an advisory per-process counter, ADR 0017) are device-local, and `node_id` is per vault (ADR 0074 §9); none of the three enters a cross-replica or snapshot comparison. |
 | `ledger_accounts` | 1 | include | include | Canonical user intent. |
 | `accounts` | 1 | include | include | Canonical user intent. |
 | `ledger_transactions` | 1 | include | include | Canonical user intent. |
