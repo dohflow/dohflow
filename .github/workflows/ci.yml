@@ -113,6 +113,14 @@ jobs:
         if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: rustup show
 
+      # personal-cfo-56w.7: the free hosted runner has a limited disk and a build of the
+      # desktop crate runs out of it ('No space left on device'). Free what no job here uses
+      # (scripts/ci-disk.sh lists it; it refuses to run anywhere but a hosted Linux runner),
+      # and record how much room the job had in the run summary.
+      - name: Free runner disk and report it
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: bash scripts/ci-disk.sh free
+
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
 
@@ -135,6 +143,10 @@ jobs:
             cargo clippy --workspace --all-targets -- -D warnings
             cargo test --workspace
           fi
+
+      - name: Disk after the Rust gates
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: bash scripts/ci-disk.sh report "rust - after fmt, clippy and test"
 
       # Declared MSRV (ADR 0001 addendum 2026-09-28, personal-cfo-g3m.5): the
       # workspace's `rust-version` must actually build with THAT compiler, not
@@ -397,6 +409,10 @@ jobs:
           fi
           echo "Importer isolation boundaries OK."
 
+      - name: Disk at the end of the job
+        if: always() && (steps.filter.outputs.code == 'true' || github.event_name != 'pull_request')
+        run: bash scripts/ci-disk.sh report "rust - end of job"
+
   # The ABSOLUTE write-set capture budget (under 3 ms added per command), as a job that is NOT a
   # required check (personal-cfo-g3m.16, owner decision personal-cfo-915.15 option C). The
   # required test of the same cost is relative; the absolute number varies about 20x between a
@@ -426,6 +442,14 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
+
+      # personal-cfo-56w.7: the free hosted runner has a limited disk and a build of the
+      # desktop crate runs out of it ('No space left on device'). Free what no job here uses
+      # (scripts/ci-disk.sh lists it; it refuses to run anywhere but a hosted Linux runner),
+      # and record how much room the job had in the run summary.
+      - name: Free runner disk and report it
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: bash scripts/ci-disk.sh free
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
@@ -462,6 +486,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+
+      - name: Disk at the end of the job
+        if: always() && (steps.filter.outputs.code == 'true' || github.event_name != 'pull_request')
+        run: bash scripts/ci-disk.sh report "perf-budget - end of job"
 
   frontend:
     name: Frontend (apps/desktop)
@@ -607,6 +635,14 @@ jobs:
         if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: rustup show
 
+      # personal-cfo-56w.7: the free hosted runner has a limited disk and a build of the
+      # desktop crate runs out of it ('No space left on device'). Free what no job here uses
+      # (scripts/ci-disk.sh lists it; it refuses to run anywhere but a hosted Linux runner),
+      # and record how much room the job had in the run summary.
+      - name: Free runner disk and report it
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: bash scripts/ci-disk.sh free
+
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         with:
@@ -630,6 +666,10 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
 
+      - name: Disk after the desktop Rust gates
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: bash scripts/ci-disk.sh report "ipc-codegen - after fmt, clippy and test"
+
       # Declared MSRV for the standalone desktop graph (ADR 0001 addendum
       # 2026-09-28, personal-cfo-g3m.5): it must equal the root workspace's and
       # build with that exact compiler, including the bindings-export feature.
@@ -649,6 +689,10 @@ jobs:
           cargo +"$desktop" check --locked --all-targets
           cargo +"$desktop" check --locked --features export-bindings,tauri/custom-protocol
 
+      - name: Disk after the desktop MSRV builds
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: bash scripts/ci-disk.sh report "ipc-codegen - after the MSRV builds"
+
       # Regenerate the bindings and fail if the committed file is stale. This is
       # the enforced Rust↔TS schema-sync gate (personal-cfo-40t / rs1v).
       - name: TypeScript bindings are in sync
@@ -661,6 +705,10 @@ jobs:
             echo "::error::apps/desktop/src/bindings.ts is stale — run 'cargo run --bin export_bindings --features export-bindings' in apps/desktop/src-tauri and commit the result."
             exit 1
           fi
+
+      - name: Disk after the bindings export
+        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
+        run: bash scripts/ci-disk.sh report "ipc-codegen - after the bindings export"
 
       # personal-cfo-0hp6, ADR 0010: prove isolation in a REAL WebView, not just in
       # configuration. A debug build with Tauri's `custom-protocol` feature serves
@@ -688,6 +736,10 @@ jobs:
             ./target/debug/personal-cfo-desktop
           echo "Isolation probe passed; report: $report"
 
+      - name: Disk at the end of the job
+        if: always() && (steps.filter.outputs.code == 'true' || github.event_name != 'pull_request')
+        run: bash scripts/ci-disk.sh report "ipc-codegen - end of job"
+
   # personal-cfo-xcrsk (LIN-1): exploratory Linux AppImage proof. This is
   # deliberately manual and is NOT a required check: the result feeds ADR
   # 0079, but Linux is not a release tier until that ADR is accepted. The job
@@ -699,6 +751,13 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # personal-cfo-56w.7: the free hosted runner has a limited disk and a build of the
+      # desktop crate runs out of it ('No space left on device'). Free what no job here uses
+      # (scripts/ci-disk.sh lists it; it refuses to run anywhere but a hosted Linux runner),
+      # and record how much room the job had in the run summary.
+      - name: Free runner disk and report it
+        run: bash scripts/ci-disk.sh free
 
       - name: Install Linux build and GUI-smoke dependencies
         run: |
@@ -935,6 +994,10 @@ jobs:
           path: ${{ runner.temp }}/linux-appimage-spike/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Disk at the end of the job
+        if: always()
+        run: bash scripts/ci-disk.sh report "appimage-spike - end of job"
 
   # personal-cfo-rr0lm (DIST-5): proves the x86_64 slice of the universal
   # binary (ADR 0072) actually builds AND launches, on a REAL native Intel
