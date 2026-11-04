@@ -54,7 +54,7 @@ pub use db_worker::{
     AUTO_CATEGORIZE_ON_IMPORT_KEY, COMFORT_BAND_UPPER_KEY, CURRENT_SCHEMA_VERSION,
     FUTURE_CASH_SERIES_KEY, MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
 };
-pub use db_worker::{CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS};
+pub use db_worker::{VaultLease, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS};
 pub use importer_core::{
     all_presets, content_fingerprint, detect_best, plugin_by_id, preset_by_id, run_bounded,
     AccountHandling, CategoryHandling, ColumnMapping, ImporterPlugin, ParseError, ParseWarning,
@@ -3016,6 +3016,16 @@ impl Kernel {
             worker: DbWorker::open(path, key)?,
             diagnostics: Diagnostics::new(),
         })
+    }
+
+    /// Close this kernel (its connections close and its key is zeroized, as in [`Kernel::lock`]) and
+    /// keep the vault's lock: the returned [`VaultLease`] is held until dropped or handed to
+    /// [`Kernel::unlock_vault_leased`]. Used by the steps that rename or remove vault files with no
+    /// kernel open (applying a key rotation, delete), so no second process can open the vault in
+    /// between (personal-cfo-bxsbz.2).
+    #[must_use]
+    pub fn close_into_lease(self) -> VaultLease {
+        self.worker.close_into_lease()
     }
 
     /// Build a kernel over an already-open db-worker.

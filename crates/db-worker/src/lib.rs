@@ -1852,10 +1852,55 @@ impl DbWorker {
     /// [`DbError::UnsupportedSchema`] for an unverified/missing layout, or the
     /// normal keying, filesystem and exclusive-owner errors.
     pub fn open_existing_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
+        let lease = VaultLease::acquire(path.as_ref())?;
+        Self::open_existing_with_raw_key_leased(lease.path.clone(), dek, lease)
+    }
+
+    /// [`DbWorker::open_existing_with_raw_key`] for a caller that already holds the vault's
+    /// [`VaultLease`]: the worker takes over that lock rather than locking again, so the lock is
+    /// never released between the caller's file work and the worker's first open. A lease for a
+    /// different vault is refused.
+    ///
+    /// # Errors
+    /// [`DbError::Io`] (invalid input) if the lease is for another vault path, otherwise as
+    /// [`DbWorker::open_existing_with_raw_key`] (the exclusive-owner error cannot occur).
+    pub fn open_existing_with_raw_key_leased(
+        path: impl AsRef<Path>,
+        dek: Dek,
+        lease: VaultLease,
+    ) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
-        let runner_lock = acquire_runner_lock(&path)?;
+        if lease.path != path {
+            // A caller bug, not a rejected command: it stays out of the command-rejection ledger.
+            return Err(DbError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the lease is for a different vault",
+            )));
+        }
         let conn = open_existing_keyed_raw(&path, &dek)?;
-        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
+        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), lease.file)
+    }
+
+    /// Close this worker (its connections, and its key is zeroized) and keep the vault's lock:
+    /// the returned [`VaultLease`] is held until it is dropped or handed to a new worker. The
+    /// steps that rename or remove vault files outside a running worker (key rotation's swap,
+    /// delete, a rebase swap) run under it, so a second process never sees the vault unowned in
+    /// between (personal-cfo-bxsbz.2).
+    #[must_use]
+    pub fn close_into_lease(self) -> VaultLease {
+        let Self {
+            inner,
+            path,
+            _runner_lock,
+            ..
+        } = self;
+        // The connections close before the lock is released or handed on; the key (the rest of
+        // `self`) is zeroized as it drops here.
+        drop(inner);
+        VaultLease {
+            path,
+            file: _runner_lock,
+        }
     }
 
     /// Probe the SQLCipher database at `path` with `dek` without opening a worker, migrating
@@ -4844,6 +4889,40 @@ impl LedgerQuery for Connection {
     fn operation_count(&self) -> Result<u64, DbError> {
         let n: i64 = self.query_row("SELECT COUNT(*) FROM operation_log", [], |r| r.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+}
+
+/// Process-exclusive ownership of the vault at one path, held as an operating-system advisory
+/// lock on `<vault>.runner.lock` for as long as this value lives (ADR 0070, personal-cfo-bxsbz.2).
+///
+/// A [`DbWorker`] holds one for its whole life. Anything else that renames or removes the vault's
+/// files while no worker is running (startup key-rotation recovery, the swap that applies a
+/// committed rotation, deleting the vault, a rebase swap) holds one across the whole step, so a
+/// second process gets [`DbError::VaultInUse`] and touches nothing. The OS releases the lock when
+/// the file closes, whether by drop, process exit or crash; a lock file left behind never blocks
+/// the next open.
+#[derive(Debug)]
+pub struct VaultLease {
+    path: PathBuf,
+    file: File,
+}
+
+impl VaultLease {
+    /// Take the lock without waiting.
+    ///
+    /// # Errors
+    /// [`DbError::VaultInUse`] if another handle, in this or another process, holds it;
+    /// [`DbError::Io`] if the lock file cannot be created or locked.
+    pub fn acquire(path: impl AsRef<Path>) -> Result<Self, DbError> {
+        let path = path.as_ref().to_path_buf();
+        let file = acquire_runner_lock(&path)?;
+        Ok(Self { path, file })
+    }
+
+    /// The vault path this lease is for.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
