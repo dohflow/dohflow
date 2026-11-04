@@ -72,7 +72,7 @@ describe("General", () => {
   it("a failed read keeps its message and the select in the slot", async () => {
     mocks.baseCurrency.mockResolvedValue({ status: "error", error: "Persistence failure" });
     renderCard();
-    const alert = await screen.findByText("Could not load the base currency.");
+    const alert = await screen.findByText("Persistence failure");
     expect(slot().contains(alert)).toBe(true);
     expect(selects()).toHaveLength(1);
     expect(slot().contains(selects()[0]!)).toBe(true);
