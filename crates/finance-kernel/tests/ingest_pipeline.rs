@@ -8,10 +8,9 @@
 use chrono::NaiveDate;
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, CashflowRole, CommandEnvelope, CommandMeta,
-    CommitStaged, CreateAccount, Currency, ImportWarning, ImporterPlugin, Kernel, KernelError,
-    LedgerAccountId, Money, ParseError, ParseWarning, ParsedBatch, ParsedRecord, ParsedTransaction,
-    ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, StagedTransactionId,
-    MAX_IMPORT_WARNINGS,
+    CreateAccount, Currency, ImportWarning, ImporterPlugin, Kernel, KernelError, LedgerAccountId,
+    Money, ParseError, ParseWarning, ParsedBatch, ParsedRecord, ParsedTransaction, ParserHints,
+    ParserInput, ParserLimits, RecategorizeTransaction, StagedTransactionId, MAX_IMPORT_WARNINGS,
 };
 use semver::Version;
 use uuid::Uuid;
@@ -778,10 +777,7 @@ fn import_anyway_on_an_invalid_row_is_refused_and_changes_nothing() {
         let staged = StagedTransactionId::from_uuid(before[0].target_id);
 
         let refused = kernel
-            .dispatch(CommandEnvelope::new(
-                meta(),
-                CommitStaged::import_anyway(staged),
-            ))
+            .import_staged_anyway(meta(), staged)
             .expect_err("an invalid row cannot be forced into the ledger");
         assert!(
             matches!(&refused, KernelError::Validation(message) if message == error),
@@ -802,7 +798,7 @@ fn import_anyway_on_an_invalid_row_is_refused_and_changes_nothing() {
 
 #[test]
 fn a_sync_batch_with_an_invalid_row_still_reaches_a_terminal_state() {
-    // ingest_sync_batch commits through the same CommitStaged path.
+    // ingest_sync_batch commits through the same commit path.
     let (_dir, kernel, account_id) = checking_kernel();
     let mut records = three_with_bad_middle(0);
     for record in &mut records {

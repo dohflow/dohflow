@@ -90,6 +90,7 @@ pub use rekey::{available_space, verify_rekeyed_copy, BlobRename};
 mod scenarios;
 mod schedule_sources;
 mod spend_by_category;
+mod staged_import;
 
 pub use assumptions::{
     AssumptionEventView, AssumptionKind, AssumptionSource, AssumptionStatus, DependencyEdge,
@@ -100,6 +101,7 @@ pub use backup_history::{BackupHistoryEntry, BackupHistoryKind};
 pub use categories::CategoryView;
 pub use commitments::CommitmentView;
 pub use money_inbox::MoneyInboxItem;
+pub use staged_import::StagedDecision;
 
 /// The schema version a fully-migrated vault is at — the highest migration this
 /// build knows. Newer backups and ordinary existing-vault version witnesses
@@ -153,6 +155,7 @@ pub const PERSISTED_SETTING_KEYS: &[&str] = &[
     AUTO_CATEGORIZE_ON_IMPORT_KEY,
     FUTURE_CASH_SERIES_KEY,
 ];
+pub use apply::ingestion_cmds::{FIRST_IMPORT_YEAR, LAST_IMPORT_YEAR, MAX_IMPORT_TEXT_BYTES};
 pub use apply::merchant_cmds::{MAX_MERCHANT_COMMAND_ENTRIES, MAX_MERCHANT_DISPLAY_NAME_BYTES};
 pub use apply::settings_cmds::MAX_USER_SETTING_VALUE_BYTES;
 pub use categorization::RecurringCandidate;
@@ -738,10 +741,11 @@ pub enum WriteCommand {
         /// Records skipped (duplicates, etc.) so far.
         skipped_count: i64,
     },
-    /// Commit one staged transaction to the ledger (ADR 0008/0014, personal-cfo-cmx):
-    /// promote it to a balanced double-entry transaction + FK-strict import
-    /// provenance, marking the staged row committed. A transaction-fingerprint
-    /// duplicate is flagged for the Money Inbox instead — never silently dropped.
+    /// RETIRED (personal-cfo-0g528.1): commit one staged transaction to the ledger (ADR 0008/0014,
+    /// personal-cfo-cmx). It names a device-local staging row and decides its outcome from class-3
+    /// state, so it cannot replicate; it stays in the enum, applying exactly as it did, so an
+    /// operation log written before the change decodes and replays. Nothing produces it any more:
+    /// the commit is [`WriteCommand::CommitImportedTransaction`].
     CommitStaged {
         /// The staged transaction to commit.
         staged_transaction_id: StagedTransactionId,
@@ -750,12 +754,45 @@ pub enum WriteCommand {
         /// §7, personal-cfo-asqy). The pipeline always passes `false`.
         force: bool,
     },
-    /// Skip a staged transaction without committing it — the Money Inbox "skip"
-    /// resolution (ADR 0014 §7, personal-cfo-asqy). Marks the row `skipped` so the
-    /// next inbox rebuild drops it; no ledger write.
+    /// RETIRED (personal-cfo-0g528.1): skip a staged transaction without committing it — the Money
+    /// Inbox "skip" resolution (ADR 0014 §7, personal-cfo-asqy). The skip touches only device-local
+    /// state, so it is a plain worker method now ([`DbWorker::skip_staged`]); the variant stays so an
+    /// operation log written before the change decodes and replays.
     SkipStaged {
         /// The staged transaction to skip.
         staged_transaction_id: StagedTransactionId,
+    },
+    /// Commit one imported transaction to the ledger (ADR 0008/0014; personal-cfo-0g528.1, SYNC-2c).
+    /// Carries the MATERIALIZED transaction the issuing device decided on and the LOGICAL id of the
+    /// source record it came from; it names no staging row and no file digest. The dedupe and row
+    /// checks ran on the issuing device, in a read-only planner, before the command existed: apply
+    /// validates this payload and writes it, and never runs a heuristic. A transaction that already
+    /// exists is left alone (a re-delivery, or one the person voided). **Engine-version rule:** once
+    /// the engine version is pinned (personal-cfo-32fmp.4), a change to the checks apply makes, or to
+    /// the rows it writes, changes what a logged command does and MUST bump `engine_version`.
+    CommitImportedTransaction {
+        /// The ledger transaction's id: a content id of (source batch, row ordinal), derived by the
+        /// issuing device and carried, so every replica writes the same row.
+        transaction_id: TransactionId,
+        /// The user account the transaction posts to.
+        account_id: AccountId,
+        /// The source record (class 1b, by its logical id) the transaction was created from.
+        source_record_id: SourceRecordId,
+        /// When the transaction occurred (the posted date at noon UTC, or the source's instant).
+        occurred_at: DateTime<Utc>,
+        /// The signed amount, non-zero, in the account's currency.
+        amount: Money,
+        /// The source's merchant, kept as the counterparty.
+        counterparty: Option<String>,
+        /// The source's description, kept as the memo.
+        memo: Option<String>,
+        /// The secondary date the source carried (ADR 0045), if any.
+        transaction_date: Option<NaiveDate>,
+        /// The category the source's own column named, resolved by the issuing device; written as a
+        /// reduced-confidence `import_alias` categorization.
+        category_id: Option<CategoryId>,
+        /// The person's "import anyway" override of a flagged row, recorded in the decision trail.
+        forced: bool,
     },
     /// Snooze a Money Inbox item until `until` (ADR 0014 §7, personal-cfo-ci71): a
     /// soft action recorded in `change_journal_entries` and re-applied to the read
@@ -1160,6 +1197,7 @@ impl WriteCommand {
             WriteCommand::UpdateBatchState { .. } => "update_batch_state",
             WriteCommand::CommitStaged { .. } => "commit_staged",
             WriteCommand::SkipStaged { .. } => "skip_staged",
+            WriteCommand::CommitImportedTransaction { .. } => "commit_imported_transaction",
             WriteCommand::SnoozeInboxItem { .. } => "snooze_inbox_item",
             WriteCommand::DismissInboxItem { .. } => "dismiss_inbox_item",
             WriteCommand::DismissRecurringSuggestion { .. } => "dismiss_recurring_suggestion",
@@ -3627,6 +3665,7 @@ impl DbWorker {
         }
         let mut staged = Vec::new();
         let mut not_routed = 0_usize;
+        let mut ordinal = ingestion::last_row_ordinal(&tx, batch_id)?;
         for rec in &batch.records {
             let txn_account = rec
                 .transaction
@@ -3658,6 +3697,7 @@ impl DbWorker {
             if let (Some(txn), Some(Some(account))) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
                 let transaction_date = txn.transaction_date.map(|d| d.to_string());
+                ordinal += 1;
                 let id = ingestion::stage_transaction(
                     &tx,
                     &ingestion::NewStagedTransaction {
@@ -3671,6 +3711,7 @@ impl DbWorker {
                         description: txn.description.as_deref(),
                         imported_category: txn.category.as_deref(),
                         txn_fingerprint: &txn.txn_fingerprint,
+                        row_ordinal: ordinal,
                     },
                 )?;
                 staged.push(id);
@@ -3731,6 +3772,7 @@ impl DbWorker {
         }
         let mut staged = Vec::new();
         let mut skipped_unmapped = 0_usize;
+        let mut ordinal = ingestion::last_row_ordinal(&tx, batch_id)?;
         let mut promotions: Vec<(Uuid, Uuid, NaiveDate, Money, CommandMeta)> = Vec::new();
         for rec in &batch.records {
             // Resolve the record's account up front: a record with no mapped
@@ -3767,6 +3809,7 @@ impl DbWorker {
             if let (Some(txn), Some(account)) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
                 let transaction_date = txn.transaction_date.map(|d| d.to_string());
+                ordinal += 1;
                 let id = ingestion::stage_transaction(
                     &tx,
                     &ingestion::NewStagedTransaction {
@@ -3780,6 +3823,7 @@ impl DbWorker {
                         description: txn.description.as_deref(),
                         imported_category: txn.category.as_deref(),
                         txn_fingerprint: &txn.txn_fingerprint,
+                        row_ordinal: ordinal,
                     },
                 )?;
                 staged.push(connectors::StagedSyncTxn {
@@ -7872,6 +7916,32 @@ fn apply_command(
         WriteCommand::SkipStaged {
             staged_transaction_id,
         } => apply::ingestion_cmds::apply_skip_staged(&tx, meta, &ids, staged_transaction_id)?,
+        WriteCommand::CommitImportedTransaction {
+            transaction_id,
+            account_id,
+            source_record_id,
+            occurred_at,
+            amount,
+            counterparty,
+            memo,
+            transaction_date,
+            category_id,
+            forced,
+        } => apply::ingestion_cmds::apply_commit_imported_transaction(
+            &tx,
+            meta,
+            &ids,
+            transaction_id,
+            account_id,
+            source_record_id,
+            occurred_at,
+            amount,
+            counterparty,
+            memo,
+            transaction_date,
+            category_id,
+            forced,
+        )?,
         WriteCommand::SnoozeInboxItem { item_id, until } => {
             apply::inbox::apply_snooze_inbox_item(&tx, meta, &mut ids, item_id, until)?
         }
@@ -8131,7 +8201,9 @@ fn apply_command(
         // The committed case affects a ledger_transaction; a flagged duplicate
         // (rare) affects only the staged row — the authoritative record there is
         // the dedupe_decisions entry, not this op-log hint.
-        WriteCommand::CommitStaged { .. } => "ledger_transactions",
+        WriteCommand::CommitStaged { .. } | WriteCommand::CommitImportedTransaction { .. } => {
+            "ledger_transactions"
+        }
         WriteCommand::RecategorizeTransaction { .. } => "ledger_transactions",
         WriteCommand::VoidTransaction { .. } => "ledger_transactions",
         WriteCommand::MarkReviewed { .. } => "transaction_reviews",

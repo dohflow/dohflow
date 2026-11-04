@@ -303,8 +303,9 @@ receives semantic auto-merge treatment.
 | `CreateSourceBatch` | Reshape first | reshape to class-1b artifact envelope in SYNC-2c |
 | `AttachSourceRecord` | Reshape first | reshape to class-1b artifact envelope in SYNC-2c |
 | `UpdateBatchState` | Reshape first | reshape to class-1b artifact envelope in SYNC-2c |
-| `CommitStaged` | Reshape first | reshape to materialized transaction in SYNC-2c |
+| `CommitStaged` | Never ships | retired; replaced by CommitImportedTransaction, decodable and never produced (Addendum L) |
 | `SkipStaged` | Never ships | never enters an envelope; device-local staging only |
+| `CommitImportedTransaction` | Create | base-dependent: a transaction that already exists is left alone, so a re-delivery and a voided transaction write nothing (Addendum L) |
 
 ## Consequences
 
@@ -668,3 +669,42 @@ the registry or to any validator (a new key, a newly supported currency, a diffe
 changes what a logged command writes and must bump `engine_version`. The rule is in the variant's
 doc comment.
 
+## Addendum L — The import commit is materialized (2026-11-04, `personal-cfo-0g528.1`)
+
+`CommitImportedTransaction` is added as a version 1 command, and `CommitStaged` is retired. That makes
+**Create 15**, **Reshape first 3**, **Never ships 2** and 84 appendix rows (**Set 31**, **Toggle 25**,
+**Base-dependent 8** unchanged). `CommitStaged` moves from Reshape first to Never ships: the reshape the
+original row asked for is this command, and the old variant is now decodable history that nothing
+produces.
+
+**What the command carries.** The materialized transaction: its id, the account, the instant, the signed
+amount, the source's merchant and description, the secondary date, the category the source named (already
+resolved to an id), and whether the person forced it. It also carries the LOGICAL id of the source record
+(class 1b) the transaction was created from. It carries no staging id, no storage id and no file digest.
+Apply derives the dedupe decision's batch from that source record.
+
+**The decision moved to the origin.** The dedupe layers (a fingerprint already committed, the cross-source
+match) and the row checks (no account, a currency that differs, a zero amount, an unreadable date) read the
+device-local staging rows, so they run in a read-only planner on the device that staged the file, before
+the command exists. A flag or a skip is device-local bookkeeping and never ships (`SkipStaged` is no longer
+a command at all). Apply runs none of these heuristics: a changed threshold, or a device on another engine
+version, cannot change what a logged command writes.
+
+**Ids are derived from the batch and the row, and carried.** The transaction id is a content id of
+(source batch, row ordinal) under the vault's derivation key. A re-upload is a new batch, so it gets new
+ids and today's restore of a voided import keeps working; two identical rows in one file have two
+ordinals, so they stay distinct. The ordinal is a class-3 staging column written by all three paths (file,
+routed, connector), and a migration numbers the rows staged before it. The provenance link and the
+decision are content ids of the transaction id, so one transaction has one of each however many commands
+deliver it. A planner that finds the derived transaction already present dispatches nothing and finishes
+the staged row's bookkeeping, so a crash between the command and that bookkeeping heals on the next try.
+
+**Disposition: Create.** A valid commit is auto. A transaction that already exists, because the command was
+delivered twice or because the person voided it, is left as it is: nothing is written, so a re-import never
+resurrects a voided transaction. A missing account, category or source record is `ReferenceMissing`; a
+currency other than the account's, a zero amount, a date outside the supported years or over-long text is
+`PayloadInvalid`. Apply does not rebuild the Money Inbox: the origin rebuilds it once after a batch.
+
+**Engine-version rule.** Once the engine version is pinned (`personal-cfo-32fmp.4`), a change to the checks
+apply makes or to the rows it writes changes what a logged command does and must bump `engine_version`.
+The rule is in the variant's doc comment.

@@ -13,7 +13,7 @@ mod common;
 
 use chrono::NaiveDate;
 use common::*;
-use core_ledger::{AccountId, CashflowRole, SourceBatchId};
+use core_ledger::{AccountId, CashflowRole, SourceBatchId, StagedTransactionId};
 use core_money::{Currency, Money};
 use db_worker::*;
 use importer_core::{ParsedAccount, ParsedBatch, ParsedRecord, ParsedTransaction};
@@ -27,29 +27,17 @@ const GOLDEN_PATH: &str = concat!(
 );
 const GOLDEN: &str = include_str!("import_commit_parity.golden.txt");
 
-/// The one place the test decides a staged row, so a change of entry point edits only this.
+/// The one place the test decides a staged row, so a change of entry point edits only this. The
+/// Money Inbox is rebuilt by the caller once a batch (or a resolution) is done.
 fn commit(worker: &DbWorker, staged: Uuid, force: bool) -> Result<(), DbError> {
     worker
-        .dispatch(
-            meta(),
-            WriteCommand::CommitStaged {
-                staged_transaction_id: core_ledger::StagedTransactionId::from_uuid(staged),
-                force,
-            },
-        )
+        .commit_staged(meta(), StagedTransactionId::from_uuid(staged), force)
         .map(|_| ())
 }
 
 /// The Money Inbox "skip" resolution (and the silent skip of a certain connector duplicate).
 fn skip(worker: &DbWorker, staged: Uuid) -> Result<(), DbError> {
-    worker
-        .dispatch(
-            meta(),
-            WriteCommand::SkipStaged {
-                staged_transaction_id: core_ledger::StagedTransactionId::from_uuid(staged),
-            },
-        )
-        .map(|_| ())
+    worker.skip_staged(StagedTransactionId::from_uuid(staged))
 }
 
 fn date(month: u32, day: u32) -> NaiveDate {
@@ -179,6 +167,7 @@ fn finish_batch(worker: &DbWorker, batch: SourceBatchId) {
             },
         )
         .unwrap();
+    worker.rebuild_money_inbox().unwrap();
 }
 
 /// A file import into one account, as the kernel runs it: file-level dedupe, then stage and decide
@@ -518,8 +507,10 @@ fn run_scenario(worker: &DbWorker, fx: &Fixture) {
     //    both resolutions on a row that is already committed.
     let flagged_cafe = waiting_with(worker, "Corner Cafe");
     commit(worker, flagged_cafe, true).unwrap();
+    worker.rebuild_money_inbox().unwrap();
     let flagged_ofx = waiting_with(worker, "CORNER CAFE #12");
     skip(worker, flagged_ofx).unwrap();
+    worker.rebuild_money_inbox().unwrap();
     assert!(commit(worker, flagged_cafe, true).is_err());
     assert!(skip(worker, flagged_cafe).is_err());
     // A forced commit of an invalid row is refused and changes nothing.
