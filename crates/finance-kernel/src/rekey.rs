@@ -304,6 +304,10 @@ pub enum RekeyRecovery {
     RolledForward,
     /// The journal and the files disagree; nothing was deleted.
     Contradiction,
+    /// Another process owns the vault (it holds the vault's lease), so recovery was not attempted
+    /// and no file was touched. The owner is either running normally or is itself mid-rotation;
+    /// either way its files are its own until it releases the vault (personal-cfo-bxsbz.2).
+    Deferred,
 }
 
 /// Startup recovery for an interrupted rotation (ADR 0083 §4). Runs before the
@@ -374,10 +378,41 @@ pub(crate) enum CrashPoint {
     OldDbRemoved,
 }
 
+/// A test-only observation point: a test installs a closure on its own thread and every call to
+/// [`observe::at`] on that thread reports where the code is, so the test can look at the world (for
+/// example, whether the vault is still locked) at exactly that step.
+#[cfg(test)]
+pub(crate) mod observe {
+    use std::cell::RefCell;
+
+    type Observer = Box<dyn Fn(&str)>;
+    thread_local! {
+        static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn install(observer: impl Fn(&str) + 'static) {
+        OBSERVER.with(|o| *o.borrow_mut() = Some(Box::new(observer)));
+    }
+
+    pub(crate) fn clear() {
+        OBSERVER.with(|o| *o.borrow_mut() = None);
+    }
+
+    pub(crate) fn at(label: &str) {
+        OBSERVER.with(|o| {
+            if let Some(observer) = o.borrow().as_ref() {
+                observer(label);
+            }
+        });
+    }
+}
+
 /// Marker error for a simulated crash; never produced outside tests.
 const SIMULATED_CRASH: &str = "simulated crash";
 
 fn crash(stop: Option<CrashPoint>, here: CrashPoint) -> Result<(), KernelError> {
+    #[cfg(test)]
+    observe::at(&format!("{here:?}"));
     if stop == Some(here) {
         return Err(KernelError::Vault(SIMULATED_CRASH.to_owned()));
     }
