@@ -326,7 +326,14 @@ name = "operation_log"
 class = "1"
 write_set = "none"
 primary_key = ["op_seq"]
-columns = ["op_seq:int", "command_id:uuid", "correlation_id:uuid", "causation_id:uuid", "actor_type:text", "actor_id:text", "idempotency_key:text", "operation_type:text", "affected_entities:bytes", "metadata:bytes", "node_id:uuid", "vault_schema_version:int", "hlc_timestamp:int", "created_at:text", "payload:bytes", "payload_schema_version:int", "write_set_hash:bytes", "engine_version:text"]
+columns = ["op_seq:int", "command_id:uuid", "correlation_id:uuid", "causation_id:uuid", "actor_type:text", "actor_id:text", "idempotency_key:text", "operation_type:text", "affected_entities:bytes", "metadata:bytes", "node_id:uuid", "vault_schema_version:int", "hlc_timestamp:int", "created_at:text", "payload:bytes", "payload_schema_version:int", "write_set_hash:bytes", "engine_version:text", "applied_base_seq:int", "rebased_from:int"]
+
+[[table]]
+name = "outbox_queue"
+class = "3"
+write_set = "none"
+primary_key = ["command_id"]
+columns = ["command_id:uuid", "correlation_id:uuid", "causation_id:uuid", "reason:text", "origin_node_id:uuid", "queued_at:text", "envelope:bytes", "audit_evidence:bytes"]
 
 [[table]]
 name = "parser_runs"
@@ -481,6 +488,20 @@ class = "3"
 write_set = "none"
 primary_key = ["id"]
 columns = ["id:uuid", "source_record_id:uuid", "proposed_account_id:uuid", "posted_at:text", "amount_minor:int", "currency:text", "normalized_merchant:text", "description:text", "txn_fingerprint:text", "dedupe_status:text", "commit_status:text", "committed_transaction_id:uuid", "created_at:text", "transaction_date:text", "imported_category:text"]
+
+[[table]]
+name = "sync_base"
+class = "3"
+write_set = "none"
+primary_key = ["singleton"]
+columns = ["singleton:int", "base_seq:int", "base_digest:bytes", "state:text", "updated_at:text"]
+
+[[table]]
+name = "sync_outbox"
+class = "3"
+write_set = "none"
+primary_key = ["command_id"]
+columns = ["command_id:uuid", "op_seq:int", "state:text", "write_set_keys:bytes", "sealed_container:bytes", "bound_seq:int", "result_ref:bytes", "created_at:text"]
 
 [[table]]
 name = "system_ledger_accounts"

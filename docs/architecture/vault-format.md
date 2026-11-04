@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=27 -->
-<!-- vault-format: schema-version=64 -->
+<!-- vault-format: spec-version=28 -->
+<!-- vault-format: schema-version=65 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,14 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 28` (personal-cfo-bxsbz.1, schema version 65) adds the device-local Sync state:
+  the class-3 tables `sync_base`, `sync_outbox` and `outbox_queue` (inventory rows, all excluded
+  from both formats) and two nullable `operation_log` columns, `applied_base_seq` (the server seq
+  of the base the row was applied on; for a re-applied local row, the new base's seq) and
+  `rebased_from` (the `op_seq` the row replaced when re-applied in a rebase, otherwise null). Like
+  `created_at` they are device-local: outside the write set, and excluded from every cross-replica
+  and snapshot comparison. No wire layout, write-set rule or vector changes; the append-only
+  triggers are unchanged.
 - `spec-version = 27` (personal-cfo-v98vd, AC27) names the failure for an epoch record whose
   `membership_head` is neither installed nor in the same request: `EpochRecordMissing` (the converse
   of an add that no epoch record names), where the reference verifier and the vector
@@ -474,7 +482,7 @@ therefore requires reviewing this inventory.
 <!-- inventory:start -->
 | Table | Class | Portable | Sync genesis | Rule |
 | --- | --- | --- | --- | --- |
-| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. |
+| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. The device-local columns `created_at`, `applied_base_seq` and `rebased_from` are never part of a comparison, a digest or the export. |
 | `ledger_accounts` | 1 | include | include | Canonical user intent. |
 | `accounts` | 1 | include | include | Canonical user intent. |
 | `ledger_transactions` | 1 | include | include | Canonical user intent. |
@@ -552,6 +560,9 @@ therefore requires reviewing this inventory.
 | `attachment_blobs` | 1b | artifact | artifact | Document bytes: plaintext inside the portable bundle; an opaque, epoch-scoped artifact object under Sync. |
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |
 | `backup_history` | 3 | exclude | exclude | Device-local state. |
+| `sync_base` | 3 | exclude | exclude | Device-local state: whether Sync is enabled here, the server seq of the base image, the digest of `sync/base.db` and the base state. |
+| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys and sealed containers. A command's envelope is what travels, never this row. |
+| `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
 <!-- inventory:end -->
 
 Rules that apply to the whole inventory:
