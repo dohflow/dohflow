@@ -75,6 +75,37 @@ describe("Household", () => {
   });
 });
 
+describe("Household read", () => {
+  it("a Retry that fails the same way announces again, though the read settles in one batch", async () => {
+    mocks.householdTimezone.mockResolvedValue(refused("The vault is busy."));
+    renderWithClient(
+      <SettingsSection title="Household" span="full">
+        <HouseholdCard />
+      </SettingsSection>,
+    );
+    const alert = await screen.findByRole("alert");
+    await waitFor(() => expect(alert).toHaveTextContent("The vault is busy."));
+    const watch = watchAlert(alert);
+    fireEvent.click(within(slotOf("Household")).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.householdTimezone).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(watch.count()).toBeGreaterThanOrEqual(2));
+    expect(screen.getByRole("alert")).toBe(alert);
+    expect(alert).toHaveTextContent("The vault is busy.");
+  });
+
+  it("the first load failing does not blank the alert", async () => {
+    mocks.householdTimezone.mockResolvedValue(refused("The vault is busy."));
+    renderWithClient(
+      <SettingsSection title="Household" span="full">
+        <HouseholdCard />
+      </SettingsSection>,
+    );
+    const alert = await screen.findByRole("alert");
+    // Found with its text at once: no clear-and-restore on the first failure.
+    expect(alert).toHaveTextContent("The vault is busy.");
+  });
+});
+
 describe("Comfort band", () => {
   it("a repeat of the same upper-edge failure announces again", async () => {
     mocks.setComfortBandUpper.mockResolvedValue(refused("That upper edge is not allowed."));

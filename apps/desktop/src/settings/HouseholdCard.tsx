@@ -91,6 +91,7 @@ export function HouseholdCard() {
     failure: readFailure,
     retry,
     retrying,
+    failures,
     isSaving,
     setTimezone,
   } = useHouseholdTimezone();
@@ -105,14 +106,15 @@ export function HouseholdCard() {
   // A Retry that was pressed and has settled with the read still failing counts as an attempt (the
   // first load settling is not one).
   const retryPressed = useRef(false);
-  const wasRetrying = useRef(false);
+  const seenFailures = useRef(failures);
   useEffect(() => {
-    if (wasRetrying.current && !retrying && retryPressed.current) {
+    if (failures === seenFailures.current) return;
+    seenFailures.current = failures;
+    if (retryPressed.current) {
       retryPressed.current = false;
       nextReadAttempt();
     }
-    wasRetrying.current = retrying;
-  }, [retrying, nextReadAttempt]);
+  }, [failures, nextReadAttempt]);
   const [saved, setSaved] = useState(false);
 
   const items = useMemo(() => supportedTimezones().map(timezoneItem), []);
