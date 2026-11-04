@@ -403,6 +403,57 @@ describe("resolved while collapsed (Studio R1)", () => {
     expect(trigger("Backups")).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("Vault health: a failed first read, collapsed, keeps its error and Re-check in the slot while the Re-check is in flight, then ends on the heading", async () => {
+    mocks.vaultHealth.mockResolvedValueOnce(failed("The health check could not run."));
+    renderWithClient(
+      <SettingsSection title="Vault health" span="full">
+        <VaultHealthCard />
+      </SettingsSection>,
+    );
+    await screen.findByText("The health check could not run.");
+    toggle("Vault health");
+    expect(trigger("Vault health")).toHaveAttribute("aria-expanded", "false");
+    let release!: (value: unknown) => void;
+    mocks.vaultHealth.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const recheck = within(slotOf("Vault health")).getByRole("button", { name: "Re-check" });
+    recheck.focus();
+    fireEvent.click(recheck);
+    await waitFor(() => expect(mocks.vaultHealth).toHaveBeenCalledTimes(2));
+    // The read is in flight: the error and its one Re-check are still in the slot.
+    expect(within(slotOf("Vault health")).getByText("The health check could not run.")).toBeInTheDocument();
+    expect(within(slotOf("Vault health")).getByRole("button", { name: /Re-check/ })).toBeInTheDocument();
+    await act(async () => release(ok(health())));
+    await waitFor(() => expect(screen.queryByText("The health check could not run.")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger("Vault health")));
+    expect(trigger("Vault health")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("Vault health: a Re-check disabled while it reads (so a browser drops its focus) gets focus back when the read fails again", async () => {
+    mocks.vaultHealth.mockResolvedValue(failed("The health check could not run."));
+    renderWithClient(
+      <SettingsSection title="Vault health" span="full">
+        <VaultHealthCard />
+      </SettingsSection>,
+    );
+    await screen.findByText("The health check could not run.");
+    let release!: (value: unknown) => void;
+    mocks.vaultHealth.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const recheck = within(slotOf("Vault health")).getByRole("button", { name: "Re-check" });
+    recheck.focus();
+    fireEvent.click(recheck);
+    await waitFor(() => expect(mocks.vaultHealth).toHaveBeenCalledTimes(2));
+    // A browser drops focus from a control that was just disabled (jsdom keeps it, so move it).
+    document.body.tabIndex = -1;
+    act(() => document.body.focus());
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => release(failed("The health check could not run.")));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        within(slotOf("Vault health")).getByRole("button", { name: "Re-check" }),
+      ),
+    );
+  });
+
   it("Vault health: a rebuild with a held re-read, resolved healthy while collapsed, ends on the section's heading", async () => {
     const drifted = ok(health({ read_models_current: false, is_healthy: false }));
     mocks.vaultHealth.mockResolvedValueOnce(drifted);
