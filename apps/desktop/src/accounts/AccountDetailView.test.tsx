@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   cardStatementForecast: vi.fn(),
   transactionPage: vi.fn(),
   assertBalance: vi.fn(),
+  accountUnexplained: vi.fn(),
+  recordTransaction: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -27,6 +29,8 @@ vi.mock("@/bindings", () => ({
     cardStatementForecast: mocks.cardStatementForecast,
     transactionPage: mocks.transactionPage,
     assertBalance: mocks.assertBalance,
+    accountUnexplained: mocks.accountUnexplained,
+    recordTransaction: mocks.recordTransaction,
   },
 }));
 
@@ -151,6 +155,7 @@ const CARD_FORECAST: CardStatementForecastDto = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.accountList.mockResolvedValue(ok([CHECKING, CARD]));
+  mocks.accountUnexplained.mockResolvedValue(ok(null));
   mocks.cashFlowHistory.mockResolvedValue(ok(HISTORY));
   mocks.futureCashByAccount.mockResolvedValue(ok(FORECAST));
   mocks.cardStatementForecast.mockResolvedValue(ok([CARD_FORECAST]));
@@ -355,5 +360,126 @@ describe("AccountDetailView", () => {
   it("shows a not-found state for an unknown account", async () => {
     renderWithClient(<AccountDetailView accountId="nope" onBack={vi.fn()} />);
     expect(await screen.findByText("Account not found")).toBeInTheDocument();
+  });
+
+  describe("Explain with transactions reads what is actually left (personal-cfo-4d8.64)", () => {
+    const REMAINING = "Remaining to reconcile";
+    const outcome = (plug: number) =>
+      ok({
+        balance: usd(200_000),
+        unexplained: plug === 0 ? null : usd(plug),
+      });
+    const reconciled = () => screen.queryByText(/reconciled/i);
+
+    async function explain(accountId: string, plug: number) {
+      mocks.assertBalance.mockResolvedValue(outcome(plug));
+      renderWithClient(<AccountDetailView accountId={accountId} onBack={vi.fn()} />);
+      await screen.findByRole("button", { name: /Edit/ });
+      fireEvent.click(screen.getByRole("button", { name: /Edit/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /^set balance$/i }));
+      fireEvent.click(await screen.findByRole("button", { name: "Explain with transactions" }));
+      await screen.findByText("Record the transactions that explain the difference.");
+    }
+
+    it.each([
+      ["a cash account", CHECKING.id, 5_000],
+      ["a credit account", CARD.id, -5_000],
+    ])(
+      "%s: a nonzero residual shows what remains, keeps the entry path, and never says Reconciled",
+      async (_name, id, plug) => {
+        mocks.accountUnexplained.mockResolvedValue(ok(usd(plug)));
+        await explain(id, plug);
+        expect(await screen.findByText(/\$50\.00/)).toBeInTheDocument();
+        expect(reconciled()).toBeNull();
+        expect(screen.getByRole("button", { name: /add & new/i })).toBeInTheDocument();
+        expect(mocks.accountUnexplained).toHaveBeenCalledTimes(1);
+        expect(mocks.accountUnexplained).toHaveBeenCalledWith(id);
+        // The only assertion is the one just made: opening the modal adds none.
+        expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("nothing is claimed while the residual is still being read", async () => {
+      mocks.accountUnexplained.mockReturnValue(new Promise(() => {}));
+      await explain(CHECKING.id, 5_000);
+      expect(reconciled()).toBeNull();
+      expect(screen.getByText(REMAINING).parentElement).toHaveTextContent("—");
+      expect(screen.getByRole("button", { name: /add & new/i })).toBeInTheDocument();
+    });
+
+    it("a residual of nothing, read from the host, is the only thing that says Reconciled", async () => {
+      mocks.accountUnexplained.mockResolvedValue(ok(null));
+      await explain(CHECKING.id, 5_000);
+      expect(await screen.findByText(/reconciled/i)).toBeInTheDocument();
+    });
+
+    it("a failed read claims nothing: the approved sentence and Retry show, and Retry reads again", async () => {
+      mocks.accountUnexplained.mockRejectedValueOnce(new Error("connection lost"));
+      await explain(CHECKING.id, 5_000);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Couldn’t check what is left to explain.",
+      );
+      expect(reconciled()).toBeNull();
+      mocks.accountUnexplained.mockResolvedValue(ok(usd(5_000)));
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(await screen.findByText(/\$50\.00/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(reconciled()).toBeNull();
+    });
+
+    it("a read the host refuses shows its reason with Retry, and never claims Reconciled", async () => {
+      mocks.accountUnexplained.mockResolvedValueOnce({ status: "error", error: "VaultLocked" });
+      await explain(CHECKING.id, 5_000);
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(/locked/i);
+      expect(alert).not.toHaveTextContent("Couldn’t check what is left to explain.");
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+      expect(reconciled()).toBeNull();
+      expect(screen.getByRole("button", { name: /add & new/i })).toBeInTheDocument();
+    });
+
+    it("the Retry state: it says Retrying… and stays disabled, a failed retry keeps the message, a good one shows the residual", async () => {
+      mocks.accountUnexplained.mockRejectedValueOnce(new Error("connection lost"));
+      await explain(CHECKING.id, 5_000);
+      await screen.findByRole("button", { name: "Retry" });
+
+      // Pressed: the button reads Retrying… and cannot be pressed again; the message stays up.
+      let fail: (reason: unknown) => void = () => {};
+      mocks.accountUnexplained.mockReturnValueOnce(
+        new Promise((_resolve, reject) => (fail = reject)),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      const retrying = await screen.findByRole("button", { name: "Retrying…" });
+      expect(retrying).toBeDisabled();
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t check what is left to explain.");
+      expect(mocks.accountUnexplained).toHaveBeenCalledTimes(2);
+
+      // The retry fails too: the same message and a live Retry again; still nothing claimed.
+      await act(async () => fail(new Error("connection lost")));
+      expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t check what is left to explain.");
+      expect(reconciled()).toBeNull();
+
+      // A retry that succeeds shows the residual and drops the alert.
+      mocks.accountUnexplained.mockResolvedValueOnce(ok(usd(2_500)));
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(await screen.findByText(/\$25\.00/)).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+      expect(reconciled()).toBeNull();
+    });
+
+    it("recording a transaction reads the residual again; Reconciled only once that read says nothing remains", async () => {
+      mocks.recordTransaction.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
+      mocks.accountUnexplained.mockResolvedValueOnce(ok(usd(5_000)));
+      await explain(CHECKING.id, 5_000);
+      await screen.findByText(/\$50\.00/);
+      fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "50" } });
+      mocks.accountUnexplained.mockResolvedValueOnce(ok(null));
+      fireEvent.click(screen.getByRole("button", { name: /add & new/i }));
+      await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText(/reconciled/i)).toBeInTheDocument();
+      expect(mocks.accountUnexplained).toHaveBeenCalledTimes(2);
+    });
   });
 });
