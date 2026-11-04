@@ -409,6 +409,17 @@ names earlier builds wrote are renamed to `user.<name>` once, on open, by schema
 owner chose an eager rename over a dual-read fallback): an older build refuses the renamed vault
 (`NewerSchema`), and the old raw writes never replicated, so no replica holds a legacy key.
 
+*Routing note (2026-11-04, `personal-cfo-0g528.1`).* The import commit is materialized:
+`CommitImportedTransaction` carries the transaction and the LOGICAL id of its class-1b source record, reads
+no staging row, and replaces `CommitStaged`, which is retired (decodable, never produced). The dedupe and
+row checks moved into a read-only planner on the device that staged the file; a flag or a skip is
+device-local bookkeeping, and `SkipStaged` is a plain worker method. The transaction id is a content id of
+(source batch, row ordinal), carried in the payload; the provider-derived id of this ADR's identity
+section (`personal-cfo-0g528.3`) takes the same payload field for connector rows. A *committed*
+`dedupe_decisions` row is written by the command and names no staged id; a *flagged* one still names the
+staging row, so it stays a device-local write until `personal-cfo-5ymg8.6` makes the decision a command
+(ADR 0073 Addendum L).
+
 Class 1 covers user-facing canonical intent; class 1b covers artifact bytes;
 class 2 is rebuilt; class 3 includes connector credentials, refresh
 watermarks, staged rows, idempotency keys, audit events, node-local values,

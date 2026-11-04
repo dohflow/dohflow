@@ -17,7 +17,7 @@ use chrono::NaiveDate;
 use common::KEY;
 use core_ledger::{
     Account, AccountFlags, AccountId, AccountSubtype, CashflowRole, CategoryId, LedgerAccountId,
-    TransactionId,
+    SourceBatchId, SourceRecordId, TransactionId,
 };
 use core_money::{Currency, Money};
 use db_worker::{
@@ -131,6 +131,23 @@ fn create_category(n: u128, parent: Option<u128>, name: &str) -> WriteCommand {
         category_type: "expense".to_owned(),
         color: None,
         icon: None,
+    }
+}
+
+/// An import commit of `minor` units to `account_id`, citing source record 151, with everything else
+/// valid; the scenarios below change one field at a time.
+fn imported(n: u128, account_id: AccountId, amount: Money) -> WriteCommand {
+    WriteCommand::CommitImportedTransaction {
+        transaction_id: TransactionId::from_uuid(u(n)),
+        account_id,
+        source_record_id: SourceRecordId::from_uuid(u(151)),
+        occurred_at: chrono::DateTime::from_timestamp_micros(ISSUED_MICROS).unwrap(),
+        amount,
+        counterparty: Some("corner cafe".to_owned()),
+        memo: Some("CORNER CAFE #4".to_owned()),
+        transaction_date: None,
+        category_id: None,
+        forced: false,
     }
 }
 
@@ -702,6 +719,178 @@ fn scenarios() -> Vec<Step> {
             revert_confirmed(130, &[]),
             Fine,
         ),
+        // ---- apply/ingestion_cmds.rs (personal-cfo-0g528.1) ----
+        step(
+            "a source batch",
+            WriteCommand::CreateSourceBatch {
+                id: SourceBatchId::from_uuid(u(150)),
+                source_type: "csv".to_owned(),
+                source_name: Some("statement.csv".to_owned()),
+                file_fingerprint: None,
+                parser_version: None,
+                connector_connection_id: None,
+            },
+            Fine,
+        ),
+        step(
+            "a source record",
+            WriteCommand::AttachSourceRecord {
+                id: SourceRecordId::from_uuid(u(151)),
+                batch_id: SourceBatchId::from_uuid(u(150)),
+                external_id: None,
+                source_hash: "sha256:row".to_owned(),
+                normalized_json: "{}".to_owned(),
+                parse_confidence_bps: None,
+            },
+            Fine,
+        ),
+        step(
+            "an import commit of a zero amount",
+            imported(160, account(1), Money::new(0, Currency::Usd)),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "an import commit with an over-long memo",
+            match imported(161, account(1), Money::new(-500, Currency::Usd)) {
+                WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    source_record_id,
+                    occurred_at,
+                    amount,
+                    counterparty,
+                    transaction_date,
+                    category_id,
+                    forced,
+                    ..
+                } => WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    source_record_id,
+                    occurred_at,
+                    amount,
+                    counterparty,
+                    memo: Some("m".repeat(db_worker::MAX_IMPORT_TEXT_BYTES + 1)),
+                    transaction_date,
+                    category_id,
+                    forced,
+                },
+                _ => unreachable!("imported builds a CommitImportedTransaction"),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "an import commit dated outside the supported years",
+            match imported(162, account(1), Money::new(-500, Currency::Usd)) {
+                WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    source_record_id,
+                    amount,
+                    counterparty,
+                    memo,
+                    transaction_date,
+                    category_id,
+                    forced,
+                    ..
+                } => WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    source_record_id,
+                    occurred_at: chrono::DateTime::parse_from_rfc3339("3001-01-01T12:00:00Z")
+                        .unwrap()
+                        .to_utc(),
+                    amount,
+                    counterparty,
+                    memo,
+                    transaction_date,
+                    category_id,
+                    forced,
+                },
+                _ => unreachable!("imported builds a CommitImportedTransaction"),
+            },
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "an import commit to an unknown account",
+            imported(163, account(97), Money::new(-500, Currency::Usd)),
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "an import commit in another currency than its account",
+            imported(164, account(1), Money::new(-500, Currency::Eur)),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "an import commit naming an unknown category",
+            match imported(165, account(1), Money::new(-500, Currency::Usd)) {
+                WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    source_record_id,
+                    occurred_at,
+                    amount,
+                    counterparty,
+                    memo,
+                    transaction_date,
+                    forced,
+                    ..
+                } => WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    source_record_id,
+                    occurred_at,
+                    amount,
+                    counterparty,
+                    memo,
+                    transaction_date,
+                    category_id: Some(category(96)),
+                    forced,
+                },
+                _ => unreachable!("imported builds a CommitImportedTransaction"),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "an import commit citing an unknown source record",
+            match imported(166, account(1), Money::new(-500, Currency::Usd)) {
+                WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    occurred_at,
+                    amount,
+                    counterparty,
+                    memo,
+                    transaction_date,
+                    category_id,
+                    forced,
+                    ..
+                } => WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    account_id,
+                    source_record_id: SourceRecordId::from_uuid(u(152)),
+                    occurred_at,
+                    amount,
+                    counterparty,
+                    memo,
+                    transaction_date,
+                    category_id,
+                    forced,
+                },
+                _ => unreachable!("imported builds a CommitImportedTransaction"),
+            },
+            Reject(ReferenceMissing),
+        ),
+        step(
+            "a valid import commit",
+            imported(167, account(1), Money::new(-500, Currency::Usd)),
+            Fine,
+        ),
+        step(
+            "the same import commit delivered again",
+            imported(167, account(1), Money::new(-500, Currency::Usd)),
+            Fine,
+        ),
         // ---- apply/merchant_cmds.rs (personal-cfo-5ymg8.5) ----
         step("minting no anchors", mint(&[]), Reject(PayloadInvalid)),
         step(
@@ -1021,6 +1210,7 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/assumption_cmds.rs",
         "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
+        "apply/ingestion_cmds.rs",
         "apply/merchant_cmds.rs",
         "apply/mod.rs",
         "apply/scenario_apply.rs",

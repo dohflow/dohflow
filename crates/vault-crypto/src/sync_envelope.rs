@@ -31,7 +31,7 @@
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use sync_core::envelope::ReceiverError;
 use sync_core::header::{
     encode_container, ClearHeader, Fingerprint, NonceDomain, ParsedContainer,
@@ -43,11 +43,11 @@ use thiserror::Error;
 
 use crate::secret::SecretBytes;
 use crate::sync::label_bytes;
+use crate::sync_keys::epoch_key_commitment;
 
 /// The label of the AEAD-key derivation.
 pub const AEAD_KEY_LABEL: &str = "dohflow/sync-aead/v1";
-/// The label of the epoch-key commitment.
-pub const EPOCH_KEY_COMMITMENT_LABEL: &str = "dohflow/sync-epoch-key-commit/v1";
+pub use crate::sync_keys::EPOCH_KEY_COMMITMENT_LABEL;
 
 /// Which kind of object a key is for. A key for one is never a key for the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,12 +96,7 @@ impl EpochKey {
         key: SecretBytes<32>,
         commitment: &[u8; 32],
     ) -> Result<Self, KeyError> {
-        // Hash incrementally: building `label ‖ K_e` in a Vec would leave an unscrubbed copy of the
-        // epoch root on the heap (and a second one if it reallocated).
-        let mut hash = Sha256::new();
-        hash.update(label_bytes(EPOCH_KEY_COMMITMENT_LABEL));
-        hash.update(key.expose());
-        let computed: [u8; 32] = hash.finalize().into();
+        let computed = epoch_key_commitment(&key);
         if &computed != commitment {
             return Err(KeyError::CommitmentMismatch);
         }
@@ -110,6 +105,11 @@ impl EpochKey {
             key_epoch,
             bytes: key,
         })
+    }
+
+    /// The protected bytes, for the custody module that stores them and nothing else.
+    pub(crate) const fn secret(&self) -> &SecretBytes<32> {
+        &self.bytes
     }
 
     /// The vault this key belongs to.

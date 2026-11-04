@@ -1227,6 +1227,7 @@ mod all_variants {
         "update_batch_state",
         "commit_staged",
         "skip_staged",
+        "commit_imported_transaction",
         "snooze_inbox_item",
         "dismiss_inbox_item",
         "dismiss_recurring_suggestion",
@@ -1260,6 +1261,8 @@ mod all_variants {
     #[derive(Default)]
     struct Runtime {
         staged: Vec<Uuid>,
+        /// The source record of the first staged row (an import commit names it).
+        source_record: Option<Uuid>,
         /// The vault's first member, whose id derives from the vault id.
         primary: Option<Uuid>,
     }
@@ -1412,8 +1415,9 @@ mod all_variants {
                     .expect("setup: balance assertion");
                 vec![]
             }
-            "commit_staged" => {
-                // Two staged transactions: one to commit, one to skip.
+            "commit_staged" | "commit_imported_transaction" => {
+                // Two staged transactions: one to commit, one to skip; the import commit names the
+                // source record of the first.
                 let batch = Uuid::now_v7();
                 worker
                     .read_connection()
@@ -1461,6 +1465,17 @@ mod all_variants {
                     .stage_parsed_batch(batch, &batch_data, account(1).as_uuid())
                     .expect("setup: staged transactions");
                 assert!(rt.staged.len() >= 2, "two staged transactions");
+                rt.source_record = Some(
+                    worker
+                        .read_connection()
+                        .unwrap()
+                        .query_row(
+                            "SELECT source_record_id FROM staged_transactions WHERE id = ?1",
+                            [rt.staged[0]],
+                            |r| r.get(0),
+                        )
+                        .expect("setup: the staged row's source record"),
+                );
                 vec![]
             }
             // The clone names two events of its source, so the source needs them first.
@@ -1705,6 +1720,33 @@ mod all_variants {
             ("skip_staged", WriteCommand::SkipStaged { .. }) => WriteCommand::SkipStaged {
                 staged_transaction_id: core_ledger::StagedTransactionId::from_uuid(rt.staged[1]),
             },
+            (
+                "commit_imported_transaction",
+                WriteCommand::CommitImportedTransaction {
+                    transaction_id,
+                    occurred_at,
+                    amount,
+                    counterparty,
+                    memo,
+                    transaction_date,
+                    forced,
+                    ..
+                },
+            ) => WriteCommand::CommitImportedTransaction {
+                transaction_id,
+                account_id: account(1),
+                source_record_id: core_ledger::SourceRecordId::from_uuid(
+                    rt.source_record.expect("setup staged a batch"),
+                ),
+                occurred_at,
+                amount,
+                counterparty,
+                memo,
+                transaction_date,
+                // The sample's category does not exist in the oracle's vault.
+                category_id: None,
+                forced,
+            },
             (_, sample) => sample,
         }
     }
@@ -1772,7 +1814,7 @@ mod all_variants {
             nonempty += usize::from(run_checked(&worker, name, command, &mut exercised));
             checked += 1;
         }
-        assert_eq!(checked, 83, "every variant ran");
+        assert_eq!(checked, 84, "every variant ran");
         assert!(by_name.is_empty());
         assert!(
             nonempty >= 40,

@@ -5,7 +5,7 @@
 //! provider refetch (connectors only), and the cross-source heuristic (same
 //! account, exact posted date, same signed amount, different source type).
 //! These tests drive real CSV and OFX bytes through `import_batch_impl` — the
-//! registered importers, the bounded host, staging, `CommitStaged` and the
+//! registered importers, the bounded host, staging, the import commit and the
 //! Money Inbox projection — and resolve flags through the same review commands
 //! the UI uses.
 
