@@ -18,3 +18,10 @@ declare module "virtual:source-tree" {
 
 /// The commit the dev server was started from (vite.config.ts); used only by the dev audit pages.
 declare const __SOURCE_SHA__: string;
+
+declare module "virtual:tailwind-sheets" {
+  /// Tailwind's own stylesheets by file name (`index.css`, `preflight.css`, `theme.css`,
+  /// `utilities.css`), for compiling `globals.css` in tests.
+  const sheets: Record<string, string>;
+  export default sheets;
+}

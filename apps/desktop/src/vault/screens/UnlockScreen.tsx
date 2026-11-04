@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent } from "react";
-import { LockKeyhole } from "lucide-react";
+import { Fingerprint, LockKeyhole } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,22 +12,43 @@ import {
 } from "@/components/ui/card";
 import { RestoreFromBackup } from "@/backup/RestoreFromBackup";
 import { describeIpcError, useVault } from "@/vault/useVault";
+import { TOUCH_ID_UNLOCK_UNKNOWN, touchIdReasonCopy } from "@/vault/touchIdCopy";
+import { useTouchIdStatus } from "@/vault/useTouchIdStatus";
 import { Screen } from "./Screen";
 
 export function UnlockScreen() {
-  const { unlockVault } = useVault();
+  const { unlockVault, unlockWithTouchId, refresh: refreshVault } = useVault();
+  const touchId = useTouchIdStatus();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // The host asked for an integrity check and the vault failed it: the only way on is a backup.
   const [damaged, setDamaged] = useState(false);
+  const [touchBusy, setTouchBusy] = useState(false);
+  // What the last Touch ID attempt said, when it did not unlock (a cancelled prompt, ...).
+  const [touchNote, setTouchNote] = useState<string | null>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
+
+  // The Touch ID call threw instead of answering: the outcome is not known (xuu repair round).
+  const [touchUnknown, setTouchUnknown] = useState(false);
+
+  const touchOn = touchId.status?.state === "on";
+  const touchOffered = touchOn && touchId.status?.offered === true;
+  // A rule that requires the password (a restart, three misses, 30 days, ...) is explained, not hidden.
+  const touchRule =
+    touchOn && !touchOffered && touchId.status?.reason
+      ? touchIdReasonCopy(touchId.status.reason)
+      : null;
+  const touchMessage = touchRule ?? touchNote;
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (password.length === 0 || submitting) return;
     setSubmitting(true);
     setError(null);
+    // A real password attempt has started, so the unconfirmed Touch ID result is no longer the
+    // news; if the password fails, only its own error shows.
+    setTouchUnknown(false);
     setDamaged(false);
     const failure = await unlockVault(password);
     if (failure) {
@@ -37,6 +58,35 @@ export function UnlockScreen() {
       setSubmitting(false);
       passwordInput.current?.focus();
     }
+  }
+
+  async function onTouchId() {
+    if (touchBusy || submitting) return;
+    setTouchBusy(true);
+    setError(null);
+    setDamaged(false);
+    setTouchNote(null);
+    setTouchUnknown(false);
+    let result: Awaited<ReturnType<typeof unlockWithTouchId>> | null = null;
+    try {
+      result = await unlockWithTouchId();
+    } catch {
+      // Not known whether the vault opened. Read it again; if it did, this screen goes away.
+      void refreshVault();
+    }
+    if (result?.kind === "unlocked") return; // the vault is open; this screen goes away
+    if (result === null) {
+      setTouchUnknown(true);
+    } else if (result.kind === "error") {
+      // The password path would report the same thing (a damaged vault, a failed read).
+      setError(describeIpcError(result.error));
+      setDamaged(result.error === "VaultIntegrityCheckFailed");
+    } else {
+      setTouchNote(touchIdReasonCopy(result.reason));
+    }
+    setTouchBusy(false);
+    void touchId.refresh();
+    passwordInput.current?.focus();
   }
 
   return (
@@ -72,11 +122,37 @@ export function UnlockScreen() {
                 {error}
               </p>
             )}
+            {touchUnknown && (
+              <p role="alert" className="text-sm text-loss">
+                {TOUCH_ID_UNLOCK_UNKNOWN}
+              </p>
+            )}
 
-            <Button type="submit" disabled={password.length === 0 || submitting}>
+            <Button
+              type="submit"
+              disabled={password.length === 0 || submitting || touchBusy}
+            >
               {submitting ? "Unlocking…" : "Unlock"}
             </Button>
           </form>
+
+          {touchOffered && (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-3 w-full"
+              onClick={onTouchId}
+              disabled={touchBusy || submitting}
+            >
+              <Fingerprint className="size-4" aria-hidden />
+              {touchBusy ? "Waiting for Touch ID…" : "Unlock with Touch ID"}
+            </Button>
+          )}
+          {touchMessage && (
+            <p role="status" className="mt-3 text-sm text-muted-foreground">
+              {touchMessage}
+            </p>
+          )}
 
           {damaged && (
             <div className="mt-4">

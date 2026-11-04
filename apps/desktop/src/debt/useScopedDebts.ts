@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { commands, type AccountViewDto } from "@/bindings";
@@ -27,11 +28,30 @@ export function useScopedDebts(accounts: AccountViewDto[]) {
       ),
   });
 
+  // A retry of a read that never produced data puts the query back to pending, which clears its
+  // error; the failure being retried stays on screen meanwhile.
+  const [retriedFailure, setRetriedFailure] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const failure = query.error?.message ?? (retrying ? retriedFailure : null);
+  /// Read the terms again. Resolves to whether the read worked.
+  async function retry(): Promise<boolean> {
+    setRetriedFailure(query.error?.message ?? null);
+    setRetrying(true);
+    try {
+      const result = await query.refetch();
+      return result.status === "success";
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   const byAccount = new Map((query.data ?? []).map((t) => [t.account_id, t]));
+  // A failed read leaves nothing known: cached terms from before the failure are not shown as if
+  // they were current.
   const debts: ScopedDebt[] | null =
     accounts.length === 0
       ? []
-      : query.data === undefined
+      : failure !== null || query.data === undefined
         ? null
         : accounts.map((account) => ({
             account,
@@ -40,5 +60,5 @@ export function useScopedDebts(accounts: AccountViewDto[]) {
             owedMinor: Math.max(-account.balance.minor_units, 0),
           }));
 
-  return { debts, error: query.error?.message ?? null };
+  return { debts, error: failure, retry, retrying };
 }
