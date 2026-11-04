@@ -97,9 +97,26 @@ hkdf = "0.12"
 hmac = "0.12"
 # Strict Ed25519 verification for the Sync membership chain (personal-cfo-g3m.21). Pinned to the 2.x
 # line: 3.x is the next RustCrypto generation and would add a second sha2/digest major. Only
-# `verify_strict` is used to verify; signing (`SigningKey::from_bytes`) is for test vectors only.
+# `verify_strict` is used to verify; signing (`SigningKey::from_bytes`) is vault-crypto's device and
+# genesis signing (personal-cfo-1cltt.2), the only non-test signer.
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fast", "zeroize"] }
 subtle = "2"
+# HPKE (RFC 9180) for the Sync key-set sealing of vault-format.md C.6 (personal-cfo-1cltt.2): base
+# mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM, the one suite C.1.4 names. Pinned EXACT
+# and on the 0.13 line on purpose: 0.14 and later move to the next RustCrypto generation (aes-gcm 0.11,
+# sha2 0.11, hkdf 0.13, x25519-dalek 3, rand_core 0.10), which would put a second major of the whole AEAD
+# and hash stack in the tree beside the one the vault already uses, exactly the cost the ed25519-dalek pin
+# above avoids. 0.13.0 resolves to aes-gcm 0.10, hkdf 0.12, sha2 0.10, x25519-dalek 2 (curve25519-dalek 4,
+# already here through ed25519-dalek). Default features are off: P-256 is not a Sync suite. Only
+# vault-crypto uses it. `alloc` is the single-shot seal and open API (heap buffers; no new package).
+# Re-run the RFC 9180 vectors in crates/vault-crypto/tests before any bump. Reopen this pin only for a
+# RustSec advisory against hpke 0.13 or x25519-dalek 2, or for `suite_id` 2 (the hybrid KEM), which is
+# the moment for a whole-workspace RustCrypto generation move.
+hpke = { version = "=0.13.0", default-features = false, features = ["alloc", "x25519"] }
+# hpke's own x25519-dalek entry leaves zeroize off, so the X25519 secret scalar it builds would not be
+# scrubbed on drop. Named here (and used by vault-crypto) so cargo's feature unification turns it on for
+# the copy hpke links, the same device as aes/ctr/ghash above. Pinned to the version hpke 0.13 resolves.
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 # Cross-platform advisory file locks for the single-owner unlocked-vault runner
 # (personal-cfo-ati, ADR 0070 addendum).
 fs2 = "0.4"

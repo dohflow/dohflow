@@ -31,11 +31,12 @@ use sync_core::membership::{
     device_fingerprint, verify_chain, Action, EpochAtPosition, EpochBody, MembershipBody, Reason,
     Recipient, SignedRecord, VerifiedState, KEM_ID, SEALED_KEYS_CIPHERTEXT_LEN, SUITE_ID,
 };
-use vault_crypto::sync::{idempotency_key_tag, idempotency_tag_key};
+use vault_crypto::sync::{idempotency_key_tag, idempotency_tag_key, TagSecret};
 use vault_crypto::sync_envelope::{
     classify_envelope, seal_envelope, EpochKey, InvalidReason, OpenFailure, SealerIdentity,
     Verdict, Wait,
 };
+use vault_crypto::sync_keys::tag_key_commitment;
 use vault_crypto::SecretBytes;
 
 const VECTORS: &str = include_str!("../../../docs/architecture/vectors/envelope-invalid-v1.json");
@@ -222,10 +223,10 @@ fn verified(memberships: &[Vec<u8>], epochs: &[Vec<u8>]) -> VerifiedState {
 /// bytes 0x20 .. 0x3f). The file carries its answer for each case's plaintext key.
 fn tagger(key: &IdempotencyKey) -> [u8; 32] {
     let s: [u8; 32] = std::array::from_fn(|i| 0x20 + i as u8);
-    idempotency_key_tag(
-        &idempotency_tag_key(&SecretBytes::new(s), &VAULT),
-        key.as_bytes(),
-    )
+    let s = SecretBytes::new(s);
+    let commitment = tag_key_commitment(&s);
+    let s = TagSecret::from_verified(s, &commitment).expect("the commitment is of this secret");
+    idempotency_key_tag(&idempotency_tag_key(&s, &VAULT), key.as_bytes())
 }
 
 fn sample_key(command: u8) -> IdempotencyKey {

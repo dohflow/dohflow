@@ -766,11 +766,12 @@ recorded on `personal-cfo-klr.4` (2026-10-18).
 The byte-level rules here are checked by a test-only reference implementation,
 `crates/vault-crypto/tests/sync_wire_vectors.rs`, which computes every vector in
 C.14 from the rules below and rejects the malformed inputs listed there. Ed25519
-signatures and HPKE sealing are **not** in that reference, because those
-primitives are not workspace dependencies yet: this part pins every byte that
-feeds them (signed bodies, HPKE `info`, AAD) and requires the implementing bead
-(`personal-cfo-1cltt`) to add the RFC 8032 and RFC 9180 known-answer tests listed
-in C.14.
+signatures and HPKE sealing are **not** in that reference, which has no signing or
+sealing code of its own: this part pins every byte that feeds them (signed bodies,
+HPKE `info`, AAD). The Rust implementation (`vault-crypto`: `sync_keys`,
+`sync_keyset`, `sync_records`, `sync_custody`) runs the RFC 8032 section 7.1 and the
+RFC 9180 known-answer tests listed in C.14, and checks that its `info`, `aad` and
+epoch header bytes equal the vectors here.
 
 ## C.1 Conventions
 
@@ -1109,11 +1110,15 @@ form, and the two differ:
 | --- | --- | --- |
 | Sync epoch root `K_e` | 32 random bytes | One per key epoch; sealed only to enrolled devices; never used directly as an AEAD key; distinct from the vault DEK |
 | Tag secret `S` | 32 random bytes | **Non-rotating**, created at Sync genesis, sealed to each device together with `K_e` and re-sealed unchanged at every epoch. It is an equality-tag key, not a confidentiality key. |
-| Device signing key | Ed25519 | One per device; generated in platform-neutral Rust and wrapped at rest by the OS keystore |
-| Device agreement key | the suite's KEM key pair (X25519 in suite 1) | One per device, independent of the signing key |
+| Device signing key | Ed25519 | One per enrollment of a device in a vault; generated in platform-neutral Rust and wrapped at rest by the OS keystore |
+| Device agreement key | the suite's KEM key pair (X25519 in suite 1) | One per enrollment of a device in a vault, independent of the signing key |
 
 The two device keys are generated independently and are not derived from a
-common seed. Hardware P-256 keys are not protocol keys. Key material lives in
+common seed. A device holds one signing key and one agreement key per enrollment of
+it in a vault, never one pair shared across vaults: a shared pair would give every
+vault the same fingerprint, so two vaults' membership chains would be linkable and
+an enrollment's fingerprint would not be its own (no two enrollments may share a
+fingerprint, below). Hardware P-256 keys are not protocol keys. Key material lives in
 zeroizing protected buffers in Rust, is loaded only when needed, and **never
 crosses the IPC boundary** to the frontend.
 
@@ -2266,8 +2271,8 @@ The vectors `aead_key_a_envelope` and `aead_key_b_envelope`, and
 **same** `K_e` and two device fingerprints: they differ, so two devices sealed the
 same epoch key by a grant never share an AEAD key or a nonce domain.
 
-The 199-byte HPKE `info` should be confirmed against the HPKE crate that
-`personal-cfo-1cltt` selects. The grant sample's `prev_epoch_id` is a declared
+The 199-byte HPKE `info` is confirmed against the HPKE crate that `personal-cfo-1cltt.2`
+selected (`hpke` 0.13.0; see the known-answer vectors file below). The grant sample's `prev_epoch_id` is a declared
 placeholder, so the epoch-chain link has no byte vector here; the implementing
 bead's real-hash tests cover it.
 
@@ -2313,6 +2318,18 @@ a changed artifact descriptor refused before encryption, end to end;
 cross-implementation canonical-JSON vectors for 64-bit integer strings, duplicate
 keys and lone surrogates; and the revocation-cutover simulator suite extended with
 the F5 retry-order case.
+
+`docs/architecture/vectors/hpke-rfc9180-x25519-v1.json` holds the RFC 9180 known-answer
+vectors for the key-set sealing suite. RFC 9180 Appendix A has no DHKEM(X25519, HKDF-SHA256)
+with AES-256-GCM entry (A.1 is AES-128-GCM), so the file vendors the two entries of the CFRG
+vector file (commit `5f503c5`, SHA-256 `61fc662f...3ede6`) with mode 0, KEM `0x0020`, KDF
+`0x0001` and AEAD `0x0001` (A.1) or `0x0002` (suite 1), keeping the sequence-0 encryption of
+each, with the provenance in the file. The Rust test opens the published ciphertext with the
+published recipient key and reproduces `enc` and the ciphertext from the published `ikmE`, both
+through the code that seals in production. The same test file seals and opens the 199-byte
+`hpke_info_recipient_b` of this part, which settles the note above that it should be
+confirmed against the HPKE crate. The RFC 8032 section 7.1 vectors (TEST 1 to 3) are in
+`crates/vault-crypto/tests/sync_records.rs`.
 
 ## Vector listing
 
