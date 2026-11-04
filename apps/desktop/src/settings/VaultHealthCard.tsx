@@ -96,7 +96,9 @@ export function VaultHealthCard() {
   const drifted = !error && health !== null && !health.read_models_current;
   const recheck = useKeepFocusAcrossMove();
   const rebuildFocus = useKeepFocusAcrossMove({
-    settled: !rebuilding,
+    // Settled once the rebuild has finished AND the health re-read it triggers has landed: until then
+    // the old verdict is still on screen and Rebuild looks usable, but it is about to go.
+    settled: !rebuilding && !checking,
     // A rebuild that worked removes its own button; Re-check is the next thing to press.
     fallback: () => recheck.ref.current?.focus(),
   });
