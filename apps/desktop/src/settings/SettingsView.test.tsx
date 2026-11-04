@@ -8,7 +8,7 @@ import { renderWithClient } from "@/test/renderWithClient";
 import { SettingsView } from "./SettingsView";
 
 const mocks = vi.hoisted(() => ({
-  vault: { vaults: [] as unknown[] },
+  vault: { vaults: [] as unknown[], vaultsError: null as string | null },
   connectorConnections: vi.fn(),
   accountList: vi.fn(),
   baseCurrency: vi.fn(),
@@ -54,6 +54,8 @@ vi.mock("@/vault/useVault", () => ({
   useVault: () => ({
     deleteVault: vi.fn(),
     vaults: mocks.vault.vaults,
+    vaultsError: mocks.vault.vaultsError,
+    reloadVaults: vi.fn(),
     createNamedVault: vi.fn(),
     switchVault: vi.fn(),
     renameVault: vi.fn(),
@@ -92,6 +94,7 @@ const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 
 beforeEach(() => {
   mocks.vault.vaults = [];
+  mocks.vault.vaultsError = null;
   // SettingsView now also renders ConnectionsCard (personal-cfo-ul5d).
   mocks.connectorConnections.mockReset();
   mocks.connectorConnections.mockResolvedValue(ok([]));
@@ -604,8 +607,17 @@ describe("the Settings sections (personal-cfo-4d8.39.1)", () => {
       await waitFor(() => expect(screen.queryByText("2 connections")).toBeNull());
     });
 
-    it("vaults: no summary at all while the vault list has no failure state, whatever it holds (4d8.39.2 AC4 brings it back)", async () => {
+    it("vaults: the active vault, once the list has loaded", async () => {
       mocks.vault.vaults = [{ id: "v1", name: "Home", is_active: true }];
+      await collapsed(["Vaults"]);
+      const trigger = await screen.findByRole("button", { name: "Vaults" });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByText("Home · active")).toBeInTheDocument();
+    });
+
+    it("vaults: no summary while the last read of the list failed, even though an earlier list is held (4d8.39.2 AC4)", async () => {
+      mocks.vault.vaults = [{ id: "v1", name: "Home", is_active: true }];
+      mocks.vault.vaultsError = "The vault service is unavailable.";
       await collapsed(["Vaults"]);
       const trigger = await screen.findByRole("button", { name: "Vaults" });
       expect(trigger).toHaveAttribute("aria-expanded", "false");

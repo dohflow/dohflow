@@ -66,6 +66,12 @@ type VaultContextValue = {
   refresh: () => Promise<void>;
   /// The known vaults + which is active (multi-vault, j0cg.6). Empty in single-vault mode.
   vaults: VaultSummaryDto[];
+  /// Why the last read of the vault list failed (a typed refusal, or a call that did not return),
+  /// or null once a read succeeds. While it is set, `vaults` is the last list that did load (or
+  /// empty), which may no longer be what is on disk: say nothing from it that needs it to be current.
+  vaultsError: string | null;
+  /// Read the vault list again (the recovery for `vaultsError`).
+  reloadVaults: () => Promise<void>;
   restoreRecoveryStatus: RestoreRecoveryStatusDto;
   /// Create a new named vault and switch to it, unlocked; the status flips to Unlocked.
   createNamedVault: (name: string, password: string) => Promise<IpcError | null>;
@@ -83,6 +89,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<VaultStatusDto | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [vaults, setVaults] = useState<VaultSummaryDto[]>([]);
+  const [vaultsError, setVaultsError] = useState<string | null>(null);
   const [restoreRecoveryStatus, setRestoreRecoveryStatus] =
     useState<RestoreRecoveryStatusDto>("clear");
   const queryClient = useQueryClient();
@@ -102,10 +109,18 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshVaults = useCallback(async () => {
-    const result = await commands.listVaults();
-    if (result.status === "ok") {
-      setVaults(result.data.vaults);
-      setRestoreRecoveryStatus(result.data.restore_recovery_status);
+    try {
+      const result = await commands.listVaults();
+      if (result.status === "ok") {
+        setVaults(result.data.vaults);
+        setRestoreRecoveryStatus(result.data.restore_recovery_status);
+        setVaultsError(null);
+      } else {
+        // A refused read leaves the earlier list in place, but it is no longer known to be current.
+        setVaultsError(describeIpcError(result.error));
+      }
+    } catch {
+      setVaultsError("The vault service is unavailable.");
     }
   }, []);
 
@@ -302,6 +317,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         restoreAsNewVault,
         refresh,
         vaults,
+        vaultsError,
+        reloadVaults: refreshVaults,
         restoreRecoveryStatus,
         createNamedVault,
         switchVault,

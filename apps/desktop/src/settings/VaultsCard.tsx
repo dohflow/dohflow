@@ -7,55 +7,75 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { describeIpcError, useVault } from "@/vault/useVault";
 
+import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
+
+/// What failed, so the section's persistent slot can show the error with the one action that
+/// recovers from it: Switch (for that vault), Save (the rename in progress) or Create vault.
+type Failure =
+  | { action: "switch"; id: string; message: string }
+  | { action: "rename"; id: string; message: string }
+  | { action: "create"; message: string };
+
 /// The multi-vault management card (personal-cfo-j0cg.6, ADR 0042): list the known vaults, switch
 /// between them (which locks the current one and routes to the unlock screen), rename them, and
 /// create a new one. Only shown in multi-vault mode (an unlocked real vault always has ≥1 entry).
 export function VaultsCard() {
-  const { vaults, createNamedVault, switchVault, renameVault } = useVault();
+  const { vaults, vaultsError, reloadVaults, createNamedVault, switchVault, renameVault } =
+    useVault();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  // Each recovery action is rendered once: in the persistent slot while its error shows, else in
+  // the body. Moving it must not strand focus.
+  const retry = useKeepFocusAcrossMove({ settled: !busy });
+  const switchFocus = useKeepFocusAcrossMove({ settled: !busy });
+  const saveFocus = useKeepFocusAcrossMove({ settled: !busy });
+  const createFocus = useKeepFocusAcrossMove({ settled: !busy });
 
-  if (vaults.length === 0) return null;
+  if (vaults.length === 0 && !vaultsError) return null;
 
   async function onSwitch(id: string) {
+    switchFocus.remember();
     setBusy(true);
-    setError(null);
-    const failure = await switchVault(id);
+    setFailure(null);
+    const result = await switchVault(id);
     setBusy(false);
-    if (failure) setError(describeIpcError(failure));
+    if (result) setFailure({ action: "switch", id, message: describeIpcError(result) });
     // On success the status flips to Locked and the vault gate shows the unlock screen.
   }
 
   async function saveRename(id: string) {
     if (!renameValue.trim()) return;
+    saveFocus.remember();
     setBusy(true);
-    setError(null);
-    const failure = await renameVault(id, renameValue.trim());
+    setFailure(null);
+    const result = await renameVault(id, renameValue.trim());
     setBusy(false);
-    if (failure) setError(describeIpcError(failure));
+    if (result) setFailure({ action: "rename", id, message: describeIpcError(result) });
     else setRenamingId(null);
   }
 
   async function onCreate() {
+    createFocus.remember();
     if (!newName.trim()) {
-      setError("Name the vault.");
+      setFailure({ action: "create", message: "Name the vault." });
       return;
     }
     if (!newPassword) {
-      setError("Choose a password.");
+      setFailure({ action: "create", message: "Choose a password." });
       return;
     }
     setBusy(true);
-    setError(null);
-    const failure = await createNamedVault(newName.trim(), newPassword);
+    setFailure(null);
+    const result = await createNamedVault(newName.trim(), newPassword);
     setBusy(false);
-    if (failure) {
-      setError(describeIpcError(failure));
+    if (result) {
+      setFailure({ action: "create", message: describeIpcError(result) });
     } else {
       setCreating(false);
       setNewName("");
@@ -63,6 +83,61 @@ export function VaultsCard() {
     }
     // On success the new (empty) vault is unlocked and active — the app stays open in it.
   }
+
+  // An error, its full message and its one recovery action stay in the section's persistent slot,
+  // open or closed. A failed list read recovers with Retry; a failed switch with Switch (shown
+  // beside the vault it is for), a failed rename with Save, a failed create with Create vault.
+  const switchInSlot = failure?.action === "switch" ? failure.id : null;
+  const renameInSlot = failure?.action === "rename" ? failure.id : null;
+  const createInSlot = failure?.action === "create";
+  const retryButton = (
+    <Button
+      ref={retry.ref}
+      size="sm"
+      variant="outline"
+      disabled={busy}
+      onClick={() => {
+        retry.remember();
+        void reloadVaults();
+      }}
+    >
+      Retry
+    </Button>
+  );
+  const loadNotice = vaultsError ? (
+    <div className="flex flex-col gap-2">
+      <p role="alert" className="text-sm text-loss">
+        {vaultsError}
+      </p>
+      <div>{retryButton}</div>
+    </div>
+  ) : null;
+
+  if (vaults.length === 0) return <PersistentNotice>{loadNotice}</PersistentNotice>;
+
+  const switchTarget = vaults.find((v) => v.id === switchInSlot);
+  const switchButton = (id: string) => (
+    <Button
+      ref={switchFocus.ref}
+      size="sm"
+      variant="outline"
+      disabled={busy}
+      onClick={() => void onSwitch(id)}
+    >
+      Switch
+    </Button>
+  );
+  const saveButton = (id: string) => (
+    <Button ref={saveFocus.ref} size="sm" disabled={busy} onClick={() => void saveRename(id)}>
+      Save
+    </Button>
+  );
+  const createButton = (
+    <Button ref={createFocus.ref} size="sm" disabled={busy} onClick={() => void onCreate()}>
+      {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+      Create vault
+    </Button>
+  );
 
   return (
     <Card>
@@ -87,14 +162,15 @@ export function VaultsCard() {
                     value={renameValue}
                     onChange={(e) => setRenameValue(e.target.value)}
                   />
-                  <Button size="sm" disabled={busy} onClick={() => void saveRename(v.id)}>
-                    Save
-                  </Button>
+                  {renameInSlot !== v.id && saveButton(v.id)}
                   <Button
                     size="sm"
                     variant="ghost"
                     disabled={busy}
-                    onClick={() => setRenamingId(null)}
+                    onClick={() => {
+                      setRenamingId(null);
+                      setFailure(null);
+                    }}
                   >
                     Cancel
                   </Button>
@@ -114,20 +190,12 @@ export function VaultsCard() {
                     onClick={() => {
                       setRenamingId(v.id);
                       setRenameValue(v.name);
+                      setFailure(null);
                     }}
                   >
                     Rename
                   </Button>
-                  {!v.is_active && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => void onSwitch(v.id)}
-                    >
-                      Switch
-                    </Button>
-                  )}
+                  {!v.is_active && switchInSlot !== v.id && switchButton(v.id)}
                 </>
               )}
             </li>
@@ -159,17 +227,14 @@ export function VaultsCard() {
               />
             </div>
             <div className="flex gap-2">
-              <Button size="sm" disabled={busy} onClick={() => void onCreate()}>
-                {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
-                Create vault
-              </Button>
+              {!createInSlot && createButton}
               <Button
                 size="sm"
                 variant="ghost"
                 disabled={busy}
                 onClick={() => {
                   setCreating(false);
-                  setError(null);
+                  setFailure(null);
                 }}
               >
                 Cancel
@@ -188,11 +253,24 @@ export function VaultsCard() {
           </Button>
         )}
 
-        {error && (
-          <p role="alert" className="text-sm text-loss">
-            {error}
-          </p>
-        )}
+        <PersistentNotice>
+          {loadNotice}
+          {failure && (
+            <div className="flex flex-col gap-2">
+              <p role="alert" className="text-sm text-loss">
+                {failure.message}
+              </p>
+              <div className="flex items-center gap-2">
+                {failure.action === "switch" && switchTarget && (
+                  <span className="truncate text-sm font-medium">{switchTarget.name}</span>
+                )}
+                {failure.action === "switch" && switchButton(failure.id)}
+                {failure.action === "rename" && saveButton(failure.id)}
+                {failure.action === "create" && createButton}
+              </div>
+            </div>
+          )}
+        </PersistentNotice>
       </CardContent>
     </Card>
   );
