@@ -3,6 +3,7 @@
 //! what it needs, so unused items here are expected.
 #![allow(dead_code)]
 
+pub mod callgraph;
 pub mod engine_pins;
 pub mod rejection_scenarios;
 pub mod replicated_state;
