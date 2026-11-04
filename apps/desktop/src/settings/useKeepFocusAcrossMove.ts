@@ -29,6 +29,10 @@ export function useKeepFocusAcrossMove<T extends HTMLButtonElement | HTMLSelectE
 ) {
   const ref = useRef<T>(null);
   const pending = useRef(false);
+  // The control that was pressed, and whether the action has been seen settling (`settled` false at
+  // least once since it was pressed).
+  const pressedRef = useRef<Element | null>(null);
+  const sawUnsettled = useRef(false);
   const section = useContext(SectionFocusContext);
   const settled = options?.settled ?? true;
   const fallback = options?.fallback;
@@ -42,10 +46,29 @@ export function useKeepFocusAcrossMove<T extends HTMLButtonElement | HTMLSelectE
     }
     // Still settling (the write, or the read that follows it): where the button ends up is not
     // known yet, so focus is not handed anywhere.
-    if (!settled) return;
-    // Focus is still on the button and it can keep it: nothing has moved yet, so there is nothing to
-    // hand over. Stay armed until focus is actually lost (an unrelated render must not use it up).
-    if (button !== null && active === button && canTakeFocus(button)) return;
+    if (!settled) {
+      sawUnsettled.current = true;
+      return;
+    }
+    // Focus is still on the button and it can keep it: nothing moved.
+    if (button !== null && active === button && canTakeFocus(button)) {
+      // The action has run and settled: done. Before it was seen settling, stay armed instead, so an
+      // unrelated render before the action's busy state shows cannot use the hand-over up.
+      if (sawUnsettled.current) pending.current = false;
+      return;
+    }
+    // The pressed control is still here, can take focus, and no longer has it: the person clicked
+    // away (onto the page, say) once nothing was settling. Do not pull focus back.
+    const pressedEl = pressedRef.current;
+    if (
+      !sawUnsettled.current &&
+      pressedEl instanceof HTMLElement &&
+      pressedEl.isConnected &&
+      canTakeFocus(pressedEl)
+    ) {
+      pending.current = false;
+      return;
+    }
     if (button !== null && canTakeFocus(button)) {
       pending.current = false;
       button.focus();
@@ -77,7 +100,10 @@ export function useKeepFocusAcrossMove<T extends HTMLButtonElement | HTMLSelectE
     /// that was pressed: `ref` is on whichever is rendered for the pressed row, which is not yet
     /// known at this moment.
     remember: (pressed?: Element | null) => {
-      pending.current = document.activeElement === (pressed ?? ref.current);
+      const element = pressed ?? ref.current;
+      pending.current = document.activeElement === element;
+      pressedRef.current = element;
+      sawUnsettled.current = false;
     },
   };
 }

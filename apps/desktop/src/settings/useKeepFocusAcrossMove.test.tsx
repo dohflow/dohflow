@@ -215,4 +215,73 @@ describe("useKeepFocusAcrossMove", () => {
     rerender(<Stay shown={false} tick={3} />);
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "elsewhere" }));
   });
+
+  it("once the action has settled with focus intact, it is done: a later click away is not undone", () => {
+    function Busy({ busy, tick }: { busy: boolean; tick: number }) {
+      const keep = useKeepFocusAcrossMove({ settled: !busy });
+      return (
+        <>
+          <span data-tick={tick} />
+          <button ref={keep.ref} type="button" onClick={() => keep.remember()}>
+            action
+          </button>
+        </>
+      );
+    }
+    const { rerender } = render(<Busy busy={false} tick={0} />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action);
+    rerender(<Busy busy tick={1} />); // the action is running
+    rerender(<Busy busy={false} tick={2} />); // it settled; the button never moved
+    expect(document.activeElement).toBe(action);
+    // The person clicks onto the page (focus goes to the body), and an unrelated render follows.
+    act(() => action.blur());
+    expect(document.activeElement).toBe(document.body);
+    rerender(<Busy busy={false} tick={3} />);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("with no busy state to watch, a click away while the button is still there disarms it", () => {
+    function Plain({ tick }: { tick: number }) {
+      const keep = useKeepFocusAcrossMove();
+      return (
+        <>
+          <span data-tick={tick} />
+          <button ref={keep.ref} type="button" onClick={() => keep.remember()}>
+            action
+          </button>
+        </>
+      );
+    }
+    const { rerender } = render(<Plain tick={0} />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action);
+    act(() => action.blur());
+    rerender(<Plain tick={1} />);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("a button disabled while its action ran (so the browser dropped its focus) gets focus back when it settles", () => {
+    function Busy({ busy }: { busy: boolean }) {
+      const keep = useKeepFocusAcrossMove({ settled: !busy });
+      return (
+        <button ref={keep.ref} type="button" disabled={busy} onClick={() => keep.remember()}>
+          action
+        </button>
+      );
+    }
+    const { rerender } = render(<Busy busy={false} />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action);
+    rerender(<Busy busy />);
+    // A browser drops focus from a control that was just disabled (jsdom keeps it, so move it).
+    document.body.tabIndex = -1;
+    act(() => document.body.focus());
+    expect(document.activeElement).toBe(document.body);
+    rerender(<Busy busy={false} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "action" }));
+  });
 });
