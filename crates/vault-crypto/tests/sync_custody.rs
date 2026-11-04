@@ -167,6 +167,25 @@ fn the_two_device_keys_are_independent() {
 }
 
 #[test]
+fn the_two_private_values_in_the_store_are_independent() {
+    // Not derived from a common seed (C.2): the stored bytes of the two halves differ, across
+    // many devices, and neither is a function of the other's public key.
+    for _ in 0..8 {
+        let store = MockSecretStore::new();
+        let custody = SyncKeyCustody::new(&store, VAULT);
+        custody
+            .store_device_keys(&DeviceKeys::generate().unwrap())
+            .unwrap();
+        let prompt = AuthPrompt::new("test").unwrap();
+        let sign = store.load_secret(&account("sign"), &prompt).unwrap();
+        let kem = store.load_secret(&account("kem"), &prompt).unwrap();
+        assert_ne!(sign.expose(), kem.expose());
+        assert_eq!(sign.expose().len(), 32);
+        assert_eq!(kem.expose().len(), 32);
+    }
+}
+
+#[test]
 fn existing_device_keys_are_never_replaced() {
     let store = MockSecretStore::new();
     let custody = SyncKeyCustody::new(&store, VAULT);
@@ -334,6 +353,22 @@ fn a_different_value_already_in_the_store_is_a_conflict_and_installs_nothing() {
         SecretError::NotFound
     );
     assert_eq!(store.len(), 1);
+}
+
+#[test]
+fn an_existing_item_whose_tag_does_not_name_its_value_is_corrupt_not_skipped() {
+    let c = chain();
+    let store = MockSecretStore::new();
+    let custody = SyncKeyCustody::new(&store, VAULT);
+    custody.install(&accepted_for(&c, &c.a.keys)).unwrap();
+    // Damage the stored tag of epoch 2: a later install must not take the item for the right one.
+    store
+        .update_public_tag(&account("ke.2"), Some(&PublicTag::new(&[3; 32]).unwrap()))
+        .unwrap();
+    assert_eq!(
+        custody.install(&accepted_for(&c, &c.a.keys)).unwrap_err(),
+        CustodyError::Corrupt(Item::EpochKey(2))
+    );
 }
 
 #[test]

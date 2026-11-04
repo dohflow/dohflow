@@ -347,3 +347,15 @@ fn errors_and_debug_output_carry_no_key_bytes() {
     let error = format!("{:?}", KeySetError::Open);
     assert_eq!(error, "Open");
 }
+
+#[test]
+#[should_panic(expected = "SeedRng asked for more than its seed")]
+fn the_one_shot_generator_stops_rather_than_invent_bytes() {
+    use hpke::rand_core::RngCore;
+    let mut rng = vault_crypto::sync_keyset::SeedRng::new(&secret32(&[7; 32]));
+    let mut first = [0_u8; 32];
+    rng.fill_bytes(&mut first);
+    assert_eq!(first, [7; 32]);
+    let mut more = [0_u8; 1];
+    rng.fill_bytes(&mut more);
+}
