@@ -1,7 +1,14 @@
-import { useEffect } from "react";
+import { useRef } from "react";
 import { X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { describeIpcError } from "@/vault/useVault";
 
 import { AddCategoryForm } from "./AddCategoryForm";
@@ -22,38 +29,31 @@ export function CreateCategoryDialog({
   onClose: () => void;
 }) {
   const { categories, addCategory } = useCategories();
-
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      // Yield to an open inner popover (emoji picker / combobox) so its own
-      // Escape dismisses just that layer, not the whole form the user is
-      // filling in (adversarial review of 4d8.25.19). The capture phase +
-      // stopPropagation still beats the outer drawer/modal for the top layer.
-      const target = event.target as Element | null;
-      if (target?.closest?.('[data-escape-layer="popover"]')) return;
-      event.stopPropagation();
-      onClose();
-    }
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  // The control that had focus when this dialog was first rendered: the real opener. It is read
+  // here, in the first render, because the name field's own `autoFocus` runs before the shared
+  // Dialog records "what had focus" and would make the field itself look like the opener.
+  const opener = useRef<HTMLElement | null>(
+    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-      <div
-        className="absolute inset-0 bg-foreground/40"
-        onClick={onClose}
-        role="presentation"
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="New category"
-        className="relative w-full max-w-md rounded-lg border bg-background shadow-xl"
+    // Shared Dialog shell (personal-cfo-4d8.6.2). An open emoji panel handles its own Escape first
+    // (it stops the key before the dialog sees it), so Escape dismisses just that layer; otherwise
+    // Escape closes this dialog and only this dialog (the drawer behind never sees the key).
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        // The form is short and its emoji panel and parent list open downward past the dialog edge, so this
+        // dialog lets them overflow instead of clipping them inside a scrolling body.
+        className="max-w-md gap-0 overflow-visible"
+        onEscapeKeyDown={(event) => event.stopPropagation()}
+        // The name field starts focused through its own `autoFocus`; on close, whichever way, focus
+        // goes back to the control that opened the dialog.
+        restoreFocusTo={opener}
       >
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <h2 className="text-sm font-semibold">New category</h2>
+        <DialogHeader className="flex-row items-center justify-between border-b px-4 pb-3 pt-3">
+          <DialogTitle className="text-sm">New category</DialogTitle>
           <Button
             size="sm"
             variant="ghost"
@@ -63,8 +63,8 @@ export function CreateCategoryDialog({
           >
             <X className="size-4" aria-hidden />
           </Button>
-        </div>
-        <div className="p-1">
+        </DialogHeader>
+        <DialogBody className="overflow-visible p-1">
           <AddCategoryForm
             parents={categories?.filter((c) => !c.archived) ?? []}
             initialName={initialName}
@@ -78,8 +78,8 @@ export function CreateCategoryDialog({
               return null;
             }}
           />
-        </div>
-      </div>
-    </div>
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
   );
 }

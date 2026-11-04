@@ -1,7 +1,16 @@
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogError,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { describeIpcError } from "@/vault/useVault";
@@ -31,13 +40,7 @@ export function NewLoanDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   async function create() {
     if (name.trim() === "") {
@@ -74,15 +77,17 @@ export function NewLoanDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-foreground/40" aria-hidden onClick={onClose} />
-      <div
-        role="dialog"
-        aria-label="New loan"
-        className="relative flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-background p-6 shadow-xl"
+    // Shared Dialog shell (personal-cfo-4d8.6.2). It opens over the account editor, so Escape closes
+    // only this dialog (the editor's own Escape listener never sees it) and focus returns to the
+    // "New loan" button that opened it.
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        initialFocusRef={nameRef}
+        onEscapeKeyDown={(event) => event.stopPropagation()}
+        className="max-w-sm"
       >
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">New loan</h2>
+        <DialogHeader className="flex-row items-center justify-between">
+          <DialogTitle>New loan</DialogTitle>
           <button
             type="button"
             onClick={onClose}
@@ -91,39 +96,37 @@ export function NewLoanDialog({
           >
             <X className="size-4" aria-hidden />
           </button>
-        </div>
+        </DialogHeader>
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="new-loan-name">Loan name</Label>
-          <Input
-            id="new-loan-name"
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Home mortgage"
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="new-loan-owed">Amount owed</Label>
-          <Input
-            id="new-loan-owed"
-            inputMode="decimal"
-            value={amountOwed}
-            onChange={(e) => setAmountOwed(e.target.value)}
-            placeholder="0.00"
-          />
-          <p className="text-xs text-muted-foreground">
-            You can add the APR, due date, and payment terms later by editing this loan.
-          </p>
-        </div>
+        <DialogBody className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="new-loan-name">Loan name</Label>
+            <Input
+              id="new-loan-name"
+              ref={nameRef}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Home mortgage"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="new-loan-owed">Amount owed</Label>
+            <Input
+              id="new-loan-owed"
+              inputMode="decimal"
+              value={amountOwed}
+              onChange={(e) => setAmountOwed(e.target.value)}
+              placeholder="0.00"
+            />
+            <p className="text-xs text-muted-foreground">
+              You can add the APR, due date, and payment terms later by editing this loan.
+            </p>
+          </div>
+        </DialogBody>
 
-        {error && (
-          <p role="alert" className="text-sm text-loss">
-            {error}
-          </p>
-        )}
+        <DialogError error={error} />
 
-        <div className="flex justify-end gap-2">
+        <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
@@ -131,8 +134,8 @@ export function NewLoanDialog({
             {busy && <Loader2 className="animate-spin" aria-hidden />}
             Create loan
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
