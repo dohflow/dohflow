@@ -7,9 +7,16 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 
+import { SectionFocusContext } from "./sectionFocusContext";
 import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
-function Harness({ settled = true, fallback }: { settled?: boolean; fallback?: () => void }) {
+function Harness({
+  settled = true,
+  fallback,
+}: {
+  settled?: boolean;
+  fallback?: () => HTMLElement | null;
+}) {
   const [inSlot, setInSlot] = useState(false);
   const keep = useKeepFocusAcrossMove({ settled, fallback });
   const action = (
@@ -29,6 +36,26 @@ function Harness({ settled = true, fallback }: { settled?: boolean; fallback?: (
       <div data-testid="body">{!inSlot && action}</div>
       <div data-testid="slot">{inSlot && action}</div>
       <button type="button">elsewhere</button>
+    </>
+  );
+}
+
+function SectionCard({ open, inSlot }: { open: boolean; inSlot: boolean }) {
+  const keep = useKeepFocusAcrossMove({ fallback: () => document.getElementById("inside") });
+  const action = (
+    <button ref={keep.ref} type="button" onClick={() => keep.remember()}>
+      action
+    </button>
+  );
+  return (
+    <>
+      <div>{inSlot && action}</div>
+      <div hidden={!open} {...(open ? {} : { inert: true })}>
+        <button id="inside" type="button">
+          inside
+        </button>
+        {!inSlot && action}
+      </div>
     </>
   );
 }
@@ -65,22 +92,86 @@ describe("useKeepFocusAcrossMove", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "action" }));
   });
 
-  it("runs the fallback when the action settles and the button is gone", () => {
-    const fallback = vi.fn();
+  it("hands focus to the fallback's element when the button is gone", () => {
     function Gone({ shown }: { shown: boolean }) {
-      const keep = useKeepFocusAcrossMove({ fallback });
+      const keep = useKeepFocusAcrossMove({ fallback: () => document.getElementById("elsewhere") });
+      return (
+        <>
+          {shown ? (
+            <button ref={keep.ref} type="button" onClick={() => keep.remember()}>
+              action
+            </button>
+          ) : null}
+          <button id="elsewhere" type="button">
+            elsewhere
+          </button>
+        </>
+      );
+    }
+    const { rerender } = render(<Gone shown />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action);
+    rerender(<Gone shown={false} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "elsewhere" }));
+  });
+
+  /// The hook sits in a child of the section, as a card does; the provider is above it.
+  function InSection({ open, inSlot }: { open: boolean; inSlot: boolean }) {
+    return (
+      <SectionFocusContext.Provider value={{ open, trigger: () => document.getElementById("heading") }}>
+        <button id="heading" type="button">
+          heading
+        </button>
+        <SectionCard open={open} inSlot={inSlot} />
+      </SectionFocusContext.Provider>
+    );
+  }
+
+  it("never focuses a target inside hidden or inert content, and uses the section's heading when it is collapsed", () => {
+    // Collapsed: the action moves from the visible slot into the hidden body, and so does the
+    // fallback; the heading is chosen, not "inside".
+    const { rerender } = render(<InSection open={false} inSlot />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action);
+    rerender(<InSection open={false} inSlot={false} />);
+    expect(document.activeElement).toBe(document.getElementById("heading"));
+  });
+
+  it("open: the button itself, in the body, is where focus goes", () => {
+    const { rerender } = render(<InSection open inSlot />);
+    const action = screen.getByRole("button", { name: "action" });
+    action.focus();
+    fireEvent.click(action);
+    rerender(<InSection open inSlot={false} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "action" }));
+  });
+
+  it("open, with nothing usable to go to, does not invent a destination: the heading is for a collapsed section only", () => {
+    function Card({ shown }: { shown: boolean }) {
+      const keep = useKeepFocusAcrossMove();
       return shown ? (
         <button ref={keep.ref} type="button" onClick={() => keep.remember()}>
           action
         </button>
       ) : null;
     }
-    const { rerender } = render(<Gone shown />);
+    function Open({ shown }: { shown: boolean }) {
+      return (
+        <SectionFocusContext.Provider value={{ open: true, trigger: () => document.getElementById("heading") }}>
+          <button id="heading" type="button">
+            heading
+          </button>
+          <Card shown={shown} />
+        </SectionFocusContext.Provider>
+      );
+    }
+    const { rerender } = render(<Open shown />);
     const action = screen.getByRole("button", { name: "action" });
     action.focus();
     fireEvent.click(action);
-    expect(fallback).not.toHaveBeenCalled();
-    rerender(<Gone shown={false} />);
-    expect(fallback).toHaveBeenCalledTimes(1);
+    rerender(<Open shown={false} />);
+    expect(document.activeElement).toBe(document.body);
   });
 });

@@ -13,8 +13,8 @@ import { Label } from "@/components/ui/label";
 import { Combobox, type ComboboxItem } from "@/components/ui/combobox";
 import { describeIpcError } from "@/vault/useVault";
 import { PersistentNotice } from "./PersistentSlot";
-import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { useHouseholdTimezone } from "./useHouseholdTimezone";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
 /// A short, curated set of IANA zones for the rare WebView build that lacks
 /// `Intl.supportedValuesOf` (personal-cfo-q329) — WKWebView on macOS 14 supports it, so
@@ -102,24 +102,26 @@ export function HouseholdCard() {
   const suggestion = timezone === "UTC" ? machineTimezone() : null;
 
   // While a failed write is on screen its Save lives in the section's persistent slot with the error,
-  // and is not rendered in the body; the Save comes back to the body when the error clears.
+  // and is not rendered in the body; the Save comes back to the body when the error clears. The
+  // hand-over keeps focus across that move (see useKeepFocusAcrossMove): to the Save, else the
+  // timezone picker, else (collapsed) the section's heading.
   const saveInSlot = saveError !== null;
   const save = useKeepFocusAcrossMove({
     settled: !isSaving,
-    // Saved: nothing is left to save, so the Save stays disabled and cannot take focus. The picker
-    // is where the person was working.
-    fallback: () => document.getElementById("household-timezone")?.focus(),
+    fallback: () => document.getElementById("household-timezone"),
   });
 
   async function onSave() {
     if (value === timezone) return;
     save.remember();
-    setSaveError(null);
     setSaved(false);
+    // The earlier error and its Save stay on screen until this try settles: clearing them now would
+    // move the Save into the body, which is hidden when the section is collapsed.
     const failure = await setTimezone(value);
     if (failure) {
       setSaveError(describeIpcError(failure));
     } else {
+      setSaveError(null);
       setDraft(null);
       setSaved(true);
     }
