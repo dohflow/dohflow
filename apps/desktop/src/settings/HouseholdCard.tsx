@@ -102,9 +102,15 @@ export function HouseholdCard() {
   const [readAttempt, nextReadAttempt] = useAttemptCount();
   const saveAlert = useReannounced(saveError, saveAttempt);
   const readAlert = useReannounced(readFailure, readAttempt);
+  // A Retry that was pressed and has settled with the read still failing counts as an attempt (the
+  // first load settling is not one).
+  const retryPressed = useRef(false);
   const wasRetrying = useRef(false);
   useEffect(() => {
-    if (wasRetrying.current && !retrying) nextReadAttempt();
+    if (wasRetrying.current && !retrying && retryPressed.current) {
+      retryPressed.current = false;
+      nextReadAttempt();
+    }
     wasRetrying.current = retrying;
   }, [retrying, nextReadAttempt]);
   const [saved, setSaved] = useState(false);
@@ -221,7 +227,10 @@ export function HouseholdCard() {
                   size="sm"
                   variant="outline"
                   disabled={retrying}
-                  onClick={retry}
+                  onClick={() => {
+                    retryPressed.current = true;
+                    retry();
+                  }}
                 >
                   {retrying ? "Retrying…" : "Retry"}
                 </Button>
