@@ -261,13 +261,13 @@ impl Pair {
                 [],
             )
             .unwrap();
-        if n % 7 == 0 {
+        if n.is_multiple_of(7) {
             self.b.rebuild_money_inbox().unwrap();
         }
-        if n % 11 == 0 {
+        if n.is_multiple_of(11) {
             let _ = self.b.rebuild_recurring_instances();
         }
-        if n % 10 == 0 {
+        if n.is_multiple_of(10) {
             self.assert_same_state(label);
         }
     }

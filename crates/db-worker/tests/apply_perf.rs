@@ -152,11 +152,7 @@ fn the_budget_check_can_fail_and_the_fixture_is_the_same_every_time() {
 fn the_derived_id_mint_stays_inside_the_absolute_budget() {
     let key = DerivedIdKey::for_vault(&u(1));
     let started = Instant::now();
-    let mut ids = DerivedIds::new(
-        key.clone(),
-        IssuedAt::from_unix_micros(1_000_000_000_000_000),
-        u(2),
-    );
+    let mut ids = DerivedIds::new(key, IssuedAt::from_unix_micros(1_000_000_000_000_000), u(2));
     for _ in 0..MAX_ORDINALS {
         ids.next("perf.tag").unwrap();
     }
