@@ -104,6 +104,39 @@ describe("Household", () => {
       expect(slotOf("Household").contains(saves[0]!)).toBe(false);
     });
 
+    it("hands focus to the Save in the slot when the error moves it, and back to the body when it clears", async () => {
+      render();
+      await pickNewYork();
+      const body = screen.getByRole("button", { name: "Save" });
+      body.focus();
+      fireEvent.click(body);
+      await screen.findByRole("alert");
+      const inSlot = within(slotOf("Household")).getByRole("button", { name: "Save" });
+      await waitFor(() => expect(document.activeElement).toBe(inSlot));
+
+      inSlot.focus();
+      fireEvent.click(inSlot);
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+      const back = everyButton("Household", "Save")[0]!;
+      expect(slotOf("Household").contains(back)).toBe(false);
+      // Saved, so there is nothing left to save and the body's Save is disabled (a disabled button
+      // takes no focus): focus lands on the timezone picker rather than being dropped.
+      expect(back).toBeDisabled();
+      await waitFor(() => expect(document.activeElement).toBe(tz()));
+    });
+
+    it("does not take focus from somewhere else when the Save moves", async () => {
+      render();
+      await pickNewYork();
+      const body = screen.getByRole("button", { name: "Save" });
+      fireEvent.click(body);
+      await screen.findByRole("alert");
+      const inSlot = within(slotOf("Household")).getByRole("button", { name: "Save" });
+      // Once the Save is enabled again (a disabled button is where a hand-over would wait).
+      await waitFor(() => expect(inSlot).toBeEnabled());
+      expect(document.activeElement).not.toBe(inSlot);
+    });
+
     it("keeps its name while busy", async () => {
       render();
       await pickNewYork();
@@ -214,6 +247,36 @@ describe("Comfort band", () => {
     const saves = everyButton("Comfort band", "Save");
     expect(saves).toHaveLength(1);
     expect(slotOf("Comfort band").contains(saves[0]!)).toBe(false);
+  });
+
+  it("hands focus to the Save in the slot when the error moves it, and back to the body when it clears", async () => {
+    mocks.setComfortBandUpper.mockResolvedValueOnce(refused("That upper edge is not allowed."));
+    render();
+    await fill();
+    const body = screen.getByRole("button", { name: "Save" });
+    body.focus();
+    fireEvent.click(body);
+    await screen.findByRole("alert");
+    const inSlot = within(slotOf("Comfort band")).getByRole("button", { name: "Save" });
+    await waitFor(() => expect(document.activeElement).toBe(inSlot));
+
+    inSlot.focus();
+    fireEvent.click(inSlot);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    const back = everyButton("Comfort band", "Save")[0]!;
+    expect(slotOf("Comfort band").contains(back)).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(back));
+  });
+
+  it("does not take focus from somewhere else when the Save moves", async () => {
+    mocks.setComfortBandUpper.mockResolvedValueOnce(refused("That upper edge is not allowed."));
+    render();
+    await fill();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("alert");
+    const inSlot = within(slotOf("Comfort band")).getByRole("button", { name: "Save" });
+    await waitFor(() => expect(inSlot).toBeEnabled());
+    expect(document.activeElement).not.toBe(inSlot);
   });
 
   it("a validation message is persistent too, with the one Save", async () => {

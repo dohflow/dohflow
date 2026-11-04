@@ -48,12 +48,20 @@ export function ComfortBandCard() {
   const saveRef = useRef<HTMLButtonElement>(null);
   const refocusSave = useRef(false);
   const saveInSlot = error !== null;
+  // Runs after every render: the Save is disabled while the write settles, and a disabled button
+  // cannot take focus, so the hand-over waits for it to be enabled. If the person has moved focus to
+  // another control meanwhile, nothing is taken from them.
   useEffect(() => {
-    if (refocusSave.current) {
+    if (!refocusSave.current) return;
+    const save = saveRef.current;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== save) {
       refocusSave.current = false;
-      saveRef.current?.focus();
+    } else if (save && !save.disabled) {
+      refocusSave.current = false;
+      save.focus();
     }
-  }, [saveInSlot]);
+  });
 
   async function onSubmit(event?: React.FormEvent) {
     event?.preventDefault();
