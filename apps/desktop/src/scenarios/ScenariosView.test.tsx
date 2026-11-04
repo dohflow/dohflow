@@ -341,6 +341,18 @@ describe("a refused row action says so (personal-cfo-5ie.20)", () => {
     expect(alert).not.toHaveTextContent(LOAD_SENTENCE);
   });
 
+  it("a refused create is alone too, not under the failed-load sentence", async () => {
+    mocks.createScenario.mockResolvedValue({ status: "error", error: { Validation: "That name is taken." } });
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /new scenario/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Trip" } });
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("That name is taken.");
+    expect(alert).not.toHaveTextContent(LOAD_SENTENCE);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
   it("a failed scenario read still shows the load sentence, and no action alert", async () => {
     mocks.scenarioList.mockRejectedValue(new Error("db unavailable"));
     renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);

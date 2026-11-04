@@ -67,3 +67,11 @@ test("a look-alike that is not one of the generated shapes is not an IpcError", 
   expect(isIpcError({ Validation: "x", id: "sce-2" })).toBe(false);
   expect(isIpcError("SomethingNew")).toBe(false);
 });
+
+test("names that exist on every object are not variants", () => {
+  for (const name of ["toString", "constructor", "hasOwnProperty", "valueOf", "__proto__"]) {
+    expect(isIpcError(name), `"${name}" as a string`).toBe(false);
+    expect(isIpcError({ [name]: "x" }), `{ ${name} }`).toBe(false);
+  }
+  expect(isIpcError(JSON.parse('{"__proto__": "x"}'))).toBe(false);
+});
