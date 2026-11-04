@@ -95,9 +95,12 @@ describe("the Cover it key's identity (personal-cfo-56w.8)", () => {
         fireEvent.click(screen.getByRole("button", { name: /confirm transfer/i }));
       },
       keys: () => mocks.recordTransfer.mock.calls.map((c) => c[0].idempotency_key),
-      // No `refusal` step yet: the helper found that Cover it keeps its key after a typed refusal,
-      // where docs/agent/FRONTEND.md section 8 says the next try is a new draft. That is a product
-      // change, so it gets its own fix (personal-cfo-56w.8 AC4); this spec gains `refusal` with it.
+      // Cover it keeps its key through a typed refusal (a refused transfer stores no key host-side, so
+      // the next send runs fresh either way): an unchanged send reuses it, an edit gives a new one.
+      refusal: {
+        arrange: () => mocks.recordTransfer.mockResolvedValueOnce({ status: "error", error: { Validation: "nope" } }),
+        mode: "same-draft",
+      },
       success: {
         arrange: () => mocks.recordTransfer.mockResolvedValueOnce(ok({ op_seq: 1, replayed: false })),
         // A recorded transfer closes the panel: the same transfer is entered into a freshly opened one.
