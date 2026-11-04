@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { commands, type IpcError } from "@/bindings";
@@ -49,6 +49,28 @@ export function useTransactionAttachments(transactionId: string) {
       ),
   });
 
+  // A retry of a read that never produced data puts the query back to pending, which clears its error
+  // and would flip the list to "Loading…"; the failure being retried stays on screen meanwhile.
+  const [retriedFailure, setRetriedFailure] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const failure = query.error?.message ?? (retrying ? retriedFailure : null);
+  /// Read the list again after a failed read.
+  const retry = useCallback(async () => {
+    setRetriedFailure(query.error?.message ?? null);
+    setRetrying(true);
+    try {
+      await query.refetch();
+    } finally {
+      setRetrying(false);
+    }
+  }, [query]);
+  /// Read the list again so it shows what is stored, e.g. after a call whose outcome is unknown.
+  /// Settles once the read has answered, whether or not it worked.
+  const refresh = useCallback(
+    () => queryClient.refetchQueries({ queryKey: key }),
+    [queryClient, key],
+  );
+
   const attachMutation = useMutation({
     mutationFn: (file: File) => attach(transactionId, file),
     onSuccess: (result) => {
@@ -86,7 +108,10 @@ export function useTransactionAttachments(transactionId: string) {
 
   return {
     attachments: query.data ?? null,
-    error: query.error?.message ?? null,
+    error: failure,
+    retry,
+    retrying,
+    refresh,
     attachFile,
     removeAttachment,
     isAttaching: attachMutation.isPending,

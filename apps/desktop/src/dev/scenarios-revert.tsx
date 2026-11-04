@@ -22,6 +22,8 @@ import { writeStoredThemePreference } from "@/theme/themePreference";
 /// - `changed`: the confirmation shown again because the changes moved while the person looked.
 /// - `failed`: the confirmation after an undo failed, with the error shown inside the dialog.
 /// - `deleted`: the "Deleted, but still applied" section.
+/// - `apply` and `delete`: an unapplied scenario; `&open=1` opens the Apply or Delete confirmation
+///   (personal-cfo-4d8.6.2), on the shared Dialog.
 ///
 /// `&open=1` clicks Undo on load (the confirmation or the blocker); `changed` and `failed` also click
 /// the confirm button. `&long=1` uses 100-character unbroken scenario and item names and 32 lines.
@@ -96,6 +98,7 @@ let previews = 0;
 function fake(cmd: string): unknown {
   switch (cmd) {
     case "scenario_list":
+      if (state === "apply" || state === "delete") return [scenario({ id: "scenario-3" })];
       return state === "deleted" ? [scenario({ id: "scenario-2", name: "New job" })] : [applied];
     case "scenario_deleted_applied_list":
       return state === "deleted"
@@ -183,7 +186,9 @@ function click(name: RegExp, next?: () => void) {
     }
   }, 100);
 }
-if (params.get("open") === "1") {
+if (params.get("open") === "1" && state === "apply") click(/apply .* to the forecast/i);
+else if (params.get("open") === "1" && state === "delete") click(/^delete /i);
+else if (params.get("open") === "1") {
   click(/undo applying/i, () => {
     if (state === "changed" || state === "failed") {
       window.setTimeout(() => click(/^undo scenario$/i), 400);

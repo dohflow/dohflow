@@ -30,6 +30,7 @@ import { useBaseCurrency } from "@/settings/useBaseCurrency";
 import { useAccounts, useCashTiers } from "./useAccounts";
 import { SUBTYPE_LABELS } from "./subtypes";
 import { archiveMovesTheForecast } from "./archiveNotice";
+import { BALANCE_SAVED_UNCONFIRMED } from "./balanceMessages";
 import { storedToShownMinor } from "./balanceSign";
 import { AccountDetailView, isSpendingRole } from "./AccountDetailView";
 import { AccountEditorDrawer } from "./AccountEditorDrawer";
@@ -183,6 +184,8 @@ export function AccountsView() {
             size="sm"
             variant={batchMode ? "secondary" : "outline"}
             aria-pressed={batchMode}
+            // Not while a save is pending: leaving would discard the drafts it is still saving.
+            disabled={batchMode && batch.saving}
             onClick={() => {
               // Leaving batch mode discards any unsaved drafts (the flat surface
               // used to unmount) so they can't resurrect on re-entry (4d8.25.24 review).
@@ -206,6 +209,7 @@ export function AccountsView() {
             type="date"
             value={batch.date}
             onChange={(e) => batch.setDate(e.target.value)}
+            disabled={batch.saving}
             className="h-8 w-40"
           />
           <span className="text-xs text-muted-foreground" role="status">
@@ -602,7 +606,10 @@ function AccountRow({
       {editing && batch ? (
         <div className="flex shrink-0 items-center gap-1.5">
           {result?.kind === "ok" && (
-            <Check className="size-4 text-gain" aria-label="Updated" />
+            <Check
+              className="size-4 text-gain"
+              aria-label={result.confirmed ? "Updated" : BALANCE_SAVED_UNCONFIRMED}
+            />
           )}
           {result?.kind === "error" && (
             <span role="alert" className="max-w-32 truncate text-xs text-loss">
@@ -618,6 +625,7 @@ function AccountRow({
             )}
             value={batch.valueOf(account)}
             onChange={(e) => batch.setDraft(account.id, e.target.value)}
+            disabled={batch.saving}
           />
         </div>
       ) : (
@@ -666,6 +674,18 @@ function AccountRow({
         )}
       </div>
       </div>
+      {/* A save whose outcome is not known, or that was saved without a confirmed balance, says so
+          in full under the row (the inline mark above is too narrow to carry a sentence). */}
+      {result?.kind === "unknown" && (
+        <p role="alert" className="mt-1 text-xs text-loss">
+          {result.message}
+        </p>
+      )}
+      {result?.kind === "ok" && !result.confirmed && (
+        <p role="status" className="mt-1 text-xs text-muted-foreground">
+          {BALANCE_SAVED_UNCONFIRMED}
+        </p>
+      )}
       {/* Sits UNDER the row rather than inside it: the row's own name is a button that
           opens the account, and a button inside a button is invalid HTML. */}
       {confirmingArchive && (

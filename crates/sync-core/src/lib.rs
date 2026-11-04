@@ -10,6 +10,7 @@
 //! * [`accepted`]: the C.10 accepted-envelope record, the service's push decision and the
 //!   client's outbox binding.
 //! * [`cbe`]: CBE1, the canonical binary encoding of C.1.1 (strict writer and reader).
+//! * [`claim`]: the proof a device makes to claim its Sync credential, and its check.
 //! * [`header`]: the C.4 clear header (the AEAD's AAD) and the `DFSY` container.
 //! * [`keys`]: the exact Ed25519 and X25519 key acceptance rules of C.6.
 //! * [`membership`]: the C.6 membership chain and epoch records and their reference verifier.
@@ -21,6 +22,7 @@
 pub mod accepted;
 pub mod canonical_json;
 pub mod cbe;
+pub mod claim;
 pub mod envelope;
 pub mod header;
 pub mod keys;

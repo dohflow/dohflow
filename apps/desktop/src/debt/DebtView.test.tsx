@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -528,5 +529,117 @@ describe("projected statement + section order (personal-cfo-08fj)", () => {
     expect(await screen.findByText(/what you have owed/i)).toBeInTheDocument();
     expect(screen.queryByText(/where the card spending went/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/card debts only/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("a failed debt-terms read says so and shows nothing it does not know (twpo.8.2)", () => {
+  const card = {
+    id: "card-1",
+    name: "Visa",
+    cashflow_role: "credit_facility",
+    subtype: "credit_card",
+    active: true,
+    balance: { minor_units: -500_000, currency: "USD" },
+    notes: null,
+    linked_account_id: null,
+    linked_account_name: null,
+  };
+  const terms = {
+    account_id: "card-1",
+    apr_bps: 2199,
+    statement_close_day: 5,
+    payment_due_day: 25,
+    grace_period_days: 21,
+    credit_limit_minor: 1_000_000,
+    repayment_philosophy: "pay_minimum",
+    fixed_amount_minor: null,
+    min_payment_percent_bps: null,
+    min_payment_floor_minor: null,
+    paying_source_account_id: null,
+    original_principal_minor: null,
+  };
+
+  beforeEach(() => {
+    mocks.accountList.mockResolvedValue(ok([card]));
+  });
+
+  it("shows the read's own message as an alert with Retry, and no totals, no terms table, no 'no debt'", async () => {
+    mocks.debtTermsList.mockRejectedValue(new Error("host down"));
+    renderWithClient(<DebtView />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load debt terms.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.queryByText("Balances and terms")).toBeNull();
+    expect(screen.queryByText("Total owed")).toBeNull();
+    expect(screen.queryByText(/no credit cards or loans yet/i)).toBeNull();
+    // The accounts did load, so the debt is still on the page.
+    expect(screen.getAllByText("Visa").length).toBeGreaterThan(0);
+  });
+
+  it("a typed refusal shows the app's own reason the same way", async () => {
+    mocks.debtTermsList.mockResolvedValue({ status: "error", error: { Validation: "nope" } });
+    renderWithClient(<DebtView />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("nope");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.queryByText("Balances and terms")).toBeNull();
+  });
+
+  it("Retry reads again, keeps the failure and reads Retrying… meanwhile, then shows the terms and moves focus to the heading", async () => {
+    mocks.debtTermsList.mockRejectedValueOnce(new Error("host down"));
+    let finish: (value: unknown) => void = () => {};
+    mocks.debtTermsList.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    renderWithClient(<DebtView />);
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: "Retrying…" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load debt terms.");
+
+    finish(ok([terms]));
+    expect(await screen.findByText("Balances and terms")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Debt" })).toHaveFocus());
+    expect(mocks.debtTermsList).toHaveBeenCalledTimes(2);
+  });
+
+  it("terms read earlier are not shown as current once a refresh of them fails", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mocks.debtTermsList.mockResolvedValue(ok([terms]));
+    renderWithClient(<DebtView />, client);
+    expect(await screen.findByText("Balances and terms")).toBeInTheDocument();
+
+    mocks.debtTermsList.mockRejectedValue(new Error("host down"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["debt-terms-list"] });
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load debt terms.");
+    expect(screen.queryByText("Balances and terms")).toBeNull();
+    expect(screen.queryByText("Total owed")).toBeNull();
+  });
+
+  it("a second failure keeps the alert and Retry", async () => {
+    mocks.debtTermsList.mockRejectedValue(new Error("host down"));
+    renderWithClient(<DebtView />);
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.debtTermsList).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load debt terms.");
+    expect(screen.queryByText("Balances and terms")).toBeNull();
+  });
+
+  it("a debt with genuinely no terms recorded is still its own state, with no error", async () => {
+    mocks.debtTermsList.mockResolvedValue(ok([]));
+    renderWithClient(<DebtView />);
+    expect(await screen.findByText("Balances and terms")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("the other panels carry on around a failed terms read", async () => {
+    mocks.debtTermsList.mockRejectedValue(new Error("host down"));
+    renderWithClient(<DebtView />);
+    await screen.findByRole("alert");
+    expect(mocks.debtPayoffComparison).toHaveBeenCalled();
+    expect(mocks.cardStatementForecast).toHaveBeenCalled();
   });
 });

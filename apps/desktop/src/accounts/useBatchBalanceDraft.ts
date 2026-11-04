@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import type { AccountViewDto } from "@/bindings";
 import { dollarsToMinorUnits } from "@/lib/format";
+import { mintIdempotencyKey } from "@/lib/idempotency";
 import { describeIpcError } from "@/vault/useVault";
 
+import { BALANCE_OUTCOME_UNKNOWN } from "./balanceMessages";
 import { useAccounts } from "./useAccounts";
 import { enteredToStoredMinor, storedToShownMinor } from "./balanceSign";
 
@@ -27,7 +29,13 @@ function minorUnitsToInput(minorUnits: number): string {
   return (minorUnits / 100).toString();
 }
 
-export type RowResult = { kind: "ok" } | { kind: "error"; message: string };
+/// What a row's save came to. `ok` is saved (the new balance may not have been read back yet:
+/// `confirmed: false`); `error` is a refusal, so nothing was saved; `unknown` is a call that threw,
+/// so nobody knows whether it was saved, which is never reported as "not saved".
+export type RowResult =
+  | { kind: "ok"; confirmed: boolean }
+  | { kind: "error"; message: string }
+  | { kind: "unknown"; message: string };
 
 /// The batch balance-update draft machinery (personal-cfo-wgpb), extracted so it can
 /// drive the **inline** edit mode in the real grouped Accounts layout rather than a
@@ -43,6 +51,13 @@ export function useBatchBalanceDraft() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, RowResult>>({});
   const [saving, setSaving] = useState(false);
+  // True from the moment a save starts until every row has settled. Read by `reset` and `setDraft`
+  // (which can run from a stale closure), so nothing can clear or replace what a pending save owns.
+  const savingRef = useRef(false);
+  // One idempotency key per row draft: saving the same row again (after a call that threw, so
+  // nobody knows whether it was saved) replays instead of appending a second observation. A
+  // different amount, date or currency is a different draft with a new key.
+  const keys = useRef<Record<string, { identity: string; key: string }>>({});
 
   const currentOf = (a: AccountViewDto) =>
     minorUnitsToInput(storedToShownMinor(a.cashflow_role, a.balance.minor_units));
@@ -54,6 +69,7 @@ export function useBatchBalanceDraft() {
     a.active && BALANCE_ROLES.has(a.cashflow_role);
 
   function setDraft(id: string, value: string) {
+    if (savingRef.current) return; // the rows are locked while a save is pending
     setDrafts((d) => ({ ...d, [id]: value }));
     setResults((r) => {
       if (!(id in r)) return r;
@@ -67,35 +83,60 @@ export function useBatchBalanceDraft() {
   /// cleanly (the account list refetches and the row falls back to the new balance).
   async function saveAll(editable: AccountViewDto[]) {
     const edited = editable.filter(isEdited);
-    if (edited.length === 0) return;
+    if (edited.length === 0 || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
-    const outcomes = await Promise.all(
-      edited.map(async (a): Promise<[string, RowResult]> => {
-        const entered = dollarsToMinorUnits(valueOf(a));
-        if (entered === null) {
-          return [a.id, { kind: "error", message: "Enter a valid amount." }];
+    // What each row sent, so a settled save drops only the draft it actually saved.
+    const submitted = Object.fromEntries(edited.map((a) => [a.id, valueOf(a)]));
+    try {
+      const outcomes = await Promise.all(
+        edited.map(async (a): Promise<[string, RowResult]> => {
+          const entered = dollarsToMinorUnits(valueOf(a));
+          if (entered === null) {
+            return [a.id, { kind: "error", message: "Enter a valid amount." }];
+          }
+          const minor = enteredToStoredMinor(a.cashflow_role, entered);
+          const identity = `${minor}|${date}|${a.balance.currency}`;
+          const existing = keys.current[a.id];
+          const draftKey =
+            existing && existing.identity === identity
+              ? existing
+              : { identity, key: mintIdempotencyKey() };
+          keys.current[a.id] = draftKey;
+          try {
+            const { result, error } = await assertBalance({
+              account_id: a.id,
+              amount: { minor_units: minor, currency: a.balance.currency },
+              as_of_date: date,
+              idempotency_key: draftKey.key,
+            });
+            if (error) {
+              // A refusal: nothing was saved, so the next try is a new draft.
+              delete keys.current[a.id];
+              return [a.id, { kind: "error", message: describeIpcError(error) }];
+            }
+            delete keys.current[a.id];
+            return [a.id, { kind: "ok", confirmed: result?.balance != null }];
+          } catch {
+            // The call itself failed: whether it was saved is not known. The key stays, so saving
+            // this row again cannot append a second observation.
+            return [a.id, { kind: "unknown", message: BALANCE_OUTCOME_UNKNOWN }];
+          }
+        }),
+      );
+      setResults((r) => ({ ...r, ...Object.fromEntries(outcomes) }));
+      // Only a confirmed save drops its draft; a refusal or an unknown outcome keeps what was typed.
+      setDrafts((d) => {
+        const next = { ...d };
+        for (const [id, res] of outcomes) {
+          if (res.kind === "ok" && next[id] === submitted[id]) delete next[id];
         }
-        const { error } = await assertBalance({
-          account_id: a.id,
-          amount: {
-            minor_units: enteredToStoredMinor(a.cashflow_role, entered),
-            currency: a.balance.currency,
-          },
-          as_of_date: date,
-        });
-        return [
-          a.id,
-          error ? { kind: "error", message: describeIpcError(error) } : { kind: "ok" },
-        ];
-      }),
-    );
-    setSaving(false);
-    setResults((r) => ({ ...r, ...Object.fromEntries(outcomes) }));
-    setDrafts((d) => {
-      const next = { ...d };
-      for (const [id, res] of outcomes) if (res.kind === "ok") delete next[id];
-      return next;
-    });
+        return next;
+      });
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   }
 
   const editedCount = (editable: AccountViewDto[]) =>
@@ -107,9 +148,11 @@ export function useBatchBalanceDraft() {
   /// now outlives batch mode, leaving it must clear state so a stale draft can't
   /// resurrect and silently overwrite a balance changed by another path.
   function reset() {
+    // Not while a save is pending: the submitted drafts and the results stay until it settles, and a
+    // draft typed afterwards must not be deleted when that save resolves.
+    if (savingRef.current) return;
     setDrafts({});
     setResults({});
-    setSaving(false);
     setDate(today());
   }
 

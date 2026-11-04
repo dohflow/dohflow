@@ -17,6 +17,11 @@ import { ipcQuery, queryKeys } from "@/lib/query";
 /// accounts + forecast caches on success (an account change can move the
 /// forecast's liquid starting balance). IPC flows through the generated
 /// `commands` only; Rust stays authoritative for validation (ADR 0003).
+/// An assertion as a caller drafts it: the idempotency key is optional (see `assertBalance`).
+export type AssertBalanceDraft = Omit<AssertBalanceInput, "idempotency_key"> & {
+  idempotency_key?: string;
+};
+
 export function useAccounts() {
   const queryClient = useQueryClient();
   const query = useQuery({
@@ -127,9 +132,14 @@ export function useAccounts() {
   // returns the result rather than just an error sentinel.
   const assertBalance = useCallback(
     async (
-      input: AssertBalanceInput,
+      input: AssertBalanceDraft,
     ): Promise<{ result: AssertBalanceResult | null; error: IpcError | null }> => {
-      const outcome = await assertMutation.mutateAsync(input);
+      // Assertions are append-only, so a retry of the same draft must reuse its key. A caller that
+      // does not retry (a one-shot save) leaves it out and gets a fresh one.
+      const outcome = await assertMutation.mutateAsync({
+        ...input,
+        idempotency_key: input.idempotency_key ?? mintIdempotencyKey(),
+      });
       return outcome.status === "ok"
         ? { result: outcome.data, error: null }
         : { result: null, error: outcome.error };

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -742,6 +742,51 @@ describe("TransactionsView", () => {
         },
       );
 
+      it("editing the account ends the confirmation, and the next create is for that account", async () => {
+        mocks.accountList.mockResolvedValue(ok([account(), SAVINGS]));
+        mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+        await fillRecurring();
+        create();
+        await screen.findByRole("button", { name: "Add anyway" });
+        fireEvent.change(document.getElementById("txn-account") as HTMLElement, {
+          target: { value: SAVINGS.id },
+        });
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+        expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+        create();
+        fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+        await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+        expect(mocks.createRecurringBill.mock.calls[0]?.[0].autopay_account_id).toBe(SAVINGS.id);
+      });
+
+      it.each([
+        [
+          "the custom interval count",
+          () => fireEvent.change(screen.getByLabelText("Interval count"), { target: { value: "3" } }),
+          "every_3_months",
+        ],
+        [
+          "the custom interval unit",
+          () => fireEvent.change(screen.getByLabelText("Interval unit"), { target: { value: "weeks" } }),
+          "every_2_weeks",
+        ],
+      ])("editing %s ends the confirmation, and the next create carries it", async (_name, edit, token) => {
+        mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
+        await fillRecurring();
+        fireEvent.change(screen.getByLabelText(/frequency/i), { target: { value: "custom" } });
+        fireEvent.change(screen.getByLabelText("Interval count"), { target: { value: "2" } });
+        fireEvent.change(screen.getByLabelText("Interval unit"), { target: { value: "months" } });
+        create();
+        await screen.findByRole("button", { name: "Add anyway" });
+        edit();
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Add anyway" })).toBeNull());
+        expect(mocks.createRecurringBill).not.toHaveBeenCalled();
+        create();
+        fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+        await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+        expect(mocks.createRecurringBill.mock.calls[0]?.[0].frequency).toBe(token);
+      });
+
       it("an edit that is put back still ends the confirmation, and the unchanged draft keeps its key", async () => {
         mocks.checkLoanOverlap.mockResolvedValue(ok(LOAN));
         mocks.createRecurringBill.mockRejectedValueOnce(new Error("connection lost"));
@@ -981,6 +1026,103 @@ describe("TransactionsView", () => {
       submit();
       await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(2));
       expect(keyOf(1)).toBe(keyOf(0));
+    });
+  });
+
+  describe("a submit in flight owns the form (g3m.38)", () => {
+    async function startPendingSubmit() {
+      let settle: { resolve: (v: unknown) => void; reject: (e: unknown) => void } = {
+        resolve: () => {},
+        reject: () => {},
+      };
+      mocks.recordTransaction.mockReturnValue(
+        new Promise((resolve, reject) => (settle = { resolve, reject })),
+      );
+      mockTransactionPage([txn()]);
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "40" } });
+      fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+      fireEvent.click(screen.getByRole("button", { name: /add details/i }));
+      fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Groceries run" } });
+      fireEvent.change(screen.getByLabelText(/attach documents/i), {
+        target: { files: [pickable("receipt.pdf", "application/pdf", [1, 2, 3])] },
+      });
+      await screen.findByText("receipt.pdf");
+      const amount = screen.getByLabelText(/amount/i);
+      fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+      await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(1));
+      return { settle, amount };
+    }
+
+    it("locks the fields, the staged-file controls and both buttons until the outcome", async () => {
+      const { settle } = await startPendingSubmit();
+      await waitFor(() => expect(screen.getByLabelText(/amount/i)).toBeDisabled());
+      for (const id of ["txn-account", "txn-date", "txn-note", "txn-category", "txn-tags"]) {
+        expect(document.getElementById(id)).toBeDisabled();
+      }
+      expect(screen.getByLabelText(/attach documents/i)).toBeDisabled();
+      expect(screen.getByRole("button", { name: /attach document/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /remove receipt\.pdf/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /adding…/i })).toBeDisabled();
+      // The header's Add buttons stay hidden while the form is open.
+      expect(screen.queryByRole("button", { name: /^add transfer$/i })).toBeNull();
+      await act(async () => settle.resolve({ status: "error", error: { Validation: "No." } }));
+    });
+
+    it("Cancel and Escape during the submit leave the form mounted, and the outcome shows in it", async () => {
+      const { settle, amount } = await startPendingSubmit();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled());
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      expect(screen.getByLabelText(/amount/i)).toBe(amount);
+
+      await act(async () => settle.reject(new Error("connection lost")));
+      expect(
+        await screen.findByText(/couldn’t confirm whether the transaction was recorded/i),
+      ).toBeInTheDocument();
+      // The same form, with what the person entered, unlocked.
+      expect(screen.getByLabelText(/amount/i)).toBe(amount);
+      expect(amount).toHaveValue("40");
+      expect(amount).toBeEnabled();
+      expect(screen.getByLabelText("Note")).toHaveValue("Groceries run");
+      expect(screen.getByText("receipt.pdf")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    it("creating the bill from the loan warning locks the form the same way until the outcome", async () => {
+      mocks.checkLoanOverlap.mockResolvedValue(
+        ok({ loan_account_id: "loan-1", loan_name: "Test Mortgage", strength: "strong", matched_by: "loan_typed" }),
+      );
+      let finish: (value: unknown) => void = () => {};
+      mocks.createRecurringBill.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      mockTransactionPage([]);
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+      fireEvent.click(screen.getByLabelText(/set up as a recurring bill/i));
+      fireEvent.change(screen.getByLabelText(/bill name/i), { target: { value: "Mortgage" } });
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "1500" } });
+      fireEvent.click(screen.getByRole("button", { name: /create recurring bill/i }));
+      fireEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+      await waitFor(() => expect(mocks.createRecurringBill).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.getByLabelText(/amount/i)).toBeDisabled());
+      expect(screen.getByLabelText(/bill name/i)).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^don't add$/i })).toBeDisabled();
+      await act(async () => finish({ status: "error", error: { Validation: "No." } }));
+      await waitFor(() => expect(screen.getByLabelText(/amount/i)).toBeEnabled());
+    });
+
+    it("an unchanged resubmit after the unknown outcome reuses the key", async () => {
+      const { settle } = await startPendingSubmit();
+      await act(async () => settle.reject(new Error("connection lost")));
+      await screen.findByText(/couldn’t confirm whether the transaction was recorded/i);
+      mocks.recordTransaction.mockResolvedValue(ok({ op_seq: 1, replayed: true, transaction_id: NEW_TXN_ID }));
+      fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+      await waitFor(() => expect(mocks.recordTransaction).toHaveBeenCalledTimes(2));
+      expect(mocks.recordTransaction.mock.calls[1]?.[0].idempotency_key).toBe(
+        mocks.recordTransaction.mock.calls[0]?.[0].idempotency_key,
+      );
     });
   });
 
@@ -1361,6 +1503,105 @@ describe("TransactionsView", () => {
     expect(input.amount.minor_units).toBe(20000);
     expect(input.frequency).toBe("weekly");
     expect(mocks.recordTransfer).not.toHaveBeenCalled();
+  });
+
+  describe("a transfer submit in flight owns the form (g3m.39)", () => {
+    const UNKNOWN =
+      "Couldn’t confirm whether the transfer was saved. Submit again and it won’t be added twice.";
+    const transferKey = (call: number) =>
+      mocks.recordTransfer.mock.calls[call]?.[0].idempotency_key;
+    const recurringKey = (call: number) =>
+      mocks.createRecurringTransfer.mock.calls[call]?.[0].idempotency_key;
+
+    async function fillTransfer(amount = "50") {
+      mocks.accountList.mockResolvedValue(ok([account(), SAVINGS]));
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transfer/i }));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: amount } });
+    }
+    const submit = () => fireEvent.click(screen.getByRole("button", { name: "Add transfer" }));
+
+    it("locks the fields and both buttons while pending; Cancel does nothing; the outcome then shows in the same form", async () => {
+      let settle: { reject: (e: unknown) => void } = { reject: () => {} };
+      mocks.recordTransfer.mockReturnValue(new Promise((_, reject) => (settle = { reject })));
+      await fillTransfer();
+      const amount = screen.getByLabelText(/amount/i);
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(amount).toBeDisabled());
+      for (const id of ["transfer-source", "transfer-dest", "transfer-date"]) {
+        expect(document.getElementById(id)).toBeDisabled();
+      }
+      expect(screen.getByRole("button", { name: "One-off" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Recurring" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /adding…/i })).toBeDisabled();
+      // The header's Add buttons stay hidden while the form is open.
+      expect(screen.queryByRole("button", { name: /^add transfer$/i })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      expect(screen.getByLabelText(/amount/i)).toBe(amount);
+
+      await act(async () => settle.reject(new Error("connection lost")));
+      expect(await screen.findByText(UNKNOWN)).toBeInTheDocument();
+      // The same form, with what the person entered, unlocked.
+      expect(screen.getByLabelText(/amount/i)).toBe(amount);
+      expect(amount).toHaveValue("50");
+      expect(amount).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+
+    it("an unchanged resubmit after an unknown outcome reuses the key; a changed amount or date gets a new one", async () => {
+      mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+      await fillTransfer();
+      submit();
+      await screen.findByText(UNKNOWN);
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+      expect(transferKey(1)).toBe(transferKey(0));
+
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "60" } });
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(3));
+      expect(transferKey(2)).not.toBe(transferKey(1));
+
+      fireEvent.change(document.getElementById("transfer-date") as HTMLElement, {
+        target: { value: "2026-01-02" },
+      });
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(4));
+      expect(transferKey(3)).not.toBe(transferKey(2));
+    });
+
+    it("a refusal shows the app's reason and the next try is a new draft with a new key", async () => {
+      mocks.recordTransfer.mockResolvedValue({
+        status: "error",
+        error: { Validation: "That account cannot cover this." },
+      });
+      await fillTransfer();
+      submit();
+      expect(await screen.findByText("That account cannot cover this.")).toBeInTheDocument();
+      expect(screen.queryByText(UNKNOWN)).toBeNull();
+      submit();
+      await waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+      expect(transferKey(1)).not.toBe(transferKey(0));
+    });
+
+    it("a recurring transfer that threw is an unknown outcome with the same key on retry; a changed schedule is a new draft", async () => {
+      mocks.createRecurringTransfer.mockRejectedValue(new Error("connection lost"));
+      await fillTransfer("200");
+      fireEvent.click(screen.getByRole("button", { name: "Recurring" }));
+      const schedule = () => fireEvent.click(screen.getByRole("button", { name: /schedule transfer/i }));
+      schedule();
+      await screen.findByText(UNKNOWN);
+      schedule();
+      await waitFor(() => expect(mocks.createRecurringTransfer).toHaveBeenCalledTimes(2));
+      expect(recurringKey(1)).toBe(recurringKey(0));
+      fireEvent.change(screen.getByLabelText(/frequency/i), { target: { value: "weekly" } });
+      schedule();
+      await waitFor(() => expect(mocks.createRecurringTransfer).toHaveBeenCalledTimes(3));
+      expect(recurringKey(2)).not.toBe(recurringKey(1));
+    });
   });
 
   const BROKERAGE = account({
@@ -1826,24 +2067,68 @@ describe("the scope strip is the one place scope is stated (personal-cfo-3tbn)",
 });
 
 describe("the four states say which thing happened (personal-cfo-xu32)", () => {
-  it("stops pretending to load when the page read fails", async () => {
+  it("stops pretending to load when the page read fails, with one message that claims nothing about the data", async () => {
     // The defect this fixes: `total` stays undefined on error, so the table skeletonised
     // forever — the screen showed an error message AND an endless loading list, which
     // reads as "still trying".
-    mocks.transactionPage.mockResolvedValue({
-      status: "error",
-      error: { kind: "Internal", message: "disk gone" },
-    });
+    mocks.transactionPage.mockRejectedValue(new Error("host down"));
     renderWithClient(<TransactionsView />);
 
-    const alerts = await screen.findAllByRole("alert");
-    expect(
-      alerts.some((a) => /couldn’t read this page of transactions/i.test(a.textContent ?? "")),
-    ).toBe(true);
-    // …and it says the data itself is fine.
-    expect(
-      alerts.some((a) => /your data is fine/i.test(a.textContent ?? "")),
-    ).toBe(true);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/^Couldn’t read this page of transactions\.$/);
+    // One message: not a banner and a table message.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    // A failed read cannot say the data is fine.
+    expect(screen.queryByText(/your data is fine/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  });
+
+  it("adds the read's own reason when it gave one", async () => {
+    mocks.transactionPage.mockResolvedValue({
+      status: "error",
+      error: { Validation: "That date range is not valid." },
+    });
+    renderWithClient(<TransactionsView />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t read this page of transactions. That date range is not valid.",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("Retry reads the page again, reads Retrying… with the message kept while it runs, and recovers", async () => {
+    mocks.transactionPage.mockRejectedValueOnce(new Error("host down"));
+    let finish: (value: unknown) => void = () => {};
+    mocks.transactionPage.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = resolve)),
+    );
+    renderWithClient(<TransactionsView />);
+    await screen.findByRole("alert");
+    const calls = mocks.transactionPage.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const pending = await screen.findByRole("button", { name: "Retrying…" });
+    expect(pending).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t read this page of transactions.");
+    expect(mocks.transactionPage.mock.calls.length).toBe(calls + 1);
+
+    await act(async () =>
+      finish(pageResult([txn({ transaction_id: "t1", memo: "Lunch" })], mocks.transactionPage.mock.calls.at(-1)?.[0])),
+    );
+    expect(await screen.findByText("Lunch")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  });
+
+  it("a second failure keeps the message and Retry", async () => {
+    mocks.transactionPage.mockRejectedValue(new Error("host down"));
+    renderWithClient(<TransactionsView />);
+    await screen.findByRole("alert");
+    const calls = mocks.transactionPage.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.transactionPage.mock.calls.length).toBe(calls + 1));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t read this page of transactions.");
   });
 
   it("distinguishes an aggregate failure from a vault failure", async () => {

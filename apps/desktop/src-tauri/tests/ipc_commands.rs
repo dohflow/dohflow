@@ -637,6 +637,7 @@ fn stale_balance_surfaces_in_the_money_inbox_through_ipc() {
                 currency: "USD".to_owned(),
             },
             as_of_date: "2020-01-01".to_owned(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .unwrap();
@@ -709,6 +710,7 @@ fn convert_unexplained_to_transaction_through_ipc() {
                 currency: "USD".to_owned(),
             },
             as_of_date: "2026-06-01".to_owned(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .unwrap();
@@ -1731,6 +1733,49 @@ fn create_forecast_assumption_requires_kind_specific_fields() {
 }
 
 #[test]
+fn assert_balance_repeated_under_one_key_writes_once_and_a_bad_key_is_refused() {
+    let (_dir, state) = open_state();
+    let account_id = create_account_impl(&state, create_input("Checking"))
+        .unwrap()
+        .account_id;
+    let key = uuid::Uuid::new_v4().to_string();
+    let draft = |minor: i64, key: &str| AssertBalanceInput {
+        account_id: account_id.clone(),
+        amount: MoneyDto {
+            minor_units: minor,
+            currency: "USD".to_owned(),
+        },
+        as_of_date: "2026-06-01".to_owned(),
+        idempotency_key: key.to_owned(),
+    };
+
+    let first = assert_balance_impl(&state, draft(100_000, &key)).unwrap();
+    assert_eq!(first.balance.expect("read back").minor_units, 100_000);
+    // The retry of the same draft is the original result: a different amount under the same key
+    // changes nothing (it would be a different draft with its own key in the app).
+    let retry = assert_balance_impl(&state, draft(999_999, &key)).unwrap();
+    assert_eq!(retry.balance.expect("read back").minor_units, 100_000);
+    assert_eq!(
+        account_balance_impl(&state, account_id.clone())
+            .unwrap()
+            .unwrap()
+            .minor_units,
+        100_000,
+    );
+    // A new key is a new assertion.
+    let next =
+        assert_balance_impl(&state, draft(250_000, &uuid::Uuid::new_v4().to_string())).unwrap();
+    assert_eq!(next.balance.expect("read back").minor_units, 250_000);
+
+    // A key that is not a canonical UUID v4 is refused before anything is written.
+    let refused = assert_balance_impl(&state, draft(1, "not-a-key"));
+    assert!(
+        matches!(refused, Err(IpcError::Validation(_))),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn assert_balance_journey_anchors_and_explains() {
     use chrono::{Duration, Utc};
 
@@ -1753,10 +1798,11 @@ fn assert_balance_journey_anchors_and_explains() {
                 currency: "USD".to_owned(),
             },
             as_of_date: as_of,
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .unwrap();
-    assert_eq!(result.balance.minor_units, 550_000);
+    assert_eq!(result.balance.expect("read back").minor_units, 550_000);
     // Nothing explains it yet → fully unexplained.
     assert_eq!(result.unexplained.unwrap().minor_units, 550_000);
 
@@ -2329,6 +2375,7 @@ fn recording_a_real_statement_balance_overrides_the_estimate_and_clears_back() {
                 currency: "USD".to_owned(),
             },
             as_of_date: "2026-06-20".to_owned(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .unwrap();
@@ -2431,6 +2478,7 @@ fn unknown_philosophy_without_minimum_terms_still_projects_a_visible_payment() {
                 currency: "USD".to_owned(),
             },
             as_of_date: "2026-06-20".to_owned(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .unwrap();
@@ -3511,6 +3559,7 @@ fn a_bill_is_linked_to_its_loan_and_unlinked_through_ipc() {
                 currency: "USD".to_owned(),
             },
             as_of_date: "2026-01-01".to_owned(),
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
         },
     )
     .unwrap();
