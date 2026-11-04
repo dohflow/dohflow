@@ -3,6 +3,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 
 import { queryKeys } from "@/lib/query";
+import { expectDraftKeyIdentity } from "@/test/idempotencyIdentity";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { AccountViewDto, CardStatementForecastDto } from "@/bindings";
@@ -506,5 +507,155 @@ describe("what is read again after an unknown outcome, and leaving while it is r
 
     await act(async () => finish(ok({ op_seq: 1, replayed: false })));
     await waitFor(() => expect(screen.getByRole("button", { name: /pay card/i })).toBeInTheDocument());
+  });
+});
+
+describe("the unresolved payment is held as sent (6wk.24, Studio R1b)", () => {
+  /// The card a test can replace without touching the draft, as a refreshed forecast would.
+  let setCard: (next: CardStatementForecastDto) => void = () => {};
+  function Harness() {
+    const [current, set] = useState(card);
+    setCard = set;
+    return <PayCardAction card={current} />;
+  }
+  const confirmEnabled = () =>
+    vi.waitFor(() => expect(screen.getByRole("button", { name: /confirm payment/i })).toBeEnabled());
+  const refreshedCard = (statementBalance: number): CardStatementForecastDto => ({
+    ...card,
+    cycles: [{ ...card.cycles[0]!, statement_balance_minor: statementBalance }],
+  });
+
+  test("a later read that makes Savings the first source does not move the retry off Checking", async () => {
+    mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<Harness />, client);
+    fireEvent.click(await openTool());
+    await confirmEnabled();
+    // Savings is funded and sorts ahead of Checking.
+    mocks.accountList.mockResolvedValue(ok([SAVINGS, CHECKING]));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.accounts });
+    });
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+        expect.stringContaining("Savings"),
+        expect.stringContaining("Checking"),
+      ]),
+    );
+    expect(sourceSelect().value).toBe("chk");
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await vi.waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].source_account_id).toBe("chk");
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].amount.minor_units).toBe(80_000);
+    expect(keyOf(1)).toBe(keyOf(0));
+  });
+
+  test("the outcome re-read itself cannot move the retry", async () => {
+    mocks.accountList.mockResolvedValueOnce(ok([CHECKING]));
+    mocks.accountList.mockResolvedValue(ok([SAVINGS, CHECKING]));
+    mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+    renderWithClient(<Harness />);
+    fireEvent.click(await openTool());
+    await vi.waitFor(() => expect(mocks.accountList.mock.calls.length).toBeGreaterThan(1));
+    await confirmEnabled();
+    expect(sourceSelect().value).toBe("chk");
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await vi.waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].source_account_id).toBe("chk");
+    expect(keyOf(1)).toBe(keyOf(0));
+  });
+
+  test("a card figure that refreshes with no edit does not move the amount of the retry", async () => {
+    mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+    renderWithClient(<Harness />);
+    fireEvent.click(await openTool());
+    await confirmEnabled();
+    expect(amountInput().value).toBe("800");
+    act(() => setCard(refreshedCard(70_000)));
+    expect(amountInput().value).toBe("800");
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await vi.waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].amount.minor_units).toBe(80_000);
+    expect(keyOf(1)).toBe(keyOf(0));
+  });
+
+  test("a deliberate edit after the refresh is still a new payment with a new key", async () => {
+    mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+    renderWithClient(<Harness />);
+    fireEvent.click(await openTool());
+    await confirmEnabled();
+    act(() => setCard(refreshedCard(70_000)));
+    fireEvent.change(amountInput(), { target: { value: "700" } });
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await vi.waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].amount.minor_units).toBe(70_000);
+    expect(keyOf(1)).not.toBe(keyOf(0));
+  });
+
+  test("after a recorded payment the tool follows the live defaults again", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<Harness />, client);
+    fireEvent.click(await openTool());
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /confirm payment/i })).toBeNull());
+    mocks.accountList.mockResolvedValue(ok([SAVINGS, CHECKING]));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.accounts });
+    });
+    act(() => setCard(refreshedCard(70_000)));
+    const confirm = await openTool();
+    await vi.waitFor(() => expect(sourceSelect().value).toBe("sav"));
+    expect(amountInput().value).toBe("700");
+    fireEvent.click(confirm);
+    await vi.waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].amount.minor_units).toBe(70_000);
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].source_account_id).toBe("sav");
+    expect(keyOf(1)).not.toBe(keyOf(0));
+  });
+
+  test("a source that a later read no longer lists as able to pay is still shown and still the one sent", async () => {
+    mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<Harness />, client);
+    fireEvent.click(await openTool());
+    await confirmEnabled();
+    // Checking drops out of the eligible list (empty), Savings is the only one left.
+    mocks.accountList.mockResolvedValue(
+      ok([{ ...CHECKING, balance: usd(0) } as AccountViewDto, SAVINGS]),
+    );
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.accounts });
+    });
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+        expect.stringContaining("Checking"),
+        expect.stringContaining("Savings"),
+      ]),
+    );
+    expect(sourceSelect().value).toBe("chk");
+    fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+    await vi.waitFor(() => expect(mocks.recordTransfer).toHaveBeenCalledTimes(2));
+    expect(mocks.recordTransfer.mock.calls[1]?.[0].source_account_id).toBe("chk");
+    expect(keyOf(1)).toBe(keyOf(0));
+  });
+
+  test("the payment's key follows its identity: amount and source change it, a retry does not (56w.8)", async () => {
+    mocks.accountList.mockResolvedValue(ok([CHECKING, SAVINGS]));
+    mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+    await expectDraftKeyIdentity({
+      name: "Pay card",
+      open: async () => {
+        renderWithClient(<PayCardAction card={card} />);
+        await openTool();
+      },
+      send: async () => {
+        await confirmEnabled();
+        fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
+      },
+      keys: () => mocks.recordTransfer.mock.calls.map((c) => c[0].idempotency_key),
+      fields: [
+        { name: "amount", change: () => fireEvent.change(amountInput(), { target: { value: "41" } }) },
+        { name: "From account", change: () => fireEvent.change(sourceSelect(), { target: { value: "sav" } }) },
+      ],
+    });
   });
 });

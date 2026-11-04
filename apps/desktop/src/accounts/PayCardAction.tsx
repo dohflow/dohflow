@@ -86,7 +86,12 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
       a.balance.minor_units > 0 &&
       a.balance.currency === currency,
   );
-  const source = sourceChoice || sources[0]?.id || "";
+  // A source the person picked, or that Confirm froze as sent, stays the source even if a later read
+  // no longer lists it as able to pay: what the select shows is what is sent. The host refuses a
+  // payment it cannot make.
+  const chosen = sourceChoice ? (accounts ?? []).find((a) => a.id === sourceChoice) : undefined;
+  const sourceOptions = chosen && !sources.some((a) => a.id === chosen.id) ? [chosen, ...sources] : sources;
+  const source = chosen?.id ?? sources[0]?.id ?? "";
   const amountValue = amountDraft ?? minorToInput(next.statement_balance_minor);
 
   const quickPicks: { label: string; minor: number }[] = [
@@ -106,6 +111,12 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
     if (draftKey.current?.identity !== identity) {
       draftKey.current = { identity, key: mintIdempotencyKey() };
     }
+    // Confirm freezes the draft as sent. Until now the amount and source may have been the live
+    // defaults (the card's statement balance, the first eligible account); written down here, a later
+    // read or a refreshed card cannot move them, so a retry after an unknown outcome is the payment
+    // that was sent, with its key. Editing afterwards is a deliberate change and a new draft.
+    setAmountDraft(amountValue);
+    setSourceChoice(source);
     setSaving(true);
     try {
       const failure = await transfer({
@@ -121,6 +132,7 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
         // The next payment is a new draft, even for the same amount and source.
         draftKey.current = null;
         setAmountDraft(null);
+        setSourceChoice("");
         closeTool();
       }
     } catch {
@@ -273,7 +285,7 @@ export function PayCardAction({ card }: { card: CardStatementForecastDto }) {
             disabled={saving}
             onChange={(e) => setSourceChoice(e.target.value)}
           >
-            {sources.map((a) => (
+            {sourceOptions.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name} ({formatMoney(a.balance)})
               </option>
