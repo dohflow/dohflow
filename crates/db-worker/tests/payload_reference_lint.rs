@@ -108,8 +108,8 @@ const RETIRED: &[&str] = &["CommitStaged", "SkipStaged"];
 const KNOWN_GAPS: &[(&str, &str)] = &[
     // Snooze and dismiss name a Money Inbox item, which is a class-2 projection row; for an
     // imported item the id is a staging row's id. The fix is to key them on the underlying entity.
-    ("SnoozeInboxItem.item_id", "personal-cfo-g3m.32"),
-    ("DismissInboxItem.item_id", "personal-cfo-g3m.32"),
+    ("SnoozeInboxItem.item_id", "personal-cfo-5ymg8.6"),
+    ("DismissInboxItem.item_id", "personal-cfo-5ymg8.6"),
 ];
 
 /// A field name that says the payload carries a device-local staging id, a storage id or a
