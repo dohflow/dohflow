@@ -51,7 +51,7 @@ export function DiagnosticsCard() {
   const saveFocus = useKeepFocusAcrossMove({
     settled: !saving,
     // The preview closed (saved, or expired): the Preview button is where the person goes next.
-    fallback: () => (previewRegion.current ?? previewButton.current)?.focus(),
+    fallback: () => previewRegion.current ?? previewButton.current,
   });
   // The pending snapshot, for discarding it when the card goes away (vault lock
   // and switch unmount Settings; the backend has already dropped it by then).
@@ -74,7 +74,9 @@ export function DiagnosticsCard() {
       previewRegion.current?.focus();
     } else if (returnFocus.current) {
       returnFocus.current = false;
-      previewButton.current?.focus();
+      // Not into a collapsed section's hidden body: there the Save's hand-over chooses the heading.
+      const button = previewButton.current;
+      if (button && button.closest("[hidden],[inert]") === null) button.focus();
     }
   }, [preview, previewButton]);
 
@@ -88,12 +90,13 @@ export function DiagnosticsCard() {
 
   async function onPreview() {
     previewFocus.remember();
-    setNote(null);
+    // An earlier error stays, with its Preview diagnostics, until this try settles.
     setLoading(true);
     const result = await commands.diagnosticsPreview();
     setLoading(false);
     if (result.status === "ok") {
       pending.current = result.data.snapshot_id;
+      setNote(null);
       setPreview(result.data);
     } else {
       setNote({ kind: "alert", text: describeIpcError(result.error) });
@@ -103,7 +106,7 @@ export function DiagnosticsCard() {
   async function onSave() {
     if (!preview) return;
     saveFocus.remember();
-    setNote(null);
+    // An earlier error stays, with its Save, until this try settles.
     const path = await save({
       title: "Save redacted diagnostics",
       defaultPath: preview.suggested_file_name,

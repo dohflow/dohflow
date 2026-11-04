@@ -4,7 +4,7 @@
  * slot while the error shows, and nothing runs because a section was collapsed.
  */
 
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { BackupScheduleCard } from "@/backup/BackupScheduleCard";
 import { renderWithClient } from "@/test/renderWithClient";
@@ -360,5 +360,72 @@ describe("Vault health", () => {
     render();
     await screen.findByText(/your vault is healthy/i);
     expect(slotOf("Vault health")).toBeEmptyDOMElement();
+  });
+});
+
+describe("resolved while collapsed (Studio R1)", () => {
+  const trigger = (title: string) => screen.getByRole("button", { name: title });
+
+  it("Backups: a successful Save from the slot hands focus to the section's heading, and the error and Save stay until it settles", async () => {
+    mocks.backupScheduleSettings.mockResolvedValue(ok(settings({ last_error: "disk is full" })));
+    mocks.configureBackup.mockResolvedValueOnce(failed("That folder cannot be used."));
+    mocks.open.mockResolvedValue("/Users/test/Elsewhere");
+    renderWithClient(
+      <SettingsSection title="Backups" span="oneOfThree">
+        <BackupScheduleCard />
+      </SettingsSection>,
+    );
+    await screen.findByRole("button", { name: "Save backup settings" });
+    fireEvent.click(screen.getByRole("button", { name: /choose folder/i }));
+    await screen.findByText("/Users/test/Elsewhere");
+    fireEvent.click(screen.getByRole("button", { name: "Save backup settings" }));
+    await screen.findByText("That folder cannot be used.");
+
+    toggle("Backups");
+    expect(trigger("Backups")).toHaveAttribute("aria-expanded", "false");
+    let release!: (value: unknown) => void;
+    mocks.configureBackup.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const save = within(slotOf("Backups")).getByRole("button", { name: "Save backup settings" });
+    save.focus();
+    fireEvent.click(save);
+    await waitFor(() => expect(mocks.configureBackup).toHaveBeenCalledTimes(2));
+    // Pending: the error and the slot's Save are still there, not moved into the hidden body.
+    expect(within(slotOf("Backups")).getByText("That folder cannot be used.")).toBeInTheDocument();
+    expect(
+      within(slotOf("Backups")).getByRole("button", { name: "Save backup settings" }),
+    ).toBeInTheDocument();
+    await act(async () =>
+      release(ok(settings({ destination: "/Users/test/Elsewhere", last_error: "disk is full" }))),
+    );
+    await waitFor(() => expect(screen.queryByText("That folder cannot be used.")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger("Backups")));
+    expect(trigger("Backups")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("Vault health: a rebuild with a held re-read, resolved healthy while collapsed, ends on the section's heading", async () => {
+    const drifted = ok(health({ read_models_current: false, is_healthy: false }));
+    mocks.vaultHealth.mockResolvedValueOnce(drifted);
+    let release!: (value: unknown) => void;
+    mocks.vaultHealth.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    renderWithClient(
+      <SettingsSection title="Vault health" span="full">
+        <VaultHealthCard />
+      </SettingsSection>,
+    );
+    await screen.findByRole("button", { name: "Rebuild data views" });
+    toggle("Vault health");
+    expect(trigger("Vault health")).toHaveAttribute("aria-expanded", "false");
+    const rebuild = within(slotOf("Vault health")).getByRole("button", { name: "Rebuild data views" });
+    rebuild.focus();
+    fireEvent.click(rebuild);
+    await waitFor(() => expect(mocks.vaultHealth).toHaveBeenCalledTimes(2));
+    // Re-read held: the drift message and its Rebuild are still in the slot.
+    expect(within(slotOf("Vault health")).getByRole("button", { name: /Rebuild|Rebuilding/ })).toBeInTheDocument();
+    await act(async () => release(ok(health())));
+    await waitFor(() =>
+      expect(within(slotOf("Vault health")).queryByRole("button", { name: "Rebuild data views" })).toBeNull(),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(trigger("Vault health")));
+    expect(trigger("Vault health")).toHaveAttribute("aria-expanded", "false");
   });
 });

@@ -44,10 +44,11 @@ export function VaultsCard() {
 
   async function onSwitch(id: string) {
     setBusy(true);
-    setFailure(null);
+    // An earlier error stays, with its Switch, until this try settles.
     const result = await switchVault(id);
     setBusy(false);
     if (result) setFailure({ action: "switch", id, message: describeIpcError(result) });
+    else setFailure(null);
     // On success the status flips to Locked and the vault gate shows the unlock screen.
   }
 
@@ -55,11 +56,14 @@ export function VaultsCard() {
     if (!renameValue.trim()) return;
     saveFocus.remember();
     setBusy(true);
-    setFailure(null);
     const result = await renameVault(id, renameValue.trim());
     setBusy(false);
-    if (result) setFailure({ action: "rename", id, message: describeIpcError(result) });
-    else setRenamingId(null);
+    if (result) {
+      setFailure({ action: "rename", id, message: describeIpcError(result) });
+    } else {
+      setFailure(null);
+      setRenamingId(null);
+    }
   }
 
   async function onCreate() {
@@ -73,12 +77,12 @@ export function VaultsCard() {
       return;
     }
     setBusy(true);
-    setFailure(null);
     const result = await createNamedVault(newName.trim(), newPassword);
     setBusy(false);
     if (result) {
       setFailure({ action: "create", message: describeIpcError(result) });
     } else {
+      setFailure(null);
       setCreating(false);
       setNewName("");
       setNewPassword("");

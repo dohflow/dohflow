@@ -53,9 +53,10 @@ export function SoftwareUpdateCard() {
   async function onUpdate() {
     updateFocus.remember();
     setApplying(true);
-    setApplyError(null);
+    // An earlier failure stays, with its Update & relaunch, until this try settles.
     const result = await apply();
     if (result.ok) {
+      setApplyError(null);
       // Relaunch quits this instance and reopens the new build — this never returns.
       await relaunch();
     } else {

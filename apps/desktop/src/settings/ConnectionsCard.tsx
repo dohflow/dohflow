@@ -537,9 +537,9 @@ export function ConnectionsCard({
   };
 
   const runSync = async (connectionId: string) => {
-    setOtherError(null);
-    setSyncFailedId(null);
     setNotice(null);
+    // An earlier failure stays, with its Refresh now, until this try settles: clearing it now would
+    // move the Refresh now into the body, which is hidden when the section is collapsed.
     const failSync = (message: string) => {
       setSyncFailedId(connectionId);
       setActionError(message);
@@ -548,8 +548,12 @@ export function ConnectionsCard({
       const result = await sync(connectionId);
       if (isRecord(result) && "connection_id" in result) {
         const copy = syncOutcomeCopy(result.status, result.message);
-        if (syncOutcomeTone(result.status) === "notice") setNotice(copy);
-        else failSync(copy);
+        if (syncOutcomeTone(result.status) === "notice") {
+          setOtherError(null);
+          setNotice(copy);
+        } else {
+          failSync(copy);
+        }
       } else {
         failSync(describeIpcError(result));
       }

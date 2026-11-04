@@ -91,8 +91,8 @@ export function BackupScheduleCard() {
   const saveFocus = useKeepFocusAcrossMove({
     settled: !configureBackup.isPending,
     // Saved: nothing is left to save, so Save is disabled and cannot take focus; the schedule is
-    // where the person was working.
-    fallback: () => document.getElementById("backup-cadence")?.focus(),
+    // where the person was working (when the section is collapsed the hook uses its heading).
+    fallback: () => document.getElementById("backup-cadence"),
   });
   const backUpFocus = useKeepFocusAcrossMove();
 
@@ -105,7 +105,7 @@ export function BackupScheduleCard() {
 
   async function chooseFolder() {
     picker.remember();
-    setFailure(null);
+    // An earlier picker error stays, with its Choose folder, until this try settles.
     try {
       const selected = await open({
         title: "Choose a backup folder",
@@ -122,13 +122,15 @@ export function BackupScheduleCard() {
 
   async function saveSettings() {
     saveFocus.remember();
-    setFailure(null);
     setNotice(null);
+    // An earlier error stays, with its Save, until this try settles: clearing it now would move the
+    // Save into the body, which is hidden when the section is collapsed.
     try {
       const saved = await configureBackup.mutateAsync({
         cadence: draft.cadence,
         destination: draft.destination,
       });
+      setFailure(null);
       setDraft({
         cadence: saved.cadence,
         destination: saved.destination,
@@ -145,10 +147,11 @@ export function BackupScheduleCard() {
 
   async function backUpNow() {
     backUpFocus.remember();
-    setFailure(null);
     setNotice(null);
+    // As for Save: the earlier error and its Back up now stay until this try settles.
     try {
       const backup = await runBackupNow.mutateAsync();
+      setFailure(null);
       setNotice(`Backup created and verified at ${backup.destination}.`);
     } catch (cause) {
       setFailure({

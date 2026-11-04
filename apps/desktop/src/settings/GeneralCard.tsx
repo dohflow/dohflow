@@ -45,13 +45,14 @@ export function GeneralCard() {
     setSelected(code);
     setSaving(true);
     setSaved(false);
-    setError(null);
+    // An earlier error stays, with the select, until this try settles.
     const failure = await setBaseCurrency(code);
     setSaving(false);
     if (failure) {
       setSelected(null);
       setError(describeIpcError(failure));
     } else {
+      setError(null);
       setSaved(true);
     }
   }

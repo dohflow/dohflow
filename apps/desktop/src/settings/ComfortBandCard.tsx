@@ -44,9 +44,10 @@ export function ComfortBandCard() {
   const upperValue = upperDraft ?? storedUpper;
 
   // While an error is on screen, the Save lives in the section's persistent slot with it and is not
-  // rendered in the body; it comes back when the error clears.
+  // rendered in the body; it comes back when the error clears. The hand-over keeps focus across
+  // that move (see useKeepFocusAcrossMove): to the Save, else (collapsed) the section's heading.
   const saveInSlot = error !== null;
-  const save = useKeepFocusAcrossMove();
+  const save = useKeepFocusAcrossMove({ settled: !saving });
 
   async function onSubmit(event?: React.FormEvent) {
     event?.preventDefault();
@@ -73,7 +74,7 @@ export function ComfortBandCard() {
 
     setSaving(true);
     setSaved(false);
-    setError(null);
+    // The earlier error and its Save stay on screen until this try settles (see the Household card).
     // Two independent settings. If the lower fails, nothing changed; if the upper fails after the
     // lower saved, say so specifically and keep the drafts so the user can retry the upper.
     const lowerFailure = await setLower({ minor_units: lowerMinor, currency });
@@ -92,6 +93,7 @@ export function ComfortBandCard() {
       );
       return;
     }
+    setError(null);
     setLowerDraft(null);
     setUpperDraft(null);
     setSaved(true);

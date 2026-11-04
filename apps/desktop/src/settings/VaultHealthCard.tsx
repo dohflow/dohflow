@@ -99,8 +99,9 @@ export function VaultHealthCard() {
     // Settled once the rebuild has finished AND the health re-read it triggers has landed: until then
     // the old verdict is still on screen and Rebuild looks usable, but it is about to go.
     settled: !rebuilding && !checking,
-    // A rebuild that worked removes its own button; Re-check is the next thing to press.
-    fallback: () => recheck.ref.current?.focus(),
+    // A rebuild that worked removes its own button; Re-check is the next thing to press (when the
+    // section is collapsed Re-check is in the hidden body, so the hook uses the section's heading).
+    fallback: () => recheck.ref.current,
   });
 
   async function onRebuild() {
