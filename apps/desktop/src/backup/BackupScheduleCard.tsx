@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useBuildInfo } from "@/settings/BuildBadge";
+import { PersistentNotice } from "@/settings/PersistentSlot";
+import { useKeepFocusAcrossMove } from "@/settings/useKeepFocusAcrossMove";
 import { backupFolderHint } from "./backupFolderHint";
 import { systemBackupDisclosure } from "./systemBackupDisclosure";
 import { ManualBackupExport } from "./BackupView";
@@ -47,7 +49,11 @@ export function BackupScheduleCard() {
   const [draft, setDraft] = useState<BackupDraft>(DEFAULT_DRAFT);
   const [dirty, setDirty] = useState(false);
   const [homeDirectory, setHomeDirectory] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Which action an error came from, so its one recovery action can sit beside it in the section's
+  // persistent slot: the folder picker, Save backup settings, or Back up now.
+  const [failure, setFailure] = useState<{ source: "picker" | "save" | "backup"; message: string } | null>(
+    null,
+  );
   const [notice, setNotice] = useState<string | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
 
@@ -76,15 +82,25 @@ export function BackupScheduleCard() {
     settingsQuery.data?.destination === draft.destination;
   const draftNeedsSave = settingsQuery.data ? !draftMatchesSavedSettings : dirty;
 
+  // A recovery button is rendered once: in the persistent slot while its error shows, else in the body.
+  const lastError = settingsQuery.data?.last_error ?? null;
+  const pickerInSlot = failure?.source === "picker";
+  const saveInSlot = failure?.source === "save";
+  const backUpInSlot = failure?.source === "backup" || lastError !== null;
+  const picker = useKeepFocusAcrossMove(pickerInSlot);
+  const saveFocus = useKeepFocusAcrossMove(saveInSlot);
+  const backUpFocus = useKeepFocusAcrossMove(backUpInSlot);
+
   function changeDraft(update: Partial<BackupDraft>) {
     setDraft((current) => ({ ...current, ...update }));
     setDirty(true);
-    setError(null);
+    setFailure(null);
     setNotice(null);
   }
 
   async function chooseFolder() {
-    setError(null);
+    picker.remember();
+    setFailure(null);
     try {
       const selected = await open({
         title: "Choose a backup folder",
@@ -95,12 +111,13 @@ export function BackupScheduleCard() {
         changeDraft({ destination: selected });
       }
     } catch {
-      setError("Could not open the folder picker.");
+      setFailure({ source: "picker", message: "Could not open the folder picker." });
     }
   }
 
   async function saveSettings() {
-    setError(null);
+    saveFocus.remember();
+    setFailure(null);
     setNotice(null);
     try {
       const saved = await configureBackup.mutateAsync({
@@ -114,24 +131,70 @@ export function BackupScheduleCard() {
       setDirty(false);
       setNotice("Backup settings saved.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save backup settings.");
+      setFailure({
+        source: "save",
+        message: cause instanceof Error ? cause.message : "Could not save backup settings.",
+      });
     }
   }
 
   async function backUpNow() {
-    setError(null);
+    backUpFocus.remember();
+    setFailure(null);
     setNotice(null);
     try {
       const backup = await runBackupNow.mutateAsync();
       setNotice(`Backup created and verified at ${backup.destination}.`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create a backup.");
+      setFailure({
+        source: "backup",
+        message: cause instanceof Error ? cause.message : "Could not create a backup.",
+      });
     }
   }
 
   const loading = settingsQuery.isPending || historyQuery.isPending;
   const scheduleBusy = configureBackup.isPending || runBackupNow.isPending;
   const busy = scheduleBusy || manualBusy;
+
+  const chooseFolderButton = (
+    <Button
+      ref={picker.ref}
+      type="button"
+      variant="outline"
+      className="self-start"
+      disabled={busy}
+      onClick={() => void chooseFolder()}
+    >
+      <FolderOpen aria-hidden />
+      Choose folder…
+    </Button>
+  );
+  const saveButton = (
+    <Button ref={saveFocus.ref} disabled={busy || !dirty} onClick={() => void saveSettings()}>
+      {configureBackup.isPending ? <Loader2 className="animate-spin" aria-hidden /> : null}
+      Save backup settings
+    </Button>
+  );
+  // The "save first" note belongs to Back up now (it describes why the button is off), so it
+  // travels with the button wherever that is rendered.
+  const saveFirstNote = draftNeedsSave ? (
+    <p id="backup-now-save-first" className="text-xs text-muted-foreground">
+      Save backup settings before using Back up now.
+    </p>
+  ) : null;
+  const backUpButton = (
+    <Button
+      ref={backUpFocus.ref}
+      variant="outline"
+      disabled={busy || !settingsQuery.data?.destination || draftNeedsSave}
+      aria-describedby={draftNeedsSave ? "backup-now-save-first" : undefined}
+      onClick={() => void backUpNow()}
+    >
+      {runBackupNow.isPending ? <Loader2 className="animate-spin" aria-hidden /> : null}
+      Back up now
+    </Button>
+  );
 
   return (
     <Card id="settings-backups" tabIndex={-1} role="region" aria-labelledby="settings-backups-heading">
@@ -184,16 +247,7 @@ export function BackupScheduleCard() {
             <div className="flex flex-col gap-2">
               <Label>Destination folder</Label>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="self-start"
-                  disabled={busy}
-                  onClick={() => void chooseFolder()}
-                >
-                  <FolderOpen aria-hidden />
-                  Choose folder…
-                </Button>
+                {!pickerInSlot && chooseFolderButton}
                 <span className="break-all text-sm text-muted-foreground">
                   {draft.destination ?? "No folder selected"}
                 </span>
@@ -213,30 +267,11 @@ export function BackupScheduleCard() {
               DohFlow keeps all backups and does not delete older copies automatically. To remove
               old backups, use Finder or your file manager.
             </p>
-            {draftNeedsSave && (
-              <p id="backup-now-save-first" className="text-xs text-muted-foreground">
-                Save backup settings before using Back up now.
-              </p>
-            )}
+            {!backUpInSlot && saveFirstNote}
 
             <div className="flex flex-wrap gap-2">
-              <Button disabled={busy || !dirty} onClick={() => void saveSettings()}>
-                {configureBackup.isPending ? (
-                  <Loader2 className="animate-spin" aria-hidden />
-                ) : null}
-                Save backup settings
-              </Button>
-              <Button
-                variant="outline"
-                disabled={busy || !settingsQuery.data?.destination || draftNeedsSave}
-                aria-describedby={draftNeedsSave ? "backup-now-save-first" : undefined}
-                onClick={() => void backUpNow()}
-              >
-                {runBackupNow.isPending ? (
-                  <Loader2 className="animate-spin" aria-hidden />
-                ) : null}
-                Back up now
-              </Button>
+              {!saveInSlot && saveButton}
+              {!backUpInSlot && backUpButton}
             </div>
 
             {lastVerifiedBackup ? (
@@ -247,28 +282,42 @@ export function BackupScheduleCard() {
             ) : (
               <p className="text-sm text-muted-foreground">No verified backups yet.</p>
             )}
-            {settingsQuery.data?.last_error && (
-              <p role="alert" className="text-sm text-loss">
-                Scheduled backup failed: {settingsQuery.data.last_error}
-              </p>
-            )}
-            {settingsQuery.error && (
-              <p role="alert" className="text-sm text-loss">
-                {settingsQuery.error.message}
-              </p>
-            )}
-            {historyQuery.error && (
-              <p role="alert" className="text-sm text-loss">
-                {historyQuery.error.message}
-              </p>
-            )}
           </>
         )}
-        {error && (
-          <p role="alert" className="text-sm text-loss">
-            {error}
-          </p>
-        )}
+        {/* Every error, its message and its one recovery action stay in the section's persistent
+            slot, open or closed. Nothing runs when the section is collapsed. */}
+        <PersistentNotice>
+          {lastError !== null && (
+            <p role="alert" className="text-sm text-loss">
+              Scheduled backup failed: {lastError}
+            </p>
+          )}
+          {settingsQuery.error && (
+            <p role="alert" className="text-sm text-loss">
+              {settingsQuery.error.message}
+            </p>
+          )}
+          {historyQuery.error && (
+            <p role="alert" className="text-sm text-loss">
+              {historyQuery.error.message}
+            </p>
+          )}
+          {failure !== null && (
+            <p role="alert" className="text-sm text-loss">
+              {failure.message}
+            </p>
+          )}
+          {(pickerInSlot || saveInSlot || backUpInSlot) && (
+            <div className="flex flex-col gap-2">
+              {backUpInSlot && saveFirstNote}
+              <div className="flex flex-wrap gap-2">
+                {pickerInSlot && chooseFolderButton}
+                {saveInSlot && saveButton}
+                {backUpInSlot && backUpButton}
+              </div>
+            </div>
+          )}
+        </PersistentNotice>
         {notice && (
           <p role="status" className="break-all text-sm text-gain">
             {notice}

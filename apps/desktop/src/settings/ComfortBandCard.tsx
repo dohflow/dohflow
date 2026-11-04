@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -15,6 +15,7 @@ import { useComfortBand } from "@/dashboard/useComfortBand";
 import { dollarsToMinorUnits, formatMoney } from "@/lib/format";
 import { describeIpcError } from "@/vault/useVault";
 import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
 /// A wire minor-units amount as an editable major-unit string (USD/EUR are 2-dp).
 function minorUnitsToInput(minorUnits: number): string {
@@ -43,21 +44,13 @@ export function ComfortBandCard() {
   const upperValue = upperDraft ?? storedUpper;
 
   // While an error is on screen, the Save lives in the section's persistent slot with it and is not
-  // rendered in the body; it comes back when the error clears. One ref follows whichever one is
-  // rendered, so focus can be handed back after the move.
-  const saveRef = useRef<HTMLButtonElement>(null);
-  const refocusSave = useRef(false);
+  // rendered in the body; it comes back when the error clears.
   const saveInSlot = error !== null;
-  useEffect(() => {
-    if (refocusSave.current) {
-      refocusSave.current = false;
-      saveRef.current?.focus();
-    }
-  }, [saveInSlot]);
+  const save = useKeepFocusAcrossMove(saveInSlot);
 
   async function onSubmit(event?: React.FormEvent) {
     event?.preventDefault();
-    refocusSave.current = document.activeElement === saveRef.current;
+    save.remember();
     const lowerMinor = dollarsToMinorUnits(lowerValue);
     if (lowerMinor === null || lowerMinor < 0) {
       setError("Enter a lower edge of zero or more.");
@@ -107,7 +100,7 @@ export function ComfortBandCard() {
   // A button of type "button" in the slot (it sits outside the form) runs the same submit.
   const saveButton = (
     <Button
-      ref={saveRef}
+      ref={save.ref}
       type={saveInSlot ? "button" : "submit"}
       aria-label="Save"
       disabled={saving}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Combobox, type ComboboxItem } from "@/components/ui/combobox";
 import { describeIpcError } from "@/vault/useVault";
 import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { useHouseholdTimezone } from "./useHouseholdTimezone";
 
 /// A short, curated set of IANA zones for the rare WebView build that lacks
@@ -101,21 +102,13 @@ export function HouseholdCard() {
   const suggestion = timezone === "UTC" ? machineTimezone() : null;
 
   // While a failed write is on screen its Save lives in the section's persistent slot with the error,
-  // and is not rendered in the body; the Save comes back to the body when the error clears. One ref
-  // follows whichever one is rendered, so focus can be handed back after the move.
-  const saveRef = useRef<HTMLButtonElement>(null);
-  const refocusSave = useRef(false);
+  // and is not rendered in the body; the Save comes back to the body when the error clears.
   const saveInSlot = saveError !== null;
-  useEffect(() => {
-    if (refocusSave.current) {
-      refocusSave.current = false;
-      saveRef.current?.focus();
-    }
-  }, [saveInSlot]);
+  const save = useKeepFocusAcrossMove(saveInSlot);
 
   async function onSave() {
     if (value === timezone) return;
-    refocusSave.current = document.activeElement === saveRef.current;
+    save.remember();
     setSaveError(null);
     setSaved(false);
     const failure = await setTimezone(value);
@@ -129,7 +122,7 @@ export function HouseholdCard() {
 
   const saveButton = (
     <Button
-      ref={saveRef}
+      ref={save.ref}
       type="button"
       aria-label="Save"
       onClick={onSave}

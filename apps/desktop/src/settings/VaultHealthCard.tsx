@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/card";
 import { describeIpcError } from "@/vault/useVault";
 import { cn } from "@/lib/utils";
+import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { useVaultHealth } from "./useVaultHealth";
 
 /// The displayed checks, in order. Each carries a plain-language `meaning` (shown
@@ -88,13 +90,38 @@ export function VaultHealthCard() {
   const [repairError, setRepairError] = useState<string | null>(null);
   const [repaired, setRepaired] = useState(false);
 
+  // A failed read puts Re-check in the section's persistent slot with the error; the data-views drift
+  // puts Rebuild there with its message. Each button is rendered in one place only.
+  const recheckInSlot = Boolean(error);
+  const drifted = !error && health !== null && !health.read_models_current;
+  const recheck = useKeepFocusAcrossMove(recheckInSlot);
+  const rebuildFocus = useKeepFocusAcrossMove(drifted);
+
   async function onRebuild() {
+    rebuildFocus.remember();
     setRepairError(null);
     setRepaired(false);
     const failure = await rebuild();
     if (failure) setRepairError(describeIpcError(failure));
     else setRepaired(true);
   }
+
+  const recheckButton = (
+    <Button
+      ref={recheck.ref}
+      variant="outline"
+      size="sm"
+      className="self-start"
+      onClick={() => {
+        recheck.remember();
+        refresh();
+      }}
+      disabled={checking}
+    >
+      {checking ? <Loader2 className="animate-spin" aria-hidden /> : <RotateCw aria-hidden />}
+      Re-check
+    </Button>
+  );
 
   return (
     <Card>
@@ -105,11 +132,7 @@ export function VaultHealthCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {error ? (
-          <p role="alert" className="text-sm text-loss">
-            {error}
-          </p>
-        ) : health === null ? (
+        {error ? null : health === null ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
             Checking…
@@ -164,61 +187,58 @@ export function VaultHealthCard() {
               })}
             </ul>
 
-            {!health.read_models_current && (
-              <div className="flex flex-col gap-2 rounded-md bg-muted/40 p-3">
-                <p className="text-sm">
-                  Your data views drifted from the source records. Rebuilding
-                  restores them without changing your data.
-                </p>
-                <Button
-                  size="sm"
-                  className="self-start"
-                  onClick={onRebuild}
-                  disabled={rebuilding}
-                >
-                  {rebuilding ? (
-                    <Loader2 className="animate-spin" aria-hidden />
-                  ) : (
-                    <Wrench aria-hidden />
-                  )}
-                  {rebuilding ? "Rebuilding…" : "Rebuild data views"}
-                </Button>
-                {repaired && <p className="text-xs text-gain">Rebuilt.</p>}
-                {repairError && (
-                  <p role="alert" className="text-xs text-loss">
-                    {repairError}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Every failing check (other than the rebuildable data views above)
-                gets plain-language instructions on how to fix it. */}
-            {CHECKS.filter((c) => !c.rebuildable && !health[c.key]).map((c) => (
-              <p
-                key={c.key}
-                className="rounded-md bg-warning/10 p-3 text-sm text-warning"
-              >
-                {`${c.label}: ${c.remedy}`}
-              </p>
-            ))}
           </>
         )}
 
-        <Button
-          variant="outline"
-          size="sm"
-          className="self-start"
-          onClick={refresh}
-          disabled={checking}
-        >
-          {checking ? (
-            <Loader2 className="animate-spin" aria-hidden />
-          ) : (
-            <RotateCw aria-hidden />
+        {/* What is wrong and how to fix it stays in the section's persistent slot, open or closed:
+            a failed read with its one Re-check; the data-views drift with its one Rebuild (and a
+            failed repair); and every failing check's complete remedy. The six checks above stay in
+            the body. */}
+        <PersistentNotice>
+          {error ? (
+            <div className="flex flex-col gap-2">
+              <p role="alert" className="text-sm text-loss">
+                {error}
+              </p>
+              {recheckButton}
+            </div>
+          ) : null}
+          {drifted && (
+            <div className="flex flex-col gap-2 rounded-md bg-muted/40 p-3">
+              <p className="text-sm">
+                Your data views drifted from the source records. Rebuilding
+                restores them without changing your data.
+              </p>
+              <Button
+                ref={rebuildFocus.ref}
+                size="sm"
+                className="self-start"
+                onClick={onRebuild}
+                disabled={rebuilding}
+              >
+                {rebuilding ? <Loader2 className="animate-spin" aria-hidden /> : <Wrench aria-hidden />}
+                {rebuilding ? "Rebuilding…" : "Rebuild data views"}
+              </Button>
+              {repaired && <p className="text-xs text-gain">Rebuilt.</p>}
+              {repairError && (
+                <p role="alert" className="text-xs text-loss">
+                  {repairError}
+                </p>
+              )}
+            </div>
           )}
-          Re-check
-        </Button>
+          {/* Every failing check (other than the rebuildable data views) gets plain-language
+              instructions on how to fix it. */}
+          {health !== null &&
+            !error &&
+            CHECKS.filter((c) => !c.rebuildable && !health[c.key]).map((c) => (
+              <p key={c.key} className="rounded-md bg-warning/10 p-3 text-sm text-warning">
+                {`${c.label}: ${c.remedy}`}
+              </p>
+            ))}
+        </PersistentNotice>
+
+        {!recheckInSlot && recheckButton}
       </CardContent>
     </Card>
   );
