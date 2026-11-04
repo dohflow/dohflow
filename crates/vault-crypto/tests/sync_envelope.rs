@@ -15,11 +15,12 @@ use sync_core::membership::{
     SignedRecord, VerifiedState, KEM_ID, SEALED_KEYS_CIPHERTEXT_LEN, SUITE_ID,
 };
 use sync_core::producer::{verify_before_upload, ProducerError};
-use vault_crypto::sync::{idempotency_key_tag, idempotency_tag_key};
+use vault_crypto::sync::{idempotency_key_tag, idempotency_tag_key, TagSecret};
 use vault_crypto::sync_envelope::{
     aead_key, seal_envelope, EpochKey, KeyError, ObjectType, ReceiverOpener, SealError,
     SealerIdentity,
 };
+use vault_crypto::sync_keys::tag_key_commitment;
 use vault_crypto::SecretBytes;
 
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
@@ -258,6 +259,8 @@ fn chain(a: &Dev, b: &Dev) -> VerifiedState {
 
 fn tag_for(key: &IdempotencyKey) -> IdempotencyKeyTag {
     let s = SecretBytes::new([0x33; 32]);
+    let commitment = tag_key_commitment(&s);
+    let s = TagSecret::from_verified(s, &commitment).expect("the commitment is of this secret");
     IdempotencyKeyTag::from_derived(idempotency_key_tag(
         &idempotency_tag_key(&s, &VAULT),
         key.as_bytes(),

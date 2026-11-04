@@ -23,7 +23,7 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use db_worker::{DbWorker, IntegrityOutcome, WorkerState};
+use db_worker::{DbError, DbWorker, IntegrityOutcome, VaultLease, WorkerState};
 use subtle::ConstantTimeEq;
 use vault_crypto::{
     dek_fingerprint, derive_kek, generate_dek, generate_salt, rewrap_envelope, unwrap_dek,
@@ -160,7 +160,35 @@ impl Kernel {
         password: &[u8],
         options: UnlockOptions,
     ) -> Result<Self, KernelError> {
-        let db_path = path.as_ref();
+        Self::unlock_vault_inner(path.as_ref(), password, options, None)
+    }
+
+    /// Unlock the vault at `path` while the caller already holds its [`VaultLease`] (the reopen
+    /// after a key rotation's swap, the verify after a restore): the new worker takes over that lock
+    /// instead of locking again, so the vault is never unowned between the caller's file work and
+    /// the unlock. Always without the integrity check (that probe takes the lock itself).
+    ///
+    /// # Errors
+    /// As [`Kernel::unlock_vault`], except that [`KernelError::VaultInUse`] cannot occur.
+    pub fn unlock_vault_leased(
+        path: impl AsRef<Path>,
+        password: &[u8],
+        lease: VaultLease,
+    ) -> Result<Self, KernelError> {
+        Self::unlock_vault_inner(
+            path.as_ref(),
+            password,
+            UnlockOptions::default(),
+            Some(lease),
+        )
+    }
+
+    fn unlock_vault_inner(
+        db_path: &Path,
+        password: &[u8],
+        options: UnlockOptions,
+        lease: Option<VaultLease>,
+    ) -> Result<Self, KernelError> {
         let sidecar = sidecar_path(db_path);
 
         let bytes = match std::fs::read(&sidecar) {
@@ -183,7 +211,14 @@ impl Kernel {
                 return Err(KernelError::IntegrityCheckFailed { problems });
             }
         }
-        let worker = DbWorker::open_existing_with_raw_key(db_path, dek)?;
+        let worker = match lease {
+            Some(lease) => {
+                #[cfg(test)]
+                rekey::observe::at("reopen-leased");
+                DbWorker::open_existing_with_raw_key_leased(db_path, dek, lease)?
+            }
+            None => DbWorker::open_existing_with_raw_key(db_path, dek)?,
+        };
         Ok(Self::with_worker(worker))
     }
 
@@ -636,6 +671,15 @@ impl Kernel {
         if dest_db_path.exists() {
             return Err(KernelError::VaultExists);
         }
+        // Hold the vault's lease from the first byte written until the restored vault is open, so a
+        // second process never opens a half-installed vault (personal-cfo-bxsbz.2). A lock that
+        // cannot be taken for a reason other than another owner is not a reason to stop: the
+        // writes below report their own failure.
+        let lease = match VaultLease::acquire(dest_db_path) {
+            Ok(lease) => Some(lease),
+            Err(DbError::VaultInUse) => return Err(KernelError::VaultInUse),
+            Err(_) => None,
+        };
         write_sidecar_new(&sidecar, &restored.envelope_bytes)?;
         if let Err(error) = install_payload(dest_db_path, &restored) {
             let _ = std::fs::remove_file(&sidecar);
@@ -648,7 +692,10 @@ impl Kernel {
 
         // 4. Reopen the restored vault to verify it works on a fresh instance —
         //    this also runs any pending migrations for an older-schema backup.
-        let kernel = Self::unlock_vault(dest_db_path, password)?;
+        let kernel = match lease {
+            Some(lease) => Self::unlock_vault_leased(dest_db_path, password, lease)?,
+            None => Self::unlock_vault(dest_db_path, password)?,
+        };
         // The restore's success is the first record of the restored vault's
         // session (personal-cfo-lyd). A failed restore has no session to record in.
         kernel.record_restore_success();
@@ -874,6 +921,13 @@ pub fn classify_vault(path: impl AsRef<Path>) -> VaultState {
     if rekey::journal_present(db_path) {
         return VaultState::CorruptNeedsRecovery;
     }
+    classify_files(db_path)
+}
+
+/// [`classify_vault`] without looking at a rotation journal, for a vault whose recovery was
+/// deferred because another process owns it (a journal then belongs to that process's live
+/// rotation, not to a fault).
+fn classify_files(db_path: &Path) -> VaultState {
     let sidecar = sidecar_path(db_path);
     match (db_path.exists(), sidecar.exists()) {
         (false, false) => VaultState::NoVault,
@@ -927,6 +981,28 @@ pub struct VaultController {
     rekey_recovery: RekeyRecovery,
 }
 
+/// [`rekey::recover_interrupted_rekey`] under the vault's lease, so a second process starting
+/// while the first is running, rotating or deleting never rolls its files back or forward
+/// (personal-cfo-bxsbz.2). When another process holds the vault nothing is touched and the result
+/// is [`RekeyRecovery::Deferred`]. A lock that cannot be taken for another reason (no directory
+/// yet, a read-only one) is not a reason to skip recovery: there is then no owner to protect.
+fn recover_under_lease(path: &Path) -> RekeyRecovery {
+    match VaultLease::acquire(path) {
+        Err(DbError::VaultInUse) => RekeyRecovery::Deferred,
+        Ok(_lease) => rekey::recover_interrupted_rekey(path),
+        Err(_) => rekey::recover_interrupted_rekey(path),
+    }
+}
+
+/// The state to enter after recovery: from the files alone when recovery was deferred.
+fn classify_after(path: &Path, recovery: RekeyRecovery) -> VaultState {
+    if recovery == RekeyRecovery::Deferred {
+        classify_files(path)
+    } else {
+        classify_vault(path)
+    }
+}
+
 impl VaultController {
     /// Inspect the vault on disk at `path` and enter the matching initial state
     /// (`NoVault` / `Locked` / `CorruptNeedsRecovery`).
@@ -938,8 +1014,8 @@ impl VaultController {
     #[must_use]
     pub fn open(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
-        let rekey_recovery = rekey::recover_interrupted_rekey(&path);
-        let state = classify_vault(&path);
+        let rekey_recovery = recover_under_lease(&path);
+        let state = classify_after(&path, rekey_recovery);
         Self {
             path,
             state,
@@ -999,8 +1075,8 @@ impl VaultController {
     /// wherever the controller starts treating a vault path as current without
     /// going through [`Self::open`] — a switch, or a failed restore.
     fn recover_and_reclassify(&mut self) {
-        self.rekey_recovery = rekey::recover_interrupted_rekey(&self.path);
-        self.reclassify();
+        self.rekey_recovery = recover_under_lease(&self.path);
+        self.state = classify_after(&self.path, self.rekey_recovery);
     }
 
     /// Create a brand-new vault and leave it unlocked. Requires `NoVault`.
@@ -1223,9 +1299,10 @@ impl VaultController {
             self.transition_to(VaultState::Unlocked)?;
             return Err(error);
         }
-        // Committed. Close the kernel so no connection or runner lock remains
-        // on the old database, then apply.
-        self.kernel = None;
+        // Committed. Close the kernel so no connection remains on the old database, keeping the
+        // vault's lease: the swap and the reopen below run under it, so a second process never
+        // finds the vault unowned while its files are half-swapped (personal-cfo-bxsbz.2).
+        let lease = self.kernel.take().map(Kernel::close_into_lease);
         if let Err(error) = rekey::finish_rotation(&self.path, stop) {
             if !rekey::is_simulated_crash(&error) {
                 self.rekey_recovery = rekey::recover_interrupted_rekey(&self.path);
@@ -1233,7 +1310,11 @@ impl VaultController {
             }
             return Err(error);
         }
-        match Kernel::unlock_vault(&self.path, password) {
+        let reopened = match lease {
+            Some(lease) => Kernel::unlock_vault_leased(&self.path, password, lease),
+            None => Kernel::unlock_vault(&self.path, password),
+        };
+        match reopened {
             Ok(kernel) => {
                 self.transition_to(VaultState::Unlocked)?;
                 self.kernel = Some(kernel);
@@ -1263,8 +1344,12 @@ impl VaultController {
                 to: VaultState::NoVault,
             });
         }
-        // Drop the kernel first so the DB connection is released before its file is removed.
-        self.kernel = None;
+        // Close the kernel first so the DB connection is released before its file is removed, but
+        // keep the vault's lease until the last file is gone: a second process that starts
+        // meanwhile is refused instead of opening a vault that is being deleted.
+        let _lease = self.kernel.take().map(Kernel::close_into_lease);
+        #[cfg(test)]
+        rekey::observe::at("delete");
 
         let db = self.path.clone();
         let with_suffix = |suffix: &str| -> PathBuf {

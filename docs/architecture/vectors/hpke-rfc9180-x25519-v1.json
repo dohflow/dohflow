@@ -1,0 +1,57 @@
+{
+  "description": "RFC 9180 known-answer vectors for HPKE base mode with DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES (the Sync key-set sealing suite, vault-format.md C.1.4 and C.6). Only the sequence-0 encryption is kept: sealing is single-shot, so later sequence numbers add nothing.",
+  "provenance": {
+    "source": "CFRG HPKE test vectors, https://github.com/cfrg/draft-irtf-cfrg-hpke, file test-vectors.json at commit 5f503c5",
+    "obtained_from": "the test-vectors-5f503c5.json file published inside the hpke 0.13.0 crate",
+    "source_file_sha256": "61fc662f01996cd06d713dacf5e133167bd309a1f329442d53f1e21a47b3ede6",
+    "extraction": "entries with mode 0, kem_id 32, kdf_id 1 and aead_id 1 or 2; kept: the identifiers, info, the two key-derivation seeds, the four keys, enc and the sequence-0 encryption. The key-schedule intermediates (shared_secret, key_schedule_context, secret, key, base_nonce, exporter_secret), the exports and the later encryptions are dropped: nothing here uses them.",
+    "rfc_note": "aead_id 1 is RFC 9180 Appendix A.1. RFC 9180 has no X25519 + AES-256-GCM appendix entry, so aead_id 2 (the suite Sync uses) comes from this file alone.",
+    "private_keys": "skRm, skEm, ikmR and ikmE are published test keys, not secrets"
+  },
+  "vectors": [
+    {
+      "mode": 0,
+      "kem_id": 32,
+      "kdf_id": 1,
+      "aead_id": 1,
+      "info": "4f6465206f6e2061204772656369616e2055726e",
+      "ikmR": "6db9df30aa07dd42ee5e8181afdb977e538f5e1fec8a06223f33f7013e525037",
+      "ikmE": "7268600d403fce431561aef583ee1613527cff655c1343f29812e66706df3234",
+      "skRm": "4612c550263fc8ad58375df3f557aac531d26850903e55a9f23f21d8534e8ac8",
+      "skEm": "52c4a758a802cd8b936eceea314432798d5baf2d7e9235dc084ab1b9cfa2f736",
+      "pkRm": "3948cfe0ad1ddb695d780e59077195da6c56506b027329794ab02bca80815c4d",
+      "pkEm": "37fda3567bdbd628e88668c3c8d7e97d1d1253b6d4ea6d44c150f741f1bf4431",
+      "enc": "37fda3567bdbd628e88668c3c8d7e97d1d1253b6d4ea6d44c150f741f1bf4431",
+      "encryptions": [
+        {
+          "aad": "436f756e742d30",
+          "ct": "f938558b5d72f1a23810b4be2ab4f84331acc02fc97babc53a52ae8218a355a96d8770ac83d07bea87e13c512a",
+          "nonce": "56d890e5accaaf011cff4b7d",
+          "pt": "4265617574792069732074727574682c20747275746820626561757479"
+        }
+      ]
+    },
+    {
+      "mode": 0,
+      "kem_id": 32,
+      "kdf_id": 1,
+      "aead_id": 2,
+      "info": "4f6465206f6e2061204772656369616e2055726e",
+      "ikmR": "dac33b0e9db1b59dbbea58d59a14e7b5896e9bdf98fad6891e99d1686492b9ee",
+      "ikmE": "2cd7c601cefb3d42a62b04b7a9041494c06c7843818e0ce28a8f704ae7ab20f9",
+      "skRm": "497b4502664cfea5d5af0b39934dac72242a74f8480451e1aee7d6a53320333d",
+      "skEm": "179d4b53b6365c45b600c4163b61d95cbc2f4d9e36f1695558dce265ab8bab11",
+      "pkRm": "430f4b9859665145a6b1ba274024487bd66f03a2dd577d7753c68d7d7d00c00c",
+      "pkEm": "6c93e09869df3402d7bf231bf540fadd35cd56be14f97178f0954db94b7fc256",
+      "enc": "6c93e09869df3402d7bf231bf540fadd35cd56be14f97178f0954db94b7fc256",
+      "encryptions": [
+        {
+          "aad": "436f756e742d30",
+          "ct": "e5d84cd531cfb583096e7cfa9641bd3079cf3a91cda813c52deb5f512be9931980a41de125a925cdad859d5b7a",
+          "nonce": "151d9929e2449747889bc923",
+          "pt": "4265617574792069732074727574682c20747275746820626561757479"
+        }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,8 @@
 //! The idempotency-key tag (vault-format.md C.3, C.5; personal-cfo-t2s4b part 6b): the C.14
 //! vectors, read from the spec, and the properties the protocol relies on.
 
-use vault_crypto::sync::{idempotency_key_tag, idempotency_tag_key};
+use vault_crypto::sync::{idempotency_key_tag, idempotency_tag_key, TagSecret, TagSecretError};
+use vault_crypto::sync_keys::tag_key_commitment;
 use vault_crypto::SecretBytes;
 
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
@@ -19,8 +20,20 @@ fn vector(name: &str) -> Vec<u8> {
 }
 
 /// `S` is the 32 bytes `20 21 22 ... 3f` (C.14).
-fn secret_s() -> SecretBytes<32> {
-    SecretBytes::from_slice(&(0x20..0x40).collect::<Vec<u8>>()).unwrap()
+fn secret_s() -> TagSecret {
+    let raw = SecretBytes::from_slice(&(0x20..0x40).collect::<Vec<u8>>()).unwrap();
+    let commitment = tag_key_commitment(&raw);
+    TagSecret::from_verified(raw, &commitment).unwrap()
+}
+
+#[test]
+fn a_secret_that_fails_its_commitment_cannot_key_a_tag() {
+    let raw = SecretBytes::from_slice(&(0x20..0x40).collect::<Vec<u8>>()).unwrap();
+    let other = SecretBytes::new([0x99; 32]);
+    assert_eq!(
+        TagSecret::from_verified(raw, &tag_key_commitment(&other)).unwrap_err(),
+        TagSecretError::CommitmentMismatch
+    );
 }
 
 const VAULT: [u8; 16] = [0x11; 16];
@@ -56,7 +69,9 @@ fn a_tag_is_stable_and_binds_the_key_the_vault_and_the_secret() {
         tag,
         idempotency_key_tag(&idempotency_tag_key(&secret_s(), &[0x12; 16]), &KEY)
     );
-    let other_secret = SecretBytes::<32>::from_slice(&[7_u8; 32]).unwrap();
+    let other_raw = SecretBytes::<32>::from_slice(&[7_u8; 32]).unwrap();
+    let other_commitment = tag_key_commitment(&other_raw);
+    let other_secret = TagSecret::from_verified(other_raw, &other_commitment).unwrap();
     assert_ne!(
         tag,
         idempotency_key_tag(&idempotency_tag_key(&other_secret, &VAULT), &KEY)

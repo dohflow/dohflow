@@ -283,8 +283,12 @@ pub(crate) fn staged_cannot_be_skipped() -> DbError {
     DbError::InvalidCommand("a committed staged transaction cannot be skipped".to_owned())
 }
 
-pub(crate) fn staged_unnumbered() -> DbError {
-    DbError::InvalidCommand("staged transaction has no row ordinal".to_owned())
+/// A staged row with no row ordinal, or whose ordinal already names a transaction made from another
+/// source record: the derived id cannot be trusted, so the commit stops loudly.
+pub(crate) fn staged_ordinal_unusable() -> DbError {
+    DbError::InvalidCommand(
+        "staged transaction's row ordinal is missing or already used by another row".to_owned(),
+    )
 }
 
 /// The two-posting transaction an import commits: `amount` on the user's account and its negation on

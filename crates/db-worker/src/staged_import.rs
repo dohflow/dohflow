@@ -20,13 +20,13 @@
 
 use chrono::{NaiveDate, Utc};
 use core_ledger::StagedTransactionId;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use crate::apply::ingestion_cmds::{
     commit_target, cross_source_reason, fit_import_text, import_date_is_valid,
     import_transaction_id, staged_already_committed, staged_cannot_be_skipped, staged_missing,
-    staged_unnumbered, RowProblem,
+    staged_ordinal_unusable, RowProblem,
 };
 use crate::{ingestion, CommandMeta, DbError, DbWorker, Outcome, WriteCommand};
 
@@ -90,7 +90,7 @@ fn plan_staged(
         [staged.source_record_id],
         |r| r.get(0),
     )?;
-    let ordinal = staged.row_ordinal.ok_or_else(staged_unnumbered)?;
+    let ordinal = staged.row_ordinal.ok_or_else(staged_ordinal_unusable)?;
     let transaction_id = import_transaction_id(vault_id, batch_id, ordinal)?;
 
     // Step 0: the transaction this row derives already exists, so there is nothing to decide.
@@ -100,6 +100,19 @@ fn plan_staged(
         |r| r.get(0),
     )?;
     if exists {
+        // The derived transaction must have been made from THIS row's source record. A repeated
+        // ordinal (a staging pass that restarted its numbering) would otherwise silently treat a
+        // different row as already committed.
+        let made_from_this_record: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM source_provenance_links
+                            WHERE entity_type = 'ledger_transaction' AND entity_id = ?1
+                              AND source_record_id = ?2)",
+            params![transaction_id, staged.source_record_id],
+            |r| r.get(0),
+        )?;
+        if !made_from_this_record {
+            return Err(staged_ordinal_unusable());
+        }
         return Ok(StagedPlan::AlreadyCommitted {
             staged_id,
             transaction_id,
@@ -211,16 +224,25 @@ impl DbWorker {
     ) -> Result<StagedDecision, DbError> {
         let plan = {
             let guard = self.lock();
-            if let Some(op_seq) =
-                crate::find_by_idempotency_key(&guard.conn, &meta.idempotency_key)?
-            {
-                return Ok(StagedDecision::Committed(Outcome::Replayed { op_seq }));
-            }
             let vault_id: Uuid = guard.conn.query_row(
                 "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
                 [],
                 |r| r.get(0),
             )?;
+            if let Some(op_seq) =
+                crate::find_by_idempotency_key(&guard.conn, &meta.idempotency_key)?
+            {
+                // A retry of a commit that already ran. If a crash left the staged row unmarked,
+                // finish that bookkeeping; any other state (already marked, refused) is left alone.
+                if let Ok(StagedPlan::AlreadyCommitted {
+                    staged_id,
+                    transaction_id,
+                }) = plan_staged(&guard.conn, &vault_id, staged.as_uuid(), force)
+                {
+                    ingestion::mark_staged_committed(&guard.conn, staged_id, transaction_id)?;
+                }
+                return Ok(StagedDecision::Committed(Outcome::Replayed { op_seq }));
+            }
             plan_staged(&guard.conn, &vault_id, staged.as_uuid(), force)?
         };
         match plan {

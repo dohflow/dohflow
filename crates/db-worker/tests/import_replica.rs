@@ -506,3 +506,108 @@ fn the_same_row_ordinal_in_another_batch_is_another_transaction() {
     );
     let _ = (DateTime::<Utc>::MIN_UTC,);
 }
+
+#[test]
+fn a_retry_under_the_same_key_after_a_crash_finishes_the_bookkeeping() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.vault");
+    base_vault(&base);
+    let origin = copy_of(&base, &dir.path().join("origin.vault"));
+    let staged = origin
+        .stage_parsed_batch(u(BATCH), &parsed(), account().as_uuid())
+        .unwrap();
+    let row = staged[1];
+    let meta = envelope_meta(7);
+    origin
+        .commit_staged(meta.clone(), StagedTransactionId::from_uuid(row), false)
+        .unwrap();
+    let conn = origin.read_connection().unwrap();
+    // The crash: the command committed, the staged row was never marked.
+    conn.execute(
+        "UPDATE staged_transactions
+            SET commit_status = 'staged', dedupe_status = 'pending', committed_transaction_id = NULL
+          WHERE id = ?1",
+        [row],
+    )
+    .unwrap();
+    let ops = count(&conn, "SELECT COUNT(*) FROM operation_log");
+    // The retry carries the same idempotency key, so it is a replay, and it still heals the row.
+    let decision = origin
+        .commit_staged(meta, StagedTransactionId::from_uuid(row), false)
+        .unwrap();
+    assert!(matches!(
+        decision,
+        StagedDecision::Committed(Outcome::Replayed { .. })
+    ));
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM operation_log"), ops);
+    let status: String = conn
+        .query_row(
+            "SELECT commit_status FROM staged_transactions WHERE id = ?1",
+            [row],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "committed");
+}
+
+#[test]
+fn a_second_staging_pass_continues_the_numbering_and_a_repeated_ordinal_is_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.vault");
+    base_vault(&base);
+    let origin = copy_of(&base, &dir.path().join("origin.vault"));
+    let first = origin
+        .stage_parsed_batch(u(BATCH), &parsed(), account().as_uuid())
+        .unwrap();
+    // A second pass over the same batch (new rows) numbers on from the first.
+    let mut more = parsed();
+    for (index, record) in more.records.iter_mut().enumerate() {
+        record.source_hash = format!("sha256:second-pass-{index}");
+        if let Some(txn) = record.transaction.as_mut() {
+            txn.txn_fingerprint = format!("second-fp-{index}");
+        }
+    }
+    let second = origin
+        .stage_parsed_batch(u(BATCH), &more, account().as_uuid())
+        .unwrap();
+    let conn = origin.read_connection().unwrap();
+    let ordinals: Vec<i64> = first
+        .iter()
+        .chain(second.iter())
+        .map(|id| {
+            conn.query_row(
+                "SELECT row_ordinal FROM staged_transactions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(ordinals, (1..=12).collect::<Vec<i64>>());
+
+    // A restart of the numbering would give two different source records the same ordinal. The
+    // second of them must NOT be treated as already committed.
+    origin
+        .commit_staged(
+            envelope_meta(1),
+            StagedTransactionId::from_uuid(first[0]),
+            false,
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE staged_transactions SET row_ordinal = 1 WHERE id = ?1",
+        [second[0]],
+    )
+    .unwrap();
+    let refused = origin
+        .commit_staged(
+            envelope_meta(2),
+            StagedTransactionId::from_uuid(second[0]),
+            true,
+        )
+        .expect_err("a repeated ordinal on another record is refused");
+    assert!(
+        matches!(&refused, DbError::InvalidCommand(m) if m.contains("row ordinal")),
+        "{refused:?}"
+    );
+}
