@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 
+import { queryKeys } from "@/lib/query";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { RevertPreviewDto, ScenarioDto } from "@/bindings";
@@ -316,6 +317,54 @@ describe("a refused row action says so (personal-cfo-5ie.20)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
     await vi.waitFor(() => expect(mocks.archiveScenario).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  const LOAD_SENTENCE = /couldn.t load your scenarios/i;
+
+  it("a refusal reads as the app's reason alone, never under the failed-load sentence", async () => {
+    mocks.archiveScenario.mockResolvedValue(refusal);
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(REASON);
+    expect(alert).not.toHaveTextContent(LOAD_SENTENCE);
+    expect(alert).not.toHaveTextContent(/unaffected/i);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("the create form's own messages are alone too, not under the failed-load sentence", async () => {
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /new scenario/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Give the scenario a name.");
+    expect(alert).not.toHaveTextContent(LOAD_SENTENCE);
+  });
+
+  it("a failed scenario read still shows the load sentence, and no action alert", async () => {
+    mocks.scenarioList.mockRejectedValue(new Error("db unavailable"));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(LOAD_SENTENCE);
+    expect(alert).toHaveTextContent(/your accounts, transactions and balances are unaffected/i);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("a refusal and a failed read together show both, each as its own alert", async () => {
+    mocks.archiveScenario.mockResolvedValue(refusal);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />, client);
+    fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(REASON);
+    mocks.scenarioList.mockRejectedValue(new Error("db unavailable"));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: queryKeys.scenarios });
+    });
+    await vi.waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    const [first, second] = screen.getAllByRole("alert");
+    const texts = [first!.textContent ?? "", second!.textContent ?? ""];
+    expect(texts.filter((t) => LOAD_SENTENCE.test(t))).toHaveLength(1);
+    expect(texts.filter((t) => t.includes(REASON) && !LOAD_SENTENCE.test(t))).toHaveLength(1);
   });
 
   it("the deleted-but-applied Undo is locked while another row action is pending, and opens when it settles", async () => {
