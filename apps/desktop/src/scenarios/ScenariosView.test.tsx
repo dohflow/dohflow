@@ -87,7 +87,7 @@ describe("ScenariosView (personal-cfo-4d8.27.6.1 / .6.6)", () => {
   it("confirms before deleting, and says what is lost", async () => {
     renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /delete maternity leave/i }));
-    const dialog = await screen.findByRole("dialog", { name: /delete scenario/i });
+    const dialog = await screen.findByRole("dialog", { name: /^Delete “Maternity leave”\?$/ });
     // The count makes "archive instead" an informed choice.
     expect(within(dialog).getByText(/3 changes/)).toBeInTheDocument();
     // The rows stay in the vault under a tombstone, so the copy must not claim permanence.
@@ -101,7 +101,7 @@ describe("ScenariosView (personal-cfo-4d8.27.6.1 / .6.6)", () => {
   it("cancelling the delete dialog deletes nothing", async () => {
     renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /delete maternity leave/i }));
-    const dialog = await screen.findByRole("dialog", { name: /delete scenario/i });
+    const dialog = await screen.findByRole("dialog", { name: /^Delete “Maternity leave”\?$/ });
     fireEvent.click(within(dialog).getByRole("button", { name: /cancel/i }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(mocks.deleteScenario).not.toHaveBeenCalled();
@@ -228,7 +228,7 @@ describe("applying a scenario (ADR 0055, personal-cfo-4d8.27.6.3)", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: /apply .* to the forecast/i }),
     );
-    const dialog = await screen.findByRole("dialog", { name: "Apply scenario" });
+    const dialog = await screen.findByRole("dialog", { name: /^Apply “Maternity leave”\?$/ });
     expect(dialog).toHaveTextContent(/3 changes/);
     expect(dialog).toHaveTextContent(/bills, income and transactions are not edited/i);
     // Nothing has happened yet — confirming is what applies.
@@ -828,7 +828,7 @@ describe("the apply confirmation says what will happen (personal-cfo-c5en)", () 
     fireEvent.click(
       await screen.findByRole("button", { name: /apply .* to the forecast/i }),
     );
-    return screen.findByRole("dialog", { name: /apply scenario/i });
+    return screen.findByRole("dialog", { name: /^Apply “Maternity leave”\?$/ });
   }
 
   it("names what moves, what does NOT, and how to undo — in that order", async () => {
@@ -859,3 +859,66 @@ describe("the apply confirmation says what will happen (personal-cfo-c5en)", () 
     expect(dialog).not.toHaveTextContent(/you should|recommend|be careful|warning/i);
   });
 });
+
+// The shared Dialog keyboard contract (personal-cfo-4d8.6.1) on the Apply and Delete confirmations
+// (personal-cfo-4d8.6.2): focus starts on the safe action and stays inside, the background is hidden,
+// Escape closes without acting, and focus returns to where it was.
+describe.each([
+  {
+    name: "Apply",
+    openerName: /apply .* to the forecast/i,
+    title: /^Apply “Maternity leave”\?$/,
+    confirmName: /^apply to my forecast$/i,
+    action: () => mocks.applyScenario,
+  },
+  {
+    name: "Delete",
+    openerName: /delete maternity leave/i,
+    title: /^Delete “Maternity leave”\?$/,
+    confirmName: /^delete scenario$/i,
+    action: () => mocks.deleteScenario,
+  },
+])("the $name scenario dialog keyboard contract (personal-cfo-4d8.6.2)", (spec) => {
+  async function open() {
+    mocks.scenarioList.mockResolvedValue(ok([scenario()]));
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    const opener = await screen.findByRole("button", { name: spec.openerName });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: spec.title });
+    return { opener, dialog };
+  }
+
+  it("starts on Cancel, the safe action", async () => {
+    const { dialog } = await open();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+  });
+
+  it("keeps Tab and Shift+Tab inside the dialog and hides the page behind it", async () => {
+    const { dialog } = await open();
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const confirm = within(dialog).getByRole("button", { name: spec.confirmName });
+    confirm.focus();
+    fireEvent.keyDown(confirm, { key: "Tab" });
+    expect(cancel).toHaveFocus();
+    fireEvent.keyDown(cancel, { key: "Tab", shiftKey: true });
+    expect(confirm).toHaveFocus();
+    // The page behind is out of reach of assistive technology.
+    expect(screen.queryByRole("button", { name: spec.openerName })).not.toBeInTheDocument();
+  });
+
+  it("closes on Escape without acting", async () => {
+    await open();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(spec.action()).not.toHaveBeenCalled();
+  });
+
+  it("returns focus to the button that opened it when Cancel closes it", async () => {
+    const { opener, dialog } = await open();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await vi.waitFor(() => expect(opener).toHaveFocus());
+  });
+});
+

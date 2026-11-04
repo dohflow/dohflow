@@ -355,6 +355,7 @@ describe("the Settings sections (personal-cfo-4d8.39.1)", () => {
     "Diagnostics",
     "Vaults",
     "Setup guide",
+    "Touch ID",
     "Change master password",
     "Rotate encryption key",
     "Delete this vault",
@@ -447,7 +448,7 @@ describe("the Settings sections (personal-cfo-4d8.39.1)", () => {
     await render({ setup: true });
     const wholeRows = [
       "Household", "General", "Appearance", "Connections", "About",
-      "Change master password", "Rotate encryption key", "Delete this vault",
+      "Touch ID", "Change master password", "Rotate encryption key", "Delete this vault",
     ];
     for (const c of [368, 655, 656, 991, 992, 1176]) {
       expect(spansAt(wholeRows, c), `C=${c}`).toEqual(wholeRows.map(() => 6));

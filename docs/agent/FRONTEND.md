@@ -108,7 +108,7 @@ to** archive, which has its own Archive and Restore affordances and an Archived 
 a delete.
 
 1. **The inline confirm.** Asking to remove shows **"Remove `<name>`?"** with the secondary line
-   **"You can bring it back."** The confirm button repeats the verb (**Remove**); the other is
+   **"After removal, you can bring it back only through the Undo notice."** The confirm button repeats the verb (**Remove**); the other is
    **Cancel**. The prompt names the thing being removed, so a screen reader hears what it is
    confirming. Do not use "Delete" here: it promises something the app does not do.
 2. **The notice.** After the removal succeeds, a transient notice reads **"Removed `<name>`. Undo"**,
@@ -457,6 +457,14 @@ How to use it:
 - **Async-rendered content uses `findBy*`, not `getBy*`** — query-backed UI only
   appears after the promise resolves (this caused a CI-only flake in `App.test`).
 - Cover loading / populated / empty / error paths.
+- **A per-draft idempotency key is tested with `expectDraftKeyIdentity`**
+  (`apps/desktop/src/test/idempotencyIdentity.ts`), which lists **every** field of the draft's
+  identity: an unchanged retry reuses the key, changing each listed field gives a new key, a confirmed
+  success gives the same draft a new key on its next submit, and (where the component treats a typed
+  refusal as a new draft) the send after a refusal gets a new key. A
+  field left out of the key's identity still sends the right payload, so nothing else notices it; the
+  helper does. Add a field to the draft, add it to the list. Every send in the test must leave the
+  form open (mock the call as a lost connection), as it does for the unknown outcome a retry follows.
 - Visual-regression testing is deferred to `personal-cfo-nbqd` (no infra yet).
 
 ## 9. IPC bindings are generated — keep them in sync
