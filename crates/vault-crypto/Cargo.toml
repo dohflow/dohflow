@@ -35,6 +35,8 @@ thiserror = { workspace = true }
 # Sync key custody (personal-cfo-1cltt.2): HPKE seals K_e and S to each enrolled device (C.6), and a
 # device's Ed25519 key signs its membership and epoch records. See the pins in the workspace manifest.
 hpke = { workspace = true }
+# Named only so its zeroize feature is enabled for the copy hpke links (see the workspace manifest).
+x25519-dalek = { workspace = true }
 ed25519-dalek = { workspace = true }
 
 # Best-effort page-locking of secret buffers (personal-cfo-1t0). Unix-only;

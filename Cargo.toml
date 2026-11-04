@@ -110,6 +110,10 @@ subtle = "2"
 # already here through ed25519-dalek). Default features are off: P-256 is not a Sync suite. Only
 # vault-crypto uses it. Re-run the RFC 9180 vectors in crates/vault-crypto/tests before any bump.
 hpke = { version = "=0.13.0", default-features = false, features = ["x25519"] }
+# hpke's own x25519-dalek entry leaves zeroize off, so the X25519 secret scalar it builds would not be
+# scrubbed on drop. Named here (and used by vault-crypto) so cargo's feature unification turns it on for
+# the copy hpke links, the same device as aes/ctr/ghash above. Pinned to the version hpke 0.13 resolves.
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 # Cross-platform advisory file locks for the single-owner unlocked-vault runner
 # (personal-cfo-ati, ADR 0070 addendum).
 fs2 = "0.4"
