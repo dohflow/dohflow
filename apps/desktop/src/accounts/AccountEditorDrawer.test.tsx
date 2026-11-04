@@ -495,6 +495,9 @@ describe("the balance step keeps one idempotency key per draft (g3m.40)", () => 
     expect(screen.getByText("Saved: Balance.")).toBeInTheDocument();
     expect(screen.queryByText(/didn’t save|not saved|may or may not/i)).toBeNull();
     expect(screen.queryByText(UNKNOWN)).toBeNull();
+    // Nothing failed or is unconfirmed, so neither group headline is shown above the saved balance.
+    expect(screen.queryByText(/some changes saved and some/i)).toBeNull();
+    expect(screen.queryByText(/not everything (saved|could be confirmed)/i)).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     // It is stored: nothing is asserted a second time, and the person can finish.
     save();
