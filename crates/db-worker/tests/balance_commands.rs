@@ -188,6 +188,52 @@ fn a_manual_assertion_is_never_last_wins_and_the_later_one_anchors() {
 }
 
 #[test]
+fn a_keyed_assertion_repeated_under_its_key_appends_nothing_a_new_key_appends() {
+    let (_dir, worker, account) = vault();
+    let key = "00000000-0000-4000-8000-0000000000a1";
+    worker
+        .record_balance_assertion_keyed(key, u(80), account, usd(500_000), day(2026, 10, 19))
+        .unwrap();
+    // A retry of the same draft, even with a fresh observation id, is the original result.
+    worker
+        .record_balance_assertion_keyed(key, u(81), account, usd(500_000), day(2026, 10, 19))
+        .unwrap();
+    assert_eq!(
+        rows(&worker, "2026-10-19").len(),
+        1,
+        "the retry appended nothing"
+    );
+    // A different draft (a new key) is a new observation.
+    worker
+        .record_balance_assertion_keyed(
+            "00000000-0000-4000-8000-0000000000a2",
+            u(82),
+            account,
+            usd(510_000),
+            day(2026, 10, 19),
+        )
+        .unwrap();
+    assert_eq!(rows(&worker, "2026-10-19").len(), 2);
+}
+
+#[test]
+fn a_keyed_assertion_refuses_a_key_that_is_not_a_canonical_uuid_v4() {
+    let (_dir, worker, account) = vault();
+    let refused = worker.record_balance_assertion_keyed(
+        "not-a-key",
+        u(83),
+        account,
+        usd(1),
+        day(2026, 10, 19),
+    );
+    assert!(
+        matches!(refused, Err(DbError::InvalidIdempotencyKey)),
+        "{refused:?}"
+    );
+    assert!(rows(&worker, "2026-10-19").is_empty());
+}
+
+#[test]
 fn a_manual_assertion_and_a_connector_reading_for_one_day_both_stay() {
     let (_dir, worker, account) = vault();
     worker

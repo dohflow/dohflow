@@ -4027,6 +4027,10 @@ pub struct AssertBalanceInput {
     pub amount: MoneyDto,
     /// The "as of" date the balance applies to, `YYYY-MM-DD`.
     pub as_of_date: String,
+    /// The draft's idempotency key (a canonical UUID version 4). Assertions are append-only, so
+    /// the caller reuses one key for retries of the same draft and mints a new one when the
+    /// amount or date changes; repeating a key returns the original result and appends nothing.
+    pub idempotency_key: String,
 }
 
 impl AssertBalanceInput {
@@ -4041,12 +4045,44 @@ impl AssertBalanceInput {
     }
 }
 
-/// The result of asserting a balance: the new (assertion-anchored) balance and the
-/// still-unexplained adjustment (the "plug"), `None` when fully explained or absent.
+/// The result of asserting a balance. The assertion has been **saved** whenever this is returned;
+/// the figures are read back afterwards, and a failed read-back is not a failed save:
+/// - `balance` is the new (assertion-anchored) balance, or `None` when it could not be read back;
+/// - `unexplained` is the still-unexplained adjustment (the "plug"), `None` when fully explained,
+///   absent, or when `balance` is `None` (nothing is claimed about it then).
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct AssertBalanceResult {
-    pub balance: MoneyDto,
+    pub balance: Option<MoneyDto>,
     pub unexplained: Option<MoneyDto>,
+}
+
+impl AssertBalanceResult {
+    /// The result of an assertion that has already committed, from the two reads made afterwards.
+    ///
+    /// Either figure can fail to read back, and a failed read of the gap must not look like "no
+    /// gap": the caller would say the balance is fully explained when nothing is known about it. So
+    /// when EITHER read fails (or the balance is missing) neither figure is returned (the unconfirmed
+    /// view). Only when both read fine does `unexplained: None` mean what it says, that the account
+    /// has no gap. The gap is not read when the balance already failed.
+    pub fn read_back<E>(
+        balance: Result<Option<Money>, E>,
+        unexplained: impl FnOnce() -> Result<Option<Money>, E>,
+    ) -> Self {
+        let unconfirmed = Self {
+            balance: None,
+            unexplained: None,
+        };
+        let Ok(Some(balance)) = balance else {
+            return unconfirmed;
+        };
+        match unexplained() {
+            Ok(unexplained) => Self {
+                balance: Some(MoneyDto::from(balance)),
+                unexplained: unexplained.map(MoneyDto::from),
+            },
+            Err(_) => unconfirmed,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4058,6 +4094,60 @@ mod tests {
             minor_units,
             currency: "USD".to_owned(),
         }
+    }
+
+    // ---- the read-back after a committed balance assertion (personal-cfo-g3m.37) ----
+
+    fn usd(minor: i64) -> Money {
+        Money::new(minor, finance_kernel::Currency::Usd)
+    }
+
+    #[test]
+    fn a_failed_gap_read_is_not_no_gap() {
+        let result =
+            AssertBalanceResult::read_back(Ok(Some(usd(200_000))), || Err("gap read failed"));
+        assert!(
+            result.balance.is_none(),
+            "an unconfirmed balance is not returned"
+        );
+        assert!(result.unexplained.is_none());
+    }
+
+    #[test]
+    fn a_failed_balance_read_confirms_nothing_and_never_reads_the_gap() {
+        let mut gap_read = false;
+        let result = AssertBalanceResult::read_back(Err("balance read failed"), || {
+            gap_read = true;
+            Ok(Some(usd(5_000)))
+        });
+        assert!(result.balance.is_none() && result.unexplained.is_none());
+        assert!(
+            !gap_read,
+            "the gap is not read once the balance could not be"
+        );
+    }
+
+    #[test]
+    fn a_missing_balance_confirms_nothing() {
+        let result: AssertBalanceResult =
+            AssertBalanceResult::read_back(Ok::<_, &str>(None), || Ok(Some(usd(5_000))));
+        assert!(result.balance.is_none() && result.unexplained.is_none());
+    }
+
+    #[test]
+    fn a_genuine_no_gap_is_a_balance_with_no_unexplained_figure() {
+        let result = AssertBalanceResult::read_back(Ok::<_, &str>(Some(usd(200_000))), || Ok(None));
+        assert_eq!(result.balance.map(|m| m.minor_units), Some(200_000));
+        assert!(result.unexplained.is_none(), "Ok(None) still means no gap");
+    }
+
+    #[test]
+    fn both_reads_working_returns_both_figures() {
+        let result = AssertBalanceResult::read_back(Ok::<_, &str>(Some(usd(200_000))), || {
+            Ok(Some(usd(5_000)))
+        });
+        assert_eq!(result.balance.map(|m| m.minor_units), Some(200_000));
+        assert_eq!(result.unexplained.map(|m| m.minor_units), Some(5_000));
     }
 
     /// personal-cfo-6wk.15: the wire input for the new kind lowers to the typed
