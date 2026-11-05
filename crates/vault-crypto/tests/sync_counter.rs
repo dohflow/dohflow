@@ -237,6 +237,23 @@ fn a_witness_for_a_context_with_no_register_is_nonce_state_lost() {
 }
 
 #[test]
+fn an_advance_to_zero_or_not_forward_is_refused_and_writes_nothing() {
+    let (store, witness) = setup();
+    let c = context(1, 0xa1);
+    assert_eq!(
+        store.commit_advance(&c, None, 0),
+        Err(RegisterStoreError::BadAdvance)
+    );
+    assert_eq!(store.next_counter(&c), Ok(None));
+    // A register entry is never 0, so a store that accepted 0 would let (some(0), some(0)) look
+    // consistent and hand counter 0 out a second time after the birth.
+    witness.advance_counter(&c, 0).unwrap();
+    let register = CounterRegister::new(&store, &witness);
+    assert_eq!(register.reserve(&c).unwrap().counter(), 0);
+    assert_eq!(store.next_counter(&c), Ok(Some(1)));
+}
+
+#[test]
 fn injected_reuse_is_refused_by_the_compare_and_set() {
     let (store, witness) = setup();
     let c = context(1, 0xa1);
@@ -404,6 +421,104 @@ fn older_restored_verified_state_is_state_rolled_back() {
     assert_eq!(
         guard.check(&[0x22; 16], Some(&old)),
         Err(VerifiedStateError::StateRolledBack)
+    );
+}
+
+#[test]
+fn the_verified_state_has_a_birth_mark_so_the_first_persist_has_no_false_rollback_window() {
+    let witness = MockWitness::new();
+    let guard = VerifiedStateGuard::new(&witness);
+    let vault = [0x11; 16];
+    let first = mark(1, 1, 1, Some(1), 1);
+
+    // (none, none): the vault has not begun. Nothing was persisted, so there is nothing to lose.
+    assert_eq!(guard.check(&vault, None), Ok(()));
+
+    // Step 0, before the first persist: the birth mark.
+    guard.begin(&vault).unwrap();
+    assert_eq!(witness.verified_mark(&vault), Ok(Some(VerifiedMark::BIRTH)));
+    guard.begin(&vault).unwrap(); // idempotent
+                                  // (none, birth): begun, nothing persisted yet. Fresh, not rolled back.
+    assert_eq!(guard.check(&vault, None), Ok(()));
+
+    // The first state is persisted and the process dies before `record`: (state, birth) is ahead,
+    // the crash window, and reconcile records the state's mark.
+    assert_eq!(guard.check(&vault, Some(&first)), Ok(()));
+    guard.reconcile(&vault, Some(&first)).unwrap();
+    assert_eq!(witness.verified_mark(&vault), Ok(Some(first)));
+    assert_eq!(guard.check(&vault, Some(&first)), Ok(()));
+
+    // (state, none): a vault whose state the witness never saw is a restore onto another device.
+    let other = [0x22; 16];
+    assert_eq!(
+        guard.check(&other, Some(&first)),
+        Err(VerifiedStateError::StateRolledBack)
+    );
+    assert_eq!(
+        guard.reconcile(&other, Some(&first)),
+        Err(VerifiedStateError::StateRolledBack)
+    );
+    assert_eq!(
+        witness.verified_mark(&other),
+        Ok(None),
+        "and nothing was recorded"
+    );
+
+    // (none, a real mark): the vault lost the state the witness saw.
+    assert_eq!(
+        guard.check(&vault, None),
+        Err(VerifiedStateError::StateRolledBack)
+    );
+}
+
+#[test]
+fn a_crash_before_the_birth_persisted_nothing_and_a_crash_after_it_persisted_nothing_yet() {
+    let witness = MockWitness::new();
+    let guard = VerifiedStateGuard::new(&witness);
+    let vault = [0x11; 16];
+    // Crash window 1: before `begin`. Nothing was persisted (the birth precedes the persist), so
+    // the restart sees (none, none).
+    assert_eq!(guard.check(&vault, None), Ok(()));
+    // Crash window 2: after `begin` and before the persist: (none, birth).
+    guard.begin(&vault).unwrap();
+    assert_eq!(guard.check(&vault, None), Ok(()));
+    // The persist then completes and `record` runs: equal.
+    let first = mark(1, 1, 1, Some(1), 1);
+    guard.record(&vault, &first).unwrap();
+    assert_eq!(guard.check(&vault, Some(&first)), Ok(()));
+}
+
+#[test]
+fn recording_a_real_mark_on_a_vault_the_witness_never_saw_is_born_first() {
+    let witness = MockWitness::new();
+    let guard = VerifiedStateGuard::new(&witness);
+    let vault = [0x11; 16];
+    let first = mark(1, 1, 1, Some(1), 1);
+    // `record` without a `begin` never leaves a real mark as the witness's first value.
+    guard.record(&vault, &first).unwrap();
+    assert_eq!(witness.verified_mark(&vault), Ok(Some(first)));
+    assert_eq!(
+        witness.mark_log(),
+        [(vault, VerifiedMark::BIRTH), (vault, first)],
+        "the birth came first"
+    );
+    // And a birth can never be recorded over a real mark.
+    assert_eq!(
+        witness.advance_verified_mark(&vault, &VerifiedMark::BIRTH),
+        Err(WitnessError::WouldRegress)
+    );
+}
+
+#[test]
+fn the_birth_mark_is_behind_every_real_mark_and_is_not_one() {
+    let thin = mark(1, 1, 1, Some(1), 0); // no epoch record counted: still a real mark
+    assert!(!thin.is_birth());
+    assert!(VerifiedMark::BIRTH.is_birth());
+    assert_eq!(thin.cmp_progress(&VerifiedMark::BIRTH), Progress::Ahead);
+    assert_eq!(VerifiedMark::BIRTH.cmp_progress(&thin), Progress::Behind);
+    assert_eq!(
+        VerifiedMark::BIRTH.cmp_progress(&VerifiedMark::BIRTH),
+        Progress::Equal
     );
 }
 

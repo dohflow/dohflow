@@ -49,7 +49,8 @@ use sync_core::membership::VerifiedState;
 use thiserror::Error;
 
 use crate::sync_counter::{
-    CounterRegister, CounterReservation, NonceError, RegisterStore, RegisterStoreError, SavedSealed,
+    CounterRegister, CounterReservation, LostReason, NonceError, RegisterStore, RegisterStoreError,
+    SavedSealed,
 };
 use crate::sync_envelope::{
     aead_key, gcm_decrypt, gcm_encrypt, EpochKey, ObjectType, SealerIdentity,
@@ -432,7 +433,13 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
         fields: &SnapshotFields,
         plaintext_sha256: &[u8; 32],
     ) -> Result<Option<SealedSnapshot>, SnapshotError> {
-        let Some(saved) = self.register.store().saved(&self.context())? else {
+        let context = self.context();
+        // The register and its witness are consulted first, on every call: a device whose vault
+        // was restored stops at `NonceStateLost` here, so nothing is sent from a rolled-back
+        // timeline, and the saved record (which sits in the vault, beside the register) can only
+        // name a counter the register has already passed.
+        let next = self.register.check(&context)?;
+        let Some(saved) = self.register.store().saved(&context)? else {
             return Ok(None);
         };
         if saved.object_id != fields.object_id
@@ -440,6 +447,9 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
             || &saved.plaintext_sha256 != plaintext_sha256
         {
             return Ok(None);
+        }
+        if !next.is_some_and(|next| saved.counter < next) {
+            return Err(NonceError::NonceStateLost(LostReason::SavedAheadOfRegister).into());
         }
         let Some(container) = self.files.read(&fields.object_id)? else {
             return Ok(None);

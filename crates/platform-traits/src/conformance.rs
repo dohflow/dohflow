@@ -375,4 +375,34 @@ pub fn run_rollback_witness(witness: &dyn crate::RollbackWitness) {
         Ok(None),
         "another vault"
     );
+
+    // The birth mark: recorded when a vault begins, before its first state is persisted.
+    let born = [0x33; 16];
+    assert_eq!(witness.verified_mark(&born), Ok(None));
+    witness
+        .advance_verified_mark(&born, &VerifiedMark::BIRTH)
+        .unwrap();
+    assert_eq!(witness.verified_mark(&born), Ok(Some(VerifiedMark::BIRTH)));
+    // Idempotent.
+    witness
+        .advance_verified_mark(&born, &VerifiedMark::BIRTH)
+        .unwrap();
+    // Every real mark is ahead of it, even one with no epoch record counted yet.
+    let thin = mark(1, 1, 1, Some(1), 0);
+    assert_eq!(
+        thin.cmp_progress(&VerifiedMark::BIRTH),
+        crate::Progress::Ahead
+    );
+    assert_eq!(
+        VerifiedMark::BIRTH.cmp_progress(&thin),
+        crate::Progress::Behind
+    );
+    witness.advance_verified_mark(&born, &thin).unwrap();
+    assert_eq!(witness.verified_mark(&born), Ok(Some(thin)));
+    // A birth after a real mark is a regress.
+    assert_eq!(
+        witness.advance_verified_mark(&born, &VerifiedMark::BIRTH),
+        Err(WitnessError::WouldRegress)
+    );
+    assert_eq!(witness.verified_mark(&born), Ok(Some(thin)));
 }

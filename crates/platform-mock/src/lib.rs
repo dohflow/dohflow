@@ -395,6 +395,8 @@ pub struct MockWitness(Arc<Mutex<WitnessState>>);
 struct WitnessState {
     counters: HashMap<CounterContext, u64>,
     marks: HashMap<[u8; 16], VerifiedMark>,
+    /// Every verified mark ever accepted, in order, so a test can see the sequence.
+    mark_log: Vec<([u8; 16], VerifiedMark)>,
     unavailable: bool,
     /// How many of the next `advance_counter` calls fail with `Unavailable` before one succeeds.
     fail_counter_advances: usize,
@@ -425,6 +427,12 @@ impl MockWitness {
         let mut state = self.0.lock().unwrap();
         state.skip_before_fail = succeed;
         state.fail_counter_advances = count;
+    }
+
+    /// Every verified mark the witness accepted, in order (a repeat of the held value included).
+    #[must_use]
+    pub fn mark_log(&self) -> Vec<([u8; 16], VerifiedMark)> {
+        self.0.lock().unwrap().mark_log.clone()
     }
 
     /// How many counter advances succeeded (a no-op advance to the held value counts).
@@ -521,6 +529,7 @@ impl RollbackWitness for MockWitness {
             }
         }
         state.marks.insert(*vault_id, *mark);
+        state.mark_log.push((*vault_id, *mark));
         Ok(())
     }
 }

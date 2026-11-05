@@ -65,6 +65,11 @@ pub enum RegisterStoreError {
     /// The persisted value is not the one the advance was computed from.
     #[error("the counter register changed during the advance")]
     Conflict,
+    /// The advance does not move forward: to `0`, or to a value no greater than the one it is
+    /// computed from. A register entry is never `0` (the first advance goes to `1`), which is what
+    /// lets a witness at `0` mean "no counter was ever handed out".
+    #[error("the counter register can only advance to a larger value, and never to zero")]
+    BadAdvance,
 }
 
 /// A sealed snapshot saved for exact-byte retransmission (W4). It sits next to the register entry
@@ -101,9 +106,12 @@ pub trait RegisterStore {
     fn next_counter(&self, context: &CounterContext) -> Result<Option<u64>, RegisterStoreError>;
 
     /// Persist `next_counter = to` if it currently equals `from` (`None` meaning no entry).
+    /// `to` must be at least `1` and greater than `from`: anything else is
+    /// [`RegisterStoreError::BadAdvance`], checked before the comparison.
     ///
     /// # Errors
-    /// [`RegisterStoreError::Unavailable`] or [`RegisterStoreError::Conflict`].
+    /// [`RegisterStoreError::Unavailable`], [`RegisterStoreError::Conflict`] or
+    /// [`RegisterStoreError::BadAdvance`].
     fn commit_advance(
         &self,
         context: &CounterContext,
@@ -137,6 +145,9 @@ pub enum LostReason {
     RegisterBehindWitness,
     /// The register has an entry and the witness has none.
     WitnessMissing,
+    /// The saved sealed snapshot names a counter the register has not reached: the saved record
+    /// is from another timeline than the register (a restore rolled one back without the other).
+    SavedAheadOfRegister,
     /// The witness has an entry and the register has none.
     RegisterMissing,
 }
@@ -332,9 +343,34 @@ impl<'a, W: RollbackWitness> VerifiedStateGuard<'a, W> {
         Self { witness }
     }
 
+    /// Step 0: the vault begins keeping verified Sync state. Records the birth mark in the
+    /// witness **before the first state is persisted**, so a crash between that persist and
+    /// [`Self::record`] is not mistaken for a restored vault the witness never saw. Idempotent: a
+    /// witness that already holds any mark for the vault is left as it is.
+    ///
+    /// The order for the verified state is: [`Self::begin`], persist, [`Self::record`].
+    ///
+    /// # Errors
+    /// [`VerifiedStateError::Witness`] if the witness is unavailable.
+    pub fn begin(&self, vault_id: &[u8; 16]) -> Result<(), VerifiedStateError> {
+        if self.witness.verified_mark(vault_id)?.is_none() {
+            self.witness
+                .advance_verified_mark(vault_id, &VerifiedMark::BIRTH)?;
+        }
+        Ok(())
+    }
+
     /// Check the state the vault loaded (`None` if it holds none) against the witness, before
-    /// anything uses it. Equal is consistent; the loaded state being *ahead* is the crash window
-    /// between persisting and recording, and [`Self::record`] raises the witness.
+    /// anything uses it. Changes nothing.
+    ///
+    /// | Loaded | Witness | Verdict |
+    /// | --- | --- | --- |
+    /// | none | none | fresh: the vault has not begun |
+    /// | none | birth | fresh: begun, nothing persisted yet |
+    /// | state | birth | ahead: the crash window after the first persist ([`Self::reconcile`] records it) |
+    /// | state | mark | equal or ahead is consistent; behind or diverged is rolled back |
+    /// | state | none | rolled back: a state the witness never saw |
+    /// | none | a real mark | rolled back: the vault lost state the witness saw |
     ///
     /// # Errors
     /// [`VerifiedStateError`].
@@ -346,6 +382,7 @@ impl<'a, W: RollbackWitness> VerifiedStateGuard<'a, W> {
         let witnessed = self.witness.verified_mark(vault_id)?;
         match (loaded, witnessed) {
             (None, None) => Ok(()),
+            (None, Some(witnessed)) if witnessed.is_birth() => Ok(()),
             (Some(loaded), Some(witnessed)) => match loaded.cmp_progress(&witnessed) {
                 Progress::Equal | Progress::Ahead => Ok(()),
                 Progress::Behind | Progress::Diverged => Err(VerifiedStateError::StateRolledBack),
@@ -354,8 +391,28 @@ impl<'a, W: RollbackWitness> VerifiedStateGuard<'a, W> {
         }
     }
 
+    /// The start-up reconciliation: [`Self::check`], and when the loaded state is ahead of the
+    /// witness (the crash window after a persist and before [`Self::record`]) record it.
+    ///
+    /// # Errors
+    /// [`VerifiedStateError`].
+    pub fn reconcile(
+        &self,
+        vault_id: &[u8; 16],
+        loaded: Option<&VerifiedMark>,
+    ) -> Result<(), VerifiedStateError> {
+        self.check(vault_id, loaded)?;
+        if let Some(loaded) = loaded {
+            if self.witness.verified_mark(vault_id)?.as_ref() != Some(loaded) {
+                self.record(vault_id, loaded)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Record that the vault has persisted `mark`. Call it **after** the state is durable, and
-    /// before relying on it. Marks only move forward.
+    /// before relying on it. Marks only move forward, and a vault the witness has never seen is
+    /// born first, so a real mark is never the first value the witness holds.
     ///
     /// # Errors
     /// [`VerifiedStateError::StateRolledBack`] if `mark` is behind or diverged from the witness,
@@ -365,6 +422,7 @@ impl<'a, W: RollbackWitness> VerifiedStateGuard<'a, W> {
         vault_id: &[u8; 16],
         mark: &VerifiedMark,
     ) -> Result<(), VerifiedStateError> {
+        self.begin(vault_id)?;
         match self.witness.advance_verified_mark(vault_id, mark) {
             Ok(()) => Ok(()),
             Err(WitnessError::WouldRegress) => Err(VerifiedStateError::StateRolledBack),
@@ -420,6 +478,28 @@ pub mod conformance {
         assert_eq!(store.next_counter(&first), Ok(Some(1)));
         assert_eq!(store.next_counter(&other), Ok(None), "another fingerprint");
         assert_eq!(store.next_counter(&next_epoch), Ok(None), "another epoch");
+
+        // An advance moves forward and is never to zero: a register entry is never 0, so a
+        // witness at 0 can only mean "no counter was ever handed out".
+        let zero = context(4, 0xd1);
+        assert_eq!(
+            store.commit_advance(&zero, None, 0),
+            Err(RegisterStoreError::BadAdvance)
+        );
+        assert_eq!(store.next_counter(&zero), Ok(None), "nothing was written");
+        store.commit_advance(&zero, None, 3).unwrap();
+        for (from, to) in [(3, 3), (3, 2), (3, 0)] {
+            assert_eq!(
+                store.commit_advance(&zero, Some(from), to),
+                Err(RegisterStoreError::BadAdvance),
+                "{from} to {to}"
+            );
+        }
+        assert_eq!(
+            store.next_counter(&zero),
+            Ok(Some(3)),
+            "and nothing changed"
+        );
 
         // An advance is durable once it returns: a reopened store sees it.
         assert_eq!(open().next_counter(&first), Ok(Some(1)));

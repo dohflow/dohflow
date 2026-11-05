@@ -61,6 +61,9 @@ impl RegisterStore for MemoryRegisterStore {
         from: Option<u64>,
         to: u64,
     ) -> Result<(), RegisterStoreError> {
+        if to == 0 || from.is_some_and(|f| to <= f) {
+            return Err(RegisterStoreError::BadAdvance);
+        }
         let mut state = self.0.lock().unwrap();
         if state.fail_commits > 0 {
             state.fail_commits -= 1;

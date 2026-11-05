@@ -608,6 +608,50 @@ fn a_rolled_back_register_is_nonce_state_lost_and_seals_nothing() {
 }
 
 #[test]
+fn a_retransmission_checks_the_register_first_and_stops_at_nonce_state_lost() {
+    let rig = Rig::new("t1-lost");
+    let first = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    assert_eq!(first.counter, 0);
+    // A restore rolled the vault's register back behind the witness; the saved record (which sits
+    // in the vault) is still there with its container file.
+    rig.store.force_next(&rig.ctx(), Some(0));
+    rig.witness.force_counter(&rig.ctx(), 1);
+    assert!(rig.file(0x33).exists());
+    assert_eq!(
+        rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap_err(),
+        SnapshotError::Nonce(NonceError::NonceStateLost(
+            LostReason::RegisterBehindWitness
+        )),
+        "the saved container of a rolled-back timeline is never sent"
+    );
+    // The same holds for a publish that has nothing saved: the device is stopped in the context.
+    assert_eq!(
+        rig.seal(&fields(0x34, 57), b"another").unwrap_err(),
+        SnapshotError::Nonce(NonceError::NonceStateLost(
+            LostReason::RegisterBehindWitness
+        ))
+    );
+}
+
+#[test]
+fn a_saved_record_ahead_of_the_register_is_never_sent() {
+    let rig = Rig::new("t1-ahead");
+    rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap(); // sealed with counter 0, register now 1
+                                                     // Register and witness agree on 0 (both rolled back), so the pair looks consistent, but the
+                                                     // saved record names counter 0, which the register has not passed.
+    rig.store.force_next(&rig.ctx(), Some(0));
+    rig.witness.force_counter(&rig.ctx(), 0);
+    assert_eq!(
+        rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap_err(),
+        SnapshotError::Nonce(NonceError::NonceStateLost(LostReason::SavedAheadOfRegister))
+    );
+    // And a saved record that the register has passed is sent as before.
+    rig.store.force_next(&rig.ctx(), Some(1));
+    rig.witness.force_counter(&rig.ctx(), 1);
+    assert!(rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap().reused);
+}
+
+#[test]
 fn the_cap_seals_the_last_counter_and_the_next_publish_requires_a_rotation() {
     let rig = Rig::new("cap");
     let last = sync_core::header::MAX_INVOCATION_COUNTER;

@@ -73,10 +73,37 @@ pub enum Progress {
 }
 
 impl VerifiedMark {
+    /// The **birth mark** of a vault: version 0, all-zero head, epoch 0, no epoch head, no records.
+    /// A witness holds it once a vault has begun keeping verified Sync state and before the first
+    /// state is persisted, so "the witness has never heard of this vault" (a restored backup) is
+    /// told apart from "the first state was persisted a moment before the witness was told" (a
+    /// crash). Every real mark is ahead of it; no real mark equals it, because a real state has a
+    /// membership head of version 1 or more. The counters have the same device in the value `0`.
+    pub const BIRTH: Self = Self {
+        membership_version: 0,
+        membership_head_id: [0; 32],
+        key_epoch: 0,
+        epoch_head_id: None,
+        positioned_records: 0,
+    };
+
+    /// Whether this is [`Self::BIRTH`].
+    #[must_use]
+    pub fn is_birth(&self) -> bool {
+        self == &Self::BIRTH
+    }
+
     /// Compare with `other`.
     #[must_use]
     pub fn cmp_progress(&self, other: &Self) -> Progress {
         use core::cmp::Ordering::{Greater, Less};
+        // The birth mark is behind every real mark, whatever its other parts say.
+        match (self.is_birth(), other.is_birth()) {
+            (true, true) => return Progress::Equal,
+            (true, false) => return Progress::Behind,
+            (false, true) => return Progress::Ahead,
+            (false, false) => {}
+        }
         // The same version must name the same head, and the same number of accepted epoch records
         // the same newest one, or the two are different histories.
         if (self.membership_version == other.membership_version
