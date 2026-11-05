@@ -26,10 +26,19 @@
 # (the verdict job has `actions: read`) and is diagnostic only: it can never change the
 # verdict, and a failed lookup only says so.
 #
+# Two more values come from scripts/macos-pools-wait.sh (personal-cfo-md8h2.26), which waits for
+# the pools for a bounded time instead of the verdict job needing them: `unfinished` (queued,
+# waiting or still running when the wait ended) and `unknown` (the job is missing or appears
+# twice, the jobs API or its token failed, or the conclusion is unrecognized). Neither is a
+# success and neither is a failure: one pool succeeding with the other `unfinished` or `unknown`
+# passes, with a notice naming the pool, because the pool that built has proven the
+# cross-compile; a failure on either pool, or no success at all, fails. An `unfinished` or
+# `unknown` pool cannot satisfy "not wanted": that case requires both pools `skipped`.
+#
 # Usage: macos-pools-verdict.sh <gate result> <build wanted: true|false|""> \
 #                                 <arm64 build result> <intel build result>
-# The results are the values of the `needs.<job>.result` expression: success, failure,
-# cancelled or skipped.
+# The results are the values of the `needs.<job>.result` expression (success, failure,
+# cancelled or skipped) or, from the wait script, unfinished or unknown.
 #
 # Naming (all optional; the defaults are the iOS check's): VERDICT_CHECK, the check's name
 # in a failure message; VERDICT_BUILD, what the build is called in a message;
@@ -108,13 +117,32 @@ built=()
 [ "$arm64_result" != "success" ] || built+=("arm64")
 [ "$intel_result" != "success" ] || built+=("intel")
 
+# Says what a pool that did not build was doing, and (for a pass) that its result is not part of
+# this check. Never fails the script.
+account_for() {
+  local pool="$1" job_name="$2" result="$3"
+  case "$result" in
+    cancelled) explain_cancelled "$pool" "$job_name" ;;
+    unfinished)
+      echo "::notice::${build_label} (${pool}) was still unfinished (queued or running) when the wait ended; the other pool's success decides this check, and a later failure of this pool shows in the run but does not change the check." ;;
+    unknown)
+      echo "::notice::${build_label} (${pool}) has an unknown state (the jobs API could not say); it counts as no success." ;;
+  esac
+}
+
 if [ "${#built[@]}" -eq 0 ]; then
-  [ "$arm64_result" != "cancelled" ] || explain_cancelled arm64 "$ARM64_JOB"
-  [ "$intel_result" != "cancelled" ] || explain_cancelled intel "$INTEL_JOB"
-  fail "the ${build_label} was needed but neither pool built it (arm64: '$arm64_result', intel: '$intel_result')"
+  account_for arm64 "$ARM64_JOB" "$arm64_result"
+  account_for intel "$INTEL_JOB" "$intel_result"
+  cause="neither pool built it"
+  if [ "$arm64_result" = "unfinished" ] || [ "$intel_result" = "unfinished" ]; then
+    cause="neither pool had built it when the wait ended"
+  elif [ "$arm64_result" = "unknown" ] || [ "$intel_result" = "unknown" ]; then
+    cause="neither pool is known to have built it"
+  fi
+  fail "the ${build_label} was needed but ${cause} (arm64: '$arm64_result', intel: '$intel_result')"
 fi
 
 echo "${build_label} was needed and succeeded on: ${built[*]}."
-[ "$arm64_result" != "cancelled" ] || explain_cancelled arm64 "$ARM64_JOB"
-[ "$intel_result" != "cancelled" ] || explain_cancelled intel "$INTEL_JOB"
+account_for arm64 "$ARM64_JOB" "$arm64_result"
+account_for intel "$INTEL_JOB" "$intel_result"
 exit 0

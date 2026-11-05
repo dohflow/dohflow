@@ -16,8 +16,9 @@ CI="$REPO_ROOT/.github/workflows/ci.yml"
 IOS="$REPO_ROOT/.github/workflows/ios-kernel.yml"
 REVIEW="$REPO_ROOT/.github/workflows/review-gate.yml"
 VERDICT="$REPO_ROOT/scripts/macos-pools-verdict.sh"
+WAIT="$REPO_ROOT/scripts/macos-pools-wait.sh"
 
-for file in "$CI" "$IOS" "$REVIEW" "$VERDICT"; do
+for file in "$CI" "$IOS" "$REVIEW" "$VERDICT" "$WAIT"; do
   [ -f "$file" ] || { echo "FAIL — missing file: $file" >&2; exit 1; }
 done
 
@@ -89,20 +90,26 @@ require_in "the gate lists the kernel crates" "$GATE" "- 'crates/**'"
 require_in "the gate lists the toolchain pin" "$GATE" "- 'rust-toolchain.toml'"
 require_in "the gate lists this workflow" "$GATE" "- '.github/workflows/ci.yml'"
 require_in "the gate lists the verdict script" "$GATE" "- 'scripts/macos-pools-verdict.sh'"
+require_in "the gate lists the wait script" "$GATE" "- 'scripts/macos-pools-wait.sh'"
 require_in "a manual dispatch always builds" "$GATE" "workflow_dispatch)"
 require_in "a private repository builds nothing on a pull request" "$GATE" 'if [ "$PRIVATE" = "false" ] && [ "$CODE_CHANGED" = "true" ]; then'
 require_in "push and the merge queue build on a public repository" "$GATE" "push | merge_group)"
 require_in "the gate skips scheduled runs (the weekly run is the security scan only)" "$GATE" "if: github.event_name != 'schedule'"
 
 # --- the verdict fails closed, through the shared script ------------------------------
-require_in "the verdict job waits for the gate and both pools" "$CHECK" "needs: [desktop-nondesktop-gate, desktop-nondesktop-build-arm64, desktop-nondesktop-build-intel]"
-require_in "the verdict job runs whether or not its needs succeeded" "$CHECK" "if: \${{ always() && github.event_name != 'schedule' }}"
+# personal-cfo-md8h2.26: the verdict job needs only the gate and polls the run's jobs for a
+# bounded time (scripts/macos-pools-wait.sh); a verdict that waits for both pools is as slow as
+# the slower one, and a pool stuck in setup is not bounded by its timeout-minutes.
+require_in "the verdict job needs only the gate" "$CHECK" "needs: desktop-nondesktop-gate"
+reject_in "the verdict job does not wait for a pool job" "$CHECK" "desktop-nondesktop-build"
+require_in "the verdict job runs whether or not the gate succeeded" "$CHECK" "if: \${{ always() && github.event_name != 'schedule' }}"
+require_in "the verdict job has a timeout above the wait" "$CHECK" "timeout-minutes: 25"
 require_in "the verdict job passes the gate result" "$CHECK" 'GATE_RESULT: ${{ needs.desktop-nondesktop-gate.result }}'
 require_in "the verdict job passes whether the build was wanted" "$CHECK" 'BUILD_WANTED: ${{ needs.desktop-nondesktop-gate.outputs.check }}'
-require_in "the verdict job passes the arm64 result" "$CHECK" 'ARM64_RESULT: ${{ needs.desktop-nondesktop-build-arm64.result }}'
-require_in "the verdict job passes the Intel result" "$CHECK" 'INTEL_RESULT: ${{ needs.desktop-nondesktop-build-intel.result }}'
-require_in "the verdict job runs the shared verdict script" "$CHECK" 'run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"'
+reject_in "the verdict job no longer takes the pools' results" "$CHECK" "ARM64_RESULT"
+require_in "the verdict job runs the wait script, which runs the shared verdict script" "$CHECK" 'run: scripts/macos-pools-wait.sh "$GATE_RESULT" "$BUILD_WANTED"'
 require_in "the verdict job may read the run's jobs, nothing more" "$CHECK" "actions: read"
+require_in "the verdict job may read the repository" "$CHECK" "contents: read"
 reject_in "the verdict job writes nothing" "$CHECK" "write"
 require_in "the verdict job hands the token to the jobs lookup" "$CHECK" 'GH_TOKEN: ${{ github.token }}'
 reject_in "the verdict logic is not written a second time in ci.yml" "$CHECK" 'fail()'
@@ -113,17 +120,56 @@ for pair in "VERDICT_ARM64_JOB:$ARM" "VERDICT_INTEL_JOB:$INTEL"; do
   require_in "the verdict's $var is the pool job's name" "$CHECK" "$var: $pool_name"
 done
 
-# --- main-red-alert and main-red-resolve keep waiting for the check -------------------
-for alert in main-red-alert main-red-resolve; do
-  needs="$(job_text "$CI" "$alert" | sed -n 's/^    needs: \[\(.*\)\]$/\1/p' | head -n 1)"
+# --- main-red-alert and main-red-resolve (personal-cfo-md8h2.26 condition 4) --------------
+# The verdict no longer waits for the pools, so a pool that fails after the verdict passed is
+# seen only through its own result. main-red-alert therefore waits for the verdict AND both
+# pool jobs; main-red-resolve waits for the verdict only, so a pool that never got a runner
+# (cancelled) cannot keep a green main from closing the alert.
+needs_of() { job_text "$CI" "$1" | sed -n 's/^    needs: \[\(.*\)\]$/\1/p' | head -n 1; }
+ALERT_NEEDS="$(needs_of main-red-alert)"
+RESOLVE_NEEDS="$(needs_of main-red-resolve)"
+for id in desktop-nondesktop-check desktop-nondesktop-build-arm64 desktop-nondesktop-build-intel; do
   CASES=$((CASES + 1))
-  if [[ ", $needs, " == *", desktop-nondesktop-check, "* ]]; then
-    ok "$alert waits for the verdict job, which fails when the gate or either pool does"
+  if [[ ", $ALERT_NEEDS, " == *", $id, "* ]]; then
+    ok "main-red-alert waits for $id"
   else
-    bad "$alert must wait for desktop-nondesktop-check (needs: $needs)"
+    bad "main-red-alert must wait for $id (needs: $ALERT_NEEDS)"
   fi
-  reject_in "$alert does not wait for a pool job directly (a cancelled pool beside a built one is not red)" "$needs" "desktop-nondesktop-build"
 done
+CASES=$((CASES + 1))
+if [[ ", $RESOLVE_NEEDS, " == *", desktop-nondesktop-check, "* ]]; then
+  ok "main-red-resolve waits for the verdict job"
+else
+  bad "main-red-resolve must wait for desktop-nondesktop-check (needs: $RESOLVE_NEEDS)"
+fi
+reject_in "main-red-resolve does not wait for a pool job (a cancelled pool beside a built one is not red)" "$RESOLVE_NEEDS" "desktop-nondesktop-build"
+ALERT_JOB="$(job_text "$CI" main-red-alert)"
+require_in "main-red-alert fires on any failed needed job" "$ALERT_JOB" "contains(needs.*.result, 'failure')"
+# The alert's own failed-job list, run on a late pool failure: the verdict passed, then a pool
+# failed. The jq filter is read out of ci.yml, so the test runs what the job runs.
+FAILED_JQ="$(sed -n "s/^          failed=\$(printf '%s' \"\$NEEDS\" | jq -r '\(.*\)')$/\1/p" <<<"$ALERT_JOB" | head -n 1)"
+[ -n "$FAILED_JQ" ] || bad "could not read the alert's failed-job filter out of ci.yml"
+LATE_FAILURE='{"rust":{"result":"success"},"desktop-nondesktop-check":{"result":"success"},"desktop-nondesktop-build-arm64":{"result":"success"},"desktop-nondesktop-build-intel":{"result":"failure"}}'
+CASES=$((CASES + 1))
+listed="$(printf '%s' "$LATE_FAILURE" | jq -r "$FAILED_JQ")"
+if [ "$listed" = "- desktop-nondesktop-build-intel" ]; then
+  ok "a pool failing after the verdict passed is the one job the alert lists"
+else
+  bad "the alert must list the late pool failure (got: $listed)"
+fi
+CASES=$((CASES + 1))
+if [ "$(printf '%s' "$LATE_FAILURE" | jq 'any(.[]; .result == "failure")')" = "true" ]; then
+  ok "the alert's condition (any needed job failed) holds for that run"
+else
+  bad "the alert condition must hold for a late pool failure"
+fi
+CASES=$((CASES + 1))
+NOT_RED='{"rust":{"result":"success"},"desktop-nondesktop-check":{"result":"success"},"desktop-nondesktop-build-arm64":{"result":"cancelled"},"desktop-nondesktop-build-intel":{"result":"success"}}'
+if [ "$(printf '%s' "$NOT_RED" | jq 'any(.[]; .result == "failure")')" = "false" ]; then
+  ok "a pool that never got a runner (cancelled) beside a built one does not raise the alert"
+else
+  bad "a cancelled pool must not raise the alert"
+fi
 
 # --- the stale comment is gone --------------------------------------------------------
 CASES=$((CASES + 1))
@@ -200,6 +246,11 @@ says "a failure on the arm64 pool fails the check" "$JOBS_DIR/none.json" 1 "the 
 says "a failed gate fails the check" "$JOBS_DIR/none.json" 1 "the gate job did not succeed" failure true skipped skipped
 says "a skipped build the gate did not want passes" "$JOBS_DIR/none.json" 0 "was not needed" success false skipped skipped
 says "a build that ran when it was not wanted fails" "$JOBS_DIR/none.json" 1 "was not needed but its results are" success false success skipped
+says "one pool built and the other unfinished passes, with a notice naming it" "$JOBS_DIR/none.json" 0 "::notice::Desktop crate build (intel) was still unfinished" success true success unfinished
+says "one pool built and the other unknown passes, with a notice" "$JOBS_DIR/none.json" 0 "::notice::Desktop crate build (arm64) has an unknown state" success true unknown success
+says "nothing built by the deadline fails and says so" "$JOBS_DIR/none.json" 1 "neither pool had built it when the wait ended" success true unfinished unfinished
+says "pools that are not known to have built do not count" "$JOBS_DIR/none.json" 1 "neither pool is known to have built it" success true unknown unknown
+says "an unfinished pool never satisfies 'not wanted'" "$JOBS_DIR/none.json" 1 "expected both 'skipped'" success false unfinished skipped
 refuses_to_mention "the iOS names do not leak into this check's messages" "$JOBS_DIR/both-never-acquired.json" "iOS" success true cancelled cancelled
 
 # --- audit: every required check, and where it runs (personal-cfo-md8h2.25 AC6) --------
@@ -238,7 +289,8 @@ fi
 
 CASES=$((CASES + 1))
 bash -n "$VERDICT"
-ok "the verdict script passes bash -n"
+bash -n "$WAIT"
+ok "the verdict and wait scripts pass bash -n"
 CASES=$((CASES + 1))
 if command -v ruby >/dev/null 2>&1; then
   ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$CI"
