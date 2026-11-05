@@ -40,7 +40,7 @@ name: iOS kernel
 # the change would leave a required check "Expected — waiting" forever (the same reason
 # ci.yml filters inside its jobs). A skip also reports Success when the GATE fails, which
 # would let a filter or API error turn the required check green without a build ever
-# running. So the required name is the verdict job (scripts/ios-kernel-ci-verdict.sh),
+# running. So the required name is the verdict job (scripts/macos-pools-verdict.sh),
 # which fails unless the gate succeeded and the build succeeded or was not wanted. `schedule` payloads carry no `repository` object, so
 # the visibility of a scheduled run is read from the REST API, as ci.yml's security-scan
 # does, instead of trusting `github.event.repository.private`.
@@ -260,7 +260,7 @@ jobs:
           BUILD_WANTED: ${{ needs.gate.outputs.check }}
           ARM64_RESULT: ${{ needs.ios-build-arm64.result }}
           INTEL_RESULT: ${{ needs.ios-build-intel.result }}
-        run: scripts/ios-kernel-ci-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"
+        run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"
 
   ios-simulator:
     name: iOS simulator (vault tests)
