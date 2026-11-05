@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+pub mod register;
+
 use sync_core::header::Fingerprint;
 use sync_core::membership::{Action, MembershipBody, Reason, SignedRecord, KEM_ID, SUITE_ID};
 use vault_crypto::sync::TagSecret;

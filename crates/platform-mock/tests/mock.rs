@@ -2,7 +2,7 @@
 //! the pre-flight prompt, and can play an unavailable platform.
 
 use platform_mock::{
-    BiometryDevice, BiometryScript, MockBiometricAuth, MockBootClock, MockSecretStore,
+    BiometryDevice, BiometryScript, MockBiometricAuth, MockBootClock, MockSecretStore, MockWitness,
 };
 use platform_traits::{
     conformance, AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, BootClock,
@@ -418,4 +418,42 @@ fn the_mock_clock_restarts_advances_goes_backwards_and_fails_on_command() {
     assert!(clock.boot_id().is_err() && clock.monotonic_ns().is_err());
     clock.fail(false);
     assert!(clock.boot_id().is_ok());
+}
+
+#[test]
+fn the_mock_witness_passes_the_shared_witness_conformance_suite() {
+    conformance::run_rollback_witness(&MockWitness::new());
+}
+
+#[test]
+fn the_mock_witness_can_play_a_failing_platform_and_clones_share_state() {
+    use platform_traits::{CounterContext, RollbackWitness, WitnessError};
+    let witness = MockWitness::new();
+    let held = witness.clone();
+    let context = CounterContext {
+        vault_id: [1; 16],
+        key_epoch: 1,
+        fingerprint: [2; 32],
+        object_type: 2,
+    };
+    witness.advance_counter(&context, 3).unwrap();
+    assert_eq!(held.counter(&context), Ok(Some(3)), "a clone sees it");
+    witness.set_unavailable(true);
+    assert_eq!(held.counter(&context), Err(WitnessError::Unavailable));
+    assert_eq!(
+        held.advance_counter(&context, 4),
+        Err(WitnessError::Unavailable)
+    );
+    witness.set_unavailable(false);
+    witness.fail_next_counter_advances(1);
+    assert_eq!(
+        witness.advance_counter(&context, 4),
+        Err(WitnessError::Unavailable)
+    );
+    witness.advance_counter(&context, 4).unwrap();
+    // The test hooks can break monotonicity; the trait cannot.
+    witness.force_counter(&context, 1);
+    assert_eq!(witness.counter(&context), Ok(Some(1)));
+    witness.forget_counter(&context);
+    assert_eq!(witness.counter(&context), Ok(None));
 }
