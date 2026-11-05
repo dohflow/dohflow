@@ -398,6 +398,8 @@ struct WitnessState {
     unavailable: bool,
     /// How many of the next `advance_counter` calls fail with `Unavailable` before one succeeds.
     fail_counter_advances: usize,
+    /// How many `advance_counter` calls succeed before the scripted failures start.
+    skip_before_fail: usize,
     counter_advances: usize,
 }
 
@@ -415,6 +417,14 @@ impl MockWitness {
     /// Make the next `count` counter advances fail with [`WitnessError::Unavailable`].
     pub fn fail_next_counter_advances(&self, count: usize) {
         self.0.lock().unwrap().fail_counter_advances = count;
+    }
+
+    /// Let the next `succeed` counter advances through, then fail the `count` after them with
+    /// [`WitnessError::Unavailable`]: a crash at a chosen step of a longer sequence.
+    pub fn fail_counter_advances_after(&self, succeed: usize, count: usize) {
+        let mut state = self.0.lock().unwrap();
+        state.skip_before_fail = succeed;
+        state.fail_counter_advances = count;
     }
 
     /// How many counter advances succeeded (a no-op advance to the held value counts).
@@ -469,7 +479,9 @@ impl RollbackWitness for MockWitness {
         if state.unavailable {
             return Err(WitnessError::Unavailable);
         }
-        if state.fail_counter_advances > 0 {
+        if state.skip_before_fail > 0 {
+            state.skip_before_fail -= 1;
+        } else if state.fail_counter_advances > 0 {
             state.fail_counter_advances -= 1;
             return Err(WitnessError::Unavailable);
         }

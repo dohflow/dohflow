@@ -156,6 +156,25 @@ fn a_crash_before_the_first_commit_of_a_new_context_is_not_a_loss() {
 }
 
 #[test]
+fn a_witness_failure_after_the_first_register_commit_of_a_new_context_is_not_a_loss() {
+    let (store, witness) = setup();
+    let register = CounterRegister::new(&store, &witness);
+    let c = context(1, 0xa1);
+    // The context is born in the witness (call 1), the register commits counter 0's advance, and
+    // the witness advance that follows (call 2) fails: the real crash window of a first reserve.
+    witness.fail_counter_advances_after(1, 1);
+    assert_eq!(
+        register.reserve(&c).unwrap_err(),
+        NonceError::Witness(WitnessError::Unavailable)
+    );
+    assert_eq!(store.next_counter(&c), Ok(Some(1)));
+    assert_eq!(witness.peek_counter(&c), Some(0));
+    // Consistent, not NonceStateLost; counter 0 is burned and the next one is 1.
+    assert_eq!(register.check(&c), Ok(Some(1)));
+    assert_eq!(register.reserve(&c).unwrap().counter(), 1);
+}
+
+#[test]
 fn a_crash_after_the_witness_advance_and_before_encrypting_burns_the_counter() {
     let (store, witness) = setup();
     let register = CounterRegister::new(&store, &witness);
