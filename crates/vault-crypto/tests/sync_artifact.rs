@@ -412,46 +412,146 @@ fn a_re_addressed_artifact_is_the_same_bytes_under_the_chained_address() {
     assert_eq!(moved.sealed.receipt.key_epoch, 2);
 }
 
+/// The digest stored at first publication in epoch 1: the SHA-256 of the complete transport plaintext.
+fn stored_digest() -> [u8; 32] {
+    sample(id_1()).digest().unwrap()
+}
+
 #[test]
 fn the_local_copy_and_the_fetched_object_re_address_to_identical_bytes() {
     let old = sealed_container();
     let fetched = readdress_container(&k1(), &k2(), &id_1(), &old, Fixity::First).unwrap();
-    // The local path: a materialized copy whose plaintext is rebuilt from its blob and descriptor.
-    let local = readdress_plaintext(&k1(), &k2(), &id_1(), &sample(id_1()), Fixity::First).unwrap();
+    // The local path: a materialized copy that matches the digest stored at first publication.
+    let local = readdress_plaintext(
+        &k1(),
+        &k2(),
+        &id_1(),
+        &sample(id_1()),
+        &stored_digest(),
+        Fixity::First,
+    )
+    .unwrap();
     assert_eq!(local.artifact_id, fetched.artifact_id);
     assert_eq!(local.sealed.container, fetched.sealed.container);
     assert_eq!(
         local.sealed.plaintext_digest,
         fetched.sealed.plaintext_digest
     );
-    // A retry of either, with the stored digest, rebuilds the same bytes.
+    // A retry, which now also holds the epoch-2 digest, rebuilds the same bytes.
     let retry = readdress_plaintext(
         &k1(),
         &k2(),
         &id_1(),
         &sample(id_1()),
+        &stored_digest(),
         Fixity::Expected(fetched.sealed.plaintext_digest),
     )
     .unwrap();
     assert_eq!(retry.sealed.container, fetched.sealed.container);
-    // A local copy that drifted from what was published cannot be re-addressed under the stored digest.
-    let drifted = TransportPlaintext {
-        blob: b"a different document",
-        ..sample(id_1())
+}
+
+#[test]
+fn a_local_copy_that_is_not_what_was_published_is_refused_on_the_first_re_address() {
+    // No epoch-2 digest exists yet (Fixity::First): the stored epoch-1 digest is the only guard.
+    let first = |plaintext: &TransportPlaintext<'_>, id: &ArtifactId| {
+        readdress_plaintext(&k1(), &k2(), id, plaintext, &stored_digest(), Fixity::First)
+            .map(|_| ())
     };
+    let differs = Err(ReaddressError::LocalCopyDiffers);
+    // A drifted blob, a drifted descriptor, and a drifted kind.
+    assert_eq!(
+        first(
+            &TransportPlaintext {
+                blob: b"a different document",
+                ..sample(id_1())
+            },
+            &id_1()
+        ),
+        differs
+    );
+    assert_eq!(
+        first(
+            &TransportPlaintext {
+                logical_metadata: br#"{"mime_type":"application/pdf"}"#,
+                ..sample(id_1())
+            },
+            &id_1()
+        ),
+        differs
+    );
+    assert_eq!(
+        first(
+            &TransportPlaintext {
+                kind: ArtifactKind::SourceBatchPart,
+                ..sample(id_1())
+            },
+            &id_1()
+        ),
+        differs
+    );
+    // A copy that names another address is refused even when everything else matches the digest of
+    // *its own* plaintext: it is not the artifact at `old_id`.
+    let other_id = ArtifactId::from_derived([0x77; 32]);
+    assert_eq!(first(&sample(other_id), &id_1()), differs);
+    // The address check stands on its own: a copy whose digest *is* the stored one but which names
+    // another address (the stored digest here is that of the copy itself) is still refused.
+    let other = sample(other_id);
     assert_eq!(
         readdress_plaintext(
             &k1(),
             &k2(),
             &id_1(),
-            &drifted,
-            Fixity::Expected(fetched.sealed.plaintext_digest)
+            &other,
+            &other.digest().unwrap(),
+            Fixity::First
+        )
+        .map(|_| ()),
+        differs
+    );
+    // A copy held at the right address but checked against the wrong stored digest is refused.
+    assert_eq!(
+        readdress_plaintext(
+            &k1(),
+            &k2(),
+            &id_1(),
+            &sample(id_1()),
+            &[0u8; 32],
+            Fixity::First
+        )
+        .map(|_| ()),
+        differs
+    );
+    // And nothing was sealed on any refusal: the good copy still re-addresses.
+    assert!(first(&sample(id_1()), &id_1()).is_ok());
+}
+
+#[test]
+fn a_local_copy_that_drifted_after_the_epoch_two_seal_is_refused_by_the_fixity_too() {
+    let sealed = readdress_plaintext(
+        &k1(),
+        &k2(),
+        &id_1(),
+        &sample(id_1()),
+        &stored_digest(),
+        Fixity::First,
+    )
+    .unwrap();
+    // The stored epoch-1 digest still matches the copy, but the epoch-2 fixity guards the retry.
+    assert_eq!(
+        readdress_plaintext(
+            &k1(),
+            &k2(),
+            &id_1(),
+            &sample(id_1()),
+            &stored_digest(),
+            Fixity::Expected([9u8; 32])
         )
         .map(|_| ()),
         Err(ReaddressError::Seal(
             SealArtifactError::ArtifactDescriptorChanged
         ))
     );
+    let _ = sealed;
 }
 
 #[test]
@@ -486,13 +586,29 @@ fn only_the_next_epoch_of_the_same_vault_is_a_re_address() {
             Err(ReaddressError::NotTheNextEpoch)
         );
         assert_eq!(
-            readdress_plaintext(&k1(), bad, &id_1(), &sample(id_1()), Fixity::First).map(|_| ()),
+            readdress_plaintext(
+                &k1(),
+                bad,
+                &id_1(),
+                &sample(id_1()),
+                &stored_digest(),
+                Fixity::First
+            )
+            .map(|_| ()),
             Err(ReaddressError::NotTheNextEpoch)
         );
     }
     // Going backwards is not a re-address.
     assert_eq!(
-        readdress_plaintext(&k2(), &k1(), &id_1(), &sample(id_1()), Fixity::First).map(|_| ()),
+        readdress_plaintext(
+            &k2(),
+            &k1(),
+            &id_1(),
+            &sample(id_1()),
+            &stored_digest(),
+            Fixity::First
+        )
+        .map(|_| ()),
         Err(ReaddressError::NotTheNextEpoch)
     );
 }
@@ -539,4 +655,29 @@ fn debug_forms_show_sizes_and_addresses_never_bytes() {
         Err(ArtifactError::BadLogicalMetadata)
     );
     let _ = LogicalBinding::of(ArtifactKind::Attachment, METADATA);
+}
+
+#[test]
+fn the_container_size_bound_is_exact() {
+    // The framing is 14 bytes and the tag 16; find the blob length that makes the container exactly
+    // the service's maximum.
+    let overhead = sample(id_1()).encode().unwrap().len() - DOCUMENT.len();
+    let at_bound = MAX_ARTIFACT_CONTAINER - 14 - 16 - overhead;
+    let blob = vec![0x5a_u8; at_bound];
+    let at = TransportPlaintext {
+        blob: &blob,
+        ..sample(id_1())
+    };
+    let sealed = seal_artifact(&k1(), &at, Fixity::First).unwrap();
+    assert_eq!(sealed.container.len(), MAX_ARTIFACT_CONTAINER);
+    drop(sealed);
+    let blob = vec![0x5a_u8; at_bound + 1];
+    let past = TransportPlaintext {
+        blob: &blob,
+        ..sample(id_1())
+    };
+    assert_eq!(
+        seal_artifact(&k1(), &past, Fixity::First).map(|_| ()),
+        Err(SealArtifactError::ContainerTooLarge)
+    );
 }

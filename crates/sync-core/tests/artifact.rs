@@ -441,3 +441,20 @@ fn the_closure_commitment_is_the_delta_commitment_for_the_same_list_and_orders_i
     assert_eq!(big.ids().len(), MAX_SNAPSHOT_CLOSURE);
     let _ = big.commitment();
 }
+
+#[test]
+fn a_batch_part_names_exactly_three_members() {
+    let extra =
+        format!(r#"{{"batch_id":"{BATCH}","extra":"x","part_count":"1","part_index":"0"}}"#);
+    assert_eq!(
+        LogicalBinding::of(ArtifactKind::SourceBatchPart, extra.as_bytes()),
+        Err(ArtifactError::BadLogicalMetadata)
+    );
+    let missing = format!(r#"{{"batch_id":"{BATCH}","part_count":"1"}}"#);
+    assert_eq!(
+        LogicalBinding::of(ArtifactKind::SourceBatchPart, missing.as_bytes()),
+        Err(ArtifactError::BadLogicalMetadata)
+    );
+    // An attachment may carry its logical fields (mime type, file name) beside the id.
+    assert!(LogicalBinding::of(ArtifactKind::Attachment, &meta_attachment()).is_ok());
+}

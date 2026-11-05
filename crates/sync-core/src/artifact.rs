@@ -231,6 +231,11 @@ impl LogicalBinding {
                 attachment_id: text("attachment_id").and_then(parse_uuid).ok_or(bad)?,
             }),
             ArtifactKind::SourceBatchPart => {
+                // Exactly the three members C.9 names: an unknown member is refused, so two
+                // replicas cannot disagree about whether it matters.
+                if members.len() != 3 {
+                    return Err(bad);
+                }
                 let batch_id = text("batch_id").and_then(parse_uuid).ok_or(bad)?;
                 let part_count = text("part_count").and_then(parse_decimal_u32).ok_or(bad)?;
                 let part_index = text("part_index").and_then(parse_decimal_u32).ok_or(bad)?;
