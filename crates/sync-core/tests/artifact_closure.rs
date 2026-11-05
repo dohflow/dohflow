@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 
 use sync_core::artifact::{ArtifactId, ArtifactKind, LogicalBinding, TransportPlaintext};
 use sync_core::artifact_closure::{
-    build_delta, check_closure, ArtifactDirectory, BuildError, DeltaArtifact, LiveClosure,
-    LogicalRef, Mismatch, PayloadRef, ReceiptState,
+    build_delta, check_closure, check_delta, ArtifactDirectory, BuildError, DeltaArtifact,
+    LiveClosure, LogicalRef, Mismatch, PayloadRef, ReceiptState,
 };
-use sync_core::source_batch::{BatchRow, RecordRow, SourceBatch};
+use sync_core::source_batch::{record_json, BatchRow, RecordRow, SourceBatch};
 
 fn aid(n: u8) -> ArtifactId {
     ArtifactId::from_derived([n; 32])
@@ -570,4 +570,188 @@ fn an_authenticated_artifact_with_metadata_naming_no_binding_is_a_mismatch() {
         blob: b"x",
     };
     assert_eq!(DeltaArtifact::from_plaintext(&attachment), bad);
+}
+
+// ---- T1: a batch is its canonical split --------------------------------------------------------------
+
+fn rec(n: u8, padding: usize) -> RecordRow {
+    RecordRow {
+        id: rid(n),
+        normalized_json: "x".repeat(padding),
+        ..one_record_batch().records[0].clone()
+    }
+}
+
+fn batch_of(records: Vec<RecordRow>) -> SourceBatch {
+    SourceBatch {
+        records,
+        ..one_record_batch()
+    }
+}
+
+fn records_only(records: &[RecordRow]) -> Vec<u8> {
+    let json: Vec<String> = records
+        .iter()
+        .map(|r| String::from_utf8(record_json(r).unwrap()).unwrap())
+        .collect();
+    format!(r#"{{"records":[{}]}}"#, json.join(",")).into_bytes()
+}
+
+/// Part plaintexts from `(blob)` in order, with ids 10, 11, ... and `count` taken from the list.
+fn delta_of(blobs: &[Vec<u8>]) -> Vec<(u8, Vec<u8>, Vec<u8>)> {
+    let count = u32::try_from(blobs.len()).unwrap();
+    blobs
+        .iter()
+        .enumerate()
+        .map(|(i, blob)| {
+            (
+                10 + u8::try_from(i).unwrap(),
+                meta(u32::try_from(i).unwrap(), count),
+                blob.clone(),
+            )
+        })
+        .collect()
+}
+
+fn verdict(refs: &[PayloadRef], blobs: &[Vec<u8>]) -> Result<(), Mismatch> {
+    let owned = delta_of(blobs);
+    let plaintexts: Vec<TransportPlaintext<'_>> = owned
+        .iter()
+        .map(|(id, metadata, blob)| plaintext(*id, metadata, blob))
+        .collect();
+    check_delta(refs, &plaintexts, &LiveClosure::new())
+}
+
+fn canonical_blobs(b: &SourceBatch) -> Vec<Vec<u8>> {
+    b.split().unwrap().into_iter().map(|p| p.blob).collect()
+}
+
+#[test]
+fn a_canonical_batch_of_one_part_and_of_many_passes_stage_9() {
+    let one = batch_of(vec![rec(1, 20)]);
+    assert_eq!(verdict(&[record(1)], &canonical_blobs(&one)), Ok(()));
+    let many = batch_of((1..=250).map(|n| rec(n, 20_000)).collect());
+    let blobs = canonical_blobs(&many);
+    assert!(blobs.len() >= 2, "{} parts", blobs.len());
+    assert_eq!(verdict(&[record(1), record(250)], &blobs), Ok(()));
+}
+
+#[test]
+fn a_later_part_with_no_records_is_not_canonical() {
+    let mut blobs = canonical_blobs(&batch_of(vec![rec(1, 20)]));
+    blobs.push(br#"{"records":[]}"#.to_vec());
+    assert_eq!(
+        verdict(&[record(1)], &blobs),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+}
+
+#[test]
+fn part_zero_with_no_records_is_not_canonical() {
+    let mut blobs = canonical_blobs(&batch_of(Vec::new()));
+    blobs.push(records_only(&[rec(1, 20)]));
+    assert_eq!(
+        verdict(&[record(1)], &blobs),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+}
+
+#[test]
+fn records_out_of_order_across_parts_are_not_canonical() {
+    let mut blobs = canonical_blobs(&batch_of(vec![rec(2, 20)]));
+    blobs.push(records_only(&[rec(1, 20)]));
+    assert_eq!(
+        verdict(&[record(1), record(2)], &blobs),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+}
+
+#[test]
+fn a_part_over_the_bound_is_not_canonical() {
+    // Five records of about 1 MB split into two parts; merge them into one oversize part.
+    let rows: Vec<RecordRow> = (1..=5).map(|n| rec(n, 1_000_000 - 400)).collect();
+    let parts = canonical_blobs(&batch_of(rows));
+    assert_eq!(parts.len(), 2);
+    let second = std::str::from_utf8(&parts[1]).unwrap();
+    let inner = &second[r#"{"records":["#.len()..second.len() - 2];
+    let first = std::str::from_utf8(&parts[0]).unwrap();
+    let merged = format!("{},{inner}]}}", &first[..first.len() - 2]).into_bytes();
+    assert!(merged.len() > 1 << 22);
+    assert_eq!(
+        verdict(&[record(1), record(5)], &[merged]),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+}
+
+#[test]
+fn a_non_greedy_split_is_not_canonical() {
+    // Both records fit one part; carrying them as two is not what the rows always give.
+    let mut blobs = canonical_blobs(&batch_of(vec![rec(1, 20)]));
+    blobs.push(records_only(&[rec(2, 20)]));
+    assert_eq!(
+        verdict(&[record(1), record(2)], &blobs),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+}
+
+// ---- T2: a record id is held by one batch ----------------------------------------------------------------
+
+#[test]
+fn an_unnamed_record_held_by_two_batches_of_the_delta_is_a_mismatch() {
+    // r2 is in both batches and named by neither reference: it would hit the primary key.
+    assert_eq!(
+        check_closure(
+            &[record(1), record(3)],
+            &[part(10, 0xb1, 0, 1, &[1, 2]), part(11, 0xb2, 0, 1, &[2, 3])],
+            &LiveClosure::new()
+        ),
+        Err(Mismatch::RecordInSeveralBatches(rid(2)))
+    );
+}
+
+#[test]
+fn a_record_held_by_a_delta_batch_and_a_different_live_batch_is_a_mismatch() {
+    let mut live = LiveClosure::new();
+    live.insert_record(rid(0xb9), rid(1));
+    assert_eq!(
+        check_closure(&[record(1)], &[part(10, 0xb1, 0, 1, &[1])], &live),
+        Err(Mismatch::RecordInLiveBatch(rid(1)))
+    );
+    // Also when the record is not named by the payload.
+    let mut live = LiveClosure::new();
+    live.insert_record(rid(0xb9), rid(2));
+    assert_eq!(
+        check_closure(&[record(1)], &[part(10, 0xb1, 0, 1, &[1, 2])], &live),
+        Err(Mismatch::RecordInLiveBatch(rid(2)))
+    );
+    // The same batch re-referenced holds the same records: fine.
+    let mut live = LiveClosure::new();
+    live.insert_record(rid(0xb1), rid(1));
+    live.insert(LogicalRef::Batch(rid(0xb1)), aid(10));
+    assert_eq!(
+        check_closure(&[record(1)], &[part(10, 0xb1, 0, 1, &[1])], &live),
+        Ok(())
+    );
+    assert_eq!(live.batch_of_record(&rid(1)), Some(rid(0xb1)));
+    assert_eq!(live.batch_of_record(&rid(9)), None);
+}
+
+#[test]
+fn the_same_number_of_parts_with_the_wrong_boundary_is_not_canonical() {
+    // Greedy puts four ~1 MB records in part 0 and the fifth in part 1; carry three and two.
+    let rows: Vec<RecordRow> = (1..=5).map(|n| rec(n, 1_000_000 - 400)).collect();
+    let canonical = canonical_blobs(&batch_of(rows.clone()));
+    assert_eq!(canonical.len(), 2);
+    let mut skewed = canonical_blobs(&batch_of(rows[..3].to_vec()));
+    assert_eq!(skewed.len(), 1);
+    skewed.push(records_only(&rows[3..]));
+    assert_eq!(
+        verdict(&[record(1), record(5)], &canonical),
+        Ok(()),
+        "the real split is fine"
+    );
+    assert_eq!(
+        verdict(&[record(1), record(5)], &skewed),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
 }

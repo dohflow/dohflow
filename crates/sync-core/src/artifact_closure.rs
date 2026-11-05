@@ -21,7 +21,7 @@ use thiserror::Error;
 use crate::artifact::{ArtifactId, LogicalBinding, TransportPlaintext};
 use crate::envelope::ArtifactManifest;
 use crate::header::ManifestCommitment;
-use crate::source_batch::record_ids;
+use crate::source_batch::{join, record_ids};
 
 /// A logical class-1b object an artifact binds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,7 +88,11 @@ impl DeltaArtifact {
 /// What a snapshot at the preceding log position would carry, in this epoch: each logical object's
 /// ids. A function of replicated state, never a replica's local cache.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LiveClosure(BTreeMap<LogicalRef, BTreeSet<ArtifactId>>);
+pub struct LiveClosure {
+    bound: BTreeMap<LogicalRef, BTreeSet<ArtifactId>>,
+    /// Each source record of a live batch, with the batch that holds it.
+    records: BTreeMap<[u8; 16], [u8; 16]>,
+}
 
 impl LiveClosure {
     /// An empty closure.
@@ -99,13 +103,24 @@ impl LiveClosure {
 
     /// Add `id` to `logical`'s set.
     pub fn insert(&mut self, logical: LogicalRef, id: ArtifactId) {
-        self.0.entry(logical).or_default().insert(id);
+        self.bound.entry(logical).or_default().insert(id);
+    }
+
+    /// Record that live batch `batch` holds source record `record`.
+    pub fn insert_record(&mut self, batch: [u8; 16], record: [u8; 16]) {
+        self.records.insert(record, batch);
+    }
+
+    /// The live batch that holds `record`, if any.
+    #[must_use]
+    pub fn batch_of_record(&self, record: &[u8; 16]) -> Option<[u8; 16]> {
+        self.records.get(record).copied()
     }
 
     /// The ids bound to `logical`, if any.
     #[must_use]
     pub fn get(&self, logical: &LogicalRef) -> Option<&BTreeSet<ArtifactId>> {
-        self.0.get(logical)
+        self.bound.get(logical)
     }
 }
 
@@ -142,6 +157,15 @@ pub enum Mismatch {
     /// One source record is held more than once across the parts of a batch.
     #[error("a source record is held by more than one part of a batch")]
     RecordDuplicated([u8; 16]),
+    /// A source record is held by a batch of the delta and by a **different** batch of the live
+    /// closure at the preceding position (T2): it would collide with a live row.
+    #[error("a source record is also held by a different live batch")]
+    RecordInLiveBatch([u8; 16]),
+    /// The parts of a batch decode, but are not what C.9's deterministic split gives for the batch
+    /// they join to (an empty part, records out of order across parts, a part over the bound, a
+    /// non-greedy split): the same rows would not always give the same parts.
+    #[error("the parts of a batch are not its canonical split")]
+    BatchNotCanonical([u8; 16]),
     /// A source record the payload names is in no referenced batch.
     #[error("a named source record is in no referenced batch")]
     RecordInNoBatch([u8; 16]),
@@ -223,6 +247,27 @@ pub fn check_closure(
         }
     }
 
+    // T2: no record id is held by two batches of the delta, named or not, nor by a delta batch and a
+    // different batch of the live closure: it would collide on the primary key at materialization.
+    let mut holder_of: BTreeMap<[u8; 16], [u8; 16]> = BTreeMap::new();
+    for (batch_id, parts) in &batches {
+        for (artifact, _, _) in parts {
+            for record in &artifact.records {
+                // A record twice in one batch was refused above (`RecordDuplicated`), so a previous
+                // holder here is always another batch.
+                if holder_of.insert(*record, *batch_id).is_some() {
+                    return Err(Mismatch::RecordInSeveralBatches(*record));
+                }
+                if live
+                    .batch_of_record(record)
+                    .is_some_and(|live_batch| &live_batch != batch_id)
+                {
+                    return Err(Mismatch::RecordInLiveBatch(*record));
+                }
+            }
+        }
+    }
+
     // Every named record is in exactly one referenced batch; every named attachment has an artifact.
     let mut named_in: BTreeSet<[u8; 16]> = BTreeSet::new();
     for reference in refs {
@@ -275,6 +320,77 @@ pub fn check_closure(
         if live.get(&logical).is_some_and(|bound| bound != &ids) {
             return Err(Mismatch::Rebinding(logical));
         }
+    }
+    Ok(())
+}
+
+/// One part of a batch as `(part_index, part_count, blob)`.
+pub type PartRef<'a> = (u32, u32, &'a [u8]);
+
+/// T1: a batch is valid only if its parts decode **and** re-splitting the batch they join to by
+/// C.9's deterministic split gives exactly these blobs at these indices. This closes the whole class
+/// of parts that join but are not what the rows would always produce (an empty part, records out of
+/// order across parts, a part over the bound, a non-greedy split).
+///
+/// # Errors
+/// [`Mismatch::BatchNotCanonical`].
+pub fn check_batch_canonical(
+    batch_id: &[u8; 16],
+    parts: &[(u32, u32, &[u8])],
+) -> Result<(), Mismatch> {
+    let not_canonical = Mismatch::BatchNotCanonical(*batch_id);
+    let joined = join(batch_id, parts).map_err(|_| not_canonical)?;
+    let expected = joined.split().map_err(|_| not_canonical)?;
+    // `join` has checked that the indices are exactly `0..count` and that `count` is the number of
+    // parts, so what remains is the number of parts and each blob, in index order.
+    let mut ordered = parts.to_vec();
+    ordered.sort_by_key(|p| p.0);
+    let same = expected.len() == ordered.len()
+        && expected
+            .iter()
+            .zip(&ordered)
+            .all(|(e, p)| e.blob.as_slice() == p.2);
+    if same {
+        Ok(())
+    } else {
+        Err(not_canonical)
+    }
+}
+
+/// Stage 9(b) end to end, from the **plaintext of every artifact in the delta**: build each stage-9
+/// input ([`DeltaArtifact::from_plaintext`]), run [`check_closure`], then check every batch is its
+/// canonical split ([`check_batch_canonical`]). A caller that skips the network for an id it already
+/// holds must still pass that artifact's plaintext here: a cache saves a fetch, never a decode, so an
+/// id fetched for an envelope that was invalid for another reason cannot stand in for a decoded part.
+///
+/// # Errors
+/// The first [`Mismatch`], in a fixed order.
+pub fn check_delta(
+    refs: &[PayloadRef],
+    plaintexts: &[TransportPlaintext<'_>],
+    live: &LiveClosure,
+) -> Result<(), Mismatch> {
+    let delta = plaintexts
+        .iter()
+        .map(DeltaArtifact::from_plaintext)
+        .collect::<Result<Vec<_>, _>>()?;
+    check_closure(refs, &delta, live)?;
+    let mut by_batch: BTreeMap<[u8; 16], Vec<PartRef<'_>>> = BTreeMap::new();
+    for (plaintext, artifact) in plaintexts.iter().zip(&delta) {
+        if let LogicalBinding::BatchPart {
+            batch_id,
+            part_index,
+            part_count,
+        } = artifact.binding
+        {
+            by_batch
+                .entry(batch_id)
+                .or_default()
+                .push((part_index, part_count, plaintext.blob));
+        }
+    }
+    for (batch_id, parts) in &by_batch {
+        check_batch_canonical(batch_id, parts)?;
     }
     Ok(())
 }
