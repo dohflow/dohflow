@@ -37,12 +37,14 @@ fn key_of(epoch: u64, first: u8) -> EpochKey {
 
 // ---- the fake service ---------------------------------------------------------------------------
 
+type ObjectKey = ([u8; 16], u64, [u8; 32]);
+
 /// `putArtifact`, `getArtifact` and `getArtifactStatus` as protocol 4.10 describes them: it checks
 /// only the framing and the size, stores the first bytes for an address, answers an exact retry with
 /// the same receipt, and refuses different bytes with `ObjectConflict`. It cannot read an object.
 #[derive(Default)]
 struct FakeService {
-    objects: RefCell<BTreeMap<([u8; 16], u64, [u8; 32]), Vec<u8>>>,
+    objects: RefCell<BTreeMap<ObjectKey, Vec<u8>>>,
     puts: Cell<usize>,
     down: Cell<bool>,
 }

@@ -425,3 +425,15 @@ fn records_out_of_order_or_repeated_in_a_part_are_refused() {
         Err(SourceBatchError::DuplicateRow)
     );
 }
+
+#[test]
+fn part_zero_names_its_own_batch_even_with_no_rows_to_betray_it() {
+    let mut empty = small(0);
+    empty.runs.clear();
+    let parts = empty.split().unwrap();
+    assert!(decode_part(&BATCH, 0, &parts[0].blob).is_ok());
+    assert_eq!(
+        decode_part(&[0xee; 16], 0, &parts[0].blob),
+        Err(SourceBatchError::RowOfAnotherBatch)
+    );
+}

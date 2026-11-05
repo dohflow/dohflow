@@ -15,9 +15,7 @@
 //!   No origin storage id, wrapped key or nonce is read from, or written to, anything that crosses
 //!   the wire.
 
-use sync_core::artifact::{
-    ArtifactId, ArtifactKind, ArtifactReceipt, LogicalBinding, MAX_ARTIFACT_CONTAINER,
-};
+use sync_core::artifact::{ArtifactId, ArtifactReceipt, LogicalBinding, MAX_ARTIFACT_CONTAINER};
 use sync_core::artifact_transport::{ArtifactTransport, TransportError};
 use thiserror::Error;
 
@@ -172,9 +170,8 @@ pub fn materialize_attachment(
     opened: &OpenedArtifact,
 ) -> Result<LocalAttachment, MaterializeError> {
     let plaintext = opened.plaintext();
-    if plaintext.kind != ArtifactKind::Attachment {
-        return Err(MaterializeError::NotAnAttachment);
-    }
+    // The binding is read according to the artifact's kind, so only an attachment with a valid
+    // `attachment_id` yields `LogicalBinding::Attachment`.
     let Ok(LogicalBinding::Attachment { attachment_id }) = plaintext.binding() else {
         return Err(MaterializeError::NotAnAttachment);
     };
