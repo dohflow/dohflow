@@ -467,12 +467,16 @@ jobs:
           cargo test -p db-worker -p job-runtime -- --ignored --nocapture --test-threads=1 \
             write_set_tests::the_capture_stays_inside_the_absolute_budget \
             write_set_tests::the_relative_check_rejects_a_much_slower_capture \
+            the_derived_id_mint_stays_inside_the_absolute_budget \
+            ordinary_commands_stay_inside_the_absolute_budget_on_the_golden_fixture \
+            an_import_batch_stays_inside_the_absolute_budget \
             rebuild_stays_inside_the_absolute_budget \
             db_cancel_request_reaches_a_running_handler_within_the_sla \
             cancellation_is_visible_within_the_absolute_sla 2>&1 \
             | tee "$out" || status=$?
           absolute=$(grep 'ABSOLUTE' "$out" || echo "no measurement line printed")
           slowed=$(grep 'write-set capture SLOWED' "$out" || echo "no measurement line printed")
+          apply_perf=$(grep 'ABSOLUTE \(derived ids\|record a transaction\|set a note\|mark reviewed\|void a transaction\|import batch\)' "$out" || echo "no measurement line printed")
           {
             echo "### Perf budget: write-set capture (not a required check)"
             echo "Runner: ${RUNNER_OS} ${RUNNER_ARCH} (${RUNNER_ENVIRONMENT:-unknown})."
@@ -483,6 +487,10 @@ jobs:
             echo "Timed slowdown proof (the relative check must reject it; it needs a ratio of 4x or more):"
             echo '```'
             echo "$slowed"
+            echo '```'
+            echo "Apply on the golden fixture (derived ids, ordinary commands, a 2,000-row import):"
+            echo '```'
+            echo "$apply_perf"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
