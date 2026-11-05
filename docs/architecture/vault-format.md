@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=29 -->
+<!-- vault-format: spec-version=32 -->
 <!-- vault-format: schema-version=65 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,21 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 32` (personal-cfo-0g528.2, part S2b) settles how class-1b artifacts are addressed,
+  grouped and referenced before any code depends on it. (1) C.3: an artifact's first id keeps its
+  derivation and its vector, with `storage_id_raw` pinned as the 32 raw bytes of the local address; at a
+  key-changing epoch the next id is derived from the previous one (`dohflow/sync-artifact-readdress/v1`),
+  so any member of the new epoch can re-address an artifact it did not originate; new vector
+  `artifact_id_readdress_epoch2`. (2) C.3, C.4, C.8: a snapshot's full closure is bounded at 2^20 ids; an
+  envelope's delta keeps 4096; the commitment's label and bytes are unchanged. (3) C.1.3, C.9: one artifact
+  per source batch, carried as ordered immutable parts under a stated per-part bound; kinds 3 and 4 are
+  reserved. (4) C.9: the delta is every class-1b artifact the payload references, a receiver
+  materializes all of them before apply and checks set equality; the seal checks the transport plaintext
+  digest before it encrypts. (5) C.11: `ArtifactRebootstrapRequired` is defined and
+  `ArtifactClosureMismatch` is added. No other wire layout and no other vector changes. The service
+  protocol's `max_artifact_manifest_ids` (4096) is the bound for an envelope's sidecar and for a status
+  request and is unchanged; the bound and the request-body size for a snapshot's closure sidecar are the
+  service's to adopt (`personal-cfo-v98vd`).
 - `spec-version = 29` (personal-cfo-1cltt.1) specifies the snapshot's manifest and the logical class-1 export it
   carries (C.8). The manifest gains the voided ranges and void ids a snapshot records (ADR 0074 Addendum D
   rule 8), the origin vault's creation time (a manifest field, never a `vault_metadata` row, so a seed
@@ -912,7 +927,7 @@ that JCS's IEEE-754 number rules never apply:
 | `membership_action` | `1` add, `2` revoke |
 | `reason` (epoch record) | `1` genesis, `2` revocation cutover, `3` grant, `4` forced rotation |
 | `kem_id` | `0x0020` DHKEM(X25519, HKDF-SHA256) |
-| `artifact_kind` | `1` attachment, `2` source batch, `3` source record, `4` parser run |
+| `artifact_kind` | `1` attachment, `2` source batch part (C.9); `3` and `4` are reserved and never produced (they were source record and parser run before spec-version 32: a record and a run belong to their batch's parts) |
 
 ### C.1.4 Cryptographic suite 1
 
@@ -1162,15 +1177,29 @@ HKDF-SHA256-Expand with PRK `K` and output length 32.
 | `idempotency_key_tag` | `HMAC-SHA256(tag key, label "dohflow/sync-idem-tag/v1" ‖ uuid canonical_idempotency_key)` |
 | `immutable_metadata_commitment` | `SHA-256(label "dohflow/sync-meta-commit/v1" ‖ uuid command_id ‖ uuid correlation_id ‖ opt(uuid) causation_id ‖ u8 actor_type ‖ text(256) actor_id ‖ uuid idempotency_key ‖ i64 issued_at ‖ uuid device_id)` |
 | Key commitments | `SHA-256(label "dohflow/sync-epoch-key-commit/v1" ‖ key32 K_e)` and `SHA-256(label "dohflow/sync-tag-key-commit/v1" ‖ key32 S)` |
-| `sync_artifact_id_e` | `HMAC-SHA256(Expand(K_e, label "dohflow/sync-artifact-address/v1" ‖ uuid vault_id), storage_id_raw)`, where `storage_id_raw` is the 32 bytes behind the local `StorageId`'s hex form |
+| `sync_artifact_id_e` (first publication) | `HMAC-SHA256(Expand(K_e, label "dohflow/sync-artifact-address/v1" ‖ uuid vault_id), storage_id_raw)`, where `storage_id_raw` is the artifact's 32-byte local address (below) |
+| `sync_artifact_id_{e+1}` (re-address at a key-changing epoch) | `HMAC-SHA256(Expand(K_{e+1}, label "dohflow/sync-artifact-readdress/v1" ‖ uuid vault_id ‖ u64 key_epoch_{e+1}), digest sync_artifact_id_e)` |
 | Artifact object key | `Expand(K_e, label "dohflow/sync-artifact-object/v1" ‖ u16 protocol_version ‖ uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id)` |
-| Artifact manifest commitment | `SHA-256(label "dohflow/sync-artifact-manifest/v1" ‖ list(digest, 4096) of the ids in strictly ascending byte order)` |
+| Artifact manifest commitment | `SHA-256(label "dohflow/sync-artifact-manifest/v1" ‖ list(digest, N) of the ids in strictly ascending byte order)`, with `N` = 4096 for an envelope's delta manifest and `N` = 2^20 for a snapshot's full closure. The label and the bytes are the same for both (a CBE1 list count is a `u32`); only the bound a producer and a receiver enforce differs. |
 | `canonical_envelope_digest` | `SHA-256(label "dohflow/sync-envelope-digest/v1" ‖ u32 len ‖ header bytes ‖ u64 len ‖ ciphertext)` |
 
 `issued_at` is a signed 64-bit count of microseconds since the Unix epoch, UTC.
 `canonical_idempotency_key` is the 16 raw bytes of the key's UUID (C.5).
 `K_e` and `S` are uniformly random, so Expand-only use is sound; the labelled,
 versioned context provides domain separation.
+
+**Artifact addresses.** `storage_id_raw` is the artifact's address as 32 raw bytes, never as text.
+For an attachment it is the 32 bytes of the `HMAC-SHA256(addr_subkey, plaintext)` output of which the
+local `StorageId` is the lowercase hex form (ADR 0023), and the hex string itself is never hashed. For a
+source batch part it is `HMAC-SHA256(addr_subkey_batch, the part's blob bytes)` (C.9), where
+`addr_subkey_batch` is derived from the vault DEK as `addr_subkey` is, with the info string
+`personal-cfo/source-batch-addressing/v1`. Each device has its own DEK, so only the device that first
+publishes an artifact can compute its first id. **Re-addressing therefore chains**: every member of
+epoch `e+1` holds `sync_artifact_id_e` in its local mapping, so any member can compute
+`sync_artifact_id_{e+1}` from it and `K_{e+1}` without the origin's DEK and without fetching anything,
+while a device that knows `sync_artifact_id_e` but not `K_{e+1}` (a revoked device, the service)
+cannot link the two ids. A guessed plaintext cannot confirm an artifact's presence: the first id is
+keyed under the DEK and then under `K_e`. A client stores no address input; it keeps the ids.
 
 ## C.4 AEAD objects: envelopes and snapshots
 
@@ -1196,7 +1225,7 @@ The header is the AAD of the object's AEAD. Its fields, in order:
 | 14 | `payload_schema_version` | `u32` | |
 | 15 | `engine_version` | `text(64)` | |
 | 16 | `schema_version` | `u32` | the vault schema version of the producer |
-| 17 | `artifact_manifest_commitment` | `opt(digest)` | an envelope: the delta manifest commitment, present **only when the delta manifest is non-empty** (absent otherwise); a snapshot: always present, the commitment of its full closure even when that closure is empty |
+| 17 | `artifact_manifest_commitment` | `opt(digest)` | an envelope: the delta manifest commitment, present **only when the delta manifest is non-empty** (absent otherwise; at most 4096 ids); a snapshot: always present, the commitment of its full closure even when that closure is empty (at most 2^20 ids, C.3) |
 
 The service-assigned `seq` is **not** in the header: it does not exist until the
 service accepts the already sealed object, and the service binds it to the
@@ -1791,7 +1820,8 @@ it joins.
 `text(255) path ‖ blob content`. The first file is `manifest.json`; the other
 files are the `data/<table>.jsonl` files in ascending path order. The manifest
 (canonical JSON) lists every table file with its row count and SHA-256, and the
-**complete closure manifest** of `sync_artifact_id_e` values; its commitment is
+**complete closure manifest** of `sync_artifact_id_e` values (at most 2^20, strictly
+ascending; a vault whose closure is larger fails with `SnapshotTooLarge`); its commitment is
 the header's `artifact_manifest_commitment`. The set of files must equal the set
 the manifest names, with none missing and none extra.
 
@@ -1813,7 +1843,7 @@ Canonical JSON (C.1.2), so every integer in it is a decimal string and every mem
 | `vault_created_at` | the origin vault's creation time, the `created_at` of its `vault_metadata` row |
 | `tables` | one object per table file, ascending by `name`: `name`, `row_count` (a decimal string), `sha256` (of the file's bytes, lowercase hex), `state_digest` (below; `null` for a folded child) and `columns`, an array of `name` and `kind` in file order |
 | `voids` | the honored voids the snapshot records, as `void_id` (lowercase hex), `first` and `last` (decimal strings), strictly ascending and disjoint, as the C.10 ledger encodes them (ADR 0074 Addendum D rule 8) |
-| `artifacts` | the complete closure manifest: `sync_artifact_id_e` values as lowercase hex, strictly ascending (empty until the artifact closure ships, `personal-cfo-1cltt.7`) |
+| `artifacts` | the complete closure manifest: `sync_artifact_id_e` values as lowercase hex, strictly ascending, at most 2^20 (empty until the artifact closure ships, `personal-cfo-1cltt.7`) |
 
 An unknown member, a value out of its form (a count with a leading zero, a hash that is not 32
 bytes of lowercase hex, a range that runs backwards or overlaps the previous one) or a manifest
@@ -1864,8 +1894,65 @@ every closure pin are durable in one compare-and-swap transaction.
 
 ## C.9 Artifact transport
 
-A class-1b artifact (an attachment's bytes, or an import provenance artifact) is
+A class-1b artifact (an attachment's bytes, or a source batch's records) is
 published as an immutable, epoch-scoped object.
+
+**Kinds and granularity.** `artifact_kind` 1 is an attachment: one artifact per attachment's bytes.
+Kind 2 is one *part* of a source batch (below). A source record and a parser run are not artifacts of
+their own (kinds 3 and 4 are reserved); each belongs to its batch's parts. Granularity is per batch,
+not per row, so that a key-changing epoch (which re-addresses every live artifact) costs time
+proportional to the number of batches and attachments and not to the number of imported rows, and so
+that one large import cannot fill a snapshot's closure.
+
+**Source batch parts (`SourceBatchPartV1`).** A part's blob is canonical JSON (C.1.2) whose rows use
+the row encoding of B.3: part 0 is `{"batch": {...}, "parser_runs": [...], "records": [...]}`, every
+later part `{"records": [...]}`. Records are in ascending `id` byte order and parser runs likewise. The
+part's `logical_metadata` is `{"batch_id": "<uuid>", "part_count": "<n>", "part_index": "<i>"}`. **A
+column is in the artifact if and only if production code sets it at INSERT and never UPDATEs it**; the
+rest is device-local workflow state that no replica reads. So the batch carries `id`, `source_type`,
+`source_name`, `file_fingerprint`, `parser_version`, `summary_json`, `imported_at`, `created_at` and
+`connector_connection_id`, and does not carry `status`, `staged_count`, `committed_count`,
+`skipped_count` or `updated_at`; every column of a source record and of a parser run is carried. A
+receiver materializes a batch with `status` `committed`, counts `0` and `updated_at` equal to
+`created_at`. If a column is later added, or later UPDATEd, this rule decides where it goes, and a
+test against the column manifest makes the new column say so.
+
+**Parts and the per-part bound.** The blob of one part is at most `2^22` bytes (4 MiB), far under the
+service's `max_artifact_bytes`. A batch is split deterministically from its rows alone: part 0 holds
+the batch columns and the parser runs, then records are added in ascending `id` order, and a part is
+closed when adding the next record's canonical JSON would pass the bound; a record that alone passes it
+occupies a part of its own. The same rows therefore always give the same parts, and **a batch of any
+size is carried whole: never refused and never truncated**. Each part has its own address (C.3: its
+`storage_id_raw` is the keyed hash of its own blob bytes) and its own sealed object; all the parts of a
+batch are published together.
+
+**Publication and immutability.** A batch is published at the first commit that references one of its
+records, as all its parts, with a durable receipt for each before the envelope is sealed. From then on
+it is immutable: adding a record to it, changing a carried column, and deleting any of its rows (or
+the provenance links that name its records) are refused on every local path with a typed error, and the
+importer starts a new batch instead. A batch still being parsed (`parsing`) is never published.
+
+**The closure of a payload (the delta).** The delta manifest of an envelope is **every** class-1b
+artifact its payload references, whether or not an earlier envelope already published it, and nothing
+else: the ids of all parts of each batch that holds a source record the payload names, and the id of the
+artifact of each attachment it names. The producer computes the set from the payload alone, with a
+total function over the command set (a new command variant that names an artifact makes this function
+fail to compile until it says which). A reference in a payload is always a *logical* id (a source
+record, a batch, an attachment); the sync artifact id appears only in the manifest (0g528 AC10).
+Because a manifest is a sorted list of ids with nothing that says which id belongs to which logical
+row, a receiver learns that only by opening the artifact, whose encrypted `logical_metadata` names its
+`batch_id` or `attachment_id`. So a receiver **fetches, verifies and materializes every artifact in the
+delta before it applies the envelope**, and then checks set equality: the logical ids bound to the
+delta's artifacts must equal the logical ids the payload references (a batch's parts must be exactly
+`0` to `part_count - 1`). A reference with no artifact, or a batch with a part missing, is
+`ArtifactMissing`; an artifact bound to a logical id that no reference names is
+`ArtifactClosureMismatch`, so junk cannot be pinned through a valid envelope. The check depends on
+artifacts, not only on the envelope and the chain, so until they are fetched the envelope is *not
+determinable*; once they are, the result is deterministic (an artifact is immutable by its address), and
+a mismatch is a receiver-check failure of the envelope at that position
+(`AuthenticatedEnvelopeInvalid`, to which the void rules of ADR 0074 Addendum D apply). The check is
+part of what the engine version names (C.13), from the engine that implements it. A snapshot's closure
+is fetched the same way at bootstrap.
 
 **Plaintext (`SyncArtifactTransportV1`).** `label
 "dohflow/sync-artifact-transport/v1" ‖ digest sync_artifact_id ‖ u8
@@ -1884,10 +1971,12 @@ same bytes, and a different byte string for the same address fails closed.
 **Fixed plaintext (normative).** The zero nonce is safe only if the transport
 plaintext is a fixed function of `(vault_id, key_epoch, sync_artifact_id)` for the
 life of the epoch. A client therefore fixes `logical_metadata` at the artifact's
-first publication in that epoch and persists those exact transport bytes (or the
-descriptor that rebuilds them byte for byte), and it **never seals a second,
-different plaintext under the same `(key_epoch, sync_artifact_id)`**. It refuses
-before encryption, with the typed error `ArtifactDescriptorChanged`. A later
+first publication in that epoch and stores the SHA-256 of the complete transport plaintext at that
+moment. Before every seal it rebuilds the plaintext, hashes it, and **never seals a second,
+different plaintext under the same `(key_epoch, sync_artifact_id)`**: any mismatch (the descriptor, the
+blob bytes or the id) is refused before encryption with the typed error `ArtifactDescriptorChanged`.
+The record is written before the object is put, so a retry after a crash rebuilds identical bytes
+(the encryption is deterministic) and the service answers with the original receipt. A later
 change to a row's filename or MIME type updates only the class-1 attachment row
 (which Sync already replicates as a field) and never re-seals the artifact; the
 object keeps its original descriptor until the next epoch re-seals it under a new
@@ -1907,7 +1996,13 @@ re-encrypts the bytes, wraps the key under its DEK, writes the blob and row
 atomically, and records only a device-local mapping from `sync_artifact_id_e` to
 the local identity. A failure is `ArtifactMaterializationFailed`, leaves the live
 vault unchanged, and discards temporary plaintext and ciphertext. A received
-canonical reference keeps the origin's `sync_artifact_id_e`.
+canonical reference keeps the origin's `sync_artifact_id_e`. Materialization **never writes the
+class-4 `attachments` row**: it stores the receiver-local crypto fields beside the mapping, and the
+attach command's `apply` creates the row from them, so a missing mapping at `apply` is
+`ArtifactMissing` and a row never exists without bytes. For a source batch, materialization writes the
+class-1b batch, record and parser-run rows (outside any command), before the envelope that references
+them is applied. Origin storage ids, wrapped keys and nonces never enter a write-set hash, and an
+existing blob with the same `StorageId_B` is reused, never overwritten.
 
 **Receipts and pins.** `ArtifactReceiptV1` is `label "dohflow/sync-receipt/v1" ‖
 uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id ‖ u64 ciphertext_length ‖
@@ -1923,7 +2018,15 @@ implements them.
 
 **Key-changing epochs.** At a revocation cutover or a forced rotation a client
 re-addresses and re-seals every live artifact under the new epoch before the
-replacement snapshot is accepted.
+replacement snapshot is accepted. The live artifacts are the full closure at the cutover head; an
+object that was uploaded and never referenced is not live. For each one the client derives
+`sync_artifact_id_{e+1}` from the id it holds (C.3), takes the plaintext from its **local
+materialized copy** if it has one whose plaintext digest matches the mapping and otherwise fetches the
+epoch-`e` ciphertext and opens it under `K_e`, reseals it under the new epoch's object key in memory
+(the plaintext is zeroized and never materialized by this step), puts it, and takes the receipt. It
+never publishes a closure with a hole: if the old bytes cannot be fetched the cutover is refused with
+`ArtifactMissing`, and if they fail the outer AEAD or the descriptor with
+`ArtifactMaterializationFailed`, each carrying the artifact id, and no snapshot is published.
 
 ## C.10 Accepted-envelope index and retry protocol
 
@@ -2135,11 +2238,21 @@ log position `V` the service assigns when it appends the void is not in the body
 `StaleMembershipHead`, `BadEpochSequence`, `CutoverHeadNotRevoke`,
 `GrantHeadNotAdd`, `EpochRecordMissing`, `EpochEquivocation`,
 `MembershipChainFork`, `SyncHalted`, `StateRolledBack`, `ArtifactDescriptorChanged`,
-`ArtifactMaterializationFailed`, `ArtifactRebootstrapRequired`,
+`ArtifactMaterializationFailed`, `ArtifactRebootstrapRequired`, `ArtifactClosureMismatch`,
 `AuthenticatedEnvelopeInvalid` (an envelope that authenticates but fails the receiver checks at a
 log position, C.4 "Push and producer rules"; neither a fork nor retryable) and
 `ArtifactMissing` (a closure that names an absent object). Each fails closed,
 mutates nothing, and retains diagnostic evidence.
+
+`SnapshotTooLarge` covers a snapshot plaintext above 2^30 bytes (C.8) and a closure above 2^20 ids
+(C.3). `ArtifactClosureMismatch` is an artifact in an envelope's delta that no reference of its
+payload binds (C.9). `ArtifactRebootstrapRequired` is a **device** state, not a service error: a
+required artifact is neither held by this device nor fetchable from the service within its published
+retention window (ADR 0074 Decision 1; sync-service-protocol 4.10). The device retains its outbox,
+bootstraps from the current complete snapshot, and uploads any artifact it still holds locally before it
+reissues a reference; it never drops the reference or rebuilds it from a stale base. A cutover that
+cannot re-address an artifact (C.9) is not this state: it is refused with `ArtifactMissing` or
+`ArtifactMaterializationFailed`, carrying the artifact id.
 
 ## C.12 Portable bundle container
 
@@ -2316,7 +2429,7 @@ written `N x 0xNN`.
 | Device A | `device_id` 16 x `0xa1`; Ed25519 public key 32 x `0xe1`; KEM (X25519) public key 32 x `0xc1` |
 | Device B | `device_id` 16 x `0xb1`; Ed25519 public key 32 x `0xe2`; KEM (X25519) public key 32 x `0xc2` |
 | `K_e` (epoch 1) | the 32 bytes `00 01 02 ... 1f` |
-| `K_e` (epoch 2, used only by `artifact_id_epoch2`) | the 32 bytes `40 41 42 ... 5f` |
+| `K_e` (epoch 2, used only by `artifact_id_epoch2` and `artifact_id_readdress_epoch2`) | the 32 bytes `40 41 42 ... 5f` |
 | `S` | the 32 bytes `20 21 22 ... 3f` |
 | Idempotency key | `4a3b2c1d-9e8f-4a7b-8c6d-5e4f3a2b1c0d` as 16 raw bytes |
 | Command metadata | `command_id` `01938f2e-7c1a-7b3d-9a4e-123456789abc`; `correlation_id` 16 x `0x22`; `causation_id` absent; `actor_type` 1; `actor_id` `device-a-user`; `issued_at` 1_790_000_000_000_000; `device_id` = device A |
@@ -2421,6 +2534,7 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: key_commitment_s=4576446220850b7883789181f26831271e57bc082d0a24074466a53a21405644 -->
 <!-- sync-vector: artifact_id_epoch1=d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
 <!-- sync-vector: artifact_id_epoch2=b8532c2b8f48fc07410d0fcaab93293882b32a0dc4cbb6d9263ddd4d5b708273 -->
+<!-- sync-vector: artifact_id_readdress_epoch2=684c15bc0b06fbaa3d36a0ee22f46e32c230390ab1b98f934c004016d0dba999 -->
 <!-- sync-vector: artifact_manifest_commitment=e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
 <!-- sync-vector: write_set_hash_sample=5e2ef15d19742bcf1f39b0071f115a9c5b1f427f11eb3eb3468cf08bbdfe3f11 -->
 <!-- sync-vector: artifact_object_key=57441986f4b6610011f5efa0aa280eb3dd5f415d6275d4e823e03048851944e1 -->
