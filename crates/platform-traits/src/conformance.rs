@@ -295,3 +295,114 @@ pub fn run_boot_clock(clock: &dyn crate::BootClock) {
         after - before
     );
 }
+
+/// The behavior every [`crate::RollbackWitness`] must show (`personal-cfo-1cltt.3`): both kinds of
+/// state only move forward, a missing value reads as `None` and is never invented, contexts and
+/// vaults are independent, and a value, once recorded, is what every later read returns. Pass an
+/// empty, working witness.
+///
+/// # Panics
+/// On any violation of the contract.
+pub fn run_rollback_witness(witness: &dyn crate::RollbackWitness) {
+    use crate::{CounterContext, VerifiedMark, WitnessError};
+
+    let context = |epoch: u64, fingerprint: u8, object_type: u8| CounterContext {
+        vault_id: [0x11; 16],
+        key_epoch: epoch,
+        fingerprint: [fingerprint; 32],
+        object_type,
+    };
+    let first = context(1, 0xa1, 2);
+
+    // A context the witness has never seen is absent, not zero.
+    assert_eq!(witness.counter(&first), Ok(None));
+    witness.advance_counter(&first, 0).unwrap();
+    assert_eq!(witness.counter(&first), Ok(Some(0)));
+    witness.advance_counter(&first, 5).unwrap();
+    assert_eq!(witness.counter(&first), Ok(Some(5)));
+    // Equal is a no-op; lower is refused and changes nothing.
+    witness.advance_counter(&first, 5).unwrap();
+    assert_eq!(
+        witness.advance_counter(&first, 4),
+        Err(WitnessError::WouldRegress)
+    );
+    assert_eq!(witness.counter(&first), Ok(Some(5)));
+    // Another fingerprint, epoch, object type or vault is another counter.
+    for other in [
+        context(1, 0xa2, 2),
+        context(2, 0xa1, 2),
+        context(1, 0xa1, 1),
+        CounterContext {
+            vault_id: [0x22; 16],
+            ..first
+        },
+    ] {
+        assert_eq!(witness.counter(&other), Ok(None));
+    }
+
+    // The verified-state mark: absent, then forward only.
+    let vault = [0x11; 16];
+    let mark =
+        |version: u64, head: u8, epoch: u64, epoch_head: Option<u8>, records: u64| VerifiedMark {
+            membership_version: version,
+            membership_head_id: [head; 32],
+            key_epoch: epoch,
+            epoch_head_id: epoch_head.map(|b| [b; 32]),
+            positioned_records: records,
+        };
+    assert_eq!(witness.verified_mark(&vault), Ok(None));
+    let m1 = mark(1, 1, 1, Some(1), 1);
+    let m2 = mark(3, 3, 1, Some(3), 3);
+    witness.advance_verified_mark(&vault, &m1).unwrap();
+    assert_eq!(witness.verified_mark(&vault), Ok(Some(m1)));
+    witness.advance_verified_mark(&vault, &m1).unwrap();
+    witness.advance_verified_mark(&vault, &m2).unwrap();
+    assert_eq!(witness.verified_mark(&vault), Ok(Some(m2)));
+    for refused in [
+        m1,                        // behind
+        mark(3, 9, 1, Some(3), 3), // the same version, another head
+        mark(4, 4, 1, Some(3), 2), // ahead in one part, behind in another
+    ] {
+        assert_eq!(
+            witness.advance_verified_mark(&vault, &refused),
+            Err(WitnessError::WouldRegress),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(witness.verified_mark(&vault), Ok(Some(m2)));
+    assert_eq!(
+        witness.verified_mark(&[0x22; 16]),
+        Ok(None),
+        "another vault"
+    );
+
+    // The birth mark: recorded when a vault begins, before its first state is persisted.
+    let born = [0x33; 16];
+    assert_eq!(witness.verified_mark(&born), Ok(None));
+    witness
+        .advance_verified_mark(&born, &VerifiedMark::BIRTH)
+        .unwrap();
+    assert_eq!(witness.verified_mark(&born), Ok(Some(VerifiedMark::BIRTH)));
+    // Idempotent.
+    witness
+        .advance_verified_mark(&born, &VerifiedMark::BIRTH)
+        .unwrap();
+    // Every real mark is ahead of it, even one with no epoch record counted yet.
+    let thin = mark(1, 1, 1, Some(1), 0);
+    assert_eq!(
+        thin.cmp_progress(&VerifiedMark::BIRTH),
+        crate::Progress::Ahead
+    );
+    assert_eq!(
+        VerifiedMark::BIRTH.cmp_progress(&thin),
+        crate::Progress::Behind
+    );
+    witness.advance_verified_mark(&born, &thin).unwrap();
+    assert_eq!(witness.verified_mark(&born), Ok(Some(thin)));
+    // A birth after a real mark is a regress.
+    assert_eq!(
+        witness.advance_verified_mark(&born, &VerifiedMark::BIRTH),
+        Err(WitnessError::WouldRegress)
+    );
+    assert_eq!(witness.verified_mark(&born), Ok(Some(thin)));
+}

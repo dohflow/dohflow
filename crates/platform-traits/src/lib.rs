@@ -31,6 +31,7 @@ mod policy;
 mod store;
 mod tag;
 mod value;
+mod witness;
 
 pub use biometric::{BiometricAuth, BiometricAvailability, PreflightResult};
 pub use clock::{BootClock, BootClockError, BootId};
@@ -40,3 +41,4 @@ pub use policy::{AccessPolicy, AuthPrompt, MAX_PROMPT_CHARS};
 pub use store::{Roaming, SecretStore, StoreCapabilities};
 pub use tag::{PublicTag, MAX_TAG_BYTES};
 pub use value::{SecretValue, MAX_SECRET_BYTES};
+pub use witness::{CounterContext, Progress, RollbackWitness, VerifiedMark, WitnessError};

@@ -11,13 +11,18 @@ mod common;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use common::{dev_known, epoch_key, epoch_record, id_of, membership, tag_secret, VAULT};
-use platform_mock::MockSecretStore;
-use sync_core::membership::{Action, Reason, VerifiedState};
+use common::register::MemoryRegisterStore;
+use common::{chain, dev_known, epoch_key, epoch_record, id_of, membership, tag_secret, VAULT};
+use platform_mock::{MockSecretStore, MockWitness};
+use platform_traits::CounterContext;
+use sync_core::membership::{verify_chain, Action, Reason, VerifiedState};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
+use vault_crypto::sync_counter::{CounterRegister, VerifiedStateGuard};
 use vault_crypto::sync_custody::SyncKeyCustody;
+use vault_crypto::sync_envelope::SealerIdentity;
 use vault_crypto::sync_records::{accept_records, create_genesis};
+use vault_crypto::sync_snapshot::{SavedSnapshotFiles, SnapshotFields, SnapshotSealer};
 
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<u8>>>);
@@ -235,4 +240,64 @@ fn the_search_finds_a_key_that_is_logged_on_purpose() {
     }
     let log = captured(|| tracing::info!(?secret, "oops"));
     assert!(!leaks(&log, &[secret]).is_empty());
+}
+
+#[test]
+fn a_snapshot_seal_the_register_and_the_witness_log_no_key_and_no_payload() {
+    const PAYLOAD: &str = "SNAPSHOT-PAYLOAD-MARKER-7f3a91c2";
+    let dir = std::env::temp_dir().join(format!("dohflow-redaction-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let c = chain();
+    let m: Vec<&[u8]> = c.memberships[..3].iter().map(Vec::as_slice).collect();
+    let e: Vec<&[u8]> = c.epochs[..3].iter().map(Vec::as_slice).collect();
+    let state = verify_chain(&VAULT, &m, &e).unwrap();
+    let key = epoch_key(1);
+    let sealer = SealerIdentity {
+        vault_id: VAULT,
+        device_id: c.a.id,
+        fingerprint: c.a.fingerprint(),
+    };
+    let log = captured(|| {
+        let (store, witness) = (MemoryRegisterStore::new(), MockWitness::new());
+        let register = CounterRegister::new(&store, &witness);
+        let files = SavedSnapshotFiles::new(&dir);
+        let publish = SnapshotSealer {
+            register: &register,
+            files: &files,
+            key: &key,
+            sealer: &sealer,
+            chain: &state,
+        };
+        let fields = SnapshotFields {
+            object_id: [0x33; 16],
+            base_seq: 41,
+            payload_schema_version: 1,
+            engine_version: "dohflow-test".to_owned(),
+            schema_version: 65,
+        };
+        let payload = common::snapshot_plaintext(&[], PAYLOAD);
+        let sealed = publish.seal(&fields, &payload).unwrap();
+        let reused = publish.seal(&fields, &payload).unwrap();
+        tracing::info!(sealed = ?sealed, reused = ?reused, register = ?register, "debug forms are redacted");
+        let guard = VerifiedStateGuard::new(&witness);
+        let _ = guard.check(&VAULT, None);
+        let _ = register.check(&CounterContext {
+            vault_id: VAULT,
+            key_epoch: 1,
+            fingerprint: *c.a.fingerprint().as_bytes(),
+            object_type: 2,
+        });
+        publish.discard(&[0x33; 16]).unwrap();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        log.contains("debug forms are redacted"),
+        "the capture works: {log:?}"
+    );
+    assert_eq!(
+        leaks(&log, &secrets()),
+        Vec::<String>::new(),
+        "a key reached the log"
+    );
+    assert!(!log.contains(PAYLOAD), "the payload reached the log");
 }
