@@ -416,8 +416,11 @@ fn folded_child_file(
             });
         }
         let cols = to_columns(columns, row);
+        // The line first: it checks every column by its declared kind and names the one that
+        // breaks a rule, which the child-row bytes cannot.
+        let line = line_of(spec, &cols)?;
         let order = child_row_bytes(&cols).map_err(|e| map_digest_error(&spec.name, &e))?;
-        encoded.push((order, line_of(spec, &cols)?));
+        encoded.push((order, line));
     }
     // The order of a parent's digest: bytewise by the child-row bytes, duplicates kept.
     encoded.sort_by(|a, b| a.0.cmp(&b.0));

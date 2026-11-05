@@ -624,6 +624,52 @@ fn a_storage_class_mismatch_stops_genesis_naming_the_table_and_column() {
 }
 
 #[test]
+fn a_folded_child_row_with_a_bad_value_names_its_table_and_column() {
+    let (_dir, worker) = populated();
+    let conn = raw(&worker);
+    // A folded child's rows are checked first (its file sorts before its parent's); the refusal
+    // must name the column, never an empty one. The balance triggers would refuse the update.
+    let triggers: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'ledger_postings'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for trigger in triggers {
+        conn.execute_batch(&format!("DROP TRIGGER \"{trigger}\""))
+            .unwrap();
+    }
+    conn.execute(
+        "UPDATE ledger_postings SET minor_units = 'not a number'",
+        [],
+    )
+    .unwrap();
+    match refusal(&worker) {
+        ExportError::KindMismatch { table, column } => assert_eq!(
+            (table.as_str(), column.as_str()),
+            ("ledger_postings", "minor_units")
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_folded_childs_uuid_column_that_is_not_sixteen_bytes_names_its_table_and_column() {
+    let (_dir, worker) = populated();
+    raw(&worker)
+        .execute("UPDATE attachment_links SET entity_id = x'0102'", [])
+        .unwrap();
+    match refusal(&worker) {
+        ExportError::KindMismatch { table, column } => assert_eq!(
+            (table.as_str(), column.as_str()),
+            ("attachment_links", "entity_id")
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn a_real_value_is_refused_not_rounded() {
     let (_dir, worker) = populated();
     raw(&worker)
