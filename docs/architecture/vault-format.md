@@ -281,8 +281,9 @@ synthetic no-app recovery test before any such public claim.
   envelope's delta keeps 4096; the commitment's label and bytes are unchanged. (3) C.1.3, C.9: one artifact
   per source batch, carried as ordered immutable parts under a stated per-part bound; kinds 3 and 4 are
   reserved. (4) C.9: the delta is every class-1b artifact the payload references, a receiver
-  materializes all of them before apply and checks set equality; the seal checks the transport plaintext
-  digest before it encrypts. (5) C.11: `ArtifactRebootstrapRequired` is defined and
+  materializes all of them before apply and checks set equality (stage 9 of C.4's "found invalid", split
+  by determinism; an already-held id is not fetched again; one binding per logical artifact per epoch;
+  receiver bounds by object type); the seal checks the transport plaintext digest before it encrypts. (5) C.11: `ArtifactRebootstrapRequired` is defined and
   `ArtifactClosureMismatch` is added. No other wire layout and no other vector changes. The service
   protocol's `max_artifact_manifest_ids` (4096) is the bound for an envelope's sidecar and for a status
   request and is unchanged; the bound and the request-body size for a snapshot's closure sidecar are the
@@ -1260,7 +1261,8 @@ index reconciliation, a receiver:
    of the membership chain at the object's epoch;
 3. for an envelope, requires a UUIDv4 idempotency key (C.5);
 4. checks the manifest commitment rule of header field 17: the plaintext's delta
-   manifest is strictly ascending and duplicate-free, and the header's commitment
+   manifest is strictly ascending and duplicate-free and holds at most 4096 ids (a snapshot's
+   closure at most 2^20, C.3, enforced by the snapshot opener), and the header's commitment
    is its commitment, or both are empty and the header field is absent. A header that
    carries a commitment for an empty delta manifest (even the commitment of the empty
    list) is refused, because it would be a second valid encoding of the same envelope
@@ -1334,7 +1336,8 @@ sealed object it is about to send through the
 **receiver path** (the AEAD key derived from the expected vault id, key epoch and its own
 fingerprint from the chain, the nonce built from the header's nonce domain and counter; never the
 sealing code's key object and never the plaintext it still holds), decode the plaintext, and run
-the receiver checks above on that header and plaintext. It MUST NOT upload on any failure; the
+the receiver checks above on that header and plaintext, and stage 9 of "When an envelope is found
+invalid" against its own local artifacts. It MUST NOT upload on any failure; the
 command stays in its outbox with a typed error and is not retried in a loop, because the failure
 is a producer bug; the change is committed on this device only and cannot sync, and the user is
 told exactly that. (4) It persists the verified object with its outbox entry, and (5) uploads by
@@ -1399,6 +1402,17 @@ or cannot yet judge it, by this sequence of stages, in this order:
    invalid** (a flipped ciphertext or tag byte, a truncated ciphertext).
 7. **The opened plaintext does not decode: invalid** (a producer fault).
 8. **A receiver check of this section fails: invalid.**
+9. **The closure (an envelope with a non-empty delta, C.9).** (a) *Not determinable* while any id in the
+   delta is not yet held and verified: not yet fetched, undeliverable by the service
+   (`ArtifactMissing`), or failing the **outer** AEAD on fetch. These are faults of the service or the
+   transport, not facts about the envelope: they are retried, they can end in the device state
+   `ArtifactRebootstrapRequired` (C.11), and they are never a basis to honor a void. (b) *Invalid*
+   (`ArtifactClosureMismatch`) once every artifact in the delta is held and verified and any of these
+   holds: the set equality of C.9 fails; a part index of a batch is missing or duplicated; parts
+   disagree on `batch_id` or `part_count`; a source record the payload names is in no referenced batch,
+   or in more than one; an authenticated artifact fails its own descriptor (length or plaintext
+   digest), is of kind 3 or 4, or has malformed `logical_metadata`; or the delta binds a logical batch
+   or attachment that is already bound in this epoch to a different id (set) (C.9, one binding).
 
 Otherwise the envelope is valid. **A not-determinable envelope is never a basis to honor a void.**
 If it counted, a replica with a missing key or one that is behind would honor a void for a valid
@@ -1952,17 +1966,39 @@ record, a batch, an attachment); the sync artifact id appears only in the manife
 Because a manifest is a sorted list of ids with nothing that says which id belongs to which logical
 row, a receiver learns that only by opening the artifact, whose encrypted `logical_metadata` names its
 `batch_id` or `attachment_id`. So a receiver **fetches, verifies and materializes every artifact in the
-delta before it applies the envelope**, and then checks set equality: the logical ids bound to the
-delta's artifacts must equal the logical ids the payload references (a batch's parts must be exactly
-`0` to `part_count - 1`). A reference with no artifact, or a batch with a part missing, is
-`ArtifactMissing`; an artifact bound to a logical id that no reference names is
-`ArtifactClosureMismatch`, so junk cannot be pinned through a valid envelope. The check depends on
-artifacts, not only on the envelope and the chain, so until they are fetched the envelope is *not
-determinable*; once they are, the result is deterministic (an artifact is immutable by its address), and
-a mismatch is a receiver-check failure of the envelope at that position
-(`AuthenticatedEnvelopeInvalid`, to which the void rules of ADR 0074 Addendum D apply). The check is
-part of what the engine version names (C.13), from the engine that implements it. A snapshot's closure
-is fetched the same way at bootstrap.
+delta before it applies the envelope**, and then checks (stage 9 of C.4's "When an envelope is found
+invalid") that the logical ids bound to the delta's artifacts equal the logical ids the payload
+references, and that a batch's parts are exactly `0` to `part_count - 1`. An id the service cannot
+deliver is `ArtifactMissing` and, like any fetch that fails the outer AEAD, leaves the envelope *not
+determinable*: it is retried and never a basis to honor a void. Once every artifact is held and
+verified the result is deterministic (an artifact is immutable by its address), and a wrong closure
+(an artifact bound to a logical id that no reference names, a reference with no artifact, a batch with
+a part missing or duplicated, and the other cases of stage 9) is `ArtifactClosureMismatch`: a
+receiver-check failure of the envelope at that position, to which the void rules of ADR 0074 Addendum D
+apply, so junk cannot be pinned through a valid envelope. The producer runs the same check against
+its local artifacts before it uploads. The check is part of what the engine version names (C.13),
+from the engine that implements it. A snapshot's closure is fetched the same way at bootstrap.
+
+*An id already held is not fetched again.* An id that is already in the receiver's mapping for this
+epoch counts as verified, because an artifact is immutable by its address; only its binding enters
+the set-equality check. A commit that references a 12-part batch does not download it again.
+
+*One binding per logical artifact per epoch.* Within an epoch a logical batch is bound to exactly one
+set of part ids and a logical attachment to exactly one id. A delta that binds an already-bound batch
+or attachment to a different id (set) is `ArtifactClosureMismatch`; without this rule two envelopes
+could materialize two different versions of one batch.
+
+*Bounds by object type.* An envelope's delta holds at most 4096 ids: a longer list does not decode, so
+the envelope is invalid at stage 7. A snapshot's closure holds at most 2^20: a longer one is refused by
+the snapshot opener (and at export) with `SnapshotTooLarge`. Until the service accepts a closure
+sidecar of that size (`personal-cfo-v98vd`), a client refuses a closure above the service's advertised
+maximum with the same error **before** the compare-and-swap and never publishes a partial list of pins.
+
+*Residual.* The fixed-plaintext rule binds honest producers. A member that holds `K_e` and colludes
+with the service could produce two valid ciphertexts under one id and serve them to different
+replicas, which would split a stage-9 verdict. This is the class of C.6's malicious-member residual.
+Binding each delta id's ciphertext SHA-256 into the envelope would close it, but that is a format
+change and is not made here.
 
 **Plaintext (`SyncArtifactTransportV1`).** `label
 "dohflow/sync-artifact-transport/v1" ‖ digest sync_artifact_id ‖ u8
@@ -2251,12 +2287,13 @@ log position `V` the service assigns when it appends the void is not in the body
 `ArtifactMaterializationFailed`, `ArtifactRebootstrapRequired`, `ArtifactClosureMismatch`,
 `AuthenticatedEnvelopeInvalid` (an envelope that authenticates but fails the receiver checks at a
 log position, C.4 "Push and producer rules"; neither a fork nor retryable) and
-`ArtifactMissing` (a closure that names an absent object). Each fails closed,
+`ArtifactMissing` (an artifact id the service cannot deliver; a cutover that cannot fetch the old
+bytes of an artifact is refused with it, C.9). Each fails closed,
 mutates nothing, and retains diagnostic evidence.
 
 `SnapshotTooLarge` covers a snapshot plaintext above 2^30 bytes (C.8) and a closure above 2^20 ids
-(C.3). `ArtifactClosureMismatch` is an artifact in an envelope's delta that no reference of its
-payload binds (C.9). `ArtifactRebootstrapRequired` is a **device** state, not a service error: a
+(C.3). `ArtifactClosureMismatch` is a wrong closure, found once every artifact of an envelope's delta
+is held and verified: stage 9(b) of C.4 and C.9 list the cases. `ArtifactRebootstrapRequired` is a **device** state, not a service error: a
 required artifact is neither held by this device nor fetchable from the service within its published
 retention window (ADR 0074 Decision 1; sync-service-protocol 4.10). The device retains its outbox,
 bootstraps from the current complete snapshot, and uploads any artifact it still holds locally before it
