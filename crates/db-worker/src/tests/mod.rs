@@ -7,6 +7,7 @@ mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;
 mod settings_upgrade;
+mod sync_local_state;
 
 use super::*;
 use core_ledger::{AccountFlags, CashflowRole};
@@ -7066,15 +7067,14 @@ fn operation_log_v2_adds_four_nullable_columns() {
     let (_dir, worker) = worker();
     let conn = worker.read_connection().unwrap();
     let columns = operation_log_columns(&conn);
-    let tail: Vec<(&str, &str, bool)> = columns
+    // The four v2 columns sit right after the pre-v2 ones; later migrations append after them
+    // (v65's two device-local columns are checked in `sync_local_state`).
+    let v2: Vec<(&str, &str, bool)> = columns[14..18]
         .iter()
-        .rev()
-        .take(4)
-        .rev()
         .map(|(n, t, nn)| (n.as_str(), t.as_str(), *nn))
         .collect();
     assert_eq!(
-        tail,
+        v2,
         vec![
             ("payload", "BLOB", false),
             ("payload_schema_version", "INTEGER", false),
@@ -7083,8 +7083,8 @@ fn operation_log_v2_adds_four_nullable_columns() {
         ],
         "v2 columns are appended and nullable, so pre-v2 rows stay valid",
     );
-    // The pre-v2 columns are unchanged.
-    assert_eq!(columns.len(), 18);
+    // The pre-v2 columns are unchanged (v65 adds two device-local columns after the v2 ones).
+    assert_eq!(columns.len(), 20);
     assert_eq!(columns[0].0, "op_seq");
     assert_eq!(columns[13].0, "created_at");
 }
@@ -7259,7 +7259,7 @@ fn operation_log_v2_rolls_back_to_55_and_forward_again() {
         .unwrap();
     assert!(rows >= 1, "history survives the rollback");
     migrations::run_migrations(&mut conn).unwrap();
-    assert_eq!(operation_log_columns(&conn).len(), 18);
+    assert_eq!(operation_log_columns(&conn).len(), 20);
     let integrity: String = conn
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .unwrap();

@@ -1552,12 +1552,19 @@ mod old_backup_settings_tests {
                 .unwrap();
         }
         {
-            // What a 63 build had on disk: the unprefixed names, no tracker row for 64.
+            // What a 63 build had on disk: the unprefixed names, no tracker row for 64 or any
+            // later migration, and none of their objects (66 adds the device-local Sync state).
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version IN (64, 65);
+                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66);
                  ALTER TABLE staged_transactions DROP COLUMN row_ordinal;
+                 ALTER TABLE operation_log DROP COLUMN rebased_from;
+                 ALTER TABLE operation_log DROP COLUMN applied_base_seq;
+                 DROP INDEX idx_outbox_queue_correlation;
+                 DROP TABLE outbox_queue;
+                 DROP TABLE sync_outbox;
+                 DROP TABLE sync_base;
                  PRAGMA user_version = 63;",
             )
             .unwrap();

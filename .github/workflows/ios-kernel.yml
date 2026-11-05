@@ -120,6 +120,8 @@ jobs:
               - 'rust-toolchain.toml'
               - '.github/workflows/ios-kernel.yml'
               - 'scripts/ios-kernel-sim-tests.sh'
+              - 'scripts/macos-pools-verdict.sh'
+              - 'scripts/macos-pools-wait.sh'
             simulator:
               - '.github/workflows/ios-kernel.yml'
               - 'scripts/ios-kernel-sim-tests.sh'
@@ -239,14 +241,28 @@ jobs:
   # The required check. A skipped build reports Success, so this job decides: it passes only
   # when the gate succeeded and either neither build was wanted (both skipped) or at least
   # one pool's build succeeded and neither failed. It fails otherwise, including when the
-  # gate itself failed or was cancelled. `actions: read` lets it say, for a cancelled build,
-  # whether GitHub never gave the job a runner or the job was cancelled mid-run; that
-  # diagnostic never changes the verdict.
+  # gate itself failed or was cancelled.
+  #
+  # It needs only the gate, NOT the pools (personal-cfo-md8h2.26). A verdict job that waits for
+  # both pools is as slow as the slower one, and `timeout-minutes` does not bound a pool job
+  # stuck in "Set up job" (run 41920261907: 55:00 against a 45-minute timeout), while the merge
+  # queue drops a pull request whose required check has not reported in 60 minutes. So this job
+  # polls the run's jobs through scripts/macos-pools-wait.sh until both pools have a conclusion,
+  # a pool fails, or a 20-minute deadline passes, and hands what it saw to
+  # scripts/macos-pools-verdict.sh, which still writes the only verdict. At the deadline one
+  # pool's success passes the check with a notice naming the pool left unfinished; no success
+  # fails it. Worst case from the gate finishing to the check reporting: the 20-minute wait, one
+  # poll interval of overshoot (30 seconds), and the checkout and verdict (seconds): about 21
+  # minutes, plus the time this Linux job takes to get a runner. `timeout-minutes: 25` is a
+  # backstop above that; the residual risk is this Linux job itself stalling in setup, which has
+  # not been seen on Linux runners and is the one thing this design does not bound.
+  # `actions: read` lets it read the run's jobs; it writes nothing.
   ios-check:
     name: iOS cross-compile (kernel crates)
-    needs: [gate, ios-build-arm64, ios-build-intel]
+    needs: gate
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     permissions:
       contents: read
       actions: read
@@ -258,9 +274,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE_RESULT: ${{ needs.gate.result }}
           BUILD_WANTED: ${{ needs.gate.outputs.check }}
-          ARM64_RESULT: ${{ needs.ios-build-arm64.result }}
-          INTEL_RESULT: ${{ needs.ios-build-intel.result }}
-        run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"
+          VERDICT_CHECK: iOS cross-compile check
+          VERDICT_BUILD: iOS build
+          VERDICT_ARM64_JOB: iOS cross-compile (macOS build, arm64)
+          VERDICT_INTEL_JOB: iOS cross-compile (macOS build, intel)
+        run: scripts/macos-pools-wait.sh "$GATE_RESULT" "$BUILD_WANTED"
 
   ios-simulator:
     name: iOS simulator (vault tests)

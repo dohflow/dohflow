@@ -25,7 +25,13 @@ Forbidden without explicit written approval:
 - destructive database migrations, table drops, data overwrites, or irreversible import/export operations
 - remote scripts such as `curl ... | bash` or unpinned installers
 
-One standing exception: the disk-hygiene rules in `docs/agent/WORKFLOW_ROLES.md` ("Build-machine hygiene", owner-authorized 2026-10-19) let a session remove its own clean, pushed per-bead worktree and its own **local** branch after its PR merges, and run `scripts/dev-hygiene.sh`; they allow nothing else above. Deleting a **remote** branch on `origin` is not part of the exception and stays the owner's call.
+One standing exception: the disk-hygiene rules in `docs/agent/WORKFLOW_ROLES.md` ("Build-machine hygiene", owner-authorized 2026-10-19 and extended to session scratch on 2026-11-04, `personal-cfo-0rein.12`) let a session:
+
+- remove its own clean, pushed per-bead worktree and its own **local** branch after its PR merges;
+- clean its own session scratch once the PR it worked on is merged or closed: `cargo clean`, and a plain `git worktree remove` (never `--force`) of a clean registered worktree;
+- run `scripts/dev-hygiene.sh`, including `--clean --scratch` under the conditions stated there.
+
+They allow nothing else above. Removing an unregistered copy or a scratch directory with `rm`, and deleting a **remote** branch on `origin`, are not part of the exception and stay the owner's call.
 
 Before any approved destructive operation:
 

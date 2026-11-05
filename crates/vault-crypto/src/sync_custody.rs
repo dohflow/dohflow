@@ -340,8 +340,15 @@ impl<'a> SyncKeyCustody<'a> {
             .first()
             .map(|install| install.record_id)
             .ok_or(CustodyError::Corrupt(Item::GenesisMarker))?;
-        match self.read(Item::GenesisMarker)? {
-            Some((held, _)) if held.expose() != &genesis_id => {
+        // The marker's public tag holds the same id, so it is read without releasing the secret:
+        // a platform store never prompts for it.
+        let held = match self.store.public_tag(&self.key(Item::GenesisMarker)) {
+            Ok(tag) => Some(tag.ok_or(CustodyError::Corrupt(Item::GenesisMarker))?),
+            Err(SecretError::NotFound) => None,
+            Err(error) => return Err(CustodyError::Store(error).into()),
+        };
+        match held {
+            Some(tag) if tag.as_bytes() != &genesis_id[..] => {
                 return Err(CustodyError::Conflict(Item::GenesisMarker).into());
             }
             Some(_) => {}

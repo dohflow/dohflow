@@ -92,6 +92,7 @@ mod scenarios;
 mod schedule_sources;
 mod spend_by_category;
 mod staged_import;
+pub mod sync_state;
 
 pub use assumptions::{
     AssumptionEventView, AssumptionKind, AssumptionSource, AssumptionStatus, DependencyEdge,
@@ -8367,13 +8368,16 @@ fn apply_command(
         | WriteCommand::SetBillAutopay { .. } => "accounts",
     };
     let affected_entities = affected_entities_json(entity_table, entity_id);
+    let sync_applied_base_seq = sync_state::applied_base_seq(&tx)?;
+    let sync_enabled = sync_applied_base_seq.is_some();
+    let created_at = Utc::now().to_rfc3339();
     tx.execute(
         "INSERT INTO operation_log (
             command_id, correlation_id, causation_id, actor_type, actor_id,
             idempotency_key, operation_type, affected_entities, metadata, node_id,
             vault_schema_version, hlc_timestamp, created_at,
-            payload, payload_schema_version, write_set_hash, engine_version
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            payload, payload_schema_version, write_set_hash, engine_version, applied_base_seq
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             meta.command_id,
             meta.correlation_id,
@@ -8387,14 +8391,27 @@ fn apply_command(
             node_id,
             schema_version,
             hlc,
-            Utc::now().to_rfc3339(),
+            created_at,
             prepared.bytes,
             payload::PAYLOAD_SCHEMA_VERSION,
             write_set.hash.as_slice(),
             ENGINE_VERSION,
+            sync_applied_base_seq,
         ],
     )?;
     let op_seq = tx.last_insert_rowid();
+
+    // While Sync is enabled on this device the command is also an unpushed outbox entry, in this same
+    // transaction (personal-cfo-bxsbz.1). With Sync off nothing is written.
+    if sync_enabled {
+        sync_state::record_pending(
+            &tx,
+            meta.command_id.as_bytes(),
+            op_seq,
+            &write_set.rows,
+            &created_at,
+        )?;
+    }
 
     // 3. Provenance link from the affected entity to this operation.
     tx.execute(
