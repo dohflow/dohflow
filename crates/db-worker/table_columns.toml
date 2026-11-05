@@ -436,7 +436,7 @@ columns = ["id:uuid", "source_type:text", "source_name:text", "file_fingerprint:
 [[table]]
 name = "source_provenance_links"
 class = "1b"
-write_set = "none"
+write_set = "full"
 primary_key = ["id"]
 columns = ["id:uuid", "entity_type:text", "entity_id:uuid", "source_record_id:uuid", "relationship:text", "created_at:text"]
 

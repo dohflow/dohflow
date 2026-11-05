@@ -115,7 +115,7 @@ pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 /// same write-set hash from the same command, which is what lets a replica verify a write set.
 /// It is bumped by hand, in the same change, whenever a change makes `apply` write something
 /// different for an unchanged payload; a mismatch tells a client to update before it continues.
-pub const ENGINE_VERSION: &str = "dohflow-engine-1";
+pub const ENGINE_VERSION: &str = "dohflow-engine-2";
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,

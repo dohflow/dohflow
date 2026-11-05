@@ -43,6 +43,14 @@ const FOLDED: &[(&str, &str, &str)] = &[
 /// row carries the write-set hash, and `provenance_links` is excluded by B.2.
 const NOT_REPLICATED: &[&str] = &["operation_log", "provenance_links"];
 
+/// Class-1b tables the write set covers although the generator's default for class 1b is `none`:
+/// import provenance links are an apply output (`CommitImportedTransaction` writes them under a
+/// content id keyed on the carried transaction id), and Sync carries them as genesis rows, so a
+/// bootstrapped replica and a tail-applied one must agree on them (C.1.5: the write set is
+/// exactly what Sync replicates; personal-cfo-0g528.2 S2a). `source_batches`, `source_records`
+/// and `parser_runs` stay artifacts.
+const REPLICATED_1B: &[&str] = &["source_provenance_links"];
+
 /// How each covered text key column is bounded, since SQLite bounds nothing. `(table, column,
 /// maximum UTF-8 bytes, mechanism)`. The manifest records the maximum, and a test per key
 /// proves the mechanism: a writer check with a typed error, or a bound by construction.
@@ -204,6 +212,9 @@ fn write_set(table: &str, class: &str) -> &'static str {
     }
     if NOT_REPLICATED.contains(&table) {
         return "none";
+    }
+    if REPLICATED_1B.contains(&table) {
+        return "full";
     }
     match class {
         "1" | "4" => "full",
@@ -854,6 +865,10 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("recurring_events", &["bd"]),
     ("recurring_transfers", &["bd"]),
     ("scenarios", &["bd"]),
+    // Only CommitImportedTransaction writes a link (an insert). The one delete, `discard_batch`,
+    // is a staging cleanup with no production caller (ingestion.rs); a command that ever deletes or
+    // changes a link must be pinned here and in the engine pin (personal-cfo-0g528.2 S2a).
+    ("source_provenance_links", &["bu", "bd"]),
     ("split_line_tags", &["bu", "bd"]),
     ("split_lines", &["bu", "bd"]),
     ("tags", &["bu", "bd"]),
