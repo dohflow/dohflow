@@ -379,7 +379,14 @@ sw "$S_OLD" wt-late merged extra
 sw "$S_OLD" wt-flip merged extra      # its PR turns open after the plan
 sw "$S_OLD" wt-detm merged extra      # detached HEAD, found by SHA
 sw "$S_OLD" wt-landing none           # detached at the commit a PR landed as
+sw "$S_OLD" wt-moved merged extra     # its branch moved on after the PR merged
+sw "$S_OLD" wt-badidx merged extra    # git status cannot read it
 printf 'dirty\n' >> "$S_OLD/wt-dirty/Cargo.toml"
+# the PR was merged at the head the stub recorded; the branch then gained a pushed commit,
+# so the checkout is NOT the merged PR's work and its head is no ancestor of the PR's head
+( cd "$S_OLD/wt-moved" && printf 'later\n' > later.txt && git add later.txt && git commit -q -m later && git push -q )
+# a corrupt index makes git status fail, which the script must treat as dirty
+printf 'not an index\n' > "$(git -C "$S_OLD/wt-badidx" rev-parse --absolute-git-dir)/index"
 ( cd "$S_OLD/wt-unpushed" && printf 'x\n' > local.txt && git add local.txt && git commit -q -m local-only )
 printf '7\tMERGED\t%s\n' "$(git -C "$S_OLD/wt-unpushed" rev-parse HEAD)" > "$GHDATA/pr-sc-old-1111-wt-unpushed"
 printf 'keep me\n' > "$S_OLD/wt-ignored/secret.local"
@@ -471,6 +478,8 @@ case_start "a squash merge counts as merged through the PR, and unknown is never
 grep -q "sc-old-1111-wt-unknown; clean; 0 unpushed; PR unknown" <<<"$out" && pass "a branch merged by ancestry only, with no PR, is unknown" || fail "ancestry made it merged: $out"
 grep -q "sc-old-1111-wt-gherr; clean; 0 unpushed; PR unknown" <<<"$out" && pass "a failing gh gives unknown" || fail "gh failure not unknown"
 grep -q "wt-landing; clean; 0 unpushed; PR unknown\|(detached at ${LAND_SHA:0:8}); clean; 0 unpushed; PR unknown" <<<"$out" && pass "a commit that is a PR's landing commit is not that PR's work: unknown" || fail "landing commit counted as the PR's work"
+grep -q "sc-old-1111-wt-moved; clean; 0 unpushed; PR unknown" <<<"$out" && pass "a branch that moved past its merged PR's head is unknown: the checkout is not that PR's work" || fail "moved-on branch counted as merged: $out"
+grep -q "status unreadable" <<<"$out" && pass "a checkout whose git status fails is reported as status unreadable, not clean" || fail "unreadable status not reported: $out"
 # the PR state for a branch is asked with gh, never derived from ancestry
 grep -q "pr list -R dohflow/dohflow --head sc-old-1111-wt-merged" "$GHCALLS" && pass "asked gh for the branch's PR" || fail "gh was not asked: $(cat "$GHCALLS")"
 n_before="$(wc -l < "$GHCALLS" | tr -d ' ')"
@@ -559,6 +568,8 @@ refused "$S_OLD/wt-open/target" "wt-open" "a worktree whose PR is open"
 refused "$S_OLD/wt-unknown/target" "wt-unknown" "a worktree whose PR is unknown"
 refused "$S_OLD/wt-gherr/target" "wt-gherr" "a worktree when gh failed"
 refused "$S_OLD/wt-landing/target" "wt-landing" "a worktree at a PR's landing commit"
+refused "$S_OLD/wt-moved/target" "wt-moved" "a worktree whose branch moved past its merged PR"
+refused "$S_OLD/wt-badidx/target" "wt-badidx" "a worktree whose git status cannot be read"
 refused "$S_OLD/wt-dirty/target" "wt-dirty" "a worktree with uncommitted changes"
 refused "$S_OLD/wt-unpushed/target" "wt-unpushed" "a worktree with an unpushed commit"
 refused "$S_OLD/wt-late/target" "wt-late" "a worktree that became dirty after the plan"
@@ -571,6 +582,9 @@ if grep -q -- "$S_FOREIGN" <<<"$SCRATCH_RUN_CALLS"; then fail "cleaned another p
 [ -d "$S_FOREIGN/wt-f" ] && grep -q "$S_FOREIGN/wt-f" <<<"$(git -C "$SMAIN" worktree list --porcelain)" && pass "left another project's registered worktree in place" || fail "touched another project's worktree"
 if grep -q "for-5555\|/wt-f/" <<<"$out"; then fail "the plan opened another project's folder"; else pass "the plan never mentions another project's folder"; fi
 grep -q "unregistered copy" <<<"$out" && pass "the unregistered-copy reason names the owner-approval rule" || fail "no unregistered-copy reason"
+grep -q "loose/target.*not inside a checkout" <<<"$out" && pass "a target with no owning checkout is refused for that reason, not by a fallback" || fail "ownerless target reason missing: $out"
+grep -q "wt-moved.*pull request state is unknown" <<<"$out" && pass "the moved-on branch is refused because its PR does not count, not for another reason" || fail "moved-on branch reason wrong: $out"
+grep -q "wt-badidx.*uncommitted changes (or status unreadable)" <<<"$out" && pass "an unreadable git status is refused as dirty, ahead of the PR state" || fail "unreadable status reason wrong: $out"
 grep -q "pull request state is open" <<<"$out" && grep -q "pull request state is unknown" <<<"$out" && pass "the PR reasons name the state" || fail "PR reasons missing"
 grep -q "uncommitted changes" <<<"$out" && grep -q "commits that exist on no remote" <<<"$out" && pass "dirty and unpushed reasons shown" || fail "dirty/unpushed reasons missing"
 grep -q "cargo/rustc process is running" <<<"$out" && pass "the running-build reason shown" || fail "no running-build reason"

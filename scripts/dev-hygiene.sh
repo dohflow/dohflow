@@ -717,9 +717,9 @@ evaluate_scratch() {
         why="$sess"
         if [ -n "$why" ]; then :
         elif [ "$b" != registered ]; then why="unregistered copy: removing it stays an explicit, owner-approved act"
-        elif [ "$g" != merged ] && [ "$g" != closed ]; then why="pull request state is ${g} (only merged or closed qualifies)"
         elif [ "$e" != 0 ]; then why="uncommitted changes (or status unreadable)"
         elif [ "$f" != 0 ]; then why="commits that exist on no remote (or unreadable)"
+        elif [ "$g" != merged ] && [ "$g" != closed ]; then why="pull request state is ${g} (only merged or closed qualifies)"
         fi
         T2_VERDICT="${T2_VERDICT}${a}${US}${why:-ok}${NL}"
         if [ -z "$why" ]; then
