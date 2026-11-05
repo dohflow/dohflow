@@ -111,7 +111,7 @@ not currently seed the Polish Demo fixture automatically (tracked separately,
 `personal-cfo-wmsw2`).
 
 **One unlocked instance of a given vault at a time.** `DbWorker` holds an OS
-advisory lock on `<vault>.runner.lock` for the whole unlocked session. A second
+advisory lock on `<vault>.runner.lock` for the whole unlocked session, and for any step that swaps or removes its files while it is closed (key-rotation recovery and swap, delete, restore). A second
 `tauri dev` process (or `cargo test --test seed_polish_vault -- --ignored`
 racing a running `tauri dev`) cannot unlock the same vault; it receives a
 plain "vault is already open" error before it can migrate or run durable-job

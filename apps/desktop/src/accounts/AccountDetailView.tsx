@@ -381,7 +381,11 @@ export function AccountDetailView({
         />
       )}
       {modal === "reconcile" && account && (
-        <ReconcileBalanceModal account={account} onClose={() => setModal("none")} />
+        <ReconcileBalanceModal
+          account={account}
+          verifyResidual
+          onClose={() => setModal("none")}
+        />
       )}
     </div>
   );

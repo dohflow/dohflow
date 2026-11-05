@@ -8,10 +8,9 @@
 use chrono::NaiveDate;
 use finance_kernel::{
     Account, AccountFlags, AccountId, ActorType, CashflowRole, CommandEnvelope, CommandMeta,
-    CommitStaged, CreateAccount, Currency, ImportWarning, ImporterPlugin, Kernel, KernelError,
-    LedgerAccountId, Money, ParseError, ParseWarning, ParsedBatch, ParsedRecord, ParsedTransaction,
-    ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, StagedTransactionId,
-    MAX_IMPORT_WARNINGS,
+    CreateAccount, Currency, ImportWarning, ImporterPlugin, Kernel, KernelError, LedgerAccountId,
+    Money, ParseError, ParseWarning, ParsedBatch, ParsedRecord, ParsedTransaction, ParserHints,
+    ParserInput, ParserLimits, RecategorizeTransaction, StagedTransactionId, MAX_IMPORT_WARNINGS,
 };
 use semver::Version;
 use uuid::Uuid;
@@ -778,10 +777,7 @@ fn import_anyway_on_an_invalid_row_is_refused_and_changes_nothing() {
         let staged = StagedTransactionId::from_uuid(before[0].target_id);
 
         let refused = kernel
-            .dispatch(CommandEnvelope::new(
-                meta(),
-                CommitStaged::import_anyway(staged),
-            ))
+            .import_staged_anyway(meta(), staged)
             .expect_err("an invalid row cannot be forced into the ledger");
         assert!(
             matches!(&refused, KernelError::Validation(message) if message == error),
@@ -802,7 +798,7 @@ fn import_anyway_on_an_invalid_row_is_refused_and_changes_nothing() {
 
 #[test]
 fn a_sync_batch_with_an_invalid_row_still_reaches_a_terminal_state() {
-    // ingest_sync_batch commits through the same CommitStaged path.
+    // ingest_sync_batch commits through the same commit path.
     let (_dir, kernel, account_id) = checking_kernel();
     let mut records = three_with_bad_middle(0);
     for record in &mut records {
@@ -834,5 +830,93 @@ fn a_sync_batch_with_an_invalid_row_still_reaches_a_terminal_state() {
     assert_eq!(
         kernel.account_balance(account_id).unwrap(),
         Some(Money::new(-3000, Currency::Usd))
+    );
+}
+
+/// Rows dated outside the years the ledger accepts (1900 to 2999) are not imported: each is flagged
+/// for the Money Inbox as unreadable and the batch carries on (personal-cfo-0g528.1). The first and the
+/// last of the allowed years still import.
+struct DatedRows;
+
+impl ImporterPlugin for DatedRows {
+    fn id(&self) -> &'static str {
+        "dated-rows-csv"
+    }
+    fn display_name(&self) -> &'static str {
+        "Dated Rows CSV"
+    }
+    fn version(&self) -> Version {
+        Version::new(1, 0, 0)
+    }
+    fn supported_extensions(&self) -> &'static [&'static str] {
+        &["csv"]
+    }
+    fn detect_confidence(&self, _: &ParserInput) -> u16 {
+        10_000
+    }
+    fn parse(&self, _: &ParserInput, _: &ParserHints) -> Result<ParsedBatch, ParseError> {
+        let dated = |row: usize, fingerprint: &str, year: i32, month: u32, day: u32| {
+            let mut r = record(row, fingerprint, -1_000 - row as i64, "Dated");
+            r.transaction.as_mut().unwrap().posted_date =
+                NaiveDate::from_ymd_opt(year, month, day).unwrap();
+            r
+        };
+        Ok(ParsedBatch {
+            source_format: "csv".to_owned(),
+            accounts: vec![],
+            records: vec![
+                dated(0, "fp-1900", 1900, 1, 1),
+                dated(1, "fp-1899", 1899, 12, 31),
+                dated(2, "fp-3000", 3000, 1, 1),
+                dated(3, "fp-2999", 2999, 12, 31),
+            ],
+            warnings: vec![],
+            skipped: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn a_date_outside_the_supported_years_is_flagged_and_the_rest_of_the_batch_commits() {
+    let (_dir, kernel, account_id) = checking_kernel();
+    let result = kernel
+        .ingest_batch(
+            &DatedRows,
+            tagged_input("dated"),
+            &ParserHints::default(),
+            account_id,
+            &ParserLimits::default(),
+            &meta(),
+        )
+        .expect("an out-of-range date never fails the import");
+    assert_eq!(
+        (result.staged, result.committed, result.flagged),
+        (4, 2, 2),
+        "1900 and 2999 import; 1899 and 3000 are flagged"
+    );
+    assert_eq!(result.status, "partially_committed");
+    let inbox = waiting_rows(&kernel);
+    assert_eq!(inbox.len(), 2);
+    for item in &inbox {
+        assert!(
+            item.payload_json
+                .contains("not imported: its date could not be read"),
+            "{}",
+            item.payload_json
+        );
+        assert!(
+            item.payload_json
+                .ends_with("\"suspected_duplicate\":false}"),
+            "{}",
+            item.payload_json
+        );
+    }
+    // The person can still not force such a row into the ledger.
+    let refused = kernel
+        .import_staged_anyway(meta(), StagedTransactionId::from_uuid(inbox[0].target_id))
+        .expect_err("a date the ledger cannot hold is refused");
+    assert!(
+        matches!(&refused, KernelError::Validation(_)),
+        "{refused:?}"
     );
 }

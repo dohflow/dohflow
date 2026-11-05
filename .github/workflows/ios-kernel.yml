@@ -15,9 +15,12 @@ name: iOS kernel
 #   1. `iOS cross-compile (kernel crates)` — `cargo check` of the whole workspace,
 #      all targets, for both iOS targets, on every pull request that touches code the
 #      build depends on. Built to be a required check, and built to fail CLOSED: the
-#      macOS build is the job `iOS cross-compile (macOS build)`, and the required name
-#      belongs to a small Linux verdict job that passes only when the gate succeeded and
-#      the build either succeeded or was intentionally skipped (see the gating note).
+#      macOS build runs as two jobs on two runner pools, `iOS cross-compile (macOS
+#      build, arm64)` on macos-15 and `iOS cross-compile (macOS build, intel)` on
+#      macos-15-intel, and the required name belongs to a small Linux verdict job that
+#      passes only when the gate succeeded and the build either succeeded on at least
+#      one pool with neither pool failing, or was intentionally skipped (see the gating
+#      note and the pools note).
 #   2. `iOS simulator (vault tests)` — builds the vault create/unlock/wrong-password
 #      and Future Cash read tests for the simulator and runs them there. Nightly and on
 #      demand, not per pull request: it needs a booted simulator and several minutes.
@@ -37,10 +40,29 @@ name: iOS kernel
 # the change would leave a required check "Expected — waiting" forever (the same reason
 # ci.yml filters inside its jobs). A skip also reports Success when the GATE fails, which
 # would let a filter or API error turn the required check green without a build ever
-# running. So the required name is the verdict job (scripts/ios-kernel-ci-verdict.sh),
+# running. So the required name is the verdict job (scripts/macos-pools-verdict.sh),
 # which fails unless the gate succeeded and the build succeeded or was not wanted. `schedule` payloads carry no `repository` object, so
 # the visibility of a scheduled run is read from the REST API, as ci.yml's security-scan
 # does, instead of trusting `github.event.repository.private`.
+#
+# Two runner pools (personal-cfo-md8h2.24). GitHub hosted macOS arm64 runners are scarce
+# at times: a job that is never given a runner is cancelled by GitHub after about 15
+# minutes ("The job was not acquired by Runner of type hosted even after multiple
+# attempts"), and a required check that never ran dropped queued pull requests
+# (#270 and #275 left the merge queue that way on 2026-11-04). So the same build runs in
+# parallel on two different pools, macos-15 (arm64) and macos-15-intel (x64), and the
+# verdict passes when at least one succeeded and neither FAILED. A shortage in one pool
+# then costs nothing, and a real build failure on either pool still fails the check. The
+# cross-compile is host-independent (`cargo check` for iOS targets), so a build that
+# passes on one pool is a build that passes. Standard macOS runners are free for a public
+# repository.
+# The Intel label was checked against actions/runner-images' README on 2026-11-04: macOS
+# 15 is listed for x64 as `macos-15-large` or `macos-15-intel`. The README publishes no
+# retirement date for the macOS 15 Intel image; it publishes the policy (at most two GA
+# images, the oldest begins deprecation when a new GA OS ships) and shows it applied: the
+# macOS 14 images retired on 2026-11-02 (actions/runner-images#13518). Re-check the label
+# when macOS 27 reaches GA, and move the Intel pool to the next x64 label if macOS 15 is
+# announced for retirement.
 #
 # Run it by hand: the Actions tab -> "iOS kernel" -> "Run workflow", or
 #   gh workflow run ios-kernel.yml --ref <branch>
@@ -146,8 +168,8 @@ jobs:
           echo "simulator=$simulator" >> "$GITHUB_OUTPUT"
           echo "event=$EVENT check=$check simulator=$simulator"
 
-  ios-build:
-    name: iOS cross-compile (macOS build)
+  ios-build-arm64:
+    name: iOS cross-compile (macOS build, arm64)
     needs: gate
     if: needs.gate.outputs.check == 'true'
     runs-on: macos-15
@@ -171,7 +193,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ios-build
+          key: ios-build-arm64
 
       # Every workspace crate, lib + bins + tests + benches, against the locked graph.
       - name: cargo check, aarch64-apple-ios
@@ -180,23 +202,65 @@ jobs:
       - name: cargo check, aarch64-apple-ios-sim
         run: cargo check --workspace --all-targets --locked --target aarch64-apple-ios-sim
 
-  # The required check. A skipped ios-build reports Success, so this job decides: it passes
-  # only when the gate succeeded and the build either succeeded or was not wanted, and
-  # fails otherwise, including when the gate itself failed or was cancelled.
+  ios-build-intel:
+    name: iOS cross-compile (macOS build, intel)
+    needs: gate
+    if: needs.gate.outputs.check == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Show toolchain and Apple SDKs
+        run: |
+          set -euo pipefail
+          rustup show
+          xcodebuild -version
+          echo "iphoneos SDK:        $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iphonesimulator SDK: $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          echo "IPHONEOS_DEPLOYMENT_TARGET=$IPHONEOS_DEPLOYMENT_TARGET"
+
+      # The toolchain (channel) comes from rust-toolchain.toml; the iOS targets are added
+      # on top of it for this job only, so Linux CI and local builds do not pay for them.
+      - name: Add the iOS targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ios-build-intel
+
+      # Every workspace crate, lib + bins + tests + benches, against the locked graph.
+      - name: cargo check, aarch64-apple-ios
+        run: cargo check --workspace --all-targets --locked --target aarch64-apple-ios
+
+      - name: cargo check, aarch64-apple-ios-sim
+        run: cargo check --workspace --all-targets --locked --target aarch64-apple-ios-sim
+
+  # The required check. A skipped build reports Success, so this job decides: it passes only
+  # when the gate succeeded and either neither build was wanted (both skipped) or at least
+  # one pool's build succeeded and neither failed. It fails otherwise, including when the
+  # gate itself failed or was cancelled. `actions: read` lets it say, for a cancelled build,
+  # whether GitHub never gave the job a runner or the job was cancelled mid-run; that
+  # diagnostic never changes the verdict.
   ios-check:
     name: iOS cross-compile (kernel crates)
-    needs: [gate, ios-build]
+    needs: [gate, ios-build-arm64, ios-build-intel]
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Verdict
         env:
+          GH_TOKEN: ${{ github.token }}
           GATE_RESULT: ${{ needs.gate.result }}
           BUILD_WANTED: ${{ needs.gate.outputs.check }}
-          BUILD_RESULT: ${{ needs.ios-build.result }}
-        run: scripts/ios-kernel-ci-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$BUILD_RESULT"
+          ARM64_RESULT: ${{ needs.ios-build-arm64.result }}
+          INTEL_RESULT: ${{ needs.ios-build-intel.result }}
+        run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"
 
   ios-simulator:
     name: iOS simulator (vault tests)

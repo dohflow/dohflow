@@ -472,8 +472,10 @@ How to use it:
 - **A per-draft idempotency key is tested with `expectDraftKeyIdentity`**
   (`apps/desktop/src/test/idempotencyIdentity.ts`), which lists **every** field of the draft's
   identity: an unchanged retry reuses the key, changing each listed field gives a new key, a confirmed
-  success gives the same draft a new key on its next submit, and (where the component treats a typed
-  refusal as a new draft) the send after a refusal gets a new key. A
+  success gives the same draft a new key on its next submit, and the spec pins what the component does
+  after a typed refusal: usually a new draft (the send after it gets a new key), or, where it keeps the
+  key, the same draft (an unchanged send reuses it, an edited field still gets a new one;
+  `refusal.mode: "same-draft"`). A
   field left out of the key's identity still sends the right payload, so nothing else notices it; the
   helper does. Add a field to the draft, add it to the list. Every send in the test must leave the
   form open (mock the call as a lost connection), as it does for the unknown outcome a retry follows.

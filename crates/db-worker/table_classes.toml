@@ -9,7 +9,7 @@
 table = "operation_log"
 class = "1"
 owner_bead = "personal-cfo-0s0"
-note = "Canonical command history and accepted-envelope evidence; class-1 rows are ordered by the Sync tail and retained for replay provenance."
+note = "Canonical command history and accepted-envelope evidence; class-1 rows are ordered by the Sync tail and retained for replay provenance. The write-set hash never depends on these columns. created_at (the recording device wall clock) and hlc_timestamp (an advisory per-process counter, ADR 0017) are device-local, and node_id is per vault (ADR 0074 section 9); none of the three enters a cross-replica or snapshot comparison (tests/replay_property.rs, tests/engine_pin.rs; personal-cfo-32fmp.4 AC2)."
 
 [[table]]
 table = "ledger_accounts"
@@ -480,7 +480,7 @@ reference_validation = "cursor names and op sequence references must be valid fo
 table = "dedupe_decisions"
 class = "4"
 owner_bead = "personal-cfo-5ymg8"
-note = "Current import decision writer is outside the bus, so this is a class-4 candidate; ADR 0074 and SYNC-2 decide routing so a dedupe choice follows the related history."
+note = "A committed decision is written by CommitImportedTransaction (no staged id, content-derived id); a flagged or skipped decision names a device-local staging row and is still written outside the bus by the staged-import worker methods, so this stays a class-4 candidate until personal-cfo-5ymg8.6 makes the decision a command; ADR 0074 and SYNC-2 decide routing so a dedupe choice follows the related history."
 
 [[table]]
 table = "balance_observations"

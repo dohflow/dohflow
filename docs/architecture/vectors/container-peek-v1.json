@@ -1,0 +1,233 @@
+{
+  "cases": [
+    {
+      "description": "The prefix ends exactly after the ciphertext length and total_len is the container's length: the header and both lengths are returned and no ciphertext byte is read.",
+      "expect": {
+        "ok": {
+          "ciphertext_len": "64",
+          "header": "0016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e3000000037012222222222222222222222222222222222222222222222222222222222222222",
+          "header_len": "195"
+        }
+      },
+      "name": "the_exact_frame",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000000000000040",
+      "total_len": "277"
+    },
+    {
+      "description": "A prefix that is the whole container gives the same answer as the exact frame.",
+      "expect": {
+        "ok": {
+          "ciphertext_len": "64",
+          "header": "0016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e3000000037012222222222222222222222222222222222222222222222222222222222222222",
+          "header_len": "195"
+        }
+      },
+      "name": "the_whole_container_as_the_prefix",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e3000000037012222222222222222222222222222222222222222222222222222222222222222000000000000004066666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
+      "total_len": "277"
+    },
+    {
+      "description": "The container is one byte shorter than its ciphertext length says.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "total_len_one_short",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000000000000040",
+      "total_len": "276"
+    },
+    {
+      "description": "One byte follows the ciphertext.",
+      "expect": {
+        "error": "TrailingBytes"
+      },
+      "name": "total_len_one_long",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000000000000040",
+      "total_len": "278"
+    },
+    {
+      "description": "header_len is larger than the container leaves, with only the first ten bytes in hand: refused by the lengths alone.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "header_len_past_the_total",
+      "prefix": "444653590001ffffffff",
+      "total_len": "277"
+    },
+    {
+      "description": "header_len is one more than the container leaves after the frame head.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "header_len_one_past_the_total",
+      "prefix": "4446535900010000010c",
+      "total_len": "277"
+    },
+    {
+      "description": "header_len fills the container exactly: more is needed, and never more than the container has.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "277"
+        }
+      },
+      "name": "header_len_leaves_no_room_for_the_ciphertext_length",
+      "prefix": "4446535900010000010b",
+      "total_len": "277"
+    },
+    {
+      "description": "More bytes in hand than a four-byte container has: refused, with no arithmetic on the missing bytes.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "a_prefix_longer_than_a_tiny_total",
+      "prefix": "444653590001000000c30016646f68666c6f772f",
+      "total_len": "4"
+    },
+    {
+      "description": "A container of no bytes is truncated, not a request for more.",
+      "expect": {
+        "error": "Truncated"
+      },
+      "name": "an_empty_container",
+      "prefix": "",
+      "total_len": "0"
+    },
+    {
+      "description": "The header is in hand and decodes, the prefix is shorter than the total, and the total ends before the eight-byte ciphertext length could: the container is truncated, so this is an error and not a request for more bytes.",
+      "expect": {
+        "error": "Truncated"
+      },
+      "name": "total_len_cannot_hold_the_ciphertext_length",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000",
+      "total_len": "210"
+    },
+    {
+      "description": "The first ten bytes are in hand, the header is not: the answer is that more is needed, and how much (the header, then the eight-byte ciphertext length).",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "213"
+        }
+      },
+      "name": "header_len_past_the_prefix",
+      "prefix": "444653590001000000c3",
+      "total_len": "277"
+    },
+    {
+      "description": "The header is in hand and decodes, the eight-byte ciphertext length is not.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "213"
+        }
+      },
+      "name": "the_header_without_the_ciphertext_length",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e300000003701222222222222222222222222222222222222222222222222222222222222222200000000000000",
+      "total_len": "277"
+    },
+    {
+      "description": "ciphertext_len is 2^64 - 1: an error, never an overflow.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "ciphertext_len_u64_max",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e3000000037012222222222222222222222222222222222222222222222222222222222222222ffffffffffffffff",
+      "total_len": "277"
+    },
+    {
+      "description": "ciphertext_len is 2^64 - 2.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "ciphertext_len_u64_max_minus_one",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e3000000037012222222222222222222222222222222222222222222222222222222222222222fffffffffffffffe",
+      "total_len": "277"
+    },
+    {
+      "description": "The container claims to be 2^64 - 1 bytes with a small ciphertext length: the surplus is trailing bytes, and no sum overflows.",
+      "expect": {
+        "error": "TrailingBytes"
+      },
+      "name": "total_len_u64_max",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000000000000040",
+      "total_len": "18446744073709551615"
+    },
+    {
+      "description": "A ciphertext of 15 bytes cannot hold a 16-byte authentication tag.",
+      "expect": {
+        "error": "CiphertextTooShort"
+      },
+      "name": "ciphertext_len_under_a_tag",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e3000000037012222222222222222222222222222222222222222222222222222222222222222000000000000000f",
+      "total_len": "228"
+    },
+    {
+      "description": "The first four bytes are not DFSY.",
+      "expect": {
+        "error": "BadMagic"
+      },
+      "name": "bad_magic",
+      "prefix": "584653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000000000000040",
+      "total_len": "277"
+    },
+    {
+      "description": "A wrong magic is refused as soon as a wrong byte is in hand.",
+      "expect": {
+        "error": "BadMagic"
+      },
+      "name": "bad_magic_in_a_two_byte_prefix",
+      "prefix": "4458",
+      "total_len": "277"
+    },
+    {
+      "description": "Container version 2.",
+      "expect": {
+        "error": "UnsupportedContainer"
+      },
+      "name": "unsupported_container_version",
+      "prefix": "444653590002000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000000000000040",
+      "total_len": "277"
+    },
+    {
+      "description": "Nothing yet: ten bytes are needed to read the frame head.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "10"
+        }
+      },
+      "name": "an_empty_prefix",
+      "prefix": "",
+      "total_len": "277"
+    },
+    {
+      "description": "The magic so far matches; the head is not complete.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "10"
+        }
+      },
+      "name": "a_good_magic_prefix",
+      "prefix": "444653",
+      "total_len": "277"
+    },
+    {
+      "description": "The header's label is wrong: the header error is the one parse_container gives.",
+      "expect": {
+        "error": "BadLabel"
+      },
+      "name": "a_malformed_header",
+      "prefix": "444653590001000000c3ff16646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e30000000370122222222222222222222222222222222222222222222222222222222222222220000000000000040",
+      "total_len": "277"
+    },
+    {
+      "description": "More bytes in hand than the container has: refused, since the lengths cannot both be true.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "a_prefix_longer_than_the_total",
+      "prefix": "444653590001000000c30016646f68666c6f772f73796e632d6865616465722f7631000111111111111111111111111111111111000000000000000302333333333333333333333333333333330000a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1444444444444444444444444444444444444444444444444444444444444444455555555000000000000000000000000000003e8000000010000000d646f68666c6f772d302e332e3000000037012222222222222222222222222222222222222222222222222222222222222222000000000000004066666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
+      "total_len": "276"
+    }
+  ],
+  "how_to_read": "A case gives the first bytes of a container ('prefix', hex) and the container's total length in bytes ('total_len', a decimal string), the way a service knows a request body's length before it reads the body. 'expect' is one of: {ok: {header, header_len, ciphertext_len}} where 'header' is the canonical header bytes (hex); {error: <name>}, the error that parsing the whole container would give; or {prefix_too_short: {needed}}, meaning the prefix ends before the answer can be decided and 'needed' bytes of prefix are enough to continue. The container frame is magic 'DFSY', u16 container_version, u32 header_len, the header, u64 ciphertext_len, the ciphertext, all lengths big-endian; 10 + header_len + 8 + ciphertext_len must equal total_len. Error names are those of the reference implementation's wire errors (Truncated, TrailingBytes, TooLong, LengthExceedsInput, BadMagic, UnsupportedContainer, CiphertextTooShort and the header's own); an implementation must agree that the container is malformed and that no ciphertext byte is read, but the specific name is informative except where the case says otherwise.",
+  "spec": "docs/architecture/vault-format.md C.4 (the container frame); personal-cfo-v98vd AC29",
+  "synthetic": "Every container is built from synthetic public values. No key, secret or real value is in this file.",
+  "vectors_version": 1
+}

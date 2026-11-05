@@ -1,0 +1,85 @@
+[transactions]
+Checking | 2026-06-01 | -450 | USD | 0 | Corner Cafe | corner cafe | 2026-05-30 | Alcohol/Bars | import_alias | 5000 | statement-june.csv | csv-1 | created_from
+Checking | 2026-06-01 | -450 | USD | 0 | Corner Cafe | corner cafe | - | - | - | - | statement-june.csv | csv-3 | created_from
+Checking | 2026-06-02 | -120000 | USD | 0 | Landlord | landlord | - | - | - | - | statement-june.csv | csv-2 | created_from
+Checking | 2026-06-04 | -700 | USD | 0 | Twin Shop | twin shop | - | - | - | - | statement-june.csv | csv-twin | created_from
+Checking | 2026-06-04 | -700 | USD | 0 | Twin Shop | twin shop | - | - | - | - | statement-june.csv | csv-twin | created_from
+Checking | 2026-06-05 | 250000 | USD | 0 | Employer | employer | - | - | - | - | statement-june.csv | csv-6 | created_from
+Checking | 2026-06-06 | -1000 | USD | 0 | Fresh Rows | fresh rows | - | - | - | - | statement-june.ofx | ofx-2 | created_from
+Checking | 2026-06-07 | -300 | USD | 0 | Newsstand | newsstand | - | - | - | - | multi.csv | csv-2 | created_from
+Checking | 2026-06-09 | -1100 | USD | 1 | After The Bad Rows | after the bad rows | - | - | - | - | odd-rows.csv | csv-3 | created_from
+Checking | 2026-06-09 | -1100 | USD | 0 | After The Bad Rows | after the bad rows | - | - | - | - | restore.csv | csv-1 | created_from
+Checking | 2026-06-09 | 1100 | USD | 1 | - | - | - | - | - | - | - | - | -
+Checking | 2026-06-10 | -4200 | USD | 0 | Provider Coffee | provider coffee | - | - | - | - | sync-1 | simplefin-1 | created_from
+Checking | 2026-06-10 | -4200 | USD | 0 | Provider Coffee | provider coffee | - | - | - | - | sync-1 | simplefin-2 | created_from
+Savings | 2026-06-07 | 5000 | USD | 0 | Transfer In | transfer in | - | - | - | - | multi.csv | csv-1 | created_from
+[provenance_links]
+ledger_transaction | created_from | multi.csv | csv-1 | 1
+ledger_transaction | created_from | multi.csv | csv-2 | 1
+ledger_transaction | created_from | odd-rows.csv | csv-3 | 1
+ledger_transaction | created_from | restore.csv | csv-1 | 1
+ledger_transaction | created_from | statement-june.csv | csv-1 | 1
+ledger_transaction | created_from | statement-june.csv | csv-2 | 1
+ledger_transaction | created_from | statement-june.csv | csv-3 | 1
+ledger_transaction | created_from | statement-june.csv | csv-6 | 1
+ledger_transaction | created_from | statement-june.csv | csv-twin | 1
+ledger_transaction | created_from | statement-june.csv | csv-twin | 1
+ledger_transaction | created_from | statement-june.ofx | ofx-2 | 1
+ledger_transaction | created_from | sync-1 | simplefin-1 | 1
+ledger_transaction | created_from | sync-1 | simplefin-2 | 1
+[dedupe_decisions]
+multi.csv | transaction | committed | unique | - | -
+multi.csv | transaction | committed | unique | - | -
+odd-rows.csv | transaction | committed | unique | - | -
+odd-rows.csv | transaction | flagged | not imported: its currency differs from the account's currency | - | -
+odd-rows.csv | transaction | flagged | not imported: the amount is zero | - | -
+restore.csv | transaction | committed | unique | - | -
+statement-june.csv | transaction | committed | unique | - | -
+statement-june.csv | transaction | committed | unique | - | -
+statement-june.csv | transaction | committed | unique | - | -
+statement-june.csv | transaction | committed | unique | - | -
+statement-june.csv | transaction | committed | unique | - | -
+statement-june.csv | transaction | committed | user import-anyway override | - | -
+statement-june.csv | transaction | flagged | duplicate of an already-committed transaction | ledger_transaction | Corner Cafe
+statement-june.ofx | transaction | committed | unique | - | -
+statement-june.ofx | transaction | flagged | same date and amount already recorded from another source | ledger_transaction | Corner Cafe
+statement-june.ofx | transaction | skipped | user skipped | - | -
+sync-1 | transaction | committed | unique | - | -
+sync-1 | transaction | committed | unique | - | -
+sync-1 | transaction | flagged | same date and amount already recorded from another source | ledger_transaction | Employer
+sync-2 | transaction | skipped | user skipped | - | -
+sync-2 | transaction | skipped | user skipped | - | -
+sync-2 | transaction | skipped | user skipped | - | -
+[staged_transactions]
+multi.csv | csv-1 | Transfer In | committed | unique | 1
+multi.csv | csv-2 | Newsstand | committed | unique | 1
+odd-rows.csv | csv-1 | Zero Row | flagged | pending | 0
+odd-rows.csv | csv-2 | Euro Shop | flagged | pending | 0
+odd-rows.csv | csv-3 | After The Bad Rows | committed | unique | 1
+restore.csv | csv-1 | After The Bad Rows | committed | unique | 1
+statement-june.csv | csv-1 | Corner Cafe | committed | unique | 1
+statement-june.csv | csv-2 | Landlord | committed | unique | 1
+statement-june.csv | csv-3 | Corner Cafe | committed | unique | 1
+statement-june.csv | csv-6 | Employer | committed | unique | 1
+statement-june.csv | csv-twin | Twin Shop | committed | unique | 1
+statement-june.csv | csv-twin | Twin Shop | committed | unique | 1
+statement-june.ofx | ofx-1 | CORNER CAFE #12 | skipped | suspected_duplicate | 0
+statement-june.ofx | ofx-2 | Fresh Rows | committed | unique | 1
+sync-1 | simplefin-1 | Provider Coffee | committed | unique | 1
+sync-1 | simplefin-2 | Provider Coffee | committed | unique | 1
+sync-1 | simplefin-3 | Payroll Direct | flagged | suspected_duplicate | 0
+sync-2 | simplefin-1 | Provider Coffee | skipped | pending | 0
+sync-2 | simplefin-2 | Provider Coffee | skipped | pending | 0
+sync-2 | simplefin-3 | Payroll Direct | skipped | pending | 0
+[batches]
+multi.csv | csv | committed | 2 | 2 | 0
+odd-rows.csv | csv | partially_committed | 3 | 1 | 2
+restore.csv | csv | committed | 1 | 1 | 0
+statement-june.csv | csv | partially_committed | 6 | 5 | 1
+statement-june.ofx | ofx | partially_committed | 2 | 1 | 1
+sync-1 | simplefin | partially_committed | 3 | 2 | 1
+sync-2 | simplefin | committed | 3 | 0 | 0
+[money_inbox]
+imported_waiting_commit | staged_transactions | {"merchant":"euro shop","description":"Euro Shop","amount_minor":-2500,"currency":"EUR","posted_at":"2026-06-08","account_id":"<id>","account_name":"Checking","source_name":"odd-rows.csv","dedupe_reason":"not imported: its currency differs from the account's currency","suspected_committed_txn_id":null,"suspected_duplicate":false}
+imported_waiting_commit | staged_transactions | {"merchant":"payroll direct","description":"Payroll Direct","amount_minor":250000,"currency":"USD","posted_at":"2026-06-05","account_id":"<id>","account_name":"Checking","source_name":"sync-1","dedupe_reason":"same date and amount already recorded from another source","suspected_committed_txn_id":"<id>","suspected_duplicate":true}
+imported_waiting_commit | staged_transactions | {"merchant":"zero row","description":"Zero Row","amount_minor":0,"currency":"USD","posted_at":"2026-06-08","account_id":"<id>","account_name":"Checking","source_name":"odd-rows.csv","dedupe_reason":"not imported: the amount is zero","suspected_committed_txn_id":null,"suspected_duplicate":false}

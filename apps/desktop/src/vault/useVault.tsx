@@ -321,6 +321,45 @@ export function useVault(): VaultContextValue {
   return ctx;
 }
 
+// One entry per variant of the generated `IpcError`. These are records, not lists, so adding a variant
+// to the generated type fails to compile here until it is listed (personal-cfo-5ie.20).
+const IPC_ERROR_STRINGS: Record<Extract<IpcError, string>, true> = {
+  VaultLocked: true,
+  VaultUnlockFailed: true,
+  NewerVaultSchema: true,
+  VaultIntegrityCheckFailed: true,
+  UnsupportedVaultSchema: true,
+  InsufficientDiskSpace: true,
+  WriterPanicked: true,
+};
+type IpcErrorObjectKey =
+  Extract<IpcError, object> extends infer Variant ? (Variant extends unknown ? keyof Variant : never) : never;
+const isText = (value: unknown) => typeof value === "string";
+const IPC_ERROR_OBJECTS: Record<IpcErrorObjectKey, (payload: unknown) => boolean> = {
+  Validation: isText,
+  Persistence: isText,
+  Unavailable: isText,
+  LoanAlreadyLinked: (payload) =>
+    typeof payload === "object" &&
+    payload !== null &&
+    isText((payload as { bill_id?: unknown }).bill_id) &&
+    isText((payload as { bill_name?: unknown }).bill_name),
+};
+
+/// Whether a value that a call resolved to is an `IpcError`, by the generated type's shape: one of
+/// its string variants, or an object with exactly one variant key and a payload of that variant's
+/// type. Calls that resolve to `IpcError | null` (or `{ id } | IpcError`) are told apart with this;
+/// never with a key the type does not have (personal-cfo-5ie.20).
+export function isIpcError(value: unknown): value is IpcError {
+  if (typeof value === "string") return Object.prototype.hasOwnProperty.call(IPC_ERROR_STRINGS, value);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  const key = keys[0];
+  if (keys.length !== 1 || key === undefined) return false;
+  if (!Object.prototype.hasOwnProperty.call(IPC_ERROR_OBJECTS, key)) return false;
+  return IPC_ERROR_OBJECTS[key as IpcErrorObjectKey]((value as Record<string, unknown>)[key]);
+}
+
 /// Turn an `IpcError` into a user-facing message. String variants like
 /// `"VaultUnlockFailed"` get friendly copy; object variants carry their message.
 export function describeIpcError(error: IpcError): string {
