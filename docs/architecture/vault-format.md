@@ -1917,20 +1917,30 @@ receiver materializes a batch with `status` `committed`, counts `0` and `updated
 `created_at`. If a column is later added, or later UPDATEd, this rule decides where it goes, and a
 test against the column manifest makes the new column say so.
 
-**Parts and the per-part bound.** The blob of one part is at most `2^22` bytes (4 MiB), far under the
-service's `max_artifact_bytes`. A batch is split deterministically from its rows alone: part 0 holds
-the batch columns and the parser runs, then records are added in ascending `id` order, and a part is
-closed when adding the next record's canonical JSON would pass the bound; a record that alone passes it
-occupies a part of its own. The same rows therefore always give the same parts, and **a batch of any
-size is carried whole: never refused and never truncated**. Each part has its own address (C.3: its
-`storage_id_raw` is the keyed hash of its own blob bytes) and its own sealed object; all the parts of a
-batch are published together.
+**Parts and the bounds.** The blob of one part is at most `2^22` bytes (4 MiB), far under the
+service's `max_artifact_bytes`, **with no exception**, because the inputs are bounded where they enter
+the vault: the canonical JSON of one source record (all its columns, B.3 encoding) is at most `2^20`
+bytes, and a batch's own columns together with all its parser runs are at most `2^20` bytes. A record
+over its bound is refused at staging, and a batch whose columns and runs would pass theirs refuses the
+parser run that would pass it, each with a typed error (`SourceRecordTooLarge`,
+`SourceBatchHeaderTooLarge`) before the row enters the vault; nothing that reached the vault is
+refused at publish. Part 0 (the batch columns, every parser run and at least one record) therefore
+always fits, and so does every later part, which holds at least one record. A batch is split
+deterministically from its rows alone: part 0 holds the batch columns and the parser runs, then
+records are added in ascending `id` order, and a part is closed when adding the next record's canonical
+JSON would pass `2^22`. The same rows always give the same parts, and **a batch of any size is carried
+whole: never refused and never truncated**. Each part has its own address (C.3: its `storage_id_raw`
+is the keyed hash of its own blob bytes) and its own sealed object; all the parts of a batch are
+published together.
 
 **Publication and immutability.** A batch is published at the first commit that references one of its
 records, as all its parts, with a durable receipt for each before the envelope is sealed. From then on
 it is immutable: adding a record to it, changing a carried column, and deleting any of its rows (or
-the provenance links that name its records) are refused on every local path with a typed error, and the
-importer starts a new batch instead. A batch still being parsed (`parsing`) is never published.
+the provenance links that name its records) are refused on every local path that is **not a command**
+(for example the staging cleanup `discard_batch` and the link deletion it performs) with a typed error,
+and the importer starts a new batch instead. The rule does not constrain a command's `apply`: provenance
+links are class-1 rows that commands write (and replicate), and the artifact carries no link. A batch
+still being parsed (`parsing`) is never published.
 
 **The closure of a payload (the delta).** The delta manifest of an envelope is **every** class-1b
 artifact its payload references, whether or not an earlier envelope already published it, and nothing
