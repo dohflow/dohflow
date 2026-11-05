@@ -106,6 +106,9 @@ fn dispositions_follow_the_class_unless_explicitly_excepted() {
         ("settings_user_keys", ("fields", "fields")),
         ("attachments", ("fields", "fields")),
         ("attachment_blobs", ("artifact", "artifact")),
+        // Import provenance links are an apply output, so they travel as genesis rows (ADR 0074
+        // Decision 5, personal-cfo-1cltt.1 S4); the class stays 1b.
+        ("source_provenance_links", ("include", "include")),
         ("operation_log", ("history", "exclude")),
         ("provenance_links", ("history", "exclude")),
     ]);

@@ -155,7 +155,10 @@ export function Disclosure({
           {summary}
         </p>
       )}
-      {persistent !== undefined && <div className="px-6 pb-3">{persistent}</div>}
+      {persistent !== undefined && (
+        // A persistent slot that is only an empty container takes no room.
+        <div className="px-6 pb-3 has-[>:only-child:empty]:hidden">{persistent}</div>
+      )}
       <PinContext.Provider value={pinContext}>
         <div
           ref={bodyRef}

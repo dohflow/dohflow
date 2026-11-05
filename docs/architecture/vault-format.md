@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=29 -->
+<!-- vault-format: spec-version=30 -->
 <!-- vault-format: schema-version=66 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,7 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 29` (personal-cfo-bxsbz.1, schema version 66) adds the device-local Sync state:
+- `spec-version = 30` (personal-cfo-bxsbz.1, schema version 66) adds the device-local Sync state:
   the class-3 tables `sync_base`, `sync_outbox` and `outbox_queue` (inventory rows, all excluded
   from both formats) and two nullable `operation_log` columns, `applied_base_seq` (the server seq
   of the base the row was applied on; for a re-applied local row, the new base's seq) and
@@ -280,6 +280,15 @@ synthetic no-app recovery test before any such public claim.
   `created_at` they are device-local: outside the write set, and excluded from every cross-replica
   and snapshot comparison. No wire layout, write-set rule or vector changes; the append-only
   triggers are unchanged.
+- `spec-version = 29` (personal-cfo-1cltt.1) specifies the snapshot's manifest and the logical class-1 export it
+  carries (C.8). The manifest gains the voided ranges and void ids a snapshot records (ADR 0074 Addendum D
+  rule 8), the origin vault's creation time (a manifest field, never a `vault_metadata` row, so a seed
+  migration on a replica stamps the origin's value), a per-table state digest a replica recomputes from rows
+  (`dohflow/sync-state-digest/v1`), and `snapshot_schema_version`. `vault_meta.node_id` is not carried. The
+  table set is exactly the B.2 `include` and `fields` rows, every table with a data file, empty ones included.
+  B.2 gives `source_provenance_links` the Sync disposition `include` (it was `artifact`): the rows are an
+  apply output (0g528.1), so they travel as genesis rows, and the class stays `1b`. No wire layout of an
+  envelope or a record changes.
 - `spec-version = 28` (personal-cfo-0g528.1) adds the version 1 command `CommitImportedTransaction` and
   retires `CommitStaged` and `SkipStaged` (they stay decodable and apply as before; nothing produces
   them). The new command carries the MATERIALIZED import (transaction id, account, instant, signed
@@ -496,7 +505,7 @@ therefore requires reviewing this inventory.
 <!-- inventory:start -->
 | Table | Class | Portable | Sync genesis | Rule |
 | --- | --- | --- | --- | --- |
-| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. The device-local columns `created_at`, `applied_base_seq` and `rebased_from` are never part of a comparison, a digest or the export. |
+| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. `created_at` (the recording device's wall clock) and `hlc_timestamp` (an advisory per-process counter, ADR 0017) are device-local, and `node_id` is per vault (ADR 0074 §9); none of the three enters a cross-replica or snapshot comparison. The device-local columns `applied_base_seq` and `rebased_from` (Sync local state, personal-cfo-bxsbz.1) are likewise never part of a comparison, a digest or the export. |
 | `ledger_accounts` | 1 | include | include | Canonical user intent. |
 | `accounts` | 1 | include | include | Canonical user intent. |
 | `ledger_transactions` | 1 | include | include | Canonical user intent. |
@@ -528,7 +537,7 @@ therefore requires reviewing this inventory.
 | `source_batches` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
 | `source_records` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
 | `parser_runs` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
-| `source_provenance_links` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
+| `source_provenance_links` | 1b | include | include | Import provenance rows travel as data in the portable export. Under Sync they travel as genesis rows, not artifacts: `CommitImportedTransaction` writes them in apply, keyed under the carried transaction id, so a replica that bootstraps from a genesis and one that applies the tail must agree on them. The class stays `1b`; the write set does not cover them yet (personal-cfo-0g528.2). |
 | `commitments` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `transaction_display_rows_read_model` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `read_model_checksums` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
@@ -1800,6 +1809,63 @@ the manifest names, with none missing and none extra.
 The household timezone travels as the `household_timezone` column of the class-1 `households`
 row in `data/households.jsonl` (Part B), never as a header field, so later changes to it
 propagate by command.
+
+### The manifest (`manifest.json`)
+
+Canonical JSON (C.1.2), so every integer in it is a decimal string and every member name is
+`[a-z0-9_]`. Its members, all required:
+
+| Member | Meaning |
+| --- | --- |
+| `format` | the constant `dohflow-sync-snapshot` |
+| `format_version`, `snapshot_schema_version` | the decimal string `"1"` for this revision; the layout of the plaintext and of this manifest. A reader refuses any other value |
+| `inventory_version` | the version of the B.2 inventory the table set follows (`"1"`) |
+| `schema_version` | the producer's database schema version (a decimal string) |
+| `vault_created_at` | the origin vault's creation time, the `created_at` of its `vault_metadata` row |
+| `tables` | one object per table file, ascending by `name`: `name`, `row_count` (a decimal string), `sha256` (of the file's bytes, lowercase hex), `state_digest` (below; `null` for a folded child) and `columns`, an array of `name` and `kind` in file order |
+| `voids` | the honored voids the snapshot records, as `void_id` (lowercase hex), `first` and `last` (decimal strings), strictly ascending and disjoint, as the C.10 ledger encodes them (ADR 0074 Addendum D rule 8) |
+| `artifacts` | the complete closure manifest: `sync_artifact_id_e` values as lowercase hex, strictly ascending (empty until the artifact closure ships, `personal-cfo-1cltt.7`) |
+
+An unknown member, a value out of its form (a count with a leading zero, a hash that is not 32
+bytes of lowercase hex, a range that runs backwards or overlaps the previous one) or a manifest
+that is not the canonical encoding of its own content is refused. A table file's line count must
+equal its `row_count`.
+
+**The tables.** The set is exactly the B.2 rows whose Sync disposition is `include` or `fields`.
+A `fields` table carries its replicated fields only (C.1.5: `attachments`, and the `user.` keys of
+`settings`, whose `device.` keys never appear), and a pseudo row of the CLASS-0 manifest is not a
+table and has no file. **Every** such table has a data file, an empty one included, and the
+manifest lists it. The file for `<table>` is `data/<table>.jsonl`; its rows are in ascending
+unsigned primary-key byte order (C.1.5), and its values follow B.3 "Row encoding". A folded child
+(`ledger_postings`, `attachment_links`) has no key: its rows are ordered bytewise by their
+child-row bytes, the order of its parent's digest (C.1.5).
+
+**What is not carried.** `vault_metadata` and `vault_meta` are excluded (B.2). In particular
+`node_id` is not carried: it feeds the advisory HLC, which is per device, so a replica mints its
+own. The origin's `vault_id` is the vault's Sync identity and travels as the header's `vault_id`;
+the origin's creation time travels as `vault_created_at`, because a seed migration (32fmp AC5)
+stamps it, and a replica installs it before any migration or mint so that the migration writes the
+origin's rows.
+
+**The state digest.** A replica proves that the rows it inserted equal the origin's by recomputing
+a digest from the rows, not from the file: for each keyed table,
+
+`SHA-256(label "dohflow/sync-state-digest/v1" ‖ text(64) table ‖ u64 row_count ‖ for each row in
+ascending unsigned primary-key byte order: digest row_digest)`
+
+where `row_digest` is the C.1.5 digest of the row (for a parent with folded children, the parent
+digest of C.1.5, which includes its child section; for a `fields` table, the digest of its
+projection). A table with no rows has a digest. A folded child has none of its own, because its
+rows are inside its parent's, but it keeps its data file and its `sha256`. The key bytes order the
+rows and are not part of the digest. The bootstrap recomputes every digest and compares it with the
+manifest before it activates the vault. There is no whole-snapshot digest.
+
+**Refusals before a snapshot exists.** The export stops with a typed error naming the table and
+column, and coerces or truncates nothing, for: a stored value whose storage class is not its
+column's declared kind (a REAL, a UUID column that is not 16 bytes, text that is not UTF-8), a
+primary key whose C.1.5 encoding exceeds 256 bytes, a text or bytes value over `2^24` bytes, a
+folded child row whose encoding exceeds 65,536 bytes (the error names the child table, since no one
+column is at fault), two rows with the same key, and a folded child row with no parent row.
 
 A snapshot's plaintext is at most `2^30` bytes (1 GiB). A larger vault fails with
 the typed error `SnapshotTooLarge` until a chunked framing is specified.

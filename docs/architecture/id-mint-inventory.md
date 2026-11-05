@@ -17,9 +17,10 @@ by SITE and by reachability from `apply_command`, not by count:
 
 `tests/id_mint_inventory.rs` scans the source for the mint tokens (`Uuid::now_v7`, `Uuid::new_v4`,
 `new_v7`, `ContextV7`, `next_id()`, and `<Entity>Id::new()`) and fails unless this table lists
-every remaining site, with its count, and unless no site under `apply/` or in a helper module that
-`apply` reaches (`debt.rs`, `money_inbox.rs`, `commitments.rs`) is listed. A new mint is therefore a
-deliberate row here, in the same change.
+every remaining site, with its count, and unless no site under `apply/` is listed. What `apply`
+REACHES outside `apply/` is not a hand-kept module list: `tests/mint_reachability.rs` walks the call
+graph from `apply_command` (see "Mints reachable from apply" below) and fails on any reachable mint.
+A new mint is therefore a deliberate row here, in the same change.
 
 ## Remaining random mints (KEEP)
 
@@ -41,6 +42,19 @@ deliberate row here, in the same change.
 | `lib.rs` | `stage_sync_batch` | 1 | keep-class-3 | Device-local import staging. |
 | `lib.rs` | `ensure_node_id` | 1 | keep-class-3 | The device's own node id. |
 | `lib.rs` | `ensure_vault_metadata` | 1 | keep-seeder | The vault id, minted once at creation (genesis). |
+
+## Mints reachable from apply (exceptions)
+
+`tests/mint_reachability.rs` walks the call graph from `apply_command` and every function in `apply/`
+(by name, over every function in `crates/db-worker/src`; it can over-report, never under-report) and
+fails on any random or time-based mint, or SQLite random or clock function, in a reachable function. A
+reachable mint that cannot be derived is a row here: the function, the token, the call edge the row
+excuses (`root -> ... -> function`) and the bead that removes it. A row whose finding is gone fails as
+stale. There are none today. The linked workspace crates are scanned by token in the same test
+(`core-ids`, which defines the mint helpers, and `job-runtime` are named exceptions in the test).
+
+| Function | Token | Call edge | Bead |
+| --- | --- | --- | --- |
 
 ## Derived mints (inside `apply` and its helpers)
 

@@ -16,6 +16,8 @@
 //! * [`membership`]: the C.6 membership chain and epoch records and their reference verifier.
 //! * [`producer`]: the seal-then-verify rule a client runs before it uploads an envelope.
 //! * [`service`]: the checks the Sync service can make on a push without reading it.
+//! * [`snapshot`]: the genesis snapshot's plaintext framing, manifest and per-table state digest
+//!   (C.8).
 //! * [`status`]: the replica's sync status (healthy, halted, or stopped at an invalid envelope).
 //! * [`envelope`]: the envelope plaintext, its commitments and digest, and the receiver checks.
 
@@ -30,6 +32,7 @@ pub mod membership;
 pub mod producer;
 pub mod row_digest;
 pub mod service;
+pub mod snapshot;
 pub mod status;
 pub mod void;
 pub mod write_set;
