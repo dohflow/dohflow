@@ -247,9 +247,10 @@ says "a failed gate fails the check" "$JOBS_DIR/none.json" 1 "the gate job did n
 says "a skipped build the gate did not want passes" "$JOBS_DIR/none.json" 0 "was not needed" success false skipped skipped
 says "a build that ran when it was not wanted fails" "$JOBS_DIR/none.json" 1 "was not needed but its results are" success false success skipped
 says "one pool built and the other unfinished passes, with a notice naming it" "$JOBS_DIR/none.json" 0 "::notice::Desktop crate build (intel) was still unfinished" success true success unfinished
-says "one pool built and the other unknown passes, with a notice" "$JOBS_DIR/none.json" 0 "::notice::Desktop crate build (arm64) has an unknown state" success true unknown success
+says "a pool whose state is unknown fails the check even beside a success (a renamed job)" "$JOBS_DIR/none.json" 1 "arm64 pool's state of the Desktop crate build could not be determined" success true unknown success
+says "an unknown Intel pool beside a success fails the same way" "$JOBS_DIR/none.json" 1 "Intel pool's state of the Desktop crate build could not be determined" success true success unknown
 says "nothing built by the deadline fails and says so" "$JOBS_DIR/none.json" 1 "neither pool had built it when the wait ended" success true unfinished unfinished
-says "pools that are not known to have built do not count" "$JOBS_DIR/none.json" 1 "neither pool is known to have built it" success true unknown unknown
+says "both pools unknown fails" "$JOBS_DIR/none.json" 1 "could not be determined" success true unknown unknown
 says "an unfinished pool never satisfies 'not wanted'" "$JOBS_DIR/none.json" 1 "expected both 'skipped'" success false unfinished skipped
 refuses_to_mention "the iOS names do not leak into this check's messages" "$JOBS_DIR/both-never-acquired.json" "iOS" success true cancelled cancelled
 

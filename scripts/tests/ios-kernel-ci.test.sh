@@ -196,6 +196,20 @@ verdict_expect pass success true success cancelled
 verdict_expect pass success true cancelled success
 verdict_expect pass success true success skipped
 verdict_expect pass success true skipped success
+# From the wait script (personal-cfo-md8h2.26): `unfinished` is the one neutral state, so a
+# success beside it passes; `unknown` (a renamed or duplicated job, an unreadable jobs API)
+# fails whatever the other pool did, and two pools that built nothing still fail.
+verdict_expect pass success true success unfinished
+verdict_expect pass success true unfinished success
+verdict_expect fail success true unfinished unfinished
+verdict_expect fail success true unfinished cancelled
+verdict_expect fail success true unfinished skipped
+for other in success failure cancelled skipped unfinished unknown; do
+  verdict_expect fail success true unknown "$other"
+  verdict_expect fail success true "$other" unknown
+done
+verdict_expect fail success false unfinished skipped
+verdict_expect fail success false skipped unknown
 # A failure on either pool fails, whatever the other pool did.
 for other in success failure cancelled skipped; do
   verdict_expect fail success true failure "$other"

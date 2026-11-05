@@ -29,11 +29,12 @@
 # Two more values come from scripts/macos-pools-wait.sh (personal-cfo-md8h2.26), which waits for
 # the pools for a bounded time instead of the verdict job needing them: `unfinished` (queued,
 # waiting or still running when the wait ended) and `unknown` (the job is missing or appears
-# twice, the jobs API or its token failed, or the conclusion is unrecognized). Neither is a
-# success and neither is a failure: one pool succeeding with the other `unfinished` or `unknown`
-# passes, with a notice naming the pool, because the pool that built has proven the
-# cross-compile; a failure on either pool, or no success at all, fails. An `unfinished` or
-# `unknown` pool cannot satisfy "not wanted": that case requires both pools `skipped`.
+# twice, or the jobs API or its token failed, so the pool's state could not be determined).
+# Only `unfinished` is neutral: one pool succeeding with the other `unfinished` passes, with a
+# notice naming the pool, because the pool that built has proven the cross-compile. A failure on
+# either pool, an `unknown` pool (whatever the other did: a renamed job must not let the check
+# pass on one pool alone), or no success at all fails. An `unfinished` or `unknown` pool cannot
+# satisfy "not wanted": that case requires both pools `skipped`.
 #
 # Usage: macos-pools-verdict.sh <gate result> <build wanted: true|false|""> \
 #                                 <arm64 build result> <intel build result>
@@ -112,6 +113,9 @@ fi
 # The build was wanted. A failure on either pool fails the check, whatever the other did.
 [ "$arm64_result" != "failure" ] || fail "the ${build_label} failed on the arm64 pool (the Intel pool: '$intel_result')"
 [ "$intel_result" != "failure" ] || fail "the ${build_label} failed on the Intel pool (the arm64 pool: '$arm64_result')"
+# A pool whose state could not be determined fails the check even beside a success.
+[ "$arm64_result" != "unknown" ] || fail "the arm64 pool's state of the ${build_label} could not be determined (its job is missing or duplicated, or the jobs API was unreadable; the Intel pool: '$intel_result')"
+[ "$intel_result" != "unknown" ] || fail "the Intel pool's state of the ${build_label} could not be determined (its job is missing or duplicated, or the jobs API was unreadable; the arm64 pool: '$arm64_result')"
 
 built=()
 [ "$arm64_result" != "success" ] || built+=("arm64")
@@ -125,8 +129,6 @@ account_for() {
     cancelled) explain_cancelled "$pool" "$job_name" ;;
     unfinished)
       echo "::notice::${build_label} (${pool}) was still unfinished (queued or running) when the wait ended; the other pool's success decides this check, and a later failure of this pool shows in the run but does not change the check." ;;
-    unknown)
-      echo "::notice::${build_label} (${pool}) has an unknown state (the jobs API could not say); it counts as no success." ;;
   esac
 }
 
@@ -136,8 +138,6 @@ if [ "${#built[@]}" -eq 0 ]; then
   cause="neither pool built it"
   if [ "$arm64_result" = "unfinished" ] || [ "$intel_result" = "unfinished" ]; then
     cause="neither pool had built it when the wait ended"
-  elif [ "$arm64_result" = "unknown" ] || [ "$intel_result" = "unknown" ]; then
-    cause="neither pool is known to have built it"
   fi
   fail "the ${build_label} was needed but ${cause} (arm64: '$arm64_result', intel: '$intel_result')"
 fi

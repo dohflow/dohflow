@@ -383,8 +383,11 @@ job" is not bounded by its `timeout-minutes` (run 41920261907 sat there for 55 m
 in 60 minutes. So each verdict job needs only its gate and runs `scripts/macos-pools-wait.sh`,
 which polls the run's jobs (this run attempt, exact job names) until both pools have a conclusion,
 a pool fails, or 20 minutes pass, and then hands what it saw to `scripts/macos-pools-verdict.sh`.
-At the deadline one pool's success passes the check with a notice naming the pool left unfinished;
-no success, an unreadable jobs API, or a missing, duplicated or unrecognized job fails it. A pool
+At the deadline one pool's success passes the check with a notice naming the pool left unfinished,
+and a pool still queued or running is the only neutral state. No success fails it, and so does a pool
+whose state cannot be determined (a missing, renamed or duplicated job, or an unreadable jobs API
+at the last poll) even beside the other pool's success, and any completed conclusion but success,
+cancelled or skipped (startup_failure, action_required, neutral, stale) is a failure. A pool
 that fails after the check passed is seen by `main-red-alert` in `ci.yml`, which waits for the two
 desktop pool jobs as well. The check reports about 21 minutes after the gate at the latest, plus
 its own Linux runner's acquisition; `scripts/tests/macos-pools-wait.test.sh` runs every case

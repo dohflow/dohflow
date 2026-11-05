@@ -19,15 +19,24 @@
 #     (a failure cannot be undone within an attempt, so waiting for the other pool would only
 #     delay the red), or VERDICT_WAIT_SECONDS (1200, twenty minutes) have passed. It never stops
 #     early on one pool's success: the other pool may still fail, and that failure fails the check.
-#   * Maps each pool to success, failure (also timed_out), cancelled, skipped, unfinished (queued,
-#     waiting or in progress) or unknown (the job is missing or appears twice, the response is
-#     unreadable or unparseable, the API or token failed, or the conclusion is not one of the
-#     above). Unknown and unfinished are never a success.
+#   * Maps each pool to one of:
+#       success, cancelled, skipped;
+#       failure   - a completed job with ANY other conclusion (failure, timed_out, startup_failure,
+#                   action_required, neutral, stale, or none), which fails the check;
+#       unfinished - queued, waiting or in progress: the ONLY neutral state;
+#       unknown   - the job is missing or appears twice, or the response is unreadable or
+#                   unparseable (the API or token failed). A missing job is waited for while the
+#                   wait runs (it may not have been created yet), but it is unknown at the end,
+#                   and an unknown pool fails the check whatever the other pool did: a renamed
+#                   job must not let the check pass on one pool alone.
 #   * Runs the verdict script with those values. The verdict script passes when the gate
-#     succeeded and a pool succeeded and none failed, and prints a notice for any pool left
-#     unfinished or unknown; with no success it fails and says which case it was. A build the
+#     succeeded and a pool succeeded and no pool failed or is unknown, and prints a notice for a
+#     pool left unfinished; with no success it fails and says which case it was. A build the
 #     gate did not want has both pools skipped by the gate's output, which counts as finished
 #     here, so that case does not wait.
+#   * The final poll decides. If the last poll could not be read, the states are unknown and the
+#     check fails: an earlier readable snapshot is not reused, because the pool it showed
+#     succeeding may be the one whose job was since renamed or duplicated.
 #
 # The gate result and the "build wanted" value are checked by the verdict script, not here: a
 # failed gate, or a value that is neither true nor false, is handed straight to it with both
@@ -99,7 +108,7 @@ fetch() {
 }
 
 # pool_state <jobs json file> <job name>: success, failure, cancelled, skipped or unfinished,
-# or unknown with the reason after a colon. Exact name, this attempt only.
+# or unknown, with a reason after a colon for failure and unknown. Exact name, this attempt only.
 pool_state() {
   jq -r --arg name "$2" --argjson attempt "$attempt" '
     [.jobs[]? | select(.name == $name and .run_attempt == $attempt)] as $m
@@ -109,10 +118,9 @@ pool_state() {
         | if $j.status != "completed" then "unfinished"
           else ($j.conclusion // "") as $c
             | if $c == "success" then "success"
-              elif $c == "failure" or $c == "timed_out" then "failure"
               elif $c == "cancelled" then "cancelled"
               elif $c == "skipped" then "skipped"
-              else "unknown:an unrecognized conclusion" end
+              else "failure:the job concluded \"" + (if $c == "" then "none" else $c end) + "\"" end
           end
       end' "$1" 2>/dev/null || echo "unknown:the response could not be parsed"
 }
@@ -135,9 +143,9 @@ while :; do
   echo "poll $poll at ${SECONDS}s (virtual ${virtual_now}s): arm64=${arm64_state} intel=${intel_state}" >&2
 
   # A failure cannot be undone within an attempt.
-  if [ "$arm64_state" = "failure" ] || [ "$intel_state" = "failure" ]; then break; fi
+  if [ "${arm64_state%%:*}" = "failure" ] || [ "${intel_state%%:*}" = "failure" ]; then break; fi
   # Both pools have a conclusion (a skipped pool is finished): nothing left to wait for.
-  if concluded "$arm64_state" && concluded "$intel_state"; then break; fi
+  if concluded "${arm64_state%%:*}" && concluded "${intel_state%%:*}"; then break; fi
   if [ "$(now)" -ge "$deadline" ]; then
     echo "::notice::${check_label}: the wait reached its ${deadline}-second deadline with arm64=${arm64_state} intel=${intel_state}." >&2
     break
@@ -148,14 +156,18 @@ done
 # The verdict script's diagnostics read the last good response, never a fresh API call.
 if [ -n "$last_snapshot" ]; then export VERDICT_JOBS_JSON="$last_snapshot"; fi
 
-# unknown:<reason> is `unknown` to the verdict, with the reason said here.
+# failure:<reason> and unknown:<reason> go to the verdict as `failure` and `unknown`, with the
+# reason said here.
 for pool in arm64 intel; do
   state_var="${pool}_state"
   state="${!state_var}"
   case "$state" in
     unknown:*)
-      echo "::warning::${check_label}: the ${pool} pool's state is unknown (${state#unknown:}), so it counts as no success." >&2
+      echo "::warning::${check_label}: the ${pool} pool's state is unknown (${state#unknown:}); an unknown pool fails the check." >&2
       printf -v "$state_var" '%s' unknown ;;
+    failure:*)
+      echo "::warning::${check_label}: the ${pool} pool's job is a failure (${state#failure:})." >&2
+      printf -v "$state_var" '%s' failure ;;
   esac
 done
 

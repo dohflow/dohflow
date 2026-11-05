@@ -14,7 +14,9 @@
 #   * one pool failed before the deadline: fail, without waiting for the deadline;
 #   * a pool's success never ends the wait on its own (the other may still fail);
 #   * nothing built by the deadline: fail, and say it was the deadline;
-#   * the API unreadable, a job missing or duplicated, a job of another attempt: no success;
+#   * the API unreadable, a job missing (a renamed job), duplicated or of another attempt: the
+#     check fails even beside the other pool's success; only a pool still queued or running at
+#     the deadline is neutral; any other completed conclusion is a failure;
 #   * the build not wanted and both pools skipped: pass at once, no wait;
 #   * a failed gate: fail without polling.
 
@@ -162,22 +164,39 @@ run_checks() {
   says "one pool cancelled beside a success: pass" 0 1 "succeeded on: intel" success true
 
   # --- the jobs API cannot be trusted to say yes -----------------------------------------------
+  # Only a pool that is queued or running at the deadline is neutral. A pool whose state cannot
+  # be determined fails the check even beside a success, so a renamed job cannot let the check
+  # pass on one pool alone.
   sequence "$dir" "UNREADABLE"
-  says "an unreadable jobs API is no success: fail at the deadline" 1 5 "neither pool is known to have built it" success true
+  says "an unreadable jobs API is no success: fail at the deadline" 1 5 "state of the ${build} could not be determined" success true
   sequence "$dir" "not json at all"
-  says "an unparseable response is no success: fail" 1 5 "neither pool is known to have built it" success true
+  says "an unparseable response fails: no pool is known to have built" 1 5 "could not be determined" success true
+  sequence "$dir" "$(snapshot "$arm_ok" "$(job "$intel (renamed)" completed success)")"
+  says "a renamed Intel job beside an arm64 success fails (it would pass on arm64 alone every run)" 1 5 "Intel pool's state of the ${build} could not be determined" success true
+  sequence "$dir" "$(snapshot "$(job "$arm (renamed)" completed success)" "$intel_ok")"
+  says "a renamed arm64 job beside an Intel success fails" 1 5 "arm64 pool's state of the ${build} could not be determined" success true
   sequence "$dir" "$(snapshot "$arm_ok")"
-  says "a missing Intel job is no success for it, and the arm64 success still passes with a notice" 0 5 "::notice::${build} (intel) has an unknown state" success true
+  says "a missing job still fails when the other pool built, at the end of the wait" 1 5 "could not be determined" success true
   sequence "$dir" "$(snapshot "$arm_ok" "$arm_ok" "$intel_ok")"
-  says "a job that appears twice is unknown, not a success" 0 - "::notice::${build} (arm64) has an unknown state" success true
-  sequence "$dir" "$(snapshot "$arm_queued" "$(job "$arm (decoy)" completed success)" "$intel_ok")"
-  says "a job whose name only starts like the pool's is not the pool (exact names)" 0 - "::notice::${build} (arm64) was still unfinished" success true
+  says "a job that appears twice fails, whatever the other pool did" 1 5 "arm64 pool's state of the ${build} could not be determined" success true
+  sequence "$dir" "$(snapshot "$arm_ok" "$intel_ok" "$intel_ok")"
+  says "a duplicated Intel job fails too" 1 5 "Intel pool's state of the ${build} could not be determined" success true
+  sequence "$dir" "$(snapshot "$arm_ok")" "$(snapshot "$arm_ok")" "$(snapshot "$arm_ok" "$intel_ok")"
+  says "a job missing at early polls is waited for: it appears at the third poll and the check passes" 0 3 "succeeded on: arm64 intel" success true
   sequence "$dir" "$(snapshot "$(job "$arm" completed success 1)" "$(job "$intel" completed success 1)")"
-  says "jobs of another run attempt are not this attempt's: fail" 1 - "neither pool is known to have built it" success true 2
-  sequence "$dir" "$(snapshot "$(job "$arm" completed neutral)" "$(job "$intel" completed action_required)")"
-  says "an unrecognized conclusion is no success: fail" 1 - "neither pool is known to have built it" success true
+  says "jobs of another run attempt are not this attempt's: fail" 1 - "could not be determined" success true 2
+  for odd in startup_failure action_required neutral stale; do
+    sequence "$dir" "$(snapshot "$arm_ok" "$(job "$intel" completed "$odd")")"
+    says "a completed job that concluded '$odd' is a failure, even beside a success" 1 1 "failed on the Intel pool" success true
+  done
+  sequence "$dir" "$(snapshot "$arm_ok" "$(job "$intel" completed "")")"
+  says "a completed job with no conclusion is a failure" 1 1 "failed on the Intel pool" success true
+  sequence "$dir" "$(snapshot "$arm_run" "$intel_queued")" "$(snapshot "$arm_ok" "$intel_run")"
+  says "one pool built and the other is unfinished: still the one neutral state, and it passes" 0 - "::notice::${build} (intel) was still unfinished" success true
   sequence "$dir" "UNREADABLE" "$(snapshot "$arm_ok" "$intel_ok")"
   says "an API failure that clears is recovered from on the next poll" 0 2 "succeeded on: arm64 intel" success true
+  sequence "$dir" "$(snapshot "$arm_ok" "$intel_run")" "UNREADABLE"
+  says "an unreadable FINAL poll fails: the earlier readable snapshot is not reused" 1 5 "could not be determined" success true
   sequence "$dir" "$(snapshot "$arm_ok" "$intel_ok")" "UNREADABLE"
   says "the wait ends at the first poll when both pools finished, so a later API failure is never seen" 0 1 "" success true
 
