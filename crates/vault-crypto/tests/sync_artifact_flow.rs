@@ -580,3 +580,16 @@ fn artifact_transport_has_no_implementor_outside_tests() {
          the first production implementor): {implementors:?}"
     );
 }
+
+#[test]
+fn only_a_fact_about_the_artifact_has_a_stage_9_verdict_and_service_faults_do_not() {
+    use sync_core::artifact_closure::Mismatch;
+    let id = ArtifactId::from_derived([0x21; 32]);
+    assert_eq!(FetchError::Missing.mismatch(id), None);
+    assert_eq!(FetchError::Unavailable.mismatch(id), None);
+    assert_eq!(FetchError::OuterAead.mismatch(id), None);
+    assert_eq!(
+        FetchError::Invalid(OpenArtifactError::WrongAddress).mismatch(id),
+        Some(Mismatch::ArtifactInvalid(id))
+    );
+}

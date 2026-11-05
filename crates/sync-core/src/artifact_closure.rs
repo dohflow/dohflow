@@ -18,9 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
-use crate::artifact::{ArtifactId, LogicalBinding};
+use crate::artifact::{ArtifactId, LogicalBinding, TransportPlaintext};
 use crate::envelope::ArtifactManifest;
 use crate::header::ManifestCommitment;
+use crate::source_batch::record_ids;
 
 /// A logical class-1b object an artifact binds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,6 +54,35 @@ pub struct DeltaArtifact {
     pub binding: LogicalBinding,
     /// For a batch part, the ids of the records in its blob; empty for an attachment.
     pub records: Vec<[u8; 16]>,
+}
+
+impl DeltaArtifact {
+    /// The stage-9 input for one **authenticated** artifact: its logical binding and, for a batch
+    /// part, the ids of the records its blob holds. The only way to build one from a plaintext, so a
+    /// part that does not decode, or whose metadata names no valid binding, has a verdict
+    /// ([`Mismatch::PartUndecodable`], [`Mismatch::BadBinding`]) instead of reaching apply. The
+    /// producer's own stage-9 self-check builds its inputs the same way.
+    ///
+    /// # Errors
+    /// A [`Mismatch`] naming the artifact.
+    pub fn from_plaintext(plaintext: &TransportPlaintext<'_>) -> Result<Self, Mismatch> {
+        let id = plaintext.artifact_id;
+        let binding = plaintext.binding().map_err(|_| Mismatch::BadBinding(id))?;
+        let records = match binding {
+            LogicalBinding::Attachment { .. } => Vec::new(),
+            LogicalBinding::BatchPart {
+                batch_id,
+                part_index,
+                ..
+            } => record_ids(&batch_id, part_index, plaintext.blob)
+                .map_err(|_| Mismatch::PartUndecodable(id))?,
+        };
+        Ok(Self {
+            id,
+            binding,
+            records,
+        })
+    }
 }
 
 /// What a snapshot at the preceding log position would carry, in this epoch: each logical object's
@@ -99,6 +129,19 @@ pub enum Mismatch {
     /// The parts of a batch disagree on `part_count`.
     #[error("the parts of a batch disagree on part_count")]
     PartsDisagree([u8; 16]),
+    /// An authenticated artifact's metadata names no valid logical binding.
+    #[error("an artifact's logical metadata names no valid binding")]
+    BadBinding(ArtifactId),
+    /// An authenticated artifact fails its own descriptor, is of a reserved kind, or was refused when
+    /// it was opened (a fact about the artifact, unlike a fetch fault).
+    #[error("an authenticated artifact is invalid")]
+    ArtifactInvalid(ArtifactId),
+    /// An authenticated batch part does not decode as a source batch part.
+    #[error("a batch part does not decode")]
+    PartUndecodable(ArtifactId),
+    /// One source record is held more than once across the parts of a batch.
+    #[error("a source record is held by more than one part of a batch")]
+    RecordDuplicated([u8; 16]),
     /// A source record the payload names is in no referenced batch.
     #[error("a named source record is in no referenced batch")]
     RecordInNoBatch([u8; 16]),
@@ -113,7 +156,10 @@ pub enum Mismatch {
     Rebinding(LogicalRef),
 }
 
-/// Stage 9(b): with every artifact of the delta held and verified, the logical ids they bind must
+/// Stage 9(b), including two cases the signed spec text does not yet list (a record held by more than
+/// one part of a batch, and an authenticated part that does not decode as C.9 rows): spec text pending
+/// in S2c part 2 (spec 33), planning ruling on personal-cfo-0g528.2. With every artifact of the delta
+/// held and verified, the logical ids they bind must
 /// equal the logical ids the payload references. A batch's parts are exactly `0` to `part_count - 1`;
 /// every named record is in exactly one referenced batch; every referenced batch holds a named
 /// record and every delta attachment is named; and no logical object of the live closure is bound to
@@ -159,6 +205,16 @@ pub fn check_closure(
         }
         if usize::try_from(count).ok() != Some(seen.len()) {
             return Err(Mismatch::PartMissing(*batch_id));
+        }
+        // A record is held by exactly one part of its batch, whether or not the payload names it:
+        // the parts would not join.
+        let mut held = BTreeSet::new();
+        for (artifact, _, _) in parts {
+            for record in &artifact.records {
+                if !held.insert(*record) {
+                    return Err(Mismatch::RecordDuplicated(*record));
+                }
+            }
         }
     }
     for (attachment_id, artifacts) in &attachments {

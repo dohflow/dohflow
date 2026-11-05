@@ -16,6 +16,7 @@
 //!   the wire.
 
 use sync_core::artifact::{ArtifactId, ArtifactReceipt, LogicalBinding, MAX_ARTIFACT_CONTAINER};
+use sync_core::artifact_closure::Mismatch;
 use sync_core::artifact_transport::{ArtifactTransport, TransportError};
 use thiserror::Error;
 
@@ -109,6 +110,19 @@ pub enum FetchError {
     /// the artifact, not about the service. Carried to the closure check as a mismatch.
     #[error("{0}")]
     Invalid(OpenArtifactError),
+}
+
+impl FetchError {
+    /// The stage-9(b) verdict this failure stands for, if it is a fact about the artifact: only
+    /// [`FetchError::Invalid`] is. Every other class is a service or transport fault and leaves the
+    /// envelope not determinable (stage 9(a)), so it has no verdict.
+    #[must_use]
+    pub fn mismatch(self, id: ArtifactId) -> Option<Mismatch> {
+        match self {
+            Self::Invalid(_) => Some(Mismatch::ArtifactInvalid(id)),
+            Self::Missing | Self::Unavailable | Self::OuterAead => None,
+        }
+    }
 }
 
 /// Get the object at `(key_epoch, id)` and open it from the expected address.

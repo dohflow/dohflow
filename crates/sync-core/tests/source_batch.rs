@@ -437,3 +437,25 @@ fn part_zero_names_its_own_batch_even_with_no_rows_to_betray_it() {
         Err(SourceBatchError::RowOfAnotherBatch)
     );
 }
+
+#[test]
+fn parser_runs_out_of_order_or_repeated_in_part_zero_are_refused() {
+    let mut b = small(1);
+    b.runs = vec![run(1), run(2)];
+    let blob = String::from_utf8(b.split().unwrap().remove(0).blob).unwrap();
+    assert!(decode_part(&BATCH, 0, blob.as_bytes()).is_ok());
+    let start = blob.find(r#""parser_runs":["#).unwrap() + r#""parser_runs":["#.len();
+    let end = blob.find(r#"],"records""#).unwrap();
+    let runs = &blob[start..end];
+    let (first, second) = runs.split_once("},{").unwrap();
+    let (first, second) = (format!("{first}}}"), format!("{{{second}"));
+    let with = |runs: String| format!("{}{runs}{}", &blob[..start], &blob[end..]);
+    assert_eq!(
+        decode_part(&BATCH, 0, with(format!("{second},{first}")).as_bytes()),
+        Err(SourceBatchError::DuplicateRow)
+    );
+    assert_eq!(
+        decode_part(&BATCH, 0, with(format!("{first},{first}")).as_bytes()),
+        Err(SourceBatchError::DuplicateRow)
+    );
+}

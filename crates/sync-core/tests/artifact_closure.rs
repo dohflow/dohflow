@@ -4,11 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use sync_core::artifact::{ArtifactId, LogicalBinding};
+use sync_core::artifact::{ArtifactId, ArtifactKind, LogicalBinding, TransportPlaintext};
 use sync_core::artifact_closure::{
     build_delta, check_closure, ArtifactDirectory, BuildError, DeltaArtifact, LiveClosure,
     LogicalRef, Mismatch, PayloadRef, ReceiptState,
 };
+use sync_core::source_batch::{BatchRow, RecordRow, SourceBatch};
 
 fn aid(n: u8) -> ArtifactId {
     ArtifactId::from_derived([n; 32])
@@ -386,4 +387,187 @@ fn a_delta_over_the_envelope_bound_is_refused() {
         Ok(4096)
     );
     assert_eq!(build_delta(&d, &refs, 1), Err(BuildError::TooManyArtifacts));
+}
+
+// ---- the stage-9 input: DeltaArtifact::from_plaintext ----------------------------------------------
+
+const BATCH: [u8; 16] = [0xb1; 16];
+
+fn one_record_batch() -> SourceBatch {
+    SourceBatch {
+        batch: BatchRow {
+            id: BATCH,
+            source_type: "csv".into(),
+            source_name: None,
+            file_fingerprint: None,
+            parser_version: None,
+            summary_json: None,
+            imported_at: None,
+            created_at: "2026-06-01T00:00:00Z".into(),
+            connector_connection_id: None,
+        },
+        runs: Vec::new(),
+        records: vec![RecordRow {
+            id: rid(1),
+            source_batch_id: BATCH,
+            external_id: None,
+            source_hash: "h".into(),
+            normalized_json: "{}".into(),
+            parse_confidence_bps: None,
+            created_at: "2026-06-01T00:00:01Z".into(),
+        }],
+    }
+}
+
+fn meta(index: u32, count: u32) -> Vec<u8> {
+    format!(
+        r#"{{"batch_id":"b1b1b1b1-b1b1-b1b1-b1b1-b1b1b1b1b1b1","part_count":"{count}","part_index":"{index}"}}"#
+    )
+    .into_bytes()
+}
+
+fn plaintext<'a>(id: u8, metadata: &'a [u8], blob: &'a [u8]) -> TransportPlaintext<'a> {
+    TransportPlaintext {
+        artifact_id: aid(id),
+        kind: ArtifactKind::SourceBatchPart,
+        logical_metadata: metadata,
+        blob,
+    }
+}
+
+#[test]
+fn a_real_batch_part_builds_its_stage_9_input_with_its_record_ids() {
+    let parts = one_record_batch().split().unwrap();
+    let m = meta(0, 1);
+    let built = DeltaArtifact::from_plaintext(&plaintext(10, &m, &parts[0].blob)).unwrap();
+    assert_eq!(built, part(10, 0xb1, 0, 1, &[1]));
+    assert_eq!(
+        check_closure(&[record(1)], &[built], &LiveClosure::new()),
+        Ok(())
+    );
+    // An attachment has no records.
+    let attachment_meta = br#"{"attachment_id":"07070707-0707-0707-0707-070707070707"}"#;
+    let attachment = TransportPlaintext {
+        artifact_id: aid(12),
+        kind: ArtifactKind::Attachment,
+        logical_metadata: attachment_meta,
+        blob: b"x",
+    };
+    assert_eq!(
+        DeltaArtifact::from_plaintext(&attachment),
+        Ok(self::attachment(12, 7))
+    );
+}
+
+#[test]
+fn a_record_in_two_parts_of_one_batch_is_a_mismatch_not_a_pass() {
+    // 04a's probe: part 0 (from split) holds r1, and part 1 also holds r1, with part_count 2.
+    let parts = one_record_batch().split().unwrap();
+    let record_json = {
+        let blob = std::str::from_utf8(&parts[0].blob).unwrap();
+        let start = blob.rfind(r#""records":["#).unwrap() + r#""records":["#.len();
+        blob[start..blob.len() - 2].to_owned()
+    };
+    let part1 = format!(r#"{{"records":[{record_json}]}}"#);
+    let (m0, m1) = (meta(0, 2), meta(1, 2));
+    let p0 = DeltaArtifact::from_plaintext(&plaintext(10, &m0, &parts[0].blob)).unwrap();
+    let p1 = DeltaArtifact::from_plaintext(&plaintext(11, &m1, part1.as_bytes())).unwrap();
+    assert_eq!(
+        check_closure(&[record(1)], &[p0.clone(), p1], &LiveClosure::new()),
+        Err(Mismatch::RecordDuplicated(rid(1)))
+    );
+    // The same defect on hand-built inputs, and with the record not named by the payload.
+    let live = LiveClosure::new();
+    assert_eq!(
+        check_closure(
+            &[record(1)],
+            &[part(10, 0xb1, 0, 2, &[1]), part(11, 0xb1, 1, 2, &[1])],
+            &live
+        ),
+        Err(Mismatch::RecordDuplicated(rid(1)))
+    );
+    assert_eq!(
+        check_closure(
+            &[record(2)],
+            &[part(10, 0xb1, 0, 2, &[1, 2]), part(11, 0xb1, 1, 2, &[1])],
+            &live
+        ),
+        Err(Mismatch::RecordDuplicated(rid(1)))
+    );
+    // Distinct records across parts are fine.
+    assert_eq!(
+        check_closure(
+            &[record(1), record(2)],
+            &[part(10, 0xb1, 0, 2, &[1]), part(11, 0xb1, 1, 2, &[2])],
+            &live
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn an_authenticated_part_that_does_not_decode_is_a_mismatch() {
+    let parts = one_record_batch().split().unwrap();
+    let (m0, m1) = (meta(0, 2), meta(1, 2));
+    let undecodable = Err(Mismatch::PartUndecodable(aid(10)));
+    // Garbage, an unknown member, an empty object, and a non-canonical blob.
+    for blob in [
+        &b"not json"[..],
+        br#"{"records":[],"extra":[]}"#,
+        b"{}",
+        br#"{"records": []}"#,
+    ] {
+        assert_eq!(
+            DeltaArtifact::from_plaintext(&plaintext(10, &m1, blob)),
+            undecodable,
+            "{blob:?}"
+        );
+    }
+    // Part 0's shape under a later part's metadata, and a later part's shape as part 0.
+    assert_eq!(
+        DeltaArtifact::from_plaintext(&plaintext(10, &m1, &parts[0].blob)),
+        undecodable
+    );
+    assert_eq!(
+        DeltaArtifact::from_plaintext(&plaintext(10, &m0, br#"{"records":[]}"#)),
+        undecodable
+    );
+    // Rows of another batch than the metadata names.
+    let other = SourceBatch {
+        batch: BatchRow {
+            id: [0xee; 16],
+            ..one_record_batch().batch
+        },
+        records: vec![RecordRow {
+            source_batch_id: [0xee; 16],
+            ..one_record_batch().records[0].clone()
+        }],
+        runs: Vec::new(),
+    };
+    let foreign = other.split().unwrap();
+    assert_eq!(
+        DeltaArtifact::from_plaintext(&plaintext(10, &m0, &foreign[0].blob)),
+        undecodable
+    );
+}
+
+#[test]
+fn an_authenticated_artifact_with_metadata_naming_no_binding_is_a_mismatch() {
+    let bad = Err(Mismatch::BadBinding(aid(10)));
+    // A part index at the count, and a missing member.
+    assert_eq!(
+        DeltaArtifact::from_plaintext(&plaintext(10, &meta(2, 2), b"{}")),
+        bad
+    );
+    assert_eq!(
+        DeltaArtifact::from_plaintext(&plaintext(10, br#"{"batch_id":"x"}"#, b"{}")),
+        bad
+    );
+    let attachment = TransportPlaintext {
+        artifact_id: aid(10),
+        kind: ArtifactKind::Attachment,
+        logical_metadata: br#"{"mime_type":"text/plain"}"#,
+        blob: b"x",
+    };
+    assert_eq!(DeltaArtifact::from_plaintext(&attachment), bad);
 }
