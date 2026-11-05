@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -12,7 +12,10 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Combobox, type ComboboxItem } from "@/components/ui/combobox";
 import { describeIpcError } from "@/vault/useVault";
+import { PersistentNotice } from "./PersistentSlot";
+import { useAttemptCount, useReannounced } from "./attemptKey";
 import { useHouseholdTimezone } from "./useHouseholdTimezone";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 
 /// A short, curated set of IANA zones for the rare WebView build that lacks
 /// `Intl.supportedValuesOf` (personal-cfo-q329) — WKWebView on macOS 14 supports it, so
@@ -85,30 +88,77 @@ export function HouseholdCard() {
   const {
     timezone,
     isLoading,
-    error: loadError,
+    failure: readFailure,
+    retry,
+    retrying,
+    failures,
     isSaving,
     setTimezone,
   } = useHouseholdTimezone();
   const [draft, setDraft] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again.
+  const [saveAttempt, nextSaveAttempt] = useAttemptCount();
+  const [readAttempt, nextReadAttempt] = useAttemptCount();
+  const saveAlert = useReannounced(saveError, saveAttempt);
+  const readAlert = useReannounced(readFailure, readAttempt);
+  // A Retry that was pressed and has settled with the read still failing counts as an attempt (the
+  // first load settling is not one).
+  const retryPressed = useRef(false);
+  const seenFailures = useRef(failures);
+  useEffect(() => {
+    if (failures === seenFailures.current) return;
+    seenFailures.current = failures;
+    if (retryPressed.current) {
+      retryPressed.current = false;
+      nextReadAttempt();
+    }
+  }, [failures, nextReadAttempt]);
   const [saved, setSaved] = useState(false);
 
   const items = useMemo(() => supportedTimezones().map(timezoneItem), []);
   const value = draft ?? timezone;
   const suggestion = timezone === "UTC" ? machineTimezone() : null;
 
+  // While a failed write is on screen its Save lives in the section's persistent slot with the error,
+  // and is not rendered in the body; the Save comes back to the body when the error clears. The
+  // hand-over keeps focus across that move (see useKeepFocusAcrossMove): to the Save, else the
+  // timezone picker, else (collapsed) the section's heading.
+  const saveInSlot = saveError !== null;
+  const save = useKeepFocusAcrossMove({
+    settled: !isSaving,
+    fallback: () => document.getElementById("household-timezone"),
+  });
+
   async function onSave() {
     if (value === timezone) return;
-    setSaveError(null);
+    save.remember();
     setSaved(false);
+    // The earlier error and its Save stay on screen until this try settles: clearing them now would
+    // move the Save into the body, which is hidden when the section is collapsed.
     const failure = await setTimezone(value);
     if (failure) {
       setSaveError(describeIpcError(failure));
+      nextSaveAttempt();
     } else {
+      setSaveError(null);
       setDraft(null);
       setSaved(true);
     }
   }
+
+  const saveButton = (
+    <Button
+      ref={save.ref}
+      type="button"
+      aria-label="Save"
+      onClick={onSave}
+      disabled={isSaving || isLoading || value === timezone}
+    >
+      {isSaving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : "Save"}
+    </Button>
+  );
 
   return (
     <Card>
@@ -156,24 +206,39 @@ export function HouseholdCard() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              onClick={onSave}
-              disabled={isSaving || isLoading || value === timezone}
-            >
-              {isSaving ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : (
-                "Save"
-              )}
-            </Button>
+            {!saveInSlot && saveButton}
             {saved && !isSaving && <span className="text-xs text-gain">Saved.</span>}
           </div>
-          {(saveError ?? loadError) && (
-            <p role="alert" className="text-xs text-loss">
-              {saveError ?? loadError}
-            </p>
-          )}
+          <PersistentNotice>
+            {saveError !== null && (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="alert" className="text-xs text-loss">
+                  {saveAlert}
+                </p>
+                {saveButton}
+              </div>
+            )}
+            {readFailure !== null && (
+              // A failed read is read again: this never writes, and never saves the UTC fallback.
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="alert" className="text-xs text-loss">
+                  {readAlert}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={retrying}
+                  onClick={() => {
+                    retryPressed.current = true;
+                    retry();
+                  }}
+                >
+                  {retrying ? "Retrying…" : "Retry"}
+                </Button>
+              </div>
+            )}
+          </PersistentNotice>
         </div>
       </CardContent>
     </Card>

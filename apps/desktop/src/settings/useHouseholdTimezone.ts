@@ -83,6 +83,9 @@ export function useHouseholdTimezone() {
     /// Read again. This is the household-timezone read and nothing else: it never writes.
     retry: () => void query.refetch(),
     retrying: query.isFetching,
+    /// How many reads have settled as a failure, so a caller can tell that a retry failed AGAIN with
+    /// the same message (it is monotonic; `retrying` can flip in one batch and miss it).
+    failures: query.errorUpdateCount,
     isLoading: query.isLoading,
     error: query.error?.message ?? null,
     isSaving: mutation.isPending,
