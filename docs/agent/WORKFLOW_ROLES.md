@@ -420,8 +420,9 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
 **Rules per role.**
 
 - **Implementation.** Any probe worktree you made in session scratch gets the
-  Tier 1 treatment below once its PR is merged or closed. After a PR merges, remove your own per-bead worktree and
-  local branch once you have verified they are clean and pushed. First run
+  Tier 1 treatment below once its PR is merged or closed. After a PR merges,
+  remove your own per-bead worktree and local branch once you have verified they
+  are clean and pushed. First run
   `git status --short --ignored` in the worktree: `git worktree remove` deletes
   ignored files too, so confirm the only ignored entries are rebuildable output
   (`target/`, `node_modules/`) and nothing you still need. Then `git worktree
@@ -435,9 +436,9 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   to a detached `origin/main` (`git switch --detach origin/main`).
 - **Review and escalation.** Both run the project's test suites, so they fill
   `target/` too. Run `cargo clean` after each verdict on a large PR, or whenever
-  your `target/` exceeds about 15 GiB. **Tier 1:** after you post a verdict on a
-  PR that is merged or closed, clean your own scratch for that PR: `cargo clean`
-  in its target directories, and `git worktree remove <path>` (never `--force`)
+  your `target/` exceeds about 15 GiB. **Tier 1:** once a PR you gave a verdict on
+  is merged or closed, clean your own scratch for that PR: `cargo clean` in its
+  target directories, and `git worktree remove <path>` (never `--force`)
   for a clean registered worktree. Check `git status --short --ignored` first, as
   above. Never remove a worktree of an open PR, and never another session's.
 - **Overseer.** Run `scripts/dev-hygiene.sh --report` at session start and once a
