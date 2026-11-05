@@ -180,10 +180,12 @@ pub enum Mismatch {
     Rebinding(LogicalRef),
 }
 
-/// Stage 9(b), including two cases the signed spec text does not yet list (a record held by more than
-/// one part of a batch, and an authenticated part that does not decode as C.9 rows): spec text pending
-/// in S2c part 2 (spec 33), planning ruling on personal-cfo-0g528.2. With every artifact of the delta
-/// held and verified, the logical ids they bind must
+/// Stage 9(b). The cases the signed spec text does not yet list (a record held by more than one part
+/// of a batch, an authenticated part that does not decode as C.9 rows, a batch that is not its
+/// canonical split, and a record id held by two batches of the delta or by a delta batch and a
+/// different live batch) are spec text pending in S2c part 2 (spec 33), planning ruling on
+/// personal-cfo-0g528.2; the same applies to [`check_batch_canonical`] and [`check_delta`]. With every
+/// artifact of the delta held and verified, the logical ids they bind must
 /// equal the logical ids the payload references. A batch's parts are exactly `0` to `part_count - 1`;
 /// every named record is in exactly one referenced batch; every referenced batch holds a named
 /// record and every delta attachment is named; and no logical object of the live closure is bound to
@@ -332,6 +334,9 @@ pub type PartRef<'a> = (u32, u32, &'a [u8]);
 /// of parts that join but are not what the rows would always produce (an empty part, records out of
 /// order across parts, a part over the bound, a non-greedy split).
 ///
+/// Spec text pending in S2c part 2 (spec 33), planning ruling on personal-cfo-0g528.2. The parts may
+/// be given in any order.
+///
 /// # Errors
 /// [`Mismatch::BatchNotCanonical`].
 pub fn check_batch_canonical(
@@ -363,8 +368,11 @@ pub fn check_batch_canonical(
 /// holds must still pass that artifact's plaintext here: a cache saves a fetch, never a decode, so an
 /// id fetched for an envelope that was invalid for another reason cannot stand in for a decoded part.
 ///
+/// Spec text pending in S2c part 2 (spec 33), planning ruling on personal-cfo-0g528.2.
+///
 /// # Errors
-/// The first [`Mismatch`], in a fixed order.
+/// The first [`Mismatch`] found, checking the artifacts in the order given (the reason is a
+/// diagnostic; the verdict class is `ArtifactClosureMismatch` whichever is reported first).
 pub fn check_delta(
     refs: &[PayloadRef],
     plaintexts: &[TransportPlaintext<'_>],

@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use sync_core::artifact::{ArtifactId, ArtifactKind, LogicalBinding, TransportPlaintext};
 use sync_core::artifact_closure::{
-    build_delta, check_closure, check_delta, ArtifactDirectory, BuildError, DeltaArtifact,
-    LiveClosure, LogicalRef, Mismatch, PayloadRef, ReceiptState,
+    build_delta, check_batch_canonical, check_closure, check_delta, ArtifactDirectory, BuildError,
+    DeltaArtifact, LiveClosure, LogicalRef, Mismatch, PayloadRef, ReceiptState,
 };
 use sync_core::source_batch::{record_json, BatchRow, RecordRow, SourceBatch};
 
@@ -752,6 +752,60 @@ fn the_same_number_of_parts_with_the_wrong_boundary_is_not_canonical() {
     );
     assert_eq!(
         verdict(&[record(1), record(5)], &skewed),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+}
+
+// ---- the parts of a batch may arrive in any order ----------------------------------------------------------
+
+#[test]
+fn a_canonical_batch_passes_whatever_order_its_parts_arrive_in() {
+    let many = batch_of((1..=250).map(|n| rec(n, 40_000)).collect());
+    let blobs = canonical_blobs(&many);
+    assert!(blobs.len() >= 3, "{} parts", blobs.len());
+    let refs = [record(1), record(250)];
+    // Through check_delta: reversed, and rotated.
+    let mut reversed = delta_of(&blobs);
+    reversed.reverse();
+    let mut rotated = delta_of(&blobs);
+    rotated.rotate_left(1);
+    for owned in [reversed, rotated] {
+        let plaintexts: Vec<TransportPlaintext<'_>> = owned
+            .iter()
+            .map(|(id, metadata, blob)| plaintext(*id, metadata, blob))
+            .collect();
+        assert_eq!(check_delta(&refs, &plaintexts, &LiveClosure::new()), Ok(()));
+    }
+    // And through check_batch_canonical directly.
+    let count = u32::try_from(blobs.len()).unwrap();
+    let mut parts: Vec<(u32, u32, &[u8])> = blobs
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (u32::try_from(i).unwrap(), count, b.as_slice()))
+        .collect();
+    assert_eq!(check_batch_canonical(&BATCH, &parts), Ok(()));
+    parts.reverse();
+    assert_eq!(check_batch_canonical(&BATCH, &parts), Ok(()));
+}
+
+#[test]
+fn parts_that_do_not_join_are_not_canonical_when_checked_directly() {
+    let blob = canonical_blobs(&batch_of(vec![rec(1, 20)])).remove(0);
+    // A gap, a count that disagrees with the number of parts, and a blob that is not a part.
+    assert_eq!(
+        check_batch_canonical(&BATCH, &[(1, 2, blob.as_slice())]),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+    assert_eq!(
+        check_batch_canonical(&BATCH, &[(0, 2, blob.as_slice())]),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+    assert_eq!(
+        check_batch_canonical(&BATCH, &[(0, 1, &b"not json"[..])]),
+        Err(Mismatch::BatchNotCanonical(BATCH))
+    );
+    assert_eq!(
+        check_batch_canonical(&BATCH, &[]),
         Err(Mismatch::BatchNotCanonical(BATCH))
     );
 }
