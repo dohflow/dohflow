@@ -5573,8 +5573,9 @@ fn ensure_vault_metadata(
         )?;
         return Ok(None);
     }
-    let vault_id = Uuid::now_v7();
-    let created_at = Utc::now().to_rfc3339();
+    let (vault_id, created_at) = FIXED_VAULT_IDENTITY
+        .with(|fixed| fixed.borrow().clone())
+        .unwrap_or_else(|| (Uuid::now_v7(), Utc::now().to_rfc3339()));
     // Schema version 61 moved the household timezone off this row onto `households`. A
     // database caught between migrations (a crash, or a test that stops at a prefix) still has
     // the old column and no household table, so its row keeps the old shape and nothing is
@@ -5626,6 +5627,27 @@ fn ensure_vault_metadata(
         )?;
     }
     Ok(Some((vault_id, created_at)))
+}
+
+thread_local! {
+    /// The identity a vault created on THIS thread gets, when a conformance test fixed one.
+    static FIXED_VAULT_IDENTITY: std::cell::RefCell<Option<(Uuid, String)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with every vault CREATED on this thread getting `vault_id` and `created_at` instead of a
+/// fresh id and the clock (personal-cfo-32fmp.4). Everything a new vault seeds is a function of the
+/// two (the categories, the household and its member, the system accounts), so a vault created
+/// this way is the same vault in every run: the engine pin and the replay property hash its rows.
+/// A conformance seam, not an API for creating vaults: the app never calls it, and it only affects
+/// the thread that calls it, for the duration of `f`.
+#[doc(hidden)]
+pub fn with_fixed_vault_identity<T>(vault_id: Uuid, created_at: &str, f: impl FnOnce() -> T) -> T {
+    FIXED_VAULT_IDENTITY
+        .with(|fixed| *fixed.borrow_mut() = Some((vault_id, created_at.to_owned())));
+    let result = f();
+    FIXED_VAULT_IDENTITY.with(|fixed| *fixed.borrow_mut() = None);
+    result
 }
 
 /// Create the vault's `vault_metadata` row and seed rows in ONE transaction when the vault is new,
