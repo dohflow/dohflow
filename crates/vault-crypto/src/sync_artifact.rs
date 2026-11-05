@@ -142,7 +142,8 @@ pub enum Fixity {
     Expected([u8; 32]),
 }
 
-/// Why an artifact was not sealed. Nothing was encrypted in any of these cases.
+/// Why an artifact was not sealed. Nothing was encrypted in any of these cases: every check,
+/// including the size bound, runs before encryption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum SealArtifactError {
@@ -200,15 +201,18 @@ pub fn seal_artifact(
             return Err(SealArtifactError::ArtifactDescriptorChanged);
         }
     }
+    // The container is the framing (magic, version, length: 14 bytes) around the plaintext plus a
+    // 16-byte tag, so its size is known before anything is encrypted.
+    if encoded.len() + 16 + 14 > MAX_ARTIFACT_CONTAINER {
+        return Err(SealArtifactError::ContainerTooLarge);
+    }
     let id = plaintext.artifact_id;
     let aad = artifact_aad(key.vault_id(), key.key_epoch(), &id);
     let aead = object_key(key, &id);
     let ciphertext =
         encrypt(&aead, &aad, encoded.as_slice()).map_err(|()| SealArtifactError::Encryption)?;
     let container = encode_container(&ciphertext);
-    if container.len() > MAX_ARTIFACT_CONTAINER {
-        return Err(SealArtifactError::ContainerTooLarge);
-    }
+    debug_assert!(container.len() <= MAX_ARTIFACT_CONTAINER);
     Ok(SealedArtifact {
         receipt: ArtifactReceipt::for_ciphertext(*key.vault_id(), key.key_epoch(), id, &ciphertext),
         container,
@@ -297,6 +301,11 @@ pub enum ReaddressError {
     /// The old object does not open (the fetch path).
     #[error("{0}")]
     Open(OpenArtifactError),
+    /// The local copy is not what was published in the previous epoch: it names another address, or
+    /// its transport plaintext no longer matches the stored digest (C.9 allows the local copy only
+    /// when it matches). The caller falls back to fetching the epoch-`e` object. Nothing was sealed.
+    #[error("the local copy differs from what was published; fetch the old object instead")]
+    LocalCopyDiffers,
     /// The resealed object was refused.
     #[error("{0}")]
     Seal(SealArtifactError),
@@ -320,21 +329,12 @@ fn require_next_epoch(old_key: &EpochKey, new_key: &EpochKey) -> Result<(), Read
     Ok(())
 }
 
-/// Re-address one artifact for the next epoch from a verified plaintext the caller already holds
-/// (a local materialized copy whose digest matched, or [`OpenedArtifact::plaintext`]): the new id
-/// is chained from `old_id`, the plaintext is the same except for the id it carries, and it is
-/// sealed in memory under the new epoch's object key. Nothing is materialized.
-///
-/// # Errors
-/// [`ReaddressError`].
-pub fn readdress_plaintext(
-    old_key: &EpochKey,
+fn reseal_for_next_epoch(
     new_key: &EpochKey,
     old_id: &ArtifactId,
     plaintext: &TransportPlaintext<'_>,
     fixity: Fixity,
 ) -> Result<Readdressed, ReaddressError> {
-    require_next_epoch(old_key, new_key)?;
     let artifact_id = readdress_id(new_key, old_id);
     let moved = TransportPlaintext {
         artifact_id,
@@ -347,8 +347,38 @@ pub fn readdress_plaintext(
     })
 }
 
+/// Re-address one artifact for the next epoch from a **local materialized copy** (C.9): the copy is
+/// used only if it is what was published in epoch `e`, that is, it names `old_id` and the SHA-256 of
+/// its complete transport plaintext equals `expected_previous`, the digest stored at first
+/// publication. Otherwise [`ReaddressError::LocalCopyDiffers`] and the caller fetches the old object
+/// ([`readdress_container`]). The new id is chained from `old_id` and the plaintext is sealed in
+/// memory under the new epoch's object key; nothing is materialized. `fixity` guards a retry
+/// against the epoch-`e+1` digest as for any seal.
+///
+/// # Errors
+/// [`ReaddressError`].
+pub fn readdress_plaintext(
+    old_key: &EpochKey,
+    new_key: &EpochKey,
+    old_id: &ArtifactId,
+    plaintext: &TransportPlaintext<'_>,
+    expected_previous: &[u8; 32],
+    fixity: Fixity,
+) -> Result<Readdressed, ReaddressError> {
+    require_next_epoch(old_key, new_key)?;
+    if &plaintext.artifact_id != old_id
+        || plaintext
+            .digest()
+            .map_or(true, |digest| &digest != expected_previous)
+    {
+        return Err(ReaddressError::LocalCopyDiffers);
+    }
+    reseal_for_next_epoch(new_key, old_id, plaintext, fixity)
+}
+
 /// Re-address one artifact from the epoch-`e` object the service holds: open it under `K_e` at
-/// `old_id`, then [`readdress_plaintext`]. The opened plaintext is zeroized when this returns.
+/// `old_id`, then reseal it. The object authenticated at `old_id` and names it, so it needs no
+/// local-copy check. The opened plaintext is zeroized when this returns.
 ///
 /// # Errors
 /// [`ReaddressError`]; an object that cannot be opened is [`ReaddressError::Open`], and nothing is
@@ -363,5 +393,5 @@ pub fn readdress_container(
     require_next_epoch(old_key, new_key)?;
     let opened = open_artifact(old_key, old_id, old_container, MAX_ARTIFACT_CONTAINER)
         .map_err(ReaddressError::Open)?;
-    readdress_plaintext(old_key, new_key, old_id, &opened.plaintext(), fixity)
+    reseal_for_next_epoch(new_key, old_id, &opened.plaintext(), fixity)
 }
