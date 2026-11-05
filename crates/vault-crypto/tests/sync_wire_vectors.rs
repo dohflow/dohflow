@@ -1005,7 +1005,24 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ),
         ("artifact_object_key", obj_key.to_vec()),
         ("artifact_aad", art_ad),
-        ("artifact_object_ciphertext", art_ct),
+        ("artifact_object_ciphertext", art_ct.clone()),
+        ("artifact_container", {
+            let mut c = b"DFSA".to_vec();
+            c.extend_from_slice(&1u16.to_be_bytes());
+            c.extend_from_slice(&(art_ct.len() as u64).to_be_bytes());
+            c.extend_from_slice(&art_ct);
+            c
+        }),
+        (
+            "artifact_receipt",
+            Enc::new("dohflow/sync-receipt/v1")
+                .fixed(&VAULT)
+                .u64(1)
+                .fixed(&art_1)
+                .u64(art_ct.len() as u64)
+                .fixed(&sha256(&art_ct))
+                .done(),
+        ),
         ("header_envelope", header_env.clone()),
         ("header_snapshot", header_snap),
         ("envelope_plaintext", plaintext_env),
