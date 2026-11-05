@@ -85,6 +85,28 @@ pub enum ExportError {
         /// The column.
         column: String,
     },
+    /// A text or bytes value is longer than 2^24 bytes.
+    #[error("table {table}, column {column}: the value exceeds the maximum length")]
+    ValueTooLong {
+        /// The table.
+        table: String,
+        /// The column.
+        column: String,
+    },
+    /// A folded child row encodes to more than 65,536 bytes. The child table is named: the
+    /// row's size is the sum of its columns, so no one column is at fault.
+    #[error("table {table}: a folded child row exceeds the maximum length")]
+    ChildRowTooLong {
+        /// The folded child table.
+        table: String,
+    },
+    /// The table's layout cannot be encoded at all (a name or column count out of bounds). That
+    /// is a fault in the column manifest, not in a row, so no column is named.
+    #[error("table {table}: the table layout cannot be encoded")]
+    InvalidLayout {
+        /// The table.
+        table: String,
+    },
     /// A folded child row names a parent that is not in the export.
     #[error("table {table}: a child row has no parent row")]
     OrphanChild {
@@ -180,16 +202,60 @@ fn read_table(
     Ok(out)
 }
 
-fn map_digest_error(table: &str, error: &RowDigestError) -> ExportError {
-    match error {
-        RowDigestError::KeyTooLong => ExportError::KeyTooLong {
-            table: table.to_owned(),
-            column: String::new(),
+/// Name what broke a row digest. A failure caused by one value names its table and column (found
+/// by digesting each column alone), one caused by a folded child row names the child table, and a
+/// failure no row can cause is the table's layout. No error carries an empty column.
+fn digest_failure(
+    table: &str,
+    columns: &[Column<'_>],
+    children: &[ChildTable<'_>],
+    error: &RowDigestError,
+) -> ExportError {
+    let layout = || ExportError::InvalidLayout {
+        table: table.to_owned(),
+    };
+    let culprit = |owner: &str, columns: &[Column<'_>]| -> Option<String> {
+        columns
+            .iter()
+            .find(|column| row_digest(owner, &[**column]).as_ref().err() == Some(error))
+            .map(|column| column.name.to_owned())
+    };
+    let named = |owner: &str, column: String| match error {
+        RowDigestError::ValueTooLong => ExportError::ValueTooLong {
+            table: owner.to_owned(),
+            column,
         },
         _ => ExportError::KindMismatch {
-            table: table.to_owned(),
-            column: String::new(),
+            table: owner.to_owned(),
+            column,
         },
+    };
+    match error {
+        RowDigestError::KindMismatch
+        | RowDigestError::BadUuidLength
+        | RowDigestError::InvalidUtf8
+        | RowDigestError::ValueTooLong => culprit(table, columns)
+            .map(|column| named(table, column))
+            .or_else(|| {
+                children.iter().find_map(|child| {
+                    child.rows.iter().find_map(|row| {
+                        culprit(child.table, row).map(|column| named(child.table, column))
+                    })
+                })
+            })
+            .unwrap_or_else(layout),
+        RowDigestError::ChildRowTooLong => children
+            .iter()
+            .find(|child| {
+                child
+                    .rows
+                    .iter()
+                    .any(|row| child_row_bytes(row) == Err(RowDigestError::ChildRowTooLong))
+            })
+            .map_or_else(layout, |child| ExportError::ChildRowTooLong {
+                table: child.table.to_owned(),
+            }),
+        _ => layout(),
     }
 }
 
@@ -201,7 +267,7 @@ fn key_of(
 ) -> Result<Vec<u8>, ExportError> {
     if let Some(constant) = projection.and_then(|p| p.constant_key_int) {
         return primary_key(&[(Kind::Int, Value::Int(constant))])
-            .map_err(|e| map_digest_error(&spec.name, &e));
+            .map_err(|e| digest_failure(&spec.name, &[], &[], &e));
     }
     let parts: Vec<(Kind, Value<'_>)> = spec
         .key
@@ -244,7 +310,7 @@ fn key_of(
             table: spec.name.clone(),
         });
     }
-    primary_key(&parts).map_err(|e| map_digest_error(&spec.name, &e))
+    primary_key(&parts).map_err(|e| digest_failure(&spec.name, &[], &[], &e))
 }
 
 fn line_of(spec: &TableSpec, columns: &[Column<'_>]) -> Result<Vec<u8>, ExportError> {
@@ -295,15 +361,17 @@ fn table_file(
     for (key, row) in &keyed {
         let cols = to_columns(&columns, row);
         content.extend_from_slice(&line_of(spec, &cols)?);
+        let child_tables = if spec.children.is_empty() {
+            Vec::new()
+        } else {
+            child_tables_of(manifest, spec, children.get(&parent_id_of(row)))
+        };
         let row_digest = if spec.children.is_empty() {
             row_digest(&spec.name, &cols)
         } else {
-            let id = parent_id_of(row);
-            let owned = children.get(&id);
-            let child_tables = child_tables_of(manifest, spec, owned);
             parent_row_digest(&spec.name, &cols, &child_tables)
         }
-        .map_err(|e| map_digest_error(&spec.name, &e))?;
+        .map_err(|e| digest_failure(&spec.name, &cols, &child_tables, &e))?;
         digest
             .push(key, row_digest)
             .map_err(|_| ExportError::BadKey {
@@ -419,7 +487,12 @@ fn folded_child_file(
         // The line first: it checks every column by its declared kind and names the one that
         // breaks a rule, which the child-row bytes cannot.
         let line = line_of(spec, &cols)?;
-        let order = child_row_bytes(&cols).map_err(|e| map_digest_error(&spec.name, &e))?;
+        let order = child_row_bytes(&cols).map_err(|e| match e {
+            RowDigestError::ChildRowTooLong => ExportError::ChildRowTooLong {
+                table: spec.name.clone(),
+            },
+            other => digest_failure(&spec.name, &cols, &[], &other),
+        })?;
         encoded.push((order, line));
     }
     // The order of a parent's digest: bytewise by the child-row bytes, duplicates kept.
@@ -440,5 +513,74 @@ const fn kind_name(kind: Kind) -> &'static str {
         Kind::Text => "text",
         Kind::Uuid => "uuid",
         Kind::Bytes => "bytes",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn child_with(value: Value<'static>) -> ChildTable<'static> {
+        ChildTable {
+            table: "ledger_postings",
+            rows: vec![vec![Column {
+                name: "currency",
+                kind: Kind::Text,
+                value,
+            }]],
+        }
+    }
+
+    #[test]
+    fn a_failure_in_a_parents_digest_names_the_child_table_that_caused_it() {
+        let leaked: &'static [u8] = Box::leak(vec![b'x'; 70_000].into_boxed_slice());
+        let children = [child_with(Value::Text(leaked))];
+        let error = digest_failure(
+            "ledger_transactions",
+            &[],
+            &children,
+            &RowDigestError::ChildRowTooLong,
+        );
+        assert!(
+            matches!(&error, ExportError::ChildRowTooLong { table } if table == "ledger_postings"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_value_failure_found_only_in_a_child_row_names_the_child_table_and_column() {
+        let bad = child_with(Value::Int(1)); // a text column holding an integer
+        let error = digest_failure(
+            "ledger_transactions",
+            &[],
+            &[bad],
+            &RowDigestError::KindMismatch,
+        );
+        assert!(
+            matches!(&error, ExportError::KindMismatch { table, column }
+                if table == "ledger_postings" && column == "currency"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_failure_no_row_can_cause_is_the_layout_and_names_no_column() {
+        for error in [
+            RowDigestError::BadName,
+            RowDigestError::DuplicateColumn,
+            RowDigestError::TooManyColumns,
+            RowDigestError::BadChildTables,
+            RowDigestError::EmptyKey,
+            RowDigestError::KeyTooLong,
+        ] {
+            let shown = digest_failure("accounts", &[], &[], &error);
+            assert!(
+                matches!(&shown, ExportError::InvalidLayout { table } if table == "accounts"),
+                "{error:?} -> {shown:?}"
+            );
+        }
+        // A value failure that no column reproduces is not blamed on an empty column either.
+        let shown = digest_failure("accounts", &[], &[], &RowDigestError::ValueTooLong);
+        assert!(matches!(shown, ExportError::InvalidLayout { .. }));
     }
 }

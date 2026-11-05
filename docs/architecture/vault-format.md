@@ -1852,8 +1852,9 @@ manifest before it activates the vault. There is no whole-snapshot digest.
 **Refusals before a snapshot exists.** The export stops with a typed error naming the table and
 column, and coerces or truncates nothing, for: a stored value whose storage class is not its
 column's declared kind (a REAL, a UUID column that is not 16 bytes, text that is not UTF-8), a
-primary key whose C.1.5 encoding exceeds 256 bytes, two rows with the same key, and a folded child
-row with no parent row.
+primary key whose C.1.5 encoding exceeds 256 bytes, a text or bytes value over `2^24` bytes, a
+folded child row whose encoding exceeds 65,536 bytes (the error names the child table, since no one
+column is at fault), two rows with the same key, and a folded child row with no parent row.
 
 A snapshot's plaintext is at most `2^30` bytes (1 GiB). A larger vault fails with
 the typed error `SnapshotTooLarge` until a chunked framing is specified.

@@ -756,6 +756,75 @@ fn a_folded_child_with_no_parent_is_refused() {
 }
 
 #[test]
+fn a_value_over_two_to_the_24_bytes_is_refused_naming_its_table_and_column() {
+    let (_dir, worker) = populated();
+    // 8,388,609 bytes hex to 16,777,218 characters, two over the limit.
+    raw(&worker)
+        .execute("UPDATE accounts SET notes = hex(zeroblob(8388609))", [])
+        .unwrap();
+    match refusal(&worker) {
+        ExportError::ValueTooLong { table, column } => {
+            assert_eq!((table.as_str(), column.as_str()), ("accounts", "notes"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_folded_child_row_over_65536_bytes_is_refused_naming_the_child_table() {
+    let (_dir, worker) = populated();
+    // No one column is too long (each is far under 2^24); the row is.
+    raw(&worker)
+        .execute(
+            "UPDATE attachment_links SET entity_kind = hex(zeroblob(40000))",
+            [],
+        )
+        .unwrap();
+    match refusal(&worker) {
+        ExportError::ChildRowTooLong { table } => assert_eq!(table, "attachment_links"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The table and column an error names, if it names a column.
+fn named_column(error: &ExportError) -> Option<&str> {
+    match error {
+        ExportError::KindMismatch { column, .. }
+        | ExportError::KeyTooLong { column, .. }
+        | ExportError::Unrepresentable { column, .. }
+        | ExportError::ValueTooLong { column, .. } => Some(column),
+        _ => None,
+    }
+}
+
+#[test]
+fn no_refusal_names_an_empty_table_or_column() {
+    let scenarios: &[&str] = &[
+        "UPDATE accounts SET retirement = 'not a number'",
+        "UPDATE accounts SET retirement = 1.5",
+        "UPDATE accounts SET ledger_account_id = x'0102'",
+        "UPDATE accounts SET name = CAST(x'ff' AS TEXT)",
+        "UPDATE accounts SET notes = hex(zeroblob(8388609))",
+        "UPDATE attachment_links SET entity_id = x'0102'",
+        "UPDATE attachment_links SET entity_kind = hex(zeroblob(40000))",
+    ];
+    for sql in scenarios {
+        let (_dir, worker) = populated();
+        raw(&worker).execute(sql, []).unwrap();
+        let error = refusal(&worker);
+        let message = error.to_string();
+        if let Some(column) = named_column(&error) {
+            assert!(!column.is_empty(), "{sql}: {message}");
+        }
+        assert!(
+            !message.contains("table ,") && !message.contains("column :"),
+            "{sql}: {message}"
+        );
+        assert!(!message.contains("SENTINEL"));
+    }
+}
+
+#[test]
 fn a_refusal_names_a_table_and_a_column_and_never_a_value() {
     let (_dir, worker) = populated();
     raw(&worker)
