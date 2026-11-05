@@ -281,9 +281,11 @@ synthetic no-app recovery test before any such public claim.
   envelope's delta keeps 4096; the commitment's label and bytes are unchanged. (3) C.1.3, C.9: one artifact
   per source batch, carried as ordered immutable parts under a stated per-part bound; kinds 3 and 4 are
   reserved. (4) C.9: the delta is every class-1b artifact the payload references, a receiver
-  materializes all of them before apply and checks set equality (stage 9 of C.4's "found invalid", split
-  by determinism; an already-held id is not fetched again; one binding per logical artifact per epoch;
-  receiver bounds by object type); the seal checks the transport plaintext digest before it encrypts. (5) C.11: `ArtifactRebootstrapRequired` is defined and
+  fetches and verifies all of them, runs stage 9 of C.4's "found invalid" (split by determinism; set
+  equality), then materializes them, then applies, so an invalid envelope binds nothing; an
+  already-held id is not fetched again; one binding per logical artifact per epoch, judged against the
+  live closure at the preceding position and never against the local mapping; receiver bounds by
+  object type; the seal checks the transport plaintext digest before it encrypts. (5) C.11: `ArtifactRebootstrapRequired` is defined and
   `ArtifactClosureMismatch` is added. No other wire layout and no other vector changes. The service
   protocol's `max_artifact_manifest_ids` (4096) is the bound for an envelope's sidecar and for a status
   request and is unchanged; the bound and the request-body size for a snapshot's closure sidecar are the
@@ -1412,7 +1414,8 @@ or cannot yet judge it, by this sequence of stages, in this order:
    disagree on `batch_id` or `part_count`; a source record the payload names is in no referenced batch,
    or in more than one; an authenticated artifact fails its own descriptor (length or plaintext
    digest), is of kind 3 or 4, or has malformed `logical_metadata`; or the delta binds a logical batch
-   or attachment that is already bound in this epoch to a different id (set) (C.9, one binding).
+   or attachment that the live closure at the preceding position (what a snapshot there would carry)
+   already binds in this epoch to a different id (set) (C.9, one binding).
 
 Otherwise the envelope is valid. **A not-determinable envelope is never a basis to honor a void.**
 If it counted, a replica with a missing key or one that is behind would honor a void for a valid
@@ -1965,9 +1968,10 @@ fail to compile until it says which). A reference in a payload is always a *logi
 record, a batch, an attachment); the sync artifact id appears only in the manifest (0g528 AC10).
 Because a manifest is a sorted list of ids with nothing that says which id belongs to which logical
 row, a receiver learns that only by opening the artifact, whose encrypted `logical_metadata` names its
-`batch_id` or `attachment_id`. So a receiver **fetches, verifies and materializes every artifact in the
-delta before it applies the envelope**, and then checks (stage 9 of C.4's "When an envelope is found
-invalid") that the logical ids bound to the delta's artifacts equal the logical ids the payload
+`batch_id` or `attachment_id`. So a receiver **fetches and verifies every artifact in the
+delta, then runs stage 9 of C.4's "When an envelope is found invalid", then materializes them, then
+applies the envelope**; an envelope found invalid materializes nothing and binds nothing. Stage 9 checks
+that the logical ids bound to the delta's artifacts equal the logical ids the payload
 references, and that a batch's parts are exactly `0` to `part_count - 1`. An id the service cannot
 deliver is `ArtifactMissing` and, like any fetch that fails the outer AEAD, leaves the envelope *not
 determinable*: it is retried and never a basis to honor a void. Once every artifact is held and
@@ -1984,9 +1988,14 @@ epoch counts as verified, because an artifact is immutable by its address; only 
 the set-equality check. A commit that references a 12-part batch does not download it again.
 
 *One binding per logical artifact per epoch.* Within an epoch a logical batch is bound to exactly one
-set of part ids and a logical attachment to exactly one id. A delta that binds an already-bound batch
-or attachment to a different id (set) is `ArtifactClosureMismatch`; without this rule two envelopes
-could materialize two different versions of one batch.
+set of part ids and a logical attachment to exactly one id. "Already bound" is judged against the
+**live closure at the preceding log position** (`N - 1`), a function of replicated state: exactly what a
+snapshot at `N - 1` would carry. It is never judged against a replica's local mapping, which is device
+history and a cache used only for the no-refetch rule above (a replica that tailed the log keeps
+mappings for artifacts that are no longer live; one bootstrapped from a later snapshot in the same
+epoch holds only the live closure; both must reach the same verdict). A delta that binds a batch or
+attachment of the live closure to a different id (set) is `ArtifactClosureMismatch`; without this rule
+two envelopes could materialize two different versions of one batch.
 
 *Bounds by object type.* An envelope's delta holds at most 4096 ids: a longer list does not decode, so
 the envelope is invalid at stage 7. A snapshot's closure holds at most 2^20: a longer one is refused by
