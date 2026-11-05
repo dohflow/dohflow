@@ -8,13 +8,15 @@ const CUSTODY: &str = include_str!("../src/sync_custody.rs");
 const SYNC: &str = include_str!("../src/sync.rs");
 const ENVELOPE: &str = include_str!("../src/sync_envelope.rs");
 const ARTIFACT: &str = include_str!("../src/sync_artifact.rs");
+const ARTIFACT_FLOW: &str = include_str!("../src/sync_artifact_flow.rs");
 
-const CUSTODY_FILES: [(&str, &str); 5] = [
+const CUSTODY_FILES: [(&str, &str); 6] = [
     ("sync_keys.rs", KEYS),
     ("sync_keyset.rs", KEYSET),
     ("sync_records.rs", RECORDS),
     ("sync_custody.rs", CUSTODY),
     ("sync_artifact.rs", ARTIFACT),
+    ("sync_artifact_flow.rs", ARTIFACT_FLOW),
 ];
 
 /// Production code only: the text before the file's `#[cfg(test)]` module, with comments removed.
@@ -122,6 +124,7 @@ fn a_struct_that_holds_key_bytes_does_not_derive_debug() {
         ("sync.rs", SYNC),
         ("sync_envelope.rs", ENVELOPE),
         ("sync_artifact.rs", ARTIFACT),
+        ("sync_artifact_flow.rs", ARTIFACT_FLOW),
     ] {
         let code = code(source);
         let lines: Vec<&str> = code.lines().collect();
