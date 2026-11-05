@@ -224,3 +224,30 @@ pub fn chain() -> Chain {
 pub fn refs(records: &[Vec<u8>]) -> Vec<&[u8]> {
     records.iter().map(Vec::as_slice).collect()
 }
+
+/// A valid snapshot plaintext (C.8) with one small table whose file carries `marker`, and the
+/// closure `artifacts` (strictly ascending). Distinct markers give distinct plaintexts.
+pub fn snapshot_plaintext(artifacts: &[[u8; 32]], marker: &str) -> Vec<u8> {
+    use sync_core::snapshot::{build, ColumnEntry, Header, TableFile};
+    let file = TableFile {
+        name: "notes".to_owned(),
+        columns: vec![ColumnEntry {
+            name: "text".to_owned(),
+            kind: "text".to_owned(),
+        }],
+        row_count: 1,
+        state_digest: Some([7; 32]),
+        content: format!("{{\"text\":\"{marker}\"}}\n").into_bytes(),
+    };
+    build(
+        &Header {
+            schema_version: 65,
+            vault_created_at: "2026-01-01T00:00:00Z",
+            inventory_version: "1",
+            voids: &[],
+            artifacts,
+        },
+        vec![file],
+    )
+    .expect("a valid snapshot plaintext")
+}

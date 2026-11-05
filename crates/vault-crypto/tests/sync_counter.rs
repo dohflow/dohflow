@@ -561,10 +561,70 @@ fn the_mark_of_a_verified_chain_follows_its_head_and_epoch() {
 
 // ---- the witness is never the keychain, and has no production implementation here ------------------
 
+/// Whether `text` implements `RollbackWitness` anywhere: an `impl` header (read up to its `{`,
+/// across lines, whitespace collapsed) of the form `impl ... RollbackWitness for ...`, or an alias
+/// of the trait (`use ... RollbackWitness as X`) that could hide one from the first form.
+fn implements_or_aliases_the_witness(text: &str) -> bool {
+    let mut rest = text;
+    while let Some(at) = rest.find("impl") {
+        let before_ok = rest[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let after = &rest[at + 4..];
+        let after_ok = after
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        if before_ok && after_ok {
+            let header: String = after
+                .split(['{', ';'])
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if header.contains("RollbackWitness for") {
+                return true;
+            }
+        }
+        rest = after;
+    }
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    flat.contains("RollbackWitness as ")
+}
+
+#[test]
+fn the_witness_scan_sees_multi_line_and_aliased_implementations() {
+    assert!(implements_or_aliases_the_witness(
+        "impl RollbackWitness for Mine { }"
+    ));
+    assert!(implements_or_aliases_the_witness(
+        "impl<T: Send> platform_traits::RollbackWitness\n    for Wrapper<T>\n{\n}"
+    ));
+    assert!(implements_or_aliases_the_witness(
+        "impl\nRollbackWitness\nfor Mine\n{ }"
+    ));
+    assert!(implements_or_aliases_the_witness(
+        "use platform_traits::RollbackWitness as Hidden;\nimpl Hidden for Mine {}"
+    ));
+    assert!(implements_or_aliases_the_witness(
+        "use platform_traits::{CounterContext, RollbackWitness as W};"
+    ));
+    // A bound is not an implementation.
+    assert!(!implements_or_aliases_the_witness(
+        "impl<S: RegisterStore, W: RollbackWitness> CounterRegister<'_, S, W> { }"
+    ));
+    assert!(!implements_or_aliases_the_witness(
+        "fn takes(w: &dyn RollbackWitness) {} // implementation"
+    ));
+}
+
 /// `RollbackWitness` is implemented in `platform-mock` and in tests only, until the platform
 /// witness (personal-cfo-elciw) lands. A production build with no platform witness has nothing to
 /// give `CounterRegister`, so it refuses to encrypt; it never falls back to the keychain or to
-/// "no witness".
+/// "no witness". The scan reads whole impl headers, so a multi-line impl or an alias of the trait
+/// does not get past it.
 #[test]
 fn no_production_code_implements_the_witness_except_the_mock() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -584,17 +644,18 @@ fn no_production_code_implements_the_witness_except_the_mock() {
             } else if name.ends_with(".rs") {
                 let shown = path.to_string_lossy().replace('\\', "/");
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
-                for line in text.lines() {
-                    let t = line.trim_start();
-                    if t.starts_with("impl") && t.contains("RollbackWitness for") {
-                        found += 1;
-                        assert!(
-                            shown.ends_with("crates/platform-mock/src/lib.rs")
-                                || shown.contains("/tests/"),
-                            "{shown} implements RollbackWitness: only platform-mock (or a test) \
-                             may until the platform witness exists"
-                        );
-                    }
+                // This file's own fixtures are examples of what the scan catches.
+                if shown.ends_with("vault-crypto/tests/sync_counter.rs") {
+                    continue;
+                }
+                if implements_or_aliases_the_witness(&text) {
+                    found += 1;
+                    assert!(
+                        shown.ends_with("crates/platform-mock/src/lib.rs")
+                            || shown.contains("/tests/"),
+                        "{shown} implements or aliases RollbackWitness: only platform-mock (or a \
+                         test) may until the platform witness exists"
+                    );
                 }
             }
         }

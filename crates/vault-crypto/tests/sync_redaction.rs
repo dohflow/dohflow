@@ -15,7 +15,6 @@ use common::register::MemoryRegisterStore;
 use common::{chain, dev_known, epoch_key, epoch_record, id_of, membership, tag_secret, VAULT};
 use platform_mock::{MockSecretStore, MockWitness};
 use platform_traits::CounterContext;
-use sync_core::header::ManifestCommitment;
 use sync_core::membership::{verify_chain, Action, Reason, VerifiedState};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
@@ -275,10 +274,10 @@ fn a_snapshot_seal_the_register_and_the_witness_log_no_key_and_no_payload() {
             payload_schema_version: 1,
             engine_version: "dohflow-test".to_owned(),
             schema_version: 65,
-            closure_commitment: ManifestCommitment::from_derived([0; 32]),
         };
-        let sealed = publish.seal(&fields, PAYLOAD.as_bytes()).unwrap();
-        let reused = publish.seal(&fields, PAYLOAD.as_bytes()).unwrap();
+        let payload = common::snapshot_plaintext(&[], PAYLOAD);
+        let sealed = publish.seal(&fields, &payload).unwrap();
+        let reused = publish.seal(&fields, &payload).unwrap();
         tracing::info!(sealed = ?sealed, reused = ?reused, register = ?register, "debug forms are redacted");
         let guard = VerifiedStateGuard::new(&witness);
         let _ = guard.check(&VAULT, None);

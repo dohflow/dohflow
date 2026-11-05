@@ -24,7 +24,17 @@ use vault_crypto::sync_snapshot::{
     SnapshotOpener, SnapshotSealError, SnapshotSealer, MAX_SNAPSHOT_PLAINTEXT,
 };
 
-const PLAINTEXT: &[u8] = b"snapshot plaintext: manifest.json then the data files";
+/// The sample snapshot plaintext: valid, with an empty closure.
+static SAMPLE: std::sync::LazyLock<Vec<u8>> =
+    std::sync::LazyLock::new(|| common::snapshot_plaintext(&[], "the sample snapshot"));
+fn sample() -> &'static [u8] {
+    SAMPLE.as_slice()
+}
+
+/// A valid snapshot plaintext with its own marker.
+fn pt(marker: &str) -> Vec<u8> {
+    common::snapshot_plaintext(&[], marker)
+}
 
 /// A temporary directory that is removed when dropped.
 struct TempDir(std::path::PathBuf);
@@ -73,7 +83,6 @@ fn fields(object_id: u8, base_seq: u64) -> SnapshotFields {
         payload_schema_version: 1,
         engine_version: "dohflow-test".to_owned(),
         schema_version: 65,
-        closure_commitment: empty_closure(),
     }
 }
 
@@ -120,7 +129,7 @@ fn sealed(c: &Chain, counter_ctx_dev: &common::Dev, plaintext: &[u8]) -> (Vec<u8
 fn a_snapshot_seals_and_opens_through_the_receiver_path() {
     let c = chain();
     let chain_state = state(&c);
-    let (bytes, key) = sealed(&c, &c.a, PLAINTEXT);
+    let (bytes, key) = sealed(&c, &c.a, sample());
     let container = parse_container(&bytes).unwrap();
     let header = &container.header;
     assert_eq!(header.object_type(), OBJECT_SNAPSHOT);
@@ -140,14 +149,14 @@ fn a_snapshot_seals_and_opens_through_the_receiver_path() {
             artifact_manifest_commitment: empty_closure()
         }
     );
-    assert_eq!(open(&key, &chain_state, &bytes).unwrap(), PLAINTEXT);
+    assert_eq!(open(&key, &chain_state, &bytes).unwrap(), sample());
 }
 
 #[test]
 fn a_wrong_key_an_aad_mismatch_and_tampering_fail_closed() {
     let c = chain();
     let chain_state = state(&c);
-    let (bytes, key) = sealed(&c, &c.a, PLAINTEXT);
+    let (bytes, key) = sealed(&c, &c.a, sample());
     // A wrong key for the same epoch.
     let wrong = common::other_epoch_key(1);
     assert_eq!(
@@ -190,7 +199,7 @@ fn a_wrong_key_an_aad_mismatch_and_tampering_fail_closed() {
 fn an_envelope_is_not_a_snapshot_and_a_snapshot_is_not_an_envelope() {
     let c = chain();
     let chain_state = state(&c);
-    let (snapshot, key) = sealed(&c, &c.a, PLAINTEXT);
+    let (snapshot, key) = sealed(&c, &c.a, sample());
     // The envelope opener refuses a snapshot.
     let parsed = parse_container(&snapshot).unwrap();
     assert!(sync_core::producer::EnvelopeOpener::open(
@@ -250,11 +259,11 @@ fn devices_with_equal_counters_get_distinct_keys_and_domains_and_a_claimed_domai
         let (store, witness) = (MemoryRegisterStore::new(), MockWitness::new());
         let register = CounterRegister::new(&store, &witness);
         let r = register.reserve(&context(&key, d, 2)).unwrap();
-        seal_snapshot(&key, &identity(d), &fields(0x33, 41), r, PLAINTEXT).unwrap()
+        seal_snapshot(&key, &identity(d), &fields(0x33, 41), r, sample()).unwrap()
     };
     let (sa, sb) = (seal(&c.a), seal(&c.b));
-    assert_eq!(open(&key, &chain_state, &sa).unwrap(), PLAINTEXT);
-    assert_eq!(open(&key, &chain_state, &sb).unwrap(), PLAINTEXT);
+    assert_eq!(open(&key, &chain_state, &sa).unwrap(), sample());
+    assert_eq!(open(&key, &chain_state, &sb).unwrap(), sample());
     assert_ne!(
         parse_container(&sa).unwrap().ciphertext,
         parse_container(&sb).unwrap().ciphertext
@@ -283,23 +292,182 @@ fn devices_with_equal_counters_get_distinct_keys_and_domains_and_a_claimed_domai
 #[test]
 fn a_device_outside_the_epoch_does_not_open() {
     let c = chain();
-    let (bytes, key) = sealed(&c, &c.a, PLAINTEXT);
+    let (bytes, key) = sealed(&c, &c.a, sample());
     // A chain that holds only the first two records: device C is not a member of it, A is. Seal as
     // C against the full chain, then open against the short one.
     let full = state(&c);
     let (store, witness) = (MemoryRegisterStore::new(), MockWitness::new());
     let register = CounterRegister::new(&store, &witness);
     let r = register.reserve(&context(&key, &c.c, 2)).unwrap();
-    let by_c = seal_snapshot(&key, &identity(&c.c), &fields(0x34, 1), r, PLAINTEXT).unwrap();
+    let by_c = seal_snapshot(&key, &identity(&c.c), &fields(0x34, 1), r, sample()).unwrap();
     let m: Vec<&[u8]> = c.memberships[..2].iter().map(Vec::as_slice).collect();
     let e: Vec<&[u8]> = c.epochs[..2].iter().map(Vec::as_slice).collect();
     let short = verify_chain(&VAULT, &m, &e).unwrap();
-    assert_eq!(open(&key, &full, &by_c).unwrap(), PLAINTEXT);
+    assert_eq!(open(&key, &full, &by_c).unwrap(), sample());
     assert_eq!(
         open(&key, &short, &by_c),
         Err(SnapshotOpenFailure::DeviceOutsideEpoch)
     );
     assert!(open(&key, &short, &bytes).is_ok());
+}
+
+// ---- header field 17 and the manifest's closure -------------------------------------------------
+
+/// Seal `plaintext` under a header whose field 17 is `commitment`, bypassing the checks that
+/// `seal_snapshot` makes: a producer that is buggy or hostile, for the receiver to refuse.
+fn hand_sealed(
+    key: &EpochKey,
+    d: &common::Dev,
+    commitment: ManifestCommitment,
+    plaintext: &[u8],
+) -> Vec<u8> {
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    let id = identity(d);
+    let domain = NonceDomain::derive(&VAULT, 1, &id.fingerprint, OBJECT_SNAPSHOT);
+    let header = ClearHeader {
+        vault_id: VAULT,
+        key_epoch: 1,
+        object: ObjectKind::Snapshot {
+            artifact_manifest_commitment: commitment,
+        },
+        object_id: [0x55; 16],
+        device_id: id.device_id,
+        device_key_fingerprint: id.fingerprint,
+        nonce_domain: domain,
+        invocation_counter: 7,
+        base_seq: 0,
+        payload_schema_version: 1,
+        engine_version: "dohflow-test".to_owned(),
+        schema_version: 65,
+    };
+    let aad = header.encode().unwrap();
+    let aead = aead_key(key, &id.fingerprint, ObjectType::Snapshot);
+    let mut nonce = [0_u8; 12];
+    nonce[..4].copy_from_slice(domain.as_bytes());
+    nonce[4..].copy_from_slice(&7_u64.to_be_bytes());
+    let ciphertext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
+        )
+        .unwrap();
+    encode_container(&header, &ciphertext).unwrap()
+}
+
+#[test]
+fn header_field_17_is_the_commitment_of_the_closure_the_manifest_names() {
+    let c = chain();
+    let chain_state = state(&c);
+    let key = epoch_key(1);
+    let (a, b) = ([0x0a; 32], [0xb0; 32]);
+    let with_closure = common::snapshot_plaintext(&[a, b], "two artifacts");
+    let (store, witness) = (MemoryRegisterStore::new(), MockWitness::new());
+    let register = CounterRegister::new(&store, &witness);
+    let seal = |plaintext: &[u8]| {
+        let r = register.reserve(&context(&key, &c.a, 2)).unwrap();
+        seal_snapshot(&key, &identity(&c.a), &fields(0x33, 41), r, plaintext).unwrap()
+    };
+    let sealed = seal(&with_closure);
+    let header = parse_container(&sealed).unwrap().header;
+    let expected = ArtifactManifest::new(vec![a, b]).unwrap().commitment();
+    assert_eq!(
+        header.object,
+        ObjectKind::Snapshot {
+            artifact_manifest_commitment: expected
+        }
+    );
+    assert_ne!(
+        expected,
+        empty_closure(),
+        "a non-empty closure commits to something else"
+    );
+    assert_eq!(
+        vault_crypto::sync_snapshot::closure_commitment_of(&with_closure),
+        Ok(expected)
+    );
+    assert_eq!(open(&key, &chain_state, &sealed).unwrap(), with_closure);
+    // The empty closure is committed to as well: the field is never absent.
+    let empty = seal(&common::snapshot_plaintext(&[], "no artifacts"));
+    assert_eq!(
+        parse_container(&empty).unwrap().header.object,
+        ObjectKind::Snapshot {
+            artifact_manifest_commitment: empty_closure()
+        }
+    );
+}
+
+#[test]
+fn the_receiver_refuses_a_header_whose_commitment_is_not_the_manifests() {
+    let c = chain();
+    let chain_state = state(&c);
+    let key = epoch_key(1);
+    let plaintext = common::snapshot_plaintext(&[[0x0a; 32]], "one artifact");
+    // The commitment of a different closure, and of the empty one.
+    for wrong in [
+        ArtifactManifest::new(vec![[0x0b; 32]])
+            .unwrap()
+            .commitment(),
+        empty_closure(),
+        ManifestCommitment::from_derived([0; 32]),
+    ] {
+        let forged = hand_sealed(&key, &c.a, wrong, &plaintext);
+        assert_eq!(
+            open(&key, &chain_state, &forged),
+            Err(SnapshotOpenFailure::ClosureCommitmentMismatch)
+        );
+    }
+    // The right commitment opens (the helper is a faithful sealer).
+    let right = ArtifactManifest::new(vec![[0x0a; 32]])
+        .unwrap()
+        .commitment();
+    let honest = hand_sealed(&key, &c.a, right, &plaintext);
+    assert_eq!(open(&key, &chain_state, &honest).unwrap(), plaintext);
+}
+
+#[test]
+fn the_receiver_refuses_an_authentic_plaintext_that_is_not_a_snapshot() {
+    let c = chain();
+    let chain_state = state(&c);
+    let key = epoch_key(1);
+    let not_a_snapshot = hand_sealed(&key, &c.a, empty_closure(), b"authentic but not a snapshot");
+    assert_eq!(
+        open(&key, &chain_state, &not_a_snapshot),
+        Err(SnapshotOpenFailure::PlaintextInvalid)
+    );
+    // A snapshot whose file no longer matches its manifest (a flipped byte) is not valid either.
+    let mut broken = common::snapshot_plaintext(&[], "a file");
+    let at = broken.len() - 3;
+    broken[at] ^= 1;
+    let forged = hand_sealed(&key, &c.a, empty_closure(), &broken);
+    assert_eq!(
+        open(&key, &chain_state, &forged),
+        Err(SnapshotOpenFailure::PlaintextInvalid)
+    );
+}
+
+#[test]
+fn a_plaintext_that_is_not_a_valid_snapshot_is_refused_before_a_counter_is_spent() {
+    let rig = Rig::new("invalid-plaintext");
+    assert_eq!(
+        rig.seal(&fields(0x33, 41), b"not a snapshot plaintext")
+            .unwrap_err(),
+        SnapshotError::Seal(SnapshotSealError::PlaintextInvalid)
+    );
+    assert_eq!(rig.store.commits(), 0, "no counter was reserved");
+    assert!(!rig.file(0x33).exists());
+    assert_eq!(rig.store.saved(&rig.ctx()), Ok(None));
+    // The low-level seal refuses it as well, after the reservation it was handed.
+    let r = CounterRegister::new(&rig.store, &rig.witness)
+        .reserve(&rig.ctx())
+        .unwrap();
+    assert_eq!(
+        seal_snapshot(&rig.key, &identity(&rig.c.a), &fields(0x33, 41), r, b"nope").unwrap_err(),
+        SnapshotSealError::PlaintextInvalid
+    );
 }
 
 // ---- the reservation ---------------------------------------------------------------------------
@@ -312,7 +480,7 @@ fn a_reservation_for_another_context_is_refused_before_anything_is_encrypted() {
     let register = CounterRegister::new(&store, &witness);
     let seal_with = |ctx: CounterContext| {
         let r = register.reserve(&ctx).unwrap();
-        seal_snapshot(&key, &identity(&c.a), &fields(0x33, 41), r, PLAINTEXT)
+        seal_snapshot(&key, &identity(&c.a), &fields(0x33, 41), r, sample())
     };
     assert_eq!(
         seal_with(context(&key, &c.b, 2)).unwrap_err(),
@@ -334,7 +502,7 @@ fn a_reservation_for_another_context_is_refused_before_anything_is_encrypted() {
     other_vault.vault_id = [9; 16];
     let r = register.reserve(&context(&key, &c.a, 2)).unwrap();
     assert_eq!(
-        seal_snapshot(&key, &other_vault, &fields(0x33, 41), r, PLAINTEXT).unwrap_err(),
+        seal_snapshot(&key, &other_vault, &fields(0x33, 41), r, sample()).unwrap_err(),
         SnapshotSealError::WrongVault
     );
 }
@@ -426,13 +594,13 @@ impl Rig {
 #[test]
 fn an_exact_retransmission_reuses_the_saved_ciphertext_and_burns_no_counter() {
     let rig = Rig::new("reuse");
-    let first = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let first = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert!(!first.reused);
     assert_eq!(first.counter, 0);
     let commits = rig.store.commits();
     let witnessed = rig.witness.counter_advances();
     // A transport retry of the same publish: the same bytes, no counter.
-    let again = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let again = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert!(again.reused);
     assert_eq!(again.container, first.container);
     assert_eq!(again.counter, 0);
@@ -442,31 +610,37 @@ fn an_exact_retransmission_reuses_the_saved_ciphertext_and_burns_no_counter() {
     // The saved container opens through the receiver path.
     assert_eq!(
         open(&rig.key, &rig.chain_state, &again.container).unwrap(),
-        PLAINTEXT
+        sample()
     );
 }
 
 #[test]
 fn a_changed_retry_burns_a_counter_and_replaces_the_saved_container() {
     let rig = Rig::new("changed");
-    let first = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let first = rig.seal(&fields(0x33, 41), sample()).unwrap();
     // A retry after a failed compare-and-swap is a new head and a new snapshot.
-    let new_head = rig.seal(&fields(0x34, 57), b"a newer plaintext").unwrap();
+    let new_head = rig
+        .seal(&fields(0x34, 57), &pt("a newer plaintext"))
+        .unwrap();
     assert!(!new_head.reused);
     assert_eq!(new_head.counter, 1);
     assert_ne!(new_head.container, first.container);
     assert!(!rig.file(0x33).exists(), "the superseded file is gone");
     assert!(rig.file(0x34).exists());
     // The same snapshot id with a different base, or different content, is not the same publish.
-    let rebased = rig.seal(&fields(0x34, 58), b"a newer plaintext").unwrap();
+    let rebased = rig
+        .seal(&fields(0x34, 58), &pt("a newer plaintext"))
+        .unwrap();
     assert!(!rebased.reused);
     assert_eq!(rebased.counter, 2);
-    let edited = rig.seal(&fields(0x34, 58), b"an edited plaintext").unwrap();
+    let edited = rig
+        .seal(&fields(0x34, 58), &pt("an edited plaintext"))
+        .unwrap();
     assert!(!edited.reused);
     assert_eq!(edited.counter, 3);
     // The latest publish is the one that is saved.
     assert!(
-        rig.seal(&fields(0x34, 58), b"an edited plaintext")
+        rig.seal(&fields(0x34, 58), &pt("an edited plaintext"))
             .unwrap()
             .reused
     );
@@ -477,19 +651,19 @@ fn a_changed_retry_burns_a_counter_and_replaces_the_saved_container() {
 #[test]
 fn a_missing_or_damaged_saved_file_is_not_reused() {
     let rig = Rig::new("damaged");
-    let first = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let first = rig.seal(&fields(0x33, 41), sample()).unwrap();
     // Damaged: one byte flipped on disk.
     let mut bytes = std::fs::read(rig.file(0x33)).unwrap();
     let mid = bytes.len() / 2;
     bytes[mid] ^= 1;
     std::fs::write(rig.file(0x33), &bytes).unwrap();
-    let second = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let second = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert!(!second.reused);
     assert_eq!(second.counter, 1);
     assert_ne!(second.container, first.container);
     // Missing.
     std::fs::remove_file(rig.file(0x33)).unwrap();
-    let third = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let third = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert!(!third.reused);
     assert_eq!(third.counter, 2);
 }
@@ -497,7 +671,7 @@ fn a_missing_or_damaged_saved_file_is_not_reused() {
 #[test]
 fn the_saved_record_and_file_survive_a_reopen_and_are_dropped_on_the_receipt() {
     let rig = Rig::new("receipt");
-    rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    rig.seal(&fields(0x33, 41), sample()).unwrap();
     // "Reopen": new handles on the same store, witness and directory, the same chain and keys.
     let (store, witness) = (rig.store.clone(), rig.witness.clone());
     let register = CounterRegister::new(&store, &witness);
@@ -510,7 +684,7 @@ fn the_saved_record_and_file_survive_a_reopen_and_are_dropped_on_the_receipt() {
         sealer: &sealer,
         chain: &rig.chain_state,
     };
-    let again = publish.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let again = publish.seal(&fields(0x33, 41), sample()).unwrap();
     assert!(again.reused);
     // The publish is durable: forget it.
     publish.discard(&[0x33; 16]).unwrap();
@@ -518,7 +692,7 @@ fn the_saved_record_and_file_survive_a_reopen_and_are_dropped_on_the_receipt() {
     assert!(!rig.file(0x33).exists());
     // Discarding twice is not an error, and sealing again is a new seal.
     publish.discard(&[0x33; 16]).unwrap();
-    let after = publish.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let after = publish.seal(&fields(0x33, 41), sample()).unwrap();
     assert!(!after.reused);
     assert_eq!(after.counter, 1);
 }
@@ -528,7 +702,7 @@ fn a_crash_between_the_file_and_its_record_burns_the_counter_and_reseals() {
     let rig = Rig::new("crash-record");
     rig.store.fail_next_set_saved(1);
     assert!(matches!(
-        rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap_err(),
+        rig.seal(&fields(0x33, 41), sample()).unwrap_err(),
         SnapshotError::Register(_)
     ));
     assert_eq!(
@@ -537,7 +711,7 @@ fn a_crash_between_the_file_and_its_record_burns_the_counter_and_reseals() {
         "counter 0 is burned"
     );
     assert_eq!(rig.store.saved(&rig.ctx()), Ok(None), "nothing is recorded");
-    let retry = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let retry = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert!(!retry.reused);
     assert_eq!(retry.counter, 1, "counter 0 is never reused");
 }
@@ -545,21 +719,21 @@ fn a_crash_between_the_file_and_its_record_burns_the_counter_and_reseals() {
 #[test]
 fn a_witness_failure_after_the_register_commit_burns_the_counter_and_publishes_nothing() {
     let rig = Rig::new("crash-reserve");
-    let first = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let first = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert_eq!(first.counter, 0);
     // The register commits counter 1 and the witness then fails: counter 1 is spent, never sealed.
     rig.witness.fail_next_counter_advances(1);
     assert_eq!(
-        rig.seal(&fields(0x34, 57), b"second").unwrap_err(),
+        rig.seal(&fields(0x34, 57), &pt("second")).unwrap_err(),
         SnapshotError::Nonce(NonceError::Witness(WitnessError::Unavailable))
     );
     assert!(!rig.file(0x34).exists(), "nothing was sealed or saved");
     assert_eq!(rig.store.next_counter(&rig.ctx()), Ok(Some(2)));
     // The first publish is still saved and can still be sent again, at no cost.
     assert!(rig.file(0x33).exists());
-    assert!(rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap().reused);
+    assert!(rig.seal(&fields(0x33, 41), sample()).unwrap().reused);
     // The next new publish uses counter 2: counter 1 is never handed out.
-    let next = rig.seal(&fields(0x34, 57), b"second").unwrap();
+    let next = rig.seal(&fields(0x34, 57), &pt("second")).unwrap();
     assert_eq!(next.counter, 2);
 }
 
@@ -581,7 +755,7 @@ fn seal_then_verify_refuses_a_snapshot_the_receiver_path_would_refuse() {
         sealer: &sealer,
         chain: &only_a,
     }
-    .seal(&fields(0x33, 41), PLAINTEXT);
+    .seal(&fields(0x33, 41), sample());
     assert_eq!(
         result.unwrap_err(),
         SnapshotError::NotOpenable(SnapshotOpenFailure::DeviceOutsideEpoch)
@@ -593,11 +767,11 @@ fn seal_then_verify_refuses_a_snapshot_the_receiver_path_would_refuse() {
 #[test]
 fn a_rolled_back_register_is_nonce_state_lost_and_seals_nothing() {
     let rig = Rig::new("lost");
-    rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
-    rig.seal(&fields(0x34, 57), b"second").unwrap();
+    rig.seal(&fields(0x33, 41), sample()).unwrap();
+    rig.seal(&fields(0x34, 57), &pt("second")).unwrap();
     // A restore of the vault: the register forgets both counters; the witness remembers.
     rig.store.force_next(&rig.ctx(), Some(0));
-    let result = rig.seal(&fields(0x35, 60), b"third");
+    let result = rig.seal(&fields(0x35, 60), &pt("third"));
     assert_eq!(
         result.unwrap_err(),
         SnapshotError::Nonce(NonceError::NonceStateLost(
@@ -610,7 +784,7 @@ fn a_rolled_back_register_is_nonce_state_lost_and_seals_nothing() {
 #[test]
 fn a_retransmission_checks_the_register_first_and_stops_at_nonce_state_lost() {
     let rig = Rig::new("t1-lost");
-    let first = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let first = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert_eq!(first.counter, 0);
     // A restore rolled the vault's register back behind the witness; the saved record (which sits
     // in the vault) is still there with its container file.
@@ -618,7 +792,7 @@ fn a_retransmission_checks_the_register_first_and_stops_at_nonce_state_lost() {
     rig.witness.force_counter(&rig.ctx(), 1);
     assert!(rig.file(0x33).exists());
     assert_eq!(
-        rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap_err(),
+        rig.seal(&fields(0x33, 41), sample()).unwrap_err(),
         SnapshotError::Nonce(NonceError::NonceStateLost(
             LostReason::RegisterBehindWitness
         )),
@@ -626,7 +800,7 @@ fn a_retransmission_checks_the_register_first_and_stops_at_nonce_state_lost() {
     );
     // The same holds for a publish that has nothing saved: the device is stopped in the context.
     assert_eq!(
-        rig.seal(&fields(0x34, 57), b"another").unwrap_err(),
+        rig.seal(&fields(0x34, 57), &pt("another")).unwrap_err(),
         SnapshotError::Nonce(NonceError::NonceStateLost(
             LostReason::RegisterBehindWitness
         ))
@@ -636,19 +810,19 @@ fn a_retransmission_checks_the_register_first_and_stops_at_nonce_state_lost() {
 #[test]
 fn a_saved_record_ahead_of_the_register_is_never_sent() {
     let rig = Rig::new("t1-ahead");
-    rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap(); // sealed with counter 0, register now 1
-                                                     // Register and witness agree on 0 (both rolled back), so the pair looks consistent, but the
-                                                     // saved record names counter 0, which the register has not passed.
+    rig.seal(&fields(0x33, 41), sample()).unwrap(); // sealed with counter 0, register now 1
+                                                    // Register and witness agree on 0 (both rolled back), so the pair looks consistent, but the
+                                                    // saved record names counter 0, which the register has not passed.
     rig.store.force_next(&rig.ctx(), Some(0));
     rig.witness.force_counter(&rig.ctx(), 0);
     assert_eq!(
-        rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap_err(),
+        rig.seal(&fields(0x33, 41), sample()).unwrap_err(),
         SnapshotError::Nonce(NonceError::NonceStateLost(LostReason::SavedAheadOfRegister))
     );
     // And a saved record that the register has passed is sent as before.
     rig.store.force_next(&rig.ctx(), Some(1));
     rig.witness.force_counter(&rig.ctx(), 1);
-    assert!(rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap().reused);
+    assert!(rig.seal(&fields(0x33, 41), sample()).unwrap().reused);
 }
 
 #[test]
@@ -657,7 +831,7 @@ fn the_cap_seals_the_last_counter_and_the_next_publish_requires_a_rotation() {
     let last = sync_core::header::MAX_INVOCATION_COUNTER;
     rig.store.force_next(&rig.ctx(), Some(last));
     rig.witness.force_counter(&rig.ctx(), last);
-    let sealed = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let sealed = rig.seal(&fields(0x33, 41), sample()).unwrap();
     assert_eq!(sealed.counter, last);
     assert_eq!(
         parse_container(&sealed.container)
@@ -667,17 +841,17 @@ fn the_cap_seals_the_last_counter_and_the_next_publish_requires_a_rotation() {
         last
     );
     assert_eq!(
-        rig.seal(&fields(0x34, 57), b"one more").unwrap_err(),
+        rig.seal(&fields(0x34, 57), &pt("one more")).unwrap_err(),
         SnapshotError::Nonce(NonceError::RotationRequired)
     );
     // The same publish can still be sent again: that spends nothing.
-    assert!(rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap().reused);
+    assert!(rig.seal(&fields(0x33, 41), sample()).unwrap().reused);
 }
 
 #[test]
 fn another_epoch_is_another_context_and_never_reuses_the_saved_container() {
     let rig = Rig::new("epoch");
-    let first = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let first = rig.seal(&fields(0x33, 41), sample()).unwrap();
     // After a rotation, the same publish under the next epoch's key is sealed from counter 0.
     let register = CounterRegister::new(&rig.store, &rig.witness);
     let files = SavedSnapshotFiles::new(&rig.dir.0);
@@ -693,7 +867,7 @@ fn another_epoch_is_another_context_and_never_reuses_the_saved_container() {
         sealer: &sealer,
         chain: &state2,
     }
-    .seal(&fields(0x33, 41), PLAINTEXT)
+    .seal(&fields(0x33, 41), sample())
     .unwrap();
     assert!(!second.reused);
     assert_eq!(second.counter, 0);
@@ -748,7 +922,7 @@ fn the_snapshot_opener_is_constructed_only_in_vault_crypto_and_tests() {
 #[test]
 fn nothing_secret_is_in_a_debug_or_an_error() {
     let rig = Rig::new("debug");
-    let sealed = rig.seal(&fields(0x33, 41), PLAINTEXT).unwrap();
+    let sealed = rig.seal(&fields(0x33, 41), sample()).unwrap();
     let shown = format!("{sealed:?}");
     assert!(shown.contains("len"));
     assert!(!shown.contains("manifest.json"));

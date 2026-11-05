@@ -41,11 +41,13 @@ use std::path::{Path, PathBuf};
 
 use platform_traits::{CounterContext, RollbackWitness};
 use sha2::{Digest, Sha256};
+use sync_core::envelope::ArtifactManifest;
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, ManifestCommitment, NonceDomain,
     ObjectKind, ParsedContainer, OBJECT_SNAPSHOT,
 };
 use sync_core::membership::VerifiedState;
+use sync_core::snapshot::verify as verify_plaintext;
 use thiserror::Error;
 
 use crate::sync_counter::{
@@ -61,7 +63,8 @@ use crate::sync_envelope::{
 pub const MAX_SNAPSHOT_PLAINTEXT: usize = 1 << 30;
 
 /// The header fields of a snapshot that the caller chooses. Everything else in the header is the
-/// sealer's identity and the reserved counter.
+/// sealer's identity, the reserved counter and the closure commitment (field 17), which is
+/// **derived from the plaintext's own manifest** and never supplied, so the two cannot disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotFields {
     /// The snapshot id (header `object_id`).
@@ -74,9 +77,6 @@ pub struct SnapshotFields {
     pub engine_version: String,
     /// The producer's vault schema version.
     pub schema_version: u32,
-    /// The commitment to the snapshot's full artifact closure (field 17): always present, the
-    /// commitment of the empty closure included.
-    pub closure_commitment: ManifestCommitment,
 }
 
 /// Why a snapshot was not sealed. Nothing was encrypted in any of these cases.
@@ -92,6 +92,11 @@ pub enum SnapshotSealError {
     /// The plaintext is above 2^30 bytes (C.11 `SnapshotTooLarge`).
     #[error("the snapshot plaintext is too large")]
     SnapshotTooLarge,
+    /// The plaintext is not a well-formed snapshot (C.8), or its manifest names a closure that
+    /// cannot be committed to. Nothing is sealed: a snapshot no replica could verify is not
+    /// published.
+    #[error("the plaintext is not a valid snapshot")]
+    PlaintextInvalid,
     /// The header cannot be encoded within its bounds.
     #[error("the snapshot cannot be encoded")]
     Unencodable,
@@ -109,8 +114,43 @@ fn context_of(key: &EpochKey, fingerprint: &Fingerprint) -> CounterContext {
     }
 }
 
+/// The commitment to the closure a snapshot plaintext names (C.3 "Artifact manifest commitment"):
+/// the plaintext is verified as a whole (C.8 framing, manifest and file hashes), the manifest's
+/// artifact ids are decoded, and the commitment is taken over them in their ascending order. It is
+/// the value header field 17 must carry, the commitment of the empty closure included.
+///
+/// # Errors
+/// [`SnapshotSealError::PlaintextInvalid`] if the plaintext does not verify or its closure is not a
+/// strictly ascending list of at most 4096 ids.
+pub fn closure_commitment_of(plaintext: &[u8]) -> Result<ManifestCommitment, SnapshotSealError> {
+    fn id_of(hex: &str) -> Option<[u8; 32]> {
+        if hex.len() != 64 {
+            return None;
+        }
+        let mut out = [0_u8; 32];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+        }
+        Some(out)
+    }
+    let verified = verify_plaintext(plaintext).map_err(|_| SnapshotSealError::PlaintextInvalid)?;
+    let ids = verified
+        .manifest
+        .artifacts
+        .iter()
+        .map(|id| id_of(id))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(SnapshotSealError::PlaintextInvalid)?;
+    // `verify` already requires strictly ascending ids; the manifest type orders and refuses a
+    // duplicate or an oversized closure again, so the commitment is over a list that is.
+    Ok(ArtifactManifest::new(ids)
+        .map_err(|_| SnapshotSealError::PlaintextInvalid)?
+        .commitment())
+}
+
 /// Seal `plaintext` as the snapshot `fields` describe, with `key` as the epoch's key and `sealer`
-/// as this device. The counter is the reservation's, consumed here.
+/// as this device. The counter is the reservation's, consumed here. Header field 17 is the
+/// commitment of the closure the plaintext's manifest names.
 ///
 /// # Errors
 /// A [`SnapshotSealError`]; nothing is encrypted unless every check passes.
@@ -118,6 +158,21 @@ pub fn seal_snapshot(
     key: &EpochKey,
     sealer: &SealerIdentity,
     fields: &SnapshotFields,
+    reservation: CounterReservation,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, SnapshotSealError> {
+    if plaintext.len() > MAX_SNAPSHOT_PLAINTEXT {
+        return Err(SnapshotSealError::SnapshotTooLarge);
+    }
+    let commitment = closure_commitment_of(plaintext)?;
+    seal_with_commitment(key, sealer, fields, commitment, reservation, plaintext)
+}
+
+fn seal_with_commitment(
+    key: &EpochKey,
+    sealer: &SealerIdentity,
+    fields: &SnapshotFields,
+    commitment: ManifestCommitment,
     reservation: CounterReservation,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, SnapshotSealError> {
@@ -140,7 +195,7 @@ pub fn seal_snapshot(
         vault_id: sealer.vault_id,
         key_epoch: key.key_epoch(),
         object: ObjectKind::Snapshot {
-            artifact_manifest_commitment: fields.closure_commitment,
+            artifact_manifest_commitment: commitment,
         },
         object_id: fields.object_id,
         device_id: sealer.device_id,
@@ -187,6 +242,12 @@ pub enum SnapshotOpenFailure {
     /// The ciphertext does not open under the derived key and the header as AAD.
     #[error("the ciphertext does not open")]
     NotOpenable,
+    /// The opened plaintext is not a well-formed snapshot (C.8).
+    #[error("the opened plaintext is not a valid snapshot")]
+    PlaintextInvalid,
+    /// Header field 17 is not the commitment of the closure the plaintext's manifest names.
+    #[error("the header's closure commitment is not the manifest's")]
+    ClosureCommitmentMismatch,
 }
 
 /// The receiver path for snapshots: the key is derived from the expected vault and epoch and the
@@ -204,7 +265,8 @@ impl<'a> SnapshotOpener<'a> {
         Self { key, chain }
     }
 
-    /// Open `container`.
+    /// Open `container`: authenticated decryption, then the plaintext verified as a snapshot, then
+    /// header field 17 compared with the closure the manifest names.
     ///
     /// # Errors
     /// A [`SnapshotOpenFailure`].
@@ -236,14 +298,24 @@ impl<'a> SnapshotOpener<'a> {
             return Err(SnapshotOpenFailure::NonceDomain);
         }
         let aead = aead_key(self.key, &member.fingerprint, ObjectType::Snapshot);
-        gcm_decrypt(
+        let plaintext = gcm_decrypt(
             &aead,
             &domain,
             header.invocation_counter,
             container.header_bytes,
             container.ciphertext,
         )
-        .map_err(|()| SnapshotOpenFailure::NotOpenable)
+        .map_err(|()| SnapshotOpenFailure::NotOpenable)?;
+        // After authenticated decryption, the receiver checks the commitment of header field 17
+        // against the plaintext's own manifest (C.4 receiver check 4, for a snapshot).
+        let commitment =
+            closure_commitment_of(&plaintext).map_err(|_| SnapshotOpenFailure::PlaintextInvalid)?;
+        match header.object {
+            ObjectKind::Snapshot {
+                artifact_manifest_commitment,
+            } if artifact_manifest_commitment == commitment => Ok(plaintext),
+            _ => Err(SnapshotOpenFailure::ClosureCommitmentMismatch),
+        }
     }
 }
 
@@ -494,6 +566,8 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
         if plaintext.len() > MAX_SNAPSHOT_PLAINTEXT {
             return Err(SnapshotSealError::SnapshotTooLarge.into());
         }
+        // A plaintext no replica could verify is refused before a counter is spent.
+        let commitment = closure_commitment_of(plaintext)?;
         let plaintext_sha256 = sha256(plaintext);
         if let Some(saved) = self.reusable(fields, &plaintext_sha256)? {
             return Ok(saved);
@@ -502,7 +576,14 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
         let previous = self.register.store().saved(&context)?;
         let reservation = self.register.reserve(&context)?;
         let counter = reservation.counter();
-        let container = seal_snapshot(self.key, self.sealer, fields, reservation, plaintext)?;
+        let container = seal_with_commitment(
+            self.key,
+            self.sealer,
+            fields,
+            commitment,
+            reservation,
+            plaintext,
+        )?;
         let parsed = parse_container(&container).map_err(|_| SnapshotSealError::Unencodable)?;
         let opened = SnapshotOpener::new(self.key, self.chain)
             .open(&parsed)
