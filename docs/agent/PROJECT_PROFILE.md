@@ -377,6 +377,22 @@ that the iOS check does. Every other required check runs on Linux, so a macOS ru
 cannot drop a pull request from the merge queue; `scripts/tests/desktop-nondesktop-ci.test.sh`
 audits that.
 
+Neither verdict job waits for its pool jobs (`personal-cfo-md8h2.26`). A pool stuck in "Set up
+job" is not bounded by its `timeout-minutes` (run 41920261907 sat there for 55 minutes against a
+45-minute timeout), and the merge queue drops a pull request whose required check has not reported
+in 60 minutes. So each verdict job needs only its gate and runs `scripts/macos-pools-wait.sh`,
+which polls the run's jobs (this run attempt, exact job names) until both pools have a conclusion,
+a pool fails, or 20 minutes pass, and then hands what it saw to `scripts/macos-pools-verdict.sh`.
+At the deadline one pool's success passes the check with a notice naming the pool left unfinished,
+and a pool still queued or running is the only neutral state. No success fails it, and so does a pool
+whose state cannot be determined (a missing, renamed or duplicated job, or an unreadable jobs API
+at the last poll) even beside the other pool's success, and any completed conclusion but success,
+cancelled or skipped (startup_failure, action_required, neutral, stale) is a failure. A pool
+that fails after the check passed is seen by `main-red-alert` in `ci.yml`, which waits for the two
+desktop pool jobs as well. The check reports about 21 minutes after the gate at the latest, plus
+its own Linux runner's acquisition; `scripts/tests/macos-pools-wait.test.sh` runs every case
+against fixture snapshots, with no live API call.
+
 That automatic check is the primary evidence, but agents still record their
 own gate runs, because CI proves the candidate SHA passes — it does not
 prove the implementation agent understood what it ran or the reviewer

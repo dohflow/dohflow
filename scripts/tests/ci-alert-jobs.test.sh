@@ -29,9 +29,23 @@ needs_of() { job_text "$1" | sed -n 's/^    needs: \[\(.*\)\]$/\1/p' | head -n 1
 alert_needs="$(needs_of main-red-alert)"
 resolve_needs="$(needs_of main-red-resolve)"
 
-case_start "the alert and resolve jobs wait for the same gates"
+# The alert job also waits for the two desktop pool jobs (personal-cfo-md8h2.26): the verdict no
+# longer waits for them, so a pool that fails after the verdict passed is seen only through its
+# own result. The resolve job does not, because a pool that never got a runner is `cancelled` and
+# would keep a green main from closing the alert. Apart from those two ids the lists are identical.
+POOL_IDS="desktop-nondesktop-build-arm64 desktop-nondesktop-build-intel"
+alert_without_pools="$alert_needs"
+for id in $POOL_IDS; do
+  alert_without_pools="$(sed -e "s/, $id//" -e "s/$id, //" <<<"$alert_without_pools")"
+done
+
+case_start "the alert and resolve jobs wait for the same gates (the alert also waits for the two pools)"
 [ -n "$alert_needs" ] && pass "main-red-alert needs: $alert_needs" || fail "main-red-alert has no needs list"
-[ "$alert_needs" = "$resolve_needs" ] && pass "main-red-resolve needs the identical list" || fail "main-red-resolve needs differ: '$resolve_needs' vs '$alert_needs'"
+[ "$alert_without_pools" = "$resolve_needs" ] && pass "main-red-resolve needs the alert's list without the pool jobs" || fail "main-red-resolve needs differ: '$resolve_needs' vs '$alert_without_pools'"
+for id in $POOL_IDS; do
+  [[ ", $alert_needs, " == *", $id, "* ]] && pass "main-red-alert waits for $id" || fail "main-red-alert must wait for $id"
+  [[ ", $resolve_needs, " != *", $id, "* ]] && pass "main-red-resolve does not wait for $id" || fail "main-red-resolve must not wait for $id"
+done
 
 case_start "every job id the alerts wait for exists"
 IFS=',' read -r -a ids <<<"${alert_needs// /}"

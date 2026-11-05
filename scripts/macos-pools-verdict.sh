@@ -26,10 +26,20 @@
 # (the verdict job has `actions: read`) and is diagnostic only: it can never change the
 # verdict, and a failed lookup only says so.
 #
+# Two more values come from scripts/macos-pools-wait.sh (personal-cfo-md8h2.26), which waits for
+# the pools for a bounded time instead of the verdict job needing them: `unfinished` (queued,
+# waiting or still running when the wait ended) and `unknown` (the job is missing or appears
+# twice, or the jobs API or its token failed, so the pool's state could not be determined).
+# Only `unfinished` is neutral: one pool succeeding with the other `unfinished` passes, with a
+# notice naming the pool, because the pool that built has proven the cross-compile. A failure on
+# either pool, an `unknown` pool (whatever the other did: a renamed job must not let the check
+# pass on one pool alone), or no success at all fails. An `unfinished` or `unknown` pool cannot
+# satisfy "not wanted": that case requires both pools `skipped`.
+#
 # Usage: macos-pools-verdict.sh <gate result> <build wanted: true|false|""> \
 #                                 <arm64 build result> <intel build result>
-# The results are the values of the `needs.<job>.result` expression: success, failure,
-# cancelled or skipped.
+# The results are the values of the `needs.<job>.result` expression (success, failure,
+# cancelled or skipped) or, from the wait script, unfinished or unknown.
 #
 # Naming (all optional; the defaults are the iOS check's): VERDICT_CHECK, the check's name
 # in a failure message; VERDICT_BUILD, what the build is called in a message;
@@ -103,18 +113,36 @@ fi
 # The build was wanted. A failure on either pool fails the check, whatever the other did.
 [ "$arm64_result" != "failure" ] || fail "the ${build_label} failed on the arm64 pool (the Intel pool: '$intel_result')"
 [ "$intel_result" != "failure" ] || fail "the ${build_label} failed on the Intel pool (the arm64 pool: '$arm64_result')"
+# A pool whose state could not be determined fails the check even beside a success.
+[ "$arm64_result" != "unknown" ] || fail "the arm64 pool's state of the ${build_label} could not be determined (its job is missing or duplicated, or the jobs API was unreadable; the Intel pool: '$intel_result')"
+[ "$intel_result" != "unknown" ] || fail "the Intel pool's state of the ${build_label} could not be determined (its job is missing or duplicated, or the jobs API was unreadable; the arm64 pool: '$arm64_result')"
 
 built=()
 [ "$arm64_result" != "success" ] || built+=("arm64")
 [ "$intel_result" != "success" ] || built+=("intel")
 
+# Says what a pool that did not build was doing, and (for a pass) that its result is not part of
+# this check. Never fails the script.
+account_for() {
+  local pool="$1" job_name="$2" result="$3"
+  case "$result" in
+    cancelled) explain_cancelled "$pool" "$job_name" ;;
+    unfinished)
+      echo "::notice::${build_label} (${pool}) was still unfinished (queued or running) when the wait ended; the other pool's success decides this check, and a later failure of this pool shows in the run but does not change the check." ;;
+  esac
+}
+
 if [ "${#built[@]}" -eq 0 ]; then
-  [ "$arm64_result" != "cancelled" ] || explain_cancelled arm64 "$ARM64_JOB"
-  [ "$intel_result" != "cancelled" ] || explain_cancelled intel "$INTEL_JOB"
-  fail "the ${build_label} was needed but neither pool built it (arm64: '$arm64_result', intel: '$intel_result')"
+  account_for arm64 "$ARM64_JOB" "$arm64_result"
+  account_for intel "$INTEL_JOB" "$intel_result"
+  cause="neither pool built it"
+  if [ "$arm64_result" = "unfinished" ] || [ "$intel_result" = "unfinished" ]; then
+    cause="neither pool had built it when the wait ended"
+  fi
+  fail "the ${build_label} was needed but ${cause} (arm64: '$arm64_result', intel: '$intel_result')"
 fi
 
 echo "${build_label} was needed and succeeded on: ${built[*]}."
-[ "$arm64_result" != "cancelled" ] || explain_cancelled arm64 "$ARM64_JOB"
-[ "$intel_result" != "cancelled" ] || explain_cancelled intel "$INTEL_JOB"
+account_for arm64 "$ARM64_JOB" "$arm64_result"
+account_for intel "$INTEL_JOB" "$intel_result"
 exit 0
