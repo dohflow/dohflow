@@ -501,9 +501,15 @@ fn a_device_that_did_not_originate_an_artifact_re_addresses_it_to_the_same_id_th
     let old = service.get(&VAULT, 1, &id1).unwrap();
     let by_b = readdress_container(&k1, &k2, &id1, &old, Fixity::First).unwrap();
     // A, which can compute the same thing from its local copy, gets the identical id and bytes.
-    let by_a =
-        vault_crypto::sync_artifact::readdress_plaintext(&k1, &k2, &id1, &plaintext, Fixity::First)
-            .unwrap();
+    let by_a = vault_crypto::sync_artifact::readdress_plaintext(
+        &k1,
+        &k2,
+        &id1,
+        &plaintext,
+        &plaintext.digest().unwrap(),
+        Fixity::First,
+    )
+    .unwrap();
     assert_eq!(by_b.artifact_id, by_a.artifact_id);
     assert_eq!(by_b.sealed.container, by_a.sealed.container);
 
