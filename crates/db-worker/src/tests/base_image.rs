@@ -270,6 +270,9 @@ fn the_outbox_check_and_the_copy_are_one_critical_section_and_the_strip_is_not()
             Arc::clone(&blocked_at),
         );
         observe::install(move |label| {
+            if label == "verifying" {
+                return;
+            }
             let mut slot = writer.lock().unwrap();
             if slot.is_none() {
                 let (worker, finished) = (Arc::clone(&worker), Arc::clone(&finished));
@@ -695,17 +698,20 @@ fn measure_the_base_copy_cost() {
             tx.commit().unwrap();
         }
         let first = worker.initialize_base_image(1).unwrap();
+        let started = std::time::Instant::now();
         let steady = worker.advance_base_image(2).unwrap();
+        let wall = started.elapsed();
         println!(
-            "vault ~{megabytes} MB -> base {} bytes | first: copy {:?}, strip {:?}, seal {:?} | \
-             steady: copy {:?}, strip {:?}, seal {:?}",
+            "vault ~{megabytes} MB -> base {} bytes | first: writer held {:?}, strip+hash {:?} | \
+             steady: writer held {:?} (copy {:?} + seal {:?}), strip+hash {:?}, wall {:?}",
             steady.image_bytes,
-            first.copy,
+            first.writer_held(),
             first.strip,
-            first.seal,
+            steady.writer_held(),
             steady.copy,
+            steady.seal,
             steady.strip,
-            steady.seal
+            wall,
         );
     }
 }
@@ -801,4 +807,49 @@ fn a_rotation_prepare_removes_a_capture_that_died_before_its_strip() {
     for leftover in leftovers {
         assert!(!leftover.exists(), "{}", leftover.display());
     }
+}
+
+#[test]
+fn vouching_for_the_existing_base_does_not_hold_the_writer() {
+    let (_dir, worker) = worker();
+    let worker = Arc::new(worker);
+    worker.initialize_base_image(1).unwrap();
+
+    // The existing base is hashed in full before the writer lock is taken, so a command can land
+    // meanwhile. (It then makes the outbox non-empty, and the capture correctly refuses.)
+    let landed = Arc::new(AtomicBool::new(false));
+    let seen_landed = Arc::new(AtomicBool::new(false));
+    let writer: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    {
+        let (worker, landed, seen_landed, writer) = (
+            Arc::clone(&worker),
+            Arc::clone(&landed),
+            Arc::clone(&seen_landed),
+            Arc::clone(&writer),
+        );
+        observe::install(move |label| {
+            if label != "verifying" {
+                return;
+            }
+            let (worker, flag) = (Arc::clone(&worker), Arc::clone(&landed));
+            *writer.lock().unwrap() = Some(std::thread::spawn(move || {
+                worker.dispatch(meta(), create_account_cmd()).unwrap();
+                flag.store(true, Ordering::SeqCst);
+            }));
+            std::thread::sleep(Duration::from_millis(300));
+            seen_landed.store(landed.load(Ordering::SeqCst), Ordering::SeqCst);
+        });
+    }
+    let error = worker.advance_base_image(2).unwrap_err();
+    observe::clear();
+    writer.lock().unwrap().take().unwrap().join().unwrap();
+
+    assert!(
+        seen_landed.load(Ordering::SeqCst),
+        "a writer was kept waiting while the base was hashed"
+    );
+    assert!(
+        matches!(error, BaseImageError::OutboxNotEmpty { pending: 1 }),
+        "{error:?}"
+    );
 }

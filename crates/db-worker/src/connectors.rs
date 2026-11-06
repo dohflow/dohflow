@@ -353,8 +353,9 @@ impl DbWorker {
             WriteCommand::DeleteConnectorConnection { id },
         )?;
         // The removed token must not live on in the pre-rebase copy of the vault (bxsbz.3). The
-        // command has committed, so a failure here is not the command's: the next unlock's
-        // `scrub_tombstoned_connector_secrets` repeats the scrub.
+        // command has committed, so a failure here is not the command's: the cleanup after a rebase
+        // swap (`scrub_tombstoned_connector_secrets`, run by the swap's post-swap sweep, bxsbz.7)
+        // repeats the scrub.
         let _ = self.scrub_pre_rebase_credentials(&[id]);
         Ok(())
     }
@@ -406,7 +407,8 @@ impl DbWorker {
         tx.commit()?;
         // The pre-rebase copy of the vault (bxsbz.3) must not keep a token this sweep removed.
         // Every tombstoned connection is scrubbed, not only those that had local rows, so a scrub
-        // that failed when the connection was forgotten is retried here on the next unlock.
+        // that failed when the connection was forgotten is retried when this sweep next runs (after a
+        // rebase swap, bxsbz.7).
         let tombstoned: Vec<Uuid> = {
             let mut stmt = guard
                 .conn

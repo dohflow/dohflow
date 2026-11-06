@@ -9,10 +9,12 @@
 //!
 //! **Taking and advancing the base.** [`DbWorker::initialize_base_image`] makes the first base (a
 //! bootstrapped replica, or the first time Sync is enabled) and [`DbWorker::advance_base_image`]
-//! moves it forward. Both run one critical section under the writer lock: check that the outbox is
-//! empty, fold the WAL, stream the checkpointed file to a temp file, strip the secrets from the
-//! temp file, hash it, rename it into place and record `base_seq`, `base_digest` and the `Ready`
-//! state in `sync_base`. The vault is never read into memory.
+//! moves it forward in three phases, one capture at a time. Under the writer lock, in one critical
+//! section, check that the outbox is empty, fold the WAL and stream the checkpointed file to a temp
+//! file. With the writer free, strip the secrets from the temp file, vacuum and hash it. Under the
+//! writer lock again, rename it into place and record `base_seq`, `base_digest` and the `Ready`
+//! state in `sync_base` in one transaction. The vault is never read into memory, and the one slow
+//! step (the vacuum) does not hold the writer.
 //!
 //! **No credential in the base.** Every table the CLASS-0 manifest marks `secret_bearing` is
 //! emptied in the copy and the copy is vacuumed, so a credential removed from `vault.db` leaves no
@@ -184,12 +186,23 @@ pub struct BaseCapture {
     pub digest: [u8; 32],
     /// Size of `base.db` after the strip.
     pub image_bytes: u64,
-    /// Time the writer lock is held to checkpoint and stream the vault to the temp file.
+    /// How long the writer lock was held in the first phase: the base and outbox checks, the
+    /// checkpoint and the streaming copy.
     pub copy: Duration,
-    /// Time to empty the secret tables and vacuum the copy, and to hash it, with the lock released.
+    /// How long the strip took (emptying the secret tables, the vacuum, the sync and the SHA-256
+    /// of the result), with the writer free.
     pub strip: Duration,
-    /// Time to rename and record the image (the hash is taken before the lock is retaken).
+    /// How long the writer lock was held in the last phase: the record check, the `sync_base`
+    /// write, the rename and the directory sync.
     pub seal: Duration,
+}
+
+impl BaseCapture {
+    /// The time commands were kept waiting for the writer: the first and last phases.
+    #[must_use]
+    pub fn writer_held(&self) -> Duration {
+        self.copy + self.seal
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -212,6 +225,11 @@ pub struct RekeyedImage {
 /// out of the command-rejection ledger (`tests/unclassified_sites.rs`).
 fn image_error(message: String) -> DbError {
     DbError::Io(io::Error::new(io::ErrorKind::InvalidData, message))
+}
+
+/// The base record changed between the phases of a capture: the copy is for a record that is gone.
+fn record_moved() -> BaseImageError {
+    image_error("the base record changed during the capture".to_owned()).into()
 }
 
 fn fsync_dir(dir: &Path) -> io::Result<()> {
@@ -341,23 +359,35 @@ impl DbWorker {
         let final_path = base_image_path(&self.path);
         let temp = base_image_temp_path(&self.path);
 
+        // Phase 0, no writer lock: vouch for the recorded base. A base whose file is gone or
+        // changed is no base (the restore rule), so it may be initialized again and cannot be
+        // advanced. Hashing the existing base is a full read of it, so it happens before the
+        // writer is taken; phase 1 re-reads the record and abandons the capture if it moved.
+        let recorded = {
+            let guard = self.lock();
+            read_base_row(&guard.conn)?
+        };
+        let really = recorded.as_ref().map(|(_, digest, state)| {
+            #[cfg(test)]
+            observe::at("verifying");
+            verify_base(&self.path, *state, digest.as_deref())
+        });
+
         // Phase 1, under the writer lock: check that the outbox is empty and copy the checkpointed
         // file, in one critical section. No command can land between the check and the copy, so
         // the copy is the vault exactly as the server last saw it. Only the checks and the
         // streaming copy hold the lock.
-        let (recorded, copy) = {
+        let copy = {
             let guard = self.lock();
+            let held = Instant::now();
             if guard.state != WorkerState::Healthy {
                 return Err(DbError::WorkerUnavailable(guard.state).into());
             }
             let conn = &guard.conn;
-            let current = read_base_row(conn)?;
-            // The state the recorded base is really in: a base whose file is gone or changed is
-            // no base (the restore rule), so it may be initialized again and cannot be advanced.
-            let really = current
-                .as_ref()
-                .map(|(_, digest, state)| verify_base(&self.path, *state, digest.as_deref()));
-            match (mode, &current, really) {
+            if read_base_row(conn)? != recorded {
+                return Err(record_moved());
+            }
+            match (mode, &recorded, really) {
                 (Capture::Initialize, _, None | Some(SyncBaseState::NoBase)) => {}
                 (Capture::Initialize, _, Some(_)) => return Err(BaseImageError::BaseAlreadyExists),
                 (Capture::Advance, None, _) | (Capture::Advance, _, None) => {
@@ -395,14 +425,13 @@ impl DbWorker {
 
             fs::create_dir_all(&dir)?;
             remove_image_files(&temp)?;
-            let started = Instant::now();
             if let Err(error) = copy_file_synced(&self.path, &temp) {
                 let _ = remove_image_files(&temp);
                 return Err(error.into());
             }
             #[cfg(test)]
             observe::at("copied");
-            (current, started.elapsed())
+            held.elapsed()
         };
 
         // Phase 2, no lock: the writer is free again. The copy is private to this capture, so it
@@ -412,9 +441,10 @@ impl DbWorker {
             observe::at("stripping");
             let started = Instant::now();
             strip_secrets(&temp, &self.key)?;
-            let strip = started.elapsed();
             File::open(&temp)?.sync_all()?;
-            Ok((sha256_file(&temp)?, fs::metadata(&temp)?.len(), strip))
+            let digest = sha256_file(&temp)?;
+            let strip = started.elapsed();
+            Ok((digest, fs::metadata(&temp)?.len(), strip))
         })();
         let (digest, image_bytes, strip) = match sealed {
             Ok(done) => done,
@@ -428,9 +458,9 @@ impl DbWorker {
         // row is written inside a transaction that commits only after the rename, so a failed
         // rename leaves the old record standing. A crash between the two leaves a digest that
         // matches no file, which the next open reads as "no base" (the safe direction).
-        let sealing = Instant::now();
-        let result = (|| -> Result<(), BaseImageError> {
+        let result = (|| -> Result<Duration, BaseImageError> {
             let guard = self.lock();
+            let held = Instant::now();
             if guard.state != WorkerState::Healthy {
                 return Err(DbError::WorkerUnavailable(guard.state).into());
             }
@@ -438,9 +468,7 @@ impl DbWorker {
             // Nothing but this capture writes the base record, but the check is cheap and keeps
             // the phases honest: a record that moved means the copy is for another base.
             if read_base_row(conn)? != recorded {
-                return Err(
-                    image_error("the base record changed during the capture".to_owned()).into(),
-                );
+                return Err(record_moved());
             }
             let tx = conn.unchecked_transaction()?;
             let now = Utc::now().to_rfc3339();
@@ -455,19 +483,22 @@ impl DbWorker {
             fs::rename(&temp, &final_path)?;
             fsync_dir(&dir)?;
             tx.commit()?;
-            Ok(())
+            Ok(held.elapsed())
         })();
-        if let Err(error) = result {
-            let _ = remove_image_files(&temp);
-            return Err(error);
-        }
+        let seal = match result {
+            Ok(seal) => seal,
+            Err(error) => {
+                let _ = remove_image_files(&temp);
+                return Err(error);
+            }
+        };
         Ok(BaseCapture {
             base_seq: seq,
             digest,
             image_bytes,
             copy,
             strip,
-            seal: sealing.elapsed(),
+            seal,
         })
     }
 

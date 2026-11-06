@@ -202,7 +202,6 @@ fn fsync_file(path: &Path) -> Result<(), KernelError> {
         .map_err(io("syncing rekey file"))
 }
 
-/// SHA-256 of a file, streamed so a large database is never read into memory.
 /// A SHA-256 digest as lowercase hex, the form the journal stores (what `sha256_file` returns).
 struct HexDigest<'a>(&'a [u8; 32]);
 
@@ -212,6 +211,7 @@ impl std::fmt::Display for HexDigest<'_> {
     }
 }
 
+/// SHA-256 of a file, streamed so a large database is never read into memory.
 fn sha256_file(path: &Path) -> Result<String, KernelError> {
     let mut file = File::open(path).map_err(io("hashing rekey file"))?;
     let mut hasher = Sha256::new();
@@ -609,13 +609,7 @@ pub(crate) fn prepare_and_commit(
         ));
     }
 
-    // The images are re-encrypted beside the vault too, so they count toward the space needed.
-    let db_size = kernel
-        .worker
-        .database_size()?
-        .saturating_add(kernel.worker.sync_images_size()?);
-    let blobs_size = kernel.worker.blobs_size()?;
-    let needed = required_space(db_size, blobs_size, hard_links_supported(&paths.blobs));
+    let needed = rotation_space_needed(kernel, &paths)?;
     check_space(needed, db_worker::available_space(paths.dir())?)?;
 
     let result = prepare_inner(kernel, password, &paths, stop);
@@ -626,6 +620,21 @@ pub(crate) fn prepare_and_commit(
         }
     }
     result
+}
+
+/// The free space a rotation of `kernel`'s vault needs (ADR 0083 §5). The Sync images are
+/// re-encrypted beside the live ones too, so they count with the database.
+fn rotation_space_needed(kernel: &Kernel, paths: &RekeyPaths) -> Result<u64, KernelError> {
+    let db_size = kernel
+        .worker
+        .database_size()?
+        .saturating_add(kernel.worker.sync_images_size()?);
+    let blobs_size = kernel.worker.blobs_size()?;
+    Ok(required_space(
+        db_size,
+        blobs_size,
+        hard_links_supported(&paths.blobs),
+    ))
 }
 
 fn prepare_inner(
@@ -1054,6 +1063,83 @@ mod protocol_tests {
         assert_eq!(sync_files(&path), ["base.db", "pre-rebase.db"]);
         assert_no_artifacts(&path);
         let _ = paths;
+    }
+
+    #[test]
+    fn a_rotation_needs_room_for_the_sync_images_too() {
+        let (_dir, path, controller, _) = seeded();
+        let paths = RekeyPaths::new(&path);
+        let kernel = controller.kernel().unwrap();
+        let with = rotation_space_needed(kernel, &paths).unwrap();
+        let image = fs::metadata(paths.image(PRE_REBASE_FILE)).unwrap().len();
+        assert!(image > 0);
+        fs::remove_file(paths.image(PRE_REBASE_FILE)).unwrap();
+        let without = rotation_space_needed(kernel, &paths).unwrap();
+        assert_eq!(with - without, image);
+    }
+
+    #[test]
+    fn recovery_removes_a_sync_image_copy_left_with_no_journal() {
+        let (_dir, path, controller, _) = seeded();
+        drop(controller);
+        let paths = RekeyPaths::new(&path);
+        // The only trace of a prepare that died before its journal: a re-encrypted image copy.
+        let stray = paths.image_new(PRE_REBASE_FILE);
+        fs::write(&stray, b"half an export").unwrap();
+
+        let reopened = VaultController::open(&path);
+
+        assert_eq!(reopened.rekey_recovery(), RekeyRecovery::RolledBack);
+        assert!(!stray.exists());
+        assert_no_artifacts(&path);
+    }
+
+    #[test]
+    fn a_swap_that_finishes_on_recovery_leaves_no_side_file_beside_the_new_image() {
+        let (_dir, path, mut controller, _) = seeded();
+        let error = controller
+            .rotate_key_with(PASSWORD, Some(CrashPoint::Committed))
+            .unwrap_err();
+        assert!(is_simulated_crash(&error));
+        drop(controller);
+        // A hot journal or log beside the old image would be replayed onto the new one.
+        let paths = RekeyPaths::new(&path);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            fs::write(
+                with_suffix(&paths.image(BASE_IMAGE_FILE), suffix),
+                b"stale side file",
+            )
+            .unwrap();
+        }
+
+        let reopened = VaultController::open(&path);
+
+        assert_eq!(reopened.rekey_recovery(), RekeyRecovery::RolledForward);
+        assert_eq!(sync_files(&path), ["base.db", "pre-rebase.db"]);
+        assert!(image_opens(&path, BASE_IMAGE_FILE, &dek_on_disk(&path)));
+    }
+
+    #[test]
+    fn an_image_already_in_place_must_be_the_bytes_the_journal_hashed() {
+        let (_dir, path, mut controller, _) = seeded();
+        let error = controller
+            .rotate_key_with(PASSWORD, Some(CrashPoint::Committed))
+            .unwrap_err();
+        assert!(is_simulated_crash(&error));
+        drop(controller);
+        let paths = RekeyPaths::new(&path);
+        // As if the swap had installed the image and something else then rewrote it.
+        fs::remove_file(paths.image_new(BASE_IMAGE_FILE)).unwrap();
+        fs::write(paths.image(BASE_IMAGE_FILE), b"not what was journaled").unwrap();
+
+        let reopened = VaultController::open(&path);
+
+        assert_eq!(reopened.rekey_recovery(), RekeyRecovery::Contradiction);
+        assert_eq!(
+            fs::read(paths.image(BASE_IMAGE_FILE)).unwrap(),
+            b"not what was journaled",
+            "nothing was deleted"
+        );
     }
 
     #[test]
