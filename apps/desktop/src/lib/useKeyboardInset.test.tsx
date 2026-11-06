@@ -4,14 +4,14 @@ import { COARSE_POINTER_QUERY } from "./compact";
 import { useKeyboardInset } from "./useKeyboardInset";
 
 /// A visual viewport whose height and offset a test can set and announce.
-function installVisualViewport(initial: { height: number; offsetTop: number }) {
+function installVisualViewport(initial: { height: number; offsetTop: number; scale?: number }) {
   const target = new EventTarget();
-  const viewport = Object.assign(target, { ...initial });
+  const viewport = Object.assign(target, { scale: 1, ...initial });
   const add = vi.spyOn(target, "addEventListener");
   Object.defineProperty(window, "visualViewport", { value: viewport, configurable: true });
   return {
     add,
-    move(next: { height: number; offsetTop?: number }) {
+    move(next: { height: number; offsetTop?: number; scale?: number }) {
       Object.assign(viewport, next);
       target.dispatchEvent(new Event("resize"));
     },
@@ -65,12 +65,26 @@ describe("useKeyboardInset (personal-cfo-i93n3.25)", () => {
     viewport.move({ height: 500 });
     expect(inset()).toBe("300px");
 
-    // The browser scrolled the page up by 40px to reveal the field: that part is not covered.
-    viewport.move({ height: 500, offsetTop: 40 });
-    expect(inset()).toBe("260px");
+    // Scrolling the page pans the visual viewport inside the layout viewport: the keyboard is no
+    // shorter for it (the inset must not shrink as the person scrolls).
+    viewport.move({ height: 500, offsetTop: 284 });
+    expect(inset()).toBe("300px");
 
     viewport.move({ height: 800, offsetTop: 0 });
     expect(inset()).toBe("0px");
+  });
+
+  it("keeps the last inset while the page is pinch-zoomed, which also shortens the visual viewport", () => {
+    installPointer(true);
+    const viewport = installVisualViewport({ height: 500, offsetTop: 0 });
+    renderHook(() => useKeyboardInset());
+    expect(inset()).toBe("300px");
+
+    viewport.move({ height: 250, scale: 2 });
+    expect(inset()).toBe("300px");
+
+    viewport.move({ height: 500, scale: 1 });
+    expect(inset()).toBe("300px");
   });
 
   it("scrolls the focused field into view while the keyboard is up", () => {

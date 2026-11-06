@@ -8,9 +8,15 @@ const EDITABLE = "input, textarea, select, [contenteditable=''], [contenteditabl
 /// focused field in view while it is up (personal-cfo-i93n3.25).
 ///
 /// The keyboard covers part of the layout viewport without resizing it, so CSS alone cannot clear it.
-/// The visual viewport is what shrinks: the inset is the part of the layout viewport it no longer
-/// covers. The shell pads its bottom edge by the larger of this and the safe area, so a scroll pane
-/// ends above the keyboard and a primary action pinned to the bottom stays visible.
+/// The visual viewport is what shrinks: the inset is how much shorter it is than the layout viewport.
+/// Its `offsetTop` is deliberately NOT subtracted: while the keyboard is up the page scrolls by
+/// panning the visual viewport inside the layout viewport, so `offsetTop` moves with every scroll and
+/// subtracting it made the inset shrink as the person scrolled, leaving the bottom of the page under
+/// the keyboard and its form accessory bar (measured on an iPhone simulator). The visual viewport
+/// already excludes that accessory bar. While the page is pinch-zoomed the visual viewport is shorter
+/// for another reason, so the last value is kept until the zoom is back to 1. The shell pads its
+/// bottom edge by the larger of this and the safe area, so a scroll pane ends above the keyboard and a
+/// primary action pinned to the bottom stays visible.
 ///
 /// It does nothing without a coarse pointer: on a desktop window no listener is added and the property
 /// stays at its CSS default of 0px. Mount it once, near the root.
@@ -22,10 +28,8 @@ export function useKeyboardInset(): void {
     let raised = false;
 
     const update = () => {
-      const inset = Math.max(
-        0,
-        Math.round(window.innerHeight - viewport.height - viewport.offsetTop),
-      );
+      if (Math.abs(viewport.scale - 1) > 0.01) return;
+      const inset = Math.max(0, Math.round(window.innerHeight - viewport.height));
       root.style.setProperty("--keyboard-inset", `${inset}px`);
       if (inset > 0) {
         raised = true;

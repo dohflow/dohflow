@@ -64,6 +64,14 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
     expect(blocks[0]).toContain("line-height: 1.5");
   });
 
+  it("the field text floor that stops iOS zooming into a focused field is inside the iOS block only", async () => {
+    const css = await compiled(["p-4"]);
+    const { blocks, rest } = splitIosBlocks(css);
+
+    expect(blocks[0]).toMatch(/input,\s*select,\s*textarea\s*\{[^}]*font-size:\s*max\(1rem,\s*16px\)\s*!important/);
+    expect(rest).not.toContain("max(1rem, 16px)");
+  });
+
   it("the safe-area insets fall back to 0px and the keyboard inset defaults to 0px", async () => {
     const css = await compiled(["pt-(--safe-area-top)"]);
     const envs = [...css.matchAll(/env\(([^)]*)\)/g)].map((m) => m[1]);

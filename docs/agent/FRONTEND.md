@@ -494,6 +494,10 @@ on a desktop window, and a test proves each.
   root stays 16px. Therefore **type is in `rem`**: never `text-[Npx]` (a test fails on it; `0.625rem` is
   `10px` at the desktop root). Chart axis labels are SVG units and are not covered; the date and event
   reading carries the meaning.
+- **Fields never trigger the browser's focus zoom.** iOS WebKit zooms the page in when a field with text
+  under 16px takes focus and leaves it zoomed (the page then pans sideways and the keyboard inset is
+  wrong). The iOS-only block in `globals.css` floors `input`, `select` and `textarea` at
+  `max(1rem, 16px)`; keep it (and never disable zoom to avoid it).
 - **Reflow, not clipping.** At the largest text size a row wraps and a control grows; meaning is never
   clipped, truncated to an ellipsis, or hidden. Prefer `min-h-*` and wrapping to a fixed `h-*` on
   anything that holds text.

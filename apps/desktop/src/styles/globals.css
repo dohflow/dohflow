@@ -242,4 +242,14 @@
     font-family: var(--font-ui);
     line-height: 1.5;
   }
+
+  /* iOS WebKit zooms the page in when a field with text smaller than 16px takes focus, and the zoom
+     stays until the person pinches back out (the layout viewport narrows and the page pans sideways).
+     Most fields are `text-sm`, so this wins over the utility on purpose; at the system text size 1rem
+     is already 16px or more, so it only ever raises a field. */
+  input,
+  select,
+  textarea {
+    font-size: max(1rem, 16px) !important;
+  }
 }
