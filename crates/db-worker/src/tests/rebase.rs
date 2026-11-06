@@ -630,6 +630,54 @@ mod executor {
         worker.lock().conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
+    /// The commitment an envelope would bind for `meta`, issued by the vault `device`.
+    fn commitment_of(meta: &CommandMeta, device: Uuid) -> sync_core::header::MetadataCommitment {
+        ImmutableMeta {
+            command_id: *meta.command_id.as_bytes(),
+            correlation_id: *meta.correlation_id.as_bytes(),
+            causation_id: meta.causation_id.map(|id| *id.as_bytes()),
+            actor_type: actor_byte(meta.actor_type),
+            actor_id: meta.actor_id.clone(),
+            idempotency_key: IdempotencyKey::parse(&meta.idempotency_key).unwrap(),
+            issued_at: meta.issued_at.as_unix_micros(),
+            device_id: *device.as_bytes(),
+        }
+        .commitment()
+        .unwrap()
+    }
+
+    #[test]
+    fn a_replayed_command_rebuilds_its_whole_meta_from_the_log_and_commits_to_what_a_seal_before_the_rollback_bound(
+    ) {
+        let (_dir, live, account, scratch_path) = live_with_base();
+        let mut original = meta();
+        original.actor_id = "alice".to_owned();
+        original.issued_at = IssuedAt::from_unix_micros(1_790_000_000_333_333);
+        original.causation_id = Some(Uuid::now_v7());
+        // A seal made BEFORE the rollback binds this commitment into the envelope header.
+        let sealed_before = commitment_of(&original, live.node_id);
+        let local = issue(&live, original.clone(), rename(account, "Local rename"));
+
+        // The metadata a rebase works from is rebuilt from operation_log and sync_outbox.issued_at
+        // alone: nothing of `original` is carried across.
+        assert_eq!(local.meta.command_id, original.command_id);
+        assert_eq!(local.meta.issued_at, original.issued_at);
+        assert_eq!(commitment_of(&local.meta, live.node_id), sealed_before);
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        // The replay applies exactly that metadata: the rebuilt vault's log row, rebuilt the same
+        // way, commits to the same value.
+        let executed = scratch.rebase_local(std::slice::from_ref(&local)).unwrap();
+        assert_eq!(executed.replayed.len(), 1);
+        let replayed = scratch.worker().read_local_commands().unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(
+            commitment_of(&replayed[0].meta, scratch.worker().node_id),
+            sealed_before,
+            "the meta commitment after the rollback and replay equals the one sealed before it"
+        );
+    }
+
     #[test]
     fn an_untouched_valid_command_is_replayed_under_its_original_ids_on_the_new_base() {
         let (dir, live, account, scratch_path) = live_with_base();
