@@ -3710,6 +3710,47 @@ mod tests {
         assert_eq!(ordinals(&conn), vec![(1, 1, Some(1))]);
     }
 
+    /// 67 adds the outbox's issue time; down drops the column and keeps the rows, and up adds it
+    /// back empty (a row from before it, which a rebase refuses by name).
+    #[test]
+    fn v67_down_drops_the_issue_time_and_keeps_the_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox
+               (command_id, op_seq, state, write_set_keys, created_at, issued_at)
+             VALUES (zeroblob(16), 1, 'Pending', zeroblob(0), '2026-11-06T00:00:00Z', 5)",
+            [],
+        )
+        .unwrap();
+        let has_column = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sync_outbox') WHERE name = 'issued_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(has_column(&conn), 1);
+
+        assert_eq!(migrate_down(&mut conn, 66).unwrap(), 1);
+        assert_eq!(has_column(&conn), 0, "down drops the column");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "down keeps the outbox rows");
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(has_column(&conn), 1);
+        let issued: Option<i64> = conn
+            .query_row("SELECT issued_at FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            issued, None,
+            "a row from before the column has no issue time"
+        );
+    }
+
     fn hex_upper(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02X}")).collect()
     }
