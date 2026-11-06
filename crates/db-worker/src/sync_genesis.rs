@@ -117,8 +117,12 @@ pub enum GenesisStoreError {
         /// Where it was asked to go.
         to: GenesisState,
     },
-    /// The persisted records do not verify as a chain for the vault, or the row is not what this
-    /// module writes. Nothing is installed from them.
+    /// The records offered do not verify as a genesis for this vault (a chain of one membership
+    /// record and one epoch record). Nothing was written.
+    #[error("the records are not a valid genesis for this vault")]
+    Invalid,
+    /// The persisted records no longer verify as a chain for the vault, or the row is not what this
+    /// module writes: damage after the write. Nothing is installed from them.
     #[error("the persisted genesis does not verify")]
     Corrupt,
 }
@@ -167,7 +171,8 @@ pub fn load(conn: &Connection) -> Result<Option<PersistedGenesis>, GenesisStoreE
 /// same bytes again change nothing and return the current state, so a crash and a retry land on one
 /// genesis. Different records are [`GenesisStoreError::Conflict`], because a vault has one.
 ///
-/// Call it inside the writer's transaction; the caller records the verified-state birth mark in the
+/// The first write verifies the records as a genesis for `vault_id` and refuses anything else with
+/// [`GenesisStoreError::Invalid`], writing nothing. Call it inside the writer's transaction; the caller records the verified-state birth mark in the
 /// witness first (C.6 freshness rule 5), so a crash between the two is not read as a restore.
 ///
 /// # Errors
@@ -189,6 +194,12 @@ pub fn persist(
             Err(GenesisStoreError::Conflict)
         };
     }
+    // The first write is checked, so a torn record, or one vault's records filed under another,
+    // can never become the vault's one genesis (a later correct genesis would be a Conflict).
+    // One membership record and one epoch record verified from the empty state are a genesis by
+    // construction: the chain checks refuse any first record that is not version 1.
+    verify_chain(vault_id, &[membership_record], &[epoch_record])
+        .map_err(|_| GenesisStoreError::Invalid)?;
     conn.execute(
         "INSERT INTO sync_genesis
              (singleton, vault_id, membership_record, epoch_record, state, persisted_at, updated_at)
