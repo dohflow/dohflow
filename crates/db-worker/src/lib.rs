@@ -8488,6 +8488,7 @@ fn apply_command(
             op_seq,
             &write_set.rows,
             &created_at,
+            meta.issued_at,
         )?;
     }
 

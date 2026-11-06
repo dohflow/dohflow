@@ -2329,6 +2329,22 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // The issue time of an unpushed command (personal-cfo-bxsbz.4, AC0). A rebase re-applies a
+    // local command under its COMPLETE original `CommandMeta`, and `issued_at` is part of it: the
+    // ids `apply` derives and the `deleted_at` stamps it writes come from it, and the envelope's
+    // immutable-metadata commitment binds it. Nothing else records it for a command that has not
+    // been sealed (the operation log keeps the wall clock, not the issue time), so the outbox row
+    // does. Microseconds since the Unix epoch, bounded as an envelope's `issued_at` is (C.6); NULL
+    // only for a row written before this migration, which a rebase refuses by name.
+    Migration {
+        version: 67,
+        name: "sync_outbox_issued_at",
+        up: "ALTER TABLE sync_outbox ADD COLUMN issued_at INTEGER
+                 CHECK (issued_at IS NULL OR (issued_at >= 0 AND issued_at <= 253402300799999999));",
+        down: Some("ALTER TABLE sync_outbox DROP COLUMN issued_at;"),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite

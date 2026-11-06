@@ -12,8 +12,9 @@
 //! append-only; outbox state lives only in `sync_outbox`.
 
 use rusqlite::{params, OptionalExtension, Transaction};
+use uuid::Uuid;
 
-use crate::DbError;
+use crate::{DbError, IssuedAt};
 
 /// The `operation_log` columns that are DEVICE-LOCAL: written by this device, outside the write set
 /// (no hash depends on them), and EXCLUDED from every cross-replica and snapshot comparison (the
@@ -45,18 +46,70 @@ pub(crate) fn record_pending(
     op_seq: i64,
     write_set_rows: &[(String, Vec<u8>)],
     created_at: &str,
+    issued_at: IssuedAt,
 ) -> Result<(), DbError> {
     tx.execute(
-        "INSERT INTO sync_outbox (command_id, op_seq, state, write_set_keys, created_at)
-         VALUES (?1, ?2, 'Pending', ?3, ?4)",
+        "INSERT INTO sync_outbox (command_id, op_seq, state, write_set_keys, created_at, issued_at)
+         VALUES (?1, ?2, 'Pending', ?3, ?4, ?5)",
         params![
             command_id,
             op_seq,
             encode_row_keys(write_set_rows),
-            created_at
+            created_at,
+            issued_at.as_unix_micros()
         ],
     )?;
     Ok(())
+}
+
+/// Why an unpushed command's issue time cannot be read back.
+#[derive(Debug, thiserror::Error)]
+pub enum OutboxIssuedAtError {
+    /// The outbox has no row for the command.
+    #[error("the command {command_id} is not in the outbox")]
+    NotInOutbox {
+        /// The command that was asked for.
+        command_id: Uuid,
+    },
+    /// The row predates the column (or was written without it): its original `issued_at` is lost,
+    /// and a replay would mint other ids than the command did. A rebase refuses by name instead
+    /// of guessing.
+    #[error("the unpushed command {command_id} has no recorded issue time")]
+    Missing {
+        /// The command whose row has no `issued_at`.
+        command_id: Uuid,
+    },
+    /// The database failed.
+    #[error(transparent)]
+    Db(#[from] DbError),
+}
+
+/// The original `issued_at` of an unpushed local command, as [`record_pending`] stored it.
+///
+/// # Errors
+/// [`OutboxIssuedAtError::NotInOutbox`], [`OutboxIssuedAtError::Missing`] for a row with no
+/// recorded time, or [`OutboxIssuedAtError::Db`].
+pub fn outbox_issued_at(
+    conn: &rusqlite::Connection,
+    command_id: &Uuid,
+) -> Result<IssuedAt, OutboxIssuedAtError> {
+    let row: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT issued_at FROM sync_outbox WHERE command_id = ?1",
+            params![command_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(DbError::from)?;
+    match row {
+        None => Err(OutboxIssuedAtError::NotInOutbox {
+            command_id: *command_id,
+        }),
+        Some(None) => Err(OutboxIssuedAtError::Missing {
+            command_id: *command_id,
+        }),
+        Some(Some(micros)) => Ok(IssuedAt::from_unix_micros(micros)),
+    }
 }
 
 /// The canonical encoding of a command's write-set row keys: for each `(table, primary key)`, a
