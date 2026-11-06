@@ -1499,8 +1499,12 @@ lifecycle:
   still names the key epoch and device, and the register has advanced past the saved counter. A
   file that is missing or fails any check is not reusable: the publish reseals with a fresh
   counter and the record is replaced.
-- **Dropped** as soon as the service has answered the publish, and when a genesis is refused
-  because the vault is known.
+- **Dropped** once the publish is accepted (a re-snapshot published, a genesis installed), or when a
+  genesis is refused as `VaultKnown`. Any other answer, `Unavailable` included, keeps the file: the
+  client then resends exactly these bytes, because resealing the same snapshot id with a new
+  counter would be a different byte string and an `ObjectConflict`.
+- **Replaced** when a seal is for a different publish: the record is replaced and the earlier
+  file is removed.
 - **Backups.** Excluded. A backup is `vault.db`, the envelope and the attachment blobs; a restore
   clears `sync/` and the restored register row names a file that is gone, which the rule above
   treats as not reusable.
