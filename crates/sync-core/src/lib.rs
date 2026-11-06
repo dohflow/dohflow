@@ -36,6 +36,7 @@ pub mod producer;
 pub mod row_digest;
 pub mod service;
 pub mod snapshot;
+pub mod snapshot_service;
 pub mod status;
 pub mod void;
 pub mod write_set;
