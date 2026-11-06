@@ -79,8 +79,9 @@
 # DEV_HYGIENE_CAP_KIB, honored only when DEV_HYGIENE_TESTING=1 (tests only): the
 # first runs between the confirmation and the apply step; the second replaces the
 # 20 GiB session flag; the third replaces the target cap with a size in KiB.
-# DEV_HYGIENE_OS overrides the operating system name (tests only, with
-# DEV_HYGIENE_TESTING=1), so the macOS-only snapshot line can be tested anywhere.
+# DEV_HYGIENE_OS overrides the operating system name for the Time Machine snapshot
+# line only (tests only, with DEV_HYGIENE_TESTING=1), so that line can be tested
+# anywhere; how files are stat'ed always follows the real operating system.
 # DEV_HYGIENE_PROCESS_NAMES overrides the process names treated as "a build is
 # running" (default "cargo rustc rust-analyzer"); the tests use it.
 #
@@ -143,8 +144,15 @@ esac
 case "$TARGET_CAP_GIB" in
   ''|*[!0-9]*|0|0[0-9]*) die "--target-cap-gib must be a whole number of GiB, 1 or more, got '$TARGET_CAP_GIB'" ;;
 esac
+# At most 1 PiB, so that the KiB conversion below can never overflow.
+if [ "${#TARGET_CAP_GIB}" -gt 7 ] || [ "$TARGET_CAP_GIB" -gt 1048576 ]; then
+  die "--target-cap-gib must be at most 1048576 GiB, got '$TARGET_CAP_GIB'"
+fi
 if [ "$CAP_CHECK" = 1 ] && { [ "$MODE" = clean ] || [ "$FORMAT" = json ] || [ "$ASSUME_YES" = 1 ] || [ "$SCRATCH_CLEAN" = 1 ]; }; then
   die "--cap-check is read-only and stands alone: it cannot be combined with --clean, --json, --yes or --scratch"
+fi
+if [ "$CAP_CHECK" = 1 ] && [ -n "$REPO" ]; then
+  die "--cap-check checks the worktree it runs from; --repo does not apply"
 fi
 if [ "$ASSUME_YES" = 1 ] && [ "$MODE" != clean ]; then
   die "--yes only makes sense with --clean"
@@ -156,10 +164,14 @@ if [ "$FORMAT" = json ] && [ "$MODE" = clean ]; then
   die "--json is a report format; it cannot be combined with --clean"
 fi
 
-if [ -z "$REPO" ]; then
-  REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# --cap-check looks only at the worktree it runs from, so it needs no repository
+# for the script itself (cap_check does its own git check on $PWD).
+if [ "$CAP_CHECK" != 1 ]; then
+  if [ -z "$REPO" ]; then
+    REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+  fi
+  git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 fi
-git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 
 # git and lsof report physical paths, so compare against the physical scratch root.
 if [ -d "$SCRATCH_DIR" ]; then SCRATCH_DIR="$(cd "$SCRATCH_DIR" && pwd -P)"; fi
@@ -175,7 +187,8 @@ NL="
 # ---------------------------------------------------------------------------
 
 OS="$(uname)"
-if [ "${DEV_HYGIENE_TESTING:-}" = 1 ] && [ -n "${DEV_HYGIENE_OS:-}" ]; then OS="$DEV_HYGIENE_OS"; fi
+SNAP_OS="$OS"
+if [ "${DEV_HYGIENE_TESTING:-}" = 1 ] && [ -n "${DEV_HYGIENE_OS:-}" ]; then SNAP_OS="$DEV_HYGIENE_OS"; fi
 CAP_KIB=$(( TARGET_CAP_GIB * 1024 * 1024 ))
 if [ "${DEV_HYGIENE_TESTING:-}" = 1 ] && [ -n "${DEV_HYGIENE_CAP_KIB:-}" ]; then CAP_KIB="$DEV_HYGIENE_CAP_KIB"; fi
 
@@ -484,7 +497,7 @@ LOCAL_SNAPSHOTS=""
 read_snapshots() {
   local out n
   LOCAL_SNAPSHOTS=""
-  [ "$OS" = Darwin ] || return 0
+  [ "$SNAP_OS" = Darwin ] || return 0
   command -v tmutil >/dev/null 2>&1 || return 0
   out="$(tmutil listlocalsnapshots / 2>/dev/null </dev/null)" || return 0
   n="$(printf '%s\n' "$out" | grep -c '^com\.apple\.TimeMachine\.' || true)"
@@ -836,9 +849,10 @@ text_row() {
 $W_TSIZES
 TSIZES
     if [ "$W_OVER" = 1 ]; then
-      echo "    OVER THE CAP: $(human "$W_TARGET_KIB") against $(human "$CAP_KIB") (--target-cap-gib). Its owner session runs"
-      echo "                  scripts/dev-hygiene.sh --cap-check at a quiet point and, if it says over, cargo clean"
-      echo "                  in this worktree's own target dirs (docs/agent/WORKFLOW_ROLES.md). Nobody else cleans it."
+      echo "    OVER THE CAP: $(human "$W_TARGET_KIB") against $(human "$CAP_KIB") (--target-cap-gib). An implementation session"
+      echo "                  runs scripts/dev-hygiene.sh --cap-check at a quiet point and, if it says over, cargo clean"
+      echo "                  in its own worktree's target dirs (docs/agent/WORKFLOW_ROLES.md). Nobody else cleans it;"
+      echo "                  a review or escalation worktree follows its own 15 GiB rule."
     fi
   fi
   if [ -n "$W_ACTIVITY" ]; then

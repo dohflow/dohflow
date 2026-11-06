@@ -360,10 +360,15 @@ if command -v jq >/dev/null 2>&1; then
   json="$(run --json 2>&1)"
   [ "$(printf '%s' "$json" | jq -r '.target_cap_kib')" = 16777216 ] && pass "the default cap is 16 GiB" || fail "default cap: $(printf '%s' "$json" | jq -r '.target_cap_kib')"
 fi
-for bad in 0 abc "" 007 -3 1.5; do
+for bad in 0 abc "" 007 -3 1.5 1048577 99999999999999999999; do
   run --target-cap-gib "$bad" >/dev/null 2>&1; rc=$?
   [ "$rc" = 64 ] && pass "--target-cap-gib '$bad' is a usage error (64)" || fail "--target-cap-gib '$bad' gave $rc"
 done
+
+if command -v jq >/dev/null 2>&1; then
+  json="$(run --target-cap-gib 1048576 --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '.target_cap_kib')" = 1099511627776 ] && pass "the largest accepted cap (1 PiB) converts without overflow" || fail "largest cap: $(printf '%s' "$json" | head -c 200)"
+fi
 
 case_start "--cap-check: the worktree it is run from, exit 0 under the cap, 1 over and quiet, 2 over and busy"
 cc() {
@@ -371,6 +376,9 @@ cc() {
   local d="$1"; shift
   CC_OUT="$( cd "$d" && env DEV_HYGIENE_TESTING=1 "$@" "$SCRIPT" --cap-check 2>&1 )"; CC_RC=$?
 }
+mkdir -p "$TMP/lsofstub"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/lsofstub/lsof"
+chmod +x "$TMP/lsofstub/lsof"
 : > "$CALLS"; before="$(snapshot)"
 cc "$TWO"
 [ "$CC_RC" = 0 ] && pass "under the cap: exit 0" || fail "under the cap: exit $CC_RC: $CC_OUT"
@@ -392,12 +400,23 @@ grep -q "a build is running: do not clean" <<<"$CC_OUT" && pass "says not to cle
 if grep -q "cargo clean --manifest-path" <<<"$CC_OUT"; then fail "offered a clean while busy"; else pass "offers no clean while busy"; fi
 cc "$TMP/wt-busy"
 [ "$CC_RC" = 0 ] && pass "busy but under the cap: exit 0" || fail "busy under the cap: exit $CC_RC"
+# A cargo process is running somewhere but where it works cannot be read (an lsof
+# that prints nothing): nothing can be ruled out, so over the cap that is busy, never
+# permission to clean.
+cc "$TWO" PATH="$TMP/lsofstub:$PATH" DEV_HYGIENE_CAP_KIB=1
+[ "$CC_RC" = 2 ] && pass "over the cap with an unreadable process list: exit 2" || fail "unreadable process list: exit $CC_RC: $CC_OUT"
+grep -q "a build is running: do not clean" <<<"$CC_OUT" && pass "says not to clean when a build cannot be ruled out" || fail "no busy message: $CC_OUT"
+if grep -q "cargo clean --manifest-path" <<<"$CC_OUT"; then fail "offered a clean with an unreadable process list"; else pass "offers no clean with an unreadable process list"; fi
+cc "$TWO" PATH="$TMP/lsofstub:$PATH"
+[ "$CC_RC" = 0 ] && pass "unreadable process list but under the cap: exit 0" || fail "unreadable list, under the cap: exit $CC_RC"
 [ ! -s "$CALLS" ] && pass "never ran cargo" || fail "ran cargo: $(cat "$CALLS")"
 [ "$before" = "$(snapshot)" ] && pass "deleted and changed nothing" || fail "changed the tree"
 ( cd "$TWO" && "$SCRIPT" --cap-check --clean ) >/dev/null 2>&1; rc=$?
 [ "$rc" = 64 ] && pass "--cap-check with --clean is a usage error (64), not a cap status" || fail "--cap-check --clean gave $rc"
 ( cd "$TWO" && "$SCRIPT" --cap-check --json ) >/dev/null 2>&1; rc=$?
 [ "$rc" = 64 ] && pass "--cap-check with --json is a usage error (64)" || fail "--cap-check --json gave $rc"
+( cd "$TWO" && "$SCRIPT" --cap-check --repo "$TWO" ) >/dev/null 2>&1; rc=$?
+[ "$rc" = 64 ] && pass "--cap-check with --repo is a usage error (64): it checks the worktree it runs from" || fail "--cap-check --repo gave $rc"
 ( cd "$TMP" && "$SCRIPT" --cap-check ) >/dev/null 2>&1; rc=$?
 [ "$rc" = 64 ] && pass "outside any git worktree: usage error (64)" || fail "outside a worktree gave $rc"
 run --bogus >/dev/null 2>&1; rc=$?
@@ -437,6 +456,14 @@ if command -v jq >/dev/null 2>&1; then
   [ "$(printf '%s' "$json" | jq -r '.local_snapshots')" = 3 ] && [ "$(printf '%s' "$json" | jq -r '.snapshots_may_delay_freed_space')" = true ] && pass "JSON: count and delay flag" || fail "JSON snapshot members wrong"
   json="$(HYGTEST_SNAPS=3 HYGTEST_LOW_DISK=1 DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Linux run --json 2>&1)"
   [ "$(printf '%s' "$json" | jq -r '.local_snapshots')" = null ] && pass "JSON: null off macOS" || fail "JSON snapshot not null off macOS"
+  # Faking the operating system is for the snapshot line only: how files are
+  # stat'ed follows the real one, so the activity times must not change.
+  act() { jq -c '[.. | .last_activity? | select(. != null)]'; }
+  plain="$(run --json 2>&1 | act)"
+  fake_mac="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Darwin run --json 2>&1 | act)"
+  fake_lin="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Linux run --json 2>&1 | act)"
+  [ -n "$plain" ] && [ "$plain" != "[]" ] && pass "activity times are present to compare" || fail "no activity times to compare: $plain"
+  [ "$plain" = "$fake_mac" ] && [ "$plain" = "$fake_lin" ] && pass "faking the OS leaves file stat times alone" || fail "faked OS changed activity times: $plain / $fake_mac / $fake_lin"
 fi
 odd="$(grep -v -x 'listlocalsnapshots /' "$TMP/tmutil-calls" || true)"
 if [ -n "$odd" ]; then fail "ran tmutil with something other than listlocalsnapshots /: $(cat "$TMP/tmutil-calls")"; else pass "tmutil was only ever asked to list"; fi
