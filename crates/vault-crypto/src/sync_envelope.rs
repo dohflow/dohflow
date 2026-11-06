@@ -158,6 +158,45 @@ fn gcm_nonce(domain: &NonceDomain, counter: u64) -> [u8; 12] {
     nonce
 }
 
+/// Encrypt under an object's AEAD key with the header bytes as AAD. Shared by envelopes and
+/// snapshots, so there is one place where a nonce is built.
+pub(crate) fn gcm_encrypt(
+    aead: &SecretBytes<32>,
+    domain: &NonceDomain,
+    counter: u64,
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, ()> {
+    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
+        .encrypt(
+            Nonce::from_slice(&gcm_nonce(domain, counter)),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| ())
+}
+
+/// The inverse of [`gcm_encrypt`].
+pub(crate) fn gcm_decrypt(
+    aead: &SecretBytes<32>,
+    domain: &NonceDomain,
+    counter: u64,
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, ()> {
+    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
+        .decrypt(
+            Nonce::from_slice(&gcm_nonce(domain, counter)),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| ())
+}
+
 /// The sealing device's own identity, from its own enrollment state. [`seal_envelope`] refuses a
 /// header that names anyone else: sealing under another device's fingerprint would reuse that
 /// device's (key, nonce domain) with this device's counter, which is AES-GCM nonce reuse.
@@ -235,15 +274,8 @@ pub fn seal_envelope(
     }
     let aad = header.encode().map_err(|_| SealError::Unencodable)?;
     let aead = aead_key(key, &sealer.fingerprint, ObjectType::Envelope);
-    let ciphertext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
-        .encrypt(
-            Nonce::from_slice(&gcm_nonce(&domain, header.invocation_counter)),
-            Payload {
-                msg: plaintext,
-                aad: &aad,
-            },
-        )
-        .map_err(|_| SealError::Encryption)?;
+    let ciphertext = gcm_encrypt(&aead, &domain, header.invocation_counter, &aad, plaintext)
+        .map_err(|()| SealError::Encryption)?;
     let container = encode_container(header, &ciphertext).map_err(|_| SealError::Unencodable)?;
     if container.len() > MAX_ENVELOPE_CONTAINER_LEN {
         return Err(SealError::Unencodable);
@@ -383,15 +415,14 @@ fn open_typed(
         return Err(OpenFailure::NonceDomain);
     }
     let aead = aead_key(key, &member.fingerprint, ObjectType::Envelope);
-    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
-        .decrypt(
-            Nonce::from_slice(&gcm_nonce(&domain, header.invocation_counter)),
-            Payload {
-                msg: container.ciphertext,
-                aad: container.header_bytes,
-            },
-        )
-        .map_err(|_| OpenFailure::NotOpenable)
+    gcm_decrypt(
+        &aead,
+        &domain,
+        header.invocation_counter,
+        container.header_bytes,
+        container.ciphertext,
+    )
+    .map_err(|()| OpenFailure::NotOpenable)
 }
 
 impl EnvelopeOpener for ReceiverOpener<'_> {

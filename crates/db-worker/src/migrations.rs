@@ -2247,6 +2247,88 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // SYNC-1c local state (personal-cfo-bxsbz.1; ADR 0074 decision 2, ADR 0073 section 4). The
+    // outbox, the queue of commands awaiting a user disposition and the record of the base image
+    // are DEVICE-LOCAL class-3 tables: never replicated, never part of a snapshot or a write set.
+    //
+    // * `sync_base` is a singleton. A row exists only once Sync is enabled on this device, and that
+    //   is what turns outbox recording on: a vault that never enabled Sync grows nothing. `state`
+    //   is NoBase (no image has been captured, so `base_digest` is NULL), Ready, or Rebasing (a
+    //   swap is in flight). `base_digest` is the digest of `sync/base.db`; a restored vault whose
+    //   digest does not match the file on disk has no base (the file is not carried by a backup).
+    // * `sync_outbox` holds one row per unpushed local command, keyed by `command_id` and written
+    //   in the same transaction as the command's operation-log row (the log itself stays
+    //   append-only, so outbox state lives only here). `write_set_keys` is the canonical list of
+    //   the command's changed class-1 rows, `(table, primary key)` pairs in write-set order, which
+    //   is what the rebase compares against pulled envelopes. The sealed container exists once the
+    //   entry is Approved; Bound adds the server seq and the result reference. The CHECK ties each
+    //   state to the columns it needs, so a half-advanced row cannot be stored.
+    // * `outbox_queue` keeps the commands a rebase queued for the user: one record per command,
+    //   grouped by `correlation_id`, with the ADR 0073 reason, the preserved envelope and the audit
+    //   evidence. Nothing here is ever dropped by a rebase.
+    //
+    // `operation_log` gains two device-local, nullable columns, defined exactly:
+    // `applied_base_seq` is the server seq of the base the row was applied on (for a re-applied
+    // local row, the new base's seq); `rebased_from` is the `op_seq` this row replaced when it was
+    // re-applied in a rebase, otherwise NULL. ADD COLUMN rewrites no row and fires no trigger, so the
+    // append-only triggers are unchanged, and both columns are excluded from every cross-replica
+    // comparison (see `sync_state::DEVICE_LOCAL_OPERATION_LOG_COLUMNS`).
+    Migration {
+        version: 66,
+        name: "sync_local_state",
+        up: "CREATE TABLE sync_base (
+                 singleton   INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 base_seq    INTEGER NOT NULL CHECK (base_seq >= 0),
+                 base_digest BLOB CHECK (base_digest IS NULL OR length(base_digest) = 32),
+                 state       TEXT NOT NULL CHECK (state IN ('NoBase', 'Ready', 'Rebasing')),
+                 updated_at  TEXT NOT NULL,
+                 CHECK ((state = 'NoBase') = (base_digest IS NULL))
+             );
+             CREATE TABLE sync_outbox (
+                 command_id       BLOB PRIMARY KEY CHECK (length(command_id) = 16),
+                 op_seq           INTEGER NOT NULL UNIQUE,
+                 state            TEXT NOT NULL DEFAULT 'Pending'
+                                  CHECK (state IN ('Pending', 'Approved', 'Bound')),
+                 write_set_keys   BLOB NOT NULL,
+                 sealed_container BLOB,
+                 bound_seq        INTEGER,
+                 result_ref       BLOB,
+                 created_at       TEXT NOT NULL,
+                 CHECK (
+                     (state = 'Pending' AND sealed_container IS NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Approved' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Bound' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NOT NULL AND result_ref IS NOT NULL)
+                 )
+             );
+             CREATE TABLE outbox_queue (
+                 command_id     BLOB PRIMARY KEY CHECK (length(command_id) = 16),
+                 correlation_id BLOB NOT NULL CHECK (length(correlation_id) = 16),
+                 causation_id   BLOB CHECK (causation_id IS NULL OR length(causation_id) = 16),
+                 reason         TEXT NOT NULL CHECK (reason IN ('queue_choose', 'queue_edit')),
+                 origin_node_id BLOB NOT NULL CHECK (length(origin_node_id) = 16),
+                 queued_at      TEXT NOT NULL,
+                 envelope       BLOB NOT NULL,
+                 audit_evidence BLOB NOT NULL
+             );
+             CREATE INDEX idx_outbox_queue_correlation ON outbox_queue (correlation_id);
+             ALTER TABLE operation_log ADD COLUMN applied_base_seq INTEGER
+                 CHECK (applied_base_seq IS NULL OR applied_base_seq >= 0);
+             ALTER TABLE operation_log ADD COLUMN rebased_from INTEGER
+                 CHECK (rebased_from IS NULL OR rebased_from >= 1);",
+        down: Some(
+            "ALTER TABLE operation_log DROP COLUMN rebased_from;
+             ALTER TABLE operation_log DROP COLUMN applied_base_seq;
+             DROP INDEX IF EXISTS idx_outbox_queue_correlation;
+             DROP TABLE outbox_queue;
+             DROP TABLE sync_outbox;
+             DROP TABLE sync_base;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -3498,13 +3580,17 @@ mod tests {
     #[test]
     fn v64_down_restores_the_unprefixed_names_and_up_renames_them_again() {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn, &MIGRATIONS[..64]).unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
         for (n, key) in LEGACY_SETTING_KEYS.iter().enumerate() {
             plant_setting(&conn, &format!("user.{key}"), &format!("v{n}"), "t");
         }
         plant_setting(&conn, "device.window", "1", "t");
 
-        assert_eq!(migrate_down(&mut conn, 63).unwrap(), 1);
+        // Every migration above 63 is rolled back (64 itself, and any that follow it).
+        assert_eq!(
+            migrate_down(&mut conn, 63).unwrap(),
+            u64::try_from(CURRENT_VERSION - 63).unwrap()
+        );
         let down: Vec<String> = setting_rows(&conn).into_iter().map(|r| r.0).collect();
         let mut want: Vec<String> = LEGACY_SETTING_KEYS
             .iter()
@@ -3589,7 +3675,7 @@ mod tests {
     #[test]
     fn v65_down_drops_the_column_and_up_numbers_the_rows_again() {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn, MIGRATIONS).unwrap();
+        apply(&mut conn, &MIGRATIONS[..65]).unwrap();
         assert!(ordinals(&conn).is_empty());
         plant_staged(&conn, 1, 1);
 

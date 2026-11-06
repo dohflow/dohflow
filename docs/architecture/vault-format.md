@@ -24,7 +24,7 @@ and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
 <!-- vault-format: spec-version=32 -->
-<!-- vault-format: schema-version=65 -->
+<!-- vault-format: schema-version=66 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -290,6 +290,21 @@ synthetic no-app recovery test before any such public claim.
   protocol's `max_artifact_manifest_ids` (4096) is the bound for an envelope's sidecar and for a status
   request and is unchanged; the bound and the request-body size for a snapshot's closure sidecar are the
   service's to adopt (`personal-cfo-v98vd`).
+- `spec-version = 31` (personal-cfo-0g528.2, part S2a) makes the write set cover
+  `source_provenance_links`. C.1.5 says the write set is exactly what Sync replicates, and the rows are
+  an apply output that travels as genesis rows (spec-version 29), so a replica that bootstraps from a
+  genesis and one that applies the tail must agree on them and `apply`'s writes to them must be in the
+  write-set hash. The B.2 note says so. The class stays `1b`; `source_batches`, `source_records` and
+  `parser_runs` stay artifacts. The engine moves to `dohflow-engine-2` (C.13): an envelope that creates a
+  link now has one more row in its write set. No wire layout and no vector of C.3 to C.10 changes.
+- `spec-version = 30` (personal-cfo-bxsbz.1, schema version 66) adds the device-local Sync state:
+  the class-3 tables `sync_base`, `sync_outbox` and `outbox_queue` (inventory rows, all excluded
+  from both formats) and two nullable `operation_log` columns, `applied_base_seq` (the server seq
+  of the base the row was applied on; for a re-applied local row, the new base's seq) and
+  `rebased_from` (the `op_seq` the row replaced when re-applied in a rebase, otherwise null). Like
+  `created_at` they are device-local: outside the write set, and excluded from every cross-replica
+  and snapshot comparison. No wire layout, write-set rule or vector changes; the append-only
+  triggers are unchanged.
 - `spec-version = 29` (personal-cfo-1cltt.1) specifies the snapshot's manifest and the logical class-1 export it
   carries (C.8). The manifest gains the voided ranges and void ids a snapshot records (ADR 0074 Addendum D
   rule 8), the origin vault's creation time (a manifest field, never a `vault_metadata` row, so a seed
@@ -515,7 +530,7 @@ therefore requires reviewing this inventory.
 <!-- inventory:start -->
 | Table | Class | Portable | Sync genesis | Rule |
 | --- | --- | --- | --- | --- |
-| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. `created_at` (the recording device's wall clock) and `hlc_timestamp` (an advisory per-process counter, ADR 0017) are device-local, and `node_id` is per vault (ADR 0074 §9); none of the three enters a cross-replica or snapshot comparison. |
+| `operation_log` | 1 | history | exclude | Portable export carries the rows as read-only imported history, never as a replayable stream. The Sync genesis carries resulting state, not pre-v2 history; the tail carries envelopes issued after op-log v2. `created_at` (the recording device's wall clock) and `hlc_timestamp` (an advisory per-process counter, ADR 0017) are device-local, and `node_id` is per vault (ADR 0074 §9); none of the three enters a cross-replica or snapshot comparison. The device-local columns `applied_base_seq` and `rebased_from` (Sync local state, personal-cfo-bxsbz.1) are likewise never part of a comparison, a digest or the export. |
 | `ledger_accounts` | 1 | include | include | Canonical user intent. |
 | `accounts` | 1 | include | include | Canonical user intent. |
 | `ledger_transactions` | 1 | include | include | Canonical user intent. |
@@ -547,7 +562,7 @@ therefore requires reviewing this inventory.
 | `source_batches` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
 | `source_records` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
 | `parser_runs` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
-| `source_provenance_links` | 1b | include | include | Import provenance rows travel as data in the portable export. Under Sync they travel as genesis rows, not artifacts: `CommitImportedTransaction` writes them in apply, keyed under the carried transaction id, so a replica that bootstraps from a genesis and one that applies the tail must agree on them. The class stays `1b`; the write set does not cover them yet (personal-cfo-0g528.2). |
+| `source_provenance_links` | 1b | include | include | Import provenance rows travel as data in the portable export. Under Sync they travel as genesis rows, not artifacts: `CommitImportedTransaction` writes them in apply, keyed under the carried transaction id, so a replica that bootstraps from a genesis and one that applies the tail must agree on them. The class stays `1b`; the write set covers them (`write_set = full`, `dohflow-engine-2`). |
 | `commitments` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `transaction_display_rows_read_model` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `read_model_checksums` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
@@ -593,6 +608,9 @@ therefore requires reviewing this inventory.
 | `attachment_blobs` | 1b | artifact | artifact | Document bytes: plaintext inside the portable bundle; an opaque, epoch-scoped artifact object under Sync. |
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |
 | `backup_history` | 3 | exclude | exclude | Device-local state. |
+| `sync_base` | 3 | exclude | exclude | Device-local state: whether Sync is enabled here, the server seq of the base image, the digest of `sync/base.db` and the base state. |
+| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys and sealed containers. A command's envelope is what travels, never this row. |
+| `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
 <!-- inventory:end -->
 
 Rules that apply to the whole inventory:

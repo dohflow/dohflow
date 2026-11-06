@@ -126,15 +126,45 @@ fi
 echo "    ok   — every action is pinned to a full commit SHA"
 
 # --- the required check fails closed (a skipped job reports Success) ------------------
-require_text "the verdict job waits for the gate and both builds" "$WORKFLOW" "needs: [gate, ios-build-arm64, ios-build-intel]"
-require_text "the verdict job runs whenever the gate or a build did not succeed" "$WORKFLOW" "if: \${{ always() && github.event_name != 'schedule' }}"
+# personal-cfo-md8h2.26: the verdict job needs only the gate. It polls the run's jobs for a
+# bounded time (scripts/macos-pools-wait.sh), because a verdict that waits for both pools is as
+# slow as the slower one and a pool stuck in setup is not bounded by its timeout-minutes.
+IOS_CHECK_TEXT="$(awk '/^  ios-check:/{f=1; print; next} f&&/^  [a-z0-9-]+:$/{exit} f{print}' "$WORKFLOW")"
+require_text "the verdict job needs only the gate, not the pools" "$WORKFLOW" "    needs: gate
+    if: \${{ always() && github.event_name != 'schedule' }}"
+CASES=$((CASES + 1))
+if [[ "$IOS_CHECK_TEXT" == *"needs: [gate"* ]] || [[ "$IOS_CHECK_TEXT" == *"ios-build"* ]]; then
+  echo "    FAIL — the verdict job must not wait for the pool jobs" >&2
+  exit 1
+fi
+echo "    ok   — the verdict job does not name a pool job"
+require_text "the verdict job runs whenever the gate did not succeed" "$WORKFLOW" "if: \${{ always() && github.event_name != 'schedule' }}"
+require_text "the verdict job has a timeout above the wait" "$WORKFLOW" "    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read"
 require_text "the verdict job passes the gate result" "$WORKFLOW" 'GATE_RESULT: ${{ needs.gate.result }}'
 require_text "the verdict job passes whether the build was wanted" "$WORKFLOW" 'BUILD_WANTED: ${{ needs.gate.outputs.check }}'
-require_text "the verdict job passes the arm64 result" "$WORKFLOW" 'ARM64_RESULT: ${{ needs.ios-build-arm64.result }}'
-require_text "the verdict job passes the Intel result" "$WORKFLOW" 'INTEL_RESULT: ${{ needs.ios-build-intel.result }}'
-require_text "the verdict job runs the verdict script" "$WORKFLOW" 'run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"'
+require_text "the verdict job names the arm64 pool it will look up" "$WORKFLOW" "VERDICT_ARM64_JOB: iOS cross-compile (macOS build, arm64)"
+require_text "the verdict job names the Intel pool it will look up" "$WORKFLOW" "VERDICT_INTEL_JOB: iOS cross-compile (macOS build, intel)"
+require_text "the verdict job runs the wait script, which runs the verdict script" "$WORKFLOW" 'run: scripts/macos-pools-wait.sh "$GATE_RESULT" "$BUILD_WANTED"'
+reject_text "the verdict job no longer takes the pools' results" "$WORKFLOW" 'ARM64_RESULT'
 require_text "the verdict job may read the run's jobs" "$WORKFLOW" "actions: read"
 require_text "the verdict job hands the token to the jobs lookup" "$WORKFLOW" 'GH_TOKEN: ${{ github.token }}'
+CASES=$((CASES + 1))
+if grep -E 'write' <<<"$IOS_CHECK_TEXT" | grep -vE '^\s*#' >/dev/null; then
+  echo "    FAIL — the verdict job must not hold a write permission" >&2
+  exit 1
+fi
+echo "    ok   — the verdict job holds no write permission"
+# The pools' names are the real job names, or the wait would never find them.
+for pair in "ios-build-arm64:iOS cross-compile (macOS build, arm64)" "ios-build-intel:iOS cross-compile (macOS build, intel)"; do
+  require_text "the pool job ${pair%%:*} is named as the verdict looks it up" "$WORKFLOW" "name: ${pair#*:}"
+done
+# A change to either script must run the iOS check, or it would go untested until the next
+# change that happens to touch the crates.
+require_text "the gate lists the verdict script" "$WORKFLOW" "              - 'scripts/macos-pools-verdict.sh'"
+require_text "the gate lists the wait script" "$WORKFLOW" "              - 'scripts/macos-pools-wait.sh'"
 CASES=$((CASES + 1))
 ios_check_runner="$(awk '/^  ios-check:/{f=1} f&&/runs-on:/{print; exit}' "$WORKFLOW")"
 if grep -qE "ubuntu-(latest|24\.04)" <<<"$ios_check_runner"; then
@@ -166,6 +196,20 @@ verdict_expect pass success true success cancelled
 verdict_expect pass success true cancelled success
 verdict_expect pass success true success skipped
 verdict_expect pass success true skipped success
+# From the wait script (personal-cfo-md8h2.26): `unfinished` is the one neutral state, so a
+# success beside it passes; `unknown` (a renamed or duplicated job, an unreadable jobs API)
+# fails whatever the other pool did, and two pools that built nothing still fail.
+verdict_expect pass success true success unfinished
+verdict_expect pass success true unfinished success
+verdict_expect fail success true unfinished unfinished
+verdict_expect fail success true unfinished cancelled
+verdict_expect fail success true unfinished skipped
+for other in success failure cancelled skipped unfinished unknown; do
+  verdict_expect fail success true unknown "$other"
+  verdict_expect fail success true "$other" unknown
+done
+verdict_expect fail success false unfinished skipped
+verdict_expect fail success false skipped unknown
 # A failure on either pool fails, whatever the other pool did.
 for other in success failure cancelled skipped; do
   verdict_expect fail success true failure "$other"
