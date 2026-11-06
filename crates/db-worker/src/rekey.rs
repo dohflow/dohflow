@@ -283,6 +283,26 @@ impl DbWorker {
         Ok(std::fs::metadata(&self.path)?.len())
     }
 
+    /// Total bytes of the Sync images beside the vault (`sync/base.db`, `sync/pre-rebase.db`),
+    /// which a rotation re-encrypts beside the live ones (bxsbz.3). Missing images are zero.
+    ///
+    /// # Errors
+    /// [`DbError::Io`] if an existing image cannot be stat'ed.
+    pub fn sync_images_size(&self) -> Result<u64, DbError> {
+        let mut total = 0u64;
+        for file in [
+            crate::base_image::BASE_IMAGE_FILE,
+            crate::base_image::PRE_REBASE_FILE,
+        ] {
+            match std::fs::metadata(crate::base_image::sync_dir(&self.path).join(file)) {
+                Ok(metadata) => total = total.saturating_add(metadata.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(total)
+    }
+
     /// Total bytes of the attachment blob files (for the §5 disk precheck when
     /// hard links are unavailable). A missing blob directory is zero.
     ///

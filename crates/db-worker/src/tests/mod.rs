@@ -3,6 +3,7 @@
 //! private `DbWorker` methods). Pub-API-only tests live in `tests/*.rs`;
 //! shared helpers for those live in `tests/common/mod.rs`.
 
+mod base_image;
 mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;

@@ -50,6 +50,7 @@ mod assumptions;
 mod attachments;
 mod backup_history;
 mod band_drift;
+pub mod base_image;
 mod categories;
 mod column_manifest;
 mod connectors;
@@ -1786,6 +1787,8 @@ pub struct DbWorker {
     /// lock below prevents a second process; this gate prevents two unlock
     /// callbacks in the same process from recovering/claiming concurrently.
     runner_gate: Mutex<()>,
+    /// Serializes base image captures (personal-cfo-bxsbz.3): one at a time owns the temp file.
+    base_gate: Mutex<()>,
     path: PathBuf,
     key: KeyMaterial,
     /// Held for the worker's lifetime so the OS releases vault ownership on a
@@ -1983,6 +1986,7 @@ impl DbWorker {
                 last_write_set: None,
             }),
             runner_gate: Mutex::new(()),
+            base_gate: Mutex::new(()),
             path,
             key,
             _runner_lock: runner_lock,
@@ -1990,6 +1994,10 @@ impl DbWorker {
             schema_version: migrations::CURRENT_VERSION,
         };
         worker.self_test()?;
+        // A base image the vault cannot vouch for is recorded as lost (bxsbz.3). A failure here
+        // never blocks the unlock: `base_image_status` re-checks the file on every read, so the
+        // recorded state only has to catch up on a later open.
+        let _ = worker.reconcile_base_image();
         Ok(worker)
     }
 
