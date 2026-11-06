@@ -1770,6 +1770,99 @@ mod accepted {
         assert_eq!(fork.local.unwrap().digest, fork.other.unwrap().digest);
     }
 
+    /// The digest matches but one field of the local record is not the sealed command's.
+    #[test]
+    fn every_field_of_the_complete_meta_the_payload_and_the_schema_version_must_match() {
+        type Change = fn(&mut CommandMeta);
+        let changes: [(&str, Change); 6] = [
+            ("actor_id", |m| m.actor_id = "someone else".to_owned()),
+            ("correlation_id", |m| m.correlation_id = Uuid::now_v7()),
+            ("causation_id", |m| m.causation_id = Some(Uuid::now_v7())),
+            ("issued_at", |m| {
+                m.issued_at = IssuedAt::from_unix_micros(m.issued_at.as_unix_micros() + 1);
+            }),
+            ("idempotency_key", |m| {
+                m.idempotency_key = Uuid::new_v4().to_string();
+            }),
+            ("actor_type", |m| m.actor_type = ActorType::System),
+        ];
+        for (field, change) in changes {
+            let (dir, live, account, _scratch) = live_with_base();
+            let origin = other_device(&live, &dir);
+            let sealed_meta = meta();
+            let sealed = seal(origin.worker(), &sealed_meta, &rename(account, "Same"));
+            let mut recorded = sealed_meta.clone();
+            change(&mut recorded);
+            live.dispatch(recorded, rename(account, "Same")).unwrap();
+            let bytes = sealed.container();
+            approve(&live, sealed_meta.command_id, &bytes);
+            let local = live.read_local_commands().unwrap();
+            let pulled = [sealed.entry(&bytes, 6, None)];
+
+            let error = reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err();
+
+            assert!(
+                matches!(error, RebaseError::ProtocolFork(_)),
+                "{field}: {error:?}"
+            );
+        }
+        // The schema version is part of the header, not the meta.
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let mut sealed = seal(origin.worker(), &c, &rename(account, "Same"));
+        sealed.header.payload_schema_version += 1;
+        live.dispatch(c.clone(), rename(account, "Same")).unwrap();
+        let bytes = sealed.container();
+        approve(&live, c.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+        let pulled = [sealed.entry(&bytes, 6, None)];
+        let error = reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err();
+        assert!(matches!(error, RebaseError::ProtocolFork(_)), "{error:?}");
+    }
+
+    #[test]
+    fn the_same_envelope_twice_in_the_log_is_a_fork() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Mine"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        let bytes = sealed.container();
+        approve(&live, c.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+
+        let pulled = [sealed.entry(&bytes, 6, None), sealed.entry(&bytes, 7, None)];
+        let fork = as_fork(reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err());
+
+        assert_eq!(fork.other.unwrap().seq, Some(7));
+    }
+
+    #[test]
+    fn a_bound_entry_the_base_already_holds_stays_bound_without_the_tail() {
+        let (_dir, live, _account, scratch_path, sealed, id) = live_with_accepted_command_in_base();
+        live.lock()
+            .conn
+            .execute(
+                "UPDATE sync_outbox SET state = 'Bound', bound_seq = 3, result_ref = x'05'
+                  WHERE command_id = ?1",
+                [id],
+            )
+            .unwrap();
+        let local = live.read_local_commands().unwrap();
+        let _ = sealed;
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let (reconciliation, executed) =
+            reconcile_and_replay(&mut scratch, &[], &local, &AcceptedEvidence::new()).unwrap();
+
+        assert_eq!(reconciliation.settled[0].by, SettledBy::Bound);
+        assert!(executed.replayed.is_empty());
+        let row = outbox_row(scratch.worker(), id).unwrap();
+        assert_eq!((row.state.as_str(), row.bound_seq), ("Bound", Some(3)));
+        assert_eq!(row.result_ref, Some(vec![5]));
+    }
+
     // -- the probe --------------------------------------------------------------------------------
 
     #[test]
