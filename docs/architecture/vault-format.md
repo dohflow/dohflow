@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=30 -->
+<!-- vault-format: spec-version=31 -->
 <!-- vault-format: schema-version=66 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,13 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 31` (personal-cfo-0g528.2, part S2a) makes the write set cover
+  `source_provenance_links`. C.1.5 says the write set is exactly what Sync replicates, and the rows are
+  an apply output that travels as genesis rows (spec-version 29), so a replica that bootstraps from a
+  genesis and one that applies the tail must agree on them and `apply`'s writes to them must be in the
+  write-set hash. The B.2 note says so. The class stays `1b`; `source_batches`, `source_records` and
+  `parser_runs` stay artifacts. The engine moves to `dohflow-engine-2` (C.13): an envelope that creates a
+  link now has one more row in its write set. No wire layout and no vector of C.3 to C.10 changes.
 - `spec-version = 30` (personal-cfo-bxsbz.1, schema version 66) adds the device-local Sync state:
   the class-3 tables `sync_base`, `sync_outbox` and `outbox_queue` (inventory rows, all excluded
   from both formats) and two nullable `operation_log` columns, `applied_base_seq` (the server seq
@@ -537,7 +544,7 @@ therefore requires reviewing this inventory.
 | `source_batches` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
 | `source_records` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
 | `parser_runs` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
-| `source_provenance_links` | 1b | include | include | Import provenance rows travel as data in the portable export. Under Sync they travel as genesis rows, not artifacts: `CommitImportedTransaction` writes them in apply, keyed under the carried transaction id, so a replica that bootstraps from a genesis and one that applies the tail must agree on them. The class stays `1b`; the write set does not cover them yet (personal-cfo-0g528.2). |
+| `source_provenance_links` | 1b | include | include | Import provenance rows travel as data in the portable export. Under Sync they travel as genesis rows, not artifacts: `CommitImportedTransaction` writes them in apply, keyed under the carried transaction id, so a replica that bootstraps from a genesis and one that applies the tail must agree on them. The class stays `1b`; the write set covers them (`write_set = full`, `dohflow-engine-2`). |
 | `commitments` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `transaction_display_rows_read_model` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |
 | `read_model_checksums` | 2 | rebuild | rebuild | Derived; rebuilt locally after import or bootstrap, never shipped. |

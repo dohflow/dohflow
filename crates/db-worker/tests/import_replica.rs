@@ -611,3 +611,112 @@ fn a_second_staging_pass_continues_the_numbering_and_a_repeated_ordinal_is_loud(
         "{refused:?}"
     );
 }
+
+/// The provenance links of a vault as the write set digests them: one entry per row.
+fn link_digests(conn: &Connection) -> std::collections::BTreeMap<Vec<u8>, [u8; 32]> {
+    common::replicated_state::replicated_state(conn)
+        .into_iter()
+        .filter(|((table, _), _)| table == "source_provenance_links")
+        .map(|((_, key), digest)| (key, digest))
+        .collect()
+}
+
+/// The links file of a genesis snapshot, loaded into `conn`. A TEST-ONLY loader for this one table:
+/// the real bootstrap (replica insert from a snapshot) is personal-cfo-1cltt.5's. It reads only what
+/// the snapshot says, so a row that a replica holds afterwards came from the snapshot alone.
+fn load_links_from_genesis(plaintext: &[u8], conn: &Connection) -> usize {
+    let verified = sync_core::snapshot::verify(plaintext).expect("a valid genesis snapshot");
+    let (_, file) = verified
+        .files
+        .iter()
+        .find(|(name, _)| name == "source_provenance_links")
+        .expect("the genesis carries the provenance links");
+    let mut loaded = 0;
+    for line in std::str::from_utf8(file).unwrap().lines() {
+        let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        let text = |key: &str| row[key].as_str().unwrap().to_owned();
+        let uuid = |key: &str| Uuid::parse_str(row[key].as_str().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO source_provenance_links
+               (id, entity_type, entity_id, source_record_id, relationship, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                uuid("id"),
+                text("entity_type"),
+                uuid("entity_id"),
+                uuid("source_record_id"),
+                text("relationship"),
+                text("created_at")
+            ],
+        )
+        .unwrap();
+        loaded += 1;
+    }
+    loaded
+}
+
+/// AC6 (personal-cfo-0g528.2 S2a): the write set now covers the provenance links, so a replica that
+/// bootstraps from a genesis snapshot and a replica that applies the same envelopes as a tail agree
+/// on the links, row for row and digest for digest, and with the origin.
+#[test]
+fn a_genesis_bootstrapped_replica_and_a_tail_applied_one_agree_on_the_provenance_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.vault");
+    base_vault(&base);
+    let origin = copy_of(&base, &dir.path().join("origin.vault"));
+    let tail = copy_of(&base, &dir.path().join("tail.vault"));
+    let genesis = copy_of(&base, &dir.path().join("genesis.vault"));
+
+    let staged = origin
+        .stage_parsed_batch(u(BATCH), &parsed(), account().as_uuid())
+        .unwrap();
+    let mut envelopes: Vec<(CommandMeta, WriteCommand)> = Vec::new();
+    for (index, id) in staged.iter().enumerate() {
+        let meta = envelope_meta(index as u128);
+        let decision = origin
+            .commit_staged(meta.clone(), StagedTransactionId::from_uuid(*id), false)
+            .unwrap();
+        if matches!(decision, StagedDecision::Committed(_)) {
+            let command = logged_command(&origin.read_connection().unwrap(), meta.command_id)
+                .expect("a committed row logs its command");
+            envelopes.push((meta, command));
+        }
+    }
+    assert_eq!(envelopes.len(), 5);
+
+    // The tail replica applies the envelopes.
+    for (meta, command) in &envelopes {
+        tail.dispatch(meta.clone(), command.clone()).unwrap();
+    }
+
+    // The genesis replica gets its links from the origin's snapshot alone, with no envelope applied.
+    let origin_conn = origin.read_connection().unwrap();
+    let snapshot = db_worker::logical_export::export_genesis_plaintext(
+        &origin_conn,
+        &db_worker::logical_export::ExportInput::default(),
+    )
+    .unwrap();
+    let genesis_conn = genesis.read_connection().unwrap();
+    assert_eq!(
+        count(
+            &genesis_conn,
+            "SELECT COUNT(*) FROM source_provenance_links"
+        ),
+        0
+    );
+    let loaded = load_links_from_genesis(&snapshot, &genesis_conn);
+    assert_eq!(loaded, 5, "five committed rows, five links");
+
+    let origin_links = link_digests(&origin_conn);
+    let tail_links = link_digests(&tail.read_connection().unwrap());
+    let genesis_links = link_digests(&genesis_conn);
+    assert_eq!(origin_links.len(), 5);
+    assert_eq!(
+        tail_links, origin_links,
+        "applying the envelopes gives the origin's links"
+    );
+    assert_eq!(
+        genesis_links, tail_links,
+        "a genesis-bootstrapped replica and a tail-applied one agree on the links"
+    );
+}
