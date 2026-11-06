@@ -1507,6 +1507,11 @@ mod accepted {
         live.dispatch(c.clone(), cmd).unwrap();
         let bytes = sealed.container();
         approve(&live, c.command_id, &bytes);
+        // The local row keys are stale on the new base: the bound row takes the scratch vault's.
+        live.lock()
+            .conn
+            .execute("UPDATE sync_outbox SET write_set_keys = x''", [])
+            .unwrap();
         let local = live.read_local_commands().unwrap();
         let old_op_seq = local[0].old_op_seq;
         let live_log = log_len(&live);
@@ -1530,6 +1535,10 @@ mod accepted {
             row.sealed.as_deref(),
             Some(bytes.as_slice()),
             "the container is kept"
+        );
+        assert!(
+            !decode_row_keys(&row.keys).unwrap().is_empty(),
+            "the rows the scratch apply wrote"
         );
         let (new_op_seq, rebased_from) = log_row(scratch.worker(), c.command_id).unwrap();
         assert_eq!(
@@ -1819,6 +1828,38 @@ mod accepted {
         let pulled = [sealed.entry(&bytes, 6, None)];
         let error = reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err();
         assert!(matches!(error, RebaseError::ProtocolFork(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_bound_entry_with_no_result_agrees_with_a_tail_that_has_none() {
+        let (dir, live, account, _scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Mine"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        let bytes = sealed.container();
+        live.lock()
+            .conn
+            .execute(
+                "UPDATE sync_outbox SET state = 'Bound', sealed_container = ?2, bound_seq = 6,
+                        result_ref = x''
+                  WHERE command_id = ?1",
+                params![c.command_id, bytes],
+            )
+            .unwrap();
+        let local = live.read_local_commands().unwrap();
+        assert!(matches!(
+            local[0].entry,
+            OutboxEntryState::Bound {
+                result_ref: None,
+                ..
+            }
+        ));
+
+        let pulled = [sealed.entry(&bytes, 6, None)];
+        let reconciliation = reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap();
+
+        assert_eq!(reconciliation.settled[0].by, SettledBy::Tail);
     }
 
     #[test]
