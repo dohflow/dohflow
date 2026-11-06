@@ -64,6 +64,16 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
     expect(blocks[0]).toContain("line-height: 1.5");
   });
 
+  it("spacing grows slowly with the system text size, inside the iOS block only", async () => {
+    const css = await compiled(["p-4"]);
+    const { blocks, rest } = splitIosBlocks(css);
+
+    expect(blocks[0]).toContain("--spacing: calc(4px + (1rem - 17px) / 8)");
+    // Desktop keeps Tailwind's own rem spacing.
+    expect(rest).toMatch(/--spacing:\s*0\.25rem/);
+    expect(rest).not.toContain("--spacing: calc(");
+  });
+
   it("the field text floor that stops iOS zooming into a focused field is inside the iOS block only", async () => {
     const css = await compiled(["p-4"]);
     const { blocks, rest } = splitIosBlocks(css);

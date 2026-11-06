@@ -498,6 +498,10 @@ on a desktop window, and a test proves each.
   under 16px takes focus and leaves it zoomed (the page then pans sideways and the keyboard inset is
   wrong). The iOS-only block in `globals.css` floors `input`, `select` and `textarea` at
   `max(1rem, 16px)`; keep it (and never disable zoom to avoid it).
+- **Spacing grows slower than type.** The iOS-only block also sets `--spacing` so padding and gaps
+  grow about one eighth as fast as the text (4px at the default system size, about 8.5px at the
+  largest), because Tailwind's rem spacing would otherwise triple with the type and leave a sliver of a
+  column. Do not size anything that must stay a fixed physical size from spacing utilities.
 - **Reflow, not clipping.** At the largest text size a row wraps and a control grows; meaning is never
   clipped, truncated to an ellipsis, or hidden. Prefer `min-h-*` and wrapping to a fixed `h-*` on
   anything that holds text.

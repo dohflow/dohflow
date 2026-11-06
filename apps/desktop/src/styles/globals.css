@@ -241,6 +241,11 @@
     font: -apple-system-body;
     font-family: var(--font-ui);
     line-height: 1.5;
+    /* Spacing grows far more slowly than type. Tailwind's spacing is rem-based, so at the largest
+       text size every padding and gap grew 3x with the type and left a sliver of a column (measured
+       on a simulator: a label overflowed its card). 4px at the default system size, about 8.5px at
+       the largest, instead of 13px. */
+    --spacing: calc(4px + (1rem - 17px) / 8);
   }
 
   /* iOS WebKit zooms the page in when a field with text smaller than 16px takes focus, and the zoom
