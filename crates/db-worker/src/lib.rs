@@ -1787,6 +1787,8 @@ pub struct DbWorker {
     /// lock below prevents a second process; this gate prevents two unlock
     /// callbacks in the same process from recovering/claiming concurrently.
     runner_gate: Mutex<()>,
+    /// Serializes base image captures (personal-cfo-bxsbz.3): one at a time owns the temp file.
+    base_gate: Mutex<()>,
     path: PathBuf,
     key: KeyMaterial,
     /// Held for the worker's lifetime so the OS releases vault ownership on a
@@ -1984,6 +1986,7 @@ impl DbWorker {
                 last_write_set: None,
             }),
             runner_gate: Mutex::new(()),
+            base_gate: Mutex::new(()),
             path,
             key,
             _runner_lock: runner_lock,

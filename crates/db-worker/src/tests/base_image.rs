@@ -250,14 +250,15 @@ fn advancing_needs_sync_on_a_usable_base_and_a_head_that_does_not_go_back() {
 }
 
 #[test]
-fn the_outbox_check_and_the_copy_are_one_critical_section() {
+fn the_outbox_check_and_the_copy_are_one_critical_section_and_the_strip_is_not() {
     let (_dir, worker) = worker();
     let worker = Arc::new(worker);
     worker.initialize_base_image(1).unwrap();
     let accounts_before = live_count(&worker, "accounts");
 
-    // At each step inside the capture, a writer on another thread must still be blocked: the
-    // outbox was checked and the file copied under one hold of the writer lock.
+    // A writer on another thread is blocked at the check and at the end of the copy (both under
+    // one hold of the writer lock), and has been let through by the time the strip starts: the
+    // credentials are stripped and the file hashed with the writer free.
     let finished = Arc::new(AtomicBool::new(false));
     let writer: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
     let blocked_at: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -290,10 +291,14 @@ fn the_outbox_check_and_the_copy_are_one_critical_section() {
     let seen = blocked_at.lock().unwrap().clone();
     assert_eq!(
         seen,
-        vec![("checked".to_owned(), true), ("copied".to_owned(), true)]
+        vec![
+            ("checked".to_owned(), true),
+            ("copied".to_owned(), true),
+            ("stripping".to_owned(), false),
+        ]
     );
     writer.lock().unwrap().take().unwrap().join().unwrap();
-    // The write landed after the capture, so the base does not contain it and the outbox holds it.
+    // The write landed after the copy, so the base does not contain it and the outbox holds it.
     let image = open_image(&worker, &base_image_path(&worker.path));
     assert_eq!(count_in(&image, "accounts"), accounts_before);
     drop(image);
@@ -326,6 +331,40 @@ fn a_base_never_holds_a_credential_and_the_copy_has_no_free_pages() {
     drop(image);
     // The live vault keeps its credential.
     assert_eq!(live_count(&worker, "connector_connection_secrets"), 1);
+}
+
+#[test]
+fn a_credential_the_live_vault_once_held_is_not_left_in_a_free_page_of_the_base() {
+    let (_dir, worker) = worker();
+    // Large credentials overflow into their own pages; forgetting the connections frees those
+    // pages in the live file, where the old values stay readable under the key.
+    let ids: Vec<Uuid> = (0..12)
+        .map(|n| connection(&worker, &format!("tok-{n}-{}", "x".repeat(20_000))))
+        .collect();
+    for id in &ids {
+        worker.delete_connector_connection(*id).unwrap();
+    }
+    let live_free: i64 = worker
+        .lock()
+        .conn
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .unwrap();
+    assert!(live_free > 0, "the live file holds freed pages");
+    worker.checkpoint_truncate().unwrap();
+    let live_len = std::fs::metadata(&worker.path).unwrap().len();
+
+    worker.initialize_base_image(1).unwrap();
+
+    let path = base_image_path(&worker.path);
+    let image = open_image(&worker, &path);
+    let free: i64 = image
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(free, 0, "no freed page survives in the base");
+    assert!(
+        std::fs::metadata(&path).unwrap().len() < live_len,
+        "the base is compacted"
+    );
 }
 
 #[test]
@@ -401,7 +440,9 @@ fn an_image_left_beside_a_vault_with_sync_off_is_removed_on_open() {
 #[test]
 fn the_pre_rebase_scrub_removes_only_the_deleted_connections_credential() {
     let (_dir, worker) = worker();
-    let gone = connection(&worker, "tok-removed-connection");
+    // Large values overflow into pages of their own, so a scrub that only deleted the row would
+    // leave the removed token in a free page.
+    let gone = connection(&worker, &format!("tok-removed-{}", "x".repeat(20_000)));
     let kept = connection(&worker, "tok-kept-connection");
     // A rebase swap (bxsbz.7) keeps the previous live vault as pre-rebase.db.
     std::fs::create_dir_all(crate::base_image::sync_dir(&worker.path)).unwrap();
@@ -628,4 +669,79 @@ fn a_reader_that_pins_an_old_snapshot_refuses_the_copy_instead_of_missing_frames
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(base_row(&worker).0, 1);
     assert_eq!(files_in_sync_dir(&worker), vec!["base.db".to_owned()]);
+}
+
+/// The per-push cost of keeping the base current, for bxsbz.7's perf budget. Not a check:
+/// `cargo test -p db-worker --lib measure_the_base_copy_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn measure_the_base_copy_cost() {
+    for megabytes in [10_i64, 50, 200] {
+        let (_dir, worker) = worker();
+        {
+            let guard = worker.lock();
+            guard
+                .conn
+                .execute_batch("CREATE TABLE perf_filler (id INTEGER PRIMARY KEY, payload BLOB);")
+                .unwrap();
+            let tx = guard.conn.unchecked_transaction().unwrap();
+            for _ in 0..megabytes * 1024 {
+                tx.execute(
+                    "INSERT INTO perf_filler (payload) VALUES (randomblob(1024))",
+                    [],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let first = worker.initialize_base_image(1).unwrap();
+        let steady = worker.advance_base_image(2).unwrap();
+        println!(
+            "vault ~{megabytes} MB -> base {} bytes | first: copy {:?}, strip {:?}, seal {:?} | \
+             steady: copy {:?}, strip {:?}, seal {:?}",
+            steady.image_bytes,
+            first.copy,
+            first.strip,
+            first.seal,
+            steady.copy,
+            steady.strip,
+            steady.seal
+        );
+    }
+}
+
+#[test]
+fn a_base_record_that_moves_during_the_capture_abandons_it_and_leaves_no_file() {
+    let (_dir, worker) = worker();
+    let worker = Arc::new(worker);
+    worker.initialize_base_image(1).unwrap();
+    let path = base_image_path(&worker.path);
+    let before = std::fs::read(&path).unwrap();
+    {
+        let worker = Arc::clone(&worker);
+        observe::install(move |label| {
+            if label == "stripping" {
+                // The record moves while the copy is being stripped with the writer free.
+                worker
+                    .lock()
+                    .conn
+                    .execute("UPDATE sync_base SET base_seq = 50", [])
+                    .unwrap();
+            }
+        });
+    }
+    let error = worker.advance_base_image(2).unwrap_err();
+    observe::clear();
+
+    assert!(
+        matches!(error, BaseImageError::Db(DbError::InvalidCommand(_))),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the base is untouched"
+    );
+    assert_eq!(files_in_sync_dir(&worker), vec!["base.db".to_owned()]);
+    assert_eq!(base_row(&worker).0, 50);
 }
