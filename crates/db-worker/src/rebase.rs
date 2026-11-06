@@ -488,3 +488,31 @@ pub(crate) fn is_queued(
         |r| r.get(0),
     )
 }
+
+/// Roll `live` back to its base image as a scratch vault at `scratch_path` (see
+/// [`DbWorker::rollback_to`]). Public for the Sync simulator, which drives the rollback and the
+/// replay between interleavings.
+///
+/// # Errors
+/// As [`DbWorker::rollback_to`].
+pub fn rollback_to<'a>(
+    live: &'a DbWorker,
+    target_seq: i64,
+    scratch_path: &Path,
+) -> Result<Scratch<'a>, RebaseError> {
+    live.rollback_to(target_seq, scratch_path)
+}
+
+/// Apply the server's `envelopes` to `scratch`, then re-apply or queue the unpushed `local`
+/// commands: one rebase, start to finish, on the scratch vault. Public for the Sync simulator.
+///
+/// # Errors
+/// As [`Scratch::apply_pulled`] and [`Scratch::rebase_local`].
+pub fn replay(
+    scratch: &mut Scratch<'_>,
+    envelopes: &[PulledEnvelope<'_>],
+    local: &[LocalCommand],
+) -> Result<Executed, RebaseError> {
+    scratch.apply_pulled(envelopes)?;
+    scratch.rebase_local(local)
+}

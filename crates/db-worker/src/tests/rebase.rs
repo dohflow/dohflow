@@ -595,7 +595,7 @@ mod executor {
 
     /// Run `cmd` on the live vault (Sync is on, so it is an unpushed outbox entry) and read back
     /// everything a rebase needs to replay or queue it.
-    fn issue(live: &DbWorker, meta: CommandMeta, cmd: WriteCommand) -> LocalCommand {
+    pub(super) fn issue(live: &DbWorker, meta: CommandMeta, cmd: WriteCommand) -> LocalCommand {
         live.dispatch(meta.clone(), cmd.clone()).unwrap();
         let (op_seq, payload, version, hash, keys): (i64, Vec<u8>, u32, Vec<u8>, Vec<u8>) = live
             .lock()
@@ -1071,4 +1071,137 @@ mod executor {
             after_rebase
         );
     }
+}
+
+// ---- the first pull after a bootstrap (bxsbz.4 AC7) ---------------------------------------
+
+mod first_pull {
+    use super::*;
+    use crate::rebase::{replay, rollback_to};
+
+    /// A fixture vault standing in for a snapshot bootstrap at server seq `n`: its base image is
+    /// initialized through the entry point a bootstrap calls, with nothing unpushed.
+    fn bootstrapped(n: i64) -> (TempDir, DbWorker, AccountId) {
+        let (dir, worker) = worker();
+        let account = AccountId::new();
+        worker
+            .dispatch(meta(), liquid_account_cmd(account, Currency::Usd, 9_000))
+            .unwrap();
+        worker.initialize_base_image(n).unwrap();
+        (dir, worker, account)
+    }
+
+    #[test]
+    fn a_bootstrapped_vault_rebases_cleanly_on_its_first_pulled_envelope() {
+        const N: i64 = 41;
+        let (dir, live, account) = bootstrapped(N);
+        let device_b = live
+            .rollback_to(N, &dir.path().join("rebase").join("b.db"))
+            .unwrap();
+        let first = seal(device_b.worker(), &meta(), &rename(account, "First pull"));
+
+        let mut scratch = rollback_to(&live, N, &dir.path().join("rebase").join("s.db")).unwrap();
+        let executed = replay(&mut scratch, &[first.pulled(42)], &[]).unwrap();
+
+        assert_eq!(scratch.head_seq(), 42, "the first envelope is seq N+1");
+        assert!(executed.replayed.is_empty());
+        assert_eq!(account_name(scratch.worker(), account), "First pull");
+    }
+
+    #[test]
+    fn it_also_rebases_with_an_unpushed_local_command_on_top() {
+        const N: i64 = 41;
+        let (dir, live, account) = bootstrapped(N);
+        // The bootstrapped device did local work after its base was taken: unpushed.
+        let local = super::executor::issue(
+            &live,
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 500),
+        );
+        let device_b = live
+            .rollback_to(N, &dir.path().join("rebase").join("b.db"))
+            .unwrap();
+        let first = seal(device_b.worker(), &meta(), &rename(account, "First pull"));
+
+        let mut scratch = rollback_to(&live, N, &dir.path().join("rebase").join("s.db")).unwrap();
+        let executed = replay(&mut scratch, &[first.pulled(42)], &[local.clone()]).unwrap();
+
+        assert_eq!(executed.replayed.len(), 1);
+        assert_eq!(account_name(scratch.worker(), account), "First pull");
+        let applied_on: Option<i64> = scratch
+            .worker()
+            .lock()
+            .conn
+            .query_row(
+                "SELECT applied_base_seq FROM operation_log WHERE command_id = ?1",
+                [local.meta.command_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied_on, Some(42));
+    }
+}
+
+// ---- envelopes this build cannot apply ----------------------------------------------------
+
+#[test]
+fn a_pulled_envelope_that_cannot_be_decoded_stops_the_rebase_before_anything_is_applied() {
+    let (dir, live, account, scratch_path) = live_with_base();
+    let device_b = other_device(&live, &dir);
+    let mut bad_payload = seal(device_b.worker(), &meta(), &rename(account, "B"));
+    bad_payload.plaintext.payload = b"{\"not\":\"a command\"}".to_vec();
+    let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+
+    let error = scratch.apply_pulled(&[bad_payload.pulled(6)]).unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            RebaseError::Undecodable {
+                seq: 6,
+                cause: crate::rebase::Undecodable::Payload(_)
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(scratch.head_seq(), 5);
+    assert_eq!(account_name(scratch.worker(), account), "Checking");
+}
+
+#[test]
+fn a_pulled_envelope_the_commands_own_validation_refuses_stops_the_replica_at_its_position() {
+    let (dir, live, _account, scratch_path) = live_with_base();
+    let device_b = other_device(&live, &dir);
+    let category = CategoryId::new();
+    // Device B creates a category and then moves it; only the move is offered, so its subject does
+    // not exist on this replica's base.
+    seal(
+        device_b.worker(),
+        &meta(),
+        &WriteCommand::CreateCategory {
+            id: category,
+            parent_id: None,
+            name: "Only on B".to_owned(),
+            category_type: "expense".to_owned(),
+            color: None,
+            icon: None,
+        },
+    );
+    let missing = seal(
+        device_b.worker(),
+        &meta(),
+        &WriteCommand::MoveCategory {
+            id: category,
+            new_parent_id: None,
+        },
+    );
+    let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+
+    let error = scratch.apply_pulled(&[missing.pulled(6)]).unwrap_err();
+
+    assert!(
+        matches!(error, RebaseError::PulledEnvelopeRefused { seq: 6, .. }),
+        "{error:?}"
+    );
+    assert_eq!(scratch.head_seq(), 5, "the replica stops at the position");
 }
