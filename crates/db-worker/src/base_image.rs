@@ -72,6 +72,13 @@ pub fn base_image_path(vault_path: &Path) -> PathBuf {
     sync_dir(vault_path).join(BASE_IMAGE_FILE)
 }
 
+/// Where a capture in flight keeps its copy before the strip. A crash leaves it behind with the
+/// secrets still in it, so every open and every rotation removes it.
+#[must_use]
+pub fn base_image_temp_path(vault_path: &Path) -> PathBuf {
+    with_suffix(&base_image_path(vault_path), ".tmp")
+}
+
 /// Where the pre-rebase copy of the vault at `vault_path` lives.
 #[must_use]
 pub fn pre_rebase_path(vault_path: &Path) -> PathBuf {
@@ -332,7 +339,7 @@ impl DbWorker {
             .unwrap_or_else(PoisonError::into_inner);
         let dir = sync_dir(&self.path);
         let final_path = base_image_path(&self.path);
-        let temp = with_suffix(&final_path, ".tmp");
+        let temp = base_image_temp_path(&self.path);
 
         // Phase 1, under the writer lock: check that the outbox is empty and copy the checkpointed
         // file, in one critical section. No command can land between the check and the copy, so
@@ -479,6 +486,10 @@ impl DbWorker {
     /// `NoBase` with no digest. Runs on every open, so the recorded state is the truth the
     /// rebase and the push path read. A base that cannot be vouched for is never rebased on.
     pub(crate) fn reconcile_base_image(&self) -> Result<(), DbError> {
+        // A capture that died before it stripped its copy leaves a full copy of the vault, secrets
+        // included. The vault lease means no capture is running now, so whatever is here is a
+        // leftover, whatever the state of the record.
+        remove_image_files(&base_image_temp_path(&self.path))?;
         let guard = self.lock();
         let conn = &guard.conn;
         match read_base_row(conn)? {
@@ -558,6 +569,16 @@ impl DbWorker {
         new_db: &Path,
     ) -> Result<Vec<RekeyedImage>, DbError> {
         let old_dek = self.dek()?;
+        // A leftover capture copy (see `reconcile_base_image`) is a copy of the vault under the key
+        // being retired, secrets still in it: it goes before anything is re-encrypted. The gate
+        // keeps a capture from recreating it meanwhile.
+        {
+            let _one_capture = self
+                .base_gate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            remove_image_files(&base_image_temp_path(&self.path))?;
+        }
         let recorded = {
             let guard = self.lock();
             read_base_row(&guard.conn)?

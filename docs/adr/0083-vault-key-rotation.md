@@ -361,6 +361,11 @@ rule is therefore **re-encrypt, never refuse**: a non-empty outbox does not bloc
   renamed over its image (an atomic rename, so the retired-key bytes are unlinked), a removed image
   is deleted, and the Sync directory is synced. The step is idempotent like the others, so recovery
   can re-run it from any interruption, including between the two images.
+- **A capture that died before its strip** leaves `sync/base.db.tmp` (and any SQLite side file):
+  a full copy of the vault, connector secrets included. Prepare removes it before anything is
+  re-encrypted, under the same gate that keeps a capture from recreating it, and every open
+  removes it too (the vault lease means no capture is running then), so no copy under the retired
+  key survives a rotation.
 - **Rollback** removes both `.rekey-new` copies whether or not the journal names them.
 - **Disk space** (section 5) counts the images, since they are re-encrypted beside the live ones.
 - **Delete** removes the whole `sync/` directory, and **restore** clears any stale one at its

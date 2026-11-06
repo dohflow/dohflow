@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use super::*;
 use crate::base_image::{
-    base_image_path, observe, pre_rebase_path, sha256_file, BaseImageError, BaseImageStatus,
-    RekeyedImage, SyncBaseState, SECRET_BEARING_TABLES,
+    base_image_path, base_image_temp_path, observe, pre_rebase_path, sha256_file, BaseImageError,
+    BaseImageStatus, RekeyedImage, SyncBaseState, SECRET_BEARING_TABLES,
 };
 
 fn base_row(worker: &DbWorker) -> (i64, Option<Vec<u8>>, String) {
@@ -744,4 +744,61 @@ fn a_base_record_that_moves_during_the_capture_abandons_it_and_leaves_no_file() 
     );
     assert_eq!(files_in_sync_dir(&worker), vec!["base.db".to_owned()]);
     assert_eq!(base_row(&worker).0, 50);
+}
+
+/// What a capture that died before its strip leaves: a full copy of the vault, secrets in it.
+fn plant_crashed_capture(worker: &DbWorker) -> Vec<PathBuf> {
+    std::fs::create_dir_all(crate::base_image::sync_dir(&worker.path)).unwrap();
+    let temp = base_image_temp_path(&worker.path);
+    std::fs::write(&temp, worker.snapshot_bytes().unwrap()).unwrap();
+    let journal = PathBuf::from(format!("{}-journal", temp.display()));
+    std::fs::write(&journal, b"half a vacuum").unwrap();
+    vec![temp, journal]
+}
+
+#[test]
+fn a_capture_that_died_before_its_strip_is_removed_on_every_open() {
+    for sync_on in [false, true] {
+        let (_dir, worker) = worker();
+        connection(&worker, "tok-in-the-crashed-copy");
+        if sync_on {
+            worker.initialize_base_image(1).unwrap();
+        }
+        let leftovers = plant_crashed_capture(&worker);
+        let path = worker.path.clone();
+        drop(worker);
+
+        let reopened = DbWorker::open(&path, KEY).unwrap();
+
+        for leftover in leftovers {
+            assert!(
+                !leftover.exists(),
+                "sync_on={sync_on}: {}",
+                leftover.display()
+            );
+        }
+        assert_eq!(
+            files_in_sync_dir(&reopened),
+            if sync_on {
+                vec!["base.db".to_owned()]
+            } else {
+                Vec::new()
+            }
+        );
+    }
+}
+
+#[test]
+fn a_rotation_prepare_removes_a_capture_that_died_before_its_strip() {
+    let (dir, worker, new_dek) = raw_worker();
+    connection(&worker, "tok-in-the-crashed-copy");
+    worker.initialize_base_image(4).unwrap();
+    let leftovers = plant_crashed_capture(&worker);
+    let new_db = rekeyed_vault(&worker, &new_dek, &dir);
+
+    worker.prepare_rekeyed_images(&new_dek, &new_db).unwrap();
+
+    for leftover in leftovers {
+        assert!(!leftover.exists(), "{}", leftover.display());
+    }
 }

@@ -1038,6 +1038,25 @@ mod protocol_tests {
     }
 
     #[test]
+    fn no_copy_of_the_vault_under_the_retired_key_survives_a_rotation() {
+        let (_dir, path, mut controller, _) = seeded();
+        let paths = RekeyPaths::new(&path);
+        // A capture that died before its strip left a full copy of the vault (secrets in it) and
+        // a journal beside it.
+        let leftover = db_worker::base_image::base_image_temp_path(&path);
+        fs::write(&leftover, fs::read(&path).unwrap()).unwrap();
+        let journal = PathBuf::from(format!("{}-journal", leftover.display()));
+        fs::write(&journal, b"half a vacuum").unwrap();
+
+        controller.rotate_key(PASSWORD).unwrap();
+
+        assert!(!leftover.exists() && !journal.exists());
+        assert_eq!(sync_files(&path), ["base.db", "pre-rebase.db"]);
+        assert_no_artifacts(&path);
+        let _ = paths;
+    }
+
+    #[test]
     fn a_damaged_base_is_dropped_by_a_rotation_instead_of_blocking_it() {
         let (_dir, path, mut controller, _) = seeded();
         let paths = RekeyPaths::new(&path);
