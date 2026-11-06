@@ -371,3 +371,215 @@ fn an_envelope_whose_memo_is_already_in_the_scratch_vault_is_not_applied_twice()
     );
     assert_eq!(account_name(scratch.worker(), account), "Checking");
 }
+
+// ---- the plan: the four cells and the correlation closure ---------------------------------
+
+mod plan_matrix {
+    use std::collections::BTreeSet;
+
+    use crate::rebase::{
+        auto_iff, plan, Disposition, OutboxCommand, QueueCause, QueueReason, RowKey,
+    };
+    use uuid::Uuid;
+
+    fn id(n: u8) -> Uuid {
+        Uuid::from_bytes([n; 16])
+    }
+
+    fn key(table: &str, pk: u8) -> RowKey {
+        (table.to_owned(), vec![pk])
+    }
+
+    fn command(n: u8, correlation: u8, causation: Option<u8>, rows: &[RowKey]) -> OutboxCommand {
+        OutboxCommand {
+            command_id: id(n),
+            correlation_id: id(correlation),
+            causation_id: causation.map(id),
+            write_set_keys: rows.to_vec(),
+        }
+    }
+
+    fn touched(rows: &[RowKey]) -> BTreeSet<RowKey> {
+        rows.iter().cloned().collect()
+    }
+
+    fn dispositions(
+        outbox: &[OutboxCommand],
+        touched: &BTreeSet<RowKey>,
+        invalid: &[u8],
+    ) -> Vec<Disposition> {
+        let invalid: BTreeSet<Uuid> = invalid.iter().map(|n| id(*n)).collect();
+        plan(outbox, touched, &invalid)
+            .commands
+            .into_iter()
+            .map(|planned| planned.disposition)
+            .collect()
+    }
+
+    const CHOOSE_TOUCHED: Disposition = Disposition::Queue {
+        cause: QueueCause::Touched,
+        reason: QueueReason::Choose,
+    };
+    const EDIT_INVALID: Disposition = Disposition::Queue {
+        cause: QueueCause::Invalid,
+        reason: QueueReason::Edit,
+    };
+
+    #[test]
+    fn the_four_cells_of_untouched_by_valid() {
+        // untouched and valid: the only automatic outcome.
+        assert_eq!(auto_iff(true, true), Disposition::Replay);
+        // touched but valid: both values are kept and the person chooses.
+        assert_eq!(auto_iff(false, true), CHOOSE_TOUCHED);
+        // untouched but no longer valid: the person repairs it.
+        assert_eq!(auto_iff(true, false), EDIT_INVALID);
+        // touched and invalid: it cannot be offered as a choice, so it is repaired.
+        assert_eq!(auto_iff(false, false), EDIT_INVALID);
+    }
+
+    #[test]
+    fn a_command_is_touched_only_when_the_exact_row_was_written() {
+        let rows = [key("accounts", 1)];
+        let one = command(1, 1, None, &rows);
+        assert!(
+            one.untouched(&touched(&[key("accounts", 2)])),
+            "same table, another row"
+        );
+        assert!(
+            one.untouched(&touched(&[key("categories", 1)])),
+            "same key, another table"
+        );
+        assert!(!one.untouched(&touched(&[key("accounts", 1)])));
+        assert!(command(2, 2, None, &[]).untouched(&touched(&[key("accounts", 1)])));
+    }
+
+    #[test]
+    fn an_untouched_valid_command_is_replayed_and_the_order_is_the_local_order() {
+        let outbox = [
+            command(3, 3, None, &[key("accounts", 3)]),
+            command(1, 1, None, &[key("accounts", 1)]),
+            command(2, 2, None, &[key("accounts", 2)]),
+        ];
+        let planned = plan(&outbox, &touched(&[key("accounts", 9)]), &BTreeSet::new());
+        let order: Vec<Uuid> = planned
+            .commands
+            .iter()
+            .map(|p| p.command.command_id)
+            .collect();
+        assert_eq!(order, vec![id(3), id(1), id(2)]);
+        assert!(planned.queued().next().is_none());
+        assert_eq!(planned.replayed().count(), 3);
+    }
+
+    #[test]
+    fn a_touched_command_queues_its_whole_correlation_group() {
+        let outbox = [
+            command(1, 1, None, &[key("accounts", 1)]), // touched
+            command(2, 1, None, &[key("accounts", 2)]), // same group, disjoint rows
+            command(3, 3, None, &[key("accounts", 3)]), // another group
+        ];
+        let got = dispositions(&outbox, &touched(&[key("accounts", 1)]), &[]);
+        assert_eq!(got[0], CHOOSE_TOUCHED);
+        assert_eq!(
+            got[1],
+            Disposition::Queue {
+                cause: QueueCause::Closure { root: id(1) },
+                reason: QueueReason::Choose
+            },
+            "a disjoint write set does not save a member of the group"
+        );
+        assert_eq!(got[2], Disposition::Replay, "another group is unaffected");
+    }
+
+    #[test]
+    fn a_causal_descendant_queues_even_in_another_correlation_group_and_so_do_its_siblings() {
+        let outbox = [
+            command(1, 1, None, &[key("accounts", 1)]), // touched: creates the entity
+            command(2, 2, Some(1), &[key("accounts", 2)]), // caused by 1, its own group
+            command(3, 2, None, &[key("accounts", 3)]), // sibling of the descendant
+            command(4, 4, Some(3), &[key("accounts", 4)]), // caused by that sibling: a chain
+            command(5, 5, None, &[key("accounts", 5)]), // unrelated
+        ];
+        let got = dispositions(&outbox, &touched(&[key("accounts", 1)]), &[]);
+        let closure = Disposition::Queue {
+            cause: QueueCause::Closure { root: id(1) },
+            reason: QueueReason::Choose,
+        };
+        assert_eq!(
+            got,
+            vec![
+                CHOOSE_TOUCHED,
+                closure,
+                closure,
+                closure,
+                Disposition::Replay
+            ]
+        );
+    }
+
+    #[test]
+    fn a_causation_naming_a_command_that_is_not_in_the_outbox_is_ignored() {
+        // Its cause was pushed and accepted earlier: nothing to close over.
+        let outbox = [command(1, 1, Some(99), &[key("accounts", 1)])];
+        assert_eq!(
+            dispositions(&outbox, &touched(&[]), &[]),
+            vec![Disposition::Replay]
+        );
+    }
+
+    #[test]
+    fn an_invalid_command_queues_its_group_to_be_repaired() {
+        let outbox = [
+            command(1, 1, None, &[key("accounts", 1)]),
+            command(2, 1, None, &[key("accounts", 2)]),
+        ];
+        let got = dispositions(&outbox, &touched(&[]), &[2]);
+        // The group's earlier member is pulled in by the later invalid one, and is offered the
+        // repair too.
+        assert_eq!(
+            got,
+            vec![
+                Disposition::Queue {
+                    cause: QueueCause::Closure { root: id(2) },
+                    reason: QueueReason::Edit
+                },
+                EDIT_INVALID
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_root_in_local_order_is_recorded_when_two_groups_reach_one_command() {
+        let outbox = [
+            command(1, 1, None, &[key("accounts", 1)]), // touched
+            command(2, 2, None, &[key("accounts", 2)]), // touched
+            command(3, 3, Some(2), &[]),                // caused by 2
+            command(4, 1, Some(2), &[]),                // sibling of 1 AND caused by 2
+        ];
+        let got = dispositions(
+            &outbox,
+            &touched(&[key("accounts", 1), key("accounts", 2)]),
+            &[],
+        );
+        assert_eq!(
+            got[3],
+            Disposition::Queue {
+                cause: QueueCause::Closure { root: id(1) },
+                reason: QueueReason::Choose
+            }
+        );
+        assert_eq!(
+            got[2],
+            Disposition::Queue {
+                cause: QueueCause::Closure { root: id(2) },
+                reason: QueueReason::Choose
+            }
+        );
+    }
+
+    #[test]
+    fn the_reason_columns_are_the_ones_the_queue_table_allows() {
+        assert_eq!(QueueReason::Choose.as_column(), "queue_choose");
+        assert_eq!(QueueReason::Edit.as_column(), "queue_edit");
+    }
+}

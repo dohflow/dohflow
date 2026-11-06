@@ -24,6 +24,8 @@
 //! **Rolling back reaches the base and no further.** [`DbWorker::rollback_to`] accepts only the
 //! recorded `base_seq`; any other target is a typed error, never a partial rollback.
 
+mod plan;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -167,6 +169,10 @@ pub struct PulledEnvelope<'a> {
     /// The checked header and plaintext.
     pub checked: CheckedEnvelope<'a>,
 }
+
+pub use plan::{
+    auto_iff, plan, Disposition, OutboxCommand, Plan, PlannedCommand, QueueCause, QueueReason,
+};
 
 /// A table row a command wrote: the table name and its canonical primary key
 /// (`WriteSet::rows`).
