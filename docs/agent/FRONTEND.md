@@ -462,6 +462,44 @@ How to use it:
 | Summaries reflect real data and never claim healthy or verified while loading or failed | `Disclosure` has a `summary` slot; the Settings sections supply one only where the page already holds the data (Backups, Comfort band, Auto-categorize, Connections, About; Vaults has none until its list read has a failure state, `personal-cfo-4d8.39.2`), built in `settings/settingsSummaries.ts` and omitted otherwise. A summary is omitted while its read has no data yet and after a refresh failed, even when an earlier read left data in the cache (`isSuccess`, or the hook's error string, gates each one) |
 | Respect reduced motion; announce a state change once; errors persist | `Disclosure`: the chevron respects reduced motion and the body does not animate; the state change is the native `aria-expanded` (no extra live region); the `persistent` slot keeps errors. Per screen elsewhere |
 
+### 7.6 Compact layout (a narrow touch screen) (personal-cfo-i93n3.25)
+
+The same React UI runs in a narrow, touch-driven WebView. This section is the convention for that; it is
+generic (compact layout, touch input) and says nothing about any one device or shell. **Desktop
+rendering must not change**: every rule below is either gated on a touch pointer or evaluates to zero
+on a desktop window, and a test proves each.
+
+- **One compact signal.** Compact is a narrow screen AND a touch pointer (`(max-width: 639px) and
+  (pointer: coarse)`), never width alone: the desktop window has no minimum width, so a narrowed desktop
+  window is narrow without being compact. The query is declared once in `src/lib/compact.ts`
+  (`COMPACT_QUERY`); `globals.css` declares the Tailwind `compact:` variant with the same query and a
+  test keeps the two equal. Style differences use `compact:`; structure that differs (which component
+  renders) uses `useCompactLayout()`. Do not write another width query for this.
+- **Safe areas.** `index.html` sets `viewport-fit=cover`, so the device chrome (notch, home indicator)
+  is reported as `env(safe-area-inset-*)`. `globals.css` exposes the four insets as `--safe-area-top`,
+  `-right`, `-bottom` and `-left`, each falling back to `0px`. A full-screen container clears them with
+  `SAFE_AREA_PADDING` (`src/lib/safeArea.ts`), or adds the same variables to its own padding with
+  `calc()`. The bottom edge takes `max(safe-area-bottom, keyboard-inset)`, never their sum.
+- **Keyboard.** The on-screen keyboard covers the layout viewport without resizing it, so
+  `useKeyboardInset()` (mounted once in `App`) publishes its height as `--keyboard-inset` from the visual
+  viewport and keeps the focused field in view. It does nothing without a touch pointer. A bottom-pinned
+  primary action stays visible because the shell's bottom padding already includes the inset; do not
+  add a second mechanism.
+- **Viewport units.** Use `dvh` (`h-dvh`, `min-h-dvh`), not `vh`: on a desktop window they are equal, and
+  on a phone `dvh` follows the visible viewport. The shell is exactly one viewport tall and `main` is
+  its only scroller, as before.
+- **Type follows the system text size.** On iOS WebKit only (`@supports (-webkit-touch-callout: none)`,
+  not the compact query, so it survives a rotation past the breakpoint), the root font size is the
+  system body size and every `rem` scales with it. macOS WebKit does not match that query, so the desktop
+  root stays 16px. Therefore **type is in `rem`**: never `text-[Npx]` (a test fails on it; `0.625rem` is
+  `10px` at the desktop root). Chart axis labels are SVG units and are not covered; the date and event
+  reading carries the meaning.
+- **Reflow, not clipping.** At the largest text size a row wraps and a control grows; meaning is never
+  clipped, truncated to an ellipsis, or hidden. Prefer `min-h-*` and wrapping to a fixed `h-*` on
+  anything that holds text.
+- **Touch targets (44 pt hit regions) and sheets** are specified with their slice; until then the
+  existing sizes apply.
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks

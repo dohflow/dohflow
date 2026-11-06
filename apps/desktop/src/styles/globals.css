@@ -7,6 +7,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Compact layout (personal-cfo-i93n3.25): a narrow screen driven by a touch pointer, so a narrowed
+   desktop window is NOT compact. The query is `COMPACT_QUERY` in `src/lib/compact.ts`, which
+   `useCompactLayout()` reads; a test keeps the two equal. Below Tailwind's `sm` (640px). */
+@custom-variant compact (@media (max-width: 639px) and (pointer: coarse));
+
 :root {
   /* Follow whichever theme is actually APPLIED, not the system preference
      (personal-cfo-17u1) — an explicit Light/Dark override in Settings can
@@ -208,5 +213,33 @@
        nothing. See ADR 0063's correction note. */
     font-variant-numeric: tabular-nums;
     -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Layout environment, not theme: these do not flip with light or dark, so they live apart from the
+   theme tokens below (whose light/dark parity a test enforces). */
+:root {
+  /* The insets the device chrome takes (notch, home indicator), reported once `viewport-fit=cover`
+     is set in index.html. Zero wherever there is no such chrome, which includes every desktop
+     window, so a rule that reads them cannot move anything there. */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  /* The on-screen keyboard's height over the layout viewport; set only by `useKeyboardInset()`,
+     which does nothing without a coarse pointer. */
+  --keyboard-inset: 0px;
+}
+
+/* Dynamic Type (personal-cfo-i93n3.25): on iOS WebKit the root font size follows the system text
+   size, so every rem in the app scales with it. Gated on iOS WebKit alone (not on the compact
+   query) so it survives a rotation past the breakpoint. `font:` also resets the family and the
+   line height, so both are restated. macOS WebKit does not match this query: the desktop root
+   stays at the browser default of 16px. A test keeps this the only place the system font is used. */
+@supports (-webkit-touch-callout: none) {
+  html {
+    font: -apple-system-body;
+    font-family: var(--font-ui);
+    line-height: 1.5;
   }
 }

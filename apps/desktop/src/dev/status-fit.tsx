@@ -239,7 +239,7 @@ function Probe({ label, children }: { label: string; children: React.ReactNode }
   }, [label]);
   return (
     <section className="flex flex-col gap-1">
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-[0.6875rem] text-muted-foreground">
         {label}:{" "}
         {res === null
           ? "measuring"
