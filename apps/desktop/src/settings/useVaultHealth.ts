@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { commands, type IpcError } from "@/bindings";
@@ -34,12 +34,31 @@ export function useVaultHealth() {
     return result.status === "ok" ? null : result.error;
   }, [rebuildMutation]);
 
+  // A retry of a read that never produced data puts the query back to pending and clears its error;
+  // the failure being retried stays visible meanwhile (the Household read-retry pattern), so the
+  // message and its Re-check do not vanish from the slot while the read is in flight.
+  const [lastFailure, setLastFailure] = useState<string | null>(null);
+  useEffect(() => {
+    if (query.status === "error") setLastFailure(query.error.message);
+    else if (query.status === "success") setLastFailure(null);
+  }, [query.status, query.error]);
+
   return {
     /// `null` while loading or on error (see `error`).
     health: query.data ?? null,
-    error: query.error?.message ?? null,
+    /// The failure of the last read that failed, while it is still unresolved (including during a
+    /// retry of it), else null.
+    error:
+      query.status === "error"
+        ? query.error.message
+        : query.status === "pending"
+          ? lastFailure
+          : null,
     refresh: () => void query.refetch(),
     checking: query.isFetching,
+    /// How many reads have settled as a failure, so a caller can tell that a Re-check failed AGAIN
+    /// with the same message (monotonic; `checking` can flip in one batch and miss it).
+    failures: query.errorUpdateCount,
     rebuild,
     rebuilding: rebuildMutation.isPending,
   };

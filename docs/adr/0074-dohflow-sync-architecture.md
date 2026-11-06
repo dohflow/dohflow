@@ -110,7 +110,7 @@ from that local identity:
 ```text
 sync_artifact_id_e = HMAC-SHA256(
   HKDF-SHA256-Expand(K_e, "dohflow/sync-artifact-address/v1" || vault_id),
-  StorageId
+  StorageId        # its raw 32 bytes, vault-format C.3; Addendum I
 )
 ```
 
@@ -1294,6 +1294,45 @@ replica. Every producer already passed NULL, so no payload carries a run id and 
 NULL. The foreign-key test sees only declared foreign keys, so these two columns are listed in it by
 name (`RUN_REFERENCES`). The inventory row (vault-format.md, spec-version 20) and the manifests
 follow.
+
+## Addendum I — Artifact addressing, granularity and closure (2026-11-05, `personal-cfo-0g528.2`)
+
+Decision 1's class-1b closure describes an artifact's id at its first publication only. This addendum
+records three choices that the SYNC-2c artifact work (`personal-cfo-0g528.2`) depends on, before any
+code does. They are engineering within Decision 9's epoch design; nothing here is business-sensitive
+(ADR 0082, public tier). The bytes are specified in vault-format.md C.3, C.8 and C.9 (spec-version 32).
+
+1. **First-publication ids and chained re-address ids.** The first id keeps the formula above, with
+   its input pinned as the **raw 32 bytes** of the local address (C.3), not the text of the hex form
+   (this settles the wording of the formula in Decision 1). Each replica has its own DEK, so only the
+   device that first publishes an artifact can compute that id. At a key-changing epoch the next id is
+   therefore derived from the previous one, not from the address:
+   `sync_artifact_id_{e+1} = HMAC-SHA256(HKDF-SHA256-Expand(K_{e+1}, "dohflow/sync-artifact-readdress/v1" ||
+   vault_id || key_epoch_{e+1}), sync_artifact_id_e)`. Every member of epoch `e+1` holds `sync_artifact_id_e`,
+   so any member can run a cutover without the origin's DEK and without fetching an object just to learn a
+   new id; a device that knows the old id and not `K_{e+1}` (a revoked device, the service) cannot link
+   the two. A guessed plaintext still cannot confirm presence, because the first id is keyed under the
+   DEK and then under `K_e`. A client stores ids, not addresses, so a vault rekey changes nothing.
+2. **One artifact per source batch, in ordered parts.** A source batch is one class-1b artifact, carried
+   as ordered, immutable parts under a stated per-part bound, instead of one artifact per source record
+   and parser run. Every key-changing epoch fetches, opens, reseals and puts every live artifact, so
+   per-row granularity would make a revocation take time proportional to all imported rows, and one
+   5,000-row import would already fill a snapshot's closure. The mutable workflow columns of a batch
+   (its status and counts) stay device-local; nothing a replica reads depends on them. This is an
+   internal storage layout with no user-visible effect.
+3. **Closure bounds and eager materialization.** An envelope's delta manifest stays at 4096 ids; a
+   snapshot's full closure may hold up to 2^20 (the commitment's label and bytes are unchanged). The
+   delta is every class-1b artifact the payload references, and a receiver fetches, verifies and
+   materializes all of them before it applies the envelope, then checks that the logical ids they bind
+   equal the payload's references. A manifest is a sorted list of ids with no logical binding, so a lazy
+   fetch cannot find the object a row needs; lazy attachment fetch needs an encrypted binding from a
+   logical reference to an id, which is a format change and is deferred.
+
+Open (an owner question routed through `05-decisions`, not decided here): an artifact lost from the
+service and from every device blocks a revocation cutover permanently under C.9's rule that a closure
+never has a hole. An honest data loss needs an explicit, recorded way out (for example voiding the
+artifact so its rows show as unavailable and the closure drops it). `personal-cfo-1cltt.6` implements
+whatever is decided.
 
 ## Linked beads
 
