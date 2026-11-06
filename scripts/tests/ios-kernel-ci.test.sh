@@ -15,7 +15,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 WORKFLOW="$REPO_ROOT/.github/workflows/ios-kernel.yml"
 SCRIPT="$REPO_ROOT/scripts/ios-kernel-sim-tests.sh"
-VERDICT="$REPO_ROOT/scripts/ios-kernel-ci-verdict.sh"
+VERDICT="$REPO_ROOT/scripts/macos-pools-verdict.sh"
 
 for file in "$WORKFLOW" "$SCRIPT" "$VERDICT"; do
   if [ ! -f "$file" ]; then
@@ -60,11 +60,23 @@ require_text "script refuses to run without the pin" "$SCRIPT" 'IPHONEOS_DEPLOYM
 
 # --- the check job: both targets, the whole workspace, the locked graph --------------
 require_text "the required-check name belongs to the verdict job" "$WORKFLOW" "name: iOS cross-compile (kernel crates)"
-require_text "the macOS build is a separate job" "$WORKFLOW" "name: iOS cross-compile (macOS build)"
+require_text "the arm64 macOS build is a separate job" "$WORKFLOW" "name: iOS cross-compile (macOS build, arm64)"
+require_text "the Intel macOS build is a separate job" "$WORKFLOW" "name: iOS cross-compile (macOS build, intel)"
 require_text "device target is checked" "$WORKFLOW" "cargo check --workspace --all-targets --locked --target aarch64-apple-ios"
 require_text "simulator target is checked" "$WORKFLOW" "cargo check --workspace --all-targets --locked --target aarch64-apple-ios-sim"
 require_text "targets are added on top of the pinned toolchain" "$WORKFLOW" "rustup target add aarch64-apple-ios aarch64-apple-ios-sim"
-require_text "runs on an Apple Silicon macOS runner" "$WORKFLOW" "runs-on: macos-15"
+require_text "the arm64 pool is an Apple Silicon macOS runner" "$WORKFLOW" "runs-on: macos-15"
+require_text "the Intel pool is an Intel macOS runner" "$WORKFLOW" "runs-on: macos-15-intel"
+require_text "the Intel label's retirement position is recorded in the workflow" "$WORKFLOW" "publishes no"
+CASES=$((CASES + 1))
+for job in ios-build-arm64 ios-build-intel; do
+  runs=$(awk -v job="  $job:" '$0==job{f=1;next} f&&/^  [a-z-]+:$/{f=0} f&&/cargo check --workspace --all-targets --locked --target aarch64-apple-ios( |$)/{n++} f&&/cargo check --workspace --all-targets --locked --target aarch64-apple-ios-sim/{m++} END{print n+0, m+0}' "$WORKFLOW")
+  if [ "$runs" != "1 1" ]; then
+    echo "    FAIL — $job must run both cargo check steps once (got: $runs)" >&2
+    exit 1
+  fi
+done
+echo "    ok   — both pools run both cargo check steps"
 
 # --- the simulator job ----------------------------------------------------------------
 require_text "simulator job has its name" "$WORKFLOW" "name: iOS simulator (vault tests)"
@@ -85,8 +97,20 @@ require_text "script cleans up its throwaway simulator" "$SCRIPT" 'xcrun simctl 
 require_text "script survives bash 3.2 empty arrays" "$SCRIPT" 'target_dir_args[@]+'
 
 # --- gating follows ci.yml's conventions ----------------------------------------------
-require_text "the build needs the gate" "$WORKFLOW" "needs: gate"
-require_text "check is skipped by a job-level if, never a workflow paths filter" "$WORKFLOW" "if: needs.gate.outputs.check == 'true'"
+require_text "the builds need the gate" "$WORKFLOW" "needs: gate"
+CASES=$((CASES + 1))
+if [ "$(grep -c "if: needs.gate.outputs.check == 'true'" "$WORKFLOW")" -eq 2 ]; then
+  echo "    ok   — both pools are skipped by a job-level if, never a workflow paths filter"
+else
+  echo "    FAIL — each pool's job must be skipped by the gate's output" >&2
+  exit 1
+fi
+CASES=$((CASES + 1))
+if grep -n "matrix" "$WORKFLOW" >/dev/null; then
+  echo "    FAIL — the pools must be separate jobs, not a matrix: a matrix job reports one aggregate result and the verdict needs each pool's" >&2
+  exit 1
+fi
+echo "    ok   — the pools are separate jobs (the verdict sees each result)"
 require_text "scheduled visibility is read from the API" "$WORKFLOW" 'gh api "repos/${{ github.repository }}" --jq .private'
 require_text "path filter covers the lockfile" "$WORKFLOW" "- 'Cargo.lock'"
 require_text "path filter covers the toolchain pin" "$WORKFLOW" "- 'rust-toolchain.toml'"
@@ -102,12 +126,45 @@ fi
 echo "    ok   — every action is pinned to a full commit SHA"
 
 # --- the required check fails closed (a skipped job reports Success) ------------------
-require_text "the verdict job waits for the gate and the build" "$WORKFLOW" "needs: [gate, ios-build]"
-require_text "the verdict job runs whenever the gate or build did not succeed" "$WORKFLOW" "if: \${{ always() && github.event_name != 'schedule' }}"
+# personal-cfo-md8h2.26: the verdict job needs only the gate. It polls the run's jobs for a
+# bounded time (scripts/macos-pools-wait.sh), because a verdict that waits for both pools is as
+# slow as the slower one and a pool stuck in setup is not bounded by its timeout-minutes.
+IOS_CHECK_TEXT="$(awk '/^  ios-check:/{f=1; print; next} f&&/^  [a-z0-9-]+:$/{exit} f{print}' "$WORKFLOW")"
+require_text "the verdict job needs only the gate, not the pools" "$WORKFLOW" "    needs: gate
+    if: \${{ always() && github.event_name != 'schedule' }}"
+CASES=$((CASES + 1))
+if [[ "$IOS_CHECK_TEXT" == *"needs: [gate"* ]] || [[ "$IOS_CHECK_TEXT" == *"ios-build"* ]]; then
+  echo "    FAIL — the verdict job must not wait for the pool jobs" >&2
+  exit 1
+fi
+echo "    ok   — the verdict job does not name a pool job"
+require_text "the verdict job runs whenever the gate did not succeed" "$WORKFLOW" "if: \${{ always() && github.event_name != 'schedule' }}"
+require_text "the verdict job has a timeout above the wait" "$WORKFLOW" "    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read"
 require_text "the verdict job passes the gate result" "$WORKFLOW" 'GATE_RESULT: ${{ needs.gate.result }}'
 require_text "the verdict job passes whether the build was wanted" "$WORKFLOW" 'BUILD_WANTED: ${{ needs.gate.outputs.check }}'
-require_text "the verdict job passes the build result" "$WORKFLOW" 'BUILD_RESULT: ${{ needs.ios-build.result }}'
-require_text "the verdict job runs the verdict script" "$WORKFLOW" 'run: scripts/ios-kernel-ci-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$BUILD_RESULT"'
+require_text "the verdict job names the arm64 pool it will look up" "$WORKFLOW" "VERDICT_ARM64_JOB: iOS cross-compile (macOS build, arm64)"
+require_text "the verdict job names the Intel pool it will look up" "$WORKFLOW" "VERDICT_INTEL_JOB: iOS cross-compile (macOS build, intel)"
+require_text "the verdict job runs the wait script, which runs the verdict script" "$WORKFLOW" 'run: scripts/macos-pools-wait.sh "$GATE_RESULT" "$BUILD_WANTED"'
+reject_text "the verdict job no longer takes the pools' results" "$WORKFLOW" 'ARM64_RESULT'
+require_text "the verdict job may read the run's jobs" "$WORKFLOW" "actions: read"
+require_text "the verdict job hands the token to the jobs lookup" "$WORKFLOW" 'GH_TOKEN: ${{ github.token }}'
+CASES=$((CASES + 1))
+if grep -E 'write' <<<"$IOS_CHECK_TEXT" | grep -vE '^\s*#' >/dev/null; then
+  echo "    FAIL — the verdict job must not hold a write permission" >&2
+  exit 1
+fi
+echo "    ok   — the verdict job holds no write permission"
+# The pools' names are the real job names, or the wait would never find them.
+for pair in "ios-build-arm64:iOS cross-compile (macOS build, arm64)" "ios-build-intel:iOS cross-compile (macOS build, intel)"; do
+  require_text "the pool job ${pair%%:*} is named as the verdict looks it up" "$WORKFLOW" "name: ${pair#*:}"
+done
+# A change to either script must run the iOS check, or it would go untested until the next
+# change that happens to touch the crates.
+require_text "the gate lists the verdict script" "$WORKFLOW" "              - 'scripts/macos-pools-verdict.sh'"
+require_text "the gate lists the wait script" "$WORKFLOW" "              - 'scripts/macos-pools-wait.sh'"
 CASES=$((CASES + 1))
 ios_check_runner="$(awk '/^  ios-check:/{f=1} f&&/runs-on:/{print; exit}' "$WORKFLOW")"
 if grep -qE "ubuntu-(latest|24\.04)" <<<"$ios_check_runner"; then
@@ -118,44 +175,147 @@ else
 fi
 
 # The verdict script's truth table, run for real. Arguments: gate result, whether the
-# build was wanted, build result.
+# build was wanted, the arm64 build's result, the Intel build's result.
 verdict_expect() {
-  local want="$1" gate="$2" wanted="$3" build="$4"
+  local want="$1" gate="$2" wanted="$3" arm="$4" intel="$5"
   CASES=$((CASES + 1))
   set +e
-  bash "$VERDICT" "$gate" "$wanted" "$build" >/dev/null 2>&1
+  bash "$VERDICT" "$gate" "$wanted" "$arm" "$intel" >/dev/null 2>&1
   local got=$?
   set -e
   if { [ "$want" = pass ] && [ "$got" -eq 0 ]; } || { [ "$want" = fail ] && [ "$got" -ne 0 ]; }; then
-    echo "    ok   — verdict $want: gate=$gate wanted=${wanted:-<empty>} build=$build"
+    echo "    ok   — verdict $want: gate=$gate wanted=${wanted:-<empty>} arm64=$arm intel=$intel"
   else
-    echo "    FAIL — verdict should $want but exit was $got: gate=$gate wanted=${wanted:-<empty>} build=$build" >&2
+    echo "    FAIL — verdict should $want but exit was $got: gate=$gate wanted=${wanted:-<empty>} arm64=$arm intel=$intel" >&2
     exit 1
   fi
 }
-# The gate succeeded and the build was wanted: only a successful build passes.
-verdict_expect pass success true success
-verdict_expect fail success true failure
-verdict_expect fail success true cancelled
-verdict_expect fail success true skipped
-# The gate succeeded and the build was not wanted: only a skipped build passes.
-verdict_expect pass success false skipped
-verdict_expect fail success false success
-verdict_expect fail success false failure
-verdict_expect fail success false cancelled
+# The gate succeeded and the build was wanted: at least one success and no failure passes.
+verdict_expect pass success true success success
+verdict_expect pass success true success cancelled
+verdict_expect pass success true cancelled success
+verdict_expect pass success true success skipped
+verdict_expect pass success true skipped success
+# From the wait script (personal-cfo-md8h2.26): `unfinished` is the one neutral state, so a
+# success beside it passes; `unknown` (a renamed or duplicated job, an unreadable jobs API)
+# fails whatever the other pool did, and two pools that built nothing still fail.
+verdict_expect pass success true success unfinished
+verdict_expect pass success true unfinished success
+verdict_expect fail success true unfinished unfinished
+verdict_expect fail success true unfinished cancelled
+verdict_expect fail success true unfinished skipped
+for other in success failure cancelled skipped unfinished unknown; do
+  verdict_expect fail success true unknown "$other"
+  verdict_expect fail success true "$other" unknown
+done
+verdict_expect fail success false unfinished skipped
+verdict_expect fail success false skipped unknown
+# A failure on either pool fails, whatever the other pool did.
+for other in success failure cancelled skipped; do
+  verdict_expect fail success true failure "$other"
+  verdict_expect fail success true "$other" failure
+done
+# Two builds that are not successes fail (a shortage in both pools must not pass).
+for a in cancelled skipped; do
+  for b in cancelled skipped; do
+    verdict_expect fail success true "$a" "$b"
+  done
+done
+# The gate succeeded and the build was not wanted: only two skipped builds pass.
+verdict_expect pass success false skipped skipped
+for a in success failure cancelled skipped; do
+  for b in success failure cancelled skipped; do
+    if [ "$a" != skipped ] || [ "$b" != skipped ]; then
+      verdict_expect fail success false "$a" "$b"
+    fi
+  done
+done
 # The gate did not succeed: nothing passes, whatever else is reported. This is the case
 # where a skipped build would otherwise make the required check green.
 for gate in failure cancelled skipped; do
   for wanted in true false ""; do
-    for build in success failure cancelled skipped; do
-      verdict_expect fail "$gate" "$wanted" "$build"
+    for a in success failure cancelled skipped; do
+      for b in success failure cancelled skipped; do
+        verdict_expect fail "$gate" "$wanted" "$a" "$b"
+      done
     done
   done
 done
 # A gate that succeeded but reported neither true nor false fails closed.
-verdict_expect fail success "" skipped
-verdict_expect fail success maybe skipped
-verdict_expect fail success True skipped
+verdict_expect fail success "" skipped skipped
+verdict_expect fail success maybe skipped skipped
+verdict_expect fail success True skipped skipped
+# A missing argument fails rather than passing.
+CASES=$((CASES + 1))
+if bash "$VERDICT" success true success >/dev/null 2>&1; then
+  echo "    FAIL — the verdict must refuse a missing Intel result" >&2
+  exit 1
+fi
+echo "    ok   — the verdict refuses a missing result"
+
+# The diagnostic for a cancelled build, read from a jobs API response. It must name the pool
+# that built, say whether the cancelled job was never given a runner or was cancelled
+# mid-run, say so when the API cannot be read, and never change the verdict.
+JOBS_DIR="$(mktemp -d)"
+trap 'rm -rf "$JOBS_DIR"' EXIT
+cat >"$JOBS_DIR/never-acquired.json" <<'JSON'
+{"total_count": 2, "jobs": [
+  {"name": "iOS cross-compile (macOS build, arm64)", "status": "completed", "conclusion": "cancelled", "runner_id": null, "runner_name": null, "steps": []},
+  {"name": "iOS cross-compile (macOS build, intel)", "status": "completed", "conclusion": "success", "runner_id": 12, "runner_name": "GitHub Actions 12", "steps": [{"name": "Set up job"}]}
+]}
+JSON
+cat >"$JOBS_DIR/mid-run.json" <<'JSON'
+{"total_count": 2, "jobs": [
+  {"name": "iOS cross-compile (macOS build, arm64)", "status": "completed", "conclusion": "success", "runner_id": 9, "runner_name": "GitHub Actions 9", "steps": [{"name": "Set up job"}]},
+  {"name": "iOS cross-compile (macOS build, intel)", "status": "completed", "conclusion": "cancelled", "runner_id": 12, "runner_name": "GitHub Actions 12", "steps": [{"name": "Set up job"}, {"name": "cargo check"}]}
+]}
+JSON
+cat >"$JOBS_DIR/both-never-acquired.json" <<'JSON'
+{"total_count": 2, "jobs": [
+  {"name": "iOS cross-compile (macOS build, arm64)", "status": "completed", "conclusion": "cancelled", "runner_id": null, "runner_name": null, "steps": []},
+  {"name": "iOS cross-compile (macOS build, intel)", "status": "completed", "conclusion": "cancelled", "runner_id": null, "runner_name": null, "steps": []}
+]}
+JSON
+echo '{"total_count": 0, "jobs": []}' >"$JOBS_DIR/empty.json"
+
+verdict_says() {
+  local label="$1" jobs_file="$2" want_exit="$3" expected="$4"
+  shift 4
+  CASES=$((CASES + 1))
+  local out
+  set +e
+  out="$(VERDICT_JOBS_JSON="$jobs_file" bash "$VERDICT" "$@" 2>&1)"
+  local got=$?
+  set -e
+  if [ "$got" -ne "$want_exit" ]; then
+    echo "    FAIL — $label (exit $got, wanted $want_exit; got: $out)" >&2
+    exit 1
+  fi
+  if grep -Fq -- "$expected" <<<"$out"; then
+    echo "    ok   — $label"
+  else
+    echo "    FAIL — $label (exit $got; wanted: $expected; got: $out)" >&2
+    exit 1
+  fi
+}
+verdict_says "a never-acquired arm64 build is named, and the Intel pool is said to have built" "$JOBS_DIR/never-acquired.json" 0 "iOS build (arm64) was never acquired" success true cancelled success
+verdict_says "the pool that built is named" "$JOBS_DIR/never-acquired.json" 0 "succeeded on: intel" success true cancelled success
+verdict_says "a build cancelled mid-run is said to have been mid-run" "$JOBS_DIR/mid-run.json" 0 "iOS build (intel) was cancelled mid-run" success true success cancelled
+verdict_says "a cancelled build the API does not know is reported as unknown" "$JOBS_DIR/empty.json" 0 "the jobs API has no record" success true cancelled success
+verdict_says "an unreadable jobs response is reported as unknown" "$JOBS_DIR/does-not-exist.json" 0 "could not be read" success true cancelled success
+verdict_says "both builds cancelled, each with its own fixture state: arm64 is named never-acquired and the check fails" "$JOBS_DIR/never-acquired.json" 1 "iOS build (arm64) was never acquired" success true cancelled cancelled
+verdict_says "both builds cancelled, each with its own fixture state: intel is named mid-run" "$JOBS_DIR/mid-run.json" 1 "iOS build (intel) was cancelled mid-run" success true cancelled cancelled
+verdict_says "both pools never acquired: each is named, and the check fails" "$JOBS_DIR/both-never-acquired.json" 1 "iOS build (intel) was never acquired" success true cancelled cancelled
+verdict_says "both pools never acquired: the arm64 pool is named too" "$JOBS_DIR/both-never-acquired.json" 1 "iOS build (arm64) was never acquired" success true cancelled cancelled
+verdict_says "the failure itself is reported when neither pool built" "$JOBS_DIR/both-never-acquired.json" 1 "neither pool built it" success true cancelled cancelled
+# The diagnostic never changes the verdict.
+CASES=$((CASES + 1))
+VERDICT_JOBS_JSON="$JOBS_DIR/never-acquired.json" bash "$VERDICT" success true cancelled success >/dev/null 2>&1
+if VERDICT_JOBS_JSON="$JOBS_DIR/never-acquired.json" bash "$VERDICT" success true cancelled cancelled >/dev/null 2>&1; then
+  echo "    FAIL — two cancelled builds must fail whatever the jobs API says" >&2
+  exit 1
+fi
+echo "    ok   — the diagnostic does not change the verdict"
 
 # --- kernel-only scope (ADR 0085) -----------------------------------------------------
 for forbidden in "apps/desktop" "tauri" "swiftui" "uniffi" "xcodegen" "App Store" "TestFlight" "testflight"; do

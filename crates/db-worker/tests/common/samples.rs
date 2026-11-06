@@ -387,6 +387,21 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
             },
         ),
         (
+            "commit_imported_transaction",
+            WriteCommand::CommitImportedTransaction {
+                transaction_id: txn(24),
+                account_id: account(1),
+                source_record_id: SourceRecordId::from_uuid(u(18)),
+                occurred_at: instant(),
+                amount: usd(-1_299),
+                counterparty: Some("caf\u{e9} corner".into()),
+                memo: Some("CAFE CORNER #4".into()),
+                transaction_date: Some(date(2026, 10, 15)),
+                category_id: Some(category(25)),
+                forced: true,
+            },
+        ),
+        (
             "snooze_inbox_item",
             WriteCommand::SnoozeInboxItem {
                 item_id: u(23),
@@ -692,6 +707,111 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
         (
             "reinstate_scenario",
             WriteCommand::ReinstateScenario { id: u(90) },
+        ),
+    ]
+}
+
+/// Alternate samples for the engine pin (personal-cfo-0g528.2 AC7 L1): the same variants with the
+/// optional fields that `samples()` leaves at `None` set to `Some`, so the pin covers the write
+/// path of the `Some` value and not only the `None` one. `(variant name, label, command)`; each is
+/// applied right after its variant's base sample, on the state that sample left, and pinned under
+/// `<variant>+<label>`. They are not payload fixtures: `payload_v1.rs` freezes `samples()` alone.
+pub fn alternates() -> Vec<(&'static str, &'static str, WriteCommand)> {
+    vec![
+        (
+            "set_debt_terms",
+            "fixed_amount",
+            WriteCommand::SetDebtTerms {
+                account_id: account(5),
+                terms: DebtTermsInput {
+                    apr_bps: Some(1_999),
+                    statement_close_day: Some(20),
+                    payment_due_day: Some(12),
+                    grace_period_days: Some(21),
+                    credit_limit_minor: Some(500_000),
+                    repayment_philosophy: RepaymentPhilosophy::PayFixedAmount,
+                    fixed_amount_minor: Some(7_500),
+                    min_payment_percent_bps: Some(150),
+                    min_payment_floor_minor: Some(2_000),
+                    paying_source_account_id: Some(account(3)),
+                    original_principal_minor: Some(1_000_000),
+                },
+            },
+        ),
+        (
+            "create_category",
+            "icon_without_color",
+            WriteCommand::CreateCategory {
+                id: category(600),
+                parent_id: Some(category(24)),
+                name: "Utilities".into(),
+                category_type: "expense".into(),
+                color: None,
+                icon: Some("bolt".into()),
+            },
+        ),
+        (
+            "update_category",
+            "color_without_icon",
+            WriteCommand::UpdateCategory {
+                id: category(16),
+                name: "Food and drink".into(),
+                color: Some("#112233".into()),
+                icon: None,
+            },
+        ),
+        (
+            "move_category",
+            "under_a_parent",
+            WriteCommand::MoveCategory {
+                id: category(16),
+                new_parent_id: Some(category(24)),
+            },
+        ),
+        (
+            "set_note",
+            "some",
+            WriteCommand::SetNote {
+                transaction_id: txn(10),
+                note: Some("Dinner with Sam".into()),
+            },
+        ),
+        (
+            "update_income_source",
+            "deposit_account",
+            WriteCommand::UpdateIncomeSource {
+                id: IncomeSourceId::from_uuid(u(13)),
+                name: "Paycheck (second raise)".into(),
+                net_amount: usd(340_000),
+                frequency: Frequency::Weekly,
+                anchor: date(2026, 2, 6),
+                deposit_account_id: Some(account(1)),
+            },
+        ),
+        (
+            "update_recurring_bill",
+            "autopay_and_description",
+            WriteCommand::UpdateRecurringBill {
+                event_id: event(14),
+                name: "Rent (quarterly)".into(),
+                amount: usd(-225_000),
+                bill_type: "rent".into(),
+                frequency: Frequency::EveryNMonths(3),
+                anchor: date(2026, 4, 1),
+                autopay_account_id: Some(account(1)),
+                description: Some("Paid on the first".into()),
+            },
+        ),
+        (
+            "dismiss_recurring_suggestion",
+            "with_reason",
+            WriteCommand::DismissRecurringSuggestion {
+                merchant_key: "coffee shop".into(),
+                currency: "USD".into(),
+                amount_minor: -451,
+                frequency: "weekly".into(),
+                reason: Some("too small to track".into()),
+            },
         ),
     ]
 }

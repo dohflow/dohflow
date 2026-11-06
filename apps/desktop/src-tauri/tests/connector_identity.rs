@@ -4,7 +4,7 @@
 //! A connector's identity is its connection. These tests link real connector
 //! connections (the in-memory mock, reporting the `simplefin` and `lunchflow`
 //! source types with provider-shaped ids) and refresh them through
-//! `connector_sync_impl` — the same staging, pre-check, `CommitStaged` and
+//! `connector_sync_impl` — the same staging, pre-check, the import commit and
 //! Money Inbox path a real refresh takes. The single-connection vault is the
 //! baseline: however the account is reached, the ledger holds one committed
 //! transaction per real transaction, the balance and the Future Cash forecast

@@ -9,6 +9,8 @@
 //!   metadata.
 //! * [`accepted`]: the C.10 accepted-envelope record, the service's push decision and the
 //!   client's outbox binding.
+//! * [`artifact`]: the class-1b artifact formats of C.9: the transport plaintext, the `DFSA` container,
+//!   the receipt, the logical binding and a snapshot's closure.
 //! * [`cbe`]: CBE1, the canonical binary encoding of C.1.1 (strict writer and reader).
 //! * [`claim`]: the proof a device makes to claim its Sync credential, and its check.
 //! * [`header`]: the C.4 clear header (the AEAD's AAD) and the `DFSY` container.
@@ -16,10 +18,13 @@
 //! * [`membership`]: the C.6 membership chain and epoch records and their reference verifier.
 //! * [`producer`]: the seal-then-verify rule a client runs before it uploads an envelope.
 //! * [`service`]: the checks the Sync service can make on a push without reading it.
+//! * [`snapshot`]: the genesis snapshot's plaintext framing, manifest and per-table state digest
+//!   (C.8).
 //! * [`status`]: the replica's sync status (healthy, halted, or stopped at an invalid envelope).
 //! * [`envelope`]: the envelope plaintext, its commitments and digest, and the receiver checks.
 
 pub mod accepted;
+pub mod artifact;
 pub mod canonical_json;
 pub mod cbe;
 pub mod claim;
@@ -30,6 +35,7 @@ pub mod membership;
 pub mod producer;
 pub mod row_digest;
 pub mod service;
+pub mod snapshot;
 pub mod status;
 pub mod void;
 pub mod write_set;

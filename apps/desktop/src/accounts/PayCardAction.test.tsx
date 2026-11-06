@@ -638,23 +638,45 @@ describe("the unresolved payment is held as sent (6wk.24, Studio R1b)", () => {
     expect(keyOf(1)).toBe(keyOf(0));
   });
 
-  test("the payment's key follows its identity: amount and source change it, a retry does not (56w.8)", async () => {
+  test("the payment's key follows its identity: amount, source and card change it, a retry does not, a refusal keeps the draft and a success closes it (56w.8)", async () => {
     mocks.accountList.mockResolvedValue(ok([CHECKING, SAVINGS]));
     mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+    const openAndFill = async () => {
+      await openTool();
+      fireEvent.change(amountInput(), { target: { value: "40" } });
+      fireEvent.change(sourceSelect(), { target: { value: "chk" } });
+    };
     await expectDraftKeyIdentity({
       name: "Pay card",
       open: async () => {
-        renderWithClient(<PayCardAction card={card} />);
-        await openTool();
+        renderWithClient(<Harness />);
+        await openAndFill();
       },
       send: async () => {
         await confirmEnabled();
         fireEvent.click(screen.getByRole("button", { name: /confirm payment/i }));
       },
       keys: () => mocks.recordTransfer.mock.calls.map((c) => c[0].idempotency_key),
+      // Pay card keeps its key through a typed refusal (a refused transfer stores no key host-side):
+      // an unchanged confirm reuses it, an edit gives a new one (planning ruling, 56w.8).
+      refusal: {
+        arrange: () =>
+          mocks.recordTransfer.mockResolvedValueOnce({ status: "error", error: { Validation: "nope" } }),
+        mode: "same-draft",
+      },
+      success: {
+        arrange: () => mocks.recordTransfer.mockResolvedValueOnce(ok({ op_seq: 1, replayed: false })),
+        // A recorded payment closes the tool: the same payment is entered into a freshly opened one.
+        reopen: async () => {
+          await screen.findByRole("button", { name: /pay card/i });
+          await openAndFill();
+        },
+      },
       fields: [
         { name: "amount", change: () => { fireEvent.change(amountInput(), { target: { value: "41" } }); } },
         { name: "From account", change: () => { fireEvent.change(sourceSelect(), { target: { value: "sav" } }); } },
+        // The card paid is the one the forecast hands the tool; another card is another payment.
+        { name: "card paid", change: () => { act(() => setCard({ ...card, account_id: "card2", account_name: "Amex" })); } },
       ],
     });
   });

@@ -13,21 +13,21 @@ use chrono::NaiveDate;
 use finance_kernel::{
     all_presets, detect_best, plugin_by_id, preset_by_id, run_bounded, AccountId, ActorType,
     ApplyScenario, ArchiveAccount, ArchiveCategory, ArchiveIncomeSource, ArchiveRecurringBill,
-    AttachSourceRecord, CategoryId, Clock, CommandEnvelope, CommandMeta, CommitStaged,
-    ConfirmObligationEarly, ConvertUnexplainedToTransaction, CreateAccount, CreateCategory,
-    CreateIncomeSource, CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag,
-    DeleteIncomeSource, DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem,
-    DismissRecurringSuggestion, Kernel, LinkBillToLoan, LoanOverlapDraft, MarkReviewed, Money,
-    MoveCategory, NewScenario, ParserHints, ParserInput, ParserLimits, RecategorizeTransaction,
-    RecurringEventId, RecurringTransferId, ReinstateAccount, ReinstateCategory,
-    ReinstateIncomeSource, ReinstateRecurringBill, ReinstateRecurringTransfer, RestoreIncomeSource,
-    RestoreRecurringBill, RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote,
-    SetAccountSubtype, SetBillAutopay, SetBillNotLoanPayment, SetCardStatementBalance,
-    SetDebtTerms, SetNote, SetSplits, SetTags, SkipStaged, SnoozeInboxItem, SourceBatchId,
-    SourceRecordId, SpendFilters, SystemClock, TagId, TransactionId, UnconfirmObligation,
-    UnlinkBillFromLoan, UpdateAccount, UpdateBatchState, UpdateCategory, UpdateIncomeSource,
-    UpdateRecurringBill, VaultController, VaultState, VoidTransaction, COMFORT_BAND_UPPER_KEY,
-    MINIMUM_CASH_FLOOR_KEY, REPORTING_CURRENCY_KEY,
+    AttachSourceRecord, CategoryId, Clock, CommandEnvelope, CommandMeta, ConfirmObligationEarly,
+    ConvertUnexplainedToTransaction, CreateAccount, CreateCategory, CreateIncomeSource,
+    CreateRecurringBill, CreateRecurringTransfer, CreateSourceBatch, CreateTag, DeleteIncomeSource,
+    DeleteRecurringBill, DeleteRecurringTransfer, DismissInboxItem, DismissRecurringSuggestion,
+    Kernel, LinkBillToLoan, LoanOverlapDraft, MarkReviewed, Money, MoveCategory, NewScenario,
+    ParserHints, ParserInput, ParserLimits, RecategorizeTransaction, RecurringEventId,
+    RecurringTransferId, ReinstateAccount, ReinstateCategory, ReinstateIncomeSource,
+    ReinstateRecurringBill, ReinstateRecurringTransfer, RestoreIncomeSource, RestoreRecurringBill,
+    RevertScenarioApply, ScenarioStatus, SetAccountLink, SetAccountNote, SetAccountSubtype,
+    SetBillAutopay, SetBillNotLoanPayment, SetCardStatementBalance, SetDebtTerms, SetNote,
+    SetSplits, SetTags, SnoozeInboxItem, SourceBatchId, SourceRecordId, SpendFilters,
+    StagedDecision, SystemClock, TagId, TransactionId, UnconfirmObligation, UnlinkBillFromLoan,
+    UpdateAccount, UpdateBatchState, UpdateCategory, UpdateIncomeSource, UpdateRecurringBill,
+    VaultController, VaultState, VoidTransaction, COMFORT_BAND_UPPER_KEY, MINIMUM_CASH_FLOOR_KEY,
+    REPORTING_CURRENCY_KEY,
 };
 use job_runtime::{CancellationToken, JobExecutor, JobRunReport};
 use uuid::Uuid;
@@ -4543,11 +4543,17 @@ pub fn import_staged_anyway_impl(
 ) -> Result<MutationResult, IpcError> {
     with_kernel(state, |kernel| {
         let id = parse_staged_transaction_id(&staged_transaction_id)?;
-        let outcome = kernel.dispatch(CommandEnvelope::new(
-            user_meta(&idempotency_key),
-            CommitStaged::import_anyway(id),
-        ))?;
-        Ok(outcome.into())
+        Ok(
+            match kernel.import_staged_anyway(user_meta(&idempotency_key), id)? {
+                StagedDecision::Committed(outcome) => outcome.into(),
+                // A crash had left the commit done and the staged row unmarked; the retry finished
+                // the bookkeeping. Nothing new was written to the ledger: a replay.
+                StagedDecision::AlreadyCommitted | StagedDecision::Flagged => MutationResult {
+                    op_seq: 0,
+                    replayed: true,
+                },
+            },
+        )
     })
 }
 
@@ -4569,13 +4575,17 @@ pub fn skip_staged_transaction_impl(
     staged_transaction_id: String,
     idempotency_key: String,
 ) -> Result<MutationResult, IpcError> {
+    // A skip touches only this device's staging rows, so it writes no operation-log entry and has
+    // no sequence number: the result reports 0, and the idempotency key is not needed (skipping a
+    // row that is already skipped does nothing).
+    let _ = idempotency_key;
     with_kernel(state, |kernel| {
         let id = parse_staged_transaction_id(&staged_transaction_id)?;
-        let outcome = kernel.dispatch(CommandEnvelope::new(
-            user_meta(&idempotency_key),
-            SkipStaged::new(id),
-        ))?;
-        Ok(outcome.into())
+        kernel.skip_staged(id)?;
+        Ok(MutationResult {
+            op_seq: 0,
+            replayed: false,
+        })
     })
 }
 

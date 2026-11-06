@@ -17,9 +17,10 @@ by SITE and by reachability from `apply_command`, not by count:
 
 `tests/id_mint_inventory.rs` scans the source for the mint tokens (`Uuid::now_v7`, `Uuid::new_v4`,
 `new_v7`, `ContextV7`, `next_id()`, and `<Entity>Id::new()`) and fails unless this table lists
-every remaining site, with its count, and unless no site under `apply/` or in a helper module that
-`apply` reaches (`debt.rs`, `money_inbox.rs`, `commitments.rs`) is listed. A new mint is therefore a
-deliberate row here, in the same change.
+every remaining site, with its count, and unless no site under `apply/` is listed. What `apply`
+REACHES outside `apply/` is not a hand-kept module list: `tests/mint_reachability.rs` walks the call
+graph from `apply_command` (see "Mints reachable from apply" below) and fails on any reachable mint.
+A new mint is therefore a deliberate row here, in the same change.
 
 ## Remaining random mints (KEEP)
 
@@ -42,6 +43,19 @@ deliberate row here, in the same change.
 | `lib.rs` | `ensure_node_id` | 1 | keep-class-3 | The device's own node id. |
 | `lib.rs` | `ensure_vault_metadata` | 1 | keep-seeder | The vault id, minted once at creation (genesis). |
 
+## Mints reachable from apply (exceptions)
+
+`tests/mint_reachability.rs` walks the call graph from `apply_command` and every function in `apply/`
+(by name, over every function in `crates/db-worker/src`; it can over-report, never under-report) and
+fails on any random or time-based mint, or SQLite random or clock function, in a reachable function. A
+reachable mint that cannot be derived is a row here: the function, the token, the call edge the row
+excuses (`root -> ... -> function`) and the bead that removes it. A row whose finding is gone fails as
+stale. There are none today. The linked workspace crates are scanned by token in the same test
+(`core-ids`, which defines the mint helpers, and `job-runtime` are named exceptions in the test).
+
+| Function | Token | Call edge | Bead |
+| --- | --- | --- | --- |
+
 ## Derived mints (inside `apply` and its helpers)
 
 | Site | Kind | Tag | Natural key (keyed only) |
@@ -56,12 +70,15 @@ deliberate row here, in the same change.
 | `apply/scenario_apply.rs` one promoted event per active scenario event (the count is base state) | keyed | `scenario-event` | scenario id, source event id |
 | `apply/scenario_cmds.rs` `apply_clone_scenario`, one per event id in the payload (the copied set is the payload's, not the base's) | ordinal | `scenario.clone-event` | |
 | `debt.rs` `apply_set_card_statement_balance` (upsert; the id is used only on insert) | keyed | `card-statement` | account id, cycle close |
-| `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (reads class-3 staging; see below) | keyed | `txn.commit-staged` | staged transaction id |
-| `apply/ingestion_cmds.rs` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
+| `apply/ingestion_cmds.rs` `apply_commit_staged` transaction (RETIRED, never produced; kept so an old operation log applies as it did) | keyed | `txn.commit-staged` | staged transaction id |
+| `apply/ingestion_cmds.rs` retired `apply_commit_staged` and `apply_skip_staged` dedupe decisions | keyed | `dedupe-decision` | staged transaction id, decision |
+| `apply/ingestion_cmds.rs` `apply_commit_imported_transaction` transaction | none | | carried in the payload: a content id `txn.import` of (source batch id, row ordinal), derived by the issuing device in `staged_import.rs` and never in apply |
+| `apply/ingestion_cmds.rs` `apply_commit_imported_transaction` committed dedupe decision | content | `import.dedupe-decision` | the transaction id, `committed` (independent of the command, so a re-delivery converges on one row) |
 | `apply/balance_cmds.rs` connector balance observation (insert branch of the upsert) | content | `balance-obs.connector` | account id, day (independent of the command: later commands update the row in place) |
 | `ensure_system_ledger_account` (`lib.rs`; from `apply` and the vault-creating transaction), only on a miss in the class-1 map | content | `system-ledger-account` | role, currency code (independent of the command; looked up first, so a legacy vault keeps its random ids; `personal-cfo-32fmp.3`) |
 | `seed_default_categories` (`lib.rs`), in the vault-creating transaction only, never reached from `apply` | content | `category.seed` | group name, or group name and leaf name (never recomputed to find a row: users rename and move seeded categories) |
-| `apply/ingestion_cmds.rs` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
+| `apply/ingestion_cmds.rs` retired `apply_commit_staged` provenance link | keyed | `provenance-link` | staged transaction id, relationship |
+| `apply/ingestion_cmds.rs` `apply_commit_imported_transaction` provenance link | content | `import.provenance-link` | the transaction id, relationship |
 | `apply/household.rs` `SetHouseholdTimezone` audit row (class 3, written once per command: `INSERT OR IGNORE`) | keyed | `audit.household-timezone` | none (the command id is in every keyed id) |
 | `apply/recurring.rs` `apply_dismiss_recurring_suggestion` | none | | the suppression row has a natural key; the affected entity recorded with the command is the command id |
 
@@ -110,12 +127,6 @@ The split-line read orders by `(sort_order, id)`, so the line order never depend
 
 ## Known gaps
 
-* **`CommitStaged` is not replicable as a command.** It reads the device-local (class 3) staging
-  rows to decide what to commit, so its effect depends on state a replica does not have. Its ids
-  are keyed (never ordinals, never a count), but the command itself must be reshaped before Sync
-  ships by `personal-cfo-0g528` (SYNC-2c, import-family payload materialization), which blocks the
-  Sync client engine and genesis; that bead also re-keys these ids on payload-carried identity
-  (never a staged id, which does not cross the service boundary) and removes this row.
 * **SQLite's own clock and random values** are the only other nondeterminism source in SQL:
   `tests/id_mint_inventory.rs` also fails on `'now'`, `randomblob`, `CURRENT_TIMESTAMP` or
   `datetime(` in any SQL the engine runs, except migration 44's two `strftime('now')` stamps. They

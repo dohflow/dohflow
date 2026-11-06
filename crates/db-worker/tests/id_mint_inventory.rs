@@ -9,9 +9,6 @@ use std::path::Path;
 const INVENTORY: &str = include_str!("../../../docs/architecture/id-mint-inventory.md");
 const MIGRATIONS: &str = include_str!("../src/migrations.rs");
 
-/// Modules `apply` reaches that must hold no raw mint at all.
-const APPLY_REACHED_MODULES: &[&str] = &["debt.rs", "money_inbox.rs", "commitments.rs"];
-
 const MINT_TOKENS: &[&str] = &[
     "Uuid::now_v7",
     "Uuid::new_v4",
@@ -144,16 +141,15 @@ fn every_remaining_mint_is_a_row_of_the_inventory_with_its_count() {
     );
 }
 
+/// Nothing under `apply/` mints a random id. What `apply` REACHES outside `apply/` is no longer a
+/// hand-kept module list: `mint_reachability.rs` walks the call graph from `apply_command` and fails
+/// on any reachable mint (personal-cfo-32fmp.4).
 #[test]
-fn nothing_under_apply_or_in_the_modules_apply_reaches_mints_a_random_id() {
+fn nothing_under_apply_mints_a_random_id() {
     for ((file, function), count) in scanned() {
         assert!(
             !file.starts_with("apply/"),
             "{file}::{function} mints {count} random id(s) under apply/: use core_ids::DerivedIds"
-        );
-        assert!(
-            !APPLY_REACHED_MODULES.contains(&file.as_str()),
-            "{file}::{function} mints {count} random id(s) in a module apply reaches"
         );
     }
 }

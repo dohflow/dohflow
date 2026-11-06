@@ -1,7 +1,7 @@
 /**
  * personal-cfo-56w.8: the per-draft idempotency key of the Add transaction form and of a recurring bill
- * created from it (personal-cfo-g3m.35, 6wk.23), pinned for EVERY field of the draft's identity with the
- * shared helper. Lives in its own file so it stays clear of the large TransactionsView suite.
+ * created from it (personal-cfo-g3m.35, 6wk.23), and of Add transfer, one-off and recurring
+ * (personal-cfo-g3m.39), pinned for EVERY field of the draft's identity with the shared helper. Lives in its own file so it stays clear of the large TransactionsView suite.
  */
 
 import { fireEvent, screen } from "@testing-library/react";
@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   spendByCategory: vi.fn(),
   baseCurrency: vi.fn(),
   createTag: vi.fn(),
+  recordTransfer: vi.fn(),
+  createRecurringTransfer: vi.fn(),
 }));
 
 vi.mock("@/bindings", () => ({
@@ -43,6 +45,8 @@ vi.mock("@/bindings", () => ({
     spendByCategory: mocks.spendByCategory,
     baseCurrency: mocks.baseCurrency,
     createTag: mocks.createTag,
+    recordTransfer: mocks.recordTransfer,
+    createRecurringTransfer: mocks.createRecurringTransfer,
   },
 }));
 
@@ -94,6 +98,8 @@ beforeEach(() => {
   // A lost connection: the call throws, so the form stays open and the key stays with the draft.
   mocks.recordTransaction.mockRejectedValue(new Error("connection lost"));
   mocks.createRecurringBill.mockRejectedValue(new Error("connection lost"));
+  mocks.recordTransfer.mockRejectedValue(new Error("connection lost"));
+  mocks.createRecurringTransfer.mockRejectedValue(new Error("connection lost"));
 });
 
 const change = (label: string | RegExp, value: string) =>
@@ -194,6 +200,105 @@ describe("a recurring bill created from the Add form: key identity (personal-cfo
         },
         // Last: choosing a fixed frequency hides the custom interval fields.
         { name: "frequency", change: () => change(/frequency/i, "weekly") },
+      ],
+    });
+  });
+});
+
+describe("Add transfer: key identity (personal-cfo-56w.8)", () => {
+  const JOINT = account({ id: "0190a000-0000-7000-8000-000000000003", name: "Joint" });
+  const WALLET = account({ id: "0190a000-0000-7000-8000-000000000004", name: "Wallet" });
+  const REFUSED = { status: "error", error: { Validation: "That account cannot cover this." } } as const;
+
+  /// Both transfer commands in the order they were called, so one spec can follow the draft across
+  /// the One-off / Recurring switch.
+  const sent: string[] = [];
+  /// What the next call gets, whichever command it is; without one it throws, a lost connection.
+  let next: { answer: unknown } | null = null;
+  const respond = async (input: { idempotency_key: string }) => {
+    sent.push(input.idempotency_key);
+    if (next === null) throw new Error("connection lost");
+    const { answer } = next;
+    next = null;
+    return answer;
+  };
+  beforeEach(() => {
+    sent.length = 0;
+    next = null;
+    mocks.accountList.mockResolvedValue(ok([account(), SAVINGS, JOINT, WALLET]));
+    mocks.recordTransfer.mockImplementation(respond);
+    mocks.createRecurringTransfer.mockImplementation(respond);
+  });
+  const answerNext = (answer: unknown) => {
+    next = { answer };
+  };
+
+  const field = (id: string) => byId(id);
+  const pick = (id: string, value: string) => fireEvent.change(field(id), { target: { value } });
+  const submitButton = () => screen.getByRole("button", { name: /^add transfer$|schedule transfer/i });
+  const send = async () => {
+    // The form is locked until the previous call settles.
+    await vi.waitFor(() => expect(submitButton()).toBeEnabled());
+    fireEvent.click(submitButton());
+  };
+  const openTransfer = async (recurring: boolean) => {
+    renderWithClient(<TransactionsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /^add transfer$/i }));
+    if (recurring) fireEvent.click(screen.getByRole("button", { name: "Recurring" }));
+    change(/amount/i, "50");
+    pick("transfer-date", "2026-06-05");
+  };
+  const reopen = (recurring: boolean) => async () => {
+    fireEvent.click(await screen.findByRole("button", { name: /^add transfer$/i }));
+    if (recurring) fireEvent.click(screen.getByRole("button", { name: "Recurring" }));
+    change(/amount/i, "50");
+    pick("transfer-date", "2026-06-05");
+  };
+
+  it("one-off: the accounts, the amount, the date and the mode", async () => {
+    await expectDraftKeyIdentity({
+      name: "Add transfer (one-off)",
+      open: () => openTransfer(false),
+      send,
+      keys: () => sent,
+      refusal: { arrange: () => answerNext(REFUSED) },
+      success: { arrange: () => answerNext(ok({ op_seq: 1, replayed: false })), reopen: reopen(false) },
+      fields: [
+        { name: "To", change: () => pick("transfer-dest", JOINT.id) },
+        { name: "From", change: () => pick("transfer-source", SAVINGS.id) },
+        { name: "amount", change: () => change(/amount/i, "51") },
+        { name: "date", change: () => pick("transfer-date", "2026-06-06") },
+        // Last: from here on the form is a recurring transfer.
+        { name: "mode (recurring instead of one-off)", change: () => { fireEvent.click(screen.getByRole("button", { name: "Recurring" })); } },
+      ],
+    });
+  });
+
+  it("recurring: the accounts, the amount, the start date and the schedule", async () => {
+    await expectDraftKeyIdentity({
+      name: "Add transfer (recurring)",
+      open: () => openTransfer(true),
+      send,
+      keys: () => sent,
+      refusal: { arrange: () => answerNext(REFUSED) },
+      success: { arrange: () => answerNext(ok({ recurring_transfer_id: "rt-1", mutation: { op_seq: 1, replayed: false } })), reopen: reopen(true) },
+      fields: [
+        { name: "To", change: () => pick("transfer-dest", JOINT.id) },
+        { name: "From", change: () => pick("transfer-source", SAVINGS.id) },
+        { name: "amount", change: () => change(/amount/i, "51") },
+        { name: "start date", change: () => pick("transfer-date", "2026-06-06") },
+        { name: "frequency", change: () => pick("transfer-frequency", "weekly") },
+        {
+          name: "a custom interval's count",
+          change: () => {
+            pick("transfer-frequency", "custom");
+            change("Interval count", "2");
+            change("Interval unit", "months");
+            // Sent once as a first draft of the custom schedule; the next change is the count.
+          },
+        },
+        { name: "interval count", change: () => change("Interval count", "3") },
+        { name: "interval unit", change: () => change("Interval unit", "weeks") },
       ],
     });
   });

@@ -42,6 +42,17 @@ lane: `00-overseer` (routing, notifications, build-machine hygiene),
   migration number, a shared frontend file, `Cargo.lock`, `pnpm-lock.yaml`, a
   shared CI workflow (`ci.yml`), or a shared policy document such as this one.
   Whichever change merges second rebases.
+- **The engine pin is a hotspot** (`personal-cfo-32fmp.4`, vault-format.md C.13).
+  `ENGINE_VERSION` (`crates/db-worker/src/lib.rs`) and `crates/db-worker/tests/engine_pins.txt`
+  (checked by `tests/engine_pin.rs`) are edited in two cases only. (1) A change that alters what
+  `apply` writes for an unchanged payload and base, or what a receiver accepts, **a new command
+  variant included**, bumps `dohflow-engine-N` AND appends its `engine` section to
+  `engine_pins.txt` (`ENGINE_PIN_UPDATE=1 cargo test -p db-worker --test engine_pin` does the
+  append once `ENGINE_VERSION` is bumped) in the same pull request; an older section is never
+  edited. (2) A change that only moves a test sample or its setup re-pins the current section in
+  place, with no bump. The test says which case applies. Ask `01-planning` before touching either
+  file, and whichever pull request merges second re-runs the pin after rebasing (two bumps in
+  flight take consecutive numbers in merge order).
 - **The two cargo-heavy jobs limit is unchanged and is across all lanes** (see
   "Usage and hardware constraints").
 - **A lane's review session reviews that lane's pull requests.** The review gate,
@@ -359,8 +370,10 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   little and add lock contention.
 - **`sccache` is not adopted.** It is a new dependency, and a possible later owner
   decision, not part of this change.
-- **Nothing here deletes a worktree, a branch or a scratch directory on its
-  own.** Those stay explicit actions (`AGENTS.md` section 1).
+- **Nothing here deletes a branch, an unregistered copy or a scratch directory
+  on its own, and `--clean` without `--scratch` removes no worktree.** Those stay
+  explicit actions (`AGENTS.md` section 1). The two scratch tiers below are the
+  only addition (`personal-cfo-0rein.12`).
 
 **The tool.** `scripts/dev-hygiene.sh` is read-only by default.
 
@@ -368,8 +381,27 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   for every registered worktree: its cargo `target/` size, last activity, branch,
   whether the branch is merged into `origin/main` or its remote branch is gone,
   uncommitted changes, commits that exist on no remote, and whether a
-  cargo/rustc process is running in it. It also reports the size of the session
-  scratch directory and the free disk space, and flags free space under 15%.
+  cargo/rustc process is running in it. It also reports the free disk space and
+  flags free space under 15%, and it reports the session scratch directory per
+  session folder (below).
+- The scratch report. Scratch lives at
+  `/private/tmp/claude-<uid>/<project slug>/<session uuid>/`, one slug per lane
+  checkout. For every session folder under a DohFlow slug the report shows the
+  slug, the session uuid, its size, its last activity, and whether a
+  cargo/rustc process is running in it. Inside each it lists the git checkouts
+  (registered with `git worktree list`, or unregistered: a clone, a copy, a
+  stale `.git` file) with branch or HEAD, uncommitted changes and unpushed
+  commits, and the cargo `target/` directories with their sizes and owning
+  checkout. Each checkout and target is tied to its pull request through `gh`
+  (by branch, or by commit SHA for a detached HEAD) and shown as merged, closed,
+  open or unknown. A squash merge counts as merged through the PR, never through
+  ancestry; with no `gh`, no network or no PR the state is **unknown, and
+  unknown is never treated as merged**. The report flags a session folder over
+  20 GiB, flags the scratch total when free space is under 15%, and names the
+  candidates `--clean --scratch` would act on. Other projects' folders under the
+  scratch root appear as a size and are never opened. It is read-only, and costs
+  one `du` walk per session folder plus the `git` and `gh` calls per checkout
+  (`--no-pr` skips `gh`).
 - `scripts/dev-hygiene.sh --clean [--idle-days N] [--yes]` shows its plan and asks
   for confirmation (`--yes` skips the question). It does exactly two things:
   `cargo clean` in worktrees idle for at least N days (default 3) that have no
@@ -379,14 +411,29 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   `rm`, never touches a dirty or unpushed worktree, and never touches the
   worktree it is run from. `scripts/tests/dev-hygiene.test.sh` covers those
   refusals.
+- `scripts/dev-hygiene.sh --clean --scratch [--idle-days N] [--yes]` (**Tier 2**)
+  adds, for the scratch session folders: `cargo clean` on a scratch cargo target
+  directory, and a plain `git worktree remove` (never `--force`) of a clean
+  *registered* scratch worktree whose only ignored entries are `target/` and
+  `node_modules/`. It acts only when the worktree's pull request is **merged or
+  closed** (never unknown, and never open), the whole session folder has been idle
+  for at least N days (default 3), no cargo/rustc process runs in it, and nothing
+  is uncommitted or on no remote. It never runs `rm`, never removes a branch,
+  never touches an unregistered copy, another project's folder, or the folder (or
+  repository) it is run from, and a target that belongs to no checkout is never
+  cleaned, because no pull request ties it to finished work. The plan,
+  confirmation, `--yes` and re-inspection after the prompt work as for `--clean`;
+  the re-inspection also re-asks `gh`.
 - "Last activity" is an approximation (git index and reflog, and the newest
   entries in the cargo target directory). The worst result of a wrong guess is a
   rebuild, never lost work.
 
 **Rules per role.**
 
-- **Implementation.** After a PR merges, remove your own per-bead worktree and
-  local branch once you have verified they are clean and pushed. First run
+- **Implementation.** Any probe worktree you made in session scratch gets the
+  Tier 1 treatment below once its PR is merged or closed. After a PR merges,
+  remove your own per-bead worktree and local branch once you have verified they
+  are clean and pushed. First run
   `git status --short --ignored` in the worktree: `git worktree remove` deletes
   ignored files too, so confirm the only ignored entries are rebuildable output
   (`target/`, `node_modules/`) and nothing you still need. Then `git worktree
@@ -400,12 +447,32 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   to a detached `origin/main` (`git switch --detach origin/main`).
 - **Review and escalation.** Both run the project's test suites, so they fill
   `target/` too. Run `cargo clean` after each verdict on a large PR, or whenever
-  your `target/` exceeds about 15 GiB.
+  your `target/` exceeds about 15 GiB. **Tier 1:** once a PR you gave a verdict on
+  is merged or closed, clean your own scratch for that PR: `cargo clean` in its
+  target directories, and `git worktree remove <path>` (never `--force`)
+  for a clean registered worktree. Check `git status --short --ignored` first, as
+  above. Never remove a worktree of an open PR, and never another session's.
 - **Overseer.** Run `scripts/dev-hygiene.sh --report` at session start and once a
   week. When free space is under 15%, **ask the owner before any `--clean`**.
-- **Everyone.** Session scratch builds under `/private/tmp/claude-<uid>` are
-  reported only. Removing one is an explicit act by the session that made it or
-  by the owner, never by `--clean`.
+- **Everyone.** Session scratch under `/private/tmp/claude-<uid>` is cleaned
+  only as the two tiers say: your own, per the role rules above (Tier 1), or by
+  `--clean --scratch` under its conditions (Tier 2). **Removing an unregistered
+  copy (`rm -r`) stays an explicit act, approved by the owner** (`AGENTS.md`
+  section 1); nothing here covers it, and `--clean --scratch` never does it.
+  Deleting a scratch directory as such, a branch, or anything in another project's
+  folder is likewise the owner's call.
+
+**Owner authorization for the scratch tiers.** On 2026-11-04 (`personal-cfo-0rein.12`),
+asked whether to file scratch hygiene with a cleanup policy at one tier or both,
+the owner answered: "File with both tiers". That is the standing authorization
+for exactly these two things and nothing else in `AGENTS.md` section 1: Tier 1
+(a session cleaning its own scratch after the verdict on a merged or closed PR, as
+the role rules above say) and Tier 2 (`--clean --scratch` under the conditions
+above). It is not an authorization to remove an unregistered copy, delete a branch,
+or touch anything outside the scratch root. The earlier 2026-10-19 authorization
+(a session's own clean, pushed per-bead worktree and local branch after its PR
+merges) is unchanged. When free space is under 15% the overseer still asks the
+owner before any `--clean`, `--clean --scratch` included; the report says so.
 
 **Owner-side note: Time Machine local snapshots.** Deleting build output does not
 return space at once if local Time Machine snapshots still hold it. These are

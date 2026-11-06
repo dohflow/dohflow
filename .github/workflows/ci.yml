@@ -467,12 +467,16 @@ jobs:
           cargo test -p db-worker -p job-runtime -- --ignored --nocapture --test-threads=1 \
             write_set_tests::the_capture_stays_inside_the_absolute_budget \
             write_set_tests::the_relative_check_rejects_a_much_slower_capture \
+            the_derived_id_mint_stays_inside_the_absolute_budget \
+            ordinary_commands_stay_inside_the_absolute_budget_on_the_golden_fixture \
+            an_import_batch_stays_inside_the_absolute_budget \
             rebuild_stays_inside_the_absolute_budget \
             db_cancel_request_reaches_a_running_handler_within_the_sla \
             cancellation_is_visible_within_the_absolute_sla 2>&1 \
             | tee "$out" || status=$?
           absolute=$(grep 'ABSOLUTE' "$out" || echo "no measurement line printed")
           slowed=$(grep 'write-set capture SLOWED' "$out" || echo "no measurement line printed")
+          apply_perf=$(grep 'ABSOLUTE \(derived ids\|record a transaction\|set a note\|mark reviewed\|void a transaction\|import batch\)' "$out" || echo "no measurement line printed")
           {
             echo "### Perf budget: write-set capture (not a required check)"
             echo "Runner: ${RUNNER_OS} ${RUNNER_ARCH} (${RUNNER_ENVIRONMENT:-unknown})."
@@ -483,6 +487,10 @@ jobs:
             echo "Timed slowdown proof (the relative check must reject it; it needs a ratio of 4x or more):"
             echo '```'
             echo "$slowed"
+            echo '```'
+            echo "Apply on the golden fixture (derived ids, ordinary commands, a 2,000-row import):"
+            echo '```'
+            echo "$apply_perf"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
@@ -1401,19 +1409,46 @@ jobs:
   # `cargo check` of the crate with its default features for aarch64-apple-ios-sim fails on it
   # (shown with a throwaway change: "cannot find `__cmd__apply_update`"). A generic portability
   # check of public code: it names no product. It needs the Apple SDK (SQLCipher and OpenSSL
-  # compile from vendored C), so it runs on a macOS runner. Not a required check yet: whether it
-  # becomes one is the owner's call via 00-overseer.
-  desktop-nondesktop-check:
-    name: Desktop crate (non-desktop target check)
-    runs-on: macos-15
-    timeout-minutes: 45
-    if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
-    env:
-      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+  # compile from vendored C), so it runs on macOS runners.
+  #
+  # A REQUIRED check (`Desktop crate (non-desktop target check)`), built to fail CLOSED and to
+  # survive a runner shortage (personal-cfo-md8h2.25, the same design as ios-kernel.yml's
+  # md8h2.24). Four jobs:
+  #
+  #   desktop-nondesktop-gate         a Linux job that decides whether the build is wanted;
+  #   desktop-nondesktop-build-arm64  the build on macos-15 (Apple Silicon);
+  #   desktop-nondesktop-build-intel  the same build on macos-15-intel;
+  #   desktop-nondesktop-check        a Linux verdict job that owns the required name. It needs
+  #                                   only the gate: scripts/macos-pools-wait.sh polls the
+  #                                   run's jobs for at most 20 minutes and hands the result to
+  #                                   scripts/macos-pools-verdict.sh, the verdict ios-kernel.yml
+  #                                   uses too (personal-cfo-md8h2.26; see that workflow).
+  #
+  # Why: a job that is never given a hosted macOS arm64 runner is cancelled by GitHub after
+  # about 15 minutes, and a required check that never ran dropped queued pull requests (#270,
+  # #275 and #279 on 2026-11-04). The verdict passes when the build succeeded on at least one
+  # pool and neither failed, or when it was not wanted and both pools were skipped; a real
+  # failure on either pool, a failed gate, or two builds that are not successes fail it. The
+  # decision to build lives in the gate, never in a step of the build: a job whose steps are
+  # skipped still reports Success, so a path filter inside the macOS job could turn the check
+  # green without a build.
+  #
+  # Separate jobs here rather than extra steps in ios-kernel.yml's pool jobs: this crate is its
+  # own Cargo workspace (its own lockfile and Tauri dependency set), only the one target is
+  # checked, and it is wanted on a different set of changes (a change under apps/desktop alone
+  # does not touch the kernel crates), so folding it in would make each required name wait for
+  # the other's work and let one failure fail both names. The cost is two more macOS runners on a
+  # pull request that touches the paths below; standard macOS runners are free for a public
+  # repository. The Intel label's retirement position is recorded in ios-kernel.yml.
+  desktop-nondesktop-gate:
+    name: Desktop crate gate (visibility and changed paths)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    outputs:
+      check: ${{ steps.decide.outputs.check }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          fetch-depth: 2
+        if: github.event_name == 'pull_request'
 
       # The desktop crate depends on crates/** by path, so a change there runs the check too.
       - name: Detect changed files
@@ -1428,20 +1463,114 @@ jobs:
               - 'crates/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
+              - 'scripts/macos-pools-verdict.sh'
+              - 'scripts/macos-pools-wait.sh'
+
+      - name: Decide whether the build runs
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          PRIVATE: ${{ github.event.repository.private }}
+          CODE_CHANGED: ${{ steps.filter.outputs.code }}
+        run: |
+          set -euo pipefail
+          check=false
+          case "$EVENT" in
+            workflow_dispatch)
+              check=true
+              ;;
+            pull_request)
+              if [ "$PRIVATE" = "false" ] && [ "$CODE_CHANGED" = "true" ]; then
+                check=true
+              fi
+              ;;
+            push | merge_group)
+              if [ "$PRIVATE" = "false" ]; then
+                check=true
+              fi
+              ;;
+          esac
+          echo "check=$check" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT check=$check"
+
+  desktop-nondesktop-build-arm64:
+    name: Desktop crate non-desktop build (macOS arm64)
+    needs: desktop-nondesktop-gate
+    if: needs.desktop-nondesktop-gate.outputs.check == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Add the non-desktop target
-        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: rustup target add aarch64-apple-ios-sim
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         with:
           workspaces: apps/desktop/src-tauri
-          key: nondesktop-check
+          key: nondesktop-check-arm64
 
       - name: cargo check, desktop crate, aarch64-apple-ios-sim (default features)
-        if: steps.filter.outputs.code == 'true' || github.event_name != 'pull_request'
         run: cargo check --locked --target aarch64-apple-ios-sim --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  desktop-nondesktop-build-intel:
+    name: Desktop crate non-desktop build (macOS intel)
+    needs: desktop-nondesktop-gate
+    if: needs.desktop-nondesktop-gate.outputs.check == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Add the non-desktop target
+        run: rustup target add aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri
+          key: nondesktop-check-intel
+
+      - name: cargo check, desktop crate, aarch64-apple-ios-sim (default features)
+        run: cargo check --locked --target aarch64-apple-ios-sim --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  # The required check: it is this job's name that the branch ruleset lists. The job id stays
+  # `desktop-nondesktop-check` so main-red-alert keeps waiting for it: it fails when the gate or
+  # either build fails before the deadline, so a real failure on main still raises the alert.
+  #
+  # It needs only the gate, not the pools (personal-cfo-md8h2.26; the reasoning is in
+  # ios-kernel.yml's verdict job): scripts/macos-pools-wait.sh polls this run's jobs until both
+  # pools have a conclusion, a pool fails, or 20 minutes pass, then scripts/macos-pools-verdict.sh
+  # decides. One pool's success with the other unfinished at the deadline passes with a notice.
+  # Worst case from the gate finishing to the check reporting: about 21 minutes (the wait, one
+  # 30-second poll of overshoot, checkout and verdict) plus this Linux job's runner acquisition,
+  # with `timeout-minutes: 25` as a backstop. A pool that fails AFTER the verdict passed does not
+  # change the check, so main-red-alert also waits for the two pool jobs (below).
+  desktop-nondesktop-check:
+    name: Desktop crate (non-desktop target check)
+    needs: desktop-nondesktop-gate
+    if: ${{ always() && github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read # reads the run's jobs: the pools' states, and a cancelled build's cause
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_RESULT: ${{ needs.desktop-nondesktop-gate.result }}
+          BUILD_WANTED: ${{ needs.desktop-nondesktop-gate.outputs.check }}
+          VERDICT_CHECK: Desktop crate non-desktop target check
+          VERDICT_BUILD: Desktop crate build
+          VERDICT_ARM64_JOB: Desktop crate non-desktop build (macOS arm64)
+          VERDICT_INTEL_JOB: Desktop crate non-desktop build (macOS intel)
+        run: scripts/macos-pools-wait.sh "$GATE_RESULT" "$BUILD_WANTED"
 
   # NOTE: Building the macOS release binary (with capability/CSP hardening and a
   # launch smoke test) is owned by bead personal-cfo-rhci and will be added as a
@@ -1452,10 +1581,18 @@ jobs:
   # required check and not run on pull requests. The issue text is built only
   # from values GitHub computes (SHA, run URL, job results); nothing from a
   # commit message or a pull request title is interpolated into a shell.
+  #
+  # It waits for the two desktop pool jobs as well as the verdict (personal-cfo-md8h2.26). The
+  # verdict no longer waits for the pools, so a pool that fails after the verdict passed (one
+  # pool built, the other was still unfinished at the 20-minute deadline) is seen here only
+  # through its own result: `contains(needs.*.result, 'failure')` fires for it, and the issue
+  # lists it by job id. A pool that is skipped (the build was not wanted) or cancelled (a runner
+  # was never given) is not a failure. This job then runs once the pools finish, which can be
+  # after the check has long reported; that delay is only the alert's.
   main-red-alert:
     name: Alert if main is red
     runs-on: ubuntu-24.04
-    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts, desktop-nondesktop-check]
+    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts, desktop-nondesktop-check, desktop-nondesktop-build-arm64, desktop-nondesktop-build-intel]
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false && contains(needs.*.result, 'failure') }}
     permissions:
       contents: read
@@ -1501,6 +1638,12 @@ jobs:
   # A skipped or cancelled gate does not count as green (alert-close.sh checks every result),
   # and an issue labeled keep-open, or reopened by a person in the last 24 hours, is left open.
   # Not a required check.
+  #
+  # It does NOT wait for the two desktop pool jobs (personal-cfo-md8h2.26), unlike main-red-alert:
+  # a pool that was never given a runner is `cancelled`, which would keep a green main from ever
+  # closing the issue, while the verdict already passed on the other pool (that pass is what it
+  # needs). A pool that fails late opens a new alert through main-red-alert; this job, which runs
+  # when the verdict reports, has by then closed only what was resolved at that moment.
   main-red-resolve:
     name: Close the main-red alert when main is green
     runs-on: ubuntu-24.04

@@ -365,8 +365,33 @@ nightly or on-demand run of the vault tests on an iOS simulator
 (`scripts/ios-kernel-sim-tests.sh`, which runs the same way locally on a Mac with Xcode).
 Its `iOS cross-compile (kernel crates)` job is a small verdict job that always reports and
 fails closed (it passes only when the path gate succeeded and the macOS build either
-succeeded or was not needed), so it is safe to require; adding that name to the branch
+succeeded on at least one of its two runner pools, arm64 and Intel, with neither pool failing,
+or was not needed; a runner shortage in one pool costs nothing, `personal-cfo-md8h2.24`), so
+it is safe to require; adding that name to the branch
 ruleset is a repository-settings step for the owner, not something a PR does.
+
+The other required check that needs macOS gets the same treatment (`personal-cfo-md8h2.25`):
+`Desktop crate (non-desktop target check)` in `ci.yml` is a Linux verdict job in front of a Linux
+gate and two macOS pool jobs (arm64 and Intel), and runs the same `scripts/macos-pools-verdict.sh`
+that the iOS check does. Every other required check runs on Linux, so a macOS runner shortage
+cannot drop a pull request from the merge queue; `scripts/tests/desktop-nondesktop-ci.test.sh`
+audits that.
+
+Neither verdict job waits for its pool jobs (`personal-cfo-md8h2.26`). A pool stuck in "Set up
+job" is not bounded by its `timeout-minutes` (run 41920261907 sat there for 55 minutes against a
+45-minute timeout), and the merge queue drops a pull request whose required check has not reported
+in 60 minutes. So each verdict job needs only its gate and runs `scripts/macos-pools-wait.sh`,
+which polls the run's jobs (this run attempt, exact job names) until both pools have a conclusion,
+a pool fails, or 20 minutes pass, and then hands what it saw to `scripts/macos-pools-verdict.sh`.
+At the deadline one pool's success passes the check with a notice naming the pool left unfinished,
+and a pool still queued or running is the only neutral state. No success fails it, and so does a pool
+whose state cannot be determined (a missing, renamed or duplicated job, or an unreadable jobs API
+at the last poll) even beside the other pool's success, and any completed conclusion but success,
+cancelled or skipped (startup_failure, action_required, neutral, stale) is a failure. A pool
+that fails after the check passed is seen by `main-red-alert` in `ci.yml`, which waits for the two
+desktop pool jobs as well. The check reports about 21 minutes after the gate at the latest, plus
+its own Linux runner's acquisition; `scripts/tests/macos-pools-wait.test.sh` runs every case
+against fixture snapshots, with no live API call.
 
 That automatic check is the primary evidence, but agents still record their
 own gate runs, because CI proves the candidate SHA passes — it does not

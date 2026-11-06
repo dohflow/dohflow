@@ -50,6 +50,7 @@ mod assumptions;
 mod attachments;
 mod backup_history;
 mod band_drift;
+pub mod base_image;
 mod categories;
 mod column_manifest;
 mod connectors;
@@ -71,6 +72,7 @@ mod forecast_overrides;
 mod forecast_persist;
 mod ingestion;
 mod jobs;
+pub mod logical_export;
 pub use jobs::{
     DurableJobView, JobStoreError, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
 };
@@ -90,6 +92,8 @@ pub use rekey::{available_space, verify_rekeyed_copy, BlobRename};
 mod scenarios;
 mod schedule_sources;
 mod spend_by_category;
+mod staged_import;
+pub mod sync_state;
 
 pub use assumptions::{
     AssumptionEventView, AssumptionKind, AssumptionSource, AssumptionStatus, DependencyEdge,
@@ -100,6 +104,7 @@ pub use backup_history::{BackupHistoryEntry, BackupHistoryKind};
 pub use categories::CategoryView;
 pub use commitments::CommitmentView;
 pub use money_inbox::MoneyInboxItem;
+pub use staged_import::StagedDecision;
 
 /// The schema version a fully-migrated vault is at — the highest migration this
 /// build knows. Newer backups and ordinary existing-vault version witnesses
@@ -112,7 +117,7 @@ pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 /// same write-set hash from the same command, which is what lets a replica verify a write set.
 /// It is bumped by hand, in the same change, whenever a change makes `apply` write something
 /// different for an unchanged payload; a mismatch tells a client to update before it continues.
-pub const ENGINE_VERSION: &str = "dohflow-engine-1";
+pub const ENGINE_VERSION: &str = "dohflow-engine-2";
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
@@ -153,6 +158,7 @@ pub const PERSISTED_SETTING_KEYS: &[&str] = &[
     AUTO_CATEGORIZE_ON_IMPORT_KEY,
     FUTURE_CASH_SERIES_KEY,
 ];
+pub use apply::ingestion_cmds::{FIRST_IMPORT_YEAR, LAST_IMPORT_YEAR, MAX_IMPORT_TEXT_BYTES};
 pub use apply::merchant_cmds::{MAX_MERCHANT_COMMAND_ENTRIES, MAX_MERCHANT_DISPLAY_NAME_BYTES};
 pub use apply::settings_cmds::MAX_USER_SETTING_VALUE_BYTES;
 pub use categorization::RecurringCandidate;
@@ -738,10 +744,11 @@ pub enum WriteCommand {
         /// Records skipped (duplicates, etc.) so far.
         skipped_count: i64,
     },
-    /// Commit one staged transaction to the ledger (ADR 0008/0014, personal-cfo-cmx):
-    /// promote it to a balanced double-entry transaction + FK-strict import
-    /// provenance, marking the staged row committed. A transaction-fingerprint
-    /// duplicate is flagged for the Money Inbox instead — never silently dropped.
+    /// RETIRED (personal-cfo-0g528.1): commit one staged transaction to the ledger (ADR 0008/0014,
+    /// personal-cfo-cmx). It names a device-local staging row and decides its outcome from class-3
+    /// state, so it cannot replicate; it stays in the enum, applying exactly as it did, so an
+    /// operation log written before the change decodes and replays. Nothing produces it any more:
+    /// the commit is [`WriteCommand::CommitImportedTransaction`].
     CommitStaged {
         /// The staged transaction to commit.
         staged_transaction_id: StagedTransactionId,
@@ -750,12 +757,45 @@ pub enum WriteCommand {
         /// §7, personal-cfo-asqy). The pipeline always passes `false`.
         force: bool,
     },
-    /// Skip a staged transaction without committing it — the Money Inbox "skip"
-    /// resolution (ADR 0014 §7, personal-cfo-asqy). Marks the row `skipped` so the
-    /// next inbox rebuild drops it; no ledger write.
+    /// RETIRED (personal-cfo-0g528.1): skip a staged transaction without committing it — the Money
+    /// Inbox "skip" resolution (ADR 0014 §7, personal-cfo-asqy). The skip touches only device-local
+    /// state, so it is a plain worker method now ([`DbWorker::skip_staged`]); the variant stays so an
+    /// operation log written before the change decodes and replays.
     SkipStaged {
         /// The staged transaction to skip.
         staged_transaction_id: StagedTransactionId,
+    },
+    /// Commit one imported transaction to the ledger (ADR 0008/0014; personal-cfo-0g528.1, SYNC-2c).
+    /// Carries the MATERIALIZED transaction the issuing device decided on and the LOGICAL id of the
+    /// source record it came from; it names no staging row and no file digest. The dedupe and row
+    /// checks ran on the issuing device, in a read-only planner, before the command existed: apply
+    /// validates this payload and writes it, and never runs a heuristic. A transaction that already
+    /// exists is left alone (a re-delivery, or one the person voided). **Engine-version rule:** once
+    /// the engine version is pinned (personal-cfo-32fmp.4), a change to the checks apply makes, or to
+    /// the rows it writes, changes what a logged command does and MUST bump `engine_version`.
+    CommitImportedTransaction {
+        /// The ledger transaction's id: a content id of (source batch, row ordinal), derived by the
+        /// issuing device and carried, so every replica writes the same row.
+        transaction_id: TransactionId,
+        /// The user account the transaction posts to.
+        account_id: AccountId,
+        /// The source record (class 1b, by its logical id) the transaction was created from.
+        source_record_id: SourceRecordId,
+        /// When the transaction occurred (the posted date at noon UTC, or the source's instant).
+        occurred_at: DateTime<Utc>,
+        /// The signed amount, non-zero, in the account's currency.
+        amount: Money,
+        /// The source's merchant, kept as the counterparty.
+        counterparty: Option<String>,
+        /// The source's description, kept as the memo.
+        memo: Option<String>,
+        /// The secondary date the source carried (ADR 0045), if any.
+        transaction_date: Option<NaiveDate>,
+        /// The category the source's own column named, resolved by the issuing device; written as a
+        /// reduced-confidence `import_alias` categorization.
+        category_id: Option<CategoryId>,
+        /// The person's "import anyway" override of a flagged row, recorded in the decision trail.
+        forced: bool,
     },
     /// Snooze a Money Inbox item until `until` (ADR 0014 §7, personal-cfo-ci71): a
     /// soft action recorded in `change_journal_entries` and re-applied to the read
@@ -1160,6 +1200,7 @@ impl WriteCommand {
             WriteCommand::UpdateBatchState { .. } => "update_batch_state",
             WriteCommand::CommitStaged { .. } => "commit_staged",
             WriteCommand::SkipStaged { .. } => "skip_staged",
+            WriteCommand::CommitImportedTransaction { .. } => "commit_imported_transaction",
             WriteCommand::SnoozeInboxItem { .. } => "snooze_inbox_item",
             WriteCommand::DismissInboxItem { .. } => "dismiss_inbox_item",
             WriteCommand::DismissRecurringSuggestion { .. } => "dismiss_recurring_suggestion",
@@ -1746,6 +1787,8 @@ pub struct DbWorker {
     /// lock below prevents a second process; this gate prevents two unlock
     /// callbacks in the same process from recovering/claiming concurrently.
     runner_gate: Mutex<()>,
+    /// Serializes base image captures (personal-cfo-bxsbz.3): one at a time owns the temp file.
+    base_gate: Mutex<()>,
     path: PathBuf,
     key: KeyMaterial,
     /// Held for the worker's lifetime so the OS releases vault ownership on a
@@ -1814,10 +1857,55 @@ impl DbWorker {
     /// [`DbError::UnsupportedSchema`] for an unverified/missing layout, or the
     /// normal keying, filesystem and exclusive-owner errors.
     pub fn open_existing_with_raw_key(path: impl AsRef<Path>, dek: Dek) -> Result<Self, DbError> {
+        let lease = VaultLease::acquire(path.as_ref())?;
+        Self::open_existing_with_raw_key_leased(lease.path.clone(), dek, lease)
+    }
+
+    /// [`DbWorker::open_existing_with_raw_key`] for a caller that already holds the vault's
+    /// [`VaultLease`]: the worker takes over that lock rather than locking again, so the lock is
+    /// never released between the caller's file work and the worker's first open. A lease for a
+    /// different vault is refused.
+    ///
+    /// # Errors
+    /// [`DbError::Io`] (invalid input) if the lease is for another vault path, otherwise as
+    /// [`DbWorker::open_existing_with_raw_key`] (the exclusive-owner error cannot occur).
+    pub fn open_existing_with_raw_key_leased(
+        path: impl AsRef<Path>,
+        dek: Dek,
+        lease: VaultLease,
+    ) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
-        let runner_lock = acquire_runner_lock(&path)?;
+        if lease.path != path {
+            // A caller bug, not a rejected command: it stays out of the command-rejection ledger.
+            return Err(DbError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the lease is for a different vault",
+            )));
+        }
         let conn = open_existing_keyed_raw(&path, &dek)?;
-        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
+        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), lease.file)
+    }
+
+    /// Close this worker (its connections, and its key is zeroized) and keep the vault's lock:
+    /// the returned [`VaultLease`] is held until it is dropped or handed to a new worker. The
+    /// steps that rename or remove vault files outside a running worker (key rotation's swap,
+    /// delete, a rebase swap) run under it, so a second process never sees the vault unowned in
+    /// between (personal-cfo-bxsbz.2).
+    #[must_use]
+    pub fn close_into_lease(self) -> VaultLease {
+        let Self {
+            inner,
+            path,
+            _runner_lock,
+            ..
+        } = self;
+        // The connections close before the lock is released or handed on; the key (the rest of
+        // `self`) is zeroized as it drops here.
+        drop(inner);
+        VaultLease {
+            path,
+            file: _runner_lock,
+        }
     }
 
     /// Probe the SQLCipher database at `path` with `dek` without opening a worker, migrating
@@ -1898,6 +1986,7 @@ impl DbWorker {
                 last_write_set: None,
             }),
             runner_gate: Mutex::new(()),
+            base_gate: Mutex::new(()),
             path,
             key,
             _runner_lock: runner_lock,
@@ -1905,6 +1994,10 @@ impl DbWorker {
             schema_version: migrations::CURRENT_VERSION,
         };
         worker.self_test()?;
+        // A base image the vault cannot vouch for is recorded as lost (bxsbz.3). A failure here
+        // never blocks the unlock: `base_image_status` re-checks the file on every read, so the
+        // recorded state only has to catch up on a later open.
+        let _ = worker.reconcile_base_image();
         Ok(worker)
     }
 
@@ -3627,6 +3720,7 @@ impl DbWorker {
         }
         let mut staged = Vec::new();
         let mut not_routed = 0_usize;
+        let mut ordinal = ingestion::last_row_ordinal(&tx, batch_id)?;
         for rec in &batch.records {
             let txn_account = rec
                 .transaction
@@ -3658,6 +3752,7 @@ impl DbWorker {
             if let (Some(txn), Some(Some(account))) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
                 let transaction_date = txn.transaction_date.map(|d| d.to_string());
+                ordinal += 1;
                 let id = ingestion::stage_transaction(
                     &tx,
                     &ingestion::NewStagedTransaction {
@@ -3671,6 +3766,7 @@ impl DbWorker {
                         description: txn.description.as_deref(),
                         imported_category: txn.category.as_deref(),
                         txn_fingerprint: &txn.txn_fingerprint,
+                        row_ordinal: ordinal,
                     },
                 )?;
                 staged.push(id);
@@ -3731,6 +3827,7 @@ impl DbWorker {
         }
         let mut staged = Vec::new();
         let mut skipped_unmapped = 0_usize;
+        let mut ordinal = ingestion::last_row_ordinal(&tx, batch_id)?;
         let mut promotions: Vec<(Uuid, Uuid, NaiveDate, Money, CommandMeta)> = Vec::new();
         for rec in &batch.records {
             // Resolve the record's account up front: a record with no mapped
@@ -3767,6 +3864,7 @@ impl DbWorker {
             if let (Some(txn), Some(account)) = (&rec.transaction, txn_account) {
                 let posted = txn.posted_date.to_string();
                 let transaction_date = txn.transaction_date.map(|d| d.to_string());
+                ordinal += 1;
                 let id = ingestion::stage_transaction(
                     &tx,
                     &ingestion::NewStagedTransaction {
@@ -3780,6 +3878,7 @@ impl DbWorker {
                         description: txn.description.as_deref(),
                         imported_category: txn.category.as_deref(),
                         txn_fingerprint: &txn.txn_fingerprint,
+                        row_ordinal: ordinal,
                     },
                 )?;
                 staged.push(connectors::StagedSyncTxn {
@@ -4803,6 +4902,40 @@ impl LedgerQuery for Connection {
     }
 }
 
+/// Process-exclusive ownership of the vault at one path, held as an operating-system advisory
+/// lock on `<vault>.runner.lock` for as long as this value lives (ADR 0070, personal-cfo-bxsbz.2).
+///
+/// A [`DbWorker`] holds one for its whole life. Anything else that renames or removes the vault's
+/// files while no worker is running (startup key-rotation recovery, the swap that applies a
+/// committed rotation, deleting the vault, a rebase swap) holds one across the whole step, so a
+/// second process gets [`DbError::VaultInUse`] and touches nothing. The OS releases the lock when
+/// the file closes, whether by drop, process exit or crash; a lock file left behind never blocks
+/// the next open.
+#[derive(Debug)]
+pub struct VaultLease {
+    path: PathBuf,
+    file: File,
+}
+
+impl VaultLease {
+    /// Take the lock without waiting.
+    ///
+    /// # Errors
+    /// [`DbError::VaultInUse`] if another handle, in this or another process, holds it;
+    /// [`DbError::Io`] if the lock file cannot be created or locked.
+    pub fn acquire(path: impl AsRef<Path>) -> Result<Self, DbError> {
+        let path = path.as_ref().to_path_buf();
+        let file = acquire_runner_lock(&path)?;
+        Ok(Self { path, file })
+    }
+
+    /// The vault path this lease is for.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// Acquire the process-exclusive ownership lease for the unlocked vault.
 ///
 /// The lock is advisory at the operating-system level and is held by the
@@ -5450,8 +5583,9 @@ fn ensure_vault_metadata(
         )?;
         return Ok(None);
     }
-    let vault_id = Uuid::now_v7();
-    let created_at = Utc::now().to_rfc3339();
+    let (vault_id, created_at) = FIXED_VAULT_IDENTITY
+        .with(|fixed| fixed.borrow().clone())
+        .unwrap_or_else(|| (Uuid::now_v7(), Utc::now().to_rfc3339()));
     // Schema version 61 moved the household timezone off this row onto `households`. A
     // database caught between migrations (a crash, or a test that stops at a prefix) still has
     // the old column and no household table, so its row keeps the old shape and nothing is
@@ -5503,6 +5637,27 @@ fn ensure_vault_metadata(
         )?;
     }
     Ok(Some((vault_id, created_at)))
+}
+
+thread_local! {
+    /// The identity a vault created on THIS thread gets, when a conformance test fixed one.
+    static FIXED_VAULT_IDENTITY: std::cell::RefCell<Option<(Uuid, String)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with every vault CREATED on this thread getting `vault_id` and `created_at` instead of a
+/// fresh id and the clock (personal-cfo-32fmp.4). Everything a new vault seeds is a function of the
+/// two (the categories, the household and its member, the system accounts), so a vault created
+/// this way is the same vault in every run: the engine pin and the replay property hash its rows.
+/// A conformance seam, not an API for creating vaults: the app never calls it, and it only affects
+/// the thread that calls it, for the duration of `f`.
+#[doc(hidden)]
+pub fn with_fixed_vault_identity<T>(vault_id: Uuid, created_at: &str, f: impl FnOnce() -> T) -> T {
+    FIXED_VAULT_IDENTITY
+        .with(|fixed| *fixed.borrow_mut() = Some((vault_id, created_at.to_owned())));
+    let result = f();
+    FIXED_VAULT_IDENTITY.with(|fixed| *fixed.borrow_mut() = None);
+    result
 }
 
 /// Create the vault's `vault_metadata` row and seed rows in ONE transaction when the vault is new,
@@ -7872,6 +8027,32 @@ fn apply_command(
         WriteCommand::SkipStaged {
             staged_transaction_id,
         } => apply::ingestion_cmds::apply_skip_staged(&tx, meta, &ids, staged_transaction_id)?,
+        WriteCommand::CommitImportedTransaction {
+            transaction_id,
+            account_id,
+            source_record_id,
+            occurred_at,
+            amount,
+            counterparty,
+            memo,
+            transaction_date,
+            category_id,
+            forced,
+        } => apply::ingestion_cmds::apply_commit_imported_transaction(
+            &tx,
+            meta,
+            &ids,
+            transaction_id,
+            account_id,
+            source_record_id,
+            occurred_at,
+            amount,
+            counterparty,
+            memo,
+            transaction_date,
+            category_id,
+            forced,
+        )?,
         WriteCommand::SnoozeInboxItem { item_id, until } => {
             apply::inbox::apply_snooze_inbox_item(&tx, meta, &mut ids, item_id, until)?
         }
@@ -8131,7 +8312,9 @@ fn apply_command(
         // The committed case affects a ledger_transaction; a flagged duplicate
         // (rare) affects only the staged row — the authoritative record there is
         // the dedupe_decisions entry, not this op-log hint.
-        WriteCommand::CommitStaged { .. } => "ledger_transactions",
+        WriteCommand::CommitStaged { .. } | WriteCommand::CommitImportedTransaction { .. } => {
+            "ledger_transactions"
+        }
         WriteCommand::RecategorizeTransaction { .. } => "ledger_transactions",
         WriteCommand::VoidTransaction { .. } => "ledger_transactions",
         WriteCommand::MarkReviewed { .. } => "transaction_reviews",
@@ -8193,13 +8376,16 @@ fn apply_command(
         | WriteCommand::SetBillAutopay { .. } => "accounts",
     };
     let affected_entities = affected_entities_json(entity_table, entity_id);
+    let sync_applied_base_seq = sync_state::applied_base_seq(&tx)?;
+    let sync_enabled = sync_applied_base_seq.is_some();
+    let created_at = Utc::now().to_rfc3339();
     tx.execute(
         "INSERT INTO operation_log (
             command_id, correlation_id, causation_id, actor_type, actor_id,
             idempotency_key, operation_type, affected_entities, metadata, node_id,
             vault_schema_version, hlc_timestamp, created_at,
-            payload, payload_schema_version, write_set_hash, engine_version
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            payload, payload_schema_version, write_set_hash, engine_version, applied_base_seq
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             meta.command_id,
             meta.correlation_id,
@@ -8213,14 +8399,27 @@ fn apply_command(
             node_id,
             schema_version,
             hlc,
-            Utc::now().to_rfc3339(),
+            created_at,
             prepared.bytes,
             payload::PAYLOAD_SCHEMA_VERSION,
             write_set.hash.as_slice(),
             ENGINE_VERSION,
+            sync_applied_base_seq,
         ],
     )?;
     let op_seq = tx.last_insert_rowid();
+
+    // While Sync is enabled on this device the command is also an unpushed outbox entry, in this same
+    // transaction (personal-cfo-bxsbz.1). With Sync off nothing is written.
+    if sync_enabled {
+        sync_state::record_pending(
+            &tx,
+            meta.command_id.as_bytes(),
+            op_seq,
+            &write_set.rows,
+            &created_at,
+        )?;
+    }
 
     // 3. Provenance link from the affected entity to this operation.
     tx.execute(

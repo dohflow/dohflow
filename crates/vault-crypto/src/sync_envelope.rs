@@ -31,7 +31,7 @@
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use sync_core::envelope::ReceiverError;
 use sync_core::header::{
     encode_container, ClearHeader, Fingerprint, NonceDomain, ParsedContainer,
@@ -43,11 +43,11 @@ use thiserror::Error;
 
 use crate::secret::SecretBytes;
 use crate::sync::label_bytes;
+use crate::sync_keys::epoch_key_commitment;
 
 /// The label of the AEAD-key derivation.
 pub const AEAD_KEY_LABEL: &str = "dohflow/sync-aead/v1";
-/// The label of the epoch-key commitment.
-pub const EPOCH_KEY_COMMITMENT_LABEL: &str = "dohflow/sync-epoch-key-commit/v1";
+pub use crate::sync_keys::EPOCH_KEY_COMMITMENT_LABEL;
 
 /// Which kind of object a key is for. A key for one is never a key for the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,12 +96,7 @@ impl EpochKey {
         key: SecretBytes<32>,
         commitment: &[u8; 32],
     ) -> Result<Self, KeyError> {
-        // Hash incrementally: building `label ‖ K_e` in a Vec would leave an unscrubbed copy of the
-        // epoch root on the heap (and a second one if it reallocated).
-        let mut hash = Sha256::new();
-        hash.update(label_bytes(EPOCH_KEY_COMMITMENT_LABEL));
-        hash.update(key.expose());
-        let computed: [u8; 32] = hash.finalize().into();
+        let computed = epoch_key_commitment(&key);
         if &computed != commitment {
             return Err(KeyError::CommitmentMismatch);
         }
@@ -110,6 +105,11 @@ impl EpochKey {
             key_epoch,
             bytes: key,
         })
+    }
+
+    /// The protected bytes, for the custody module that stores them and nothing else.
+    pub(crate) const fn secret(&self) -> &SecretBytes<32> {
+        &self.bytes
     }
 
     /// The vault this key belongs to.
@@ -156,6 +156,45 @@ fn gcm_nonce(domain: &NonceDomain, counter: u64) -> [u8; 12] {
     nonce[..4].copy_from_slice(domain.as_bytes());
     nonce[4..].copy_from_slice(&counter.to_be_bytes());
     nonce
+}
+
+/// Encrypt under an object's AEAD key with the header bytes as AAD. Shared by envelopes and
+/// snapshots, so there is one place where a nonce is built.
+pub(crate) fn gcm_encrypt(
+    aead: &SecretBytes<32>,
+    domain: &NonceDomain,
+    counter: u64,
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, ()> {
+    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
+        .encrypt(
+            Nonce::from_slice(&gcm_nonce(domain, counter)),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| ())
+}
+
+/// The inverse of [`gcm_encrypt`].
+pub(crate) fn gcm_decrypt(
+    aead: &SecretBytes<32>,
+    domain: &NonceDomain,
+    counter: u64,
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, ()> {
+    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
+        .decrypt(
+            Nonce::from_slice(&gcm_nonce(domain, counter)),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| ())
 }
 
 /// The sealing device's own identity, from its own enrollment state. [`seal_envelope`] refuses a
@@ -235,15 +274,8 @@ pub fn seal_envelope(
     }
     let aad = header.encode().map_err(|_| SealError::Unencodable)?;
     let aead = aead_key(key, &sealer.fingerprint, ObjectType::Envelope);
-    let ciphertext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
-        .encrypt(
-            Nonce::from_slice(&gcm_nonce(&domain, header.invocation_counter)),
-            Payload {
-                msg: plaintext,
-                aad: &aad,
-            },
-        )
-        .map_err(|_| SealError::Encryption)?;
+    let ciphertext = gcm_encrypt(&aead, &domain, header.invocation_counter, &aad, plaintext)
+        .map_err(|()| SealError::Encryption)?;
     let container = encode_container(header, &ciphertext).map_err(|_| SealError::Unencodable)?;
     if container.len() > MAX_ENVELOPE_CONTAINER_LEN {
         return Err(SealError::Unencodable);
@@ -383,15 +415,14 @@ fn open_typed(
         return Err(OpenFailure::NonceDomain);
     }
     let aead = aead_key(key, &member.fingerprint, ObjectType::Envelope);
-    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aead.expose()))
-        .decrypt(
-            Nonce::from_slice(&gcm_nonce(&domain, header.invocation_counter)),
-            Payload {
-                msg: container.ciphertext,
-                aad: container.header_bytes,
-            },
-        )
-        .map_err(|_| OpenFailure::NotOpenable)
+    gcm_decrypt(
+        &aead,
+        &domain,
+        header.invocation_counter,
+        container.header_bytes,
+        container.ciphertext,
+    )
+    .map_err(|()| OpenFailure::NotOpenable)
 }
 
 impl EnvelopeOpener for ReceiverOpener<'_> {
