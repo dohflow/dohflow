@@ -197,11 +197,11 @@ describe("ConnectionsCard", () => {
       mocks.connectorConnections.mockResolvedValue(ok([connection()]));
       mocks.connectorSync.mockReturnValue(new Promise(() => undefined));
       const { findByRole, getByText } = renderWithClient(<ConnectionsCard />);
-      const button = await findByRole("button", { name: "Refresh now" });
+      const button = await findByRole("button", { name: /^Refresh now/ });
       expect(button.querySelector("svg.animate-spin")).toBeNull();
       fireEvent.click(button);
       await waitFor(() => expect(button).toBeDisabled());
-      expect(button).toHaveAccessibleName("Refresh now");
+      expect(button).toHaveAccessibleName("Refresh now, SimpleFIN Bridge connection");
       expect(button.querySelector("svg.animate-spin")).not.toBeNull();
       // The status words are unchanged by the pending state.
       expect(getByText(/^Out of date · refreshed /)).toBeInTheDocument();
