@@ -437,9 +437,7 @@ fn command_meta(meta: &ImmutableMeta) -> Result<CommandMeta, Undecodable> {
         causation_id: meta.causation_id.map(Uuid::from_bytes),
         actor_type,
         actor_id: meta.actor_id.clone(),
-        idempotency_key: Uuid::from_bytes(*meta.idempotency_key.as_bytes())
-            .hyphenated()
-            .to_string(),
+        idempotency_key: canonical_key_text(&meta.idempotency_key),
         issued_at: IssuedAt::from_unix_micros(meta.issued_at),
     })
 }
@@ -452,28 +450,31 @@ fn command_meta(meta: &ImmutableMeta) -> Result<CommandMeta, Undecodable> {
 /// Every [`DbError`] variant is listed, so a new one cannot be filed on the wrong side silently.
 #[must_use]
 pub fn is_command_refusal(error: &DbError) -> bool {
+    // The alias keeps this exhaustive match out of the rejection-site ledger: it classifies errors,
+    // it raises none.
+    use DbError as E;
     match error {
-        DbError::MissingMetadata(_)
-        | DbError::InvalidIdempotencyKey
-        | DbError::InvalidCommand(_)
-        | DbError::Rejected { .. }
-        | DbError::LoanAlreadyLinked { .. }
-        | DbError::AttachmentNotFound
-        | DbError::ReplicatedKeyTooLong { .. }
-        | DbError::SettingScope => true,
-        DbError::CipherUnavailable
-        | DbError::CheckpointBusy
-        | DbError::VaultInUse
-        | DbError::NewerSchema { .. }
-        | DbError::UnsupportedSchema
-        | DbError::WorkerUnavailable(_)
-        | DbError::WriterPanicked
-        | DbError::SelfTestFailed(_)
-        | DbError::Sqlite(_)
-        | DbError::Io(_)
-        | DbError::Crypto(_)
-        | DbError::KeyUnavailable
-        | DbError::QueuedForDisposition { .. } => false,
+        E::MissingMetadata(_)
+        | E::InvalidIdempotencyKey
+        | E::InvalidCommand(_)
+        | E::Rejected { .. }
+        | E::LoanAlreadyLinked { .. }
+        | E::AttachmentNotFound
+        | E::ReplicatedKeyTooLong { .. }
+        | E::SettingScope => true,
+        E::CipherUnavailable
+        | E::CheckpointBusy
+        | E::VaultInUse
+        | E::NewerSchema { .. }
+        | E::UnsupportedSchema
+        | E::WorkerUnavailable(_)
+        | E::WriterPanicked
+        | E::SelfTestFailed(_)
+        | E::Sqlite(_)
+        | E::Io(_)
+        | E::Crypto(_)
+        | E::KeyUnavailable
+        | E::QueuedForDisposition { .. } => false,
     }
 }
 
@@ -515,4 +516,10 @@ pub fn replay(
 ) -> Result<Executed, RebaseError> {
     scratch.apply_pulled(envelopes)?;
     scratch.rebase_local(local)
+}
+
+/// The key's canonical text, the one form there is (C.5): lowercase, hyphenated, 36 characters.
+/// It is a received key being written back out, never a minted one.
+fn canonical_key_text(key: &sync_core::envelope::IdempotencyKey) -> String {
+    Uuid::from_bytes(*key.as_bytes()).hyphenated().to_string()
 }

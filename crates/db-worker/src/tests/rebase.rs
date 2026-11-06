@@ -1124,7 +1124,12 @@ mod first_pull {
         let first = seal(device_b.worker(), &meta(), &rename(account, "First pull"));
 
         let mut scratch = rollback_to(&live, N, &dir.path().join("rebase").join("s.db")).unwrap();
-        let executed = replay(&mut scratch, &[first.pulled(42)], &[local.clone()]).unwrap();
+        let executed = replay(
+            &mut scratch,
+            &[first.pulled(42)],
+            std::slice::from_ref(&local),
+        )
+        .unwrap();
 
         assert_eq!(executed.replayed.len(), 1);
         assert_eq!(account_name(scratch.worker(), account), "First pull");
