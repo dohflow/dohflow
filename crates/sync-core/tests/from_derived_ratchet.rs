@@ -17,6 +17,12 @@ const ALLOWED: &[&str] = &[
     "crates/sync-core/src/accepted.rs",
     // The void decoder wraps the signer fingerprint it reads off the wire (as membership does).
     "crates/sync-core/src/void.rs",
+    // The class-1b artifact id type and a snapshot closure's commitment (C.3, C.9): the closure
+    // commitment is derived here from CBE1 bytes, and the id is wrapped where it is read off the wire.
+    "crates/sync-core/src/artifact.rs",
+    // The first-publication and chained re-address ids (C.3) are derived from `K_e` here and nowhere
+    // else (personal-cfo-0g528.2).
+    "crates/vault-crypto/src/sync_artifact.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];

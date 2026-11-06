@@ -215,11 +215,17 @@ impl ArtifactManifest {
 }
 
 fn manifest_bytes(ids: &[[u8; 32]]) -> Vec<u8> {
+    manifest_bytes_bounded(ids, MAX_MANIFEST_ENTRIES)
+}
+
+/// The commitment's preimage with the list bound of the object type: 4096 for an envelope's delta,
+/// 2^20 for a snapshot's closure. The label and the bytes are the same for both (C.3).
+pub(crate) fn manifest_bytes_bounded(ids: &[[u8; 32]], max: usize) -> Vec<u8> {
     let mut w = Writer::with_label("dohflow/sync-artifact-manifest/v1");
-    w.list(MAX_MANIFEST_ENTRIES, ids, |w, id| {
+    w.list(max, ids, |w, id| {
         w.fixed(id);
     })
-    .expect("a manifest of at most 4096 ids always fits");
+    .expect("a manifest within its bound always fits");
     w.finish()
 }
 

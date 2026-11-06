@@ -191,6 +191,21 @@ impl Writer {
         Ok(self)
     }
 
+    /// Append `blob(max)`: a `u64` length, then the bytes (C.1.1; used only for large bodies with a
+    /// stated bound).
+    ///
+    /// # Errors
+    /// [`WireError::TooLong`] if `value` is longer than `max`.
+    pub fn blob(&mut self, max: usize, value: &[u8]) -> Result<&mut Self, WireError> {
+        if value.len() > max {
+            return Err(WireError::TooLong);
+        }
+        let length = u64::try_from(value.len()).map_err(|_| WireError::TooLong)?;
+        self.0.extend_from_slice(&length.to_be_bytes());
+        self.0.extend_from_slice(value);
+        Ok(self)
+    }
+
     /// Append `text(max)`; `max` counts bytes.
     ///
     /// # Errors
@@ -352,6 +367,22 @@ impl<'a> Reader<'a> {
     /// [`WireError::LengthExceedsInput`] if it claims more bytes than remain.
     pub fn bytes(&mut self, max: usize) -> Result<&'a [u8], WireError> {
         let length = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;
+        if length > max {
+            return Err(WireError::TooLong);
+        }
+        if length > self.rest.len() {
+            return Err(WireError::LengthExceedsInput);
+        }
+        self.take(length)
+    }
+
+    /// Read `blob(max)`: a `u64` length, then the bytes.
+    ///
+    /// # Errors
+    /// [`WireError::TooLong`] if the stated length is above `max`,
+    /// [`WireError::LengthExceedsInput`] if it claims more bytes than remain.
+    pub fn blob(&mut self, max: usize) -> Result<&'a [u8], WireError> {
+        let length = usize::try_from(self.u64()?).map_err(|_| WireError::TooLong)?;
         if length > max {
             return Err(WireError::TooLong);
         }
