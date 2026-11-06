@@ -16,7 +16,9 @@ use vault_crypto::sync_counter::{
     SavedSealed, VerifiedStateError, VerifiedStateGuard,
 };
 use vault_crypto::sync_keys::DeviceKeys;
-use vault_crypto::sync_records::{create_genesis, GenesisRecords};
+use vault_crypto::sync_records::{
+    create_genesis, create_genesis_with, fresh_epoch_key, fresh_tag_secret, GenesisRecords,
+};
 
 const KEY: &str = "correct horse battery staple";
 const VAULT: [u8; 16] = [0x11; 16];
@@ -443,18 +445,122 @@ fn a_restored_or_stripped_verified_state_is_rolled_back() {
 }
 
 #[test]
-fn persisted_records_that_do_not_verify_install_nothing() {
+fn records_damaged_after_the_write_install_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let worker = open(&dir.path().join("v.db"));
     let records = genesis_records();
+    persist(&worker, &records).unwrap();
+    assert!(loaded(&worker).is_some(), "the true records verify");
+
+    // Damage after the write (a bad disk, an edit outside this module): the verification at load
+    // still refuses it.
     let mut torn = records.epoch.clone();
     let last = torn.len() - 1;
     torn[last] ^= 0x01;
     worker
-        .write_sync_state(|tx| sync_genesis::persist(tx, &VAULT, &records.membership, &torn, NOW))
+        .read_connection()
+        .unwrap()
+        .execute("UPDATE sync_genesis SET epoch_record = ?1", [torn])
         .unwrap();
     assert_eq!(
         worker.write_sync_state(|tx| sync_genesis::loaded_verified_mark(tx)),
         Err::<Option<VerifiedMark>, _>(GenesisStoreError::Corrupt)
+    );
+}
+
+#[test]
+fn a_torn_record_and_another_vaults_records_are_refused_at_persist_and_write_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.db"));
+    let records = genesis_records();
+
+    let mut torn = records.epoch.clone();
+    let last = torn.len() - 1;
+    torn[last] ^= 0x01;
+    let persist_bytes = |vault: &[u8; 16], membership: &[u8], epoch: &[u8]| {
+        worker.write_sync_state(|tx| sync_genesis::persist(tx, vault, membership, epoch, NOW))
+    };
+    assert_eq!(
+        persist_bytes(&VAULT, &records.membership, &torn),
+        Err(GenesisStoreError::Invalid),
+        "a torn epoch record"
+    );
+    assert_eq!(
+        persist_bytes(&VAULT, &torn, &records.epoch),
+        Err(GenesisStoreError::Invalid),
+        "a torn membership record"
+    );
+    assert_eq!(
+        persist_bytes(&[0x22; 16], &records.membership, &records.epoch),
+        Err(GenesisStoreError::Invalid),
+        "one vault's valid records filed under another vault"
+    );
+    assert_eq!(
+        persist_bytes(&VAULT, &[], &[]),
+        Err(GenesisStoreError::Invalid),
+        "nothing"
+    );
+    assert!(load(&worker).is_none(), "none of them wrote a row");
+
+    // And the true records still persist, and advance, afterwards.
+    assert_eq!(persist(&worker, &records), Ok(GenesisState::Persisted));
+    assert!(loaded(&worker).is_some());
+}
+
+#[test]
+fn a_retried_persist_reports_how_far_enabling_got_and_different_records_conflict() {
+    use GenesisState::{Installed, VaultKnown};
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.db"));
+    let keys = DeviceKeys::generate().unwrap();
+    let first = create_genesis_with(
+        VAULT,
+        [0xa1; 16],
+        &keys,
+        1_700_000_000,
+        &fresh_epoch_key(VAULT, 1).unwrap(),
+        &fresh_tag_secret().unwrap(),
+    )
+    .unwrap();
+    persist(&worker, &first).unwrap();
+    advance(&worker, Installed).unwrap();
+    assert_eq!(
+        persist(&worker, &first),
+        Ok(Installed),
+        "an installed genesis stays installed"
+    );
+
+    // The same device and the same membership record, a different (valid) epoch record: not this
+    // genesis.
+    let second = create_genesis_with(
+        VAULT,
+        [0xa1; 16],
+        &keys,
+        1_700_000_000,
+        &fresh_epoch_key(VAULT, 1).unwrap(),
+        &fresh_tag_secret().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        second.membership, first.membership,
+        "only the epoch record differs"
+    );
+    assert_ne!(second.epoch, first.epoch);
+    assert_eq!(persist(&worker, &second), Err(GenesisStoreError::Conflict));
+
+    // The same records filed under another vault are not this genesis either. (They are refused
+    // as invalid when nothing is held; with a genesis held, the comparison comes first.)
+    assert_eq!(
+        worker.write_sync_state(|tx| {
+            sync_genesis::persist(tx, &[0x22; 16], &first.membership, &first.epoch, NOW)
+        }),
+        Err(GenesisStoreError::Conflict)
+    );
+
+    advance(&worker, VaultKnown).unwrap();
+    assert_eq!(
+        persist(&worker, &first),
+        Ok(VaultKnown),
+        "a refused genesis stays refused"
     );
 }
