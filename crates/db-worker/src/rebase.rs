@@ -33,6 +33,7 @@
 //! recorded `base_seq`; any other target is a typed error, never a partial rollback.
 
 mod execute;
+mod overlay;
 mod plan;
 mod reconcile;
 
@@ -191,6 +192,17 @@ pub enum RebaseError {
         /// The command.
         command_id: Uuid,
     },
+    /// [`Scratch::overlay_class3`] before [`Scratch::rebase_local`]: the overlay lands on the
+    /// rebuilt vault, because the replay rewrites the rows it withholds.
+    #[error("the class-3 overlay needs the local commands rebased first")]
+    OverlayBeforeReplay,
+    /// The class-3 overlay was already carried onto this scratch vault.
+    #[error("the class-3 overlay was already carried onto this scratch vault")]
+    AlreadyOverlaid,
+    /// The device-local state does not fit the rebuilt vault: the live vault is untouched and the
+    /// scratch vault is kept as the evidence (`RebaseBlockedLocalState`).
+    #[error("{}", .0.describe())]
+    BlockedLocalState(Box<RebaseBlockedLocalState>),
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -254,6 +266,11 @@ pub struct PulledEnvelope<'a> {
 }
 
 pub use execute::{Executed, LocalCommand, OutboxEntryState, Replayed};
+#[cfg(test)]
+pub(crate) use overlay::class_three_tables_handled;
+pub use overlay::{
+    BlockCause, Offending, OverlayReport, OverlayTable, Preservation, RebaseBlockedLocalState,
+};
 pub use plan::{
     auto_iff, plan, Disposition, OutboxCommand, Plan, PlannedCommand, QueueCause, QueueReason,
 };
@@ -283,6 +300,10 @@ pub struct Scratch<'a> {
     cleared: BTreeSet<Uuid>,
     /// Whether the local commands were already rebased onto this scratch vault.
     rebased: bool,
+    /// The keys of the class-3 rows the base image itself carries: the only rows the overlay drops.
+    inherited: overlay::Inherited,
+    /// Whether the class-3 overlay was carried onto this scratch vault.
+    overlaid: bool,
 }
 
 impl std::fmt::Debug for Scratch<'_> {
@@ -337,6 +358,14 @@ impl DbWorker {
                 return Err(error.into());
             }
         };
+        let inherited = match overlay::inherited_keys(&worker) {
+            Ok(inherited) => inherited,
+            Err(error) => {
+                drop(worker);
+                let _ = fs::remove_file(scratch_path);
+                return Err(error);
+            }
+        };
         Ok(Scratch {
             live: self,
             worker,
@@ -347,6 +376,8 @@ impl DbWorker {
             pulled_rows: BTreeMap::new(),
             cleared: BTreeSet::new(),
             rebased: false,
+            inherited,
+            overlaid: false,
         })
     }
 
