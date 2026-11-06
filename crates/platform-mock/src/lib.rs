@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use platform_traits::{
     AccessPolicy, AuthPrompt, BiometricAuth, BiometricAvailability, BootClock, BootClockError,
-    BootId, PreflightResult, PublicTag, Roaming, SecretError, SecretKey, SecretStore, SecretValue,
-    StoreCapabilities, UnavailableReason,
+    BootId, CounterContext, PreflightResult, Progress, PublicTag, Roaming, RollbackWitness,
+    SecretError, SecretKey, SecretStore, SecretValue, StoreCapabilities, UnavailableReason,
+    VerifiedMark, WitnessError,
 };
 
 /// The simulated device's biometric state, SHARED by a [`MockSecretStore`] and a [`MockBiometricAuth`]
@@ -377,5 +378,158 @@ impl BootClock for MockBootClock {
             return Err(BootClockError);
         }
         Ok(state.now_ns)
+    }
+}
+
+/// An in-memory [`RollbackWitness`] for tests. **The only implementation in the tree until the
+/// Sync client engine supplies the platform one** (`personal-cfo-elciw`); a source-scan test fails
+/// any other. It keeps the contract of the trait (monotone, never invents a value) and lets a
+/// test script the failures a real witness can have.
+///
+/// Clones share state, as a real witness does across the code that holds it: a test keeps one clone
+/// to inspect or tamper with while the code under test holds another.
+#[derive(Clone, Default)]
+pub struct MockWitness(Arc<Mutex<WitnessState>>);
+
+#[derive(Default)]
+struct WitnessState {
+    counters: HashMap<CounterContext, u64>,
+    marks: HashMap<[u8; 16], VerifiedMark>,
+    /// Every verified mark ever accepted, in order, so a test can see the sequence.
+    mark_log: Vec<([u8; 16], VerifiedMark)>,
+    unavailable: bool,
+    /// How many of the next `advance_counter` calls fail with `Unavailable` before one succeeds.
+    fail_counter_advances: usize,
+    /// How many `advance_counter` calls succeed before the scripted failures start.
+    skip_before_fail: usize,
+    counter_advances: usize,
+}
+
+impl MockWitness {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Make every call fail with [`WitnessError::Unavailable`] (or stop doing so).
+    pub fn set_unavailable(&self, unavailable: bool) {
+        self.0.lock().unwrap().unavailable = unavailable;
+    }
+
+    /// Make the next `count` counter advances fail with [`WitnessError::Unavailable`].
+    pub fn fail_next_counter_advances(&self, count: usize) {
+        self.0.lock().unwrap().fail_counter_advances = count;
+    }
+
+    /// Let the next `succeed` counter advances through, then fail the `count` after them with
+    /// [`WitnessError::Unavailable`]: a crash at a chosen step of a longer sequence.
+    pub fn fail_counter_advances_after(&self, succeed: usize, count: usize) {
+        let mut state = self.0.lock().unwrap();
+        state.skip_before_fail = succeed;
+        state.fail_counter_advances = count;
+    }
+
+    /// Every verified mark the witness accepted, in order (a repeat of the held value included).
+    #[must_use]
+    pub fn mark_log(&self) -> Vec<([u8; 16], VerifiedMark)> {
+        self.0.lock().unwrap().mark_log.clone()
+    }
+
+    /// How many counter advances succeeded (a no-op advance to the held value counts).
+    #[must_use]
+    pub fn counter_advances(&self) -> usize {
+        self.0.lock().unwrap().counter_advances
+    }
+
+    /// The witnessed value, bypassing the trait (for assertions).
+    #[must_use]
+    pub fn peek_counter(&self, context: &CounterContext) -> Option<u64> {
+        self.0.lock().unwrap().counters.get(context).copied()
+    }
+
+    /// Set a counter to any value, forwards or backwards: the way a test injects a witness that is
+    /// ahead of a rolled-back register. A real witness cannot be told to do this.
+    pub fn force_counter(&self, context: &CounterContext, value: u64) {
+        self.0.lock().unwrap().counters.insert(*context, value);
+    }
+
+    /// Forget a counter entirely: a witness that has lost its record of a context.
+    pub fn forget_counter(&self, context: &CounterContext) {
+        self.0.lock().unwrap().counters.remove(context);
+    }
+
+    /// Set the verified mark to any value (for the same reason as [`Self::force_counter`]).
+    pub fn force_mark(&self, vault_id: &[u8; 16], mark: VerifiedMark) {
+        self.0.lock().unwrap().marks.insert(*vault_id, mark);
+    }
+
+    /// Forget a vault's mark entirely.
+    pub fn forget_mark(&self, vault_id: &[u8; 16]) {
+        self.0.lock().unwrap().marks.remove(vault_id);
+    }
+}
+
+impl RollbackWitness for MockWitness {
+    fn counter(&self, context: &CounterContext) -> Result<Option<u64>, WitnessError> {
+        let state = self.0.lock().unwrap();
+        if state.unavailable {
+            return Err(WitnessError::Unavailable);
+        }
+        Ok(state.counters.get(context).copied())
+    }
+
+    fn advance_counter(
+        &self,
+        context: &CounterContext,
+        next_counter: u64,
+    ) -> Result<(), WitnessError> {
+        let mut state = self.0.lock().unwrap();
+        if state.unavailable {
+            return Err(WitnessError::Unavailable);
+        }
+        if state.skip_before_fail > 0 {
+            state.skip_before_fail -= 1;
+        } else if state.fail_counter_advances > 0 {
+            state.fail_counter_advances -= 1;
+            return Err(WitnessError::Unavailable);
+        }
+        if state
+            .counters
+            .get(context)
+            .is_some_and(|held| *held > next_counter)
+        {
+            return Err(WitnessError::WouldRegress);
+        }
+        state.counters.insert(*context, next_counter);
+        state.counter_advances += 1;
+        Ok(())
+    }
+
+    fn verified_mark(&self, vault_id: &[u8; 16]) -> Result<Option<VerifiedMark>, WitnessError> {
+        let state = self.0.lock().unwrap();
+        if state.unavailable {
+            return Err(WitnessError::Unavailable);
+        }
+        Ok(state.marks.get(vault_id).copied())
+    }
+
+    fn advance_verified_mark(
+        &self,
+        vault_id: &[u8; 16],
+        mark: &VerifiedMark,
+    ) -> Result<(), WitnessError> {
+        let mut state = self.0.lock().unwrap();
+        if state.unavailable {
+            return Err(WitnessError::Unavailable);
+        }
+        if let Some(held) = state.marks.get(vault_id) {
+            match mark.cmp_progress(held) {
+                Progress::Equal | Progress::Ahead => {}
+                Progress::Behind | Progress::Diverged => return Err(WitnessError::WouldRegress),
+            }
+        }
+        state.marks.insert(*vault_id, *mark);
+        state.mark_log.push((*vault_id, *mark));
+        Ok(())
     }
 }

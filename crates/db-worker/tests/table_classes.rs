@@ -889,3 +889,117 @@ fn starting_assignment_rows_are_not_silently_dropped() {
         assert!(declared.contains(expected), "manifest omitted {expected}");
     }
 }
+
+/// Words that mark a column as holding a credential or key material a person would not want copied
+/// into a base image or an export.
+const CREDENTIAL_WORDS: &[&str] = &[
+    "credential",
+    "secret",
+    "token",
+    "password",
+    "passphrase",
+    "api_key",
+    "bearer",
+];
+
+#[test]
+fn secret_bearing_tables_are_exactly_the_credential_holders() {
+    let rows = manifest_rows();
+    let marked: BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| row.get("secret_bearing") == Some("true"))
+        .map(|row| row.get("table").unwrap())
+        .collect();
+    // The set bxsbz.3 strips from a base image at capture. A table joins it by naming the marker in
+    // this manifest AND here, so adding a credential holder is a reviewed change.
+    assert_eq!(marked, BTreeSet::from(["connector_connection_secrets"]));
+
+    // The marker is only meaningful on a device-local table, and never on a replicated one.
+    for row in &rows {
+        if row.get("secret_bearing").is_some() {
+            assert_eq!(row.get("secret_bearing"), Some("true"));
+            assert_eq!(
+                row.get("class"),
+                Some("3"),
+                "{:?} is secret_bearing",
+                row.get("table")
+            );
+            assert_eq!(row.kind(), "sqlite_table");
+        }
+    }
+
+    // No migrated table may have a credential-named column without being marked: a new one fails
+    // here until it is classified.
+    let (_dir, worker) = worker();
+    let conn = worker.read_connection().unwrap();
+    for table in migrated_table_names(&conn).unwrap() {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let holds_credential = names.iter().any(|name| {
+            CREDENTIAL_WORDS
+                .iter()
+                .any(|word| name.to_ascii_lowercase().contains(word))
+        });
+        assert_eq!(
+            holds_credential,
+            marked.contains(table.as_str()),
+            "{table}: columns {names:?} vs the secret_bearing set"
+        );
+    }
+}
+
+#[test]
+fn the_operation_log_device_local_columns_match_the_code_list() {
+    let rows = manifest_rows();
+    let log = rows
+        .iter()
+        .find(|row| row.get("table") == Some("operation_log"))
+        .unwrap();
+    let declared: Vec<&str> = log
+        .required("device_local_columns")
+        .unwrap()
+        .split(',')
+        .map(str::trim)
+        .collect();
+    assert_eq!(
+        declared,
+        db_worker::sync_state::DEVICE_LOCAL_OPERATION_LOG_COLUMNS
+    );
+    // Each one is a real column of the table.
+    let (_dir, worker) = worker();
+    let conn = worker.read_connection().unwrap();
+    let mut stmt = conn.prepare("PRAGMA table_info(operation_log)").unwrap();
+    let columns: BTreeSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for column in declared {
+        assert!(columns.contains(column), "{column}");
+    }
+}
+
+#[test]
+fn the_sync_local_state_tables_are_device_local_and_declare_their_rebase_behavior() {
+    let rows = manifest_rows();
+    for (table, phase) in [
+        ("sync_base", "stable"),
+        ("sync_outbox", "replay_owned"),
+        ("outbox_queue", "stable"),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row.get("table") == Some(table))
+            .unwrap();
+        assert_eq!(row.get("class"), Some("3"), "{table}");
+        assert_eq!(row.get("owner_bead"), Some("personal-cfo-bxsbz"), "{table}");
+        assert_eq!(row.get("rebase_phase"), Some(phase), "{table}");
+        assert!(row.get("rebase_preservation").is_some(), "{table}");
+    }
+}

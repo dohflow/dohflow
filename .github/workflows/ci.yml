@@ -1418,9 +1418,11 @@ jobs:
   #   desktop-nondesktop-gate         a Linux job that decides whether the build is wanted;
   #   desktop-nondesktop-build-arm64  the build on macos-15 (Apple Silicon);
   #   desktop-nondesktop-build-intel  the same build on macos-15-intel;
-  #   desktop-nondesktop-check        a Linux verdict job that owns the required name and runs
+  #   desktop-nondesktop-check        a Linux verdict job that owns the required name. It needs
+  #                                   only the gate: scripts/macos-pools-wait.sh polls the
+  #                                   run's jobs for at most 20 minutes and hands the result to
   #                                   scripts/macos-pools-verdict.sh, the verdict ios-kernel.yml
-  #                                   uses too.
+  #                                   uses too (personal-cfo-md8h2.26; see that workflow).
   #
   # Why: a job that is never given a hosted macOS arm64 runner is cancelled by GitHub after
   # about 15 minutes, and a required check that never ran dropped queued pull requests (#270,
@@ -1462,6 +1464,7 @@ jobs:
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
               - 'scripts/macos-pools-verdict.sh'
+              - 'scripts/macos-pools-wait.sh'
 
       - name: Decide whether the build runs
         id: decide
@@ -1535,16 +1538,26 @@ jobs:
         run: cargo check --locked --target aarch64-apple-ios-sim --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   # The required check: it is this job's name that the branch ruleset lists. The job id stays
-  # `desktop-nondesktop-check` so main-red-alert and main-red-resolve keep waiting for it: it
-  # fails when the gate or either build fails, so a real failure on main still raises the alert.
+  # `desktop-nondesktop-check` so main-red-alert keeps waiting for it: it fails when the gate or
+  # either build fails before the deadline, so a real failure on main still raises the alert.
+  #
+  # It needs only the gate, not the pools (personal-cfo-md8h2.26; the reasoning is in
+  # ios-kernel.yml's verdict job): scripts/macos-pools-wait.sh polls this run's jobs until both
+  # pools have a conclusion, a pool fails, or 20 minutes pass, then scripts/macos-pools-verdict.sh
+  # decides. One pool's success with the other unfinished at the deadline passes with a notice.
+  # Worst case from the gate finishing to the check reporting: about 21 minutes (the wait, one
+  # 30-second poll of overshoot, checkout and verdict) plus this Linux job's runner acquisition,
+  # with `timeout-minutes: 25` as a backstop. A pool that fails AFTER the verdict passed does not
+  # change the check, so main-red-alert also waits for the two pool jobs (below).
   desktop-nondesktop-check:
     name: Desktop crate (non-desktop target check)
-    needs: [desktop-nondesktop-gate, desktop-nondesktop-build-arm64, desktop-nondesktop-build-intel]
+    needs: desktop-nondesktop-gate
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     permissions:
       contents: read
-      actions: read # names a cancelled build's cause from the run's jobs (diagnostic only)
+      actions: read # reads the run's jobs: the pools' states, and a cancelled build's cause
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -1553,13 +1566,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE_RESULT: ${{ needs.desktop-nondesktop-gate.result }}
           BUILD_WANTED: ${{ needs.desktop-nondesktop-gate.outputs.check }}
-          ARM64_RESULT: ${{ needs.desktop-nondesktop-build-arm64.result }}
-          INTEL_RESULT: ${{ needs.desktop-nondesktop-build-intel.result }}
           VERDICT_CHECK: Desktop crate non-desktop target check
           VERDICT_BUILD: Desktop crate build
           VERDICT_ARM64_JOB: Desktop crate non-desktop build (macOS arm64)
           VERDICT_INTEL_JOB: Desktop crate non-desktop build (macOS intel)
-        run: scripts/macos-pools-verdict.sh "$GATE_RESULT" "$BUILD_WANTED" "$ARM64_RESULT" "$INTEL_RESULT"
+        run: scripts/macos-pools-wait.sh "$GATE_RESULT" "$BUILD_WANTED"
 
   # NOTE: Building the macOS release binary (with capability/CSP hardening and a
   # launch smoke test) is owned by bead personal-cfo-rhci and will be added as a
@@ -1570,10 +1581,18 @@ jobs:
   # required check and not run on pull requests. The issue text is built only
   # from values GitHub computes (SHA, run URL, job results); nothing from a
   # commit message or a pull request title is interpolated into a shell.
+  #
+  # It waits for the two desktop pool jobs as well as the verdict (personal-cfo-md8h2.26). The
+  # verdict no longer waits for the pools, so a pool that fails after the verdict passed (one
+  # pool built, the other was still unfinished at the 20-minute deadline) is seen here only
+  # through its own result: `contains(needs.*.result, 'failure')` fires for it, and the issue
+  # lists it by job id. A pool that is skipped (the build was not wanted) or cancelled (a runner
+  # was never given) is not a failure. This job then runs once the pools finish, which can be
+  # after the check has long reported; that delay is only the alert's.
   main-red-alert:
     name: Alert if main is red
     runs-on: ubuntu-24.04
-    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts, desktop-nondesktop-check]
+    needs: [rust, frontend, ipc-codegen, security-scan, shell-scripts, desktop-nondesktop-check, desktop-nondesktop-build-arm64, desktop-nondesktop-build-intel]
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false && contains(needs.*.result, 'failure') }}
     permissions:
       contents: read
@@ -1619,6 +1638,12 @@ jobs:
   # A skipped or cancelled gate does not count as green (alert-close.sh checks every result),
   # and an issue labeled keep-open, or reopened by a person in the last 24 hours, is left open.
   # Not a required check.
+  #
+  # It does NOT wait for the two desktop pool jobs (personal-cfo-md8h2.26), unlike main-red-alert:
+  # a pool that was never given a runner is `cancelled`, which would keep a green main from ever
+  # closing the issue, while the verdict already passed on the other pool (that pass is what it
+  # needs). A pool that fails late opens a new alert through main-red-alert; this job, which runs
+  # when the verdict reports, has by then closed only what was resolved at that moment.
   main-red-resolve:
     name: Close the main-red alert when main is green
     runs-on: ubuntu-24.04

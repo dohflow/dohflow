@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 
 import { renderWithClient } from "@/test/renderWithClient";
 import type { AccountViewDto } from "@/bindings";
+import { expectDraftKeyIdentity } from "@/test/idempotencyIdentity";
 import { AccountEditorDrawer } from "./AccountEditorDrawer";
 
 const mocks = vi.hoisted(() => ({
@@ -377,5 +378,304 @@ describe("a save that stops part-way (g3m.35)", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(mocks.updateAccount).toHaveBeenCalledTimes(1); // the rename is not sent twice
     expect(mocks.setAccountNote).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the balance step keeps one idempotency key per draft (g3m.40)", () => {
+  const CHECKING: AccountViewDto = {
+    id: "chk-1",
+    name: "Checking",
+    cashflow_role: "liquid_cash",
+    subtype: null,
+    active: true,
+    balance: { minor_units: 0, currency: "USD" },
+    notes: null,
+    linked_account_id: null,
+    linked_account_name: null,
+  };
+  const SAVED = ok({ balance: { minor_units: 12_300, currency: "USD" }, unexplained: null });
+  const UNKNOWN =
+    "Couldn’t confirm whether this balance was saved. Save again and it won’t be added twice.";
+  const SAVED_UNCONFIRMED = "Saved, but the new balance couldn’t be confirmed.";
+  const refusal = { status: "error", error: { Validation: "That amount is too large." } } as const;
+
+  const keys = () => mocks.assertBalance.mock.calls.map((c) => c[0].idempotency_key as string);
+  const view = (onClose = vi.fn()) =>
+    renderWithClient(
+      <AccountEditorDrawer account={CHECKING} defaultCurrency="USD" onClose={onClose} />,
+    );
+  const setBalance = (value: string) =>
+    fireEvent.change(screen.getByLabelText("Balance"), { target: { value } });
+  const saveButton = () => screen.getByRole("button", { name: /save account|try again|done/i });
+  const save = () => fireEvent.click(saveButton());
+  /// Waits for the form to be released after the previous send (it is busy until the call settles).
+  const saveWhenReady = async () => {
+    await waitFor(() => expect(saveButton()).toBeEnabled());
+    save();
+  };
+
+  beforeEach(() => {
+    // A lost connection: the call rejects, so nobody knows whether it was written.
+    mocks.assertBalance.mockRejectedValue(new Error("connection lost"));
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-04T12:00:00") });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  test("an unknown outcome then a retry reuses the key; any changed field, a refusal and a success each start a new draft", async () => {
+    let rendered = view();
+    await expectDraftKeyIdentity({
+      name: "the account editor's balance save",
+      open: () => void setBalance("123"),
+      send: saveWhenReady,
+      keys,
+      fields: [
+        { name: "amount", change: () => void setBalance("456") },
+        { name: "date", change: () => void vi.setSystemTime(new Date("2026-11-05T12:00:00")) },
+        // The currency is the account's own and has no control in this drawer, so no UI change can
+        // reach it; it is in the identity string all the same (the test below pins that it is sent).
+      ],
+      refusal: { arrange: () => mocks.assertBalance.mockResolvedValueOnce(refusal) },
+      success: {
+        arrange: () => mocks.assertBalance.mockResolvedValueOnce(SAVED),
+        // A confirmed save closes the drawer, so the same figures come back in a new one.
+        reopen: () => {
+          rendered.unmount();
+          rendered = view();
+          void setBalance("123");
+        },
+      },
+    });
+  });
+
+  test("the draft carries the account, the figure, the date and the currency it was entered with", async () => {
+    view();
+    setBalance("123");
+    save();
+    await waitFor(() => expect(mocks.assertBalance).toHaveBeenCalledTimes(1));
+    expect(mocks.assertBalance.mock.calls[0]?.[0]).toMatchObject({
+      account_id: "chk-1",
+      amount: { minor_units: 12_300, currency: "USD" },
+      as_of_date: "2026-11-04",
+      idempotency_key: expect.stringMatching(/.+/),
+    });
+  });
+
+  test("a call that threw says it could not confirm, never 'not saved', and releases the form", async () => {
+    const onClose = vi.fn();
+    view(onClose);
+    setBalance("123");
+    save();
+    const alert = await screen.findByText(UNKNOWN);
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(screen.queryByText(/couldn’t confirm whether this saved/i)).toBeNull();
+    expect(screen.queryByText(/didn’t save|not saved/i)).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    // Busy is released: Save is live again and Cancel works.
+    expect(screen.getByRole("button", { name: /save account/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /cancel/i })).toBeEnabled();
+  });
+
+  test("a refused balance shows the host's reason, not the unknown-outcome sentence", async () => {
+    mocks.assertBalance.mockResolvedValueOnce(refusal);
+    view();
+    setBalance("123");
+    save();
+    expect(await screen.findByText("That amount is too large.")).toBeInTheDocument();
+    expect(screen.queryByText(UNKNOWN)).toBeNull();
+  });
+
+  test("a balance saved but not read back is saved, says so, and keeps the drawer open", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    const onClose = vi.fn();
+    view(onClose);
+    setBalance("123");
+    save();
+    const note = await screen.findByText(SAVED_UNCONFIRMED);
+    expect(note).toBeInTheDocument();
+    expect(screen.getByText("Saved: Balance.")).toBeInTheDocument();
+    expect(screen.queryByText(/didn’t save|not saved|may or may not/i)).toBeNull();
+    expect(screen.queryByText(UNKNOWN)).toBeNull();
+    // Nothing failed or is unconfirmed, so neither group headline is shown above the saved balance.
+    expect(screen.queryByText(/some changes saved and some/i)).toBeNull();
+    expect(screen.queryByText(/not everything (saved|could be confirmed)/i)).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    // It is stored: nothing is asserted a second time, and the person can finish.
+    save();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+  });
+
+  test("the finished-but-unconfirmed state offers Done, which sends nothing and closes", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    const onClose = vi.fn();
+    view(onClose);
+    setBalance("123");
+    save();
+    await screen.findByText(SAVED_UNCONFIRMED);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save account" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+    expect(mocks.updateAccount).not.toHaveBeenCalled();
+    expect(mocks.setAccountNote).not.toHaveBeenCalled();
+  });
+
+  test("on a debt account Done also sends nothing: no debt terms, no write of any kind, and it closes", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer
+        account={{
+          id: "card-1",
+          name: "Sapphire",
+          cashflow_role: "credit_facility",
+          subtype: "credit_card",
+          active: true,
+          balance: { minor_units: -1_000_000, currency: "USD" },
+          notes: null,
+          linked_account_id: null,
+          linked_account_name: null,
+        }}
+        defaultCurrency="USD"
+        onClose={onClose}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Amount owed"), { target: { value: "1234" } });
+    // Saving waits until the debt terms have loaded.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save account" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await screen.findByText(SAVED_UNCONFIRMED);
+    const writes = () => [
+      mocks.assertBalance.mock.calls.length,
+      mocks.setDebtTerms.mock.calls.length,
+      mocks.updateAccount.mock.calls.length,
+      mocks.setAccountNote.mock.calls.length,
+    ];
+    const before = writes();
+    expect(before[1]).toBe(1); // the debt terms were stored by the save itself
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(writes()).toEqual(before);
+  });
+
+  test("creating a New loan after the unconfirmed result leaves Done: the link is a change, so the footer saves it", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    mocks.createAccount.mockResolvedValue(
+      ok({ account_id: "loan-new", mutation: { op_seq: 1, replayed: false } }),
+    );
+    const onClose = vi.fn();
+    renderWithClient(
+      <AccountEditorDrawer
+        account={{
+          id: "house-1",
+          name: "House",
+          cashflow_role: "real_asset",
+          subtype: null,
+          active: true,
+          balance: { minor_units: 30_000_000, currency: "USD" },
+          notes: null,
+          linked_account_id: null,
+          linked_account_name: null,
+        }}
+        defaultCurrency="USD"
+        onClose={onClose}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "310000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await screen.findByText(SAVED_UNCONFIRMED);
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+
+    // The loan dialog sits outside the form: its result changes the draft without a form event.
+    fireEvent.click(screen.getByRole("button", { name: /new loan/i }));
+    const dialog = await screen.findByRole("dialog", { name: /new loan/i });
+    fireEvent.change(within(dialog).getByLabelText("Loan name"), { target: { value: "Mortgage" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /create loan/i }));
+    await waitFor(() => expect(mocks.createAccount).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Done" })).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await waitFor(() => expect(mocks.setAccountLink).toHaveBeenCalledWith("house-1", "loan-new", expect.anything()));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // The stored balance is not asserted a second time.
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+  });
+
+  test("an edit after the unconfirmed result resumes normal saving: the label is Save account and the change is written", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    mocks.setAccountNote.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    const onClose = vi.fn();
+    view(onClose);
+    setBalance("123");
+    save();
+    await screen.findByText(SAVED_UNCONFIRMED);
+    fireEvent.change(screen.getByPlaceholderText(/anything you want to remember/i), {
+      target: { value: "Main account" },
+    });
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+    expect(screen.queryByText(SAVED_UNCONFIRMED)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.setAccountNote).toHaveBeenCalledTimes(1);
+    expect(mocks.setAccountNote.mock.calls[0]).toEqual(["chk-1", "Main account", expect.anything()]);
+    // The balance that was stored is not asserted a second time.
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(1);
+  });
+
+  test("a real retry keeps Try again: a refused step, an unconfirmed step or an untried step is not Done", async () => {
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    mocks.setAccountNote.mockResolvedValue({ status: "error", error: { Validation: "That note is too long." } });
+    view();
+    setBalance("123");
+    fireEvent.change(screen.getByPlaceholderText(/anything you want to remember/i), {
+      target: { value: "Main account" },
+    });
+    save();
+    await screen.findByText(/some changes saved and some didn’t/i);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+  });
+
+  test("with a rename saved first and notes refused after, the balance outcome lands in its own group", async () => {
+    mocks.updateAccount.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
+    mocks.assertBalance.mockResolvedValue(ok({ balance: null, unexplained: null }));
+    mocks.setAccountNote.mockResolvedValue({ status: "error", error: { Validation: "That note is too long." } });
+    view();
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Everyday" } });
+    setBalance("123");
+    fireEvent.change(screen.getByPlaceholderText(/anything you want to remember/i), {
+      target: { value: "Main account" },
+    });
+    save();
+    const heading = await screen.findByText(/some changes saved and some didn’t/i);
+    const block = heading.parentElement as HTMLElement;
+    expect(within(block).getByText("Saved: Name, Balance.")).toBeInTheDocument();
+    expect(within(block).getByText(/Didn’t save: Notes\. That note is too long\./)).toBeInTheDocument();
+    expect(within(block).getByText(SAVED_UNCONFIRMED)).toBeInTheDocument();
+  });
+
+  test("a balance that threw after a rename saved is listed as unconfirmed, and a retry repeats only it, with its key", async () => {
+    mocks.updateAccount.mockResolvedValue(ok({ op_seq: 1, replayed: false }));
+    const onClose = vi.fn();
+    view(onClose);
+    fireEvent.change(screen.getByLabelText("Account name"), { target: { value: "Everyday" } });
+    setBalance("123");
+    save();
+    const heading = await screen.findByText(/some changes saved and some couldn’t be confirmed/i);
+    const block = heading.parentElement as HTMLElement;
+    expect(within(block).getByText("Saved: Name.")).toBeInTheDocument();
+    expect(within(block).getByText("Couldn’t confirm: Balance. It may or may not have saved.")).toBeInTheDocument();
+    expect(within(block).queryByText(/Didn’t save/)).toBeNull();
+    // A step that may not have saved is a real retry, never Done.
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+
+    mocks.assertBalance.mockResolvedValue(SAVED);
+    save();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.updateAccount).toHaveBeenCalledTimes(1);
+    expect(mocks.assertBalance).toHaveBeenCalledTimes(2);
+    expect(keys()[1]).toBe(keys()[0]);
   });
 });

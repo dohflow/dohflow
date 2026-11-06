@@ -359,3 +359,90 @@ fn the_one_shot_generator_stops_rather_than_invent_bytes() {
     let mut more = [0_u8; 1];
     rng.fill_bytes(&mut more);
 }
+
+// ---- the RFC 9180 A.1 vector, both ways ----------------------------------------------------------------
+
+#[test]
+fn the_rfc_9180_a1_vector_opens_and_reproduces_with_aes_128_gcm() {
+    use hpke::aead::AesGcm128;
+    use hpke::kdf::HkdfSha256;
+    use hpke::kem::X25519HkdfSha256;
+    use hpke::{
+        single_shot_open, single_shot_seal, Deserializable, OpModeR, OpModeS, Serializable,
+    };
+    use vault_crypto::sync_keyset::SeedRng;
+
+    let file: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/architecture/vectors/hpke-rfc9180-x25519-v1.json"
+    ))
+    .unwrap();
+    let vector = file["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["aead_id"].as_u64() == Some(1))
+        .expect("the A.1 entry");
+    let unhex = |name: &str, v: &serde_json::Value| -> Vec<u8> {
+        let text = v[name].as_str().unwrap();
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    };
+    let encryption = &vector["encryptions"][0];
+    let (info, aad) = (unhex("info", vector), unhex("aad", encryption));
+    let (ct, pt) = (unhex("ct", encryption), unhex("pt", encryption));
+    let private =
+        <X25519HkdfSha256 as hpke::Kem>::PrivateKey::from_bytes(&unhex("skRm", vector)).unwrap();
+    let encapped =
+        <X25519HkdfSha256 as hpke::Kem>::EncappedKey::from_bytes(&unhex("enc", vector)).unwrap();
+
+    // Open the published ciphertext with the published recipient key ...
+    let opened = single_shot_open::<AesGcm128, HkdfSha256, X25519HkdfSha256>(
+        &OpModeR::Base,
+        &private,
+        &encapped,
+        &info,
+        &ct,
+        &aad,
+    )
+    .expect("A.1 opens");
+    assert_eq!(opened, pt);
+    // ... and a one-byte change to the ciphertext, the aad or the info does not.
+    for flip in 0..3 {
+        let (mut c, mut a, mut i) = (ct.clone(), aad.clone(), info.clone());
+        match flip {
+            0 => c[0] ^= 1,
+            1 => a[0] ^= 1,
+            _ => i[0] ^= 1,
+        }
+        assert!(
+            single_shot_open::<AesGcm128, HkdfSha256, X25519HkdfSha256>(
+                &OpModeR::Base,
+                &private,
+                &encapped,
+                &i,
+                &c,
+                &a
+            )
+            .is_err(),
+            "flip {flip}"
+        );
+    }
+    // Reproduce enc and the ciphertext from the published ephemeral seed, through the same
+    // one-shot generator production uses.
+    let public =
+        <X25519HkdfSha256 as hpke::Kem>::PublicKey::from_bytes(&unhex("pkRm", vector)).unwrap();
+    let seed = vault_crypto::SecretBytes::<32>::from_slice(&unhex("ikmE", vector)).unwrap();
+    let mut rng = SeedRng::new(&seed);
+    let (enc, sealed) = single_shot_seal::<AesGcm128, HkdfSha256, X25519HkdfSha256, _>(
+        &OpModeS::Base,
+        &public,
+        &info,
+        &pt,
+        &aad,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(enc.to_bytes().as_slice(), unhex("enc", vector).as_slice());
+    assert_eq!(sealed, ct);
+}
