@@ -135,6 +135,29 @@ describe("vault routing", () => {
     ).toBeInTheDocument();
   });
 
+  it("mounts the keyboard-inset hook once, so a touch device publishes its keyboard height (personal-cfo-i93n3.25)", async () => {
+    mocks.vaultStatus.mockResolvedValue(ok({ state: "NoVault", account_count: null }));
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: Object.assign(new EventTarget(), { height: window.innerHeight - 200, offsetTop: 0, scale: 1 }),
+    });
+    try {
+      render(<App />);
+      await screen.findByRole("heading", { name: /create your vault/i });
+      expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("200px");
+    } finally {
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(window, "visualViewport");
+      document.documentElement.style.removeProperty("--keyboard-inset");
+    }
+  });
+
   it("shows the recovery screen for a half-open vault", async () => {
     mocks.vaultStatus.mockResolvedValue(
       ok({ state: "CorruptNeedsRecovery", account_count: null }),

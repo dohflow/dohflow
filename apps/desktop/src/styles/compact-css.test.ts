@@ -12,6 +12,7 @@ import sourceTree from "virtual:source-tree";
 import STYLESHEETS from "virtual:tailwind-sheets";
 
 import { COMPACT_QUERY } from "@/lib/compact";
+import { SAFE_AREA_PADDING } from "@/lib/safeArea";
 
 async function compiled(candidates: string[]): Promise<string> {
   const compiler = await compile(globalsCss, {
@@ -105,6 +106,18 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
     ]);
     expect(css).toMatch(/padding-top:\s*var\(--safe-area-top\)/);
     expect(css).toMatch(/padding-bottom:\s*max\(var\(--safe-area-bottom\),\s*var\(--keyboard-inset\)\)/);
+  });
+
+  it("the exported safe-area padding is the four insets, with the larger of the home indicator and the keyboard at the bottom", async () => {
+    expect(SAFE_AREA_PADDING.split(" ").sort()).toEqual([
+      "pb-[max(var(--safe-area-bottom),var(--keyboard-inset))]",
+      "pl-(--safe-area-left)",
+      "pr-(--safe-area-right)",
+      "pt-(--safe-area-top)",
+    ]);
+    const css = await compiled(SAFE_AREA_PADDING.split(" "));
+    expect(css).toMatch(/padding-bottom:\s*max\(var\(--safe-area-bottom\),\s*var\(--keyboard-inset\)\)/);
+    expect(css).not.toMatch(/padding-bottom:[^;]*\+/);
   });
 
   it("index.html asks for the full screen, so the insets are reported, and still allows zoom", () => {

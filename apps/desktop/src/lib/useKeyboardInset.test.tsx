@@ -127,6 +127,52 @@ describe("useKeyboardInset (personal-cfo-i93n3.25)", () => {
     expect(scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
+  it("reports no keyboard while the visual viewport is panned past the top, as a zoom bounce does", () => {
+    installPointer(true);
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const viewport = installVisualViewport({ height: 800, offsetTop: 0 });
+    const { getByLabelText } = render(
+      <label>
+        Amount <input />
+      </label>,
+    );
+    renderHook(() => useKeyboardInset());
+    getByLabelText("Amount").focus();
+
+    viewport.move({ height: 800, offsetTop: -100 });
+    viewport.move({ height: 800, offsetTop: -139 });
+
+    expect(inset()).toBe("0px");
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("scrolls the newly focused field into view when focus moves while the keyboard is up", async () => {
+    installPointer(true);
+    const viewport = installVisualViewport({ height: 800, offsetTop: 0 });
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const { getByLabelText } = render(
+      <>
+        <label>
+          First <input />
+        </label>
+        <label>
+          Second <input />
+        </label>
+      </>,
+    );
+    renderHook(() => useKeyboardInset());
+    getByLabelText("First").focus();
+    viewport.move({ height: 500 });
+    scrollIntoView.mockClear();
+
+    getByLabelText("Second").focus();
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
+
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
   it("removes its listeners and the property on unmount", () => {
     installPointer(true);
     const viewport = installVisualViewport({ height: 500, offsetTop: 0 });
