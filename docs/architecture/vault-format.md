@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=31 -->
-<!-- vault-format: schema-version=66 -->
+<!-- vault-format: spec-version=34 -->
+<!-- vault-format: schema-version=67 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,15 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 34` (personal-cfo-bxsbz.4, schema version 67) adds the nullable device-local column
+  `sync_outbox.issued_at`: the command's original `issued_at`, in microseconds since the Unix epoch and
+  bounded as an envelope's is (C.6), written in the operation-log transaction while Sync is enabled.
+  A rebase re-applies an unpushed command under its complete original `CommandMeta`; the ids `apply`
+  derives and the `deleted_at` stamps it writes come from `issued_at`, and the envelope's
+  immutable-metadata commitment binds it, so a replay under any other value would fork from the
+  command's own envelope. A row with no recorded value (written before the column) is refused by
+  name. The column is excluded from both formats like the rest of the table. No wire layout,
+  write-set rule or vector changes, and no `engine_version` change.
 - `spec-version = 31` (personal-cfo-0g528.2, part S2a) makes the write set cover
   `source_provenance_links`. C.1.5 says the write set is exactly what Sync replicates, and the rows are
   an apply output that travels as genesis rows (spec-version 29), so a replica that bootstraps from a
@@ -591,7 +600,7 @@ therefore requires reviewing this inventory.
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |
 | `backup_history` | 3 | exclude | exclude | Device-local state. |
 | `sync_base` | 3 | exclude | exclude | Device-local state: whether Sync is enabled here, the server seq of the base image, the digest of `sync/base.db` and the base state. |
-| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys and sealed containers. A command's envelope is what travels, never this row. |
+| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys, original `issued_at` and sealed containers. A command's envelope is what travels, never this row. |
 | `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
 <!-- inventory:end -->
 

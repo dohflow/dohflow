@@ -501,7 +501,7 @@ name = "sync_outbox"
 class = "3"
 write_set = "none"
 primary_key = ["command_id"]
-columns = ["command_id:uuid", "op_seq:int", "state:text", "write_set_keys:bytes", "sealed_container:bytes", "bound_seq:int", "result_ref:bytes", "created_at:text"]
+columns = ["command_id:uuid", "op_seq:int", "state:text", "write_set_keys:bytes", "sealed_container:bytes", "bound_seq:int", "result_ref:bytes", "created_at:text", "issued_at:int"]
 
 [[table]]
 name = "system_ledger_accounts"
