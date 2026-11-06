@@ -32,6 +32,27 @@ struct Sealed {
 }
 
 impl Sealed {
+    /// The container the service stores: the header and a stand-in ciphertext (the AEAD is the
+    /// client engine's, not the rebase's, so any bytes will do).
+    fn container(&self) -> Vec<u8> {
+        sync_core::header::encode_container(&self.header, &self.plaintext.encode().unwrap())
+            .unwrap()
+    }
+
+    /// The entry a reconciliation is offered for the log position `seq`.
+    fn entry<'a>(
+        &'a self,
+        container: &'a [u8],
+        seq: u64,
+        result_ref: Option<Vec<u8>>,
+    ) -> crate::rebase::PulledLogEntry<'a> {
+        crate::rebase::PulledLogEntry {
+            envelope: self.pulled(seq),
+            container,
+            result_ref,
+        }
+    }
+
     fn pulled(&self, seq: u64) -> PulledEnvelope<'_> {
         PulledEnvelope {
             seq,
@@ -1239,7 +1260,7 @@ fn a_pulled_envelope_the_commands_own_validation_refuses_stops_the_replica_at_it
 
 mod outbox_reader {
     use super::*;
-    use crate::rebase::RebaseError;
+    use crate::rebase::{OutboxEntryState, RebaseError};
 
     #[test]
     fn the_unpushed_commands_come_back_in_local_order_with_their_complete_original_meta() {
@@ -1277,8 +1298,8 @@ mod outbox_reader {
     }
 
     #[test]
-    fn an_entry_the_server_already_accepted_is_not_replayed() {
-        let (_dir, live, account, _scratch) = live_with_base();
+    fn an_entry_the_server_already_accepted_reads_back_bound_and_is_not_replayed() {
+        let (_dir, live, account, scratch) = live_with_base();
         let sent = meta();
         live.dispatch(sent.clone(), rename(account, "Pushed"))
             .unwrap();
@@ -1297,9 +1318,18 @@ mod outbox_reader {
 
         let read = live.read_local_commands().unwrap();
 
-        assert_eq!(read.len(), 1);
+        assert_eq!(read.len(), 2);
+        assert!(matches!(
+            read[0].entry,
+            OutboxEntryState::Bound { seq: 6, .. }
+        ));
+        assert_eq!(read[1].entry, OutboxEntryState::Pending);
+        // The executor refuses a Bound entry: it is reconciled, never replayed.
+        let mut scratch = live.rollback_to(5, &scratch).unwrap();
+        let error = scratch.rebase_local(&read).unwrap_err();
         assert!(
-            matches!(read[0].cmd, WriteCommand::UpdateAccount { ref name, .. } if name == "Still local")
+            matches!(error, RebaseError::NotReconciled { command_id } if command_id == sent.command_id),
+            "{error:?}"
         );
     }
 
@@ -1326,5 +1356,764 @@ mod outbox_reader {
     fn a_vault_with_nothing_unpushed_reads_back_nothing() {
         let (_dir, live, _account, _scratch) = live_with_base();
         assert!(live.read_local_commands().unwrap().is_empty());
+    }
+}
+
+// ---- already-accepted reconciliation and the re-seal rule (personal-cfo-bxsbz.5) ------------
+
+mod accepted {
+    use rusqlite::params;
+    use sync_core::accepted::{decide_push, AcceptedRecord, InMemoryIndex, PushIdentity};
+    use sync_core::envelope::{canonical_envelope_digest, ReceiverError};
+    use sync_core::header::{parse_container, MetadataCommitment};
+    use sync_core::status::EngineVersion;
+
+    use super::*;
+    use crate::rebase::{
+        reconcile, reconcile_and_replay, AcceptedEvidence, Disagreement, ForkSource,
+        OutboxEntryState, Probe, ProtocolForkEvidence, RebaseError, SettledBy,
+    };
+    use crate::sync_state::decode_row_keys;
+
+    struct OutboxRow {
+        state: String,
+        op_seq: i64,
+        bound_seq: Option<i64>,
+        result_ref: Option<Vec<u8>>,
+        sealed: Option<Vec<u8>>,
+        keys: Vec<u8>,
+    }
+
+    fn outbox_row(worker: &DbWorker, id: Uuid) -> Option<OutboxRow> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT state, op_seq, bound_seq, result_ref, sealed_container, write_set_keys
+                   FROM sync_outbox WHERE command_id = ?1",
+                [id],
+                |r| {
+                    Ok(OutboxRow {
+                        state: r.get(0)?,
+                        op_seq: r.get(1)?,
+                        bound_seq: r.get(2)?,
+                        result_ref: r.get(3)?,
+                        sealed: r.get(4)?,
+                        keys: r.get(5)?,
+                    })
+                },
+            )
+            .ok()
+    }
+
+    fn log_row(worker: &DbWorker, id: Uuid) -> Option<(i64, Option<i64>)> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT op_seq, rebased_from FROM operation_log WHERE command_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    fn count(worker: &DbWorker, sql: &str) -> i64 {
+        worker.lock().conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn log_len(worker: &DbWorker) -> i64 {
+        count(worker, "SELECT count(*) FROM operation_log")
+    }
+
+    fn approve(live: &DbWorker, id: Uuid, container: &[u8]) {
+        live.lock()
+            .conn
+            .execute(
+                "UPDATE sync_outbox SET state = 'Approved', sealed_container = ?2
+                  WHERE command_id = ?1",
+                params![id, container],
+            )
+            .unwrap();
+    }
+
+    fn digest_of(container: &[u8]) -> [u8; 32] {
+        let parsed = parse_container(container).unwrap();
+        canonical_envelope_digest(parsed.header_bytes, parsed.ciphertext).unwrap()
+    }
+
+    fn accept(index: &mut InMemoryIndex, container: &[u8], seq: u64, result: Option<Vec<u8>>) {
+        let parsed = parse_container(container).unwrap();
+        let identity = PushIdentity::from_container(&parsed).unwrap();
+        index.insert(identity.accepted(1, seq, result)).unwrap();
+    }
+
+    /// What re-pushing `container` byte for byte tells the engine.
+    fn probe(index: &InMemoryIndex, container: &[u8]) -> Probe {
+        let parsed = parse_container(container).unwrap();
+        let identity = PushIdentity::from_container(&parsed).unwrap();
+        Probe::from_decision(&decide_push(index, &identity).unwrap())
+    }
+
+    /// A live vault whose base image already holds `cmd`, as a snapshot bootstrap past its
+    /// acceptance would, with the command still unacknowledged (`Approved`) in the outbox.
+    fn live_with_accepted_command_in_base() -> (TempDir, DbWorker, AccountId, PathBuf, Sealed, Uuid)
+    {
+        let (dir, live) = worker();
+        let account = AccountId::new();
+        live.dispatch(meta(), liquid_account_cmd(account, Currency::Usd, 50_000))
+            .unwrap();
+        let c = meta();
+        let cmd = rename(account, "Mine");
+        live.dispatch(c.clone(), cmd.clone()).unwrap();
+        live.initialize_base_image(5).unwrap();
+        let origin = live
+            .rollback_to(5, &dir.path().join("rebase").join("sealer.db"))
+            .unwrap();
+        let sealed = seal(origin.worker(), &c, &cmd);
+        drop(origin);
+        let bytes = sealed.container();
+        live.lock()
+            .conn
+            .execute(
+                "INSERT INTO sync_outbox
+                   (command_id, op_seq, state, write_set_keys, sealed_container, created_at,
+                    issued_at)
+                 SELECT command_id, op_seq, 'Approved', x'', ?2, '2026-11-06T00:00:00Z', ?3
+                   FROM operation_log WHERE command_id = ?1",
+                params![c.command_id, bytes, c.issued_at.as_unix_micros()],
+            )
+            .unwrap();
+        let scratch = dir.path().join("rebase").join("scratch.db");
+        (dir, live, account, scratch, sealed, c.command_id)
+    }
+
+    fn as_fork(error: RebaseError) -> ProtocolForkEvidence {
+        match error {
+            RebaseError::ProtocolFork(evidence) => *evidence,
+            other => panic!("expected a ProtocolFork, got {other:?}"),
+        }
+    }
+
+    // -- the tail ---------------------------------------------------------------------------------
+
+    #[test]
+    fn an_accepted_command_in_the_tail_is_bound_to_its_position_and_never_replayed_or_pending() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let cmd = rename(account, "Mine");
+        let sealed = seal(origin.worker(), &c, &cmd);
+        live.dispatch(c.clone(), cmd).unwrap();
+        let bytes = sealed.container();
+        approve(&live, c.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+        let old_op_seq = local[0].old_op_seq;
+        let live_log = log_len(&live);
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let pulled = [sealed.entry(&bytes, 6, Some(vec![7, 7]))];
+        let (reconciliation, executed) =
+            reconcile_and_replay(&mut scratch, &pulled, &local, &AcceptedEvidence::new()).unwrap();
+
+        assert_eq!(reconciliation.settled.len(), 1);
+        assert_eq!(reconciliation.settled[0].by, SettledBy::Tail);
+        assert!(
+            executed.replayed.is_empty(),
+            "an accepted command is not replayed"
+        );
+        let row = outbox_row(scratch.worker(), c.command_id).unwrap();
+        assert_eq!(row.state, "Bound");
+        assert_eq!(row.bound_seq, Some(6));
+        assert_eq!(row.result_ref, Some(vec![7, 7]));
+        assert_eq!(
+            row.sealed.as_deref(),
+            Some(bytes.as_slice()),
+            "the container is kept"
+        );
+        let (new_op_seq, rebased_from) = log_row(scratch.worker(), c.command_id).unwrap();
+        assert_eq!(
+            row.op_seq, new_op_seq,
+            "the outbox row follows the rebuilt log row"
+        );
+        assert_eq!(
+            rebased_from,
+            Some(old_op_seq),
+            "the log row remembers what it replaced"
+        );
+        // AC3: an accepted command is never written back as Pending.
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT count(*) FROM sync_outbox WHERE state = 'Pending'"
+            ),
+            0
+        );
+        assert_eq!(
+            account_name(scratch.worker(), account),
+            "Mine",
+            "applied once"
+        );
+        assert_eq!(
+            count(scratch.worker(), "SELECT count(*) FROM outbox_queue"),
+            0
+        );
+        assert_eq!(log_len(&live), live_log, "the live vault is untouched");
+    }
+
+    #[test]
+    fn a_command_built_on_an_accepted_one_replays_and_is_not_mistaken_for_a_conflict() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let first = meta();
+        let mut second = meta();
+        second.correlation_id = first.correlation_id;
+        second.causation_id = Some(first.command_id);
+        let sealed = seal(origin.worker(), &first, &rename(account, "One"));
+        live.dispatch(first.clone(), rename(account, "One"))
+            .unwrap();
+        live.dispatch(second.clone(), rename(account, "Two"))
+            .unwrap();
+        let bytes = sealed.container();
+        approve(&live, first.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let pulled = [sealed.entry(&bytes, 6, None)];
+        let (_, executed) =
+            reconcile_and_replay(&mut scratch, &pulled, &local, &AcceptedEvidence::new()).unwrap();
+
+        // The accepted command's own rows are not the server's: the second command is untouched.
+        assert_eq!(executed.replayed.len(), 1);
+        assert_eq!(executed.replayed[0].command_id, second.command_id);
+        assert_eq!(
+            count(scratch.worker(), "SELECT count(*) FROM outbox_queue"),
+            0
+        );
+        assert_eq!(account_name(scratch.worker(), account), "Two");
+        let one = outbox_row(scratch.worker(), first.command_id).unwrap();
+        let two = outbox_row(scratch.worker(), second.command_id).unwrap();
+        assert_eq!(
+            (one.state.as_str(), two.state.as_str()),
+            ("Bound", "Pending")
+        );
+        assert_eq!(
+            one.result_ref,
+            Some(Vec::new()),
+            "no result is the empty column"
+        );
+        assert!(one.op_seq < two.op_seq);
+    }
+
+    #[test]
+    fn a_bound_entry_is_remapped_when_the_tail_agrees_and_refused_when_it_does_not() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let cmd = rename(account, "Mine");
+        let sealed = seal(origin.worker(), &c, &cmd);
+        live.dispatch(c.clone(), cmd).unwrap();
+        let bytes = sealed.container();
+        live.lock()
+            .conn
+            .execute(
+                "UPDATE sync_outbox SET state = 'Bound', sealed_container = ?2, bound_seq = 6,
+                        result_ref = x'0a'
+                  WHERE command_id = ?1",
+                params![c.command_id, bytes],
+            )
+            .unwrap();
+        let local = live.read_local_commands().unwrap();
+        assert!(matches!(
+            local[0].entry,
+            OutboxEntryState::Bound { seq: 6, .. }
+        ));
+
+        // The tail agrees.
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let pulled = [sealed.entry(&bytes, 6, Some(vec![0x0a]))];
+        reconcile_and_replay(&mut scratch, &pulled, &local, &AcceptedEvidence::new()).unwrap();
+        let row = outbox_row(scratch.worker(), c.command_id).unwrap();
+        assert_eq!((row.state.as_str(), row.bound_seq), ("Bound", Some(6)));
+
+        // The tail puts the same envelope somewhere else: a fork-consistency failure, not a bind.
+        let moved = [sealed.entry(&bytes, 9, Some(vec![0x0a]))];
+        let error = reconcile(&moved, &local, &AcceptedEvidence::new()).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RebaseError::EvidenceDisagrees {
+                    found: Disagreement::Position { .. },
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    // -- forks ------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_same_command_id_with_another_envelope_is_a_protocol_fork_with_both_kept_and_nothing_applied(
+    ) {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let theirs = seal(origin.worker(), &c, &rename(account, "Theirs"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        // Sealed from the local record: the same command id, a different envelope.
+        let mine = {
+            let other = live
+                .rollback_to(5, &dir.path().join("rebase").join("sealer.db"))
+                .unwrap();
+            seal(other.worker(), &c, &rename(account, "Mine"))
+        };
+        let local_bytes = mine.container();
+        let their_bytes = theirs.container();
+        approve(&live, c.command_id, &local_bytes);
+        let local = live.read_local_commands().unwrap();
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let log_before = log_len(scratch.worker());
+        let pulled = [theirs.entry(&their_bytes, 6, None)];
+        let error = reconcile_and_replay(&mut scratch, &pulled, &local, &AcceptedEvidence::new())
+            .unwrap_err();
+
+        let fork = as_fork(error);
+        assert_eq!(fork.source, ForkSource::Tail);
+        assert_eq!(fork.command_id, c.command_id);
+        let (local_kept, other_kept) = (fork.local.clone().unwrap(), fork.other.clone().unwrap());
+        assert_eq!(local_kept.container, local_bytes, "our ciphertext is kept");
+        assert_eq!(other_kept.container, their_bytes, "theirs is kept");
+        assert_eq!(local_kept.digest, digest_of(&local_bytes));
+        assert_eq!(other_kept.digest, digest_of(&their_bytes));
+        assert_ne!(local_kept.digest, other_kept.digest);
+        // Nothing was applied, bound or queued.
+        assert_eq!(scratch.head_seq(), 5);
+        assert_eq!(log_len(scratch.worker()), log_before);
+        assert!(outbox_row(scratch.worker(), c.command_id).is_none());
+        // AC5: the status machine halts with the command and both digests.
+        let mut status = SyncStatus::Healthy;
+        let event = fork.observe(&mut status);
+        let evidence = HaltEvidence::ProtocolFork {
+            command_id: *c.command_id.as_bytes(),
+            local_digest: Some(local_kept.digest),
+            other_digest: Some(other_kept.digest),
+        };
+        assert_eq!(event, Some(SyncEvent::Halted(evidence)));
+        assert_eq!(status, SyncStatus::Halted(evidence));
+        assert_eq!(fork.halt_evidence(), evidence);
+    }
+
+    #[test]
+    fn a_pending_entry_whose_command_id_is_already_in_the_log_is_a_fork_with_no_local_envelope() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let theirs = seal(origin.worker(), &c, &rename(account, "Theirs"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        let local = live.read_local_commands().unwrap();
+        assert_eq!(local[0].entry, OutboxEntryState::Pending);
+
+        let bytes = theirs.container();
+        let pulled = [theirs.entry(&bytes, 6, None)];
+        let fork = as_fork(reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err());
+
+        assert!(fork.local.is_none(), "it was never sealed");
+        assert_eq!(fork.other.as_ref().unwrap().seq, Some(6));
+        assert_eq!(
+            fork.halt_evidence(),
+            HaltEvidence::ProtocolFork {
+                command_id: *c.command_id.as_bytes(),
+                local_digest: None,
+                other_digest: Some(digest_of(&bytes)),
+            }
+        );
+        drop(scratch_path);
+    }
+
+    #[test]
+    fn a_new_command_id_reusing_an_idempotency_key_in_the_log_is_a_fork() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let a = meta();
+        let theirs = seal(origin.worker(), &a, &rename(account, "Theirs"));
+        let mut b = meta();
+        b.idempotency_key = a.idempotency_key.clone();
+        live.dispatch(b.clone(), rename(account, "Mine")).unwrap();
+        let local = live.read_local_commands().unwrap();
+
+        let bytes = theirs.container();
+        let pulled = [theirs.entry(&bytes, 6, None)];
+        let fork = as_fork(reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err());
+
+        assert_eq!(fork.command_id, b.command_id);
+        assert!(fork.local.is_none());
+    }
+
+    #[test]
+    fn identical_bytes_whose_plaintext_disagrees_with_the_local_record_are_a_fork() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Sealed"));
+        // The local record is another payload under the same command id.
+        live.dispatch(c.clone(), rename(account, "Recorded"))
+            .unwrap();
+        let bytes = sealed.container();
+        approve(&live, c.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+
+        let pulled = [sealed.entry(&bytes, 6, None)];
+        let fork = as_fork(reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err());
+
+        assert_eq!(fork.local.unwrap().digest, fork.other.unwrap().digest);
+    }
+
+    // -- the probe --------------------------------------------------------------------------------
+
+    #[test]
+    fn a_sealed_entry_the_tail_does_not_settle_needs_a_probe_result() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Mine"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        approve(&live, c.command_id, &sealed.container());
+        let local = live.read_local_commands().unwrap();
+
+        let error = reconcile(&[], &local, &AcceptedEvidence::new()).unwrap_err();
+
+        assert!(
+            matches!(error, RebaseError::ProbeRequired { command_id } if command_id == c.command_id),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_probe_lets_the_entry_re_seal_pending_with_its_container_dropped() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Mine"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        let bytes = sealed.container();
+        approve(&live, c.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+        let index = InMemoryIndex::new();
+        let mut evidence = AcceptedEvidence::new();
+        evidence.record(c.command_id, probe(&index, &bytes));
+        assert_eq!(evidence.probe(&c.command_id), Some(&Probe::Unknown));
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let (reconciliation, executed) =
+            reconcile_and_replay(&mut scratch, &[], &local, &evidence).unwrap();
+
+        assert!(reconciliation.settled.is_empty());
+        assert_eq!(executed.replayed.len(), 1);
+        let row = outbox_row(scratch.worker(), c.command_id).unwrap();
+        assert_eq!(row.state, "Pending");
+        assert!(row.sealed.is_none(), "the stale container is dropped");
+        assert_eq!(
+            decode_row_keys(&row.keys),
+            Some(local[0].command.write_set_keys.clone()),
+            "the new write-set row keys"
+        );
+        assert_eq!(account_name(scratch.worker(), account), "Mine");
+    }
+
+    #[test]
+    fn a_sealed_entry_cannot_reach_the_replay_without_its_evidence() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Mine"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        approve(&live, c.command_id, &sealed.container());
+        let local = live.read_local_commands().unwrap();
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let error = scratch.rebase_local(&local).unwrap_err();
+
+        assert!(
+            matches!(error, RebaseError::NotReconciled { command_id } if command_id == c.command_id),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_probe_fork_halts_with_our_envelope_kept_and_the_other_unnamed() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let accepted = meta();
+        let first = seal(origin.worker(), &accepted, &rename(account, "First"));
+        // Another command id under the same idempotency key.
+        let mut reuse = meta();
+        reuse.idempotency_key = accepted.idempotency_key.clone();
+        // A second origin: one vault cannot apply two commands under one key.
+        let origin_two = live
+            .rollback_to(5, &dir.path().join("rebase").join("device-c.db"))
+            .unwrap();
+        let second = seal(origin_two.worker(), &reuse, &rename(account, "Second"));
+        let first_bytes = first.container();
+        let second_bytes = second.container();
+        let mut index = InMemoryIndex::new();
+        accept(&mut index, &first_bytes, 6, Some(vec![1, 2]));
+        live.dispatch(reuse.clone(), rename(account, "Second"))
+            .unwrap();
+        approve(&live, reuse.command_id, &second_bytes);
+        let local = live.read_local_commands().unwrap();
+        let live_log = log_len(&live);
+
+        // Re-pushing the exact retained container: the index holds the key under another command.
+        let result = probe(&index, &second_bytes);
+        assert_eq!(result, Probe::ProtocolFork);
+        let mut evidence = AcceptedEvidence::new();
+        evidence.record(reuse.command_id, result);
+        let fork = as_fork(reconcile(&[], &local, &evidence).unwrap_err());
+
+        assert_eq!(fork.source, ForkSource::Index);
+        assert_eq!(fork.local.as_ref().unwrap().container, second_bytes);
+        assert!(fork.other.is_none());
+        assert_eq!(log_len(&live), live_log, "no second operation-log row");
+        // The first command's own exact retry still returns its original result.
+        assert_eq!(
+            probe(&index, &first_bytes),
+            Probe::Replay {
+                seq: 6,
+                result_ref: Some(vec![1, 2])
+            }
+        );
+    }
+
+    #[test]
+    fn the_probe_and_the_tail_must_agree() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Mine"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        let bytes = sealed.container();
+        approve(&live, c.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+        let pulled = [sealed.entry(&bytes, 6, Some(vec![1]))];
+
+        for (probe, want) in [
+            (Probe::Unknown, Disagreement::ProbeUnknownButPulled),
+            (Probe::ProtocolFork, Disagreement::ProbeForkButPulled),
+        ] {
+            let mut evidence = AcceptedEvidence::new();
+            evidence.record(c.command_id, probe);
+            let error = reconcile(&pulled, &local, &evidence).unwrap_err();
+            assert!(
+                matches!(&error, RebaseError::EvidenceDisagrees { found, .. } if *found == want),
+                "{error:?}"
+            );
+        }
+        let mut evidence = AcceptedEvidence::new();
+        evidence.record(
+            c.command_id,
+            Probe::Replay {
+                seq: 7,
+                result_ref: Some(vec![1]),
+            },
+        );
+        let error = reconcile(&pulled, &local, &evidence).unwrap_err();
+        assert!(matches!(
+            error,
+            RebaseError::EvidenceDisagrees {
+                found: Disagreement::Position { .. },
+                ..
+            }
+        ));
+        // A probe that agrees changes nothing.
+        let mut evidence = AcceptedEvidence::new();
+        evidence.record(
+            c.command_id,
+            Probe::Replay {
+                seq: 6,
+                result_ref: Some(vec![1]),
+            },
+        );
+        let reconciliation = reconcile(&pulled, &local, &evidence).unwrap();
+        assert_eq!(reconciliation.settled[0].by, SettledBy::Tail);
+    }
+
+    // -- the index: truncation, snapshot bootstrap, restart --------------------------------------
+
+    /// The accepted command is not in the pulled tail; its effects are already in the base. The
+    /// index's `Replay` binds it with the original position and result.
+    fn bind_from_the_index(
+        build: impl FnOnce(&[u8]) -> InMemoryIndex,
+        seq: u64,
+        result: Option<Vec<u8>>,
+    ) {
+        let (dir, live, account, scratch_path, sealed, id) = live_with_accepted_command_in_base();
+        let bytes = sealed.container();
+        let index = build(&bytes);
+        let local = live.read_local_commands().unwrap();
+        let old_op_seq = local[0].old_op_seq;
+        let mut evidence = AcceptedEvidence::new();
+        evidence.record(id, probe(&index, &bytes));
+        // The tail that is left holds only a later, unrelated envelope.
+        let origin = other_device(&live, &dir);
+        let later = seal(origin.worker(), &meta(), &rename(account, "Later"));
+        drop(origin);
+        let later_bytes = later.container();
+        let pulled = [later.entry(&later_bytes, 6, None)];
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let (reconciliation, executed) =
+            reconcile_and_replay(&mut scratch, &pulled, &local, &evidence).unwrap();
+
+        assert_eq!(reconciliation.settled[0].by, SettledBy::Index);
+        assert!(executed.replayed.is_empty());
+        let row = outbox_row(scratch.worker(), id).unwrap();
+        assert_eq!(row.state, "Bound", "an accepted command is never Pending");
+        assert_eq!(row.bound_seq, Some(i64::try_from(seq).unwrap()));
+        assert_eq!(row.result_ref, Some(result.unwrap_or_default()));
+        assert_eq!(
+            row.op_seq, old_op_seq,
+            "the base already holds the command's row"
+        );
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT count(*) FROM sync_outbox WHERE state = 'Pending'"
+            ),
+            0
+        );
+        // One log row for the command: nothing was applied twice.
+        assert_eq!(
+            count(
+                scratch.worker(),
+                &format!(
+                    "SELECT count(*) FROM operation_log WHERE command_id = x'{}'",
+                    id.simple()
+                )
+            ),
+            1
+        );
+        assert_eq!(account_name(scratch.worker(), account), "Later");
+    }
+
+    fn index_of(bytes: &[u8], seq: u64, result: Option<Vec<u8>>) -> InMemoryIndex {
+        let mut index = InMemoryIndex::new();
+        accept(&mut index, bytes, seq, result);
+        index
+    }
+
+    #[test]
+    fn tail_truncation_the_index_still_binds_the_accepted_command() {
+        // Accepted at seq 4; the retained tail starts after the base.
+        bind_from_the_index(|bytes| index_of(bytes, 4, Some(vec![9])), 4, Some(vec![9]));
+    }
+
+    #[test]
+    fn a_latest_snapshot_bootstrap_binds_through_the_index_without_a_result() {
+        bind_from_the_index(|bytes| index_of(bytes, 3, None), 3, None);
+    }
+
+    #[test]
+    fn a_service_restart_that_rebuilds_the_index_from_its_records_answers_the_same() {
+        bind_from_the_index(
+            |bytes| {
+                let parsed = parse_container(bytes).unwrap();
+                let record =
+                    PushIdentity::from_container(&parsed)
+                        .unwrap()
+                        .accepted(1, 4, Some(vec![5, 5]));
+                // The records are what survives: encode them, "restart", decode into a new index.
+                let durable = record.encode().unwrap();
+                let mut restarted = InMemoryIndex::new();
+                restarted
+                    .insert(AcceptedRecord::decode(&durable).unwrap())
+                    .unwrap();
+                restarted
+            },
+            4,
+            Some(vec![5, 5]),
+        );
+    }
+
+    #[test]
+    fn an_index_replay_for_a_command_the_scratch_vault_does_not_hold_binds_nothing() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let sealed = seal(origin.worker(), &c, &rename(account, "Mine"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        let bytes = sealed.container();
+        approve(&live, c.command_id, &bytes);
+        let local = live.read_local_commands().unwrap();
+        let mut evidence = AcceptedEvidence::new();
+        evidence.record(
+            c.command_id,
+            Probe::Replay {
+                seq: 8,
+                result_ref: None,
+            },
+        );
+
+        // Accepted at seq 8, but the pulled tail stops short of it and the base lacks it.
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let error = reconcile_and_replay(&mut scratch, &[], &local, &evidence).unwrap_err();
+
+        assert!(
+            matches!(error, RebaseError::AcceptedButAbsent { seq: 8, .. }),
+            "{error:?}"
+        );
+        assert!(outbox_row(scratch.worker(), c.command_id).is_none());
+    }
+
+    // -- the receiver checks come first ------------------------------------------------------------
+
+    #[test]
+    fn a_tampered_tag_or_commitment_fails_closed_before_any_apply_and_keeps_the_evidence() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let sealed = seal(origin.worker(), &meta(), &rename(account, "Theirs"));
+        let bytes = sealed.container();
+        let scratch = live.rollback_to(5, &scratch_path).unwrap();
+        let log_before = log_len(scratch.worker());
+
+        let mut bad_tag = sealed.header.clone();
+        let mut bad_commitment = sealed.header.clone();
+        if let ObjectKind::Envelope {
+            idempotency_key_tag,
+            ..
+        } = &mut bad_tag.object
+        {
+            *idempotency_key_tag = IdempotencyKeyTag::from_derived([0xee; 32]);
+        }
+        if let ObjectKind::Envelope {
+            immutable_metadata_commitment,
+            ..
+        } = &mut bad_commitment.object
+        {
+            *immutable_metadata_commitment = MetadataCommitment::from_derived([0xdd; 32]);
+        }
+        for (header, want) in [
+            (bad_tag, ReceiverError::TagMismatch),
+            (bad_commitment, ReceiverError::MetadataCommitmentMismatch),
+        ] {
+            // No PulledEnvelope exists for it: the proof that the checks passed cannot be built.
+            let error = check_envelope(&header, &sealed.plaintext, tag_for).unwrap_err();
+            assert_eq!(error, want);
+            // The replica stops at the position and keeps its digest; the ciphertext is the
+            // caller's container, untouched.
+            let mut status = SyncStatus::Healthy;
+            let own = EngineVersion::new(ENGINE).unwrap();
+            let event = status.observe_envelope(6, digest_of(&bytes), &header, &own, Err(error));
+            assert!(matches!(event, Some(SyncEvent::EnvelopeInvalid(i)) if i.seq == 6));
+            assert!(
+                matches!(status, SyncStatus::EnvelopeInvalid(i) if i.envelope_digest == digest_of(&bytes))
+            );
+        }
+        // Nothing was applied, reconciled or bound.
+        assert_eq!(scratch.head_seq(), 5);
+        assert_eq!(log_len(scratch.worker()), log_before);
+        assert!(scratch.touched().is_empty());
+        assert!(parse_container(&bytes).is_ok(), "the ciphertext is kept");
     }
 }
