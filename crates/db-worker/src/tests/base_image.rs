@@ -600,3 +600,32 @@ fn a_passphrase_vault_cannot_be_rekeyed_so_its_images_are_left_alone() {
         Err(DbError::KeyUnavailable)
     ));
 }
+
+#[test]
+fn a_reader_that_pins_an_old_snapshot_refuses_the_copy_instead_of_missing_frames() {
+    let (_dir, worker) = worker();
+    worker.initialize_base_image(1).unwrap();
+    let path = base_image_path(&worker.path);
+    let before = std::fs::read(&path).unwrap();
+
+    // Frames committed after the reader's snapshot cannot be folded into the main file, so a copy
+    // of that file would silently lack them. The capture says so instead.
+    let reader = worker.read_connection().unwrap();
+    reader.execute_batch("BEGIN;").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))
+        .unwrap();
+    worker
+        .set_device_setting("device.after_reader", "v")
+        .unwrap();
+
+    let error = worker.advance_base_image(2).unwrap_err();
+
+    assert!(
+        matches!(error, BaseImageError::Db(DbError::CheckpointBusy)),
+        "{error:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(base_row(&worker).0, 1);
+    assert_eq!(files_in_sync_dir(&worker), vec!["base.db".to_owned()]);
+}
