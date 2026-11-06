@@ -24,6 +24,7 @@
 //! **Rolling back reaches the base and no further.** [`DbWorker::rollback_to`] accepts only the
 //! recorded `base_seq`; any other target is a typed error, never a partial rollback.
 
+mod execute;
 mod plan;
 
 use std::collections::BTreeSet;
@@ -108,6 +109,16 @@ pub enum RebaseError {
         /// The command that would have been applied twice.
         command_id: Uuid,
     },
+    /// The local commands were already rebased onto this scratch vault: replaying the same outbox
+    /// twice would apply every command twice.
+    #[error("the local commands were already rebased onto this scratch vault")]
+    AlreadyRebased,
+    /// A local command's metadata cannot be preserved as an envelope.
+    #[error("the local command {command_id} cannot be preserved")]
+    UnsealableLocalCommand {
+        /// The command.
+        command_id: Uuid,
+    },
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -170,6 +181,7 @@ pub struct PulledEnvelope<'a> {
     pub checked: CheckedEnvelope<'a>,
 }
 
+pub use execute::{Executed, LocalCommand, Replayed};
 pub use plan::{
     auto_iff, plan, Disposition, OutboxCommand, Plan, PlannedCommand, QueueCause, QueueReason,
 };
@@ -187,6 +199,8 @@ pub struct Scratch<'a> {
     base_seq: i64,
     head_seq: i64,
     touched: BTreeSet<RowKey>,
+    /// Whether the local commands were already rebased onto this scratch vault.
+    rebased: bool,
 }
 
 impl std::fmt::Debug for Scratch<'_> {
@@ -248,6 +262,7 @@ impl DbWorker {
             base_seq,
             head_seq: base_seq,
             touched: BTreeSet::new(),
+            rebased: false,
         })
     }
 

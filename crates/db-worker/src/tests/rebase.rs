@@ -583,3 +583,492 @@ mod plan_matrix {
         assert_eq!(QueueReason::Edit.as_column(), "queue_edit");
     }
 }
+
+// ---- the executor: replay, queue, the memo and the rebuilt rows ---------------------------
+
+mod executor {
+    use super::*;
+    use crate::rebase::{
+        Disposition, LocalCommand, OutboxCommand, QueueCause, QueueReason, RebaseError,
+    };
+    use crate::sync_state::decode_row_keys;
+
+    /// Run `cmd` on the live vault (Sync is on, so it is an unpushed outbox entry) and read back
+    /// everything a rebase needs to replay or queue it.
+    fn issue(live: &DbWorker, meta: CommandMeta, cmd: WriteCommand) -> LocalCommand {
+        live.dispatch(meta.clone(), cmd.clone()).unwrap();
+        let (op_seq, payload, version, hash, keys): (i64, Vec<u8>, u32, Vec<u8>, Vec<u8>) = live
+            .lock()
+            .conn
+            .query_row(
+                "SELECT l.op_seq, l.payload, l.payload_schema_version, l.write_set_hash,
+                        o.write_set_keys
+                   FROM operation_log l JOIN sync_outbox o ON o.command_id = l.command_id
+                  WHERE l.command_id = ?1",
+                [meta.command_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        LocalCommand {
+            command: OutboxCommand {
+                command_id: meta.command_id,
+                correlation_id: meta.correlation_id,
+                causation_id: meta.causation_id,
+                write_set_keys: decode_row_keys(&keys).unwrap(),
+            },
+            meta,
+            cmd,
+            old_op_seq: op_seq,
+            payload,
+            payload_version: version,
+            write_set_hash: hash.try_into().unwrap(),
+        }
+    }
+
+    fn op_log_row(worker: &DbWorker, command_id: Uuid) -> Option<(i64, Option<i64>, Option<i64>)> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT op_seq, applied_base_seq, rebased_from FROM operation_log
+                  WHERE command_id = ?1",
+                [command_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()
+    }
+
+    fn memo_op_seq(worker: &DbWorker, key: &str) -> Option<i64> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT op_seq FROM command_idempotency_keys WHERE idempotency_key = ?1",
+                [key],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    fn count(worker: &DbWorker, sql: &str) -> i64 {
+        worker.lock().conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn an_untouched_valid_command_is_replayed_under_its_original_ids_on_the_new_base() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        // Local, unpushed: a second account. Server: a rename of the first.
+        let local = issue(
+            &live,
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 7_000),
+        );
+        let device_b = other_device(&live, &dir);
+        let remote = seal(
+            device_b.worker(),
+            &meta(),
+            &rename(account, "From device B"),
+        );
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        scratch.apply_pulled(&[remote.pulled(6)]).unwrap();
+        let remote_op_seq = op_log_row(
+            scratch.worker(),
+            Uuid::from_bytes(remote.plaintext.meta.command_id),
+        )
+        .unwrap()
+        .0;
+        let executed = scratch.rebase_local(std::slice::from_ref(&local)).unwrap();
+
+        // Re-applied under its original command id and key, once, and recorded as rebased.
+        assert_eq!(executed.replayed.len(), 1);
+        let row = op_log_row(scratch.worker(), local.meta.command_id).unwrap();
+        assert_eq!(row.1, Some(6), "applied on the new base (the pulled head)");
+        assert_eq!(
+            row.2,
+            Some(local.old_op_seq),
+            "it replaced its pre-rebase op_seq"
+        );
+        assert_eq!(executed.replayed[0].new_op_seq, row.0);
+        // The old op_seq is now claimed by the remote operation, and the local memo points at the
+        // REBUILT op_seq, never at the pre-rebase number.
+        assert_eq!(remote_op_seq, local.old_op_seq);
+        assert_ne!(row.0, local.old_op_seq);
+        assert_eq!(
+            memo_op_seq(scratch.worker(), &local.meta.idempotency_key),
+            Some(row.0)
+        );
+        // It is an unpushed entry on the rebuilt vault, keyed by the rebuilt op_seq.
+        let (state, op_seq): (String, i64) = scratch
+            .worker()
+            .lock()
+            .conn
+            .query_row(
+                "SELECT state, op_seq FROM sync_outbox WHERE command_id = ?1",
+                [local.meta.command_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), op_seq), ("Pending", row.0));
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM outbox_queue"),
+            0
+        );
+        // Both effects are in the rebuilt vault.
+        assert_eq!(account_name(scratch.worker(), account), "From device B");
+        assert_eq!(count(scratch.worker(), "SELECT COUNT(*) FROM accounts"), 2);
+    }
+
+    #[test]
+    fn a_touched_command_is_queued_with_its_envelope_and_never_applied() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let local = issue(&live, meta(), rename(account, "Local rename"));
+        let device_b = other_device(&live, &dir);
+        let remote = seal(
+            device_b.worker(),
+            &meta(),
+            &rename(account, "Remote rename"),
+        );
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        scratch.apply_pulled(&[remote.pulled(6)]).unwrap();
+        let executed = scratch.rebase_local(std::slice::from_ref(&local)).unwrap();
+
+        assert!(executed.replayed.is_empty());
+        let queued: Vec<_> = executed.plan.queued().collect();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(
+            (queued[0].1, queued[0].2),
+            (QueueCause::Touched, QueueReason::Choose)
+        );
+        // The server's value stands; the local value is preserved only in the queue.
+        assert_eq!(account_name(scratch.worker(), account), "Remote rename");
+        assert!(op_log_row(scratch.worker(), local.meta.command_id).is_none());
+        assert_eq!(
+            memo_op_seq(scratch.worker(), &local.meta.idempotency_key),
+            None
+        );
+        let (reason, correlation, origin, envelope): (String, Uuid, Uuid, Vec<u8>) = scratch
+            .worker()
+            .lock()
+            .conn
+            .query_row(
+                "SELECT reason, correlation_id, origin_node_id, envelope FROM outbox_queue
+                  WHERE command_id = ?1",
+                [local.meta.command_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(reason, "queue_choose");
+        assert_eq!(correlation, local.meta.correlation_id);
+        assert_eq!(origin, scratch.worker().node_id);
+        // The preserved envelope is the command's complete original metadata and payload.
+        let preserved = EnvelopePlaintext::decode(&envelope).unwrap();
+        assert_eq!(
+            preserved.meta.issued_at,
+            local.meta.issued_at.as_unix_micros()
+        );
+        assert_eq!(preserved.payload, local.payload);
+        assert_eq!(preserved.write_set_hash, local.write_set_hash);
+        // An ordinary retry of it is told so; it is neither applied nor a no-op success.
+        let retry = scratch
+            .worker()
+            .dispatch(local.meta.clone(), local.cmd.clone())
+            .unwrap_err();
+        assert!(
+            matches!(retry, DbError::QueuedForDisposition { command_id } if command_id == local.meta.command_id),
+            "{retry:?}"
+        );
+        assert_eq!(account_name(scratch.worker(), account), "Remote rename");
+    }
+
+    #[test]
+    fn a_two_device_rebase_replays_one_group_and_queues_the_other_with_its_causal_descendant() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        // Group 1 (auto): a new account. Group 2: a rename of the shared account (touched by the
+        // server) and a command it caused, in another correlation group, on disjoint rows.
+        let auto = issue(
+            &live,
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 3_000),
+        );
+        let root = issue(&live, meta(), rename(account, "Local rename"));
+        let mut caused_meta = meta();
+        caused_meta.causation_id = Some(root.meta.command_id);
+        let descendant = issue(
+            &live,
+            caused_meta,
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 4_000),
+        );
+        let device_b = other_device(&live, &dir);
+        let remote = seal(
+            device_b.worker(),
+            &meta(),
+            &rename(account, "Remote rename"),
+        );
+
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        scratch.apply_pulled(&[remote.pulled(6)]).unwrap();
+        let outbox = [auto.clone(), root.clone(), descendant.clone()];
+        let executed = scratch.rebase_local(&outbox).unwrap();
+
+        assert_eq!(
+            executed.plan.commands[0].disposition,
+            Disposition::Replay,
+            "the untouched group replays"
+        );
+        assert_eq!(
+            executed.plan.commands[1].disposition,
+            Disposition::Queue {
+                cause: QueueCause::Touched,
+                reason: QueueReason::Choose
+            }
+        );
+        assert_eq!(
+            executed.plan.commands[2].disposition,
+            Disposition::Queue {
+                cause: QueueCause::Closure {
+                    root: root.meta.command_id
+                },
+                reason: QueueReason::Choose
+            },
+            "a causal descendant queues with the command that caused it"
+        );
+        // Nothing of the queued group was applied, including the descendant's disjoint rows.
+        assert!(op_log_row(scratch.worker(), auto.meta.command_id).is_some());
+        assert!(op_log_row(scratch.worker(), root.meta.command_id).is_none());
+        assert!(op_log_row(scratch.worker(), descendant.meta.command_id).is_none());
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM outbox_queue"),
+            2
+        );
+        assert_eq!(count(scratch.worker(), "SELECT COUNT(*) FROM accounts"), 2);
+    }
+
+    #[test]
+    fn a_command_the_new_base_refuses_queues_its_whole_group_to_be_repaired() {
+        let (dir, live, _account, scratch_path) = live_with_base();
+        let (parent, child) = (CategoryId::new(), CategoryId::new());
+        for (id, name) in [(parent, "Parent"), (child, "Child")] {
+            live.dispatch(
+                meta(),
+                WriteCommand::CreateCategory {
+                    id,
+                    parent_id: None,
+                    name: name.to_owned(),
+                    category_type: "expense".to_owned(),
+                    color: None,
+                    icon: None,
+                },
+            )
+            .unwrap();
+        }
+        // The base is taken AFTER both categories exist, with the outbox empty.
+        live.lock()
+            .conn
+            .execute("DELETE FROM sync_outbox", [])
+            .unwrap();
+        live.advance_base_image(6).unwrap();
+        // Local: move the child under the parent. Server: move the parent under the child.
+        let local = issue(
+            &live,
+            meta(),
+            WriteCommand::MoveCategory {
+                id: child,
+                new_parent_id: Some(parent),
+            },
+        );
+        let sibling = {
+            let mut same_group = meta();
+            same_group.correlation_id = local.meta.correlation_id;
+            issue(
+                &live,
+                same_group,
+                liquid_account_cmd(AccountId::new(), Currency::Usd, 1_000),
+            )
+        };
+        let device_b = live
+            .rollback_to(6, &dir.path().join("rebase").join("b.db"))
+            .unwrap();
+        let remote = seal(
+            device_b.worker(),
+            &meta(),
+            &WriteCommand::MoveCategory {
+                id: parent,
+                new_parent_id: Some(child),
+            },
+        );
+
+        let mut scratch = live.rollback_to(6, &scratch_path).unwrap();
+        scratch.apply_pulled(&[remote.pulled(7)]).unwrap();
+        let executed = scratch
+            .rebase_local(&[local.clone(), sibling.clone()])
+            .unwrap();
+
+        // The move would make a cycle on the new base: the command is invalid, not touched, and
+        // so is its group.
+        assert!(executed.replayed.is_empty());
+        let queued: Vec<_> = executed.plan.queued().collect();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(
+            (queued[0].1, queued[0].2),
+            (QueueCause::Invalid, QueueReason::Edit)
+        );
+        assert!(matches!(queued[1].1, QueueCause::Closure { .. }));
+        assert_eq!(queued[1].2, QueueReason::Edit);
+        assert!(op_log_row(scratch.worker(), sibling.meta.command_id).is_none());
+        let reasons: Vec<String> = scratch
+            .worker()
+            .lock()
+            .conn
+            .prepare("SELECT reason FROM outbox_queue")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(reasons, vec!["queue_edit", "queue_edit"]);
+    }
+
+    #[test]
+    fn replaying_the_same_outbox_twice_leaves_one_row_per_command() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let kept = issue(
+            &live,
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 2_000),
+        );
+        let queued = issue(&live, meta(), rename(account, "Local rename"));
+        let device_b = other_device(&live, &dir);
+        let remote = seal(
+            device_b.worker(),
+            &meta(),
+            &rename(account, "Remote rename"),
+        );
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        scratch.apply_pulled(&[remote.pulled(6)]).unwrap();
+        let outbox = [kept.clone(), queued.clone()];
+        scratch.rebase_local(&outbox).unwrap();
+        let log_rows = count(scratch.worker(), "SELECT COUNT(*) FROM operation_log");
+
+        let again = scratch.rebase_local(&outbox).unwrap_err();
+
+        assert!(matches!(again, RebaseError::AlreadyRebased), "{again:?}");
+        for command in [&kept, &queued] {
+            let id = command.meta.command_id;
+            let in_log: i64 = scratch
+                .worker()
+                .lock()
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM operation_log WHERE command_id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let in_queue: i64 = scratch
+                .worker()
+                .lock()
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM outbox_queue WHERE command_id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                in_log + in_queue,
+                1,
+                "{id}: one row, in the log or in the queue"
+            );
+        }
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM operation_log"),
+            log_rows
+        );
+    }
+
+    #[test]
+    fn unrelated_memos_are_untouched_and_the_live_vault_is_never_written() {
+        let (dir, live, account, scratch_path) = live_with_base();
+        let local = issue(
+            &live,
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 2_000),
+        );
+        let device_b = other_device(&live, &dir);
+        let remote = seal(
+            device_b.worker(),
+            &meta(),
+            &rename(account, "Remote rename"),
+        );
+        let live_before = live.snapshot_bytes().unwrap();
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        scratch.apply_pulled(&[remote.pulled(6)]).unwrap();
+        let memos = |worker: &DbWorker| -> Vec<(String, i64)> {
+            worker
+                .lock()
+                .conn
+                .prepare("SELECT idempotency_key, op_seq FROM command_idempotency_keys ORDER BY 1")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let before = memos(scratch.worker());
+
+        scratch.rebase_local(std::slice::from_ref(&local)).unwrap();
+
+        let after = memos(scratch.worker());
+        let added: Vec<_> = after.iter().filter(|m| !before.contains(m)).collect();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].0, local.meta.idempotency_key);
+        assert!(
+            before.iter().all(|m| after.contains(m)),
+            "no existing memo moved"
+        );
+        assert_eq!(live.snapshot_bytes().unwrap(), live_before);
+    }
+
+    #[test]
+    fn class_two_is_rebuilt_once_after_the_replay() {
+        let (_dir, live, _account, scratch_path) = live_with_base();
+        let local = issue(
+            &live,
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 2_000),
+        );
+        let mut scratch = live.rollback_to(5, &scratch_path).unwrap();
+        // Damage a class-2 read model in the post-pull scratch vault: only a full rebuild restores
+        // it (an apply updates it incrementally, for the rows it touches).
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute("DELETE FROM transaction_display_rows_read_model", [])
+            .unwrap();
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT COUNT(*) FROM transaction_display_rows_read_model"
+            ),
+            0
+        );
+
+        scratch.rebase_local(std::slice::from_ref(&local)).unwrap();
+
+        // The damage is gone and the projection is exactly what a full rebuild gives.
+        let rows = count(
+            scratch.worker(),
+            "SELECT COUNT(*) FROM transaction_display_rows_read_model",
+        );
+        assert!(rows > 0, "the projection was rebuilt");
+        let after_rebase = scratch.worker().transaction_display_checksum().unwrap();
+        scratch.worker().rebuild_transaction_display().unwrap();
+        assert_eq!(
+            scratch.worker().transaction_display_checksum().unwrap(),
+            after_rebase
+        );
+    }
+}
