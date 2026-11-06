@@ -1606,11 +1606,7 @@ mod accepted {
             (one.state.as_str(), two.state.as_str()),
             ("Bound", "Pending")
         );
-        assert_eq!(
-            one.result_ref,
-            Some(Vec::new()),
-            "no result is the empty column"
-        );
+        assert_eq!(one.result_ref, None, "no result is a NULL column");
         assert!(one.op_seq < two.op_seq);
     }
 
@@ -1779,6 +1775,44 @@ mod accepted {
         assert_eq!(fork.local.unwrap().digest, fork.other.unwrap().digest);
     }
 
+    #[test]
+    fn a_fork_is_described_by_what_happened_and_never_logs_ciphertext() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let c = meta();
+        let theirs = seal(origin.worker(), &c, &rename(account, "Theirs"));
+        live.dispatch(c.clone(), rename(account, "Mine")).unwrap();
+        let local = live.read_local_commands().unwrap();
+        let bytes = theirs.container();
+        let pulled = [theirs.entry(&bytes, 6, None)];
+
+        // A command this device never sealed: not "two digests differ".
+        let error = reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err();
+        let described = error.to_string();
+        assert!(described.contains("never sealed"), "{described}");
+        assert!(described.contains(&c.command_id.to_string()), "{described}");
+        assert!(!described.contains("two different"), "{described}");
+
+        // Debug names the digest and the length, never the container bytes.
+        let debug = format!("{error:?}");
+        assert!(!debug.contains("68, 70, 83, 89"), "the DFSY magic: {debug}");
+        assert!(debug.contains("container_len"), "{debug}");
+        assert!(debug.len() < 1200, "{} bytes of Debug", debug.len());
+
+        // A sealed command held as another envelope says so.
+        let sealed_local = {
+            let other = live
+                .rollback_to(5, &dir.path().join("rebase").join("sealer.db"))
+                .unwrap();
+            seal(other.worker(), &c, &rename(account, "Mine"))
+        };
+        let local_bytes = sealed_local.container();
+        approve(&live, c.command_id, &local_bytes);
+        let local = live.read_local_commands().unwrap();
+        let error = reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err();
+        assert!(error.to_string().contains("two different envelopes"));
+    }
+
     /// The digest matches but one field of the local record is not the sealed command's.
     #[test]
     fn every_field_of_the_complete_meta_the_payload_and_the_schema_version_must_match() {
@@ -1842,7 +1876,7 @@ mod accepted {
             .conn
             .execute(
                 "UPDATE sync_outbox SET state = 'Bound', sealed_container = ?2, bound_seq = 6,
-                        result_ref = x''
+                        result_ref = NULL
                   WHERE command_id = ?1",
                 params![c.command_id, bytes],
             )
@@ -2105,7 +2139,7 @@ mod accepted {
         let row = outbox_row(scratch.worker(), id).unwrap();
         assert_eq!(row.state, "Bound", "an accepted command is never Pending");
         assert_eq!(row.bound_seq, Some(i64::try_from(seq).unwrap()));
-        assert_eq!(row.result_ref, Some(result.unwrap_or_default()));
+        assert_eq!(row.result_ref, result);
         assert_eq!(
             row.op_seq, old_op_seq,
             "the base already holds the command's row"

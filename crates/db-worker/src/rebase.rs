@@ -144,7 +144,7 @@ pub enum RebaseError {
     /// One command identity is bound to two different envelopes (C.10 `ProtocolFork`). Both are
     /// kept in the evidence; the caller feeds it to the replica's `SyncStatus` and the vault stops.
     /// Nothing was applied to the scratch vault when this is returned from `reconcile`.
-    #[error("the command {} is bound to two different envelopes", .0.command_id)]
+    #[error("{}", .0.describe())]
     ProtocolFork(Box<ProtocolForkEvidence>),
     /// An `Approved` entry the tail does not settle has no probe result: whether the service
     /// accepted it is unknown, and the rebase will not guess (a replay of an accepted command is a

@@ -105,8 +105,9 @@ pub enum HaltEvidence {
         /// The command whose identity is claimed twice.
         command_id: [u8; 16],
         /// The `canonical_envelope_digest` of this device's retained envelope for it. `None` when
-        /// the device never sealed one (a `Pending` entry): then the pulled envelope is the only
-        /// one there is to compare.
+        /// the device never sealed one (a `Pending` entry): the halt then means the device never
+        /// sealed this command and the log holds an envelope for its identity anyway, not that two
+        /// digests differ.
         local_digest: Option<[u8; 32]>,
         /// The digest of the other envelope. `None` when the service refused this device's exact
         /// bytes as a fork and did not say which envelope holds the identity.

@@ -20,7 +20,6 @@ use rusqlite::params;
 use sync_core::envelope::{EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
 use uuid::Uuid;
 
-use super::reconcile::result_from_column;
 use super::{
     is_command_refusal, plan, Disposition, OutboxCommand, Plan, QueueCause, RebaseError, Scratch,
     StepContext,
@@ -439,7 +438,7 @@ impl DbWorker {
                 ("Bound", Some(sealed), Some(seq)) => OutboxEntryState::Bound {
                     sealed,
                     seq: u64::try_from(seq).map_err(|_| unreadable())?,
-                    result_ref: result_ref.and_then(result_from_column),
+                    result_ref,
                 },
                 _ => return Err(unreadable()),
             };

@@ -146,8 +146,9 @@ pub struct PulledLogEntry<'a> {
     pub result_ref: Option<Vec<u8>>,
 }
 
-/// One retained envelope, kept whole for diagnosis.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One retained envelope, kept whole for diagnosis. Its `Debug` shows the digest and the length,
+/// never the container bytes, so a fork that is logged does not write ciphertext into a log.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RetainedEnvelope {
     /// Its `canonical_envelope_digest`.
     pub digest: [u8; 32],
@@ -155,6 +156,20 @@ pub struct RetainedEnvelope {
     pub container: Vec<u8>,
     /// The server seq it was seen at, if it came from the log.
     pub seq: Option<u64>,
+}
+
+impl std::fmt::Debug for RetainedEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetainedEnvelope")
+            .field("digest", &hex(&self.digest))
+            .field("container_len", &self.container.len())
+            .field("seq", &self.seq)
+            .finish()
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Where a fork was found.
@@ -180,6 +195,31 @@ pub struct ProtocolForkEvidence {
 }
 
 impl ProtocolForkEvidence {
+    /// What happened, in words for a diagnostic. A command this device never sealed is described
+    /// as that, not as two digests that differ: there is only one envelope to compare.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let id = self.command_id;
+        match (&self.local, &self.other) {
+            (None, Some(other)) => format!(
+                "this device never sealed command {id}, yet the log already holds an envelope \
+                 for its identity (seq {})",
+                other
+                    .seq
+                    .map_or_else(|| "unknown".to_owned(), |seq| seq.to_string())
+            ),
+            (None, None) => format!("this device never sealed command {id}"),
+            (Some(_), Some(_)) => format!(
+                "command {id} is held as two different envelopes: this device's sealed one and \
+                 another in the log"
+            ),
+            (Some(_), None) => format!(
+                "the accepted-envelope index refused this device's sealed envelope for command \
+                 {id}: its identity is held by a different envelope"
+            ),
+        }
+    }
+
     /// The halt the replica's `SyncStatus` records: the command and both digests.
     #[must_use]
     pub fn halt_evidence(&self) -> HaltEvidence {
@@ -548,18 +588,6 @@ pub fn reconcile(
     Ok(out)
 }
 
-/// The `sync_outbox.result_ref` column for a result: a `Bound` row requires it non-null, so an
-/// absent result is stored as the empty blob. The service's result reference is never empty
-/// (`AcceptedRecord` refuses that), so the two readings cannot be confused.
-pub(super) fn result_to_column(result_ref: &Option<Vec<u8>>) -> Vec<u8> {
-    result_ref.clone().unwrap_or_default()
-}
-
-/// The inverse of [`result_to_column`].
-pub(super) fn result_from_column(column: Vec<u8>) -> Option<Vec<u8>> {
-    (!column.is_empty()).then_some(column)
-}
-
 impl Scratch<'_> {
     /// Apply the server's envelopes with the device's own accepted commands recognized, bind
     /// those, and clear the entries whose evidence says the service does not know them for the
@@ -627,7 +655,7 @@ impl Scratch<'_> {
                     encode_row_keys(keys),
                     entry.sealed,
                     seq,
-                    result_to_column(&entry.result_ref),
+                    entry.result_ref,
                     now,
                 ],
             )?;

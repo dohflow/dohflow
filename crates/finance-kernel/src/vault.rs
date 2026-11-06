@@ -1559,11 +1559,11 @@ mod old_backup_settings_tests {
         {
             // What a 63 build had on disk: the unprefixed names, no tracker row for 64 or any
             // later migration, and none of their objects (66 adds the device-local Sync state, 67 the
-            // outbox's issue time).
+            // outbox's issue time, 68 lets a bound outbox row have no result).
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67);
+                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68);
                  ALTER TABLE staged_transactions DROP COLUMN row_ordinal;
                  ALTER TABLE sync_outbox DROP COLUMN issued_at;
                  ALTER TABLE operation_log DROP COLUMN rebased_from;
