@@ -497,11 +497,32 @@ primary_key = ["singleton"]
 columns = ["singleton:int", "base_seq:int", "base_digest:bytes", "state:text", "updated_at:text"]
 
 [[table]]
+name = "sync_counter_register"
+class = "3"
+write_set = "none"
+primary_key = ["vault_id", "key_epoch", "fingerprint", "object_type"]
+columns = ["vault_id:uuid", "key_epoch:int", "fingerprint:bytes", "object_type:int", "next_counter:int"]
+
+[[table]]
+name = "sync_genesis"
+class = "3"
+write_set = "none"
+primary_key = ["singleton"]
+columns = ["singleton:int", "vault_id:uuid", "membership_record:bytes", "epoch_record:bytes", "state:text", "persisted_at:text", "updated_at:text"]
+
+[[table]]
 name = "sync_outbox"
 class = "3"
 write_set = "none"
 primary_key = ["command_id"]
 columns = ["command_id:uuid", "op_seq:int", "state:text", "write_set_keys:bytes", "sealed_container:bytes", "bound_seq:int", "result_ref:bytes", "created_at:text"]
+
+[[table]]
+name = "sync_saved_snapshot"
+class = "3"
+write_set = "none"
+primary_key = ["vault_id", "key_epoch", "fingerprint", "object_type"]
+columns = ["vault_id:uuid", "key_epoch:int", "fingerprint:bytes", "object_type:int", "object_id:uuid", "base_seq:int", "plaintext_sha256:bytes", "container_sha256:bytes", "container_len:int", "counter:int"]
 
 [[table]]
 name = "system_ledger_accounts"

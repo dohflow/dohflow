@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=31 -->
-<!-- vault-format: schema-version=66 -->
+<!-- vault-format: spec-version=34 -->
+<!-- vault-format: schema-version=67 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,15 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 34` (personal-cfo-1cltt.4, schema version 67) adds the SQLite home of the counter
+  register and of the genesis a device mints at sync-enable: the class-3 tables
+  `sync_counter_register`, `sync_saved_snapshot` and `sync_genesis` (inventory rows, all excluded from
+  both formats), and states the birth rules the register and the verified state already follow:
+  C.4 ("Counter register and nonce state") says a register entry is never 0 and what a missing
+  entry, a missing witness or a witness of exactly 0 means, and C.6 freshness rule 5 says how the
+  verified state is born (a birth mark in the witness before the first persist) and how each
+  combination of persisted state and witness is judged. No wire, write-set, vector or
+  `engine_version` change: the tables are device-local and outside every hash.
 - `spec-version = 31` (personal-cfo-0g528.2, part S2a) makes the write set cover
   `source_provenance_links`. C.1.5 says the write set is exactly what Sync replicates, and the rows are
   an apply output that travels as genesis rows (spec-version 29), so a replica that bootstraps from a
@@ -593,6 +602,9 @@ therefore requires reviewing this inventory.
 | `sync_base` | 3 | exclude | exclude | Device-local state: whether Sync is enabled here, the server seq of the base image, the digest of `sync/base.db` and the base state. |
 | `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys and sealed containers. A command's envelope is what travels, never this row. |
 | `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
+| `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
+| `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |
+| `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, and how far enabling got. The records never change. |
 <!-- inventory:end -->
 
 Rules that apply to the whole inventory:
@@ -1406,7 +1418,12 @@ advance **before** encrypting. The register has an independent anti-rollback
 witness that a backup restore does not restore; a missing, restored or
 inconsistent witness is `NonceStateLost`, and the client must not encrypt in
 that context. It re-enrolls with a fresh device key pair and fingerprint, or
-bootstraps a fresh epoch. Each derived key has a cap of `2^32` invocations;
+bootstraps a fresh epoch. **A register entry is never `0`**: the first advance of a context goes
+to `1`, which is what lets the witness mean something by `0`. A context with no register entry
+and a witness of exactly `0`, or none, is fresh. A witness of `1` or more with no register entry,
+a register entry with no witness entry, and a register entry below the witness are each
+`NonceStateLost`; a register entry at or above the witness is consistent (a crash between the
+register advance and the witness advance), and the witness is raised to it. Each derived key has a cap of `2^32` invocations;
 before the next invocation the client completes a fresh-key epoch rotation. The
 service records the first `(key_epoch, fingerprint, object_type, nonce)` it
 receives and accepts only an exact-byte retry afterwards, as a duplicate-detection
@@ -1688,7 +1705,23 @@ requires all of the following. The checks above are evaluated for each record
    the accepted epoch chain and the per-position record map are persisted under the
    same independent anti-rollback witness as the nonce counters (C.4). Older
    restored state is `StateRolledBack`, handled like `NonceStateLost` by
-   re-enrollment, and is never silently accepted.
+   re-enrollment, and is never silently accepted. The verified state has a **birth
+   mark**, which the vault records in the witness **before** it first persists any
+   verified state. The vault is then judged on each start by what it holds against
+   what the witness holds:
+
+   | Persisted verified state | Witness | Verdict |
+   | --- | --- | --- |
+   | none | none | fresh: the vault has not begun |
+   | none | the birth mark | fresh: begun, nothing persisted yet |
+   | some | the birth mark only | ahead: the crash window between the first persist and recording its mark; the state's mark is recorded |
+   | some | a mark equal to the state's, or behind it | consistent; the witness is raised to the state's mark |
+   | some | a mark ahead of the state's, or diverged from it | `StateRolledBack` |
+   | some | none | `StateRolledBack`: a state the witness never saw |
+   | none | a real mark | `StateRolledBack`: the vault lost state the witness saw |
+
+   A crash between the birth mark and the first persist, and one between the first
+   persist and recording its mark, both resume without re-enrollment.
 
 ### Detection and recovery
 
