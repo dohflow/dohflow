@@ -201,33 +201,10 @@ pub struct RekeyedImage {
     pub new_sha256: Option<[u8; 32]>,
 }
 
-/// A test-only observation point inside the capture's critical section: a test installs a closure
-/// on its own thread and learns where the code is, so it can look at the world at exactly that
-/// step (for example, that a writer on another thread is blocked).
-#[cfg(test)]
-pub(crate) mod observe {
-    use std::cell::RefCell;
-
-    type Observer = Box<dyn Fn(&str)>;
-    thread_local! {
-        static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
-    }
-
-    pub(crate) fn install(observer: impl Fn(&str) + 'static) {
-        OBSERVER.with(|o| *o.borrow_mut() = Some(Box::new(observer)));
-    }
-
-    pub(crate) fn clear() {
-        OBSERVER.with(|o| *o.borrow_mut() = None);
-    }
-
-    pub(crate) fn at(label: &str) {
-        OBSERVER.with(|o| {
-            if let Some(observer) = o.borrow().as_ref() {
-                observer(label);
-            }
-        });
-    }
+/// A refusal that is about the images, not about a command: it is an I/O-shaped error so it stays
+/// out of the command-rejection ledger (`tests/unclassified_sites.rs`).
+fn image_error(message: String) -> DbError {
+    DbError::Io(io::Error::new(io::ErrorKind::InvalidData, message))
 }
 
 fn fsync_dir(dir: &Path) -> io::Result<()> {
@@ -305,7 +282,7 @@ fn strip_secrets(path: &Path, key: &KeyMaterial) -> Result<(), DbError> {
     drop(conn);
     for suffix in SIDE_SUFFIXES {
         if with_suffix(path, suffix).exists() {
-            return Err(DbError::InvalidCommand(format!(
+            return Err(image_error(format!(
                 "a base image left a {suffix} side file"
             )));
         }
@@ -454,10 +431,9 @@ impl DbWorker {
             // Nothing but this capture writes the base record, but the check is cheap and keeps
             // the phases honest: a record that moved means the copy is for another base.
             if read_base_row(conn)? != recorded {
-                return Err(DbError::InvalidCommand(
-                    "the base record changed during the capture".to_owned(),
-                )
-                .into());
+                return Err(
+                    image_error("the base record changed during the capture".to_owned()).into(),
+                );
             }
             let tx = conn.unchecked_transaction()?;
             let now = Utc::now().to_rfc3339();
@@ -573,7 +549,7 @@ impl DbWorker {
     /// The caller journals the result and swaps the files at commit.
     ///
     /// # Errors
-    /// [`DbError::KeyUnavailable`] in passphrase mode, [`DbError::InvalidCommand`] if a
+    /// [`DbError::KeyUnavailable`] in passphrase mode, [`DbError::Io`] (invalid data) if a
     /// `.rekey-new` file already exists, or [`DbError`] for a database or file failure while
     /// writing `new_db`.
     pub fn prepare_rekeyed_images(
@@ -594,9 +570,7 @@ impl DbWorker {
             }
             let dest = with_suffix(&live, REKEY_NEW_SUFFIX);
             if dest.exists() {
-                return Err(DbError::InvalidCommand(
-                    "an image rekey copy already exists".to_owned(),
-                ));
+                return Err(image_error("an image rekey copy already exists".to_owned()));
             }
             // Only an image that cannot be READ under the current key is dropped (it is damaged,
             // or not this vault's); a failure while writing the copy is the rotation's to report,
@@ -633,7 +607,7 @@ impl DbWorker {
                 drop(conn);
                 for suffix in SIDE_SUFFIXES {
                     if with_suffix(new_db, suffix).exists() {
-                        return Err(DbError::InvalidCommand(format!(
+                        return Err(image_error(format!(
                             "the rekeyed copy left a {suffix} side file"
                         )));
                     }
@@ -673,7 +647,7 @@ fn export_image(live: &Path, old_dek: &Dek, new_dek: &Dek, dest: &Path) -> Resul
         .open(dest)?;
     let dest_text = dest
         .to_str()
-        .ok_or_else(|| DbError::InvalidCommand("an image path is not UTF-8".to_owned()))?;
+        .ok_or_else(|| image_error("an image path is not UTF-8".to_owned()))?;
     // Read-write, because the export attaches the destination and an attached database inherits
     // the connection's flags; nothing is written to the image itself.
     let conn = crate::open_vault_connection(live, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
@@ -703,13 +677,13 @@ fn export_image(live: &Path, old_dek: &Dek, new_dek: &Dek, dest: &Path) -> Resul
     let integrity: String = copy.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     drop(copy);
     if integrity != "ok" {
-        return Err(DbError::InvalidCommand(
+        return Err(image_error(
             "a rekeyed image failed integrity_check".to_owned(),
         ));
     }
     for suffix in SIDE_SUFFIXES {
         if with_suffix(dest, suffix).exists() {
-            return Err(DbError::InvalidCommand(format!(
+            return Err(image_error(format!(
                 "a rekeyed image left a {suffix} side file"
             )));
         }
@@ -770,4 +744,33 @@ fn status_of(conn: &Connection, vault_path: &Path) -> Result<BaseImageStatus, Db
             SyncBaseState::Rebasing => BaseImageStatus::Rebasing { base_seq: seq },
         },
     })
+}
+
+/// A test-only observation point inside the capture's critical section: a test installs a closure
+/// on its own thread and learns where the code is, so it can look at the world at exactly that
+/// step (for example, that a writer on another thread is blocked).
+#[cfg(test)]
+pub(crate) mod observe {
+    use std::cell::RefCell;
+
+    type Observer = Box<dyn Fn(&str)>;
+    thread_local! {
+        static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn install(observer: impl Fn(&str) + 'static) {
+        OBSERVER.with(|o| *o.borrow_mut() = Some(Box::new(observer)));
+    }
+
+    pub(crate) fn clear() {
+        OBSERVER.with(|o| *o.borrow_mut() = None);
+    }
+
+    pub(crate) fn at(label: &str) {
+        OBSERVER.with(|o| {
+            if let Some(observer) = o.borrow().as_ref() {
+                observer(label);
+            }
+        });
+    }
 }

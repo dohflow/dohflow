@@ -626,7 +626,7 @@ fn a_leftover_image_rekey_copy_is_refused_not_overwritten() {
 
     assert!(matches!(
         worker.prepare_rekeyed_images(&new_dek, &new_db),
-        Err(DbError::InvalidCommand(_))
+        Err(DbError::Io(_))
     ));
     assert_eq!(std::fs::read(&leftover).unwrap(), b"previous attempt");
 }
@@ -734,7 +734,7 @@ fn a_base_record_that_moves_during_the_capture_abandons_it_and_leaves_no_file() 
     observe::clear();
 
     assert!(
-        matches!(error, BaseImageError::Db(DbError::InvalidCommand(_))),
+        matches!(error, BaseImageError::Db(DbError::Io(_))),
         "{error:?}"
     );
     assert_eq!(
