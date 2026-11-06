@@ -588,41 +588,17 @@ mod plan_matrix {
 
 mod executor {
     use super::*;
-    use crate::rebase::{
-        Disposition, LocalCommand, OutboxCommand, QueueCause, QueueReason, RebaseError,
-    };
-    use crate::sync_state::decode_row_keys;
+    use crate::rebase::{Disposition, LocalCommand, QueueCause, QueueReason, RebaseError};
 
     /// Run `cmd` on the live vault (Sync is on, so it is an unpushed outbox entry) and read back
     /// everything a rebase needs to replay or queue it.
     pub(super) fn issue(live: &DbWorker, meta: CommandMeta, cmd: WriteCommand) -> LocalCommand {
-        live.dispatch(meta.clone(), cmd.clone()).unwrap();
-        let (op_seq, payload, version, hash, keys): (i64, Vec<u8>, u32, Vec<u8>, Vec<u8>) = live
-            .lock()
-            .conn
-            .query_row(
-                "SELECT l.op_seq, l.payload, l.payload_schema_version, l.write_set_hash,
-                        o.write_set_keys
-                   FROM operation_log l JOIN sync_outbox o ON o.command_id = l.command_id
-                  WHERE l.command_id = ?1",
-                [meta.command_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .unwrap();
-        LocalCommand {
-            command: OutboxCommand {
-                command_id: meta.command_id,
-                correlation_id: meta.correlation_id,
-                causation_id: meta.causation_id,
-                write_set_keys: decode_row_keys(&keys).unwrap(),
-            },
-            meta,
-            cmd,
-            old_op_seq: op_seq,
-            payload,
-            payload_version: version,
-            write_set_hash: hash.try_into().unwrap(),
-        }
+        live.dispatch(meta.clone(), cmd).unwrap();
+        live.read_local_commands()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.meta.command_id == meta.command_id)
+            .expect("the command is in the outbox")
     }
 
     fn op_log_row(worker: &DbWorker, command_id: Uuid) -> Option<(i64, Option<i64>, Option<i64>)> {
@@ -1209,4 +1185,98 @@ fn a_pulled_envelope_the_commands_own_validation_refuses_stops_the_replica_at_it
         "{error:?}"
     );
     assert_eq!(scratch.head_seq(), 5, "the replica stops at the position");
+}
+
+// ---- reading the unpushed commands back ---------------------------------------------------
+
+mod outbox_reader {
+    use super::*;
+    use crate::rebase::RebaseError;
+
+    #[test]
+    fn the_unpushed_commands_come_back_in_local_order_with_their_complete_original_meta() {
+        let (_dir, live, account, _scratch) = live_with_base();
+        let mut first = meta();
+        first.actor_id = "alice".to_owned();
+        first.issued_at = IssuedAt::from_unix_micros(1_790_000_000_111_111);
+        let mut second = meta();
+        second.causation_id = Some(first.command_id);
+        second.issued_at = IssuedAt::from_unix_micros(1_790_000_000_222_222);
+        live.dispatch(first.clone(), rename(account, "One"))
+            .unwrap();
+        live.dispatch(second.clone(), rename(account, "Two"))
+            .unwrap();
+
+        let read = live.read_local_commands().unwrap();
+
+        assert_eq!(read.len(), 2);
+        for (got, want) in read.iter().zip([&first, &second]) {
+            assert_eq!(got.meta.command_id, want.command_id);
+            assert_eq!(got.meta.correlation_id, want.correlation_id);
+            assert_eq!(got.meta.causation_id, want.causation_id);
+            assert_eq!(got.meta.actor_id, want.actor_id);
+            assert_eq!(got.meta.idempotency_key, want.idempotency_key);
+            assert_eq!(
+                got.meta.issued_at, want.issued_at,
+                "the issue time, not the wall clock"
+            );
+            assert!(!got.command.write_set_keys.is_empty());
+        }
+        assert!(read[0].old_op_seq < read[1].old_op_seq);
+        assert!(
+            matches!(read[0].cmd, WriteCommand::UpdateAccount { ref name, .. } if name == "One")
+        );
+    }
+
+    #[test]
+    fn an_entry_the_server_already_accepted_is_not_replayed() {
+        let (_dir, live, account, _scratch) = live_with_base();
+        let sent = meta();
+        live.dispatch(sent.clone(), rename(account, "Pushed"))
+            .unwrap();
+        live.dispatch(meta(), rename(account, "Still local"))
+            .unwrap();
+        live.lock()
+            .conn
+            .execute(
+                "UPDATE sync_outbox
+                    SET state = 'Bound', sealed_container = zeroblob(1), bound_seq = 6,
+                        result_ref = zeroblob(1)
+                  WHERE command_id = ?1",
+                [sent.command_id],
+            )
+            .unwrap();
+
+        let read = live.read_local_commands().unwrap();
+
+        assert_eq!(read.len(), 1);
+        assert!(
+            matches!(read[0].cmd, WriteCommand::UpdateAccount { ref name, .. } if name == "Still local")
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_recorded_issue_time_is_refused_by_name() {
+        let (_dir, live, account, _scratch) = live_with_base();
+        let m = meta();
+        live.dispatch(m.clone(), rename(account, "Old row"))
+            .unwrap();
+        live.lock()
+            .conn
+            .execute("UPDATE sync_outbox SET issued_at = NULL", [])
+            .unwrap();
+
+        let error = live.read_local_commands().unwrap_err();
+
+        assert!(
+            matches!(error, RebaseError::MissingIssuedAt { command_id } if command_id == m.command_id),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_vault_with_nothing_unpushed_reads_back_nothing() {
+        let (_dir, live, _account, _scratch) = live_with_base();
+        assert!(live.read_local_commands().unwrap().is_empty());
+    }
 }

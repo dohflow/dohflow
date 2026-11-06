@@ -119,6 +119,19 @@ pub enum RebaseError {
         /// The command.
         command_id: Uuid,
     },
+    /// An unpushed command has no recorded issue time (a row from before the outbox kept it): a
+    /// replay under any other time would mint other ids, so the rebase refuses by name.
+    #[error("the unpushed command {command_id} has no recorded issue time")]
+    MissingIssuedAt {
+        /// The command.
+        command_id: Uuid,
+    },
+    /// An unpushed command's recorded row cannot be decoded by this build.
+    #[error("the unpushed command {command_id} cannot be read back")]
+    UnreadableLocalCommand {
+        /// The command.
+        command_id: Uuid,
+    },
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
