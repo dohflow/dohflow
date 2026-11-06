@@ -41,6 +41,8 @@ chrono = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 sync-core = { path = "../sync-core" }
 thiserror = { workspace = true }
+# The base image digest (personal-cfo-bxsbz.3): streamed SHA-256 of sync/base.db.
+sha2 = { workspace = true }
 uuid = { workspace = true }
 zeroize = { workspace = true }
 # Read-path JSON parsing for forecast assumption-event params (manual entries,
@@ -50,7 +52,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 base64 = "=0.22.1" # Frozen encrypted cross-version fixtures (text only).
-sha2 = { workspace = true } # Verify frozen encrypted artifact hashes.
 tempfile = "3"
 proptest = "1"
 # db-worker is the sole rusqlite owner; its own tests may drive raw SQL to

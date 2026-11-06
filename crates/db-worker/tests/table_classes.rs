@@ -910,9 +910,20 @@ fn secret_bearing_tables_are_exactly_the_credential_holders() {
         .filter(|row| row.get("secret_bearing") == Some("true"))
         .map(|row| row.get("table").unwrap())
         .collect();
-    // The set bxsbz.3 strips from a base image at capture. A table joins it by naming the marker in
+    // The set bxsbz.3 strips from a base image at capture (`base_image::SECRET_BEARING_TABLES`). A table joins it by naming the marker in
     // this manifest AND here, so adding a credential holder is a reviewed change.
     assert_eq!(marked, BTreeSet::from(["connector_connection_secrets"]));
+
+    // The strip a base image applies at capture (bxsbz.3 AC2) is exactly the marked set: the
+    // code list and the manifest cannot drift apart.
+    let stripped: BTreeSet<&str> = db_worker::base_image::SECRET_BEARING_TABLES
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(
+        stripped, marked,
+        "the base image strip list vs the manifest"
+    );
 
     // The marker is only meaningful on a device-local table, and never on a replicated one.
     for row in &rows {

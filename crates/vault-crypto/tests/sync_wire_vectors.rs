@@ -355,6 +355,24 @@ fn artifact_id(k_e: &[u8; 32], vault: &[u8; 16], storage_id: &[u8; 32]) -> [u8; 
     hmac256(&addr_key, storage_id)
 }
 
+/// The id of an artifact in the next key-changing epoch, from its previous id (C.3): any member of
+/// epoch `e+1` holds the previous id and `K_{e+1}`, so none needs the origin's DEK.
+fn artifact_readdress_id(
+    k_next: &[u8; 32],
+    vault: &[u8; 16],
+    epoch_next: u64,
+    previous_id: &[u8; 32],
+) -> [u8; 32] {
+    let key = hkdf_expand(
+        k_next,
+        &Enc::new("dohflow/sync-artifact-readdress/v1")
+            .fixed(vault)
+            .u64(epoch_next)
+            .done(),
+    );
+    hmac256(&key, previous_id)
+}
+
 fn artifact_object_key(k_e: &[u8; 32], vault: &[u8; 16], epoch: u64, id: &[u8; 32]) -> [u8; 32] {
     hkdf_expand(
         k_e,
@@ -767,6 +785,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     let storage_2 = [0x6bu8; 32];
     let art_1 = artifact_id(&k_e, &VAULT, &storage_1);
     let art_1_e2 = artifact_id(&k_e2, &VAULT, &storage_1);
+    let art_1_readdress_e2 = artifact_readdress_id(&k_e2, &VAULT, 2, &art_1);
     let art_2 = artifact_id(&k_e, &VAULT, &storage_2);
     let man_commit = manifest_commitment(&[art_1, art_2]);
     let mut delta = vec![art_1, art_2];
@@ -973,6 +992,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("key_commitment_s", commit_s.to_vec()),
         ("artifact_id_epoch1", art_1.to_vec()),
         ("artifact_id_epoch2", art_1_e2.to_vec()),
+        ("artifact_id_readdress_epoch2", art_1_readdress_e2.to_vec()),
         ("artifact_manifest_commitment", man_commit.to_vec()),
         (
             "write_set_hash_sample",
@@ -985,7 +1005,24 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ),
         ("artifact_object_key", obj_key.to_vec()),
         ("artifact_aad", art_ad),
-        ("artifact_object_ciphertext", art_ct),
+        ("artifact_object_ciphertext", art_ct.clone()),
+        ("artifact_container", {
+            let mut c = b"DFSA".to_vec();
+            c.extend_from_slice(&1u16.to_be_bytes());
+            c.extend_from_slice(&(art_ct.len() as u64).to_be_bytes());
+            c.extend_from_slice(&art_ct);
+            c
+        }),
+        (
+            "artifact_receipt",
+            Enc::new("dohflow/sync-receipt/v1")
+                .fixed(&VAULT)
+                .u64(1)
+                .fixed(&art_1)
+                .u64(art_ct.len() as u64)
+                .fixed(&sha256(&art_ct))
+                .done(),
+        ),
         ("header_envelope", header_env.clone()),
         ("header_snapshot", header_snap),
         ("envelope_plaintext", plaintext_env),
@@ -1346,6 +1383,30 @@ fn artifact_addresses_are_unlinkable_across_epochs_and_vaults() {
     // The address is not a plaintext digest and not the local storage id.
     assert_ne!(a, storage);
     assert_ne!(a, sha256(b"synthetic document"));
+}
+
+#[test]
+fn a_re_addressed_id_is_derived_from_the_previous_id_and_the_new_epoch_key_alone() {
+    let (k1, k2) = (counting(0), counting(0x40));
+    let first = artifact_id(&k1, &VAULT, &[0x5a; 32]);
+    let next = artifact_readdress_id(&k2, &VAULT, 2, &first);
+    // It is not the first-publication derivation under the new key (that needs the origin's address),
+    // and it is not the previous id.
+    assert_ne!(next, artifact_id(&k2, &VAULT, &[0x5a; 32]));
+    assert_ne!(next, first);
+    // It depends on every input: the new epoch key, the vault, the epoch number and the previous id.
+    assert_ne!(
+        next,
+        artifact_readdress_id(&counting(0x41), &VAULT, 2, &first)
+    );
+    assert_ne!(next, artifact_readdress_id(&k2, &[0x12; 16], 2, &first));
+    assert_ne!(next, artifact_readdress_id(&k2, &VAULT, 3, &first));
+    assert_ne!(next, artifact_readdress_id(&k2, &VAULT, 2, &[0x77; 32]));
+    // A holder of the previous id and not the new key cannot compute it: the old key gives another id.
+    assert_ne!(next, artifact_readdress_id(&k1, &VAULT, 2, &first));
+    // The chain continues from the id it produced, and never revisits an earlier one.
+    let third = artifact_readdress_id(&counting(0x80), &VAULT, 3, &next);
+    assert!(third != next && third != first);
 }
 
 #[test]
