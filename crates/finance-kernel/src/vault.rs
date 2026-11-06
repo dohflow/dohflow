@@ -680,6 +680,9 @@ impl Kernel {
             Err(DbError::VaultInUse) => return Err(KernelError::VaultInUse),
             Err(_) => None,
         };
+        // No vault exists here yet, so any Sync image beside this path is a stale copy of some
+        // other vault's data: it never becomes this vault's base (bxsbz.3).
+        let _ = std::fs::remove_dir_all(db_worker::base_image::sync_dir(dest_db_path));
         write_sidecar_new(&sidecar, &restored.envelope_bytes)?;
         if let Err(error) = install_payload(dest_db_path, &restored) {
             let _ = std::fs::remove_file(&sidecar);
@@ -1365,6 +1368,8 @@ impl VaultController {
         let _ = std::fs::remove_file(with_suffix("-shm"));
         let _ = std::fs::remove_file(with_suffix("-journal"));
         let _ = std::fs::remove_dir_all(&blobs);
+        // The Sync images (the base image, the pre-rebase copy) are copies of this vault's data.
+        let _ = std::fs::remove_dir_all(db_worker::base_image::sync_dir(&db));
         // Key-rotation artifacts (ADR 0083): best-effort like the side files.
         for artifact in RekeyPaths::new(&db).all_artifacts() {
             let _ = std::fs::remove_file(artifact);

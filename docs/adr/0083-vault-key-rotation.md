@@ -334,10 +334,54 @@ leftover `.runner.lock` file never blocks the next open. A second process that i
 typed `VaultInUse` the desktop already maps to "vault is already open in another DohFlow
 instance". Section 5's controller state machine is unchanged.
 
+## Addendum C — The Sync images across a rotation (2026-11-05, `personal-cfo-bxsbz.3`)
+
+Sync keeps two more copies of the vault beside `vault.db`, both encrypted under the same DEK (ADR
+0074 decision 2): `sync/base.db`, the base image a rebase restores, and `sync/pre-rebase.db`, the
+previous live vault a rebase swap keeps until the next accepted push. A copy under the retired DEK
+must not outlive a rotation, and a suspected compromise must not wait on a network connection. The
+rule is therefore **re-encrypt, never refuse**: a non-empty outbox does not block a rotation.
+
+- **Prepare** re-encrypts each image that exists into `sync/<image>.rekey-new`, with the same
+  `sqlcipher_export` into a database keyed through `sqlite3_key_v2` that the vault copy uses
+  (Addendum A), then reopens the copy under the new key and runs `integrity_check`. The live images
+  are only read. When `base.db` was a base the vault could vouch for (the recorded digest matched
+  the file), the rekeyed copy of `vault.db` records the digest of the re-encrypted base in the same
+  step; a base already lost stays lost.
+- **An image that cannot be read** under the current key (damaged, or not this vault's) is not
+  carried over and does not stop the rotation: the journal lists it for removal, and when it is
+  `base.db` the rekeyed vault records `NoBase`, so the vault rebootstraps pull-first. A failure
+  while *writing* a copy is the rotation's to report, never a reason to drop an image.
+- **The journal** gains an `images` list: for each image, the hash of its finalized `.rekey-new`
+  copy, or none when it is removed. Journals written before it have none.
+- **Commit agreement** (section 4) requires each listed copy to be either waiting as `.rekey-new`
+  with the journaled hash, or already in place with it. A disagreement is a contradiction, and
+  nothing is deleted.
+- **Apply** gains a step between the envelope swap (4) and the old blob removal (5): each copy is
+  renamed over its image (an atomic rename, so the retired-key bytes are unlinked), a removed image
+  is deleted, and the Sync directory is synced. The step is idempotent like the others, so recovery
+  can re-run it from any interruption, including between the two images.
+- **A capture that died before its strip** leaves `sync/base.db.tmp` (and any SQLite side file):
+  a full copy of the vault, connector secrets included. Prepare removes it before anything is
+  re-encrypted, under the same gate that keeps a capture from recreating it, and every open
+  removes it too (the vault lease means no capture is running then), so no copy under the retired
+  key survives a rotation.
+- **Rollback** removes both `.rekey-new` copies whether or not the journal names them.
+- **Disk space** (section 5) counts the images, since they are re-encrypted beside the live ones.
+- **Delete** removes the whole `sync/` directory, and **restore** clears any stale one at its
+  destination: a backup carries `vault.db` (and so the `sync_base` row) but not `sync/`, so a
+  restored vault has no base and records `NoBase` on its first open.
+
+Known residual: the base image's `attachments` rows are class 4 and keep their receiver-local
+fields (`wrapped_content_key`, `storage_id`), still wrapped under the retired DEK. They sit inside
+a file that is now encrypted under the new key, so they are unreadable without it, and a rebase
+never reads them (class-4 rows are materialized from the live vault, not restored from the base).
+
 ## Linked beads
 
 - `personal-cfo-7ie.17` (keys through `sqlite3_key_v2`; Addendum A)
 - `personal-cfo-bxsbz.2` (the vault lease across apply, recovery, delete and restore; Addendum B)
+- `personal-cfo-bxsbz.3` (the Sync images across a rotation; Addendum C)
 - `personal-cfo-2y8` (implementation)
 - `personal-cfo-g3m.5` (engine remediation; implementation follows it)
 - `personal-cfo-zxq` (password change — the KEK-only re-wrap this extends)
