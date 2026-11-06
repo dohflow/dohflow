@@ -26,7 +26,7 @@ use chrono::{TimeZone, Utc};
 use common::engine_pins::{generation, judge, parse, render, Section, Verdict};
 use common::rejection_scenarios;
 use common::replicated_state::comparable_state;
-use common::samples::samples;
+use common::samples::{alternates, samples};
 use common::variant_runner::{after_setup, before, command_for, Runtime, ORDER};
 use common::KEY;
 use db_worker::payload::encode_payload;
@@ -125,7 +125,6 @@ fn variant_pins() -> BTreeMap<String, (String, String)> {
     let mut by_name: BTreeMap<&str, WriteCommand> = samples().into_iter().collect();
     let mut pins = BTreeMap::new();
     let mut n = 0_u128;
-    let state = |worker: &DbWorker| comparable_state(&worker.read_connection().unwrap());
     for name in ORDER {
         let sample = by_name.remove(name).expect("a sample per variant");
         for (label, setup) in before(name, &worker, &mut runtime) {
@@ -135,30 +134,57 @@ fn variant_pins() -> BTreeMap<String, (String, String)> {
                 .unwrap_or_else(|e| panic!("{name}: {label}: {e}"));
         }
         after_setup(&worker, &mut runtime);
-        let command = command_for(name, sample, &runtime);
-        let payload = encode_payload(&command).expect("a sample encodes");
-        let base = state(&worker);
-        n += 1;
-        let outcome = worker.dispatch(pin_meta(n), command);
-        let after = state(&worker);
-        let (code, hash): (String, Vec<u8>) = match &outcome {
-            Ok(_) => (
-                "applied".to_owned(),
-                worker.last_write_set().expect("a write set").hash.to_vec(),
-            ),
-            Err(DbError::Rejected { code, .. }) => (format!("rejected {}", code.as_u16()), vec![]),
-            Err(other) => panic!("{name}: the sample did not apply: {other}"),
-        };
-        let input = sha(&[&payload, &state_bytes(&base)]);
-        let output = sha(&[
-            code.as_bytes(),
-            &hash,
-            &state_bytes(&changed_rows(&base, &after)),
-        ]);
+        let (input, output, _) =
+            pin_one(&worker, &mut n, name, command_for(name, sample, &runtime));
         pins.insert((*name).to_owned(), (input, output));
+        // The same variant with its optional fields set (L1), on the state the sample left.
+        for (_, label, alternate) in alternates().into_iter().filter(|(v, _, _)| v == name) {
+            let (input, output, code) = pin_one(
+                &worker,
+                &mut n,
+                name,
+                command_for(name, alternate, &runtime),
+            );
+            assert_eq!(
+                code, "applied",
+                "{name}+{label}: an alternate sample must apply, or it pins a rejection and not the Some path"
+            );
+            pins.insert(format!("{name}+{label}"), (input, output));
+        }
     }
     assert!(by_name.is_empty(), "ORDER covers every sample");
     pins
+}
+
+/// Dispatch one command on the pin vault and return its (input, output) digests and its outcome
+/// code (`applied` or `rejected N`).
+fn pin_one(
+    worker: &DbWorker,
+    n: &mut u128,
+    name: &str,
+    command: WriteCommand,
+) -> (String, String, String) {
+    let state = |worker: &DbWorker| comparable_state(&worker.read_connection().unwrap());
+    let payload = encode_payload(&command).expect("a sample encodes");
+    let base = state(worker);
+    *n += 1;
+    let outcome = worker.dispatch(pin_meta(*n), command);
+    let after = state(worker);
+    let (code, hash): (String, Vec<u8>) = match &outcome {
+        Ok(_) => (
+            "applied".to_owned(),
+            worker.last_write_set().expect("a write set").hash.to_vec(),
+        ),
+        Err(DbError::Rejected { code, .. }) => (format!("rejected {}", code.as_u16()), vec![]),
+        Err(other) => panic!("{name}: the sample did not apply: {other}"),
+    };
+    let input = sha(&[&payload, &state_bytes(&base)]);
+    let output = sha(&[
+        code.as_bytes(),
+        &hash,
+        &state_bytes(&changed_rows(&base, &after)),
+    ]);
+    (input, output, code)
 }
 
 /// The outcome of every deterministic-rejection scenario, on a fixed vault.
@@ -260,7 +286,7 @@ fn apply_writes_what_the_pin_says_for_this_engine_version() {
 #[test]
 fn every_variant_and_every_rejection_scenario_is_pinned() {
     let now = current_section();
-    assert_eq!(now.variants.len(), samples().len());
+    assert_eq!(now.variants.len(), samples().len() + alternates().len());
     assert!(
         now.rejections.len() > 50,
         "the rejection scenarios are pinned ({})",
@@ -268,10 +294,17 @@ fn every_variant_and_every_rejection_scenario_is_pinned() {
     );
     // Pinning does not make the engine accept what the sample set leaves out: every variant of the
     // enum has a sample (payload_v1 guards that), so every variant has a pin entry.
-    assert!(now
-        .variants
-        .keys()
-        .all(|name| samples().iter().any(|(n, _)| n == name)));
+    assert!(now.variants.keys().all(|name| {
+        let variant = name.split('+').next().unwrap();
+        samples().iter().any(|(n, _)| *n == variant)
+    }));
+    // An alternate names a variant and a distinct label, and encodes like any payload.
+    for (variant, label, command) in alternates() {
+        assert!(samples().iter().any(|(n, _)| *n == variant), "{variant}");
+        assert!(now.variants.contains_key(&format!("{variant}+{label}")));
+        let bytes = encode_payload(&command).expect("an alternate encodes");
+        assert!(!bytes.is_empty());
+    }
 }
 
 #[test]

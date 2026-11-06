@@ -37,11 +37,6 @@ use crate::write_set::{digest_columns, replicated, to_columns, Owned, Row};
 /// The version of the B.2 inventory the table set follows.
 const INVENTORY_VERSION: &str = "1";
 
-/// Tables the genesis carries although the write set does not cover them (S4): the import
-/// provenance links are an apply output that travels as data. Their write-set coverage is
-/// personal-cfo-0g528.2's.
-const EXTRA_GENESIS_TABLES: &[&str] = &["source_provenance_links"];
-
 /// What a caller supplies beyond the vault's own rows.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExportInput<'a> {
@@ -126,7 +121,7 @@ pub(crate) fn genesis_tables(manifest: &Manifest) -> Vec<&TableSpec> {
     manifest
         .tables
         .values()
-        .filter(|t| t.coverage != Coverage::None || EXTRA_GENESIS_TABLES.contains(&t.name.as_str()))
+        .filter(|t| t.coverage != Coverage::None)
         .collect()
 }
 

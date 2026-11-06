@@ -301,14 +301,21 @@ pub fn oracle(
 }
 
 /// The class-1b artifact tables the write set does not cover (`write_set = none`: the source
-/// batches, records, parser runs and provenance links), digested like any other row so a replica's
-/// copy can be compared. The write-set oracle must NOT use this (the capture does not include them).
+/// batches, records and parser runs; the provenance links are covered since personal-cfo-0g528.2
+/// S2a), digested like any other row so a replica's copy can be compared. The write-set oracle must
+/// NOT use this (the capture does not include them). A class-1b table with no primary key cannot be
+/// digested by key, so it FAILS here rather than being skipped: a replica comparison that silently
+/// ignored a table would prove nothing about it (personal-cfo-0g528.2 AC7 L5).
 pub fn artifact_state(conn: &rusqlite::Connection) -> BTreeMap<(String, Vec<u8>), [u8; 32]> {
     let mut out = BTreeMap::new();
     for (table, spec) in &manifest_tables() {
-        if spec.class != "1b" || spec.write_set != "none" || spec.key.is_empty() {
+        if spec.class != "1b" || spec.write_set != "none" {
             continue;
         }
+        assert!(
+            !spec.key.is_empty(),
+            "class-1b table {table} has no primary key, so the replica comparison cannot digest it"
+        );
         for row in all_rows(conn, table, spec) {
             out.insert(
                 (table.clone(), key_of(spec, &row)),
