@@ -93,6 +93,7 @@ mod scenarios;
 mod schedule_sources;
 mod spend_by_category;
 mod staged_import;
+pub mod sync_enable;
 pub mod sync_genesis;
 pub mod sync_register;
 pub mod sync_state;
@@ -2087,6 +2088,9 @@ impl DbWorker {
     /// back with the vault, which is what the independent witness detects. A closure that needs the
     /// transaction of a command (the register advance beside the operation-log row) takes it from
     /// that command's own transaction instead.
+    ///
+    /// `f` runs while the writer lock is held, so it must not call another method of this worker
+    /// that takes the lock (`vault_id`, a dispatch): read what it needs first.
     ///
     /// # Errors
     /// `f`'s error (the transaction is rolled back), or [`DbError::WorkerUnavailable`] /
