@@ -40,12 +40,13 @@ fn every_shipped_adapter_has_exactly_one_registry_entry() {
 }
 
 #[test]
-fn only_simplefin_is_enabled_by_default() {
-    let enabled: Vec<&str> = all_registrations()
+fn simplefin_and_lunchflow_are_the_enabled_providers() {
+    let mut enabled: Vec<&str> = all_registrations()
         .filter(|r| r.metadata.enabled)
         .map(|r| r.adapter.id())
         .collect();
-    assert_eq!(enabled, ["simplefin"]);
+    enabled.sort_unstable();
+    assert_eq!(enabled, ["lunchflow", "simplefin"]);
 }
 
 #[test]
@@ -88,13 +89,10 @@ fn every_workspace_adapter_crate_is_linked_into_this_roster() {
 }
 
 #[test]
-fn lunchflow_ships_disabled_with_its_referral_disclosed() {
+fn lunchflow_is_enabled_with_its_referral_disclosed() {
     let entry = registration_by_id("lunchflow").expect("lunchflow registered");
     let metadata = &entry.metadata;
-    assert!(
-        !metadata.enabled,
-        "ships disabled until its release flips it"
-    );
+    assert!(metadata.enabled, "v0.4.0 flipped it (personal-cfo-p3f7r)");
     let economics = &metadata.economics;
     assert_eq!(economics.payer, Payer::UserDirect);
     assert!(economics.included_connections.is_some());

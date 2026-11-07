@@ -10,7 +10,7 @@ used at all, and how the Connections picker turns that into a connect flow.
   enter the free app, the ship conditions, the picker order and the affiliate
   stance).
 - **Built by:** `personal-cfo-5jjz` (the registry), `personal-cfo-r2pow` (the
-  second adapter, LunchFlow, registered disabled) and `personal-cfo-dto2j` (the
+  second adapter, LunchFlow, registered disabled until v0.4.0) and `personal-cfo-dto2j` (the
   picker).
 - **Scope:** describes what is merged. It introduces no provider, cost claim
   or enablement.
@@ -100,8 +100,8 @@ only once ADR 0076 decision 3's ship conditions hold: cross-provider dedupe,
 the currency refusal, help and disclosure placements, and the threat model's
 egress row.
 
-At the time of writing, **SimpleFIN is enabled** and **LunchFlow is
-implemented but disabled**. Its release bead is `personal-cfo-p3f7r`.
+At the time of writing (v0.4.0), **SimpleFIN and LunchFlow are both
+enabled**. `personal-cfo-p3f7r` flipped LunchFlow's flag.
 
 The refusal is `connector_link_registered_impl`
 (`apps/desktop/src-tauri/src/ipc/commands.rs`), the only path the
@@ -228,9 +228,9 @@ reminder when nobody has looked for six months.
 
 | Guarantee | Test |
 |---|---|
-| Every shipped adapter has exactly one entry; only SimpleFIN is enabled; LunchFlow ships disabled with its referral; every workspace adapter crate is in the roster | `crates/connector-core/tests/registry.rs` |
+| Every shipped adapter has exactly one entry; SimpleFIN and LunchFlow are the enabled providers; LunchFlow is enabled with its referral; every workspace adapter crate is in the roster | `crates/connector-core/tests/registry.rs` |
 | Inconsistent metadata is rejected; the six-month boundary | unit tests in `crates/connector-core/src/lib.rs` |
-| A disabled provider is refused before link (mock and the real registry); the DTO has no secret fields; disabled entries are listed and flagged; registry order | `apps/desktop/src-tauri/tests/connector_ipc.rs` |
+| A disabled provider is refused before link (the mock); the real LunchFlow entry is accepted through the gate (its metadata on a fixture transport); the DTO has no secret fields; disabled entries are listed and flagged; registry order | `apps/desktop/src-tauri/tests/connector_ipc.rs` |
 | SimpleFIN's copy in the registry is the shipped text; the frontend registry fixture holds every provider and matches the registry | `apps/desktop/src-tauri/tests/connector_registry.rs` |
 | Every provider's registry wording (disclosure, link guide, referral sentence) passes the ADR 0018 advice-phrase list, and every provider is scanned | `apps/desktop/src/copy-review.test.ts` |
 | A provider that echoes the API key (error bodies, ids, statuses, split or zero-width-hidden) never leaks it into errors, warnings, stored ids, `last_error`, DTOs or logs | `crates/connectors/lunchflow-adapter/src/lib.rs` (unit), `crates/connectors/lunchflow-adapter/tests/lunchflow_flow.rs`, `apps/desktop/src-tauri/tests/connector_ipc.rs` |
