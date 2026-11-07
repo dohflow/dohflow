@@ -510,7 +510,8 @@ on a desktop window, and a test proves each.
   column (`unrecoverable`) takes `[overflow-wrap:anywhere]`, or the page grows sideways and the edge
   clips it. Where the column beside an icon gets too narrow to read at that size, the row stacks on a
   container query (`compact:@max-[15rem]:flex-col` inside an `@container`), and prose takes
-  `compact:hyphens-auto` so words break at syllables instead of mid-syllable.
+  `compact:@max-[15rem]:hyphens-auto` (only on the narrow card, so a normal-size card keeps whole words)
+  so words break at syllables instead of mid-syllable.
   The shared `Button` is `h-10 whitespace-nowrap`, so a button whose label can outgrow the column at that
   size takes `h-auto min-h-10 whitespace-normal [overflow-wrap:anywhere]` at its call site (`cn()` drops the
   primitive's `h-10` and `whitespace-nowrap`), with `compact:@max-[15rem]:px-1` inside an `@container` so a

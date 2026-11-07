@@ -69,7 +69,7 @@ describe("NoResetWarning", () => {
     expect(warning.parentElement).toHaveClass("compact:@max-[15rem]:flex-col");
     expect(label).toHaveClass("compact:@max-[15rem]:flex-col");
     for (const element of [warning, acknowledgement]) {
-      expect(element).toHaveClass("compact:hyphens-auto");
+      expect(element).toHaveClass("compact:@max-[15rem]:hyphens-auto");
     }
     // The copy is untouched.
     expect(warning.textContent).toBe(CANONICAL);
@@ -85,14 +85,14 @@ describe("NoResetWarning", () => {
     ).build([
       "@container",
       "compact:@max-[15rem]:flex-col",
-      "compact:hyphens-auto",
+      "compact:@max-[15rem]:hyphens-auto",
       "[overflow-wrap:anywhere]",
     ]);
     expect(css).toContain("container-type: inline-size");
     expect(css).toMatch(/@container \(width < 15rem\)/);
     expect(css).toMatch(/flex-direction: column/);
     expect(css).toContain(`@media ${COMPACT_QUERY}`);
-    expect(css).toContain("hyphens: auto");
+    expect(css).toMatch(/@container \(width < 15rem\) \{[^}]*hyphens: auto/);
     expect(css).toContain("overflow-wrap: anywhere");
   });
 });
