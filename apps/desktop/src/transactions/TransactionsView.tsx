@@ -581,14 +581,14 @@ export function TransactionsView({
           : "mx-auto flex w-full max-w-6xl flex-col gap-4"
       }
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between compact:flex-wrap compact:gap-2">
         {embedded ? (
           <span />
         ) : (
           <h2 className="text-lg font-semibold tracking-tight">Transactions</h2>
         )}
         {!adding && hasAccounts && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 compact:flex-wrap">
             {total !== undefined && (total > 0 || filtersActive) && (
               <Button
                 size="sm"

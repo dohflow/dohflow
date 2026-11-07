@@ -279,6 +279,18 @@ describe("TransactionsView", () => {
       expect(within(card).getByText("Checking")).toBeInTheDocument();
     });
 
+    it("wraps the action buttons and the search, sort and filter controls on a phone (compact-only classes)", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      expect(screen.getByRole("button", { name: /Add transaction/ }).parentElement).toHaveClass("compact:flex-wrap");
+      const search = screen.getByRole("searchbox", { name: "Search transactions" });
+      expect(search.parentElement).toHaveClass("compact:basis-full");
+      expect(search.parentElement!.parentElement).toHaveClass("compact:flex-wrap");
+      expect(screen.getByRole("combobox", { name: "Sort transactions" }).parentElement).toHaveClass("compact:flex-1");
+    });
+
     it("keeps the horizontal table on a desktop window", async () => {
       mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
       renderWithClient(<TransactionsView />);
