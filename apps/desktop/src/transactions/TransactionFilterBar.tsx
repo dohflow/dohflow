@@ -61,8 +61,8 @@ export function TransactionFilterBar({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
+      <div className="flex items-center gap-2 compact:flex-wrap">
+        <div className="relative flex-1 compact:min-w-0 compact:basis-full">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
             aria-hidden
@@ -81,7 +81,7 @@ export function TransactionFilterBar({
           aria-label="Sort transactions"
           value={sort}
           onChange={(e) => onSortChange(e.target.value as TransactionSort)}
-          className="w-40 shrink-0"
+          className="w-40 shrink-0 compact:min-w-0 compact:flex-1"
         >
           {SORT_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
@@ -94,7 +94,7 @@ export function TransactionFilterBar({
           variant={open || facets > 0 ? "secondary" : "outline"}
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="shrink-0"
+          className="shrink-0 compact:flex-1"
         >
           <SlidersHorizontal aria-hidden />
           Filters
@@ -107,7 +107,7 @@ export function TransactionFilterBar({
       </div>
 
       {open && (
-        <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3">
+        <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3 compact:[&>*]:min-w-0 compact:[&>*]:max-w-full">
           {!accountScopeLocked && (
           <div className="flex min-w-36 flex-col gap-1">
             <Label htmlFor={ids.account} className="text-xs">

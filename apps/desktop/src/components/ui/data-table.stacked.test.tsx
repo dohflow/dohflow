@@ -1,3 +1,4 @@
+import { type ReactNode } from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { Inbox } from "lucide-react";
 
@@ -168,5 +169,62 @@ describe("DataTable on a phone (personal-cfo-i93n3.27 slice F)", () => {
     const item = within(screen.getByRole("list")).getAllByRole("listitem")[1]!;
     expect(item.firstElementChild!.firstElementChild).toHaveTextContent("Northhollow Health Payroll");
     expect([...item.querySelectorAll("dt")].map((t) => t.textContent)).toEqual(["Date", "Amount"]);
+  });
+
+  it("puts control columns (an empty header) in the heading row, before or after the title, and never labels them", () => {
+    stubMatchMedia(true);
+    const columns: DataTableColumn<Row>[] = [
+      { key: "select", header: "", cell: () => <input type="checkbox" aria-label="Select row" /> },
+      { key: "name", header: "Activity", cell: (r) => r.name },
+      { key: "date", header: "Date", cell: (r) => r.date },
+      { key: "expand", header: "", cell: () => <button type="button">Show details</button> },
+    ];
+    render(table({ columns }));
+    const item = within(screen.getByRole("list")).getAllByRole("listitem")[0]!;
+    const heading = item.firstElementChild!.firstElementChild!;
+    const order = [...heading.querySelectorAll("input, button, .flex-1")].map((e) => e.tagName.toLowerCase() + ":" + (e.getAttribute("aria-label") ?? e.textContent?.slice(0, 12)));
+    expect(order[0]).toBe("input:Select row");
+    expect(order.at(-1)).toBe("button:Show details");
+    expect([...item.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Date"]);
+  });
+
+  describe("empty pairs", () => {
+    function rowsWith(amount: ReactNode, note: ReactNode) {
+      stubMatchMedia(true);
+      const columns: DataTableColumn<Row>[] = [
+        { key: "name", header: "Activity", cell: (r) => r.name },
+        { key: "amount", header: "Amount", cell: () => amount },
+        { key: "note", header: "Note", cell: () => note },
+      ];
+      render(table({ columns, rows: [ROWS[0]!] }));
+      return [...within(screen.getByRole("list")).getAllByRole("listitem")[0]!.querySelectorAll("dt")].map((d) => d.textContent);
+    }
+
+    it.each([
+      ["null", null],
+      ["undefined", undefined],
+      ["false", false],
+      ["an empty string", ""],
+      ["an empty list", []],
+      ["a list of absent values", [null, false, ""]],
+    ])("hides a pair whose value is %s, so a label is never read bare", (_name, absent) => {
+      expect(rowsWith("$5.00", absent as ReactNode)).toEqual(["Amount"]);
+    });
+
+    it.each([
+      ["zero", 0],
+      ["$0.00", "$0.00"],
+      ["an explicit None", "None"],
+      ["Uncategorized", "Uncategorized"],
+      ["a dash placeholder", "—"],
+    ])("never hides a present value: %s stays", (_name, present) => {
+      expect(rowsWith(present as ReactNode, "kept")).toEqual(["Amount", "Note"]);
+    });
+
+    it("keeps the pairs on a desktop table (the table has every column)", () => {
+      stubMatchMedia(false);
+      render(table({ columns: [{ key: "n", header: "Note", cell: () => null }], rows: [ROWS[0]!] }));
+      expect(screen.getByRole("columnheader", { name: "Note" })).toBeInTheDocument();
+    });
   });
 });

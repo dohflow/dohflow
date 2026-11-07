@@ -404,6 +404,7 @@ export function TransactionsView({
       key: "activity",
       header: "Activity",
       className: "min-w-0 align-top",
+      phoneTitle: true,
       cell: (txn) => (
         <div className="flex items-center gap-3">
           {/* Unreviewed indicator (personal-cfo-4d8.7): a dot until reviewed; the space
@@ -421,7 +422,7 @@ export function TransactionsView({
             onClick={() => setSelected(txn)}
             className="flex min-w-0 flex-1 flex-col items-start text-left"
           >
-            <span className="max-w-full truncate font-medium">
+            <span className="max-w-full truncate font-medium compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
               {/* The account is its OWN column, so falling back to it here would print
                   the same name twice on one row. */}
               {txn.memo ?? txn.counterparty ?? txn.note ?? "—"}
@@ -448,7 +449,7 @@ export function TransactionsView({
       key: "date",
       header: "Date",
       width: "min",
-      className: "whitespace-nowrap align-top text-muted-foreground",
+      className: "whitespace-nowrap align-top text-muted-foreground compact:whitespace-normal",
       cell: (txn) => formatDate(txn.occurred_at),
     },
     {
@@ -457,17 +458,17 @@ export function TransactionsView({
       className: "align-top text-muted-foreground",
       cell: (txn) =>
         txn.counter_account_name ? (
-          <span className="flex min-w-0 items-center gap-1 whitespace-nowrap">
-            <span className="truncate">
+          <span className="flex min-w-0 items-center gap-1 whitespace-nowrap compact:flex-wrap compact:justify-end compact:whitespace-normal">
+            <span className="truncate compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
               {txn.amount.minor_units < 0 ? txn.account_name : txn.counter_account_name}
             </span>
             <ArrowRight aria-hidden className="size-3 shrink-0" />
-            <span className="truncate">
+            <span className="truncate compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
               {txn.amount.minor_units < 0 ? txn.counter_account_name : txn.account_name}
             </span>
           </span>
         ) : (
-          <span className="truncate">{txn.account_name}</span>
+          <span className="truncate compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">{txn.account_name}</span>
         ),
     },
     {
@@ -489,14 +490,14 @@ export function TransactionsView({
       key: "tags",
       header: "Tags",
       className: "align-top",
-      cell: (txn) => (
-        <span className="flex flex-wrap items-center gap-1">
-          {txn.tag_ids.map((id) => {
-            const tag = tags?.find((candidate) => candidate.id === id);
-            return tag ? <TagChip key={id} tag={tag} /> : null;
-          })}
-        </span>
-      ),
+      cell: (txn) => {
+        const chips = txn.tag_ids.flatMap((id) => {
+          const tag = tags?.find((candidate) => candidate.id === id);
+          return tag ? [<TagChip key={id} tag={tag} />] : [];
+        });
+        // No tags: nothing (null), so the stacked phone layout hides the pair instead of a bare "Tags" label.
+        return chips.length === 0 ? null : <span className="flex flex-wrap items-center gap-1">{chips}</span>;
+      },
     },
     {
       key: "amount",
@@ -580,18 +581,19 @@ export function TransactionsView({
           : "mx-auto flex w-full max-w-6xl flex-col gap-4"
       }
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between compact:flex-wrap compact:gap-2">
         {embedded ? (
           <span />
         ) : (
           <h2 className="text-lg font-semibold tracking-tight">Transactions</h2>
         )}
         {!adding && hasAccounts && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 compact:flex-wrap">
             {total !== undefined && (total > 0 || filtersActive) && (
               <Button
                 size="sm"
                 variant="outline"
+                className="compact:h-auto compact:max-w-full compact:whitespace-normal compact:py-2"
                 onClick={() => void runAutoCategorize()}
                 disabled={autoCatBusy}
               >
@@ -608,13 +610,14 @@ export function TransactionsView({
               <Button
                 size="sm"
                 variant="outline"
+                className="compact:h-auto compact:max-w-full compact:whitespace-normal compact:py-2"
                 onClick={() => setAdding("transfer")}
               >
                 <ArrowLeftRight aria-hidden />
                 Add transfer
               </Button>
             )}
-            <Button size="sm" onClick={() => setAdding("transaction")}>
+            <Button size="sm" className="compact:h-auto compact:max-w-full compact:whitespace-normal compact:py-2" onClick={() => setAdding("transaction")}>
               <Plus aria-hidden />
               Add transaction
             </Button>
@@ -811,6 +814,7 @@ export function TransactionsView({
                 columns={transactionColumns}
                 rows={rows}
                 rowKey={(txn) => txn.transaction_id}
+                phoneLayout="stacked"
                 minWidth="min-w-[900px]"
                 // The table owns its own loading and empty treatments (ADR 0053 §1) —
                 // this screen used to hand-roll a centred spinner and a bespoke card,
@@ -951,7 +955,7 @@ function CategoryCell({
   // color to show.
   const swatch = showIcons && !uncategorized && (meta?.icon || meta?.color) ? meta : null;
   return (
-    <div className="relative shrink-0">
+    <div className="relative shrink-0 compact:min-w-0 compact:max-w-full compact:shrink">
       {swatch && (
         <span
           aria-hidden
@@ -966,7 +970,7 @@ function CategoryCell({
         value={categoryId ?? ""}
         onChange={(event) => onSelect(event.target.value || null)}
         className={cn(
-          "max-w-[9rem] cursor-pointer appearance-none truncate rounded-full border py-0.5 pr-6 text-[0.6875rem] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "max-w-[9rem] compact:w-full compact:max-w-full cursor-pointer appearance-none truncate rounded-full border py-0.5 pr-6 text-[0.6875rem] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
           swatch ? "pl-7" : "pl-2.5",
           uncategorized
             ? "border-dashed border-warning/50 bg-warning/5 text-warning"

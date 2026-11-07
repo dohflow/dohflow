@@ -9,6 +9,7 @@ import type {
   TransactionPageInput,
   TransactionRowDto,
 } from "@/bindings";
+import { COMPACT_QUERY } from "@/lib/compact";
 import { TransactionsView } from "./TransactionsView";
 import {
   filterTransactions,
@@ -249,6 +250,68 @@ function pickable(name: string, type: string, bytes: number[]): File {
 }
 
 describe("TransactionsView", () => {
+  // personal-cfo-i93n3.28: Activity on a phone is a list of cards of labeled values, not a horizontal table.
+  describe("on a phone", () => {
+    afterEach(() => vi.unstubAllGlobals());
+    function compactScreen() {
+      vi.stubGlobal("matchMedia", ((query: string) => ({
+        matches: query === COMPACT_QUERY,
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      })) as unknown as typeof window.matchMedia);
+    }
+
+    it("shows each transaction as a card: the select control and the title in the heading row, labeled values below", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      const amount = await screen.findByText(/\+\$?150/);
+      expect(screen.queryByRole("table")).toBeNull();
+      const card = amount.closest("li")!;
+      // The checkbox (a control column) heads the card with the title: no "select" label, no lowercase key as a label.
+      expect(within(card).getByRole("checkbox", { name: /^Select/ })).toBeInTheDocument();
+      const labels = [...card.querySelectorAll("dt")].map((d) => d.textContent);
+      expect(labels).toEqual(expect.arrayContaining(["Date", "Accounts", "Category", "Amount", "Balance after"]));
+      expect(labels).not.toContain("select");
+      expect(labels).not.toContain("expand");
+      expect(labels.indexOf("Date")).toBeLessThan(labels.indexOf("Amount"));
+      expect(within(card).getByText("Checking")).toBeInTheDocument();
+    });
+
+    it("hides the Tags pair for a transaction with no tags, so no bare label is read (and shows it when there are tags)", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" }, tag_ids: [] })]);
+      renderWithClient(<TransactionsView />);
+      const card = (await screen.findByText(/\+\$?150/)).closest("li")!;
+      expect([...card.querySelectorAll("dt")].map((d) => d.textContent)).not.toContain("Tags");
+    });
+
+    it("wraps the action buttons and the search, sort and filter controls on a phone (compact-only classes)", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      expect(screen.getByRole("button", { name: /Add transaction/ }).parentElement).toHaveClass("compact:flex-wrap");
+      // At the largest text size a button's own label wraps instead of running off the screen.
+      expect(screen.getByRole("button", { name: /Add transaction/ })).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
+      expect(screen.getByText("Checking")).toHaveClass("compact:whitespace-normal");
+      // The category picker may not be wider than the card.
+      expect(screen.getByRole("combobox", { name: "Category" })).toHaveClass("compact:w-full", "compact:max-w-full");
+      const search = screen.getByRole("searchbox", { name: "Search transactions" });
+      expect(search.parentElement).toHaveClass("compact:basis-full");
+      expect(search.parentElement!.parentElement).toHaveClass("compact:flex-wrap");
+      expect(screen.getByRole("combobox", { name: "Sort transactions" }).parentElement).toHaveClass("compact:flex-1");
+    });
+
+    it("keeps the horizontal table on a desktop window", async () => {
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      expect(screen.getByRole("table")).toBeInTheDocument();
+    });
+  });
+
   it("prompts to add an account when there are none", async () => {
     mocks.accountList.mockResolvedValue(ok([]));
     renderWithClient(<TransactionsView />);
