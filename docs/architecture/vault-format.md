@@ -2027,7 +2027,14 @@ never published or re-minted and nothing in the vault is discarded.
 **The genesis snapshot's id and a resume.** The genesis snapshot's `object_id` is not random: it is
 the first 16 bytes of `SHA-256("dohflow/genesis-snapshot-id/v1" ‖ genesis_epoch_record_id)` with the
 UUID version (4) and variant bits set, so a client that resumes after a crash or a lost response
-names the snapshot its first attempt named without persisting anything more. A resume sends the
+names the snapshot its first attempt named without persisting anything more.
+`genesis_epoch_record_id` is the identifier of the vault's genesis epoch record (C.6 "Signed record
+container": `SHA-256` of the record's body bytes, 32 raw bytes). The body carries the `vault_id`, so
+the id binds the vault: no two vaults share one. This is the **one** `object_id` that is not drawn
+from a CSPRNG: C.5's rule is about idempotency keys, and an `object_id` is only an identifier the
+service stores. The derived id is version-4 formatted for the wire and is unpredictable to anyone
+without the genesis epoch record, which the service already holds, so it reveals nothing new. The
+vector `genesis_snapshot_id` (C.14) pins one input and its 16 bytes. A resume sends the
 **saved container** of that snapshot (C.4 "Saved sealed snapshot") exactly as it was sealed, and
 reads nothing from the vault: if the vault changed in between, re-exporting would build a different
 snapshot under an id the service may already hold. Only when nothing usable is saved does the client
@@ -2727,6 +2734,7 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: artifact_id_epoch1=d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
 <!-- sync-vector: artifact_id_epoch2=b8532c2b8f48fc07410d0fcaab93293882b32a0dc4cbb6d9263ddd4d5b708273 -->
 <!-- sync-vector: artifact_id_readdress_epoch2=684c15bc0b06fbaa3d36a0ee22f46e32c230390ab1b98f934c004016d0dba999 -->
+<!-- sync-vector: genesis_snapshot_id=2485cd189d53493584d44603bc2083d4 -->
 <!-- sync-vector: artifact_manifest_commitment=e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
 <!-- sync-vector: write_set_hash_sample=5e2ef15d19742bcf1f39b0071f115a9c5b1f427f11eb3eb3468cf08bbdfe3f11 -->
 <!-- sync-vector: artifact_object_key=57441986f4b6610011f5efa0aa280eb3dd5f415d6275d4e823e03048851944e1 -->
