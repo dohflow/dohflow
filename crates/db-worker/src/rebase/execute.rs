@@ -363,109 +363,116 @@ impl DbWorker {
     /// [`RebaseError::Db`].
     pub fn read_local_commands(&self) -> Result<Vec<LocalCommand>, RebaseError> {
         let guard = self.lock();
-        let conn = &guard.conn;
-        let mut stmt = conn.prepare(
-            "SELECT l.op_seq, l.command_id, l.correlation_id, l.causation_id, l.actor_type,
+        read_local_commands_on(&guard.conn)
+    }
+}
+
+/// [`DbWorker::read_local_commands`] on a connection the caller already holds, so the preservation
+/// capture reads the plan in the same critical section as the class-3 rows.
+pub(super) fn read_local_commands_on(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<LocalCommand>, RebaseError> {
+    let mut stmt = conn.prepare(
+        "SELECT l.op_seq, l.command_id, l.correlation_id, l.causation_id, l.actor_type,
                     l.actor_id, l.idempotency_key, l.payload, l.payload_schema_version,
                     l.write_set_hash, o.write_set_keys, o.state, o.sealed_container,
                     o.bound_seq, o.result_ref
                FROM sync_outbox o JOIN operation_log l ON l.command_id = o.command_id
               ORDER BY l.op_seq",
-        )?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Uuid>(1)?,
-                    r.get::<_, Uuid>(2)?,
-                    r.get::<_, Option<Uuid>>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                    r.get::<_, Option<Vec<u8>>>(7)?,
-                    r.get::<_, Option<u32>>(8)?,
-                    r.get::<_, Option<Vec<u8>>>(9)?,
-                    r.get::<_, Vec<u8>>(10)?,
-                    r.get::<_, String>(11)?,
-                    r.get::<_, Option<Vec<u8>>>(12)?,
-                    r.get::<_, Option<i64>>(13)?,
-                    r.get::<_, Option<Vec<u8>>>(14)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (
-            op_seq,
-            command_id,
-            correlation_id,
-            causation_id,
-            actor,
-            actor_id,
-            key,
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Uuid>(1)?,
+                r.get::<_, Uuid>(2)?,
+                r.get::<_, Option<Uuid>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, Option<Vec<u8>>>(7)?,
+                r.get::<_, Option<u32>>(8)?,
+                r.get::<_, Option<Vec<u8>>>(9)?,
+                r.get::<_, Vec<u8>>(10)?,
+                r.get::<_, String>(11)?,
+                r.get::<_, Option<Vec<u8>>>(12)?,
+                r.get::<_, Option<i64>>(13)?,
+                r.get::<_, Option<Vec<u8>>>(14)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (
+        op_seq,
+        command_id,
+        correlation_id,
+        causation_id,
+        actor,
+        actor_id,
+        key,
+        payload,
+        version,
+        hash,
+        keys,
+        state,
+        sealed,
+        bound_seq,
+        result_ref,
+    ) in rows
+    {
+        let unreadable = || RebaseError::UnreadableLocalCommand { command_id };
+        let issued_at = outbox_issued_at(conn, &command_id).map_err(|error| match error {
+            OutboxIssuedAtError::Db(error) => RebaseError::Db(error),
+            OutboxIssuedAtError::Missing { command_id }
+            | OutboxIssuedAtError::NotInOutbox { command_id } => {
+                RebaseError::MissingIssuedAt { command_id }
+            }
+        })?;
+        let (payload, version, hash) = match (payload, version, hash) {
+            (Some(payload), Some(version), Some(hash)) => (payload, version, hash),
+            _ => return Err(unreadable()),
+        };
+        let cmd = decode_payload(version, &payload).map_err(|_| unreadable())?;
+        let actor_type = match actor.as_str() {
+            "user" => ActorType::User,
+            "system" => ActorType::System,
+            "importer" => ActorType::Importer,
+            "agent" => ActorType::Agent,
+            _ => return Err(unreadable()),
+        };
+        let entry = match (state.as_str(), sealed, bound_seq) {
+            ("Pending", None, None) => OutboxEntryState::Pending,
+            ("Approved", Some(sealed), None) => OutboxEntryState::Approved { sealed },
+            ("Bound", Some(sealed), Some(seq)) => OutboxEntryState::Bound {
+                sealed,
+                seq: u64::try_from(seq).map_err(|_| unreadable())?,
+                result_ref,
+            },
+            _ => return Err(unreadable()),
+        };
+        out.push(LocalCommand {
+            entry,
+            command: OutboxCommand {
+                command_id,
+                correlation_id,
+                causation_id,
+                write_set_keys: decode_row_keys(&keys).ok_or_else(unreadable)?,
+            },
+            meta: CommandMeta {
+                command_id,
+                correlation_id,
+                causation_id,
+                actor_type,
+                actor_id,
+                idempotency_key: key,
+                issued_at,
+            },
+            cmd,
+            old_op_seq: op_seq,
             payload,
-            version,
-            hash,
-            keys,
-            state,
-            sealed,
-            bound_seq,
-            result_ref,
-        ) in rows
-        {
-            let unreadable = || RebaseError::UnreadableLocalCommand { command_id };
-            let issued_at = outbox_issued_at(conn, &command_id).map_err(|error| match error {
-                OutboxIssuedAtError::Db(error) => RebaseError::Db(error),
-                OutboxIssuedAtError::Missing { command_id }
-                | OutboxIssuedAtError::NotInOutbox { command_id } => {
-                    RebaseError::MissingIssuedAt { command_id }
-                }
-            })?;
-            let (payload, version, hash) = match (payload, version, hash) {
-                (Some(payload), Some(version), Some(hash)) => (payload, version, hash),
-                _ => return Err(unreadable()),
-            };
-            let cmd = decode_payload(version, &payload).map_err(|_| unreadable())?;
-            let actor_type = match actor.as_str() {
-                "user" => ActorType::User,
-                "system" => ActorType::System,
-                "importer" => ActorType::Importer,
-                "agent" => ActorType::Agent,
-                _ => return Err(unreadable()),
-            };
-            let entry = match (state.as_str(), sealed, bound_seq) {
-                ("Pending", None, None) => OutboxEntryState::Pending,
-                ("Approved", Some(sealed), None) => OutboxEntryState::Approved { sealed },
-                ("Bound", Some(sealed), Some(seq)) => OutboxEntryState::Bound {
-                    sealed,
-                    seq: u64::try_from(seq).map_err(|_| unreadable())?,
-                    result_ref,
-                },
-                _ => return Err(unreadable()),
-            };
-            out.push(LocalCommand {
-                entry,
-                command: OutboxCommand {
-                    command_id,
-                    correlation_id,
-                    causation_id,
-                    write_set_keys: decode_row_keys(&keys).ok_or_else(unreadable)?,
-                },
-                meta: CommandMeta {
-                    command_id,
-                    correlation_id,
-                    causation_id,
-                    actor_type,
-                    actor_id,
-                    idempotency_key: key,
-                    issued_at,
-                },
-                cmd,
-                old_op_seq: op_seq,
-                payload,
-                payload_version: version,
-                write_set_hash: hash.try_into().map_err(|_| unreadable())?,
-            });
-        }
-        Ok(out)
+            payload_version: version,
+            write_set_hash: hash.try_into().map_err(|_| unreadable())?,
+        });
     }
+    Ok(out)
 }

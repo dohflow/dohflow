@@ -32,7 +32,10 @@
 //! **Rolling back reaches the base and no further.** [`DbWorker::rollback_to`] accepts only the
 //! recorded `base_seq`; any other target is a typed error, never a partial rollback.
 
+mod closure;
+mod effects;
 mod execute;
+mod overlay;
 mod plan;
 mod reconcile;
 
@@ -191,6 +194,29 @@ pub enum RebaseError {
         /// The command.
         command_id: Uuid,
     },
+    /// [`Scratch::overlay_class3`] before [`Scratch::rebase_local`]: the overlay lands on the
+    /// rebuilt vault, because the replay rewrites the rows it withholds.
+    #[error("the class-3 overlay needs the local commands rebased first")]
+    OverlayBeforeReplay,
+    /// The class-3 overlay was already carried onto this scratch vault.
+    #[error("the class-3 overlay was already carried onto this scratch vault")]
+    AlreadyOverlaid,
+    /// The device-local state does not fit the rebuilt vault: the live vault is untouched and the
+    /// scratch vault is kept as the evidence (`RebaseBlockedLocalState`).
+    #[error("{}", .0.describe())]
+    BlockedLocalState(Box<RebaseBlockedLocalState>),
+    /// [`Scratch::apply_pulled_class3_effects`] before [`Scratch::overlay_class3`]: the effects
+    /// are run on the overlaid vault, because the overlay restores the rows they act on.
+    #[error("the pulled class-3 effects need the class-3 overlay carried first")]
+    EffectsBeforeOverlay,
+    /// The pulled class-3 effects were already run on this scratch vault.
+    #[error("the pulled class-3 effects were already run on this scratch vault")]
+    EffectsAlreadyApplied,
+    /// A class-1b reference of the rebuilt vault names an object that neither the vault nor the
+    /// retained closure or confirmed pin holds. The live vault is untouched and the scratch vault is
+    /// kept as the evidence; the way out is a pull-first re-bootstrap.
+    #[error("{}", .0.describe())]
+    ArtifactRebootstrapRequired(Box<ArtifactRebootstrapRequired>),
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -253,7 +279,19 @@ pub struct PulledEnvelope<'a> {
     pub checked: CheckedEnvelope<'a>,
 }
 
+pub use closure::{
+    ArtifactRebootstrapRequired, ClassOneBObject, ClosureReport, ClosureView, MissingObjects,
+    NoRetainedClosure,
+};
+pub use effects::EffectsReport;
+#[cfg(test)]
+pub(crate) use effects::{effect_of, Class3Effect, CLASS3_APPLY_SITES};
 pub use execute::{Executed, LocalCommand, OutboxEntryState, Replayed};
+#[cfg(test)]
+pub(crate) use overlay::class_three_tables_handled;
+pub use overlay::{
+    BlockCause, Offending, OverlayReport, OverlayTable, Preservation, RebaseBlockedLocalState,
+};
 pub use plan::{
     auto_iff, plan, Disposition, OutboxCommand, Plan, PlannedCommand, QueueCause, QueueReason,
 };
@@ -283,6 +321,16 @@ pub struct Scratch<'a> {
     cleared: BTreeSet<Uuid>,
     /// Whether the local commands were already rebased onto this scratch vault.
     rebased: bool,
+    /// The keys of the class-3 rows the base image itself carries: the only rows the overlay drops.
+    inherited: overlay::Inherited,
+    /// The ids of the source batches and records the base image holds.
+    base_sources: BTreeSet<Vec<u8>>,
+    /// Whether the class-3 overlay was carried onto this scratch vault.
+    overlaid: bool,
+    /// The commands the scratch vault applied from the server's tail, in seq order.
+    pulled_commands: Vec<effects::PulledCommand>,
+    /// Whether the pulled commands' class-3 effects were run.
+    effects_applied: bool,
 }
 
 impl std::fmt::Debug for Scratch<'_> {
@@ -337,6 +385,22 @@ impl DbWorker {
                 return Err(error.into());
             }
         };
+        let inherited = match overlay::inherited_keys(&worker) {
+            Ok(inherited) => inherited,
+            Err(error) => {
+                drop(worker);
+                let _ = fs::remove_file(scratch_path);
+                return Err(error);
+            }
+        };
+        let base_sources = match overlay::base_source_ids(&worker) {
+            Ok(ids) => ids,
+            Err(error) => {
+                drop(worker);
+                let _ = fs::remove_file(scratch_path);
+                return Err(error);
+            }
+        };
         Ok(Scratch {
             live: self,
             worker,
@@ -347,6 +411,11 @@ impl DbWorker {
             pulled_rows: BTreeMap::new(),
             cleared: BTreeSet::new(),
             rebased: false,
+            inherited,
+            base_sources,
+            overlaid: false,
+            pulled_commands: Vec::new(),
+            effects_applied: false,
         })
     }
 
@@ -488,8 +557,13 @@ impl Scratch<'_> {
                 rebased_from: own.get(&command_id).copied(),
                 record_outbox: false,
             };
+            let applied = effects::PulledCommand {
+                meta: meta.clone(),
+                cmd: command.clone(),
+                own: own.contains_key(&command_id),
+            };
             match self.worker.dispatch_rebase_step(meta, &command, step) {
-                Ok(_) => {}
+                Ok(_) => self.pulled_commands.push(applied),
                 Err(RebaseError::Db(error)) if is_command_refusal(&error) => {
                     return Err(RebaseError::PulledEnvelopeRefused { seq, error });
                 }

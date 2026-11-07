@@ -122,6 +122,48 @@ pub const MAX_LINK_EXTERNAL_ID_BYTES: usize = 234;
 /// The audit event recorded when a device removes the token of a connection that was deleted.
 pub const CONNECTOR_SECRET_REMOVED_EVENT: &str = "connector.token_removed_connection_deleted";
 
+/// The scrub of [`DbWorker::scrub_tombstoned_connector_secrets`] inside the caller's transaction:
+/// for every tombstoned connection that still has a local row, scrub the secret, cursors and notice
+/// and record the token-removed audit event. Idempotent. Shared with the rebase's registry of pulled
+/// class-3 effects, which runs it on the scratch vault before the swap.
+pub(crate) fn scrub_tombstoned_in(tx: &rusqlite::Transaction<'_>) -> Result<u32, DbError> {
+    let ids: Vec<(Uuid, bool)> = {
+        // Every tombstoned connection that still has ANY local row, not only those with a
+        // secret: a stray cursor or notice left under a tombstone is cleaned too.
+        let mut stmt = tx.prepare(
+            "SELECT c.id,
+                    EXISTS (SELECT 1 FROM connector_connection_secrets s
+                             WHERE s.connection_id = c.id)
+               FROM connector_connections c
+              WHERE c.deleted_at IS NOT NULL
+                AND (EXISTS (SELECT 1 FROM connector_connection_secrets s
+                              WHERE s.connection_id = c.id)
+                  OR EXISTS (SELECT 1 FROM connector_link_cursors k
+                              WHERE k.connection_id = c.id)
+                  OR EXISTS (SELECT 1 FROM connector_attention a
+                              WHERE a.connection_id = c.id))
+              ORDER BY c.id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, Uuid>(0)?, r.get::<_, bool>(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let now = Utc::now().to_rfc3339();
+    for (id, had_secret) in &ids {
+        scrub_local_rows(tx, *id)?;
+        // The audit event records a removed TOKEN; a stray cursor or notice is cleaned
+        // without one. A system event, not a command: it gets its own ids.
+        if *had_secret {
+            let event = Uuid::now_v7();
+            tx.execute(
+                "INSERT INTO audit_events (id, event_type, command_id, correlation_id, created_at)
+                 VALUES (?1, ?2, ?3, ?3, ?4)",
+                params![Uuid::now_v7(), CONNECTOR_SECRET_REMOVED_EVENT, event, now],
+            )?;
+        }
+    }
+    Ok(u32::try_from(ids.len()).unwrap_or(u32::MAX))
+}
+
 /// Scrub and remove THIS device's rows for a connection: the credential is overwritten with an
 /// empty value before the row is deleted, then the cursors and the notice go. The class-1 identity
 /// and mapping are untouched.
@@ -370,40 +412,7 @@ impl DbWorker {
     pub fn scrub_tombstoned_connector_secrets(&self) -> Result<u32, DbError> {
         let guard = self.lock();
         let tx = guard.conn.unchecked_transaction()?;
-        let ids: Vec<(Uuid, bool)> = {
-            // Every tombstoned connection that still has ANY local row, not only those with a
-            // secret: a stray cursor or notice left under a tombstone is cleaned too.
-            let mut stmt = tx.prepare(
-                "SELECT c.id,
-                        EXISTS (SELECT 1 FROM connector_connection_secrets s
-                                 WHERE s.connection_id = c.id)
-                   FROM connector_connections c
-                  WHERE c.deleted_at IS NOT NULL
-                    AND (EXISTS (SELECT 1 FROM connector_connection_secrets s
-                                  WHERE s.connection_id = c.id)
-                      OR EXISTS (SELECT 1 FROM connector_link_cursors k
-                                  WHERE k.connection_id = c.id)
-                      OR EXISTS (SELECT 1 FROM connector_attention a
-                                  WHERE a.connection_id = c.id))
-                  ORDER BY c.id",
-            )?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, Uuid>(0)?, r.get::<_, bool>(1)?)))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        let now = Utc::now().to_rfc3339();
-        for (id, had_secret) in &ids {
-            scrub_local_rows(&tx, *id)?;
-            // The audit event records a removed TOKEN; a stray cursor or notice is cleaned
-            // without one. A system event, not a command: it gets its own ids.
-            if *had_secret {
-                let event = Uuid::now_v7();
-                tx.execute(
-                    "INSERT INTO audit_events (id, event_type, command_id, correlation_id, created_at)
-                     VALUES (?1, ?2, ?3, ?3, ?4)",
-                    params![Uuid::now_v7(), CONNECTOR_SECRET_REMOVED_EVENT, event, now],
-                )?;
-            }
-        }
+        let cleaned = scrub_tombstoned_in(&tx)?;
         tx.commit()?;
         // The pre-rebase copy of the vault (bxsbz.3) must not keep a token this sweep removed.
         // Every tombstoned connection is scrubbed, not only those that had local rows, so a scrub
@@ -417,7 +426,7 @@ impl DbWorker {
             rows.collect::<Result<_, _>>()?
         };
         self.scrub_pre_rebase_credentials(&tombstoned)?;
-        Ok(u32::try_from(ids.len()).unwrap_or(u32::MAX))
+        Ok(cleaned)
     }
 
     /// Upsert a discovered external account (`UpsertConnectorLink`). A re-discovery refreshes the
