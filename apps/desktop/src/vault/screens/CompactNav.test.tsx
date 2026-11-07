@@ -133,8 +133,8 @@ describe("the compact navigation (personal-cfo-i93n3.25 slice C)", () => {
       .getAllByRole("button")
       .filter((b) => b.getAttribute("aria-current") === "page");
     expect(current).toHaveLength(1);
-    expect(current[0]).toHaveAccessibleName("Cash Flow");
-    expect(current[0].querySelectorAll("svg").length).toBe(2); // its icon and the check mark
+    expect(current[0]!).toHaveAccessibleName("Cash Flow");
+    expect(current[0]!.querySelectorAll("svg").length).toBe(2); // its icon and the check mark
     const another = within(dialog).getByRole("button", { name: "Bills" });
     expect(another.querySelectorAll("svg").length).toBe(1);
   });
