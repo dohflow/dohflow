@@ -18,9 +18,13 @@ use platform_traits::CounterContext;
 use sync_core::membership::{verify_chain, Action, Reason, VerifiedState};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
+use vault_crypto::sync_artifact::{
+    first_artifact_id, open_artifact, readdress_container, seal_artifact, Fixity,
+};
 use vault_crypto::sync_counter::{CounterRegister, VerifiedStateGuard};
 use vault_crypto::sync_custody::SyncKeyCustody;
-use vault_crypto::sync_envelope::SealerIdentity;
+use vault_crypto::sync_envelope::{EpochKey, SealerIdentity};
+use vault_crypto::sync_keys::epoch_key_commitment;
 use vault_crypto::sync_records::{accept_records, create_genesis};
 use vault_crypto::sync_snapshot::{SavedSnapshotFiles, SnapshotFields, SnapshotSealer};
 
@@ -300,4 +304,50 @@ fn a_snapshot_seal_the_register_and_the_witness_log_no_key_and_no_payload() {
         "a key reached the log"
     );
     assert!(!log.contains(PAYLOAD), "the payload reached the log");
+}
+
+#[test]
+fn an_artifact_seal_open_and_readdress_log_no_key_and_no_blob() {
+    use sync_core::artifact::{ArtifactKind, TransportPlaintext, MAX_ARTIFACT_CONTAINER};
+    const BLOB: &str = "ARTIFACT-BLOB-MARKER-3c9e51d7";
+    let key_of = |epoch: u64, first: u8| {
+        let raw: [u8; 32] = std::array::from_fn(|i| first.wrapping_add(i as u8));
+        let secret = vault_crypto::SecretBytes::new(raw);
+        let commitment = epoch_key_commitment(&secret);
+        EpochKey::from_verified(VAULT, epoch, secret, &commitment).unwrap()
+    };
+    let known: Vec<[u8; 32]> = [0x00_u8, 0x40]
+        .iter()
+        .map(|first| std::array::from_fn(|i| first.wrapping_add(i as u8)))
+        .collect();
+    let log = captured(|| {
+        let (k1, k2) = (key_of(1, 0x00), key_of(2, 0x40));
+        let id = first_artifact_id(&k1, &[0x5a; 32]);
+        let plaintext = TransportPlaintext {
+            artifact_id: id,
+            kind: ArtifactKind::Attachment,
+            logical_metadata: br#"{"mime_type":"text/plain"}"#,
+            blob: BLOB.as_bytes(),
+        };
+        let sealed = seal_artifact(&k1, &plaintext, Fixity::First).unwrap();
+        let opened = open_artifact(&k1, &id, &sealed.container, MAX_ARTIFACT_CONTAINER).unwrap();
+        let moved = readdress_container(&k1, &k2, &id, &sealed.container, Fixity::First).unwrap();
+        tracing::info!(
+            sealed = ?sealed,
+            opened = ?opened,
+            plaintext = ?opened.plaintext(),
+            moved = ?moved,
+            "debug forms are redacted"
+        );
+    });
+    assert!(
+        log.contains("debug forms are redacted"),
+        "the capture works: {log:?}"
+    );
+    assert_eq!(
+        leaks(&log, &known),
+        Vec::<String>::new(),
+        "a key reached the log"
+    );
+    assert!(!log.contains(BLOB), "the blob reached the log");
 }

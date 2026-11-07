@@ -430,6 +430,18 @@ How to use it:
   collapsed and must come from real data.
 - Put the error, its complete remedy and the one relevant action in `persistent`. It renders once,
   outside the hidden body, and is never collapsed away. Keep exactly one active retry.
+  On the Settings page a card does this with `PersistentNotice` (`settings/PersistentSlot.tsx`): it
+  portals the card's error, remedy and recovery action into its `SettingsSection`'s slot while the
+  card's state and form stay mounted. While the error shows, that action is rendered only in the slot
+  (never also in the body), keeps its accessible name while busy, and hands focus over when it moves
+  (`useKeepFocusAcrossMove`). The hand-over never targets anything inside `[hidden]` or `[inert]`
+  content: when the section is collapsed and the card's own targets are hidden, focus goes to the
+  section's own heading trigger (reached through `SectionFocusContext`), without expanding the
+  section and without taking focus from a control the person moved to; an open section keeps the
+  card's own targets. The error and the slot's action are not cleared when a retry starts: they stay
+  until it settles, so the control in use does not move into the hidden body mid-retry. jsdom does not
+  enforce `inert`, so tests assert the chosen target (collapse, resolve, `activeElement` is the
+  heading).
 - The body stays mounted when collapsed (`hidden` and `inert`), so drafts survive; do not unmount
   it to collapse. Collapse never submits, resets or cancels work.
 - A component that owns a destructive confirmation calls `usePinDisclosures(active)` with `active`
@@ -447,7 +459,7 @@ How to use it:
 | Focus returns to the trigger **before** focused content is hidden; a hidden body leaves keyboard and accessibility navigation while ordinary drafts survive | In `Disclosure` (focus returns before the hide; the body is `hidden` and `inert` and stays mounted); not provided elsewhere |
 | Errors, complete remedies and the one relevant action stay **outside** the hidden body; exactly one active retry; collapse never submits, discards drafts or cancels work | In `Disclosure` (`persistent` slot), which `SettingsSection` forwards once as its own `persistent` prop; no Settings section supplies one yet, so a card's error inside a collapsed section is still hidden (which is why every Settings section starts open) |
 | Destructive confirmations that are open, armed or irreversibly busy pin every ancestor open (focusable `aria-disabled` triggers); explicit Cancel resets and returns focus without collapsing; a blocking key rotation makes the rest of the app inert and cannot be dismissed | The rotation card (`settings/RotateKeyCard.tsx`) and the other destructive cards now sit inside Settings sections (`personal-cfo-4d8.39.1`), but no card calls `usePinDisclosures` yet (slice `personal-cfo-4d8.39.3`), so collapsing a section can still hide an armed confirmation; that is a known intermediate limit, and it is why every Settings section starts open |
-| Summaries reflect real data and never claim healthy or verified while loading or failed | `Disclosure` has a `summary` slot; the Settings sections supply one only where the page already holds the data (Backups, Comfort band, Auto-categorize, Connections, About; Vaults has none until its list read has a failure state, `personal-cfo-4d8.39.2`), built in `settings/settingsSummaries.ts` and omitted otherwise. A summary is omitted while its read has no data yet and after a refresh failed, even when an earlier read left data in the cache (`isSuccess`, or the hook's error string, gates each one) |
+| Summaries reflect real data and never claim healthy or verified while loading or failed | `Disclosure` has a `summary` slot; the Settings sections supply one only where the page already holds the data (Backups, Comfort band, Auto-categorize, Connections, Vaults, About; the Vaults line also needs its list read to be current, so `useVault().vaultsError` omits it, `personal-cfo-4d8.39.2`), built in `settings/settingsSummaries.ts` and omitted otherwise. A summary is omitted while its read has no data yet and after a refresh failed, even when an earlier read left data in the cache (`isSuccess`, or the hook's error string, gates each one) |
 | Respect reduced motion; announce a state change once; errors persist | `Disclosure`: the chevron respects reduced motion and the body does not animate; the state change is the native `aria-expanded` (no extra live region); the `persistent` slot keeps errors. Per screen elsewhere |
 
 ## 8. Testing
