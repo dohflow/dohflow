@@ -147,6 +147,10 @@ describe("RestoreFromBackup", () => {
     expect(button).not.toHaveClass("compact:hyphens-auto");
     expect(button).not.toHaveClass("h-10");
     expect(button).not.toHaveClass("whitespace-nowrap");
+    // The button's own card is the container its narrow-card classes query: this component is also
+    // rendered outside the create-vault form (Unlock, Recovery, the vault picker).
+    expect(button.closest(".\\@container")).not.toBeNull();
+    expect(button.parentElement).toHaveClass("@container");
   });
 
   it("picks a backup file, takes its password, and restores", async () => {
