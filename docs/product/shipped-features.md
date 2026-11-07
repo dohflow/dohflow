@@ -189,7 +189,7 @@ Generated 2026-11-07 · 193 shipped features
 | `npoe` | Transfer transactions (one-off + recurring account-to-account) |
 | `pezm.1` | Ordinary vs extraordinary expense classifier (pezm sub-bead) |
 | `pxi.22` | Re-authentication notice: when a bank connection needs the user to sign in again at the provider (SimpleFIN con.auth/gen.auth/expired; the LunchFlow equivalent), show an unmissable in-app notice outside Settings that names the bank, says what to do, links to the provider, and clears on the next healthy refresh |
-| `r2pow` | CONN-5 LunchFlow adapter (user-token tier): crates/connectors/lunchflow-adapter — link by pasted API key, accounts with currency + stable ids, transactions with provider ids, balances, health, revoke; source_type token; threat-model TB3 egress row; registry entry enabled:false until the v0.3.0 release flips it (M) |
+| `r2pow` | CONN-5 LunchFlow bank connection (user-token tier): link by pasted API key; accounts with currency and stable ids, transactions with provider ids, balances, health and revoke; enabled in v0.4.0 |
 | `r7sb` | Mixed-role transfers + editable recurring transfers |
 | `s0iz` | Cash Flow: the uncertainty band stays legible in dark mode |
 | `sbm3` | App shell + main navigation |
