@@ -18,7 +18,7 @@
 
 use rusqlite::{params, OptionalExtension};
 use sync_core::artifact_closure::{LiveClosure, LogicalRef};
-use sync_core::source_batch::SourceBatch;
+use sync_core::source_batch::{BatchRow, RecordRow, RunRow, SourceBatch};
 use thiserror::Error;
 use vault_crypto::sync_artifact::OpenedArtifact;
 use vault_crypto::sync_artifact_flow as flow;
@@ -205,14 +205,22 @@ impl DbWorker {
     /// * A batch **in** `live` is never touched: equal rows are left, absent rows are written, and a
     ///   row that differs is [`MaterializeError::RowsDiffer`] (an invariant: stage 9(b) already
     ///   checked the delta against the live closure).
-    /// * A batch **not** in `live` is replaced: its rows and part mappings are removed and written
-    ///   again from the artifact, and so is a record of another batch that holds one of its record ids
-    ///   (also not live). Both kinds of replica end with the same class-1 state.
+    /// * A batch **not** in `live` is replaced, **by id and only where it differs**: a batch whose rows
+    ///   already equal the artifact's is not written at all, rows that stay are updated in place
+    ///   (their ids, which staging rows reference, never leave), and only a row the new batch no longer
+    ///   has is removed. A record id that a different not-live batch holds moves to this one. Both kinds
+    ///   of replica end with the same class-1 state.
     ///
-    /// A record that a replicated row names (a provenance link) is part of the live closure by
-    /// definition; replacing it would orphan that row, so it is [`MaterializeError::LiveReference`]
-    /// and nothing is written. Device-local staging rows (class 3) that name a replaced record are
-    /// left as they are: their commit finds no source record and fails with `ReferenceMissing`.
+    /// When the replacement changes, adds or drops any row of a batch for which this device holds
+    /// **staging** (an import still being reviewed: `staged_transactions`, `staged_balances`,
+    /// `staged_accounts`, `dedupe_decisions`), all of that batch's staging is removed in the same
+    /// transaction, because a half-import must not be committed, and a durable notice is written so
+    /// the user is told to run the import again. The returned [`DiscardedImport`]s say which, by
+    /// counts. An identical batch discards nothing, and the staging of any other batch is untouched.
+    ///
+    /// A record that a replicated row (a provenance link) names is part of the live closure by
+    /// definition; changing, dropping or moving it would orphan that row, so it is
+    /// [`MaterializeError::LiveReference`] and nothing is written.
     ///
     /// # Errors
     /// [`MaterializeError`]; on any error nothing is written.
@@ -222,25 +230,40 @@ impl DbWorker {
         parts: &[BatchPartRef],
         batch: &SourceBatch,
         live: &LiveClosure,
-    ) -> Result<(), MaterializeError> {
+    ) -> Result<Vec<DiscardedImport>, MaterializeError> {
         let mut guard = self.lock();
         if guard.state != WorkerState::Healthy {
             return Err(DbError::WorkerUnavailable(guard.state).into());
         }
         let tx = guard.conn.transaction()?;
         let b = &batch.batch;
+        let mut discarded = Vec::new();
         if live.get(&LogicalRef::Batch(b.id)).is_none() {
-            remove_replaced_rows(&tx, batch, live)?;
-            // The old parts' addresses no longer name this batch's artifacts.
-            tx.execute(
-                "DELETE FROM sync_artifacts WHERE kind = 2 AND logical_id = ?1 AND key_epoch = ?2",
-                params![
-                    b.id.as_slice(),
-                    i64::try_from(key_epoch).map_err(|_| MappingError::Corrupt)?
-                ],
-            )?;
+            discarded = replace_not_live(&tx, batch, live)?;
+            // The old parts' addresses no longer name this batch's artifacts; the ones that stay keep
+            // their receipts.
+            let keep: Vec<[u8; 32]> = parts.iter().map(|p| p.artifact_id).collect();
+            let epoch = i64::try_from(key_epoch).map_err(|_| MappingError::Corrupt)?;
+            let stale: Vec<Vec<u8>> = {
+                let mut stmt = tx.prepare(
+                    "SELECT sync_artifact_id FROM sync_artifacts
+                      WHERE kind = 2 AND logical_id = ?1 AND key_epoch = ?2",
+                )?;
+                let rows = stmt.query_map(params![b.id.as_slice(), epoch], |r| r.get(0))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            for id in stale
+                .into_iter()
+                .filter(|id| !keep.iter().any(|k| k.as_slice() == id))
+            {
+                tx.execute(
+                    "DELETE FROM sync_artifacts WHERE key_epoch = ?1 AND sync_artifact_id = ?2",
+                    params![epoch, id],
+                )?;
+            }
+        } else {
+            write_rows(&tx, batch)?;
         }
-        write_rows(&tx, batch)?;
         for part in parts {
             record(
                 &tx,
@@ -257,29 +280,261 @@ impl DbWorker {
                 None,
             )?;
         }
+        let now = chrono::Utc::now().to_rfc3339();
+        for import in &discarded {
+            tx.execute(
+                "INSERT INTO sync_notices (kind, batch_id, source_name, discarded_count, created_at)
+                 VALUES ('import_discarded', ?1, ?2, ?3, ?4)",
+                params![
+                    import.batch_id.as_slice(),
+                    import.source_name,
+                    i64::try_from(import.rows()).unwrap_or(i64::MAX),
+                    now
+                ],
+            )?;
+        }
         tx.commit()?;
-        Ok(())
+        // One line, after the commit, with counts only: the file name, merchants, amounts and ids
+        // stay out of logs (docs/security/logging-policy.md).
+        for import in &discarded {
+            tracing::info!(
+                staged_transactions = import.staged_transactions,
+                staged_balances = import.staged_balances,
+                staged_accounts = import.staged_accounts,
+                dedupe_decisions = import.dedupe_decisions,
+                "sync: an import in progress was discarded because a received batch replaced its rows"
+            );
+        }
+        Ok(discarded)
+    }
+
+    /// The notices Sync left for the user that they have not dismissed, oldest first.
+    ///
+    /// # Errors
+    /// [`DbError`].
+    pub fn sync_notices(&self) -> Result<Vec<SyncNotice>, DbError> {
+        let conn = self.read_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, batch_id, source_name, discarded_count, created_at
+               FROM sync_notices WHERE dismissed_at IS NULL ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SyncNotice {
+                id: r.get(0)?,
+                batch_id: r.get::<_, Vec<u8>>(1)?.try_into().unwrap_or([0; 16]),
+                source_name: r.get(2)?,
+                discarded_count: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Mark a notice as seen. Returns whether a pending notice with that id existed.
+    ///
+    /// # Errors
+    /// [`DbError`].
+    pub fn dismiss_sync_notice(&self, id: i64, now: &str) -> Result<bool, DbError> {
+        let guard = self.lock();
+        let changed = guard.conn.execute(
+            "UPDATE sync_notices SET dismissed_at = ?2 WHERE id = ?1 AND dismissed_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(changed == 1)
     }
 }
 
-/// Remove what materializing `batch` replaces, when `batch` is not live: the batch's own rows, and
-/// the record rows of other (not live) batches that hold one of its record ids.
-fn remove_replaced_rows(
+/// An import in progress on this device that a received batch replaced, by counts of what was
+/// removed. The file name is the user's own text: it is shown in the notice and never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DiscardedImport {
+    /// The batch whose staging was removed.
+    pub batch_id: [u8; 16],
+    /// The file name the user chose for the import, if the batch row had one.
+    pub source_name: Option<String>,
+    /// `staged_transactions` removed.
+    pub staged_transactions: usize,
+    /// `staged_balances` removed.
+    pub staged_balances: usize,
+    /// `staged_accounts` removed.
+    pub staged_accounts: usize,
+    /// `dedupe_decisions` removed.
+    pub dedupe_decisions: usize,
+}
+
+impl DiscardedImport {
+    /// How many staging rows were removed in all.
+    #[must_use]
+    pub const fn rows(&self) -> usize {
+        self.staged_transactions
+            + self.staged_balances
+            + self.staged_accounts
+            + self.dedupe_decisions
+    }
+}
+
+impl core::fmt::Debug for DiscardedImport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DiscardedImport")
+            .field("rows", &self.rows())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A notice for the user, as the app shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SyncNotice {
+    /// The notice's id, for dismissing it.
+    pub id: i64,
+    /// The batch the notice is about.
+    pub batch_id: [u8; 16],
+    /// The file name of the discarded import, if it had one.
+    pub source_name: Option<String>,
+    /// How many staging rows were discarded.
+    pub discarded_count: i64,
+    /// When it was written.
+    pub created_at: String,
+}
+
+impl core::fmt::Debug for SyncNotice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SyncNotice")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+fn load_batch(
+    tx: &rusqlite::Transaction<'_>,
+    id: &[u8; 16],
+) -> Result<Option<BatchRow>, MaterializeError> {
+    Ok(tx
+        .query_row(
+            "SELECT source_type, source_name, file_fingerprint, parser_version, summary_json,
+                    imported_at, created_at, connector_connection_id
+               FROM source_batches WHERE id = ?1",
+            params![id.as_slice()],
+            |r| {
+                Ok(BatchRow {
+                    id: *id,
+                    source_type: r.get(0)?,
+                    source_name: r.get(1)?,
+                    file_fingerprint: r.get(2)?,
+                    parser_version: r.get(3)?,
+                    summary_json: r.get(4)?,
+                    imported_at: r.get(5)?,
+                    created_at: r.get(6)?,
+                    connector_connection_id: r
+                        .get::<_, Option<Vec<u8>>>(7)?
+                        .map(|v| <[u8; 16]>::try_from(v).unwrap_or([0; 16])),
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn load_runs(
+    tx: &rusqlite::Transaction<'_>,
+    batch: &[u8; 16],
+) -> Result<Vec<RunRow>, MaterializeError> {
+    let mut stmt = tx.prepare(
+        "SELECT id, parser_name, parser_version, bytes_in, records_out, status, limit_hit,
+                started_at, finished_at
+           FROM parser_runs WHERE source_batch_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![batch.as_slice()], |r| {
+        Ok(RunRow {
+            id: r.get::<_, Vec<u8>>(0)?.try_into().unwrap_or([0; 16]),
+            source_batch_id: *batch,
+            parser_name: r.get(1)?,
+            parser_version: r.get(2)?,
+            bytes_in: r.get(3)?,
+            records_out: r.get(4)?,
+            status: r.get(5)?,
+            limit_hit: r.get(6)?,
+            started_at: r.get(7)?,
+            finished_at: r.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+fn load_records(
+    tx: &rusqlite::Transaction<'_>,
+    batch: &[u8; 16],
+) -> Result<Vec<RecordRow>, MaterializeError> {
+    let mut stmt = tx.prepare(
+        "SELECT id, external_id, source_hash, normalized_json, parse_confidence_bps, created_at
+           FROM source_records WHERE source_batch_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![batch.as_slice()], |r| {
+        Ok(RecordRow {
+            id: r.get::<_, Vec<u8>>(0)?.try_into().unwrap_or([0; 16]),
+            source_batch_id: *batch,
+            external_id: r.get(1)?,
+            source_hash: r.get(2)?,
+            normalized_json: r.get(3)?,
+            parse_confidence_bps: r.get(4)?,
+            created_at: r.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Remove all of a batch's staging (an import still being reviewed on this device), children first
+/// (`dedupe_decisions` references `staged_transactions` and the batch), and say what went. `None` if
+/// the device holds no staging for it.
+fn discard_staging(
+    tx: &rusqlite::Transaction<'_>,
+    batch: &[u8; 16],
+    source_name: Option<String>,
+) -> Result<Option<DiscardedImport>, MaterializeError> {
+    let by_record = "SELECT id FROM source_records WHERE source_batch_id = ?1";
+    let dedupe_decisions = tx.execute(
+        "DELETE FROM dedupe_decisions WHERE source_batch_id = ?1",
+        params![batch.as_slice()],
+    )?;
+    let staged_transactions = tx.execute(
+        &format!("DELETE FROM staged_transactions WHERE source_record_id IN ({by_record})"),
+        params![batch.as_slice()],
+    )?;
+    let staged_balances = tx.execute(
+        &format!("DELETE FROM staged_balances WHERE source_record_id IN ({by_record})"),
+        params![batch.as_slice()],
+    )?;
+    let staged_accounts = tx.execute(
+        "DELETE FROM staged_accounts WHERE source_batch_id = ?1",
+        params![batch.as_slice()],
+    )?;
+    let import = DiscardedImport {
+        batch_id: *batch,
+        source_name,
+        staged_transactions,
+        staged_balances,
+        staged_accounts,
+        dedupe_decisions,
+    };
+    Ok((import.rows() > 0).then_some(import))
+}
+
+/// Replace a batch that is not live, where it differs (see [`DbWorker::materialize_batch`]).
+fn replace_not_live(
     tx: &rusqlite::Transaction<'_>,
     batch: &SourceBatch,
     live: &LiveClosure,
-) -> Result<(), MaterializeError> {
+) -> Result<Vec<DiscardedImport>, MaterializeError> {
     let b = &batch.batch;
-    let mut removed: Vec<[u8; 16]> = {
-        let mut stmt = tx.prepare("SELECT id FROM source_records WHERE source_batch_id = ?1")?;
-        let rows = stmt.query_map(params![b.id.as_slice()], |r| r.get::<_, Vec<u8>>(0))?;
-        let mut ids = Vec::new();
-        for id in rows {
-            ids.push(<[u8; 16]>::try_from(id?).map_err(|_| MappingError::Corrupt)?);
-        }
-        ids
-    };
-    let mut colliding: Vec<[u8; 16]> = Vec::new();
+    let old_batch = load_batch(tx, &b.id)?;
+    let mut old_runs = load_runs(tx, &b.id)?;
+    let mut old_records = load_records(tx, &b.id)?;
+    let (mut new_runs, mut new_records) = (batch.runs.clone(), batch.records.clone());
+    old_runs.sort_by_key(|r| r.id);
+    old_records.sort_by_key(|r| r.id);
+    new_runs.sort_by_key(|r| r.id);
+    new_records.sort_by_key(|r| r.id);
+
+    // A record id that a *different* batch holds: that batch loses it. It must not be live.
+    let mut holders: Vec<([u8; 16], [u8; 16])> = Vec::new();
     for record in &batch.records {
         let holder: Option<Vec<u8>> = tx
             .query_row(
@@ -289,18 +544,37 @@ fn remove_replaced_rows(
             )
             .optional()?;
         let Some(holder) = holder else { continue };
+        let holder = <[u8; 16]>::try_from(holder).map_err(|_| MappingError::Corrupt)?;
         if holder == b.id {
             continue;
         }
-        let holder = <[u8; 16]>::try_from(holder).map_err(|_| MappingError::Corrupt)?;
         // A different live batch holding the id is a T2 violation that stage 9(b) rejects first.
         if live.get(&LogicalRef::Batch(holder)).is_some() {
             return Err(MaterializeError::RowsDiffer);
         }
-        colliding.push(record.id);
+        holders.push((holder, record.id));
     }
-    removed.extend(&colliding);
-    for id in &removed {
+
+    let identical = old_batch.as_ref() == Some(b)
+        && old_runs == new_runs
+        && old_records == new_records
+        && holders.is_empty();
+    if identical {
+        return Ok(Vec::new());
+    }
+
+    // Records this replacement changes, drops or moves: none may be named by a replicated row.
+    let mut touched: Vec<[u8; 16]> = old_records
+        .iter()
+        .filter(|old| {
+            new_records
+                .binary_search_by_key(&old.id, |n| n.id)
+                .map_or(true, |i| &new_records[i] != *old)
+        })
+        .map(|old| old.id)
+        .collect();
+    touched.extend(holders.iter().map(|(_, record)| *record));
+    for id in &touched {
         let named: Option<i64> = tx
             .query_row(
                 "SELECT 1 FROM source_provenance_links WHERE source_record_id = ?1 LIMIT 1",
@@ -312,25 +586,118 @@ fn remove_replaced_rows(
             return Err(MaterializeError::LiveReference);
         }
     }
+
+    // Staging of every batch whose rows change, before any row moves.
+    let mut discarded = Vec::new();
+    let mut losing: Vec<[u8; 16]> = holders.iter().map(|(holder, _)| *holder).collect();
+    losing.sort_unstable();
+    losing.dedup();
+    if let Some(old) = &old_batch {
+        if let Some(import) = discard_staging(tx, &b.id, old.source_name.clone())? {
+            discarded.push(import);
+        }
+    }
+    for holder in losing {
+        let name = load_batch(tx, &holder)?.and_then(|row| row.source_name);
+        if let Some(import) = discard_staging(tx, &holder, name)? {
+            discarded.push(import);
+        }
+    }
+
+    // The batch row, then its runs and records, in place by id. Staging rows referenced these ids,
+    // and none of them is deleted unless the new batch no longer has it.
     tx.execute(
-        "DELETE FROM parser_runs WHERE source_batch_id = ?1",
-        params![b.id.as_slice()],
+        "INSERT INTO source_batches
+             (id, source_type, source_name, file_fingerprint, parser_version, status,
+              staged_count, committed_count, skipped_count, summary_json, imported_at,
+              created_at, updated_at, connector_connection_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'committed', 0, 0, 0, ?6, ?7, ?8, ?8, ?9)
+         ON CONFLICT (id) DO UPDATE SET
+             source_type = excluded.source_type, source_name = excluded.source_name,
+             file_fingerprint = excluded.file_fingerprint, parser_version = excluded.parser_version,
+             status = 'committed', staged_count = 0, committed_count = 0, skipped_count = 0,
+             summary_json = excluded.summary_json, imported_at = excluded.imported_at,
+             created_at = excluded.created_at, updated_at = excluded.created_at,
+             connector_connection_id = excluded.connector_connection_id",
+        params![
+            b.id.as_slice(),
+            b.source_type,
+            b.source_name,
+            b.file_fingerprint,
+            b.parser_version,
+            b.summary_json,
+            b.imported_at,
+            b.created_at,
+            b.connector_connection_id.as_ref().map(<[u8; 16]>::as_slice),
+        ],
     )?;
-    tx.execute(
-        "DELETE FROM source_records WHERE source_batch_id = ?1",
-        params![b.id.as_slice()],
-    )?;
-    for id in &colliding {
+    for old in old_runs
+        .iter()
+        .filter(|old| new_runs.binary_search_by_key(&old.id, |n| n.id).is_err())
+    {
         tx.execute(
-            "DELETE FROM source_records WHERE id = ?1",
-            params![id.as_slice()],
+            "DELETE FROM parser_runs WHERE id = ?1",
+            params![old.id.as_slice()],
         )?;
     }
-    tx.execute(
-        "DELETE FROM source_batches WHERE id = ?1",
-        params![b.id.as_slice()],
-    )?;
-    Ok(())
+    for run in &new_runs {
+        tx.execute(
+            "INSERT INTO parser_runs
+                 (id, source_batch_id, parser_name, parser_version, bytes_in, records_out,
+                  status, limit_hit, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (id) DO UPDATE SET
+                 source_batch_id = excluded.source_batch_id, parser_name = excluded.parser_name,
+                 parser_version = excluded.parser_version, bytes_in = excluded.bytes_in,
+                 records_out = excluded.records_out, status = excluded.status,
+                 limit_hit = excluded.limit_hit, started_at = excluded.started_at,
+                 finished_at = excluded.finished_at",
+            params![
+                run.id.as_slice(),
+                run.source_batch_id.as_slice(),
+                run.parser_name,
+                run.parser_version,
+                run.bytes_in,
+                run.records_out,
+                run.status,
+                run.limit_hit,
+                run.started_at,
+                run.finished_at,
+            ],
+        )?;
+    }
+    for old in old_records
+        .iter()
+        .filter(|old| new_records.binary_search_by_key(&old.id, |n| n.id).is_err())
+    {
+        tx.execute(
+            "DELETE FROM source_records WHERE id = ?1",
+            params![old.id.as_slice()],
+        )?;
+    }
+    for rec in &new_records {
+        tx.execute(
+            "INSERT INTO source_records
+                 (id, source_batch_id, external_id, source_hash, normalized_json,
+                  parse_confidence_bps, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (id) DO UPDATE SET
+                 source_batch_id = excluded.source_batch_id, external_id = excluded.external_id,
+                 source_hash = excluded.source_hash, normalized_json = excluded.normalized_json,
+                 parse_confidence_bps = excluded.parse_confidence_bps,
+                 created_at = excluded.created_at",
+            params![
+                rec.id.as_slice(),
+                rec.source_batch_id.as_slice(),
+                rec.external_id,
+                rec.source_hash,
+                rec.normalized_json,
+                rec.parse_confidence_bps,
+                rec.created_at,
+            ],
+        )?;
+    }
+    Ok(discarded)
 }
 
 /// Write the rows of `batch`; a row already present must equal the one being written.

@@ -436,6 +436,8 @@ dependencies = [
  "sync-core",
  "tempfile",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "vault-crypto",
  "zeroize",

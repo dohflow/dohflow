@@ -28,6 +28,8 @@ job-runtime = { path = "../job-runtime" }
 # The ImporterPlugin output type (`ParsedBatch`) the ingestion pipeline bulk-stages
 # (personal-cfo-cmx). importer-core is a pure parsing-types crate (no DB), so no cycle.
 importer-core = { path = "../importers/importer-core" }
+# One redaction-safe line when Sync discards an import in progress (personal-cfo-0g528.2); counts only.
+tracing = { workspace = true }
 # Raw-key vault open: db-worker keys SQLCipher from the DEK that vault-crypto
 # unwraps (personal-cfo-vhv). vault-crypto is pure (no rusqlite), so no cycle.
 vault-crypto = { path = "../vault-crypto" }
@@ -66,3 +68,5 @@ sync-core = { path = "../sync-core" }
 uuid = { workspace = true }
 # The independent witness the register and verified-state tests run against (personal-cfo-1cltt.4).
 platform-mock = { path = "../platform-mock" }
+# Captures that line in the redaction test (personal-cfo-0g528.2).
+tracing-subscriber = { workspace = true }

@@ -24,7 +24,7 @@ and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
 <!-- vault-format: spec-version=38 -->
-<!-- vault-format: schema-version=69 -->
+<!-- vault-format: schema-version=70 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -295,7 +295,10 @@ synthetic no-app recovery test before any such public claim.
   A class-3 table holds the mapping from `sync_artifact_id_e` to the local identity with the hash this
   device verified, and, for a received attachment, the pre-apply staging of the receiver-local crypto
   fields, which the attach command's `apply` consumes and clears in its own transaction, so no
-  second long-lived copy of key material exists. The C.4 header vectors change and binding vectors are added **with the code that implements this**; the
+  second long-lived copy of key material exists. (6) **The device-local notice (B.2 `sync_notices`,
+  schema version 70, provisional like 69).** A class-3 table holds the notice that an import in
+  progress on this device was discarded because a received batch replaced its rows (C.9), so the user
+  is told and the import is run again. The C.4 header vectors change and binding vectors are added **with the code that implements this**; the
   engine moves to `dohflow-engine-3` (C.13). The service's check is `personal-cfo-v98vd` AC31. `envelope-version` stays `1`: this is a pre-release amendment of the header and the
   plaintext, and no object of the old shape exists in any release. The spec landed first; the code that implements it follows in the same PR stack (the header field and the closure and receive stages, the device-local mapping at schema version 69, and the engine pin).
 - `spec-version = 36` (personal-cfo-1cltt.4, part C) states how the genesis snapshot is named and
@@ -681,6 +684,7 @@ therefore requires reviewing this inventory.
 | `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |
 | `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, how far enabling got (`Persisted`, `Installed`, `Published`, or a terminal `VaultKnown` or `GenesisResumeLost`), and the `operation_log` high-water mark of the export. The records never change. |
+| `sync_notices` | 3 | exclude | exclude | Device-local notices that Sync discarded something the user was in the middle of. The only kind is `import_discarded`: a received batch replaced the rows of an import still being reviewed on this device, and the staged import for that batch (`staged_transactions`, `staged_balances`, `staged_accounts`, `dedupe_decisions`) was removed in the same transaction (C.9), so the user must run the import again. `source_name` is the file name the user chose, so the notice can name it; it is shown to the user and never logged. |
 | `sync_artifacts` | 3 | exclude | exclude | Device-local mapping from a class-1b artifact's service address in an epoch (`sync_artifact_id_e`) to the local identity that carries it, with the `ciphertext_sha256` this device verified when it published the artifact or fetched it (the only hash a producer binds; a cache for the no-refetch rule that never decides a verdict, C.9) and, for a producer, whether a durable receipt matched. For an attachment received from a peer, the `staged_*` columns hold the receiver-local crypto fields from materialization until the attach command's `apply` creates the class-4 `attachments` row from them; the same transaction sets them to `NULL`, so the `attachments` row is the only long-lived copy of the key material. While staged, a key rotation re-wraps and re-addresses them like an `attachments` row. A backup carries the database and every blob as they are, so a restore returns a staged row together with its blob; a staged row whose blob is missing is a cache miss, and the artifact is fetched again from the retained closure. The portable export and every Sync snapshot exclude the table. Their presence is tied to `kind` = attachment, all present or all absent. |
 <!-- inventory:end -->
 
@@ -2284,7 +2288,7 @@ the mapping with a recorded hash equal to the bound one counts as verified, and 
 residual of C.6's malicious-member class for artifacts. What it does not close: a member that holds
 `K_e` and can predict the blob an honest device will publish can squat that artifact's id with other
 bytes first, and so block that device's command. That is a member denial of service in C.6's residual
-class, with no data revealed and no replica corrupted; revoking the member (C.7) is the remedy. The same class holds a second case: a member that learns the random id of a batch a peer is still importing (an id that does not leave the peer's device before the batch's first commit) can publish a batch under it, which replaces the peer's uncommitted source rows, so the peer's import fails cleanly with `ReferenceMissing` at commit; nothing replicated is affected, and revoking the member is the remedy.
+class, with no data revealed and no replica corrupted; revoking the member (C.7) is the remedy. The same class holds a second case: a member that learns the random id of a batch a peer is still importing (an id that does not leave the peer's device before the batch's first commit) can publish a batch under it, which replaces the peer's uncommitted source rows and discards its staged import for that batch, so the import must be re-run and the user is told; nothing replicated is affected, and revoking the member is the remedy.
 
 **Plaintext (`SyncArtifactTransportV1`).** `label
 "dohflow/sync-artifact-transport/v1" ‖ digest sync_artifact_id ‖ u8

@@ -2479,6 +2479,34 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 70 (personal-cfo-0g528.2, S2c part 2; provisional, one above the artifact mapping's
+    // version, so it moves with it):
+    // * `sync_notices` is the durable, device-local notice that Sync discarded something the user
+    //   was in the middle of. Its only kind today is `import_discarded`: a received batch replaced
+    //   the rows of an import that was still being reviewed on this device, and the staged
+    //   import for that batch was removed in the same transaction (C.9), so the user must run the
+    //   import again. `source_name` is the file name the user chose, so the notice can name it; it
+    //   is shown to the user and never logged. Class 3: never replicated, exported or snapshotted.
+    Migration {
+        version: 70,
+        name: "sync_notices",
+        up: "CREATE TABLE sync_notices (
+                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                 kind            TEXT NOT NULL CHECK (kind IN ('import_discarded')),
+                 batch_id        BLOB NOT NULL CHECK (length(batch_id) = 16),
+                 source_name     TEXT,
+                 discarded_count INTEGER NOT NULL CHECK (discarded_count >= 0),
+                 created_at      TEXT NOT NULL,
+                 dismissed_at    TEXT
+             );
+             CREATE INDEX idx_sync_notices_pending ON sync_notices (dismissed_at, id);",
+        down: Some(
+            "DROP INDEX idx_sync_notices_pending;
+             DROP TABLE sync_notices;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -3913,8 +3941,8 @@ mod tests {
             ]
         );
 
-        // 69 (`sync_artifacts`) sits above 68: stepping to 67 reverts both.
-        assert_eq!(migrate_down(&mut conn, 67).unwrap(), 2);
+        // 69 and 70 (`sync_artifacts`, `sync_notices`) sit above 68: stepping to 67 reverts all three.
+        assert_eq!(migrate_down(&mut conn, 67).unwrap(), 3);
         assert!(tables(&conn).is_empty(), "down drops all three");
 
         apply(&mut conn, MIGRATIONS).unwrap();
@@ -3951,7 +3979,8 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 1);
+        // 70 (`sync_notices`) sits above 69: stepping to 68 reverts both.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 2);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4055,6 +4084,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cleared, 1);
+    }
+
+    /// 70 adds the device-local notice table; down drops it with its index, and up creates it
+    /// again empty. Its CHECKs refuse an unknown kind, a short batch id and a negative count.
+    #[test]
+    fn v70_down_drops_the_notice_table_and_up_creates_it_empty() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let insert = |kind: &str, batch_len: usize, count: i64| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO sync_notices (kind, batch_id, source_name, discarded_count, created_at)
+                     VALUES ('{kind}', zeroblob({batch_len}), 'statement.csv', {count}, 't')"
+                ),
+                [],
+            )
+        };
+        assert!(insert("import_discarded", 16, 3).is_ok());
+        assert!(insert("import_discarded", 16, 0).is_ok());
+        assert!(insert("something_else", 16, 3).is_err());
+        assert!(insert("import_discarded", 15, 3).is_err());
+        assert!(insert("import_discarded", 16, -1).is_err());
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 1);
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_notices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     fn hex_upper(bytes: &[u8]) -> String {

@@ -296,7 +296,7 @@ fn batch() -> SourceBatch {
         batch: BatchRow {
             id,
             source_type: "csv".to_owned(),
-            source_name: Some("statement.csv".to_owned()),
+            source_name: Some("private-statement-march.csv".to_owned()),
             file_fingerprint: Some("fp".to_owned()),
             parser_version: Some("1".to_owned()),
             summary_json: Some("{}".to_owned()),
@@ -970,4 +970,415 @@ fn the_sweep_also_stands_down_while_a_rebase_is_in_progress() {
     assert!(db_worker::base_image::swap_or_rebase_in_progress(
         &vault.dir.path().join("vault.db")
     ));
+}
+
+// ---- staging under a batch that is replaced (foreign keys are on) -----------------------------------
+
+/// Put an import in progress under `batch`: a staged transaction and balance per record, a staged
+/// account, and a dedupe decision that references both the batch and a staged transaction. The
+/// merchant, description and amount are sentinels the log must never show.
+fn stage_import(vault: &Vault, batch: [u8; 16], records: &[[u8; 16]]) {
+    let conn = vault.worker.read_connection().unwrap();
+    for (n, record) in records.iter().enumerate() {
+        let tag = batch[0].wrapping_add(n as u8);
+        conn.execute(
+            "INSERT INTO staged_transactions
+                 (id, source_record_id, posted_at, amount_minor, currency, normalized_merchant,
+                  description, txn_fingerprint, created_at)
+             VALUES (?1, ?2, '2026-11-01', 987654, 'USD', 'SENTINEL MERCHANT',
+                     'SENTINEL DESCRIPTION', ?3, 't')",
+            rusqlite::params![
+                [tag, 1_u8].repeat(8),
+                record.as_slice(),
+                format!("fp-{tag}")
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO staged_balances
+                 (id, source_record_id, observed_at, balance_minor, currency, created_at)
+             VALUES (?1, ?2, '2026-11-01', 555444, 'USD', 't')",
+            rusqlite::params![[tag, 2_u8].repeat(8), record.as_slice()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO dedupe_decisions
+                 (id, source_batch_id, layer, staged_transaction_id, decision, reason, decided_at)
+             VALUES (?1, ?2, 'transaction', ?3, 'flagged', 'r', 't')",
+            rusqlite::params![
+                [tag, 3_u8].repeat(8),
+                batch.as_slice(),
+                [tag, 1_u8].repeat(8)
+            ],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO staged_accounts (id, source_batch_id, external_name, created_at)
+         VALUES (?1, ?2, 'SENTINEL ACCOUNT', 't')",
+        rusqlite::params![[batch[0], 4_u8].repeat(8), batch.as_slice()],
+    )
+    .unwrap();
+}
+
+/// The staging rows (class 3 and the class-4 decisions) that belong to `batch`.
+fn staging_of(vault: &Vault, batch: [u8; 16]) -> [i64; 4] {
+    let conn = vault.worker.read_connection().unwrap();
+    let count = |sql: &str| -> i64 {
+        conn.query_row(sql, [batch.as_slice()], |r| r.get(0))
+            .unwrap()
+    };
+    [
+        count(
+            "SELECT COUNT(*) FROM staged_transactions WHERE source_record_id IN
+                 (SELECT id FROM source_records WHERE source_batch_id = ?1)",
+        ),
+        count(
+            "SELECT COUNT(*) FROM staged_balances WHERE source_record_id IN
+                 (SELECT id FROM source_records WHERE source_batch_id = ?1)",
+        ),
+        count("SELECT COUNT(*) FROM staged_accounts WHERE source_batch_id = ?1"),
+        count("SELECT COUNT(*) FROM dedupe_decisions WHERE source_batch_id = ?1"),
+    ]
+}
+
+fn foreign_key_violations(vault: &Vault) -> usize {
+    let conn = vault.worker.read_connection().unwrap();
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
+    stmt.query_map([], |_| Ok(())).unwrap().count()
+}
+
+fn everything(vault: &Vault) -> Vec<(String, Vec<String>)> {
+    let conn = vault.worker.read_connection().unwrap();
+    let mut tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    tables.sort();
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
+            let columns = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |r| {
+                    Ok((0..columns)
+                        .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                        .collect::<Vec<_>>()
+                        .join("|"))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            rows.sort();
+            (table, rows)
+        })
+        .collect()
+}
+
+#[test]
+fn an_identical_re_reference_with_staging_present_changes_nothing() {
+    let vault = Vault::new();
+    let none = LiveClosure::new();
+    vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    stage_import(&vault, [0xb1; 16], &[[1; 16], [2; 16]]);
+    let before = everything(&vault);
+    assert_eq!(staging_of(&vault, [0xb1; 16]), [2, 2, 1, 2]);
+
+    // The same envelope delivered again, or an honest producer re-referencing the batch.
+    let discarded = vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    assert!(discarded.is_empty());
+    assert_eq!(
+        everything(&vault),
+        before,
+        "not one row of any table changed"
+    );
+    assert!(vault.worker.sync_notices().unwrap().is_empty());
+    assert_eq!(foreign_key_violations(&vault), 0);
+}
+
+#[test]
+fn a_changed_or_dropped_row_discards_that_batchs_staging_and_only_that_batchs() {
+    for variant in ["changed", "dropped"] {
+        let vault = Vault::new();
+        let none = LiveClosure::new();
+        vault
+            .worker
+            .materialize_batch(1, &parts(), &batch(), &none)
+            .unwrap();
+        // A second import in progress, for another batch, that must survive.
+        let mut other = batch();
+        other.batch.id = [0xb9; 16];
+        other.runs.clear();
+        other.records = vec![RecordRow {
+            id: [9; 16],
+            source_batch_id: [0xb9; 16],
+            ..batch().records[0].clone()
+        }];
+        vault
+            .worker
+            .materialize_batch(1, &[], &other, &none)
+            .unwrap();
+        stage_import(&vault, [0xb1; 16], &[[1; 16], [2; 16]]);
+        stage_import(&vault, [0xb9; 16], &[[9; 16]]);
+        let other_before = staging_of(&vault, [0xb9; 16]);
+
+        // The forged re-publication: record 1 has other content ("changed"), or record 2 is gone
+        // ("dropped"). Both are inconsistent with what the user was reviewing.
+        let mut forged = batch();
+        match variant {
+            "changed" => forged.records[0].normalized_json = "{\"n\":100}".to_owned(),
+            _ => {
+                forged.records.remove(1);
+            }
+        }
+        let discarded = vault
+            .worker
+            .materialize_batch(1, &parts_v2(), &forged, &none)
+            .unwrap();
+
+        assert_eq!(discarded.len(), 1, "{variant}");
+        assert_eq!(discarded[0].batch_id, [0xb1; 16]);
+        assert_eq!(
+            [
+                discarded[0].staged_transactions,
+                discarded[0].staged_balances,
+                discarded[0].staged_accounts,
+                discarded[0].dedupe_decisions
+            ],
+            [2, 2, 1, 2],
+            "{variant}: ALL of the batch's staging, so a half-import cannot be committed"
+        );
+        assert_eq!(staging_of(&vault, [0xb1; 16]), [0, 0, 0, 0], "{variant}");
+        assert_eq!(
+            staging_of(&vault, [0xb9; 16]),
+            other_before,
+            "{variant}: another batch is untouched"
+        );
+        assert_eq!(foreign_key_violations(&vault), 0, "{variant}");
+
+        // The rows are the forged batch's, in place.
+        let conn = vault.worker.read_connection().unwrap();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT normalized_json FROM source_records WHERE id = ?1",
+                [[1_u8; 16].as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            json.as_deref(),
+            Some(if variant == "changed" {
+                "{\"n\":100}"
+            } else {
+                "{\"n\":1}"
+            })
+        );
+        let record_two: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_records WHERE id = ?1",
+                [[2_u8; 16].as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(record_two, if variant == "changed" { 1 } else { 0 });
+
+        // The user is told, naming their file.
+        let notices = vault.worker.sync_notices().unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].batch_id, [0xb1; 16]);
+        assert_eq!(
+            notices[0].source_name.as_deref(),
+            Some("private-statement-march.csv")
+        );
+        assert_eq!(notices[0].discarded_count, 7);
+    }
+}
+
+#[test]
+fn a_batch_that_loses_a_record_to_another_loses_its_staging_too() {
+    let vault = Vault::new();
+    let none = LiveClosure::new();
+    vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    stage_import(&vault, [0xb1; 16], &[[1; 16], [2; 16]]);
+
+    // Another batch carries record 1 (a takeover). The batch that lost it is a cache and cannot be
+    // committed consistently any more.
+    let mut other = batch();
+    other.batch.id = [0xb2; 16];
+    other.batch.source_name = Some("the-other-file.csv".to_owned());
+    other.runs.clear();
+    other.records = vec![RecordRow {
+        source_batch_id: [0xb2; 16],
+        ..batch().records[0].clone()
+    }];
+    let discarded = vault
+        .worker
+        .materialize_batch(1, &[], &other, &none)
+        .unwrap();
+    assert_eq!(discarded.len(), 1);
+    assert_eq!(
+        discarded[0].batch_id, [0xb1; 16],
+        "the batch that lost the record"
+    );
+    assert_eq!(staging_of(&vault, [0xb1; 16]), [0, 0, 0, 0]);
+    assert_eq!(foreign_key_violations(&vault), 0);
+    let notices = vault.worker.sync_notices().unwrap();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notices[0].source_name.as_deref(),
+        Some("private-statement-march.csv")
+    );
+}
+
+#[test]
+fn the_notice_is_durable_device_local_and_can_be_dismissed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    let dek = generate_dek().unwrap();
+    {
+        let vault = Vault {
+            dir: tempfile::tempdir().unwrap(),
+            dek: duplicate(&dek),
+            worker: DbWorker::open_with_raw_key(&path, duplicate(&dek)).unwrap(),
+        };
+        let none = LiveClosure::new();
+        vault
+            .worker
+            .materialize_batch(1, &parts(), &batch(), &none)
+            .unwrap();
+        stage_import(&vault, [0xb1; 16], &[[1; 16]]);
+        let mut forged = batch();
+        forged.records[0].normalized_json = "{\"n\":100}".to_owned();
+        vault
+            .worker
+            .materialize_batch(1, &parts_v2(), &forged, &none)
+            .unwrap();
+        assert_eq!(vault.worker.sync_notices().unwrap().len(), 1);
+    }
+    // After a restart it is still there.
+    let worker = DbWorker::open_existing_with_raw_key(&path, duplicate(&dek)).unwrap();
+    let notices = worker.sync_notices().unwrap();
+    assert_eq!(notices.len(), 1);
+    // Its Debug shows no file name.
+    assert!(!format!("{:?}", notices[0]).contains("private-statement"));
+    assert!(worker
+        .dismiss_sync_notice(notices[0].id, "2026-11-08T00:00:00Z")
+        .unwrap());
+    assert!(
+        !worker
+            .dismiss_sync_notice(notices[0].id, "2026-11-08T00:00:01Z")
+            .unwrap(),
+        "once"
+    );
+    assert!(worker.sync_notices().unwrap().is_empty());
+}
+
+#[test]
+fn the_log_line_carries_counts_and_nothing_the_user_typed_or_imported() {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    let vault = Vault::new();
+    let none = LiveClosure::new();
+    vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    stage_import(&vault, [0xb1; 16], &[[1; 16], [2; 16]]);
+    let mut forged = batch();
+    forged.records[0].normalized_json = "{\"n\":100}".to_owned();
+
+    let buffer = Buffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buffer.clone())
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        vault
+            .worker
+            .materialize_batch(1, &parts_v2(), &forged, &none)
+            .unwrap();
+    });
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(logged.lines().count(), 1, "one line: {logged}");
+    for field in [
+        "staged_transactions=2",
+        "staged_balances=2",
+        "staged_accounts=1",
+        "dedupe_decisions=2",
+    ] {
+        assert!(logged.contains(field), "{field} in {logged}");
+    }
+    // Not the file name, merchant, description, amounts, or any id.
+    for forbidden in [
+        "private-statement",
+        "csv",
+        "SENTINEL",
+        "987654",
+        "555444",
+        "b1b1b1",
+        "177",
+    ] {
+        assert!(!logged.contains(forbidden), "{forbidden} in {logged}");
+    }
+}
+
+#[test]
+fn replicas_converge_when_a_forged_delta_hits_a_device_with_pending_staging() {
+    let none = LiveClosure::new();
+    let tailing = Vault::new();
+    tailing
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    stage_import(&tailing, [0xb1; 16], &[[1; 16], [2; 16]]);
+    let bootstrapped = Vault::new();
+    let state = |vault: &Vault| class_one_state(&vault.worker.read_connection().unwrap());
+    let (tailing_before, bootstrapped_before) = (state(&tailing), state(&bootstrapped));
+
+    for vault in [&tailing, &bootstrapped] {
+        vault
+            .worker
+            .materialize_batch(1, &parts_v2(), &batch_v2(), &none)
+            .unwrap();
+    }
+    assert_equal_class_one_state(
+        (&tailing_before, &state(&tailing)),
+        (&bootstrapped_before, &state(&bootstrapped)),
+    );
+    // Only the device that had an import in progress was told, and nothing is left dangling.
+    assert_eq!(tailing.worker.sync_notices().unwrap().len(), 1);
+    assert!(bootstrapped.worker.sync_notices().unwrap().is_empty());
+    assert_eq!(foreign_key_violations(&tailing), 0);
 }

@@ -518,6 +518,13 @@ primary_key = ["singleton"]
 columns = ["singleton:int", "vault_id:uuid", "membership_record:bytes", "epoch_record:bytes", "state:text", "export_high_water:int", "persisted_at:text", "updated_at:text"]
 
 [[table]]
+name = "sync_notices"
+class = "3"
+write_set = "none"
+primary_key = ["id"]
+columns = ["id:int", "kind:text", "batch_id:uuid", "source_name:text", "discarded_count:int", "created_at:text", "dismissed_at:text"]
+
+[[table]]
 name = "sync_outbox"
 class = "3"
 write_set = "none"

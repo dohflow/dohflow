@@ -135,7 +135,8 @@ fn an_attachment_and_a_batch_are_received_and_the_attachment_reads_back_after_th
         received,
         Received {
             attachments: 1,
-            batches: 1
+            batches: 1,
+            discarded_imports: 0,
         }
     );
     assert_eq!(vault.count("source_batches"), 1);

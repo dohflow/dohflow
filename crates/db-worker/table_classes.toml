@@ -381,6 +381,15 @@ rebase_preservation = "preserve every row byte for byte across the swap; a rebas
 reference_validation = "next_counter is at least 1; the row is checked against the witness before the context encrypts, and a row with no witness entry (or the reverse) is NonceStateLost"
 
 [[table]]
+table = "sync_notices"
+class = "3"
+owner_bead = "personal-cfo-0g528"
+note = "Device-local notices that Sync discarded something the user was in the middle of: today only import_discarded, where a received batch replaced the rows of an import still being reviewed on this device and its staged rows for that batch were removed in the same transaction. source_name is the file name the user chose, shown to the user and never logged. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap; a notice is shown until the user dismisses it"
+reference_validation = "none: batch_id names a batch that may no longer exist on this device"
+
+[[table]]
 table = "sync_saved_snapshot"
 class = "3"
 owner_bead = "personal-cfo-1cltt"
