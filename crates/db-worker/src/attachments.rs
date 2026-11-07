@@ -111,12 +111,49 @@ pub(crate) fn remove_blob(dir: &Path, storage_id: &str) -> Result<(), DbError> {
     }
 }
 
+/// The blob names a Sync image (the base image) holds in its `attachments` rows and staged mappings.
+/// The image is the rollback target of a rebase, so a blob only it names must survive a sweep.
+/// A table the image's schema predates is simply absent.
+pub(crate) fn names_in_image(
+    image: &Connection,
+) -> Result<std::collections::HashSet<String>, DbError> {
+    let has = |table: &str| -> Result<bool, DbError> {
+        Ok(image.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table],
+            |r| r.get(0),
+        )?)
+    };
+    let mut names = std::collections::HashSet::new();
+    let mut collect = |sql: &str| -> Result<(), DbError> {
+        let mut stmt = image.prepare(sql)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for name in rows {
+            names.insert(name?);
+        }
+        Ok(())
+    };
+    if has("attachments")? {
+        collect("SELECT storage_id FROM attachments")?;
+    }
+    if has("sync_artifacts")? {
+        collect(
+            "SELECT staged_storage_id FROM sync_artifacts WHERE staged_storage_id IS NOT NULL",
+        )?;
+    }
+    Ok(names)
+}
+
 /// Remove every file in `dir` that no `attachments` row and no staged mapping names (D7,
 /// `personal-cfo-0g528.2`): the ciphertext of a blob whose key was never committed, or a stale
 /// `.tmp`. The caller holds the writer lock, so no import or materialization is between writing its
 /// blob and recording its row. Returns how many files were removed.
-pub(crate) fn sweep_orphans(dir: &Path, conn: &Connection) -> Result<usize, DbError> {
-    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+pub(crate) fn sweep_orphans(
+    dir: &Path,
+    conn: &Connection,
+    also_named: &std::collections::HashSet<String>,
+) -> Result<usize, DbError> {
+    let mut referenced: std::collections::HashSet<String> = also_named.clone();
     {
         let mut stmt = conn.prepare(
             "SELECT storage_id FROM attachments

@@ -1382,3 +1382,52 @@ fn replicas_converge_when_a_forged_delta_hits_a_device_with_pending_staging() {
     assert!(bootstrapped.worker.sync_notices().unwrap().is_empty());
     assert_eq!(foreign_key_violations(&tailing), 0);
 }
+
+#[test]
+fn the_sweep_keeps_a_blob_that_only_the_base_image_names() {
+    let vault = Vault::new();
+    let bytes = b"an attachment the base image remembers";
+    let id = vault.worker.import_attachment(bytes, None, None).unwrap();
+    // The base image is taken while the attachment exists; it is the rollback target of a rebase.
+    vault.worker.initialize_base_image(0).unwrap();
+    assert!(vault.dir.path().join("sync").join("base.db").is_file());
+    // The attachment is then deleted here, so only the base image names its blob.
+    let conn = vault.worker.read_connection().unwrap();
+    conn.execute(
+        "DELETE FROM attachment_links WHERE attachment_id = ?1",
+        [id.as_uuid()],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM attachments WHERE id = ?1", [id.as_uuid()])
+        .unwrap();
+    let orphan = vault.blobs().join("4".repeat(64));
+    fs::write(&orphan, b"ciphertext whose key was never committed").unwrap();
+
+    assert_eq!(
+        vault.worker.sweep_orphan_blobs().unwrap(),
+        1,
+        "only the unnamed blob"
+    );
+    assert!(
+        vault.blob_path(bytes).is_file(),
+        "the base image's blob survives"
+    );
+    assert!(!orphan.exists());
+}
+
+#[test]
+fn the_sweep_removes_nothing_when_the_base_image_exists_and_cannot_be_read() {
+    let vault = Vault::new();
+    let sync = vault.dir.path().join("sync");
+    fs::create_dir_all(&sync).unwrap();
+    fs::write(sync.join("base.db"), b"this is not a database").unwrap();
+    fs::create_dir_all(vault.blobs()).unwrap();
+    let orphan = vault.blobs().join("5".repeat(64));
+    fs::write(&orphan, b"an orphan").unwrap();
+
+    assert!(
+        vault.worker.sweep_orphan_blobs().is_err(),
+        "it fails closed and says so"
+    );
+    assert!(orphan.is_file(), "and removes nothing");
+}

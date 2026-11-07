@@ -3286,8 +3286,9 @@ impl DbWorker {
     /// file and its row. It does **nothing** while a swap or a rebase is in progress
     /// ([`base_image::swap_or_rebase_in_progress`], the one shared predicate): the new-name blobs
     /// of an interrupted rotation, and any blob that only a rebase's scratch vault, the base image
-    /// or the pre-rebase copy names, are not named by the database. Returns how many files it
-    /// removed.
+    /// or the pre-rebase copy names, are not named by the database. It also keeps every blob that the
+    /// base image (`sync/base.db`, the rebase rollback target) names, read read-only, and removes
+    /// nothing if that image exists and cannot be read. Returns how many files it removed.
     ///
     /// # Errors
     /// [`DbError`] if the worker is unavailable or a file cannot be read or removed.
@@ -3300,7 +3301,19 @@ impl DbWorker {
         if base_image::swap_or_rebase_in_progress(&self.path) {
             return Ok(0);
         }
-        attachments::sweep_orphans(&dir, &guard.conn)
+        // The base image is the rollback target of a rebase (`bxsbz.7`): a blob that only it names
+        // (an attachment deleted here after the base was taken) must survive. If the image exists
+        // and cannot be read, nothing is removed: the sweep fails closed.
+        let base = base_image::base_image_path(&self.path);
+        let also_named = if base.exists() {
+            let image = self
+                .key
+                .open_image(&base, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            attachments::names_in_image(&image)?
+        } else {
+            std::collections::HashSet::new()
+        };
+        attachments::sweep_orphans(&dir, &guard.conn, &also_named)
     }
 
     /// Link an imported attachment to a domain entity (many-to-many), bumping its
