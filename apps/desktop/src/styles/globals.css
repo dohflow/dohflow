@@ -312,6 +312,12 @@
     min-height: 48px;
   }
 
+  /* A native select ignores `min-height` on iOS WebKit (the 44px rule above gives it an explicit height for
+     the same reason), so its 48px is an explicit height too. */
+  [data-comfortable-targets] select {
+    height: max(48px, calc(1lh + 20px));
+  }
+
   /* A checkbox or radio is a 16px native box, far under the floor, and padding does not grow it. On
      a touch screen it is drawn instead as a 44px hit region holding a 20px box: the box is the
      padding box inside a transparent 12px border (its rounded corner is the border radius minus
