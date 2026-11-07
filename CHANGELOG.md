@@ -7,7 +7,9 @@ record until the first tagged release.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-11-07
+## [0.4.1] - 2026-11-07
+
+Version 0.4.0 was tagged but never published; this release replaces it.
 
 ### Added
 
@@ -29,14 +31,6 @@ record until the first tagged release.
   whose currency is not known, is refused with the reason (`personal-cfo-049p6`), and
   mapping a connected account onto one that another connection already feeds asks
   what to do (`personal-cfo-6evt`).
-- **Unlock with Touch ID** (`personal-cfo-xuu`). After you have unlocked a vault with
-  your master password, **Settings → Touch ID** can turn Touch ID on for that vault
-  (it asks for your master password again to turn it on). Your master password
-  always works, and DohFlow asks for it after you restart your Mac, after three
-  Touch ID tries that fail or are cancelled, and every 30 days. Changing the vault
-  password, rotating the encryption key, or changing the fingerprints enrolled on your
-  Mac turns Touch ID off for that vault until you turn it on again. The key Touch ID
-  uses stays on that Mac and is never synced. It needs the signed release of DohFlow.
 - **Link a recurring bill to the loan it pays** (`personal-cfo-6wk.22`,
   `personal-cfo-6wk.20`, `personal-cfo-6wk.23`). A bill that pays a loan can be
   linked to it so the forecast counts the payment once instead of twice. A loan's
