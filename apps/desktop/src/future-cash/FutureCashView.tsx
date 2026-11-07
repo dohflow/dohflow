@@ -489,7 +489,7 @@ function LookbackPicker({
 }) {
   return (
     <div
-      className="inline-flex rounded-md border p-0.5"
+      className="inline-flex rounded-md border p-0.5 compact:flex compact:max-w-full compact:flex-wrap"
       role="group"
       aria-label="History lookback"
     >
@@ -522,7 +522,7 @@ function HorizonPicker({
 }) {
   return (
     <div
-      className="inline-flex rounded-md border p-0.5"
+      className="inline-flex rounded-md border p-0.5 compact:flex compact:max-w-full compact:flex-wrap"
       role="group"
       aria-label="Forecast horizon"
     >
@@ -563,7 +563,8 @@ function StatCard({
         </span>
         <span
           className={cn(
-            "text-2xl font-semibold tabular-nums",
+            // Money stays complete: at the largest text size it breaks inside the number rather than running off the card.
+            "text-2xl font-semibold tabular-nums compact:[overflow-wrap:anywhere]",
             negative && "text-loss",
           )}
         >

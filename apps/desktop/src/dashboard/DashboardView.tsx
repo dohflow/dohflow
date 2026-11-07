@@ -192,7 +192,7 @@ function StatCard({
         </span>
         <span
           className={cn(
-            "text-2xl font-semibold tabular-nums tracking-tight",
+            "text-2xl font-semibold tabular-nums tracking-tight compact:[overflow-wrap:anywhere]",
             negative && "text-loss",
           )}
         >

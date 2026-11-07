@@ -57,7 +57,8 @@ export function FutureCashEntries({ currency }: { currency: string }) {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+      {/* The title and Add entry wrap onto two rows when they do not fit (the largest text size on a phone). */}
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3 compact:flex-wrap compact:gap-2">
         <CardTitle className="text-sm">Your future entries</CardTitle>
         {!open && (
           <Button
@@ -101,7 +102,7 @@ export function FutureCashEntries({ currency }: { currency: string }) {
             {entries.map((entry) => (
               <li
                 key={entry.id}
-                className="flex items-center justify-between gap-4 border-t px-6 py-2.5 text-sm"
+                className="flex items-center justify-between gap-4 border-t px-6 py-2.5 text-sm compact:flex-wrap compact:gap-y-1"
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -118,7 +119,7 @@ export function FutureCashEntries({ currency }: { currency: string }) {
                       : formatIsoDate(entry.date)}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2 compact:flex-wrap">
                   <span
                     className={cn("tabular-nums", signedAmountClass(entry.amount))}
                   >
