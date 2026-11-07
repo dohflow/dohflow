@@ -7,6 +7,7 @@ import type {
   ForecastEventDto,
   MultiSeriesForecastDto,
 } from "@/bindings";
+import { COMPACT_QUERY } from "@/lib/compact";
 import { ProjectedActivityTable } from "./ProjectedActivityTable";
 
 // A bill row's expand panel renders the mark-paid control, which reads accounts + bills. Mock
@@ -409,5 +410,59 @@ describe("ProjectedActivityTable", () => {
     await vi.waitFor(() =>
       expect(mocks.deleteForecastAssumption).toHaveBeenCalledWith("assump-1"),
     );
+  });
+});
+
+describe("the projected activity table on a phone (personal-cfo-i93n3.27 slice F)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function stub(compact: boolean) {
+    vi.stubGlobal("matchMedia", ((query: string) => ({
+      matches: compact && query === COMPACT_QUERY,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia);
+  }
+
+  it("shows each activity as a card of labeled values with every balance column, and no table", () => {
+    stub(true);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    expect(screen.queryByRole("table")).toBeNull();
+    const list = screen.getByRole("list", { name: "Projected activity" });
+    const items = within(list).getAllByRole("listitem");
+    // TODAY first, then each activity.
+    expect(items[0]).toHaveTextContent("Today");
+    const acme = items.find((i) => /Acme Corp/.test(i.textContent ?? ""))!;
+    const labels = [...acme.querySelectorAll("dt")].map((t) => t.textContent);
+    expect(labels).toEqual(expect.arrayContaining(["Date", "Amount", "Spendable", "Net cash"]));
+    // Label before value, in column order: Date, Amount, then the balance columns.
+    expect(labels.indexOf("Date")).toBeLessThan(labels.indexOf("Amount"));
+    expect(labels.indexOf("Amount")).toBeLessThan(labels.indexOf("Spendable"));
+    expect(labels.indexOf("Spendable")).toBeLessThan(labels.indexOf("Net cash"));
+  });
+
+  it("keeps the row disclosure: the explanation opens under the card and the trigger reports expanded", () => {
+    stub(true);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    const trigger = screen.getAllByRole("button", { expanded: false }).find((b) => /Acme Corp/.test(b.textContent ?? ""))!;
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const card = trigger.closest("li")!;
+    expect(within(card).getByText(/Basis/)).toBeInTheDocument();
+  });
+
+  it("stacks its filter, type and accounts controls at full width on a phone", () => {
+    stub(true);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    const toolbar = screen.getByRole("searchbox").parentElement!.parentElement!;
+    expect(toolbar).toHaveClass("compact:flex-col", "compact:items-stretch", "compact:px-4");
+    expect(screen.getByRole("combobox", { name: "Filter by activity type" }).parentElement).toHaveClass("compact:w-full");
+  });
+
+  it("stays the horizontal table on a desktop window", () => {
+    stub(false);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    expect(screen.getByRole("table", { name: "Projected activity" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Projected activity" })).toBeNull();
   });
 });
