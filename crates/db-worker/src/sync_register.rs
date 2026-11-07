@@ -1,7 +1,7 @@
 //! The SQLite counter register (personal-cfo-1cltt.4; `vault-format.md` C.4 "Counter register and
 //! nonce state").
 //!
-//! Two class-3 tables (`sync_counter_register`, `sync_saved_snapshot`, migration 67) are the durable
+//! Two class-3 tables (`sync_counter_register`, `sync_saved_snapshot`, migration 68) are the durable
 //! home of the `next_counter` of every `(vault_id, key_epoch, fingerprint, object_type)` context and
 //! of the sealed snapshot saved for an exact-byte retransmission. [`SqliteRegisterStore`] is the one
 //! register table: it passes the `RegisterStore` conformance suite of `vault-crypto`, and the

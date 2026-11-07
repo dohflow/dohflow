@@ -24,7 +24,7 @@ and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
 <!-- vault-format: spec-version=34 -->
-<!-- vault-format: schema-version=67 -->
+<!-- vault-format: schema-version=68 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,7 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 34` (personal-cfo-1cltt.4, schema version 67) adds the SQLite home of the counter
+- `spec-version = 34` (personal-cfo-1cltt.4, schema version 68) adds the SQLite home of the counter
   register and of the genesis a device mints at sync-enable: the class-3 tables
   `sync_counter_register`, `sync_saved_snapshot` and `sync_genesis` (inventory rows, all excluded from
   both formats), and states the birth rules the register and the verified state already follow:
@@ -281,6 +281,15 @@ synthetic no-app recovery test before any such public claim.
   verified state is born (a birth mark in the witness before the first persist) and how each
   combination of persisted state and witness is judged. No wire, write-set, vector or
   `engine_version` change: the tables are device-local and outside every hash.
+- `spec-version = 33` (personal-cfo-bxsbz.4, schema version 67) adds the nullable device-local column
+  `sync_outbox.issued_at`: the command's original `issued_at`, in microseconds since the Unix epoch and
+  bounded as an envelope's is (C.6), written in the operation-log transaction while Sync is enabled.
+  A rebase re-applies an unpushed command under its complete original `CommandMeta`; the ids `apply`
+  derives and the `deleted_at` stamps it writes come from `issued_at`, and the envelope's
+  immutable-metadata commitment binds it, so a replay under any other value would fork from the
+  command's own envelope. A row with no recorded value (written before the column) is refused by
+  name. The column is excluded from both formats like the rest of the table. No wire layout,
+  write-set rule or vector changes, and no `engine_version` change.
 - `spec-version = 32` (personal-cfo-0g528.2, part S2b) settles how class-1b artifacts are addressed,
   grouped and referenced before any code depends on it. (1) C.3: an artifact's first id keeps its
   derivation and its vector, with `storage_id_raw` pinned as the 32 raw bytes of the local address; at a
@@ -618,7 +627,7 @@ therefore requires reviewing this inventory.
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |
 | `backup_history` | 3 | exclude | exclude | Device-local state. |
 | `sync_base` | 3 | exclude | exclude | Device-local state: whether Sync is enabled here, the server seq of the base image, the digest of `sync/base.db` and the base state. |
-| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys and sealed containers. A command's envelope is what travels, never this row. |
+| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys, original `issued_at` and sealed containers. A command's envelope is what travels, never this row. |
 | `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
 | `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |

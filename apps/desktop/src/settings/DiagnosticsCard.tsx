@@ -17,6 +17,10 @@ import {
 } from "@/components/ui/card";
 import { describeIpcError } from "@/vault/useVault";
 
+import { useAttemptCount, useReannounced } from "./attemptKey";
+import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
+
 /// Safe copy for every save result (personal-cfo-lyd). None of it echoes the
 /// path or any OS error text.
 const SAVE_MESSAGES: Record<Exclude<DiagnosticsSaveResult, "saved">, string> = {
@@ -40,8 +44,24 @@ export function DiagnosticsCard() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
-  const previewButton = useRef<HTMLButtonElement>(null);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [noteAttempt, nextNoteAttempt] = useAttemptCount();
+  const alertText = useReannounced(note?.kind === "alert" ? note.text : null, noteAttempt);
+  function failWith(text: string) {
+    setNote({ kind: "alert", text });
+    nextNoteAttempt();
+  }
   const previewRegion = useRef<HTMLPreElement>(null);
+  // Preview and Save each move between the body and the persistent slot (rendered once, wherever
+  // the error needs them), so each keeps focus across the move.
+  const previewFocus = useKeepFocusAcrossMove();
+  const previewButton = previewFocus.ref;
+  const saveFocus = useKeepFocusAcrossMove({
+    settled: !saving,
+    // The preview closed (saved, or expired): the Preview button is where the person goes next.
+    fallback: () => previewRegion.current ?? previewButton.current,
+  });
   // The pending snapshot, for discarding it when the card goes away (vault lock
   // and switch unmount Settings; the backend has already dropped it by then).
   const pending = useRef<number | null>(null);
@@ -58,14 +78,22 @@ export function DiagnosticsCard() {
     [],
   );
 
+  // This card moves focus itself when a preview opens or closes. It does so only while focus is
+  // still where the action left it (on the page, or on the Preview button that was pressed): a
+  // person who has since moved to another control, a later section say, keeps it. And never into a
+  // collapsed section's hidden body, where the hook's hand-over chooses the heading instead.
   useEffect(() => {
+    const active = document.activeElement;
+    const focusIsFree = !active || active === document.body || active === previewButton.current;
     if (preview) {
-      previewRegion.current?.focus();
+      const region = previewRegion.current;
+      if (focusIsFree && region && region.closest("[hidden],[inert]") === null) region.focus();
     } else if (returnFocus.current) {
       returnFocus.current = false;
-      previewButton.current?.focus();
+      const button = previewButton.current;
+      if (focusIsFree && button && button.closest("[hidden],[inert]") === null) button.focus();
     }
-  }, [preview]);
+  }, [preview, previewButton]);
 
   function closePreview(message?: Note) {
     if (pending.current !== null) void commands.diagnosticsDiscard(pending.current);
@@ -73,24 +101,28 @@ export function DiagnosticsCard() {
     returnFocus.current = true;
     setPreview(null);
     setNote(message ?? null);
+    if (message?.kind === "alert") nextNoteAttempt();
   }
 
   async function onPreview() {
-    setNote(null);
+    previewFocus.remember();
+    // An earlier error stays, with its Preview diagnostics, until this try settles.
     setLoading(true);
     const result = await commands.diagnosticsPreview();
     setLoading(false);
     if (result.status === "ok") {
       pending.current = result.data.snapshot_id;
+      setNote(null);
       setPreview(result.data);
     } else {
-      setNote({ kind: "alert", text: describeIpcError(result.error) });
+      failWith(describeIpcError(result.error));
     }
   }
 
   async function onSave() {
     if (!preview) return;
-    setNote(null);
+    saveFocus.remember();
+    // An earlier error stays, with its Save, until this try settles.
     const path = await save({
       title: "Save redacted diagnostics",
       defaultPath: preview.suggested_file_name,
@@ -115,11 +147,43 @@ export function DiagnosticsCard() {
       closePreview({ kind: "alert", text: SAVE_MESSAGES.preview_expired });
     } else {
       // The preview is still pending: the user can pick another destination.
-      setNote({ kind: "alert", text: SAVE_MESSAGES[result.data] });
+      failWith(SAVE_MESSAGES[result.data]);
     }
   }
 
   const empty = preview !== null && preview.records === 0;
+
+  // An error, its full message and its one recovery action stay in the section's persistent slot,
+  // open or closed; the action is rendered once, there while the error shows, else in the body.
+  // With the preview still pending (a save was refused) the action is Save, to pick another
+  // destination; with no preview (it failed, or it expired) it is Preview diagnostics.
+  const alert = note?.kind === "alert" ? note : null;
+  const previewInSlot = alert !== null && preview === null;
+  const saveInSlot = alert !== null && preview !== null;
+  const previewDiagnosticsButton = (
+    <Button
+      ref={previewButton}
+      size="sm"
+      variant="outline"
+      disabled={loading}
+      onClick={() => void onPreview()}
+    >
+      {loading && <Loader2 className="animate-spin" aria-hidden />}
+      Preview diagnostics
+    </Button>
+  );
+  const saveButton = (
+    <Button
+      ref={saveFocus.ref}
+      size="sm"
+      disabled={saving || empty}
+      aria-busy={saving}
+      onClick={() => void onSave()}
+    >
+      {saving ? <Loader2 className="animate-spin" aria-hidden /> : <FileDown aria-hidden />}
+      {saving ? "Saving…" : "Save…"}
+    </Button>
+  );
 
   return (
     <Card>
@@ -133,20 +197,7 @@ export function DiagnosticsCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {!preview && (
-          <div>
-            <Button
-              ref={previewButton}
-              size="sm"
-              variant="outline"
-              disabled={loading}
-              onClick={() => void onPreview()}
-            >
-              {loading && <Loader2 className="animate-spin" aria-hidden />}
-              Preview diagnostics
-            </Button>
-          </div>
-        )}
+        {!preview && !previewInSlot && <div>{previewDiagnosticsButton}</div>}
 
         {preview && (
           <div
@@ -177,19 +228,7 @@ export function DiagnosticsCard() {
               {preview.text}
             </pre>
             <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                disabled={saving || empty}
-                aria-busy={saving}
-                onClick={() => void onSave()}
-              >
-                {saving ? (
-                  <Loader2 className="animate-spin" aria-hidden />
-                ) : (
-                  <FileDown aria-hidden />
-                )}
-                {saving ? "Saving…" : "Save…"}
-              </Button>
+              {!saveInSlot && saveButton}
               <Button
                 size="sm"
                 variant="ghost"
@@ -202,13 +241,18 @@ export function DiagnosticsCard() {
           </div>
         )}
 
-        {note && (
-          <p
-            role={note.kind}
-            className={
-              note.kind === "alert" ? "text-xs text-loss" : "text-xs text-muted-foreground"
-            }
-          >
+        <PersistentNotice>
+          {alert && (
+            <div className="flex flex-col gap-2">
+              <p role="alert" className="text-xs text-loss">
+                {alertText}
+              </p>
+              <div>{previewInSlot ? previewDiagnosticsButton : saveButton}</div>
+            </div>
+          )}
+        </PersistentNotice>
+        {note?.kind === "status" && (
+          <p role="status" className="text-xs text-muted-foreground">
             {note.text}
           </p>
         )}
