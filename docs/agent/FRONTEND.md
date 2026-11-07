@@ -594,7 +594,11 @@ on a desktop window, and a test proves each.
   date has none and says "The forecast starts here."), each activity in source order with its signed amount and account,
   the explicit "No activity on this date." when there is none, and the closing balance per group and account with P10 and
   P90 only where the data has a range (never summed). The selected date is session view state (`forecast.selectedDate`); a
-  restored date the data no longer offers becomes the nearest one and is announced (a polite live region). **The
+  restored date the data no longer offers becomes the nearest one and is announced (a polite live region). **Realized
+  history** joins the spine: with a lookback on, each account's recorded dates before the forecast are dates too, and a
+  recorded date reads as "Recorded balances." (the opening is the previous recorded closing, or "The history starts here."
+  on the first; the closing per account; no forecast range, group or activity, because the history has only balances); a
+  date the forecast also has reads as the forecast. **The
   missing-event rule**: when the open event in Projected activity no longer resolves (restored, deleted, or removed by a
   scenario or horizon change) the table closes it and `onMissingEvent` moves focus to the section heading. The event
   explanation stays the in-place disclosure with `aria-expanded` and `aria-controls` (it already restores the invoking

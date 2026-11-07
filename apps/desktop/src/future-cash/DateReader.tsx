@@ -1,7 +1,7 @@
 import { useId } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
-import type { MoneyDto, MultiSeriesForecastDto } from "@/bindings";
+import type { AccountHistoryDto, MoneyDto, MultiSeriesForecastDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -33,11 +33,25 @@ function nearest(spine: string[], wanted: string): string {
 /// offers (nothing between them is interpolated). It shows the date, the opening balance, each activity with its
 /// signed amount and account, and the closing balance by group and account, with P10, P50 and P90 from the same
 /// data (never summed or invented). A date with no activity says so, and its closing is the data's own.
-export function DateReader({ projection }: { projection: MultiSeriesForecastDto }) {
+export function DateReader({
+  projection,
+  history = null,
+}: {
+  projection: MultiSeriesForecastDto;
+  /// The realized past behind the projection for the active lookback (personal-cfo-4d8.27.5.3): each account's
+  /// recorded daily closings. Its dates join the spine, and a recorded date reads as recorded balances with no forecast
+  /// range. Nothing is interpolated: only dates the data has.
+  history?: AccountHistoryDto[] | null;
+}) {
   const id = useId();
   const [stored, setSelected] = useSessionState<string | null>("forecast.selectedDate", null);
 
-  const spine = [...new Set(projection.groups.flatMap((g) => g.closings.map((c) => c.date)))].sort();
+  const forecastDates = new Set(projection.groups.flatMap((g) => g.closings.map((c) => c.date)));
+  // Recorded dates before the forecast starts; a date the forecast also has is read as the forecast (it has the range).
+  const recordedDates = new Set(
+    (history ?? []).flatMap((account) => account.days.map((d) => d.date)).filter((d) => !forecastDates.has(d)),
+  );
+  const spine = [...new Set([...forecastDates, ...recordedDates])].sort();
   if (spine.length === 0) return null;
   // A restored date the forecast no longer offers (a shorter horizon, a different scenario) becomes the nearest
   // available one, and the reader says so.
@@ -46,6 +60,9 @@ export function DateReader({ projection }: { projection: MultiSeriesForecastDto 
   const moved = stored !== null && date !== stored;
   const index = spine.indexOf(date);
 
+  const recorded = recordedDates.has(date);
+  const recordedClosing = (account: AccountHistoryDto, on: string): MoneyDto | null =>
+    account.days.find((d) => d.date === on)?.closing ?? null;
   const closingOf = (closings: { date: string; closing: Band }[], on: string): Band | null =>
     closings.find((c) => c.date === on)?.closing ?? null;
   const groups = [...projection.groups].sort((a, b) => (TIER_ORDER[a.tier] ?? 99) - (TIER_ORDER[b.tier] ?? 99));
@@ -112,60 +129,93 @@ export function DateReader({ projection }: { projection: MultiSeriesForecastDto 
           {moved ? `Showing ${formatIsoDate(date)}` : ""}
         </p>
 
-        <section aria-label={`Forecast for ${formatIsoDate(date)}`} className="flex flex-col gap-4">
-          <h3 className="text-base font-semibold">{formatIsoDate(date)}</h3>
-
-          <div>
-            <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Opening balance</h4>
-            {previous === null ? (
-              <p className="text-sm text-muted-foreground">The forecast starts here.</p>
-            ) : (
-              <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
-                {groups.map((group) => {
-                  const opening = closingOf(group.closings, previous);
-                  return opening === null ? null : (
-                    <Row key={group.tier} label={TIER_LABEL[group.tier] ?? group.tier} value={formatMoney(opening.p50)} />
+        {recorded ? (
+          <section aria-label={`Recorded balances for ${formatIsoDate(date)}`} className="flex flex-col gap-4">
+            <h3 className="text-base font-semibold">{formatIsoDate(date)}</h3>
+            <p className="text-sm text-muted-foreground">Recorded balances.</p>
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Opening balance</h4>
+              {previous === null ? (
+                <p className="text-sm text-muted-foreground">The history starts here.</p>
+              ) : (
+                <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
+                  {(history ?? []).map((account) => {
+                    const opening = recordedClosing(account, previous);
+                    return opening === null ? null : (
+                      <Row key={account.account_id} label={account.name} value={formatMoney(opening)} />
+                    );
+                  })}
+                </dl>
+              )}
+            </div>
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Closing balance</h4>
+              <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
+                {(history ?? []).map((account) => {
+                  const closing = recordedClosing(account, date);
+                  return closing === null ? null : (
+                    <Row key={account.account_id} label={account.name} value={formatMoney(closing)} />
                   );
                 })}
               </dl>
-            )}
-          </div>
-
-          <div>
-            <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Activity</h4>
-            {activities.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No activity on this date.</p>
-            ) : (
-              <ul className="flex flex-col gap-1 text-sm">
-                {activities.map(({ event, accountName }, i) => (
-                  <li key={`${event.source_event_id}-${accountName}-${i}`} className="flex flex-wrap justify-between gap-x-4">
-                    <span className="min-w-0 break-words">
-                      {event.name} <span className="text-muted-foreground">· {accountName}</span>
-                    </span>
-                    <span className={cn("tabular-nums", event.amount.minor_units < 0 ? "text-loss" : "text-gain")}>
-                      {formatSignedMoney(event.amount)}
-                    </span>
-                  </li>
+            </div>
+          </section>
+        ) : (
+        <section aria-label={`Forecast for ${formatIsoDate(date)}`} className="flex flex-col gap-4">
+            <h3 className="text-base font-semibold">{formatIsoDate(date)}</h3>
+  
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Opening balance</h4>
+              {previous === null ? (
+                <p className="text-sm text-muted-foreground">The forecast starts here.</p>
+              ) : (
+                <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
+                  {groups.map((group) => {
+                    const opening = closingOf(group.closings, previous);
+                    return opening === null ? null : (
+                      <Row key={group.tier} label={TIER_LABEL[group.tier] ?? group.tier} value={formatMoney(opening.p50)} />
+                    );
+                  })}
+                </dl>
+              )}
+            </div>
+  
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Activity</h4>
+              {activities.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No activity on this date.</p>
+              ) : (
+                <ul className="flex flex-col gap-1 text-sm">
+                  {activities.map(({ event, accountName }, i) => (
+                    <li key={`${event.source_event_id}-${accountName}-${i}`} className="flex flex-wrap justify-between gap-x-4">
+                      <span className="min-w-0 break-words">
+                        {event.name} <span className="text-muted-foreground">· {accountName}</span>
+                      </span>
+                      <span className={cn("tabular-nums", event.amount.minor_units < 0 ? "text-loss" : "text-gain")}>
+                        {formatSignedMoney(event.amount)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+  
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Closing balance</h4>
+              <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
+                {groups.map((group) => {
+                  const closing = closingOf(group.closings, date);
+                  return closing === null ? null : (
+                    <Row key={group.tier} label={TIER_LABEL[group.tier] ?? group.tier} value={closeText(closing)} strong={group.tier === "net"} />
+                  );
+                })}
+                {accountsWithClosing.map(({ account, closing }) => (
+                  <Row key={account.account_id ?? account.name} label={account.name} value={closeText(closing!)} />
                 ))}
-              </ul>
-            )}
-          </div>
-
-          <div>
-            <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Closing balance</h4>
-            <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
-              {groups.map((group) => {
-                const closing = closingOf(group.closings, date);
-                return closing === null ? null : (
-                  <Row key={group.tier} label={TIER_LABEL[group.tier] ?? group.tier} value={closeText(closing)} strong={group.tier === "net"} />
-                );
-              })}
-              {accountsWithClosing.map(({ account, closing }) => (
-                <Row key={account.account_id ?? account.name} label={account.name} value={closeText(closing!)} />
-              ))}
-            </dl>
-          </div>
-        </section>
+              </dl>
+            </div>
+          </section>
+        )}
       </CardContent>
     </Card>
   );

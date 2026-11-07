@@ -386,7 +386,7 @@ export function FutureCashView({
         </Card>
 
         {/* Read the same forecast one date at a time (personal-cfo-i93n3.27 slice C). */}
-        {projection && cashFlowState === "ready" && <DateReader projection={projection} />}
+        {projection && cashFlowState === "ready" && <DateReader projection={projection} history={historyAccounts} />}
       </div>
     </>
   );

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import type { ForecastDayDto, ForecastEventDto, MultiSeriesForecastDto } from "@/bindings";
+import type { AccountHistoryDto, ForecastDayDto, ForecastEventDto, MultiSeriesForecastDto } from "@/bindings";
 import { SessionViewStateProvider } from "@/lib/SessionViewStateProvider";
 import { useSessionState } from "@/lib/sessionViewState";
 import { DateReader } from "./DateReader";
@@ -175,5 +175,102 @@ describe("Read forecast by date (personal-cfo-i93n3.27 slice C)", () => {
     expect(control).toHaveClass("compact:order-first", "compact:basis-full", "compact:w-full", "compact:max-w-full");
     expect(screen.getByRole("button", { name: "Previous day" })).toHaveClass("compact:flex-1");
     expect(screen.getByRole("button", { name: "Next day" })).toHaveClass("compact:flex-1");
+  });
+});
+
+// Realized history joins the spine (the design: the union of recorded history dates and forecast dates).
+function history(): AccountHistoryDto[] {
+  return [
+    {
+      account_id: "acc-1",
+      name: "Glassmoor Checking",
+      subtype: "checking",
+      tier: "spendable",
+      days: [
+        { date: "2026-08-30", closing: money(2_400_000) },
+        { date: "2026-08-31", closing: money(2_450_000) },
+        // A recorded date the forecast also has: read as the forecast, with the range.
+        { date: "2026-09-01", closing: money(2_513_317) },
+      ],
+    },
+    {
+      account_id: "acc-2",
+      name: "Glassmoor Savings",
+      subtype: "savings",
+      tier: "reserve",
+      days: [
+        { date: "2026-08-30", closing: money(790_000) },
+        { date: "2026-08-31", closing: money(795_000) },
+      ],
+    },
+  ];
+}
+
+function renderWithHistory(initial?: string | null, h: AccountHistoryDto[] | null = history()) {
+  function Seed() {
+    const seeded = useRef(false);
+    const set = useSessionState<string | null>("forecast.selectedDate", null)[1];
+    // Once: seeding on every render would undo a later Previous or Next.
+    if (!seeded.current) {
+      seeded.current = true;
+      set(initial ?? null);
+    }
+    return null;
+  }
+  return render(
+    <SessionViewStateProvider>
+      {initial !== undefined && <Seed />}
+      <DateReader projection={projection()} history={h} />
+    </SessionViewStateProvider>,
+  );
+}
+
+describe("Read forecast by date with realized history (personal-cfo-i93n3.27)", () => {
+  it("adds the recorded dates before the forecast to the spine, once each, in order", () => {
+    renderWithHistory();
+    expect([...select().options].map((o) => o.value)).toEqual([
+      "2026-08-30", "2026-08-31", "2026-09-01", "2026-09-08", "2026-09-09", "2026-09-11",
+    ]);
+  });
+
+  it("walks across the seam from the last recorded date into the forecast with Previous and Next", () => {
+    renderWithHistory("2026-08-31");
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+    expect(select().value).toBe("2026-09-01");
+    fireEvent.click(screen.getByRole("button", { name: "Previous day" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous day" }));
+    expect(select().value).toBe("2026-08-30");
+    expect(screen.getByRole("button", { name: "Previous day" })).toBeDisabled();
+  });
+
+  it("reads a recorded date as recorded balances per account, with no forecast range, group or activity", () => {
+    renderWithHistory("2026-08-31");
+    const reading = screen.getByRole("region", { name: /recorded balances for/i });
+    expect(within(reading).getByText("Recorded balances.")).toBeInTheDocument();
+    expect(within(reading).getByText("$24,500.00")).toBeInTheDocument();
+    expect(within(reading).getByText("$7,950.00")).toBeInTheDocument();
+    // The opening is the previous recorded date's closing.
+    expect(within(reading).getByText("$24,000.00")).toBeInTheDocument();
+    expect(within(reading).queryByText(/P10|P90|Net cash|Spendable|Reserve/)).toBeNull();
+    expect(within(reading).queryByText("Activity")).toBeNull();
+  });
+
+  it("says the history starts on its first recorded date, and invents no earlier balance", () => {
+    renderWithHistory("2026-08-30");
+    expect(screen.getByText("The history starts here.")).toBeInTheDocument();
+    // $24,000.00 is that date's own closing, and appears once: there is no opening balance before it.
+    expect(screen.getAllByText("$24,000.00")).toHaveLength(1);
+  });
+
+  it("reads a date the forecast also has as the forecast, not as recorded", () => {
+    renderWithHistory("2026-09-01");
+    expect(screen.getByRole("region", { name: /^forecast for/i })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /recorded balances/i })).toBeNull();
+  });
+
+  it("moves a restored recorded date the lookback no longer offers to the nearest date and announces it", () => {
+    renderWithHistory("2026-08-29", null);
+    expect(select().value).toBe("2026-09-01");
+    expect(document.querySelector('[aria-live="polite"]')!.textContent).toMatch(/^Showing /);
   });
 });
