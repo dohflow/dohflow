@@ -218,6 +218,15 @@ fn manifest_bytes(ids: &[[u8; 32]]) -> Vec<u8> {
     manifest_bytes_bounded(ids, MAX_MANIFEST_ENTRIES)
 }
 
+/// The first bytes of the commitment's preimage: the label and the `u32` count of the list (C.3).
+/// [`manifest_bytes_bounded`] writes the same bytes before the ids, and the incremental
+/// `ClosureCommitter` starts its hash here; a test pins that the two agree.
+pub(crate) fn manifest_preimage_head(count: u32) -> Vec<u8> {
+    let mut w = Writer::with_label("dohflow/sync-artifact-manifest/v1");
+    w.u32(count);
+    w.finish()
+}
+
 /// The commitment's preimage with the list bound of the object type: 4096 for an envelope's delta,
 /// 2^20 for a snapshot's closure. The label and the bytes are the same for both (C.3).
 pub(crate) fn manifest_bytes_bounded(ids: &[[u8; 32]], max: usize) -> Vec<u8> {

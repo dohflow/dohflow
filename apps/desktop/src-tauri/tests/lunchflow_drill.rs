@@ -14,8 +14,8 @@
 //! ```
 //!
 //! It links through `connector_link_impl`, which resolves no registry entry,
-//! because the registered LunchFlow entry is disabled until its release
-//! (`connector_link` would refuse it — asserted in `connector_ipc.rs`). The
+//! so the drill runs the adapter without the registry gate (the entry has been
+//! enabled since v0.4.0; `connector_ipc.rs` asserts the gate lets it through). The
 //! drill prints counts, currencies and dates only: never the key, an amount,
 //! a merchant, or an account name.
 
