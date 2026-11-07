@@ -565,7 +565,9 @@ on a desktop window, and a test proves each.
   cannot be a media query, because `rem` there is the browser's default, not the root size set for
   Dynamic Type) it holds icon buttons in at least 48-point targets (`min-h-12 min-w-12`) named Sections,
   Search and Lock. The page keeps its own scroll pane and a narrower padding. Desktop is unchanged: the
-  sidebar, no bar. The new copy is the word "Sections" and the generic Close; nothing else was added.
+  sidebar, no bar. The Sections button carries `aria-expanded` but **never** `aria-haspopup="dialog"`: iOS
+  exposes that as a pop-up (menu) button, which is announced as one and is not found as a button by assistive
+  technology or a UI test (found on the simulator; a test pins it). The new copy is the word "Sections" and the generic Close; nothing else was added.
   Within-session state lifting (a destination keeping its filters across a visit elsewhere) is
   `personal-cfo-i93n3.27`, not this.
 
