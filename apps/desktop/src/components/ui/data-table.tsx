@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, type LucideIcon } from "lucide-react";
 
 import {
@@ -341,6 +341,7 @@ function StackedRows<T>({
   className?: string;
   label?: string;
 }) {
+  const sortId = useId();
   const sortable = columns.filter((column) => column.sortable && typeof column.header === "string");
   // A control column (an empty header: a select checkbox, an expander) has no label to read, so it is not a labeled
   // pair: it sits in the card's heading row, before or after the title in its column order. The title is the column
@@ -356,11 +357,11 @@ function StackedRows<T>({
     <div className={className}>
       {onSortChange && sortable.length > 0 && (
         <div className="flex items-center gap-2 px-4 pb-2">
-          <label className="sr-only" htmlFor="stacked-sort-by">
+          <label className="sr-only" htmlFor={sortId}>
             Sort by
           </label>
           <NativeSelect
-            id="stacked-sort-by"
+            id={sortId}
             size="sm"
             className="min-w-0 flex-1"
             value={sort?.key ?? ""}
