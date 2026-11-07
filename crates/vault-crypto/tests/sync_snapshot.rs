@@ -76,6 +76,10 @@ fn empty_closure() -> ManifestCommitment {
     ArtifactManifest::new(Vec::new()).unwrap().commitment()
 }
 
+fn empty_binding() -> sync_core::header::BindingCommitment {
+    sync_core::envelope::binding_commitment(&[], 1 << 20).unwrap()
+}
+
 fn fields(object_id: u8, base_seq: u64) -> SnapshotFields {
     SnapshotFields {
         object_id: [object_id; 16],
@@ -146,7 +150,8 @@ fn a_snapshot_seals_and_opens_through_the_receiver_path() {
     assert_eq!(
         header.object,
         ObjectKind::Snapshot {
-            artifact_manifest_commitment: empty_closure()
+            artifact_manifest_commitment: empty_closure(),
+            artifact_binding_commitment: empty_binding(),
         }
     );
     assert_eq!(open(&key, &chain_state, &bytes).unwrap(), sample());
@@ -216,6 +221,7 @@ fn an_envelope_is_not_a_snapshot_and_a_snapshot_is_not_an_envelope() {
             idempotency_key_tag: IdempotencyKeyTag::from_derived([1; 32]),
             immutable_metadata_commitment: MetadataCommitment::from_derived([2; 32]),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: [0x44; 16],
         device_id: a.device_id,
@@ -330,6 +336,12 @@ fn hand_sealed(
         key_epoch: 1,
         object: ObjectKind::Snapshot {
             artifact_manifest_commitment: commitment,
+            // The binding is the plaintext's own, so a test about the manifest commitment has one
+            // defect.
+            artifact_binding_commitment: vault_crypto::sync_snapshot::closure_commitments_of(
+                plaintext,
+            )
+            .map_or_else(|_| empty_binding(), |c| c.binding),
         },
         object_id: [0x55; 16],
         device_id: id.device_id,
@@ -377,7 +389,15 @@ fn header_field_17_is_the_commitment_of_the_closure_the_manifest_names() {
     assert_eq!(
         header.object,
         ObjectKind::Snapshot {
-            artifact_manifest_commitment: expected
+            artifact_manifest_commitment: expected,
+            artifact_binding_commitment: sync_core::envelope::binding_commitment(
+                &[
+                    common::bound(a).ciphertext_sha256,
+                    common::bound(b).ciphertext_sha256
+                ],
+                1 << 20
+            )
+            .unwrap(),
         }
     );
     assert_ne!(
@@ -395,7 +415,8 @@ fn header_field_17_is_the_commitment_of_the_closure_the_manifest_names() {
     assert_eq!(
         parse_container(&empty).unwrap().header.object,
         ObjectKind::Snapshot {
-            artifact_manifest_commitment: empty_closure()
+            artifact_manifest_commitment: empty_closure(),
+            artifact_binding_commitment: empty_binding(),
         }
     );
 }

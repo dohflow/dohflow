@@ -757,7 +757,7 @@ fn export_image(live: &Path, old_dek: &Dek, new_dek: &Dek, dest: &Path) -> Resul
 }
 
 /// Stream `from` to a new file at `to` and sync it.
-fn copy_file_synced(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn copy_file_synced(from: &Path, to: &Path) -> io::Result<()> {
     let mut reader = BufReader::with_capacity(1 << 20, File::open(from)?);
     let file = fs::OpenOptions::new()
         .write(true)

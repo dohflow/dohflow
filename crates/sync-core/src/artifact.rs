@@ -42,6 +42,10 @@ pub const MAX_LOGICAL_METADATA: usize = 65_536;
 pub const MAX_ARTIFACT_CONTAINER: usize = 67_108_864;
 /// The most ids in a snapshot's full closure (C.3).
 pub const MAX_SNAPSHOT_CLOSURE: usize = 1 << 20;
+/// The bytes of one id in a closure sidecar body (sync-service-protocol 4.14): the id's 32 raw bytes.
+pub const CLOSURE_SIDECAR_ID_LEN: usize = 32;
+/// The most bytes a closure sidecar body holds (sync-service-protocol 7.1): 2^20 ids of 32 bytes.
+pub const MAX_CLOSURE_SIDECAR_LEN: usize = MAX_SNAPSHOT_CLOSURE * CLOSURE_SIDECAR_ID_LEN;
 /// The most ids in an envelope's delta manifest (C.3).
 pub const MAX_DELTA: usize = crate::envelope::MAX_MANIFEST_ENTRIES;
 /// The most bytes in one source batch part's blob (C.9).
@@ -486,6 +490,21 @@ impl ArtifactReceipt {
     }
 }
 
+/// Why a closure sidecar body (sync-service-protocol 4.14) is not a closure. Each maps to a protocol
+/// code: [`Self::TooManyIds`] is `SnapshotTooLarge`, the others `MalformedObject`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ClosureSidecarError {
+    /// The body is longer than 2^20 ids. Decided from the length alone, before a byte is read.
+    #[error("the closure sidecar holds more than 2^20 ids")]
+    TooManyIds,
+    /// The body's length is not a whole number of 32-byte ids.
+    #[error("the closure sidecar is not a whole number of ids")]
+    NotWholeIds,
+    /// An id is not greater than the one before it (a duplicate, or out of order).
+    #[error("the closure sidecar is not strictly ascending")]
+    NotAscending,
+}
+
 /// A snapshot's full artifact closure: strictly ascending, at most [`MAX_SNAPSHOT_CLOSURE`] ids.
 /// Its commitment (header field 17 of a snapshot) is the same function of the list as an envelope
 /// delta's, with the label and bytes of C.3; only the bound differs.
@@ -512,6 +531,34 @@ impl ClosureManifest {
     #[must_use]
     pub fn ids(&self) -> &[[u8; 32]] {
         &self.0
+    }
+
+    /// The closure as a sidecar body (sync-service-protocol 4.14): the ids' raw bytes, strictly
+    /// ascending, with no framing, so its length is 32 times the number of ids.
+    #[must_use]
+    pub fn to_sidecar(&self) -> Vec<u8> {
+        self.0.concat()
+    }
+
+    /// A closure from a sidecar body. Strict: a body that is out of order is refused, never put in
+    /// order, because the sidecar's order is part of what the commitment binds. The service and the
+    /// client both call this, so they cannot disagree on what a well-formed sidecar is.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError`], checked in the order of its variants: the length first.
+    pub fn from_sidecar(bytes: &[u8]) -> Result<Self, ClosureSidecarError> {
+        if bytes.len() > MAX_CLOSURE_SIDECAR_LEN {
+            return Err(ClosureSidecarError::TooManyIds);
+        }
+        if !bytes.len().is_multiple_of(CLOSURE_SIDECAR_ID_LEN) {
+            return Err(ClosureSidecarError::NotWholeIds);
+        }
+        let (whole, _) = bytes.as_chunks::<CLOSURE_SIDECAR_ID_LEN>();
+        let ids: Vec<[u8; 32]> = whole.to_vec();
+        if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(ClosureSidecarError::NotAscending);
+        }
+        Ok(Self(ids))
     }
 
     /// `SHA-256(label "dohflow/sync-artifact-manifest/v1" ‖ list(digest, 2^20))` (C.3).

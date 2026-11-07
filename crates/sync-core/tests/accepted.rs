@@ -14,8 +14,7 @@ use sync_core::accepted::{
 };
 use sync_core::cbe::WireError;
 use sync_core::envelope::{
-    canonical_envelope_digest, check_envelope, ArtifactManifest, EnvelopePlaintext, IdempotencyKey,
-    ImmutableMeta,
+    canonical_envelope_digest, check_envelope, EnvelopePlaintext, IdempotencyKey, ImmutableMeta,
 };
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag, NonceDomain,
@@ -71,6 +70,7 @@ fn parts(spec: Spec) -> (ClearHeader, EnvelopePlaintext) {
             idempotency_key_tag: test_tag(&meta.idempotency_key),
             immutable_metadata_commitment: meta.commitment().unwrap(),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: [spec.command; 16],
         device_id: [spec.device; 16],
@@ -85,7 +85,7 @@ fn parts(spec: Spec) -> (ClearHeader, EnvelopePlaintext) {
     let plaintext = EnvelopePlaintext {
         meta,
         write_set_hash: [0x44; 32],
-        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         payload: b"{}".to_vec(),
     };
     (header, plaintext)
@@ -232,6 +232,9 @@ fn a_snapshot_container_has_no_command_identity() {
             ClearHeader::decode(parse_container(&container).unwrap().header_bytes).unwrap();
         header.object = ObjectKind::Snapshot {
             artifact_manifest_commitment: sync_core::header::ManifestCommitment::from_derived(
+                [1; 32],
+            ),
+            artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived(
                 [1; 32],
             ),
         };
@@ -519,7 +522,7 @@ fn a_rebase_executor_rebuilds_the_command_metadata_from_the_envelope_alone() {
     let plaintext = EnvelopePlaintext {
         meta: original.clone(),
         write_set_hash: [0x44; 32],
-        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         payload: b"{}".to_vec(),
     };
     // The executor sees only the decrypted bytes: no outbox row, no inherited idempotency memo.
@@ -539,6 +542,7 @@ fn a_rebase_executor_rebuilds_the_command_metadata_from_the_envelope_alone() {
     );
     let _ = ObjectKind::Snapshot {
         artifact_manifest_commitment: sync_core::header::ManifestCommitment::from_derived([0; 32]),
+        artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived([0; 32]),
     };
 }
 

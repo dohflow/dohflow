@@ -36,7 +36,17 @@ fn table(name: &str, rows: &[&str]) -> TableFile {
     }
 }
 
-fn header<'a>(voids: &'a [RecordedVoid], artifacts: &'a [[u8; 32]]) -> Header<'a> {
+fn bound(id: [u8; 32]) -> sync_core::envelope::BoundArtifact {
+    sync_core::envelope::BoundArtifact {
+        id,
+        ciphertext_sha256: [id[0] ^ 0xff; 32],
+    }
+}
+
+fn header<'a>(
+    voids: &'a [RecordedVoid],
+    artifacts: &'a [sync_core::envelope::BoundArtifact],
+) -> Header<'a> {
     Header {
         schema_version: 65,
         vault_created_at: "2026-01-02T03:04:05+00:00",
@@ -170,13 +180,17 @@ fn voids_and_artifacts_are_recorded_in_order() {
             last: 10,
         },
     ];
-    let artifacts = [[3; 32], [4; 32]];
+    let artifacts = [bound([3; 32]), bound([4; 32])];
     let plaintext = build(&header(&voids, &artifacts), vec![table("a", &["{}"])]).unwrap();
     let manifest = manifest_of(&plaintext);
     assert_eq!(manifest.voids.len(), 2);
     assert_eq!(manifest.voids[0].first, "5");
     assert_eq!(manifest.voids[1].void_id, hex(&[2; 32]));
-    assert_eq!(manifest.artifacts, [hex(&[3; 32]), hex(&[4; 32])]);
+    let entry = |id: [u8; 32]| sync_core::snapshot::ArtifactEntry {
+        id: hex(&id),
+        ciphertext_sha256: hex(&[id[0] ^ 0xff; 32]),
+    };
+    assert_eq!(manifest.artifacts, [entry([3; 32]), entry([4; 32])]);
 }
 
 #[test]
@@ -221,7 +235,10 @@ fn voided_ranges_must_be_strictly_ascending_and_disjoint() {
 
 #[test]
 fn the_closure_manifest_must_be_strictly_ascending() {
-    for artifacts in [[[2u8; 32], [1; 32]], [[1; 32], [1; 32]]] {
+    for artifacts in [
+        [bound([2; 32]), bound([1; 32])],
+        [bound([1; 32]), bound([1; 32])],
+    ] {
         let result = build(&header(&[], &artifacts), vec![table("a", &["{}"])]);
         assert!(matches!(result, Err(SnapshotError::ManifestInvalid(_))));
     }
@@ -451,7 +468,16 @@ fn manifest_rules_each_have_a_typed_refusal() {
     assert!(invalid(bad(&|m| m.tables[0].columns.clear())));
     assert!(invalid(bad(&|m| m.tables[0].name = "Bad-Name".into())));
     assert!(invalid(bad(&|m| m.tables.swap(0, 1))));
-    assert!(invalid(bad(&|m| m.artifacts = vec!["xyz".into()])));
+    assert!(invalid(bad(&|m| m.artifacts =
+        vec![sync_core::snapshot::ArtifactEntry {
+            id: "xyz".into(),
+            ciphertext_sha256: hex(&[0; 32]),
+        }])));
+    assert!(invalid(bad(&|m| m.artifacts =
+        vec![sync_core::snapshot::ArtifactEntry {
+            id: hex(&[1; 32]),
+            ciphertext_sha256: "xyz".into(),
+        }])));
 }
 
 // ---------------------------------------------------------------------------------------------

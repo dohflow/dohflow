@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::artifact::{ArtifactId, LogicalBinding, TransportPlaintext};
-use crate::envelope::ArtifactManifest;
-use crate::header::ManifestCommitment;
+use crate::envelope::{BoundArtifact, BoundManifest};
+use crate::header::{BindingCommitment, ManifestCommitment};
 use crate::source_batch::{join, record_ids};
 
 /// A logical class-1b object an artifact binds.
@@ -54,6 +54,18 @@ pub struct DeltaArtifact {
     pub binding: LogicalBinding,
     /// For a batch part, the ids of the records in its blob; empty for an attachment.
     pub records: Vec<[u8; 16]>,
+    /// The SHA-256 of the artifact's AEAD output that the envelope bound to this id, which the
+    /// receiver checked the fetched bytes against before it opened them (C.4 stage 9, C.9).
+    pub ciphertext_sha256: [u8; 32],
+}
+
+/// An authenticated artifact's plaintext with the hash the envelope bound to its id.
+#[derive(Debug, Clone, Copy)]
+pub struct BoundPlaintext<'a> {
+    /// The opened, authenticated transport plaintext.
+    pub plaintext: TransportPlaintext<'a>,
+    /// The `ciphertext_sha256` the envelope bound to the artifact's id.
+    pub ciphertext_sha256: [u8; 32],
 }
 
 impl DeltaArtifact {
@@ -65,7 +77,8 @@ impl DeltaArtifact {
     ///
     /// # Errors
     /// A [`Mismatch`] naming the artifact.
-    pub fn from_plaintext(plaintext: &TransportPlaintext<'_>) -> Result<Self, Mismatch> {
+    pub fn from_plaintext(bound: &BoundPlaintext<'_>) -> Result<Self, Mismatch> {
+        let plaintext = &bound.plaintext;
         let id = plaintext.artifact_id;
         let binding = plaintext.binding().map_err(|_| Mismatch::BadBinding(id))?;
         let records = match binding {
@@ -81,6 +94,7 @@ impl DeltaArtifact {
             id,
             binding,
             records,
+            ciphertext_sha256: bound.ciphertext_sha256,
         })
     }
 }
@@ -89,7 +103,7 @@ impl DeltaArtifact {
 /// ids. A function of replicated state, never a replica's local cache.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LiveClosure {
-    bound: BTreeMap<LogicalRef, BTreeSet<ArtifactId>>,
+    bound: BTreeMap<LogicalRef, BTreeMap<ArtifactId, [u8; 32]>>,
     /// Each source record of a live batch, with the batch that holds it.
     records: BTreeMap<[u8; 16], [u8; 16]>,
 }
@@ -101,9 +115,19 @@ impl LiveClosure {
         Self::default()
     }
 
-    /// Add `id` to `logical`'s set.
-    pub fn insert(&mut self, logical: LogicalRef, id: ArtifactId) {
-        self.bound.entry(logical).or_default().insert(id);
+    /// Add `id` to `logical`'s set, with the `ciphertext_sha256` the snapshot at the preceding
+    /// position binds to it. The live closure is a set of `(id, hash)` pairs (C.9).
+    pub fn insert(&mut self, logical: LogicalRef, id: ArtifactId, ciphertext_sha256: [u8; 32]) {
+        self.bound
+            .entry(logical)
+            .or_default()
+            .insert(id, ciphertext_sha256);
+    }
+
+    /// The hash the live closure binds to `id`, if the closure holds the id at all.
+    #[must_use]
+    pub fn hash_of(&self, id: &ArtifactId) -> Option<[u8; 32]> {
+        self.bound.values().find_map(|ids| ids.get(id).copied())
     }
 
     /// Record that live batch `batch` holds source record `record`.
@@ -119,8 +143,10 @@ impl LiveClosure {
 
     /// The ids bound to `logical`, if any.
     #[must_use]
-    pub fn get(&self, logical: &LogicalRef) -> Option<&BTreeSet<ArtifactId>> {
-        self.bound.get(logical)
+    pub fn get(&self, logical: &LogicalRef) -> Option<BTreeSet<ArtifactId>> {
+        self.bound
+            .get(logical)
+            .map(|ids| ids.keys().copied().collect())
     }
 }
 
@@ -178,6 +204,11 @@ pub enum Mismatch {
     /// The delta binds a logical object of the live closure to a different id (set).
     #[error("a logical object is bound to a different id than in the live closure")]
     Rebinding(LogicalRef),
+    /// The live closure at the preceding position holds this id with a ciphertext hash other than
+    /// the one the delta binds (C.9): the producer bound a hash that is not the immutable
+    /// artifact's. A local mapping entry outside the live closure never decides this.
+    #[error("the live closure binds this id to a different ciphertext hash")]
+    HashDiffersFromLive(ArtifactId),
 }
 
 /// Stage 9(b). The cases the signed spec text does not yet list (a record held by more than one part
@@ -312,15 +343,24 @@ pub fn check_closure(
     for (batch_id, parts) in &batches {
         let logical = LogicalRef::Batch(*batch_id);
         let ids: BTreeSet<ArtifactId> = parts.iter().map(|(a, _, _)| a.id).collect();
-        if live.get(&logical).is_some_and(|bound| bound != &ids) {
+        if live.get(&logical).is_some_and(|bound| bound != ids) {
             return Err(Mismatch::Rebinding(logical));
         }
     }
     for (attachment_id, artifacts) in &attachments {
         let logical = LogicalRef::Attachment(*attachment_id);
         let ids: BTreeSet<ArtifactId> = artifacts.iter().map(|a| a.id).collect();
-        if live.get(&logical).is_some_and(|bound| bound != &ids) {
+        if live.get(&logical).is_some_and(|bound| bound != ids) {
             return Err(Mismatch::Rebinding(logical));
+        }
+    }
+    // The hash bound to an id the live closure holds is the hash the live closure binds to it.
+    for artifact in delta {
+        if live
+            .hash_of(&artifact.id)
+            .is_some_and(|live_hash| live_hash != artifact.ciphertext_sha256)
+        {
+            return Err(Mismatch::HashDiffersFromLive(artifact.id));
         }
     }
     Ok(())
@@ -375,7 +415,7 @@ pub fn check_batch_canonical(
 /// diagnostic; the verdict class is `ArtifactClosureMismatch` whichever is reported first).
 pub fn check_delta(
     refs: &[PayloadRef],
-    plaintexts: &[TransportPlaintext<'_>],
+    plaintexts: &[BoundPlaintext<'_>],
     live: &LiveClosure,
 ) -> Result<(), Mismatch> {
     let delta = plaintexts
@@ -384,7 +424,8 @@ pub fn check_delta(
         .collect::<Result<Vec<_>, _>>()?;
     check_closure(refs, &delta, live)?;
     let mut by_batch: BTreeMap<[u8; 16], Vec<PartRef<'_>>> = BTreeMap::new();
-    for (plaintext, artifact) in plaintexts.iter().zip(&delta) {
+    for (bound, artifact) in plaintexts.iter().zip(&delta) {
+        let plaintext = &bound.plaintext;
         if let LogicalBinding::BatchPart {
             batch_id,
             part_index,
@@ -411,8 +452,13 @@ pub fn check_delta(
 pub enum ReceiptState {
     /// No receipt yet: the row is written, the object may not have been put.
     None,
-    /// A receipt that matched what the client computed has been recorded.
-    Durable,
+    /// A receipt that matched what the client computed has been recorded. It carries the
+    /// `ciphertext_sha256` the client verified when it published the artifact or fetched it: the
+    /// only hash a producer may bind (C.9), never a transport or blob plaintext digest.
+    Durable {
+        /// The SHA-256 of the artifact's AEAD output.
+        ciphertext_sha256: [u8; 32],
+    },
 }
 
 /// The producer's device-local view of its artifacts for one epoch: the mapping from a logical
@@ -451,13 +497,13 @@ pub enum BuildError {
 /// `delta_manifest`, so a reference cannot be emitted without its receipts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltDelta {
-    manifest: ArtifactManifest,
+    manifest: BoundManifest,
 }
 
 impl BuiltDelta {
-    /// The delta manifest for the envelope plaintext.
+    /// The delta manifest for the envelope plaintext: each id with the hash bound to it.
     #[must_use]
-    pub const fn manifest(&self) -> &ArtifactManifest {
+    pub const fn manifest(&self) -> &BoundManifest {
         &self.manifest
     }
 
@@ -467,6 +513,12 @@ impl BuiltDelta {
     #[must_use]
     pub fn header_commitment(&self) -> Option<ManifestCommitment> {
         (!self.manifest.is_empty()).then(|| self.manifest.commitment())
+    }
+
+    /// Header field 18: the binding commitment, present exactly when field 17 is.
+    #[must_use]
+    pub fn header_binding(&self) -> Option<BindingCommitment> {
+        (!self.manifest.is_empty()).then(|| self.manifest.binding())
     }
 }
 
@@ -480,7 +532,7 @@ pub fn build_delta(
     refs: &[PayloadRef],
     key_epoch: u64,
 ) -> Result<BuiltDelta, BuildError> {
-    let mut ids: BTreeSet<[u8; 32]> = BTreeSet::new();
+    let mut ids: BTreeMap<[u8; 32], [u8; 32]> = BTreeMap::new();
     for reference in refs {
         let logical = match *reference {
             PayloadRef::Record(record) => LogicalRef::Batch(
@@ -495,13 +547,20 @@ pub fn build_delta(
             .filter(|c| !c.is_empty())
             .ok_or(BuildError::NoArtifact(*reference))?;
         for (id, receipt) in carried {
-            if receipt != ReceiptState::Durable {
+            let ReceiptState::Durable { ciphertext_sha256 } = receipt else {
                 return Err(BuildError::ReceiptMissing(*reference, id));
-            }
-            ids.insert(*id.as_bytes());
+            };
+            ids.insert(*id.as_bytes(), ciphertext_sha256);
         }
     }
-    let manifest = ArtifactManifest::new(ids.into_iter().collect())
-        .map_err(|_| BuildError::TooManyArtifacts)?;
+    let manifest = BoundManifest::new(
+        ids.into_iter()
+            .map(|(id, ciphertext_sha256)| BoundArtifact {
+                id,
+                ciphertext_sha256,
+            })
+            .collect(),
+    )
+    .map_err(|_| BuildError::TooManyArtifacts)?;
     Ok(BuiltDelta { manifest })
 }

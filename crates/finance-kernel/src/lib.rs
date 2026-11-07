@@ -2964,6 +2964,12 @@ impl From<DbError> for KernelError {
                 bill_id: bill_id.to_string(),
                 bill_name,
             },
+            // A change a rebase queued for the person's decision (personal-cfo-bxsbz.4). It crosses
+            // the boundary as a validation message until the interface that resolves it adds a
+            // typed error with its own screen (SYNC-3).
+            DbError::QueuedForDisposition { .. } => KernelError::Validation(
+                "this change is waiting for your decision after a sync".to_owned(),
+            ),
             DbError::SelfTestFailed(message) => KernelError::Persistence(message),
             // Generic text; no path or key crosses the boundary.
             DbError::CipherUnavailable => KernelError::Persistence(

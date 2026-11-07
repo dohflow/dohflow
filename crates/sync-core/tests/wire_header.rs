@@ -4,9 +4,9 @@
 
 use sync_core::cbe::WireError;
 use sync_core::header::{
-    encode_container, parse_container, parse_container_with_limit, ClearHeader, Fingerprint,
-    IdempotencyKeyTag, ManifestCommitment, MetadataCommitment, NonceDomain, ObjectKind,
-    MAX_ENVELOPE_CONTAINER_LEN, MAX_INVOCATION_COUNTER,
+    encode_container, parse_container, parse_container_with_limit, BindingCommitment, ClearHeader,
+    Fingerprint, IdempotencyKeyTag, ManifestCommitment, MetadataCommitment, NonceDomain,
+    ObjectKind, MAX_ENVELOPE_CONTAINER_LEN, MAX_INVOCATION_COUNTER,
 };
 
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
@@ -39,6 +39,9 @@ fn sample_envelope() -> ClearHeader {
             ))),
             artifact_manifest_commitment: Some(ManifestCommitment::from_derived(array(&vector(
                 "artifact_manifest_commitment",
+            )))),
+            artifact_binding_commitment: Some(BindingCommitment::from_derived(array(&vector(
+                "artifact_binding_commitment",
             )))),
         },
         object_id: [
@@ -216,31 +219,74 @@ fn the_dual_identity_fields_must_match_the_object_type() {
 }
 
 #[test]
-fn a_snapshot_without_a_manifest_commitment_is_refused() {
-    let mut header = ClearHeader::decode(&vector("header_snapshot")).unwrap();
+fn a_snapshot_without_its_manifest_or_binding_commitment_is_refused() {
+    let header = ClearHeader::decode(&vector("header_snapshot")).unwrap();
     let ObjectKind::Snapshot { .. } = header.object else {
         panic!()
     };
-    // Re-encode by hand with the final opt() absent: presence byte 0 and no 32 bytes.
-    let mut bytes = header.encode().unwrap();
-    let new_len = bytes.len() - 33;
-    bytes.truncate(new_len);
-    bytes.push(0);
+    // The header ends with field 17 then field 18, each `opt(digest)`: 33 bytes when present.
+    let bytes = header.encode().unwrap();
+    let head = bytes.len() - 66;
+    let (manifest, binding) = (&bytes[head..head + 33], &bytes[head + 33..]);
+
+    // Both absent, or only the manifest commitment absent: no manifest commitment.
+    let both_absent = [&bytes[..head], &[0][..], &[0][..]].concat();
     assert_eq!(
-        ClearHeader::decode(&bytes),
+        ClearHeader::decode(&both_absent),
         Err(WireError::SnapshotWithoutManifest)
     );
-    // An envelope may omit it (an empty delta manifest), and round-trips.
-    header = sample_envelope();
+    let manifest_absent = [&bytes[..head], &[0][..], binding].concat();
+    assert_eq!(
+        ClearHeader::decode(&manifest_absent),
+        Err(WireError::SnapshotWithoutManifest)
+    );
+    // The manifest commitment present and the binding commitment absent.
+    let binding_absent = [&bytes[..head], manifest, &[0][..]].concat();
+    assert_eq!(
+        ClearHeader::decode(&binding_absent),
+        Err(WireError::SnapshotWithoutBinding)
+    );
+}
+
+#[test]
+fn an_envelopes_manifest_and_binding_commitments_are_present_or_absent_together() {
+    // Both absent (an empty delta manifest) round-trips.
+    let mut header = sample_envelope();
     if let ObjectKind::Envelope {
         artifact_manifest_commitment,
+        artifact_binding_commitment,
         ..
     } = &mut header.object
     {
         *artifact_manifest_commitment = None;
+        *artifact_binding_commitment = None;
     }
     let bytes = header.encode().unwrap();
     assert_eq!(ClearHeader::decode(&bytes).unwrap(), header);
+
+    // One without the other does not decode, and has no encoding.
+    let sample = sample_envelope().encode().unwrap();
+    let head = sample.len() - 66;
+    let (manifest, binding) = (&sample[head..head + 33], &sample[head + 33..]);
+    let manifest_only = [&sample[..head], manifest, &[0][..]].concat();
+    assert_eq!(
+        ClearHeader::decode(&manifest_only),
+        Err(WireError::BindingFieldsMismatch)
+    );
+    let binding_only = [&sample[..head], &[0][..], binding].concat();
+    assert_eq!(
+        ClearHeader::decode(&binding_only),
+        Err(WireError::BindingFieldsMismatch)
+    );
+    let mut lopsided = sample_envelope();
+    if let ObjectKind::Envelope {
+        artifact_binding_commitment,
+        ..
+    } = &mut lopsided.object
+    {
+        *artifact_binding_commitment = None;
+    }
+    assert_eq!(lopsided.encode(), Err(WireError::BindingFieldsMismatch));
 }
 
 #[test]
