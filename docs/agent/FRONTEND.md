@@ -504,8 +504,9 @@ on a desktop window, and a test proves each.
   column. Do not size anything that must stay a fixed physical size from spacing utilities.
 - **Reflow, not clipping.** At the largest text size a row wraps and a control grows; meaning is never
   clipped, truncated to an ellipsis, or hidden. Prefer `min-h-*` and wrapping to a fixed `h-*` on
-  anything that holds text (a form field's `h-10` becomes `min-h-10`, which is the same 40px on a desktop
-  window). A text child of a flex row takes `min-w-0`, and copy that can hold a word wider than the
+  anything that holds text (a form field that holds text takes `h-auto min-h-10` at its call site; the shared
+  `Input` stays `h-10`, because `cn()` keeps a `min-h-10` next to a caller's own `h-8` and the minimum then
+  wins, so changing the primitive would grow every compact input on a desktop window). A text child of a flex row takes `min-w-0`, and copy that can hold a word wider than the
   column (`unrecoverable`) takes `[overflow-wrap:anywhere]`, or the page grows sideways and the edge
   clips it. Where the column beside an icon gets too narrow to read at that size, the row stacks on a
   container query (`compact:@max-[15rem]:flex-col` inside an `@container`), and prose takes

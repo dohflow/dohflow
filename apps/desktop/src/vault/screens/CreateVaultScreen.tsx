@@ -75,6 +75,7 @@ export function CreateVaultScreen() {
                 id="password"
                 type="password"
                 autoComplete="new-password"
+                className="h-auto min-h-10"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 aria-invalid={tooShort}
@@ -95,6 +96,7 @@ export function CreateVaultScreen() {
                 id="confirm"
                 type="password"
                 autoComplete="new-password"
+                className="h-auto min-h-10"
                 value={confirm}
                 onChange={(event) => setConfirm(event.target.value)}
                 aria-invalid={mismatch}

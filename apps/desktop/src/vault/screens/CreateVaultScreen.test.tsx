@@ -76,5 +76,12 @@ describe("create-vault fields at the largest text size", () => {
       expect(field).toHaveClass("min-h-10");
       expect(field).not.toHaveClass("h-10");
     }
+    // twMerge resolves `h-10` against `h-auto` for the shared Input, so the password fields carry it.
+    for (const field of [
+      screen.getByLabelText("Master password"),
+      screen.getByLabelText("Confirm password"),
+    ]) {
+      expect(field).toHaveClass("h-auto");
+    }
   });
 });
