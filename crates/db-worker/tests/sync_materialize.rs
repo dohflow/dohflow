@@ -1309,6 +1309,8 @@ fn the_log_line_carries_counts_and_nothing_the_user_typed_or_imported() {
         }
     }
 
+    // DoD §2.4 rule 1: the global test subscriber first, so events on other threads are not lost.
+    observability::testing::install_global_test_subscriber();
     let vault = Vault::new();
     let none = LiveClosure::new();
     vault
@@ -1430,4 +1432,89 @@ fn the_sweep_removes_nothing_when_the_base_image_exists_and_cannot_be_read() {
         "it fails closed and says so"
     );
     assert!(orphan.is_file(), "and removes nothing");
+}
+
+/// A committed dedupe decision, as `CommitImportedTransaction`'s apply writes it: no staged
+/// transaction, replicated, present on every replica.
+fn committed_decision(vault: &Vault, batch: [u8; 16]) {
+    vault
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO dedupe_decisions
+                 (id, source_batch_id, layer, staged_transaction_id, decision, reason, decided_at)
+             VALUES (?1, ?2, 'transaction', NULL, 'committed', 'imported', 't')",
+            rusqlite::params![[0xc0_u8, batch[0]].repeat(8), batch.as_slice()],
+        )
+        .unwrap();
+}
+
+fn committed_decisions(vault: &Vault, batch: [u8; 16]) -> i64 {
+    vault
+        .worker
+        .read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM dedupe_decisions
+              WHERE source_batch_id = ?1 AND staged_transaction_id IS NULL",
+            [batch.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_committed_dedupe_decision_is_replicated_data_and_survives_the_discard() {
+    let none = LiveClosure::new();
+    let mut forged = batch();
+    forged.records[0].normalized_json = "{\"n\":100}".to_owned();
+
+    // A replica with no staging at all, holding only the committed decision: nothing to discard, so
+    // no notice, and the decision stays.
+    let replica = Vault::new();
+    replica
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    committed_decision(&replica, [0xb1; 16]);
+    let discarded = replica
+        .worker
+        .materialize_batch(1, &parts_v2(), &forged, &none)
+        .unwrap();
+    assert!(discarded.is_empty(), "no staging, so nothing was discarded");
+    assert!(
+        replica.worker.sync_notices().unwrap().is_empty(),
+        "and nobody is told"
+    );
+    assert_eq!(
+        committed_decisions(&replica, [0xb1; 16]),
+        1,
+        "the replicated decision stays"
+    );
+
+    // A device that has both: only the decisions about its staged transactions go.
+    let importing = Vault::new();
+    importing
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    stage_import(&importing, [0xb1; 16], &[[1; 16], [2; 16]]);
+    committed_decision(&importing, [0xb1; 16]);
+    let discarded = importing
+        .worker
+        .materialize_batch(1, &parts_v2(), &forged, &none)
+        .unwrap();
+    assert_eq!(discarded.len(), 1);
+    assert_eq!(
+        discarded[0].dedupe_decisions, 2,
+        "counts only the staging's decisions"
+    );
+    assert_eq!(committed_decisions(&importing, [0xb1; 16]), 1);
+    assert_eq!(foreign_key_violations(&importing), 0);
+    // And the two replicas hold the same replicated decisions.
+    assert_eq!(
+        committed_decisions(&replica, [0xb1; 16]),
+        committed_decisions(&importing, [0xb1; 16])
+    );
 }

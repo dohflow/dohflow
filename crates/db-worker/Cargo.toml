@@ -70,3 +70,5 @@ uuid = { workspace = true }
 platform-mock = { path = "../platform-mock" }
 # Captures that line in the redaction test (personal-cfo-0g528.2).
 tracing-subscriber = { workspace = true }
+# The global test subscriber a log-capture test installs first (DoD §2.4 rule 1).
+observability = { path = "../observability", features = ["test-support"] }

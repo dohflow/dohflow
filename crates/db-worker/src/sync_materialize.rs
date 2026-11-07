@@ -482,16 +482,23 @@ fn load_records(
 }
 
 /// Remove all of a batch's staging (an import still being reviewed on this device), children first
-/// (`dedupe_decisions` references `staged_transactions` and the batch), and say what went. `None` if
-/// the device holds no staging for it.
+/// (`dedupe_decisions` references `staged_transactions`), and say what went. A committed dedupe
+/// decision (no staged transaction) is replicated data and stays. `None` if the device holds no
+/// staging for the batch, so a replica that only holds committed rows gets no notice.
 fn discard_staging(
     tx: &rusqlite::Transaction<'_>,
     batch: &[u8; 16],
     source_name: Option<String>,
 ) -> Result<Option<DiscardedImport>, MaterializeError> {
     let by_record = "SELECT id FROM source_records WHERE source_batch_id = ?1";
+    // Only the decisions about this batch's *staged transactions*. A decision with no staged id is a
+    // committed one that `CommitImportedTransaction`'s apply writes on every replica: replicated
+    // data, which this device-local discard must never touch.
     let dedupe_decisions = tx.execute(
-        "DELETE FROM dedupe_decisions WHERE source_batch_id = ?1",
+        &format!(
+            "DELETE FROM dedupe_decisions WHERE staged_transaction_id IN
+                 (SELECT id FROM staged_transactions WHERE source_record_id IN ({by_record}))"
+        ),
         params![batch.as_slice()],
     )?;
     let staged_transactions = tx.execute(
