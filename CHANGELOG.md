@@ -24,7 +24,19 @@ record until the first tagged release.
   dashboard and paste it into DohFlow; your bank sign-in stays with LunchFlow. The
   key is stored encrypted in your vault like a SimpleFIN access URL, and the app
   only contacts LunchFlow once you have linked it. Everything still works with
-  manual entry and file imports.
+  manual entry and file imports. The checks that come with a second provider
+  apply to it too: an account in a currency other than your base currency, or one
+  whose currency is not known, is refused with the reason (`personal-cfo-049p6`), and
+  mapping a connected account onto one that another connection already feeds asks
+  what to do (`personal-cfo-6evt`).
+- **Unlock with Touch ID** (`personal-cfo-xuu`). After you have unlocked a vault with
+  your master password, **Settings → Touch ID** can turn Touch ID on for that vault
+  (it asks for your master password again to turn it on). Your master password
+  always works, and DohFlow asks for it after you restart your Mac, after three
+  Touch ID tries that fail or are cancelled, and every 30 days. Changing the vault
+  password, rotating the encryption key, or changing the fingerprints enrolled on your
+  Mac turns Touch ID off for that vault until you turn it on again. The key Touch ID
+  uses stays on that Mac and is never synced. It needs the signed release of DohFlow.
 - **Link a recurring bill to the loan it pays** (`personal-cfo-6wk.22`,
   `personal-cfo-6wk.20`, `personal-cfo-6wk.23`). A bill that pays a loan can be
   linked to it so the forecast counts the payment once instead of twice. A loan's
