@@ -84,7 +84,7 @@ export function ScopeStrip({
         )}
       </div>
 
-      <div className="flex items-center gap-3 text-xs tabular-nums text-muted-foreground">
+      <div className="flex items-center gap-3 text-xs tabular-nums text-muted-foreground compact:flex-wrap compact:gap-x-3 compact:gap-y-1">
         <span>
           {shown === total
             ? `${total} transaction${total === 1 ? "" : "s"}`

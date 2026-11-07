@@ -449,7 +449,7 @@ export function TransactionsView({
       key: "date",
       header: "Date",
       width: "min",
-      className: "whitespace-nowrap align-top text-muted-foreground",
+      className: "whitespace-nowrap align-top text-muted-foreground compact:whitespace-normal",
       cell: (txn) => formatDate(txn.occurred_at),
     },
     {
@@ -459,16 +459,16 @@ export function TransactionsView({
       cell: (txn) =>
         txn.counter_account_name ? (
           <span className="flex min-w-0 items-center gap-1 whitespace-nowrap compact:flex-wrap compact:justify-end compact:whitespace-normal">
-            <span className="truncate compact:overflow-visible compact:text-clip compact:[overflow-wrap:anywhere]">
+            <span className="truncate compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
               {txn.amount.minor_units < 0 ? txn.account_name : txn.counter_account_name}
             </span>
             <ArrowRight aria-hidden className="size-3 shrink-0" />
-            <span className="truncate compact:overflow-visible compact:text-clip compact:[overflow-wrap:anywhere]">
+            <span className="truncate compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
               {txn.amount.minor_units < 0 ? txn.counter_account_name : txn.account_name}
             </span>
           </span>
         ) : (
-          <span className="truncate compact:overflow-visible compact:text-clip compact:[overflow-wrap:anywhere]">{txn.account_name}</span>
+          <span className="truncate compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">{txn.account_name}</span>
         ),
     },
     {
@@ -593,6 +593,7 @@ export function TransactionsView({
               <Button
                 size="sm"
                 variant="outline"
+                className="compact:h-auto compact:max-w-full compact:whitespace-normal compact:py-2"
                 onClick={() => void runAutoCategorize()}
                 disabled={autoCatBusy}
               >
@@ -609,13 +610,14 @@ export function TransactionsView({
               <Button
                 size="sm"
                 variant="outline"
+                className="compact:h-auto compact:max-w-full compact:whitespace-normal compact:py-2"
                 onClick={() => setAdding("transfer")}
               >
                 <ArrowLeftRight aria-hidden />
                 Add transfer
               </Button>
             )}
-            <Button size="sm" onClick={() => setAdding("transaction")}>
+            <Button size="sm" className="compact:h-auto compact:max-w-full compact:whitespace-normal compact:py-2" onClick={() => setAdding("transaction")}>
               <Plus aria-hidden />
               Add transaction
             </Button>

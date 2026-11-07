@@ -285,6 +285,9 @@ describe("TransactionsView", () => {
       renderWithClient(<TransactionsView />);
       await screen.findByText(/\+\$?150/);
       expect(screen.getByRole("button", { name: /Add transaction/ }).parentElement).toHaveClass("compact:flex-wrap");
+      // At the largest text size a button's own label wraps instead of running off the screen.
+      expect(screen.getByRole("button", { name: /Add transaction/ })).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
+      expect(screen.getByText("Checking")).toHaveClass("compact:whitespace-normal");
       const search = screen.getByRole("searchbox", { name: "Search transactions" });
       expect(search.parentElement).toHaveClass("compact:basis-full");
       expect(search.parentElement!.parentElement).toHaveClass("compact:flex-wrap");
