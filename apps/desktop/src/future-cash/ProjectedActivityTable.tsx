@@ -13,6 +13,7 @@ import {
   formatSignedMoney,
   signedAmountClass,
 } from "@/lib/format";
+import { useSessionState } from "@/lib/sessionViewState";
 import { cn } from "@/lib/utils";
 import { PaginationControls } from "@/components/ui/pagination";
 import { PAGE_SIZE_OPTIONS, usePagination } from "@/lib/usePagination";
@@ -120,13 +121,19 @@ export function ProjectedActivityTable({
     };
   }, [raw]);
   const { currency } = projection;
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [kind, setKind] = useState("");
+  // These survive a visit to another destination, for the unlocked session only (personal-cfo-i93n3.27 slice D).
+  // The search text is memory only and is never logged. Restored values are validated below.
+  const [openKey, setOpenKey] = useSessionState<string | null>("activity.openKey", null);
+  const [query, setQuery] = useSessionState<string>("activity.query", "");
+  const [storedKind, setKind] = useSessionState<string>("activity.kind", "");
   // Individual account columns the user has added (personal-cfo-4d8.27.7.2): the
   // default stays the grouped tiers, per the feedback that accounts are hidden by
   // default — this is the opt-in for "how does this transaction hit THIS account".
-  const [accountColumns, setAccountColumns] = useState<string[]>([]);
+  const [storedColumns, setAccountColumns] = useSessionState<string[]>("activity.accountColumns", []);
+  // A restored column for an account that no longer exists is dropped (the picker's count included).
+  const accountColumns = storedColumns.filter((id) =>
+    projection.accounts.some((a) => a.account_id === id),
+  );
 
   const balanceColumns = buildColumns(projection, accountColumns);
   const rows = buildRows(projection, balanceColumns);
@@ -142,10 +149,13 @@ export function ProjectedActivityTable({
   const kindOptions = [
     ...new Set(activities.flatMap((row) => (row.event ? [row.event.kind] : []))),
   ];
+  // A restored type filter that no row has any more is dropped, so it cannot hide everything.
+  const kind = storedKind === "" || kindOptions.includes(storedKind as ForecastEventDto["kind"]) ? storedKind : "";
   const filteredActivities = filterActivityRows(activities, query, kind);
   const activityPages = usePagination(
     filteredActivities,
     "pcfo.pageSize.projectedActivity",
+    "activity.page",
   );
   const visibleRows = today
     ? [today, ...activityPages.pageItems]

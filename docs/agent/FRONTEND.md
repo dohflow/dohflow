@@ -571,6 +571,22 @@ on a desktop window, and a test proves each.
   Within-session state lifting (a destination keeping its filters across a visit elsewhere) is
   `personal-cfo-i93n3.27`, not this.
 
+- **Session view state** (personal-cfo-i93n3.27, slice D). The view settings that should survive a visit to another
+  destination live in `SessionViewStateProvider` (`src/lib/sessionViewState.tsx`), provided once inside `UnlockedHome`, and
+  views read them with `useSessionState(key, initial)`, which is `useState` with a closed set of keys
+  (`SessionViewStateKey`). Today: the Cash Flow horizon, lookback and scenario stack, and the projected-activity search
+  text, type filter, page, account columns and open event. The store is a `Map` in a ref: **memory only**, no module-level
+  state and no browser storage of any kind, so it lives exactly as long as the shell. The router unmounts the shell on every
+  lock (explicit, host auto-lock, a password change or key rotation, which pass through a non-Unlocked state) and on a vault
+  switch (which comes up locked), so the store is cleared at those moments **by construction**: add no code to clear it, and
+  never keep one of these values anywhere that outlives the shell. A restored value is **validated on read** (a horizon or
+  lookback that is no longer an option reverts to the default; the page is clamped; an account column whose account is gone
+  is dropped; a type filter no row has is dropped; an open event that no longer resolves opens nothing), so a stale value
+  can never hide data. The activity search text is never logged. Without a provider a view falls back to plain local state,
+  and a test renders the real shell to pin that every lifted view runs under the provider. Page SIZE and the unresolved-bill
+  collapse keep their own sticky localStorage preferences. **This also applies on desktop**: a tab switch now keeps these
+  view settings for the session (accepted by planning and called out in the PR).
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks

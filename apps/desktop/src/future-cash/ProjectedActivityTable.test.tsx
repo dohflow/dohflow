@@ -7,6 +7,8 @@ import type {
   ForecastEventDto,
   MultiSeriesForecastDto,
 } from "@/bindings";
+import { SessionViewStateProvider } from "@/lib/SessionViewStateProvider";
+import { useSessionState, type SessionViewStateKey } from "@/lib/sessionViewState";
 import { ProjectedActivityTable } from "./ProjectedActivityTable";
 
 // A bill row's expand panel renders the mark-paid control, which reads accounts + bills. Mock
@@ -409,5 +411,72 @@ describe("ProjectedActivityTable", () => {
     await vi.waitFor(() =>
       expect(mocks.deleteForecastAssumption).toHaveBeenCalledWith("assump-1"),
     );
+  });
+});
+
+/// Seeds the session store before the table first renders, as a previous visit to this destination would have.
+function Seed({ values }: { values: Partial<Record<SessionViewStateKey, unknown>> }) {
+  for (const [key, value] of Object.entries(values)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- a fixed list per test, called in a fixed order
+    useSessionState(key as SessionViewStateKey, value)[1](value);
+  }
+  return null;
+}
+
+function withSession(ui: React.ReactElement, values: Partial<Record<SessionViewStateKey, unknown>> = {}) {
+  return renderWithClient(
+    <SessionViewStateProvider>
+      <Seed values={values} />
+      {ui}
+    </SessionViewStateProvider>,
+  );
+}
+
+describe("the activity table's view state across a visit elsewhere (personal-cfo-i93n3.27 slice D)", () => {
+  it("restores the search text, the type filter and the page it was left on", () => {
+    withSession(<ProjectedActivityTable projection={manyProjection()} />, {
+      "activity.query": "paycheck 1",
+      "activity.page": 0,
+    });
+    expect(screen.getByRole("searchbox")).toHaveValue("paycheck 1");
+  });
+
+  it("clamps a restored page past the end to the last page", () => {
+    withSession(<ProjectedActivityTable projection={manyProjection()} />, { "activity.page": 9 });
+    // 12 activities at 10 a page: page 9 clamps to the second (last) page, which shows Paycheck 11 and 12.
+    expect(screen.getByText("Paycheck 12")).toBeInTheDocument();
+    expect(screen.queryByText("Paycheck 1")).toBeNull();
+  });
+
+  it("drops a restored account column for an account that no longer exists, and does not count it", () => {
+    withSession(<ProjectedActivityTable projection={projection()} />, {
+      "activity.accountColumns": ["acc-1", "acc-gone"],
+    });
+    const trigger = screen.getAllByRole("button", { name: /accounts/i })[0]!;
+    expect(trigger).toHaveTextContent("1");
+    expect(trigger).not.toHaveTextContent("2");
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toContain("Checking");
+  });
+
+  it("drops a restored type filter that no row has any more, so it cannot hide everything", () => {
+    withSession(<ProjectedActivityTable projection={projection()} />, { "activity.kind": "recurring_transfer_gone" });
+    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("opens nothing for a restored open event that no longer resolves", () => {
+    withSession(<ProjectedActivityTable projection={projection()} />, { "activity.openKey": "evt-gone" });
+    expect(screen.queryByTestId("row-explanation")).toBeNull();
+    expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
+  });
+
+  it("never logs the search text", () => {
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
+    withSession(<ProjectedActivityTable projection={manyProjection()} />);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "secret-merchant-name" } });
+    for (const spy of spies) {
+      expect(JSON.stringify(spy.mock.calls)).not.toContain("secret-merchant-name");
+      spy.mockRestore();
+    }
   });
 });
