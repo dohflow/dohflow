@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { fireEvent, screen, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -464,9 +465,47 @@ describe("the activity table's view state across a visit elsewhere (personal-cfo
     expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("");
   });
 
-  it("opens nothing for a restored open event that no longer resolves", () => {
-    withSession(<ProjectedActivityTable projection={projection()} />, { "activity.openKey": "evt-gone" });
+  it("opens nothing for a restored open event that no longer resolves, closes it and says so once (the missing-event rule)", () => {
+    const onMissingEvent = vi.fn();
+    withSession(<ProjectedActivityTable projection={projection()} onMissingEvent={onMissingEvent} />, { "activity.openKey": "evt-gone" });
     expect(screen.queryByTestId("row-explanation")).toBeNull();
+    expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
+    expect(onMissingEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call the missing-event rule for an event that is there, or when none is open", () => {
+    const onMissingEvent = vi.fn();
+    const { unmount } = withSession(<ProjectedActivityTable projection={projection()} onMissingEvent={onMissingEvent} />);
+    fireEvent.click(screen.getAllByRole("button", { expanded: false }).find((b) => /Acme Corp/.test(b.textContent ?? ""))!);
+    expect(document.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    expect(onMissingEvent).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("closes an open event that a changed projection removed, and calls the rule", () => {
+    const onMissingEvent = vi.fn();
+    function Host() {
+      const [other, setOther] = useState(false);
+      return (
+        <SessionViewStateProvider>
+          <button type="button" onClick={() => setOther(true)}>
+            change projection
+          </button>
+          <button type="button" onClick={() => setOther(false)}>
+            change back
+          </button>
+          <ProjectedActivityTable projection={other ? sameDayProjection() : projection()} onMissingEvent={onMissingEvent} />
+        </SessionViewStateProvider>
+      );
+    }
+    renderWithClient(<Host />);
+    fireEvent.click(screen.getAllByRole("button", { expanded: false }).find((b) => /Acme Corp/.test(b.textContent ?? ""))!);
+    expect(document.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "change projection" }));
+    expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
+    expect(onMissingEvent).toHaveBeenCalledTimes(1);
+    // It was closed, not just hidden: bringing the event back does not reopen it.
+    fireEvent.click(screen.getByRole("button", { name: "change back" }));
     expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
   });
 

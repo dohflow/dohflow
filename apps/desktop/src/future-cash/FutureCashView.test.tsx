@@ -170,6 +170,38 @@ beforeEach(() => {
 });
 
 describe("FutureCashView", () => {
+  it("adds the realized history dates to the forecast date reader while a lookback is on (i93n3.27)", async () => {
+    mocks.cashFlowHistory.mockResolvedValue(
+      ok({
+        currency: "USD",
+        start_date: "2026-06-18",
+        end_date: "2026-06-20",
+        accounts: [
+          {
+            account_id: "acc-1",
+            name: "Checking",
+            subtype: "checking",
+            tier: "spendable",
+            days: [
+              { date: "2026-06-18", closing: money(240_000) },
+              { date: "2026-06-19", closing: money(245_000) },
+            ],
+          },
+        ],
+      }),
+    );
+    renderWithClient(<FutureCashView />);
+    const select = (await screen.findByRole("combobox", { name: "Forecast date" }, { timeout: 5000 })) as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].map((o) => o.value)).toContain("2026-06-18"));
+    expect([...select.options].map((o) => o.value).slice(0, 3)).toEqual(["2026-06-18", "2026-06-19", "2026-06-20"]);
+  });
+
+  it("offers the forecast date reader under the projected activity (i93n3.27 slice C)", async () => {
+    renderWithClient(<FutureCashView />);
+    expect(await screen.findByRole("combobox", { name: "Forecast date" })).toBeInTheDocument();
+    expect(screen.getByText("Read forecast by date")).toBeInTheDocument();
+  });
+
   it("shows a loading state until the forecast resolves", () => {
     mocks.futureCashForecast.mockReturnValue(new Promise(() => {}));
     renderWithClient(<FutureCashView />);

@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 import type {
@@ -246,5 +246,20 @@ describe("Future Cash view state survives a visit to another destination (person
     );
     await screen.findByRole("heading", { name: "Cash Flow" });
     expect(within(screen.getByRole("group", { name: "Forecast horizon" })).getByRole("button", { name: "3M" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("puts focus on the Projected activity heading when the open event is gone (the missing-event rule)", async () => {
+    function Seed() {
+      useSessionState<string | null>("activity.openKey", null)[1]("evt-gone");
+      return null;
+    }
+    renderWithClient(
+      <SessionViewStateProvider>
+        <Seed />
+        <FutureCashView />
+      </SessionViewStateProvider>,
+    );
+    const heading = await screen.findByText("Projected activity", {}, { timeout: 5000 });
+    await waitFor(() => expect(heading).toHaveFocus());
   });
 });
