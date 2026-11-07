@@ -545,7 +545,7 @@ on a desktop window, and a test proves each.
   desktop card classes are still there. The hand-rolled side drawers (transaction detail, bill detail,
   account editor) are already full height and full width on a phone; they add the chrome clearance
   (`COMPACT_DRAWER_PADDED_6`, `COMPACT_DRAWER_CLEARS_CHROME`). The remaining hand-rolled centered modals
-  are migrated to the shared `Dialog` under the design-system adoption work, not here; until then they
+  are migrated to the shared `Dialog` under `personal-cfo-4d8.6.2`, not here; until then they
   stay centered cards that still get the 44 pt floor.
 
 ## 8. Testing
