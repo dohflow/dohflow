@@ -352,6 +352,15 @@ function StackedRows<T>({
   const controlsBefore = columns.filter((column, index) => isControl(column) && column !== title && index < titleIndex);
   const controlsAfter = columns.filter((column, index) => isControl(column) && column !== title && index > titleIndex);
   const rest = columns.filter((column) => column !== title && !isControl(column));
+  // A value that is ABSENT (null, undefined, a boolean, an empty string, or an empty list of those) hides its pair, so a
+  // screen reader never reads a bare label. A PRESENT value always shows: 0, "$0.00", an explicit "None", "Uncategorized",
+  // or a "—" placeholder a column chose to render. A cell returns null for "nothing here".
+  const absent = (node: ReactNode): boolean =>
+    node === null ||
+    node === undefined ||
+    typeof node === "boolean" ||
+    node === "" ||
+    (Array.isArray(node) && node.every(absent));
 
   return (
     <div className={className}>
@@ -445,14 +454,17 @@ function StackedRows<T>({
                     </div>
                   )}
                   <dl className="flex flex-col gap-1 text-sm">
-                    {rest.map((column) => (
-                      <div key={column.key} className="flex items-baseline justify-between gap-4">
-                        <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{column.header}</dt>
-                        <dd className={cn("min-w-0 text-right tabular-nums [overflow-wrap:anywhere]", column.className)}>
-                          {column.cell(row)}
-                        </dd>
-                      </div>
-                    ))}
+                    {rest.map((column) => {
+                      const value = column.cell(row);
+                      return absent(value) ? null : (
+                        <div key={column.key} className="flex items-baseline justify-between gap-4">
+                          <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{column.header}</dt>
+                          <dd className={cn("min-w-0 text-right tabular-nums [overflow-wrap:anywhere]", column.className)}>
+                            {value}
+                          </dd>
+                        </div>
+                      );
+                    })}
                   </dl>
                 </div>
                 {detail}

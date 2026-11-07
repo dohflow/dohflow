@@ -490,14 +490,14 @@ export function TransactionsView({
       key: "tags",
       header: "Tags",
       className: "align-top",
-      cell: (txn) => (
-        <span className="flex flex-wrap items-center gap-1">
-          {txn.tag_ids.map((id) => {
-            const tag = tags?.find((candidate) => candidate.id === id);
-            return tag ? <TagChip key={id} tag={tag} /> : null;
-          })}
-        </span>
-      ),
+      cell: (txn) => {
+        const chips = txn.tag_ids.flatMap((id) => {
+          const tag = tags?.find((candidate) => candidate.id === id);
+          return tag ? [<TagChip key={id} tag={tag} />] : [];
+        });
+        // No tags: nothing (null), so the stacked phone layout hides the pair instead of a bare "Tags" label.
+        return chips.length === 0 ? null : <span className="flex flex-wrap items-center gap-1">{chips}</span>;
+      },
     },
     {
       key: "amount",
