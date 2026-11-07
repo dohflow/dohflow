@@ -42,8 +42,9 @@ const INVENTORY_VERSION: &str = "1";
 pub struct ExportInput<'a> {
     /// The honored voids this replica holds, ascending and disjoint (C.10).
     pub voids: &'a [RecordedVoid],
-    /// The closure manifest, ascending; empty until personal-cfo-1cltt.7.
-    pub artifacts: &'a [[u8; 32]],
+    /// The closure manifest: each id with the ciphertext hash bound to it, ascending by id; empty
+    /// until personal-cfo-1cltt.7.
+    pub artifacts: &'a [sync_core::envelope::BoundArtifact],
 }
 
 /// Why the export stopped. A name is a table or column name, never a value from a row.

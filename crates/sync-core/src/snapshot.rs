@@ -17,6 +17,7 @@ use thiserror::Error;
 use crate::canonical_json::{from_canonical_slice, to_canonical_vec, CanonicalJsonError};
 use crate::canonical_json::{node_to_canonical_vec, Node};
 use crate::cbe::{Reader, WireError, Writer};
+use crate::envelope::BoundArtifact;
 use crate::row_digest::{Column, Kind, Value, MAX_NAME};
 
 /// The label a snapshot plaintext starts with.
@@ -161,9 +162,19 @@ pub struct Manifest {
     /// The voided ranges and void ids this snapshot records, ranges strictly ascending and
     /// disjoint, as the C.10 ledger encodes them.
     pub voids: Vec<VoidEntry>,
-    /// The complete closure manifest of `sync_artifact_id_e` values (lowercase hex), strictly
-    /// ascending. Empty until personal-cfo-1cltt.7.
-    pub artifacts: Vec<String>,
+    /// The complete closure manifest: each `sync_artifact_id_e` (lowercase hex) with the SHA-256 of
+    /// its AEAD output, strictly ascending by id. Empty until personal-cfo-1cltt.7.
+    pub artifacts: Vec<ArtifactEntry>,
+}
+
+/// One artifact of the closure in `manifest.json` (C.8): its id and the hash bound to it. The
+/// header's field 17 commits to the ids and field 18 to the hashes, in the ids' order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactEntry {
+    /// `sync_artifact_id_e`, 32 bytes as lowercase hex.
+    pub id: String,
+    /// The SHA-256 of the artifact's AEAD output, 32 bytes as lowercase hex.
+    pub ciphertext_sha256: String,
 }
 
 /// The data file path of a table.
@@ -330,8 +341,9 @@ pub struct Header<'a> {
     pub inventory_version: &'a str,
     /// The voided ranges to record, ascending and disjoint.
     pub voids: &'a [RecordedVoid],
-    /// The closure manifest: `sync_artifact_id_e` values, strictly ascending.
-    pub artifacts: &'a [[u8; 32]],
+    /// The closure manifest: each `sync_artifact_id_e` with the hash bound to it, strictly
+    /// ascending by id.
+    pub artifacts: &'a [BoundArtifact],
 }
 
 /// Build a snapshot plaintext from `tables`.
@@ -380,7 +392,14 @@ pub fn build(header: &Header<'_>, mut tables: Vec<TableFile>) -> Result<Vec<u8>,
                 last: v.last.to_string(),
             })
             .collect(),
-        artifacts: header.artifacts.iter().map(|a| hex(a)).collect(),
+        artifacts: header
+            .artifacts
+            .iter()
+            .map(|a| ArtifactEntry {
+                id: hex(&a.id),
+                ciphertext_sha256: hex(&a.ciphertext_sha256),
+            })
+            .collect(),
     };
     let manifest_bytes =
         to_canonical_vec(&manifest).map_err(SnapshotError::ManifestNotCanonical)?;
@@ -552,13 +571,17 @@ fn check_manifest(manifest: &Manifest) -> Result<(), SnapshotError> {
     if manifest.artifacts.len() > MAX_ARTIFACTS {
         return invalid("too many artifacts");
     }
-    if manifest.artifacts.iter().any(|a| !is_hex_of(a, 32)) {
-        return invalid("an artifact id is not 32 bytes of lowercase hex");
+    if manifest
+        .artifacts
+        .iter()
+        .any(|a| !is_hex_of(&a.id, 32) || !is_hex_of(&a.ciphertext_sha256, 32))
+    {
+        return invalid("an artifact id or hash is not 32 bytes of lowercase hex");
     }
     if manifest
         .artifacts
         .windows(2)
-        .any(|pair| pair[0].as_bytes() >= pair[1].as_bytes())
+        .any(|pair| pair[0].id.as_bytes() >= pair[1].id.as_bytes())
     {
         return invalid("the artifacts are not strictly ascending");
     }

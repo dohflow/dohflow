@@ -99,6 +99,19 @@ impl Enc {
             Some(b) => self.u8(1).fixed(b),
         }
     }
+    /// `list(digest ‖ digest, max)`: an envelope's delta manifest items (C.4), an id and the
+    /// ciphertext hash bound to it.
+    fn list_pairs(mut self, items: &[([u8; 32], [u8; 32])], max: u32) -> Self {
+        assert!(items.len() as u64 <= u64::from(max));
+        self.0
+            .extend_from_slice(&(items.len() as u32).to_be_bytes());
+        for (id, hash) in items {
+            self.0.extend_from_slice(id);
+            self.0.extend_from_slice(hash);
+        }
+        self
+    }
+
     fn list_digests(self, items: &[[u8; 32]], max: u32) -> Self {
         assert!(items.len() as u64 <= u64::from(max));
         let mut e = self.u32(items.len() as u32);
@@ -473,6 +486,7 @@ struct Header {
     engine_version: &'static str,
     schema_version: u32,
     manifest_commit: Option<[u8; 32]>,
+    binding_commit: Option<[u8; 32]>,
 }
 
 const VAULT: [u8; 16] = [0x11; 16];
@@ -495,6 +509,7 @@ fn encode_header(h: &Header) -> Vec<u8> {
         .text(h.engine_version, 64)
         .u32(h.schema_version)
         .opt_fixed(h.manifest_commit.as_ref().map(<[u8; 32]>::as_slice))
+        .opt_fixed(h.binding_commit.as_ref().map(<[u8; 32]>::as_slice))
         .done()
 }
 
@@ -520,7 +535,14 @@ fn parse_header(buf: &[u8]) -> Result<(u8, u64, Option<[u8; 32]>), WireError> {
     let _engine = d.text(64)?;
     let _schema = d.u32()?;
     let manifest: Option<[u8; 32]> = d.opt_fixed()?;
+    let binding: Option<[u8; 32]> = d.opt_fixed()?;
     d.finish()?;
+    // Fields 17 and 18 are present together or absent together (C.4).
+    if manifest.is_some() != binding.is_some() {
+        return Err(WireError::Semantic(
+            "the manifest commitment and the binding commitment must be present together",
+        ));
+    }
     match (object_type, tag.is_some(), commit.is_some()) {
         (OBJ_ENVELOPE, true, true) | (OBJ_SNAPSHOT, false, false) => {}
         (OBJ_ENVELOPE | OBJ_SNAPSHOT, _, _) => {
@@ -801,6 +823,19 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     let mut delta = vec![art_1, art_2];
     delta.sort_unstable();
     validate_manifest_list(&delta).unwrap();
+    // The ciphertext hashes bound to the two artifacts (inputs of the sample: 0x31 repeated for the
+    // first artifact, 0x32 repeated for the second), paired with the ids in the ids' order.
+    let hash_of = |id: &[u8; 32]| {
+        if *id == art_1 {
+            [0x31u8; 32]
+        } else {
+            [0x32u8; 32]
+        }
+    };
+    let delta_pairs: Vec<([u8; 32], [u8; 32])> =
+        delta.iter().map(|id| (*id, hash_of(id))).collect();
+    let bind_hashes: Vec<[u8; 32]> = delta_pairs.iter().map(|(_, h)| *h).collect();
+    let bind_commit = binding_commitment(&bind_hashes);
 
     let nd_a = nonce_domain(&VAULT, 1, &fpr_a, OBJ_ENVELOPE);
     let nd_b = nonce_domain(&VAULT, 1, &fpr_b, OBJ_ENVELOPE);
@@ -821,6 +856,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         engine_version: "dohflow-0.3.0",
         schema_version: 55,
         manifest_commit: Some(man_commit),
+        binding_commit: Some(bind_commit),
     });
     parse_header(&header_env).unwrap();
     let nd_snap = nonce_domain(&VAULT, 1, &fpr_a, OBJ_SNAPSHOT);
@@ -839,6 +875,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         engine_version: "dohflow-0.3.0",
         schema_version: 55,
         manifest_commit: Some(man_commit),
+        binding_commit: Some(bind_commit),
     });
     parse_header(&header_snap).unwrap();
 
@@ -852,7 +889,7 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         .i64(meta.issued_at)
         .fixed(&meta.device_id)
         .fixed(&[0x44; 32])
-        .list_digests(&delta, 4096)
+        .list_pairs(&delta_pairs, 4096)
         .bytes(br#"{"amount_minor":"-1250","currency":"USD"}"#, 1 << 24)
         .done();
     let ct_env = seal(&key_a, &nonce(nd_a, 0), &header_env, &plaintext_env);
@@ -1004,6 +1041,8 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("artifact_id_epoch2", art_1_e2.to_vec()),
         ("artifact_id_readdress_epoch2", art_1_readdress_e2.to_vec()),
         ("artifact_manifest_commitment", man_commit.to_vec()),
+        // The sample delta's binding commitment: the hashes 0x31 and 0x32 repeated, in id order.
+        ("artifact_binding_commitment", bind_commit.to_vec()),
         // The binding commitment of an empty closure (a genesis snapshot, field 18 of C.4) and of two
         // ciphertext hashes in id order.
         (
@@ -1191,6 +1230,7 @@ fn dual_identity_fields_must_match_the_object_type() {
         engine_version: "e",
         schema_version: 55,
         manifest_commit: None,
+        binding_commit: None,
     };
     assert!(matches!(
         parse_header(&encode_header(&base)),
@@ -1224,6 +1264,7 @@ fn counter_beyond_the_per_key_cap_is_rejected() {
         engine_version: "e",
         schema_version: 55,
         manifest_commit: None,
+        binding_commit: None,
     };
     assert!(parse_header(&encode_header(&h)).is_ok());
     h.counter = MAX_COUNTER + 1;
@@ -2251,6 +2292,48 @@ fn the_manifest_commitment_presence_rule_is_exact() {
         Some(manifest_commitment(&[]))
     ));
     assert!(!manifest_presence_ok(true, &[], None));
+}
+
+#[test]
+fn fields_17_and_18_are_present_together_or_absent_together() {
+    let mut h = Header {
+        object_type: OBJ_ENVELOPE,
+        key_epoch: 1,
+        object_id: [3; 16],
+        tag: Some([4; 32]),
+        meta_commit: Some([5; 32]),
+        device_id: [1; 16],
+        fpr: [2; 32],
+        nonce_domain: [0; 4],
+        counter: 0,
+        base_seq: 0,
+        payload_schema_version: 1,
+        engine_version: "e",
+        schema_version: 55,
+        manifest_commit: None,
+        binding_commit: None,
+    };
+    assert!(parse_header(&encode_header(&h)).is_ok(), "both absent");
+    h.manifest_commit = Some([6; 32]);
+    h.binding_commit = Some([7; 32]);
+    assert!(parse_header(&encode_header(&h)).is_ok(), "both present");
+    h.binding_commit = None;
+    assert!(
+        matches!(
+            parse_header(&encode_header(&h)),
+            Err(WireError::Semantic(_))
+        ),
+        "17 without 18"
+    );
+    h.manifest_commit = None;
+    h.binding_commit = Some([7; 32]);
+    assert!(
+        matches!(
+            parse_header(&encode_header(&h)),
+            Err(WireError::Semantic(_))
+        ),
+        "18 without 17"
+    );
 }
 
 #[test]

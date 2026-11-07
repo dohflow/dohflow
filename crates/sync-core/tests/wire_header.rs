@@ -4,9 +4,9 @@
 
 use sync_core::cbe::WireError;
 use sync_core::header::{
-    encode_container, parse_container, parse_container_with_limit, ClearHeader, Fingerprint,
-    IdempotencyKeyTag, ManifestCommitment, MetadataCommitment, NonceDomain, ObjectKind,
-    MAX_ENVELOPE_CONTAINER_LEN, MAX_INVOCATION_COUNTER,
+    encode_container, parse_container, parse_container_with_limit, BindingCommitment, ClearHeader,
+    Fingerprint, IdempotencyKeyTag, ManifestCommitment, MetadataCommitment, NonceDomain,
+    ObjectKind, MAX_ENVELOPE_CONTAINER_LEN, MAX_INVOCATION_COUNTER,
 };
 
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
@@ -39,6 +39,9 @@ fn sample_envelope() -> ClearHeader {
             ))),
             artifact_manifest_commitment: Some(ManifestCommitment::from_derived(array(&vector(
                 "artifact_manifest_commitment",
+            )))),
+            artifact_binding_commitment: Some(BindingCommitment::from_derived(array(&vector(
+                "artifact_binding_commitment",
             )))),
         },
         object_id: [

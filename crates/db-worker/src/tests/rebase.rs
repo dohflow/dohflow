@@ -82,6 +82,7 @@ fn seal(origin: &DbWorker, meta: &CommandMeta, cmd: &WriteCommand) -> Sealed {
             idempotency_key_tag: tag_for(&immutable.idempotency_key),
             immutable_metadata_commitment: immutable.commitment().unwrap(),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: immutable.command_id,
         device_id: immutable.device_id,

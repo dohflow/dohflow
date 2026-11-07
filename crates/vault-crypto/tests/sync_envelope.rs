@@ -290,6 +290,7 @@ fn parts(dev: &Dev, command: u8, key_epoch: u64, counter: u64) -> (ClearHeader, 
             idempotency_key_tag: tag_for(&meta.idempotency_key),
             immutable_metadata_commitment: meta.commitment().unwrap(),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: meta.command_id,
         device_id: dev.device_id,
@@ -304,7 +305,7 @@ fn parts(dev: &Dev, command: u8, key_epoch: u64, counter: u64) -> (ClearHeader, 
     let plaintext = EnvelopePlaintext {
         meta,
         write_set_hash: [0x44; 32],
-        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         payload: b"{}".to_vec(),
     };
     (header, plaintext)
@@ -348,6 +349,7 @@ fn the_sealer_cannot_seal_under_another_devices_identity_and_nothing_is_encrypte
     let mut snapshot = good.clone();
     snapshot.object = ObjectKind::Snapshot {
         artifact_manifest_commitment: ManifestCommitment::from_derived([1; 32]),
+        artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived([1; 32]),
     };
     assert_eq!(attempt(&snapshot), Err(SealError::NotAnEnvelope));
 
