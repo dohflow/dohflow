@@ -274,8 +274,9 @@ synthetic no-app recovery test before any such public claim.
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
 - `spec-version = 36` (personal-cfo-1cltt.4, part C) states how the genesis snapshot is named and
   resumed (C.8 "The genesis snapshot's id and a resume": a derived id, the saved container is what
-  a resume sends, the persisted genesis is the authority). No wire layout, write-set rule, vector,
-  `engine_version` or schema change.
+  a resume sends, a fresh container is sent only when the service does not hold the id, the persisted
+  genesis is the authority, and a vault that has synced before never mints one). One vector
+  (`genesis_snapshot_id`). No wire layout, write-set rule, `engine_version` or schema change.
 - `spec-version = 35` (personal-cfo-1cltt.4, part B) states how a snapshot is published and where
   its plaintext is read from (C.8 "Publishing a snapshot": a genesis by `installEpoch`, a later
   snapshot by `publishSnapshot`, the live vault only for a genesis, no publish while halted or
@@ -2045,9 +2046,23 @@ without the genesis epoch record, which the service already holds, so it reveals
 vector `genesis_snapshot_id` (C.14) pins one input and its 16 bytes. A resume sends the
 **saved container** of that snapshot (C.4 "Saved sealed snapshot") exactly as it was sealed, and
 reads nothing from the vault: if the vault changed in between, re-exporting would build a different
-snapshot under an id the service may already hold. Only when nothing usable is saved does the client
-export the live vault and seal again. The enable sequence persists the genesis records before it
-installs any key from them, and a vault that holds a persisted genesis never mints another.
+snapshot under an id the service may already hold. The client exports the live vault and seals again
+**only when the service does not hold the id**. A container sealed in this attempt has never been
+sent, so if the service answers `ObjectConflict` at the stage (an earlier attempt staged another
+container under the derived id), or answers `installEpoch` with an exact retry of a genesis it has
+already installed (the `200` of protocol 4.4), the service holds an earlier attempt's snapshot that
+this device can no longer send, and publishing the new one would either be refused or leave the
+service's snapshot installed while the origin holds changes no envelope carries. The client then
+stops in the persisted terminal state `GenesisResumeLost` (vault-format B.2, `sync_genesis`):
+nothing is published, minted or discarded, a restart does not retry (every retry would seal again
+and burn a counter), and Sync status shows it with the support path. A resume that sends the **saved**
+container is different: it is the container the service already holds, so a refused stage, an
+`ObjectConflict` or an already-published answer all go on to `installEpoch`, whose `200` decides. The
+client records the outcome (`Published`, `VaultKnown` or `GenesisResumeLost`) **before** it drops the
+saved container. The enable sequence persists the genesis records before it installs any key from
+them, and a vault that holds a persisted genesis never mints another. A vault that holds a sync base
+or any outbox row and no persisted genesis never mints a genesis; it joins as a replica. And no
+genesis is exported from the live vault once it holds either.
 
 **Where the plaintext is read from.** Only a genesis is read from the live vault, at sync-enable,
 before any outbox row exists. The live vault holds the effects of local commands no envelope has

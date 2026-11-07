@@ -108,6 +108,7 @@ impl FakeSnapshotService {
                 position: 0,
                 membership_head: [0; 32],
                 epoch_record_id: [0; 32],
+                already_installed: false,
             },
             key_epoch: 1,
             head: 0,
@@ -294,7 +295,10 @@ impl SnapshotService for FakeSnapshotService {
                 let same = install.membership_record == Some(vault.genesis_membership.as_slice())
                     && install.epoch_record == vault.genesis_epoch.as_slice();
                 return if same {
-                    Ok(vault.installed)
+                    Ok(InstalledEpoch {
+                        already_installed: true,
+                        ..vault.installed
+                    })
                 } else {
                     Err(ServiceError::VaultExists)
                 };
@@ -349,6 +353,7 @@ impl SnapshotService for FakeSnapshotService {
                 epoch_record_id: chain
                     .epoch_head_id()
                     .ok_or(ServiceError::EpochRecordInvalid)?,
+                already_installed: false,
             };
             state.pins.extend(install.artifact_manifest.iter().copied());
             state.published.push(PublishedSnapshot {

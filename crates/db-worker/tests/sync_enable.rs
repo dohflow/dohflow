@@ -330,24 +330,11 @@ fn the_resume_sends_the_saved_bytes_even_if_the_vault_changed_meanwhile() {
 #[test]
 fn a_vault_the_service_knows_ends_as_vault_known_with_nothing_published_or_discarded() {
     let device = Device::new();
+    // A fresh vault with data (a command dispatched before any sync_base) whose vault_id the
+    // service already knows, because another device enabled Sync for it with a genesis of its own.
     worker_makes_an_account(&device);
-    let conn = device.worker.read_connection().unwrap();
-    // The vault is enabled for Sync in the base-image sense and holds an unpushed command.
-    conn.execute(
-        "INSERT INTO sync_base (singleton, base_seq, base_digest, state, updated_at)
-         VALUES (1, 7, zeroblob(32), 'Ready', '2026-11-06T00:00:00Z')",
-        [],
-    )
-    .unwrap();
-    worker_makes_an_account(&device);
-    let (log, outbox, accounts) = (
-        device.count("operation_log"),
-        device.count("sync_outbox"),
-        device.count("accounts"),
-    );
-    assert!(outbox >= 1, "a Pending outbox row exists");
-
-    // The same vault_id was already enabled elsewhere, with a genesis of its own.
+    let (log, accounts) = (device.count("operation_log"), device.count("accounts"));
+    assert_eq!(device.count("sync_base") + device.count("sync_outbox"), 0);
     let other = create_genesis(
         device.vault_id(),
         [0xee; 16],
@@ -366,12 +353,8 @@ fn a_vault_the_service_knows_ends_as_vault_known_with_nothing_published_or_disca
     );
     assert_eq!(device.saved_files(), 0);
     assert_eq!(
-        (
-            device.count("operation_log"),
-            device.count("sync_outbox"),
-            device.count("accounts")
-        ),
-        (log, outbox, accounts),
+        (device.count("operation_log"), device.count("accounts")),
+        (log, accounts),
         "nothing in the vault was discarded"
     );
 
@@ -382,6 +365,227 @@ fn a_vault_the_service_knows_ends_as_vault_known_with_nothing_published_or_disca
     assert_eq!(device.enable().unwrap(), EnableOutcome::VaultKnown);
     assert_eq!(device.service.calls().len(), calls_after, "no service call");
     assert_eq!(device.genesis().unwrap(), genesis, "never re-minted");
+}
+
+#[test]
+fn a_vault_that_has_synced_before_is_refused_before_anything_is_minted_or_sent() {
+    // A restored copy carries its sync_base row (a backup includes it) and an unpushed command.
+    for rows in ["base", "outbox", "both"] {
+        let device = Device::new();
+        worker_makes_an_account(&device);
+        let conn = device.worker.read_connection().unwrap();
+        if rows != "outbox" {
+            conn.execute(
+                "INSERT INTO sync_base (singleton, base_seq, base_digest, state, updated_at)
+                 VALUES (1, 7, zeroblob(32), 'Ready', '2026-11-06T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        if rows == "outbox" {
+            conn.execute(
+                "INSERT INTO sync_outbox (command_id, op_seq, state, write_set_keys, created_at)
+                 VALUES (zeroblob(16), 1, 'Pending', zeroblob(0), '2026-11-06T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        if rows == "both" {
+            worker_makes_an_account(&device);
+        }
+        let (log, outbox, accounts) = (
+            device.count("operation_log"),
+            device.count("sync_outbox"),
+            device.count("accounts"),
+        );
+
+        let result = device.enable();
+        assert!(
+            matches!(result, Err(EnableError::LiveVaultHasSyncState)),
+            "{rows}: {result:?}"
+        );
+        assert!(device.service.calls().is_empty(), "{rows}: no service call");
+        assert!(device.genesis().is_none(), "{rows}: nothing minted");
+        assert!(
+            !device.custody().has_device_keys().unwrap(),
+            "{rows}: no device keys made"
+        );
+        assert_eq!(
+            device.witness.verified_mark(&device.vault_id()),
+            Ok(None),
+            "{rows}: the witness untouched"
+        );
+        assert_eq!(
+            (
+                device.count("operation_log"),
+                device.count("sync_outbox"),
+                device.count("accounts")
+            ),
+            (log, outbox, accounts),
+            "{rows}: nothing discarded"
+        );
+    }
+}
+
+#[test]
+fn a_persisted_genesis_is_not_exported_from_a_vault_that_has_gained_sync_state() {
+    let device = Device::new();
+    // Persisted and installed by hand, with nothing sealed: the retry would export the live vault.
+    let records = mint(&device);
+    persist(&device, &records);
+    device.custody().install_genesis(&records).unwrap();
+    device
+        .worker
+        .write_sync_state(|tx| {
+            sync_genesis::advance(tx, GenesisState::Installed, "2026-11-06T00:00:00+00:00")
+        })
+        .unwrap();
+    assert_eq!(device.saved_files(), 0);
+    device
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_base (singleton, base_seq, base_digest, state, updated_at)
+             VALUES (1, 7, zeroblob(32), 'Ready', '2026-11-06T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    let calls = device.service.calls().len();
+
+    assert!(matches!(
+        device.enable(),
+        Err(EnableError::LiveVaultHasSyncState)
+    ));
+    assert_eq!(device.service.calls().len(), calls, "no request");
+    assert_eq!(device.state(), Some(GenesisState::Installed));
+}
+
+// ---- a resume that cannot send what the service holds ------------------------------------------
+
+/// Delete the saved snapshot files, as a lost disk would.
+fn lose_the_saved_container(device: &Device) {
+    let dir = saved_snapshots_dir(device.worker.db_path());
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        std::fs::remove_file(entry.path()).unwrap();
+    }
+}
+
+#[test]
+fn a_fresh_seal_over_a_snapshot_the_service_staged_stops_in_the_terminal_state_once() {
+    let device = Device::new();
+    device.service.script(Fault::Pass); // the stage takes effect
+    device
+        .service
+        .script(Fault::Refuse(ServiceError::Unavailable)); // the install does not arrive
+    assert!(device.enable().is_err());
+    assert_eq!(device.counter(), Some(1));
+    lose_the_saved_container(&device);
+
+    // The retry would seal a different container under the same id: the stage refuses it.
+    assert_eq!(device.enable().unwrap(), EnableOutcome::GenesisResumeLost);
+    assert_eq!(device.state(), Some(GenesisState::GenesisResumeLost));
+    assert!(
+        device.service.published().is_empty(),
+        "nothing was published"
+    );
+    assert_eq!(
+        device.counter(),
+        Some(2),
+        "one counter was spent finding out"
+    );
+    assert_eq!(
+        device.saved_files(),
+        0,
+        "and the container it sealed is dropped"
+    );
+
+    // A restart makes no call and spends nothing.
+    let calls = device.service.calls().len();
+    assert_eq!(device.enable().unwrap(), EnableOutcome::GenesisResumeLost);
+    assert_eq!(device.service.calls().len(), calls);
+    assert_eq!(device.counter(), Some(2));
+}
+
+#[test]
+fn a_fresh_seal_after_the_genesis_was_installed_stops_whatever_credential_it_holds() {
+    for credential in [Credential::Account, Credential::Device] {
+        let device = Device::new();
+        device.service.script(Fault::Pass); // the stage
+        device.service.script(Fault::LoseResponse); // the install takes effect; the answer is lost
+        assert!(device.enable().is_err());
+        assert!(device.service.knows_vault());
+        lose_the_saved_container(&device);
+        device.service.set_credential(credential);
+
+        assert_eq!(
+            device.enable().unwrap(),
+            EnableOutcome::GenesisResumeLost,
+            "{credential:?}"
+        );
+        assert_eq!(device.state(), Some(GenesisState::GenesisResumeLost));
+        assert_eq!(
+            device.service.published().len(),
+            1,
+            "the service's own snapshot"
+        );
+    }
+}
+
+#[test]
+fn a_saved_container_reaches_published_whatever_the_stage_answers() {
+    // The install took effect and its answer was lost; the saved bytes are what the service holds.
+    for (credential, stage_fault) in [
+        (Credential::Account, None),
+        (Credential::Device, None),
+        (
+            Credential::Device,
+            Some(Fault::Refuse(ServiceError::ObjectConflict)),
+        ),
+    ] {
+        let device = Device::new();
+        device.service.script(Fault::Pass);
+        device.service.script(Fault::LoseResponse);
+        assert!(device.enable().is_err());
+        device.service.set_credential(credential);
+        if let Some(fault) = stage_fault.clone() {
+            device.service.script(fault);
+        }
+
+        assert_eq!(
+            device.enable().unwrap(),
+            EnableOutcome::Enabled,
+            "{credential:?} {stage_fault:?}"
+        );
+        assert_eq!(device.state(), Some(GenesisState::Published));
+        assert_eq!(device.service.published().len(), 1);
+        assert_eq!(
+            device.counter(),
+            Some(1),
+            "the same bytes: no second counter"
+        );
+    }
+}
+
+#[test]
+fn a_published_vault_with_a_leftover_saved_file_makes_no_request_and_reseals_nothing() {
+    // The outcome is recorded before the saved container is dropped, so a crash between the two
+    // leaves a Published vault and a leftover file. The next call reads the state first.
+    let device = Device::new();
+    assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
+    assert_eq!(device.state(), Some(GenesisState::Published));
+    let dir = saved_snapshots_dir(device.worker.db_path());
+    std::fs::write(
+        dir.join("00112233445566778899aabbccddeeff.snapshot"),
+        b"leftover",
+    )
+    .unwrap();
+    device.service.set_credential(Credential::Device);
+    let calls = device.service.calls().len();
+
+    assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
+    assert_eq!(device.service.calls().len(), calls, "no request");
+    assert_eq!(device.counter(), Some(1), "nothing was sealed again");
 }
 
 // ---- the refusals that come first --------------------------------------------------------------

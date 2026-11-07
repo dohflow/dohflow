@@ -247,6 +247,78 @@ fn a_lost_install_response_resumes_to_the_same_genesis_without_a_second_counter(
 }
 
 #[test]
+fn a_fresh_container_over_a_staged_one_stops_and_a_saved_one_goes_on_to_install() {
+    // An earlier attempt staged a container; its saved file is gone, so the next seal is fresh.
+    let rig = Rig::genesis("conflict");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let plaintext = pt("genesis");
+    service.script(Fault::Pass); // the stage takes effect
+    service.script(Fault::Refuse(ServiceError::Unavailable)); // the install does not arrive
+    assert!(rig
+        .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .is_err());
+    std::fs::remove_file(rig._dir.0.join(format!("{}.snapshot", hex(&[0x01; 16])))).unwrap();
+
+    // Fresh: the stage answers ObjectConflict, which is not the saved container.
+    assert_eq!(
+        rig.publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext)),
+        Ok(PublishOutcome::GenesisResumeLost)
+    );
+    assert!(service.published().is_empty());
+    assert!(
+        !rig.saved_file_exists(0x01),
+        "the container it sealed is dropped"
+    );
+
+    // Saved: the same refusal at the stage goes on to the install, which decides.
+    let rig = Rig::genesis("conflict-saved");
+    let service = FakeSnapshotService::new(Credential::Account);
+    service.script(Fault::Pass);
+    service.script(Fault::Refuse(ServiceError::Unavailable));
+    assert!(rig
+        .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .is_err());
+    service.script(Fault::Refuse(ServiceError::ObjectConflict)); // the stage of the retry
+    let outcome = rig
+        .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .unwrap();
+    assert!(
+        matches!(outcome, PublishOutcome::GenesisInstalled(_)),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_fresh_container_after_the_genesis_was_installed_stops_and_a_saved_one_finishes() {
+    for lose_the_file in [true, false] {
+        let rig = Rig::genesis("installed");
+        let service = FakeSnapshotService::new(Credential::Account);
+        let plaintext = pt("genesis");
+        service.script(Fault::Pass);
+        service.script(Fault::LoseResponse); // the install takes effect; the answer is lost
+        assert!(rig
+            .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+            .is_err());
+        if lose_the_file {
+            std::fs::remove_file(rig._dir.0.join(format!("{}.snapshot", hex(&[0x01; 16]))))
+                .unwrap();
+        }
+        let outcome = rig
+            .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+            .unwrap();
+        if lose_the_file {
+            assert_eq!(outcome, PublishOutcome::GenesisResumeLost, "a fresh seal");
+        } else {
+            let PublishOutcome::GenesisInstalled(installed) = outcome else {
+                panic!("{outcome:?}");
+            };
+            assert!(installed.already_installed, "the 200 exact retry decided");
+        }
+        assert_eq!(service.published().len(), 1, "the service's own snapshot");
+    }
+}
+
+#[test]
 fn an_install_that_finds_no_staged_snapshot_stages_again_and_retries() {
     let rig = Rig::genesis("restage");
     let service = FakeSnapshotService::new(Credential::Account);

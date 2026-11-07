@@ -32,8 +32,8 @@ use vault_crypto::sync_custody::{CustodyError, EnableError as CustodyEnableError
 use vault_crypto::sync_envelope::SealerIdentity;
 use vault_crypto::sync_snapshot::{SavedSnapshotFiles, SnapshotFields, SnapshotSealer};
 use vault_crypto::sync_snapshot_flow::{
-    genesis_snapshot_id, publish, resume_saved, PublishError, PublishKind, PublishOutcome,
-    PublishRequest,
+    genesis_snapshot_id, publish_keeping_saved, resume_saved_keeping, PublishError, PublishKind,
+    PublishOutcome, PublishRequest,
 };
 
 use crate::base_image::saved_snapshots_dir;
@@ -61,6 +61,12 @@ pub enum EnableOutcome {
     /// published, nothing in the vault changed, and the genesis is never retried: the device
     /// bootstraps from the service's snapshot as a replica.
     VaultKnown,
+    /// An earlier attempt of this genesis reached the service and the container it sent is gone, so
+    /// a fresh export would not be what the service holds. Nothing was published, minted or
+    /// discarded, and a restart does not retry. Shown in Sync status with the support path: the
+    /// vault holds changes the service's snapshot lacks, so the device does not bootstrap on its
+    /// own.
+    GenesisResumeLost,
 }
 
 /// Why enabling did not finish. Calling [`enable_sync`] again resumes it, except where noted.
@@ -89,6 +95,13 @@ pub enum EnableError {
     /// The database failed.
     #[error("{0}")]
     Db(DbError),
+    /// The vault already holds Sync state of an earlier life (a `sync_base` row or an outbox row)
+    /// and no persisted genesis: it has synced before, or it is a restored copy of a vault that
+    /// did. A genesis exported from it would carry the effects of unsequenced local commands that an
+    /// envelope will also carry, so it is never minted or exported; the device joins the vault as a
+    /// device instead (`personal-cfo-1cltt.5`). Nothing was minted or sent.
+    #[error("this vault has synced before: join it as a device instead of enabling Sync")]
+    LiveVaultHasSyncState,
     /// The directory for the saved snapshot could not be created.
     #[error("the saved snapshot directory could not be created")]
     Io,
@@ -112,6 +125,18 @@ from_error! {
     ExportError => Export,
     PublishError => Publish,
     DbError => Db,
+}
+
+/// Whether the live vault holds Sync state of an earlier life: a `sync_base` row, or any outbox row.
+fn holds_sync_state(worker: &DbWorker) -> Result<bool, EnableError> {
+    Ok(worker.write_sync_state(|tx| -> Result<bool, DbError> {
+        let found: i64 = tx.query_row(
+            "SELECT (SELECT count(*) FROM sync_base) + (SELECT count(*) FROM sync_outbox)",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(found > 0)
+    })?)
 }
 
 /// Enable Sync on this device for the vault `worker` holds, or finish an enabling that was
@@ -138,7 +163,12 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
     match held.as_ref().map(|genesis| genesis.state) {
         Some(GenesisState::VaultKnown) => return Ok(EnableOutcome::VaultKnown),
         Some(GenesisState::Published) => return Ok(EnableOutcome::Enabled),
+        Some(GenesisState::GenesisResumeLost) => return Ok(EnableOutcome::GenesisResumeLost),
         _ => {}
+    }
+    // A vault with Sync state of an earlier life and no genesis of its own never mints one.
+    if held.is_none() && holds_sync_state(worker)? {
+        return Err(EnableError::LiveVaultHasSyncState);
     }
     // A halted or stopped replica publishes nothing (Addendum D rule 5); it does not start
     // minting a genesis either.
@@ -212,14 +242,18 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
         membership_record: &genesis.membership_record,
         epoch_record: &genesis.epoch_record,
     };
-    let outcome = match resume_saved(service, &sealer, status, &kind, &snapshot_id)? {
+    let outcome = match resume_saved_keeping(service, &sealer, status, &kind, &snapshot_id)? {
         Some(outcome) => outcome,
         None => {
             // Nothing saved: the genesis is read from the live vault, now, before any outbox row
-            // exists.
+            // exists. A vault that has gained Sync state since is not exported (and a genesis that
+            // is persisted is not sent from it).
+            if holds_sync_state(worker)? {
+                return Err(EnableError::LiveVaultHasSyncState);
+            }
             let plaintext =
                 export_genesis_plaintext(&worker.read_connection()?, &ExportInput::default())?;
-            publish(
+            publish_keeping_saved(
                 service,
                 &sealer,
                 status,
@@ -240,20 +274,23 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
         }
     };
 
-    // 5. Record how it ended.
+    // 5. Record how it ended, and only then drop the saved container: a crash between the two
+    //    leaves the outcome recorded and a leftover file, never a dropped container with the
+    //    outcome lost (which would reseal and reach a service that already holds the genesis).
     let now = Utc::now().to_rfc3339();
-    match outcome {
-        PublishOutcome::GenesisInstalled(_) => {
-            worker
-                .write_sync_state(|tx| sync_genesis::advance(tx, GenesisState::Published, &now))?;
-            Ok(EnableOutcome::Enabled)
-        }
-        PublishOutcome::VaultKnown => {
-            worker
-                .write_sync_state(|tx| sync_genesis::advance(tx, GenesisState::VaultKnown, &now))?;
-            Ok(EnableOutcome::VaultKnown)
-        }
+    let (terminal, result) = match outcome {
+        PublishOutcome::GenesisInstalled(_) => (GenesisState::Published, EnableOutcome::Enabled),
+        PublishOutcome::VaultKnown => (GenesisState::VaultKnown, EnableOutcome::VaultKnown),
+        PublishOutcome::GenesisResumeLost => (
+            GenesisState::GenesisResumeLost,
+            EnableOutcome::GenesisResumeLost,
+        ),
         // A genesis is never published as a re-snapshot.
-        _ => Err(PublishError::GenesisSource.into()),
-    }
+        _ => return Err(PublishError::GenesisSource.into()),
+    };
+    worker.write_sync_state(|tx| sync_genesis::advance(tx, terminal, &now))?;
+    sealer
+        .discard(&snapshot_id)
+        .map_err(PublishError::Snapshot)?;
+    Ok(result)
 }
