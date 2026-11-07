@@ -581,8 +581,12 @@ on a desktop window, and a test proves each.
   `sortable` the headers are gone, so a native "Sort by" control and a direction button above the list keep sorting reachable;
   a table with no sortable column (running balances must never be re-sorted) shows none. Filters stay the caller's: put them
   in a toolbar that stacks at full width on a phone (`compact:flex-col compact:items-stretch compact:px-4`). A table that
-  does not opt in stays the horizontal table on every screen; a table with a `leadingRow` (raw table cells) keeps the table
-  layout. Projected activity is the first user; `.28`'s Accounts and Activity are next.
+  does not opt in stays the horizontal table on every screen. **A table that pins raw cells in `leadingRow` must supply
+  `leadingCards`** (the pinned content as `li` elements: cards or section labels) to stack on a phone; without it, it keeps
+  the table layout, so a table with a pinned block must not opt in until it has both (no phone table may stay horizontal by
+  accident). A column marked `phoneTitle` is the card's heading instead of the first column (a description reads better than
+  a leading date); the others keep their order. Account detail's Activity is the second user (Upcoming and Posted labels,
+  the projected rows as cards). Projected activity is the first user; `.28`'s Accounts and Activity are next.
 
 ## 8. Testing
 

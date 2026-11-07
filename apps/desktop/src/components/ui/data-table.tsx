@@ -36,6 +36,9 @@ export type DataTableColumn<T> = {
   className?: string;
   /// Classes for the header cell only.
   headerClassName?: string;
+  /// On a phone (`phoneLayout="stacked"`) the row's title is the FIRST column unless one column says it is the title
+  /// (a description or a name reads better as the heading than a leading date). The others keep their order.
+  phoneTitle?: boolean;
   /// Opt-IN. Sorting is never assumed: a table whose rows carry order-dependent values
   /// (running balances) is actively wrong when re-sorted, so a column has to say it is
   /// safe (personal-cfo-yequ).
@@ -75,6 +78,7 @@ export function DataTable<T>({
   className,
   label,
   phoneLayout,
+  leadingCards,
 }: {
   columns: DataTableColumn<T>[];
   rows: T[];
@@ -119,10 +123,15 @@ export function DataTable<T>({
   /// card of labeled values in column order, with nothing clipped and no horizontal scroll. A table with a
   /// `leadingRow` (raw table cells) keeps the table layout.
   phoneLayout?: "stacked";
+  /// The stacked equivalent of `leadingRow` (personal-cfo-i93n3.28): pinned content rendered before the rows in the
+  /// phone list, as `li` elements (cards or section labels). A table that pins raw table cells in `leadingRow` must
+  /// supply this too to stack on a phone; without it, it keeps the table layout (no phone table may stay horizontal
+  /// by accident, so a table that cannot stack should not opt in).
+  leadingCards?: ReactNode;
 }) {
   const span = columns.length;
   const compact = useCompactLayout();
-  if (phoneLayout === "stacked" && compact && leadingRow === undefined) {
+  if (phoneLayout === "stacked" && compact && (leadingRow === undefined || leadingCards !== undefined)) {
     return (
       <StackedRows
         columns={columns}
@@ -134,6 +143,7 @@ export function DataTable<T>({
         empty={empty}
         expandedContent={expandedContent}
         rowProps={rowProps}
+        leadingCards={leadingCards}
         trailingRow={trailingRow}
         sort={sort}
         onSortChange={onSortChange}
@@ -306,6 +316,7 @@ function StackedRows<T>({
   empty,
   expandedContent,
   rowProps,
+  leadingCards,
   trailingRow,
   sort,
   onSortChange,
@@ -322,6 +333,7 @@ function StackedRows<T>({
   empty?: { icon: LucideIcon; title: string; description?: string; action?: ReactNode };
   expandedContent?: (row: T) => ReactNode | null;
   rowProps?: (row: T) => { className?: string; "data-state"?: string };
+  leadingCards?: ReactNode;
   trailingRow?: ReactNode;
   sort?: DataTableSort;
   onSortChange?: (sort: DataTableSort) => void;
@@ -330,7 +342,8 @@ function StackedRows<T>({
   label?: string;
 }) {
   const sortable = columns.filter((column) => column.sortable && typeof column.header === "string");
-  const [title, ...rest] = columns;
+  const title = columns.find((column) => column.phoneTitle) ?? columns[0];
+  const rest = columns.filter((column) => column !== title);
 
   return (
     <div className={className}>
@@ -367,6 +380,7 @@ function StackedRows<T>({
         </div>
       )}
       <ul role="list" aria-label={label} className="flex flex-col">
+        {leadingCards}
         {status === "loading" &&
           Array.from({ length: 3 }, (_, index) => (
             <li key={`skeleton-${index}`} className="border-b px-4 py-3">

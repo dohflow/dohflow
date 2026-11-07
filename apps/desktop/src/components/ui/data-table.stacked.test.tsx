@@ -140,4 +140,33 @@ describe("DataTable on a phone (personal-cfo-i93n3.27 slice F)", () => {
     );
     expect(screen.getByRole("table")).toBeInTheDocument();
   });
+
+  it("stacks a table that pins raw cells only when it supplies the phone equivalent (leadingCards)", () => {
+    stubMatchMedia(true);
+    const leadingRow = (
+      <tr>
+        <td colSpan={3}>pinned</td>
+      </tr>
+    );
+    const { rerender } = render(table({ leadingRow }));
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    rerender(table({ leadingRow, leadingCards: <li>pinned as a card</li> }));
+    expect(screen.queryByRole("table")).toBeNull();
+    const items = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("pinned as a card");
+    expect(items).toHaveLength(3);
+  });
+
+  it("uses the column marked phoneTitle as the card heading, keeping the other columns in order", () => {
+    stubMatchMedia(true);
+    const columns: DataTableColumn<Row>[] = [
+      { key: "date", header: "Date", cell: (r) => r.date },
+      { key: "name", header: "Description", phoneTitle: true, cell: (r) => r.name },
+      { key: "amount", header: "Amount", align: "right", cell: (r) => r.amount },
+    ];
+    render(table({ columns }));
+    const item = within(screen.getByRole("list")).getAllByRole("listitem")[1]!;
+    expect(item.firstElementChild!.firstElementChild).toHaveTextContent("Northhollow Health Payroll");
+    expect([...item.querySelectorAll("dt")].map((t) => t.textContent)).toEqual(["Date", "Amount"]);
+  });
 });
