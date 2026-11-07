@@ -167,7 +167,17 @@ fn nf1_future_cash_matches_the_checked_in_arithmetic() {
         forecast.starting_balance.minor_units,
         expected_at(&expected, 0)["net"].as_i64().unwrap()
     );
-    assert!(!forecast.days.is_empty(), "the forecast has days");
+    // One row per calendar day in the horizon, ascending (today and the days after it, `horizon_days` rows in all), and the per-group and
+    // per-account series cover exactly the same days: a series that is short would otherwise pass by comparing less.
+    let expected_days = expected["horizon_days"].as_u64().expect("horizon") as usize;
+    assert_eq!(
+        forecast.days.len(),
+        expected_days,
+        "one forecast row per day of the horizon"
+    );
+    for window in forecast.days.windows(2) {
+        assert!(window[0].date < window[1].date, "days ascend");
+    }
 
     // Net (the plain forecast): every day's closing is the arithmetic closing at its offset.
     for day in &forecast.days {
@@ -230,6 +240,14 @@ fn nf1_future_cash_matches_the_checked_in_arithmetic() {
         }
     }
     assert_eq!(by_account.groups.len(), 3, "spendable, reserve and net");
+    for group in &by_account.groups {
+        assert_eq!(
+            group.closings.len(),
+            forecast.days.len(),
+            "{} covers every day",
+            group.tier
+        );
+    }
 
     // Per account, with its tier.
     for account in expected["accounts"].as_array().unwrap() {
@@ -261,4 +279,12 @@ fn nf1_future_cash_matches_the_checked_in_arithmetic() {
         2,
         "two accounts and nothing unallocated"
     );
+    for series in &by_account.accounts {
+        assert_eq!(
+            series.days.len(),
+            forecast.days.len(),
+            "{} covers every day",
+            series.name
+        );
+    }
 }
