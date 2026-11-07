@@ -242,7 +242,7 @@ export function ProjectedActivityTable({
               role="searchbox"
               aria-label="Filter projected activity"
               placeholder="Filter by activity name…"
-              className="pl-9"
+              className="pl-9 compact:min-w-0 compact:w-full"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />

@@ -119,7 +119,7 @@ export function FutureCashEntries({ currency }: { currency: string }) {
                       : formatIsoDate(entry.date)}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2 compact:flex-wrap">
+                <div className="flex shrink-0 items-center gap-2 compact:shrink compact:flex-wrap">
                   <span
                     className={cn("tabular-nums", signedAmountClass(entry.amount))}
                   >
