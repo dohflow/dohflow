@@ -7,6 +7,7 @@ mod base_image;
 mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;
+mod rebase;
 mod settings_upgrade;
 mod sync_local_state;
 

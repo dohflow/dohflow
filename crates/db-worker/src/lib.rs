@@ -84,6 +84,7 @@ mod merchant_memory;
 mod migrations;
 mod money_inbox;
 mod projection;
+pub mod rebase;
 mod recurring_debt;
 mod recurring_detection;
 mod recurring_instances;
@@ -1646,6 +1647,15 @@ pub enum DbError {
         /// the verdict.
         site: &'static std::panic::Location<'static>,
     },
+    /// A rebase queued this command for the person's decision (personal-cfo-bxsbz.4, ADR 0074
+    /// decision 2): it was not applied, and an ordinary retry of it neither applies it nor
+    /// succeeds as a no-op. It is resolved by the choice the person makes, emitted as a new
+    /// command; the queued one stays as audit evidence.
+    #[error("this change is waiting for your decision after a sync")]
+    QueuedForDisposition {
+        /// The queued command.
+        command_id: Uuid,
+    },
     /// At most one bill is linked to a loan (personal-cfo-6wk.22): linking a second is refused
     /// and names the first so the user can unlink it. The Display text is fixed (bill names are
     /// user data and stay out of logs); the fields carry the name for the interface.
@@ -1758,6 +1768,9 @@ struct Inner {
     /// The write set of the last command this writer applied (vault-format.md C.4). The
     /// operation-log write that stores it is a later part of personal-cfo-t2s4b.
     last_write_set: Option<write_set::WriteSet>,
+    /// How the NEXT command is applied by a rebase (personal-cfo-bxsbz.4); set and taken inside one
+    /// hold of the writer lock by [`rebase`], and `None` for every ordinary command.
+    rebase: Option<rebase::StepContext>,
 }
 
 impl Inner {
@@ -1777,7 +1790,9 @@ impl Inner {
 /// is dropped (lock zeroizes the DEK, ADR 0002).
 enum KeyMaterial {
     Passphrase(Zeroizing<String>),
-    Raw(Dek),
+    /// Shared so a rebase's scratch vault (personal-cfo-bxsbz.4) is keyed with the same DEK
+    /// without copying the key bytes; the key is scrubbed when the last holder drops.
+    Raw(std::sync::Arc<Dek>),
 }
 
 /// The database worker. Cheap to share across threads behind an `Arc`.
@@ -1846,7 +1861,12 @@ impl DbWorker {
         } else {
             open_keyed_raw(&path, &dek)?
         };
-        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), runner_lock)
+        Self::bootstrap(
+            path,
+            conn,
+            KeyMaterial::Raw(std::sync::Arc::new(dek)),
+            runner_lock,
+        )
     }
 
     /// Open an existing envelope-backed vault. Unlike creation, a missing DB
@@ -1883,7 +1903,12 @@ impl DbWorker {
             )));
         }
         let conn = open_existing_keyed_raw(&path, &dek)?;
-        Self::bootstrap(path, conn, KeyMaterial::Raw(dek), lease.file)
+        Self::bootstrap(
+            path,
+            conn,
+            KeyMaterial::Raw(std::sync::Arc::new(dek)),
+            lease.file,
+        )
     }
 
     /// Close this worker (its connections, and its key is zeroized) and keep the vault's lock:
@@ -1967,9 +1992,30 @@ impl DbWorker {
     /// after a vault exists ships as a migration, never as a new check on open.
     fn bootstrap(
         path: PathBuf,
+        conn: Connection,
+        key: KeyMaterial,
+        runner_lock: File,
+    ) -> Result<Self, DbError> {
+        Self::bootstrap_with(path, conn, key, runner_lock, true)
+    }
+
+    /// [`DbWorker::bootstrap`] for a rebase's scratch vault (personal-cfo-bxsbz.4): a copy of the
+    /// base image has no base image of its own, so the open does not reconcile one.
+    fn bootstrap_scratch(
+        path: PathBuf,
+        conn: Connection,
+        key: KeyMaterial,
+        runner_lock: File,
+    ) -> Result<Self, DbError> {
+        Self::bootstrap_with(path, conn, key, runner_lock, false)
+    }
+
+    fn bootstrap_with(
+        path: PathBuf,
         mut conn: Connection,
         key: KeyMaterial,
         runner_lock: File,
+        reconcile_base: bool,
     ) -> Result<Self, DbError> {
         migrations::run_migrations(&mut conn)?;
         let node_id = ensure_node_id(&conn)?;
@@ -1984,6 +2030,7 @@ impl DbWorker {
                 state: WorkerState::Healthy,
                 last_hlc,
                 last_write_set: None,
+                rebase: None,
             }),
             runner_gate: Mutex::new(()),
             base_gate: Mutex::new(()),
@@ -1997,7 +2044,9 @@ impl DbWorker {
         // A base image the vault cannot vouch for is recorded as lost (bxsbz.3). A failure here
         // never blocks the unlock: `base_image_status` re-checks the file on every read, so the
         // recorded state only has to catch up on a later open.
-        let _ = worker.reconcile_base_image();
+        if reconcile_base {
+            let _ = worker.reconcile_base_image();
+        }
         Ok(worker)
     }
 
@@ -3327,7 +3376,7 @@ impl DbWorker {
     /// attachments require the raw key (ADR 0002 / ADR 0023).
     fn dek(&self) -> Result<&Dek, DbError> {
         match &self.key {
-            KeyMaterial::Raw(dek) => Ok(dek),
+            KeyMaterial::Raw(dek) => Ok(dek.as_ref()),
             KeyMaterial::Passphrase(_) => Err(DbError::KeyUnavailable),
         }
     }
@@ -4824,6 +4873,14 @@ impl DbWorker {
         // so a key stored before this rule (a UUIDv7, a prefixed string) still
         // dedupes until its 30-day expiry instead of being rejected.
         validate_idempotency_key(&meta.idempotency_key)?;
+
+        // A command a rebase queued for the person's decision is neither replayed nor applied: a
+        // retry of it is told so (ADR 0074 decision 2). No memo exists for it by design.
+        if rebase::is_queued(&guard.conn, &meta.command_id)? {
+            return Err(DbError::QueuedForDisposition {
+                command_id: meta.command_id,
+            });
+        }
 
         let result = catch_unwind(AssertUnwindSafe(|| {
             apply_command(
@@ -7648,6 +7705,8 @@ fn apply_command(
     // Before anything else: `apply` converts `issued_at` to a calendar instant, and a command
     // from another device may carry any i64 (apply::require_issued_at).
     apply::require_issued_at(meta)?;
+    // A rebase's step context applies to this one command (personal-cfo-bxsbz.4).
+    let step = inner.rebase.take();
     // Advance the HLC before borrowing the connection for the transaction.
     let hlc = inner.next_hlc();
     let tx = inner.conn.transaction()?;
@@ -8376,16 +8435,26 @@ fn apply_command(
         | WriteCommand::SetBillAutopay { .. } => "accounts",
     };
     let affected_entities = affected_entities_json(entity_table, entity_id);
-    let sync_applied_base_seq = sync_state::applied_base_seq(&tx)?;
-    let sync_enabled = sync_applied_base_seq.is_some();
+    // Ordinarily the base is whatever `sync_base` says and Sync being enabled turns the outbox on.
+    // A rebase step states both itself: the base the row is applied on, and whether the command is
+    // an unpushed local one (re-applied) rather than a server envelope.
+    let (sync_applied_base_seq, sync_enabled, rebased_from) = match &step {
+        Some(step) => (step.applied_base_seq, step.record_outbox, step.rebased_from),
+        None => {
+            let base = sync_state::applied_base_seq(&tx)?;
+            (base, base.is_some(), None)
+        }
+    };
     let created_at = Utc::now().to_rfc3339();
     tx.execute(
         "INSERT INTO operation_log (
             command_id, correlation_id, causation_id, actor_type, actor_id,
             idempotency_key, operation_type, affected_entities, metadata, node_id,
             vault_schema_version, hlc_timestamp, created_at,
-            payload, payload_schema_version, write_set_hash, engine_version, applied_base_seq
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            payload, payload_schema_version, write_set_hash, engine_version, applied_base_seq,
+            rebased_from
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                  ?19)",
         params![
             meta.command_id,
             meta.correlation_id,
@@ -8405,6 +8474,7 @@ fn apply_command(
             write_set.hash.as_slice(),
             ENGINE_VERSION,
             sync_applied_base_seq,
+            rebased_from,
         ],
     )?;
     let op_seq = tx.last_insert_rowid();
