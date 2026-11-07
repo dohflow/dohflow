@@ -279,6 +279,14 @@ describe("TransactionsView", () => {
       expect(within(card).getByText("Checking")).toBeInTheDocument();
     });
 
+    it("hides the Tags pair for a transaction with no tags, so no bare label is read (and shows it when there are tags)", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" }, tag_ids: [] })]);
+      renderWithClient(<TransactionsView />);
+      const card = (await screen.findByText(/\+\$?150/)).closest("li")!;
+      expect([...card.querySelectorAll("dt")].map((d) => d.textContent)).not.toContain("Tags");
+    });
+
     it("wraps the action buttons and the search, sort and filter controls on a phone (compact-only classes)", async () => {
       compactScreen();
       mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
