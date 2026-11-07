@@ -76,6 +76,13 @@ impl FakeService {
             .borrow_mut()
             .remove(&(VAULT, epoch, *id.as_bytes()));
     }
+    /// Serve `bytes` for `(epoch, id)` from now on, whatever was put there.
+    fn serve(&self, epoch: u64, id: &ArtifactId, bytes: Vec<u8>) {
+        self.objects
+            .borrow_mut()
+            .insert((VAULT, epoch, *id.as_bytes()), bytes);
+    }
+
     fn corrupt(&self, epoch: u64, id: &ArtifactId) {
         let mut objects = self.objects.borrow_mut();
         let bytes = objects.get_mut(&(VAULT, epoch, *id.as_bytes())).unwrap();
@@ -627,6 +634,50 @@ fn only_a_fact_about_the_artifact_has_a_stage_9_verdict_and_service_faults_do_no
         FetchError::Invalid(OpenArtifactError::WrongAddress).mismatch(id),
         Some(Mismatch::ArtifactInvalid(id))
     );
+}
+
+#[test]
+fn served_bytes_that_are_not_a_container_are_not_the_bound_artifact_and_have_no_verdict() {
+    let service = FakeService::default();
+    let k = key_of(1, 0);
+    let id = ArtifactId::from_derived([0x21; 32]);
+    let meta = metadata();
+    let plaintext = TransportPlaintext {
+        artifact_id: id,
+        kind: ArtifactKind::Attachment,
+        logical_metadata: &meta,
+        blob: BYTES,
+    };
+    publish(&service, &k, &plaintext, Fixity::First).unwrap();
+    let honest = service.bound_hash(1, &id);
+    let good = service.objects.borrow()[&(VAULT, 1, *id.as_bytes())].clone();
+    assert!(fetch(&service, &k, &id, &honest).is_ok());
+
+    let mut bad_magic = good.clone();
+    bad_magic[0] ^= 0xff;
+    // The container frame ends with a length that must equal the body that follows it; make the
+    // body one byte longer, then one byte shorter.
+    let mut too_long = good.clone();
+    too_long.push(0);
+    let too_short = good[..good.len() - 1].to_vec();
+    let nothing = Vec::new();
+    let three_bytes = vec![b'D', b'F', b'S'];
+    for (label, bytes) in [
+        ("bad magic", bad_magic),
+        ("a trailing byte after the declared length", too_long),
+        ("a body shorter than the declared length", too_short),
+        ("empty", nothing),
+        ("three bytes", three_bytes),
+    ] {
+        service.serve(1, &id, bytes);
+        let error = fetch(&service, &k, &id, &honest).err();
+        assert_eq!(error, Some(FetchError::HashMismatch), "{label}");
+        assert_eq!(
+            error.and_then(|e| e.mismatch(id)),
+            None,
+            "{label}: a service fault leaves the envelope not determinable, never voidable"
+        );
+    }
 }
 
 #[test]
