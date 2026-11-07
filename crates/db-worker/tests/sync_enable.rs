@@ -39,7 +39,7 @@ const DEVICE: EnablingDevice = EnablingDevice {
 /// Everything one device has: its vault, secret store and witness, and the service it talks to.
 struct Device {
     dir: tempfile::TempDir,
-    worker: DbWorker,
+    worker: std::sync::Arc<DbWorker>,
     secrets: MockSecretStore,
     witness: MockWitness,
     service: FakeSnapshotService,
@@ -50,7 +50,7 @@ impl Device {
         let (dir, worker) = worker();
         Self {
             dir,
-            worker,
+            worker: std::sync::Arc::new(worker),
             secrets: MockSecretStore::new(),
             witness: MockWitness::new(),
             service: FakeSnapshotService::new(Credential::Account),
@@ -318,11 +318,142 @@ fn the_resume_sends_the_saved_bytes_even_if_the_vault_changed_meanwhile() {
 
     // The user edits the vault between the crash and the resume. Re-exporting would build a
     // different snapshot under the id the service already holds.
+    let mark = device
+        .genesis()
+        .unwrap()
+        .export_high_water
+        .expect("the export's mark");
     worker_makes_an_account(&device);
 
-    assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
+    // The saved bytes are what the service holds, so the genesis is published; but the vault holds
+    // a command past the mark that no envelope carries, so the device is not Enabled.
+    let outcome = device.enable().unwrap();
+    let EnableOutcome::EnabledWithLocalChanges {
+        since_mark,
+        high_water,
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(since_mark, mark);
+    assert!(high_water > since_mark);
+    assert_eq!(device.state(), Some(GenesisState::Published));
     assert_eq!(device.service.published().len(), 1);
     assert_eq!(device.counter(), Some(1), "no second seal");
+}
+
+#[test]
+fn a_command_taken_while_the_genesis_is_in_flight_is_a_local_change_not_an_enabled_vault() {
+    let device = Device::new();
+    worker_makes_an_account(&device);
+    let worker = std::sync::Arc::clone(&device.worker);
+    // The user's command lands between the export and the service's answer.
+    device.service.before("install_epoch", move || {
+        worker.dispatch(meta(), create_account_cmd()).unwrap();
+    });
+
+    let outcome = device.enable().unwrap();
+    let mark = device.genesis().unwrap().export_high_water.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            EnableOutcome::EnabledWithLocalChanges { since_mark, high_water }
+                if since_mark == mark && high_water > mark
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(device.state(), Some(GenesisState::Published));
+}
+
+#[test]
+fn an_unarmed_published_device_reports_every_command_taken_since_and_an_armed_one_is_enabled() {
+    let device = Device::new();
+    worker_makes_an_account(&device);
+    assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
+
+    // A later call, with the vault unchanged, is Enabled; after one more command it is not.
+    assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
+    worker_makes_an_account(&device);
+    assert!(matches!(
+        device.enable().unwrap(),
+        EnableOutcome::EnabledWithLocalChanges { .. }
+    ));
+    assert!(
+        matches!(
+            device.enable().unwrap(),
+            EnableOutcome::EnabledWithLocalChanges { .. }
+        ),
+        "and it stays so across restarts until someone reconciles it"
+    );
+
+    // Armed (a sync_base row exists): the commands that follow are recorded in the outbox, so the
+    // question no longer applies.
+    device
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_base (singleton, base_seq, base_digest, state, updated_at)
+             VALUES (1, 0, zeroblob(32), 'Ready', '2026-11-06T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
+}
+
+#[test]
+fn the_outcome_is_recorded_before_the_saved_container_is_dropped_so_a_failed_record_keeps_it() {
+    // Make the write that records Published fail, as a full disk or a locked database would.
+    let device = Device::new();
+    device
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refuse_published BEFORE UPDATE OF state ON sync_genesis
+             WHEN NEW.state = 'Published'
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+    assert!(device.enable().is_err(), "the record step fails");
+    assert_eq!(
+        device.service.published().len(),
+        1,
+        "the service accepted the genesis"
+    );
+    assert_eq!(
+        device.state(),
+        Some(GenesisState::Installed),
+        "and it was not recorded"
+    );
+    assert_eq!(
+        device.saved_files(),
+        1,
+        "the saved container survives a failed record"
+    );
+    assert_eq!(device.counter(), Some(1));
+
+    // A restart that resumes the saved container hits the same failure, and keeps the container
+    // again: the resume path must not drop it either.
+    assert!(device.enable().is_err());
+    assert_eq!(device.saved_files(), 1, "the resume path keeps it too");
+    assert_eq!(device.counter(), Some(1));
+
+    // The restart resumes the saved container to Published, with no second seal.
+    device
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute_batch("DROP TRIGGER refuse_published;")
+        .unwrap();
+    assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
+    assert_eq!(device.state(), Some(GenesisState::Published));
+    assert_eq!(
+        device.counter(),
+        Some(1),
+        "the same bytes: no second counter"
+    );
+    assert_eq!(device.saved_files(), 0);
 }
 
 // ---- the vault the service already knows (R39) -------------------------------------------------

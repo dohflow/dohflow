@@ -59,9 +59,15 @@ struct State {
     calls: Vec<&'static str>,
 }
 
+/// The operation a hook waits for, and what it runs.
+type Hook = (&'static str, Box<dyn FnOnce() + Send>);
+
 pub struct FakeSnapshotService {
     credential: Mutex<Credential>,
     state: Mutex<State>,
+    /// Runs once, just before the named operation does anything: what happens on the client's
+    /// device while a request is in flight.
+    hook: Mutex<Option<Hook>>,
 }
 
 impl FakeSnapshotService {
@@ -69,7 +75,13 @@ impl FakeSnapshotService {
         Self {
             credential: Mutex::new(credential),
             state: Mutex::new(State::default()),
+            hook: Mutex::new(None),
         }
+    }
+
+    /// Run `action` once, just before the next call of `operation` does anything.
+    pub fn before(&self, operation: &'static str, action: impl FnOnce() + Send + 'static) {
+        *self.hook.lock().unwrap() = Some((operation, Box::new(action)));
     }
 
     pub fn set_credential(&self, credential: Credential) {
@@ -148,6 +160,20 @@ impl FakeSnapshotService {
         op: impl FnOnce(&mut State, Credential) -> Result<R, ServiceError>,
     ) -> Result<R, ServiceError> {
         let credential = *self.credential.lock().unwrap();
+        let hook = {
+            let mut slot = self.hook.lock().unwrap();
+            if slot
+                .as_ref()
+                .is_some_and(|(operation, _)| *operation == name)
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, action)) = hook {
+            action();
+        }
         let mut state = self.state.lock().unwrap();
         state.calls.push(name);
         match state.faults.pop_front() {

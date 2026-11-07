@@ -37,7 +37,7 @@ use vault_crypto::sync_snapshot_flow::{
 };
 
 use crate::base_image::saved_snapshots_dir;
-use crate::logical_export::{export_genesis_plaintext, ExportError, ExportInput};
+use crate::logical_export::{export_genesis_with_mark, ExportError, ExportInput};
 use crate::sync_genesis::{self, GenesisState, GenesisStoreError};
 use crate::sync_register::SqliteRegisterStore;
 use crate::{DbError, DbWorker, ENGINE_VERSION};
@@ -57,6 +57,18 @@ pub struct EnablingDevice {
 pub enum EnableOutcome {
     /// The genesis is published. Sync is enabled on this device.
     Enabled,
+    /// The genesis is published, but the vault changed after the export: its `operation_log` holds
+    /// commands past the mark the genesis was exported at, and no envelope carries them. The device
+    /// is **not armed**: whoever arms it must not treat the vault as ready, because its state is
+    /// not what the genesis carries. The reconciliation (a base built from the genesis plaintext
+    /// and the later commands enqueued as unpushed work) is the replica bootstrap's
+    /// (`personal-cfo-1cltt.5`).
+    EnabledWithLocalChanges {
+        /// The `operation_log` high-water mark of the export.
+        since_mark: u64,
+        /// The high-water mark now.
+        high_water: u64,
+    },
     /// The service already knows this vault and does not hold this genesis (R39). Nothing was
     /// published, nothing in the vault changed, and the genesis is never retried: the device
     /// bootstraps from the service's snapshot as a replica.
@@ -127,6 +139,49 @@ from_error! {
     DbError => Db,
 }
 
+/// The largest `op_seq` of the operation log (`0` for an empty log): the high-water mark.
+fn op_log_high_water(worker: &DbWorker) -> Result<u64, EnableError> {
+    let mark: i64 = worker.write_sync_state(|tx| -> Result<i64, DbError> {
+        Ok(tx.query_row(
+            "SELECT COALESCE(MAX(op_seq), 0) FROM operation_log",
+            [],
+            |r| r.get(0),
+        )?)
+    })?;
+    Ok(u64::try_from(mark).unwrap_or(0))
+}
+
+/// Whether the device has been armed for Sync: a `sync_base` row exists. Until then the commands
+/// the vault takes are not recorded in the outbox, so a log that has grown past the genesis's mark
+/// holds commands no envelope will ever carry.
+fn is_armed(worker: &DbWorker) -> Result<bool, EnableError> {
+    Ok(worker.write_sync_state(|tx| -> Result<bool, DbError> {
+        let rows: i64 = tx.query_row("SELECT count(*) FROM sync_base", [], |r| r.get(0))?;
+        Ok(rows > 0)
+    })?)
+}
+
+/// `Enabled` for a published genesis, or `EnabledWithLocalChanges` when the log has grown past the
+/// mark of the export and the device is not armed yet.
+fn published_outcome(
+    worker: &DbWorker,
+    export_high_water: Option<u64>,
+) -> Result<EnableOutcome, EnableError> {
+    let since_mark = export_high_water.ok_or(GenesisStoreError::Corrupt)?;
+    if is_armed(worker)? {
+        return Ok(EnableOutcome::Enabled);
+    }
+    let high_water = op_log_high_water(worker)?;
+    Ok(if high_water > since_mark {
+        EnableOutcome::EnabledWithLocalChanges {
+            since_mark,
+            high_water,
+        }
+    } else {
+        EnableOutcome::Enabled
+    })
+}
+
 /// Whether the live vault holds Sync state of an earlier life: a `sync_base` row, or any outbox row.
 fn holds_sync_state(worker: &DbWorker) -> Result<bool, EnableError> {
     Ok(worker.write_sync_state(|tx| -> Result<bool, DbError> {
@@ -162,7 +217,12 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
     guard.reconcile(&vault_id, mark.as_ref())?;
     match held.as_ref().map(|genesis| genesis.state) {
         Some(GenesisState::VaultKnown) => return Ok(EnableOutcome::VaultKnown),
-        Some(GenesisState::Published) => return Ok(EnableOutcome::Enabled),
+        Some(GenesisState::Published) => {
+            return published_outcome(
+                worker,
+                held.as_ref().and_then(|genesis| genesis.export_high_water),
+            )
+        }
         Some(GenesisState::GenesisResumeLost) => return Ok(EnableOutcome::GenesisResumeLost),
         _ => {}
     }
@@ -251,8 +311,11 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
             if holds_sync_state(worker)? {
                 return Err(EnableError::LiveVaultHasSyncState);
             }
-            let plaintext =
-                export_genesis_plaintext(&worker.read_connection()?, &ExportInput::default())?;
+            let (plaintext, high_water) =
+                export_genesis_with_mark(&worker.read_connection()?, &ExportInput::default())?;
+            // The mark is persisted before anything is sealed; a later export replaces it.
+            let now = Utc::now().to_rfc3339();
+            worker.write_sync_state(|tx| sync_genesis::record_export_mark(tx, high_water, &now))?;
             publish_keeping_saved(
                 service,
                 &sealer,
@@ -292,5 +355,11 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
     sealer
         .discard(&snapshot_id)
         .map_err(PublishError::Snapshot)?;
+    if terminal == GenesisState::Published {
+        let mark = worker
+            .write_sync_state(|tx| sync_genesis::load(tx))?
+            .and_then(|genesis| genesis.export_high_water);
+        return published_outcome(worker, mark);
+    }
     Ok(result)
 }
