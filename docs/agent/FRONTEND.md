@@ -523,8 +523,8 @@ on a desktop window, and a test proves each.
 - **Touch targets: a fixed 44 pt floor.** On a compact screen every control a finger can press is at
   least 44 by 44 points. The floor lives in one place, `globals.css`, in the compact media query and
   OUTSIDE every cascade layer: `min-height: 44px` on `button`, `[role="button"]`, `[role="menuitem"]`,
-  `summary`, `select`, `textarea` and every text-like `input`, and `min-width: 44px` on the pressable
-  ones. It is in **px, never spacing utilities** (the iOS `--spacing` is below 4px at the smaller system
+  `summary`, `select`, `textarea` and every text-like `input`, and `min-width: 44px` on the same set
+  (measured on a simulator: amount fields laid out 33pt wide, a color input 40pt). It is in **px, never spacing utilities** (the iOS `--spacing` is below 4px at the smaller system
   text sizes), and being unlayered it also wins over a call site's `h-8`, `min-h-0` or `min-h-10`, so a
   new control is compliant without its author remembering; the floor is the rule, not a default. WebKit's native `select` (appearance auto) keeps its own
   `min-height: 30px` and ignores ours, so on compact a `select` also takes an explicit

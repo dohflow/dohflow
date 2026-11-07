@@ -278,7 +278,15 @@
     min-height: 44px;
   }
 
-  :where(button, [role="button"], [role="menuitem"], summary, select) {
+  :where(
+      button,
+      [role="button"],
+      [role="menuitem"],
+      summary,
+      select,
+      textarea,
+      input:not([type="hidden"], [type="checkbox"], [type="radio"], [type="range"])
+    ) {
     min-width: 44px;
   }
 

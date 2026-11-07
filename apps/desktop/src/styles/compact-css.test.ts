@@ -175,6 +175,13 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       for (const selector of ["button", '[role="button"]', '[role="menuitem"]', "summary", "select", "textarea"]) {
         expect(block, selector).toContain(selector);
       }
+      // The width floor covers the same set, text-like inputs included: measured on a simulator, amount
+      // fields laid out 33pt wide and a color input 40pt.
+      const widthAt = block.indexOf("min-width: 44px");
+      const widthSelectors = block.slice(block.lastIndexOf(":where(", widthAt), widthAt);
+      for (const selector of ["button", "select", "textarea", "input:not("]) {
+        expect(widthSelectors, selector).toContain(selector);
+      }
       // Text-like inputs get the height; checkboxes, radios, hidden and range inputs are excluded from
       // THAT rule (the first two have their own below, the others are not pressed).
       expect(block).toMatch(/input:not\(\[type="hidden"\],\s*\[type="checkbox"\],\s*\[type="radio"\],\s*\[type="range"\]\)/);
