@@ -1,0 +1,20 @@
+{
+  "fixture": "NF-1",
+  "purpose": "The shared expected Future Cash result for the NF-1 fixture (personal-cfo-i93n3.27 slice E). Desktop and iPhone are each tested against THIS file, so the phone is held to the same numbers as the desktop. It is derived by arithmetic from the fixture below, not recorded from a run.",
+  "currency": "USD",
+  "horizon_days": 30,
+  "accounts": [
+    { "name": "Glassmoor Checking", "subtype": "checking", "tier": "spendable", "opening_minor": 2513317 },
+    { "name": "Glassmoor Savings", "subtype": "savings", "tier": "reserve", "opening_minor": 800000 }
+  ],
+  "events": [
+    { "offset": 7, "label": "Glassmoor Utilities", "account": "Glassmoor Checking", "amount_minor": -18432 },
+    { "offset": 10, "label": "Northhollow Health Payroll", "account": "Glassmoor Checking", "amount_minor": 291240 }
+  ],
+  "closing_rule": "A closing balance at an offset is the last listed closing at or before it: nothing changes between the listed offsets. No percentile range: p10, p50 and p90 are equal.",
+  "closings": [
+    { "offset": 0, "net": 3313317, "spendable": 2513317, "reserve": 800000, "accounts": { "Glassmoor Checking": 2513317, "Glassmoor Savings": 800000 } },
+    { "offset": 7, "net": 3294885, "spendable": 2494885, "reserve": 800000, "accounts": { "Glassmoor Checking": 2494885, "Glassmoor Savings": 800000 } },
+    { "offset": 10, "net": 3586125, "spendable": 2786125, "reserve": 800000, "accounts": { "Glassmoor Checking": 2786125, "Glassmoor Savings": 800000 } }
+  ]
+}
