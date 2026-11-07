@@ -160,6 +160,7 @@ export function DebtTermsTable({
           rows={debts}
           rowKey={(d) => d.account.id}
           label="Balances and terms for the debts in scope"
+          phoneLayout="stacked"
         />
       </CardContent>
     </Card>

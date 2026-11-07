@@ -685,6 +685,7 @@ export function ScenariosView({
                 rows={visible}
                 rowKey={(scenario) => scenario.id}
                 rowProps={appliedRowProps}
+                phoneLayout="stacked"
                 minWidth="min-w-[640px]"
               />
               {deletedAppliedSection}
