@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { describeIpcError, useVault } from "@/vault/useVault";
+import { pickedFilePath } from "./pickedPath";
 
 /// Restore a vault from an encrypted backup file (au3, ADR 0024). Pick the package
 /// via a native Open dialog, enter its password, and the vault opens unlocked. A fresh
@@ -60,7 +61,7 @@ export function RestoreFromBackup({
         filters: [{ name: "DohFlow backup", extensions: ["pcfobk"] }],
       });
       // `open` returns string | string[] | null; we requested a single file.
-      if (typeof selected === "string") setPackagePath(selected);
+      if (typeof selected === "string") setPackagePath(pickedFilePath(selected));
       else returnFocusAfterPick.current = true;
     } catch {
       setError("The backup file picker could not be opened. Please try again.");
@@ -126,7 +127,7 @@ export function RestoreFromBackup({
         </>
       ) : (
         <form onSubmit={(event) => void onRestore(event)} className="flex flex-col gap-2" aria-busy={busy}>
-          // The chosen file wraps (a long path is never cut off); it is not truncated.
+          {/* The chosen file wraps (a long path is never cut off); it is not truncated. */}
           <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{packagePath}</p>
           {mode === "newNamed" && (
             <div className="flex flex-col gap-1.5">
