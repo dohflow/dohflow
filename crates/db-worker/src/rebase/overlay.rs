@@ -200,6 +200,62 @@ const OVERLAID: &[Spec] = &[
     },
 ];
 
+/// The class-1b rows of an import still in progress (bxsbz.6 AC5): its batch, the batch's records and
+/// parser runs. An import is in progress while a staged row of it is `staged` or `flagged`, or it has
+/// staged accounts or balances; its already-decided rows travel with it, as one local unit. They are carried only under the
+/// rules of `carry_sources`.
+const SRC_BATCHES: Spec = Spec {
+    table: "source_batches",
+    filter: Some(
+        "id IN (SELECT source_batch_id FROM staged_accounts
+                       UNION SELECT source_batch_id FROM source_records
+                              WHERE id IN (SELECT source_record_id FROM staged_transactions
+                                            WHERE commit_status IN ('staged', 'flagged')
+                                            UNION SELECT source_record_id FROM staged_balances))",
+    ),
+    kind: Kind::Keyed,
+    refs: &[Ref {
+        column: "connector_connection_id",
+        target_table: "connector_connections",
+        target_column: "id",
+        missing: Missing::Block,
+    }],
+};
+const SRC_RECORDS: Spec = Spec {
+    table: "source_records",
+    filter: Some(
+        "source_batch_id IN (SELECT source_batch_id FROM staged_accounts
+                       UNION SELECT source_batch_id FROM source_records
+                              WHERE id IN (SELECT source_record_id FROM staged_transactions
+                                            WHERE commit_status IN ('staged', 'flagged')
+                                            UNION SELECT source_record_id FROM staged_balances))",
+    ),
+    kind: Kind::Keyed,
+    refs: &[Ref {
+        column: "source_batch_id",
+        target_table: "source_batches",
+        target_column: "id",
+        missing: Missing::Block,
+    }],
+};
+const SRC_RUNS: Spec = Spec {
+    table: "parser_runs",
+    filter: Some(
+        "source_batch_id IN (SELECT source_batch_id FROM staged_accounts
+                       UNION SELECT source_batch_id FROM source_records
+                              WHERE id IN (SELECT source_record_id FROM staged_transactions
+                                            WHERE commit_status IN ('staged', 'flagged')
+                                            UNION SELECT source_record_id FROM staged_balances))",
+    ),
+    kind: Kind::Keyed,
+    refs: &[Ref {
+        column: "source_batch_id",
+        target_table: "source_batches",
+        target_column: "id",
+        missing: Missing::Block,
+    }],
+};
+
 /// Class-3 tables the overlay reads but carries by their own rule.
 const AUDIT: Spec = Spec {
     table: "audit_events",
@@ -270,6 +326,14 @@ pub enum BlockCause {
         /// The rows.
         rows: Offending,
     },
+    /// A source row of an in-flight import has the id of a row a pulled envelope (or the replay)
+    /// wrote: the same file was imported elsewhere. Blocks until bxsbz.8's AlreadyPresent rule.
+    SourceIdCollision {
+        /// The class-1b table.
+        kind: &'static str,
+        /// The rows.
+        rows: Offending,
+    },
     /// A live memo belongs to no planned or queued command and is not in the scratch vault.
     UnplannedMemo {
         /// The memos.
@@ -334,6 +398,10 @@ impl BlockCause {
                     rows.count
                 )
             }
+            Self::SourceIdCollision { kind, rows } => format!(
+                "{} {kind} row(s) of an in-flight import share an id with a row the rebase wrote",
+                rows.count
+            ),
             Self::UnplannedMemo { rows } => format!(
                 "{} idempotency memo(s) belong to no planned or queued command",
                 rows.count
@@ -438,6 +506,8 @@ pub struct Preservation {
     audit: TableImage,
     memos: TableImage,
     migrations: TableImage,
+    /// The in-flight import's batch, records and parser runs, in that order.
+    sources: Vec<TableImage>,
     digest: [u8; 32],
 }
 
@@ -506,12 +576,20 @@ impl DbWorker {
         let audit = read_table(&tx, &AUDIT)?;
         let memos = read_table(&tx, &MEMOS)?;
         let migrations = read_table(&tx, &MIGRATIONS)?;
+        let sources = [&SRC_BATCHES, &SRC_RECORDS, &SRC_RUNS]
+            .into_iter()
+            .map(|spec| read_table(&tx, spec))
+            .collect::<Result<Vec<_>, _>>()?;
         drop(tx);
         let mut hasher = Sha256::new();
         for command in &local {
             hasher.update(command.meta.command_id.as_bytes());
         }
-        for table in tables.iter().chain([&audit, &memos, &migrations]) {
+        for table in tables
+            .iter()
+            .chain([&audit, &memos, &migrations])
+            .chain(&sources)
+        {
             hasher.update(table.table.as_bytes());
             for row in &table.rows {
                 let mut buf = Vec::new();
@@ -528,6 +606,7 @@ impl DbWorker {
             audit,
             memos,
             migrations,
+            sources,
             digest: hasher.finalize().into(),
         })
     }
@@ -543,6 +622,37 @@ pub(super) fn inherited_keys(worker: &DbWorker) -> Result<Inherited, RebaseError
         out.insert(spec.table, keys);
     }
     Ok(out)
+}
+
+/// The ids of every source batch and source record the base image carries: a row of an in-flight
+/// import is carried only if the base does not already have it.
+pub(super) fn base_source_ids(worker: &DbWorker) -> Result<BTreeSet<Vec<u8>>, RebaseError> {
+    let guard = worker.lock();
+    let mut stmt = guard
+        .conn
+        .prepare("SELECT id FROM source_batches UNION ALL SELECT id FROM source_records")?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    Ok(ids)
+}
+
+/// The source batch and record ids a command names. A command that is not listed here names none;
+/// a pulled one that names a row of an in-flight import is caught as a collision instead.
+fn source_ids_of(cmd: &crate::WriteCommand) -> Vec<Vec<u8>> {
+    use crate::WriteCommand as W;
+    match cmd {
+        W::CreateSourceBatch { id, .. } => vec![id.as_uuid().as_bytes().to_vec()],
+        W::AttachSourceRecord { id, batch_id, .. } => vec![
+            id.as_uuid().as_bytes().to_vec(),
+            batch_id.as_uuid().as_bytes().to_vec(),
+        ],
+        W::UpdateBatchState { batch_id, .. } => vec![batch_id.as_uuid().as_bytes().to_vec()],
+        W::CommitImportedTransaction {
+            source_record_id, ..
+        } => vec![source_record_id.as_uuid().as_bytes().to_vec()],
+        _ => Vec::new(),
+    }
 }
 
 /// What an overlay did to one table.
@@ -594,17 +704,43 @@ impl Scratch<'_> {
         }
         let report = {
             let guard = self.worker.lock();
-            overlay_in(&guard.conn, image, &self.inherited, &self.path)?
+            let local: BTreeSet<Vec<u8>> = image
+                .local
+                .iter()
+                .flat_map(|c| source_ids_of(&c.cmd))
+                .collect();
+            let pulled: BTreeSet<Vec<u8>> = self
+                .pulled_commands
+                .iter()
+                .flat_map(|p| source_ids_of(&p.cmd))
+                .collect();
+            let carry = Carry {
+                base: &self.base_sources,
+                local: &local,
+                pulled: &pulled,
+            };
+            overlay_in(&guard.conn, image, &self.inherited, &carry, &self.path)?
         };
         self.overlaid = true;
         Ok(report)
     }
 }
 
+/// What decides whether a source row of an in-flight import is carried.
+struct Carry<'a> {
+    /// The ids the base image already holds.
+    base: &'a BTreeSet<Vec<u8>>,
+    /// The ids an outbox command names: its replay or queue owns them.
+    local: &'a BTreeSet<Vec<u8>>,
+    /// The ids a pulled envelope names.
+    pulled: &'a BTreeSet<Vec<u8>>,
+}
+
 fn overlay_in(
     conn: &Connection,
     image: &Preservation,
     inherited: &Inherited,
+    carry: &Carry<'_>,
     scratch: &Path,
 ) -> Result<OverlayReport, RebaseError> {
     let blocked = |table: &'static str, cause: BlockCause| {
@@ -639,6 +775,7 @@ fn overlay_in(
         .map(|spec| drop_inherited(&tx, spec, inherited, &blocked))
         .collect::<Result<Vec<_>, _>>()?;
     let mut report = OverlayReport::default();
+    carry_sources(&tx, image, carry, &mut report, &blocked)?;
     for ((spec, table), removed) in OVERLAID.iter().zip(&image.tables).zip(removed) {
         let mut entry = OverlayTable {
             table: spec.table,
@@ -802,6 +939,84 @@ fn place(
             },
         ))
     }
+}
+
+/// Carry the class-1b rows of an import still in progress, with its staging rows, as one local unit
+/// (bxsbz.6 AC5). A row is carried only if the base image does not hold it and no envelope or outbox
+/// command names it, so it has never left this device; a row such a command names is not carried
+/// here (its command replays or queues on its own). A candidate whose id the scratch vault already
+/// holds was written by a pulled envelope or the replay: the same file was imported elsewhere, and
+/// the rebase blocks with a typed cause until bxsbz.8's AlreadyPresent rule.
+fn carry_sources(
+    tx: &Connection,
+    image: &Preservation,
+    carry: &Carry<'_>,
+    report: &mut OverlayReport,
+    blocked: &dyn Fn(&'static str, BlockCause) -> RebaseError,
+) -> Result<(), RebaseError> {
+    let specs = [&SRC_BATCHES, &SRC_RECORDS, &SRC_RUNS];
+    let mut carried_batches: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for (spec, table) in specs.into_iter().zip(&image.sources) {
+        let Some(id_column) = table.column("id") else {
+            return Err(blocked(spec.table, BlockCause::SchemaDiffers));
+        };
+        let batch_column = table.column("source_batch_id");
+        let mut entry = OverlayTable {
+            table: spec.table,
+            ..OverlayTable::default()
+        };
+        let mut rows: Vec<&Vec<Value>> = Vec::new();
+        let mut collisions = Vec::new();
+        for row in &table.rows {
+            let Value::Blob(id) = &row[id_column] else {
+                continue;
+            };
+            if carry.base.contains(id) {
+                continue;
+            }
+            // A pulled envelope names this id: the same file was imported elsewhere.
+            let exists = row_by_key(tx, table, &table.key_of(row))?.is_some();
+            if exists && carry.pulled.contains(id) {
+                collisions.push(key_bytes(&table.key_of(row)));
+                continue;
+            }
+            if carry.local.contains(id) || carry.pulled.contains(id) {
+                continue;
+            }
+            // A record or run is carried only with its batch (or the base's).
+            if let Some(batch_column) = batch_column {
+                if let Value::Blob(batch) = &row[batch_column] {
+                    if !carry.base.contains(batch) && !carried_batches.contains(batch) {
+                        continue;
+                    }
+                }
+            }
+            if exists {
+                collisions.push(key_bytes(&table.key_of(row)));
+                continue;
+            }
+            rows.push(row);
+        }
+        if !collisions.is_empty() {
+            return Err(blocked(
+                spec.table,
+                BlockCause::SourceIdCollision {
+                    kind: spec.table,
+                    rows: Offending::from_keys(&collisions),
+                },
+            ));
+        }
+        if spec.table == "source_batches" {
+            for row in &rows {
+                if let Value::Blob(id) = &row[id_column] {
+                    carried_batches.insert(id.clone());
+                }
+            }
+        }
+        place(tx, spec, table, &rows, &mut entry, blocked)?;
+        report.tables.push(entry);
+    }
+    Ok(())
 }
 
 /// Carry the stable audit rows; withhold the replay-owned ones. Audit is append-only, so nothing

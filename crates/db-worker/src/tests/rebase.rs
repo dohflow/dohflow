@@ -2854,23 +2854,158 @@ mod overlay {
         );
     }
 
+    /// An import left half-done on the live vault after the base: its batch, its record and a staged
+    /// row, none of which any envelope names.
+    fn in_flight_import(w: &World) -> (Uuid, Uuid, Uuid) {
+        let (batch, record) = source(&w.live);
+        let staged = Uuid::now_v7();
+        stage(&w.live, record, w.account, staged, 9);
+        (batch, record, staged)
+    }
+
+    fn row_count(worker: &DbWorker, table: &str, id: Uuid) -> i64 {
+        count(
+            worker,
+            &format!("SELECT COUNT(*) FROM {table} WHERE id = x'{}'", hex(id)),
+        )
+    }
+
     #[test]
-    fn a_staged_row_whose_source_the_rebuilt_vault_lacks_blocks_the_rebase() {
+    fn an_in_flight_import_is_carried_with_its_source_rows_across_a_rebase_that_pulls_others() {
         let w = world();
-        // Staged after the base, on an import whose provenance exists only on this device.
-        let (_batch, record) = source(&w.live);
-        stage(&w.live, record, w.account, Uuid::now_v7(), 9);
+        let (batch, record, staged) = in_flight_import(&w);
         let (mut scratch, image) = ready(&w);
+        let report = scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+        assert_eq!(row_count(s, "source_batches", batch), 1);
+        assert_eq!(row_count(s, "source_records", record), 1);
+        assert_eq!(row_count(s, "staged_transactions", staged), 1);
+        assert_eq!(report.table("source_batches").unwrap().inserted, 1);
+        assert_eq!(report.table("source_records").unwrap().inserted, 1);
+        // The ids and the bytes are the live vault's, exactly.
+        let read = |worker: &DbWorker| -> (String, String) {
+            worker
+                .lock()
+                .conn
+                .query_row(
+                    "SELECT r.normalized_json, b.source_name FROM source_records r
+                       JOIN source_batches b ON b.id = r.source_batch_id WHERE r.id = ?1",
+                    [record],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(read(s), read(&w.live));
+    }
+
+    #[test]
+    fn an_in_flight_import_commits_or_is_discarded_after_the_rebase() {
+        let w = world();
+        let (batch, record, staged) = in_flight_import(&w);
+        let (mut scratch, image) = ready(&w);
+        scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+        // Skipping works on the carried rows.
+        s.skip_staged(StagedTransactionId::from_uuid(staged))
+            .unwrap();
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM staged_transactions WHERE id = x'{}' AND commit_status = 'skipped'",
+                    hex(staged)
+                )
+            ),
+            1
+        );
+        // Discarding the import deletes the staging and the source rows together.
+        crate::ingestion::discard_batch(&s.lock().conn, batch).unwrap();
+        assert_eq!(row_count(s, "source_batches", batch), 0);
+        assert_eq!(row_count(s, "source_records", record), 0);
+        assert_eq!(row_count(s, "staged_transactions", staged), 0);
+    }
+
+    #[test]
+    fn a_same_id_source_row_from_a_pulled_envelope_blocks_with_a_typed_cause() {
+        let w = world();
+        let (batch, _record, _staged) = in_flight_import(&w);
+        let device_b = other_device(&w.live, &w.dir);
+        let sealed = seal(
+            device_b.worker(),
+            &meta(),
+            &WriteCommand::CreateSourceBatch {
+                id: SourceBatchId::from_uuid(batch),
+                source_type: "other".to_owned(),
+                source_name: Some("the same file".to_owned()),
+                file_fingerprint: None,
+                parser_version: None,
+                connector_connection_id: None,
+            },
+        );
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
         let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
-        assert_eq!(blocked.table, "staged_transactions");
+        assert_eq!(blocked.table, "source_batches");
+        assert!(matches!(
+            blocked.cause,
+            BlockCause::SourceIdCollision { kind: "source_batches", rows } if rows.count == 1
+        ));
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT COUNT(*) FROM staged_transactions WHERE row_ordinal = 9"
+            ),
+            0,
+            "nothing was overlaid"
+        );
+    }
+
+    #[test]
+    fn a_source_row_a_local_command_names_is_never_carried_this_way() {
+        let w = world();
+        // A local import written through the bus: the batch is named by an outbox command.
+        let batch = Uuid::now_v7();
+        let issued = executor::issue(
+            &w.live,
+            meta(),
+            WriteCommand::CreateSourceBatch {
+                id: SourceBatchId::from_uuid(batch),
+                source_type: "other".to_owned(),
+                source_name: Some("through the bus".to_owned()),
+                file_fingerprint: None,
+                parser_version: None,
+                connector_connection_id: None,
+            },
+        );
+        assert_eq!(issued.meta.command_id, issued.command.command_id);
+        let record = Uuid::now_v7();
+        exec(
+            &w.live,
+            "INSERT INTO source_records
+                (id, source_batch_id, external_id, source_hash, normalized_json,
+                 parse_confidence_bps, created_at)
+             VALUES (?1, ?2, 'ext', 'hash-bus', '{}', 10000, 't')",
+            params![record, batch],
+        );
+        stage(&w.live, record, w.account, Uuid::now_v7(), 8);
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        // The replay wrote the batch itself; the overlay does not copy the live one over it.
+        let report = scratch.overlay_class3(&image).unwrap_err();
+        // The record (not named by any command) cannot be carried without a batch of its own: the
+        // staged row's reference is what blocks, never a copy of a row an envelope names.
+        let blocked = blocked(report);
         assert!(matches!(
             blocked.cause,
             BlockCause::MissingReference {
-                column: "source_record_id",
                 target: "source_records",
                 ..
             }
         ));
+        assert_eq!(row_count(scratch.worker(), "source_batches", batch), 1);
     }
 
     #[test]
@@ -3580,5 +3715,53 @@ mod overlay {
             (evidence.missing[0].kind, evidence.missing[0].rows.count),
             ("source_batch", 1)
         );
+    }
+
+    #[test]
+    fn the_decided_rows_of_an_import_still_in_progress_travel_with_it_and_a_finished_import_does_not(
+    ) {
+        let w = world();
+        let (batch, record, _staged) = in_flight_import(&w);
+        // A second record of the same import was already skipped; the import is still in progress.
+        let record2 = Uuid::now_v7();
+        exec(
+            &w.live,
+            "INSERT INTO source_records
+                (id, source_batch_id, external_id, source_hash, normalized_json,
+                 parse_confidence_bps, created_at)
+             VALUES (?1, ?2, 'ext2', 'hash2', '{}', 10000, 't')",
+            params![record2, batch],
+        );
+        let skipped = Uuid::now_v7();
+        stage(&w.live, record2, w.account, skipped, 10);
+        exec(
+            &w.live,
+            "UPDATE staged_transactions SET commit_status = 'skipped' WHERE id = ?1",
+            params![skipped],
+        );
+        let (mut scratch, image) = ready(&w);
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(row_count(scratch.worker(), "source_records", record), 1);
+        assert_eq!(row_count(scratch.worker(), "source_records", record2), 1);
+
+        // An import whose every staged row is decided is not in progress: nothing of it is
+        // carried, so its staged rows have nothing to point at.
+        let w = world();
+        let (_batch, record, staged) = in_flight_import(&w);
+        exec(
+            &w.live,
+            "UPDATE staged_transactions SET commit_status = 'skipped' WHERE id = ?1",
+            params![staged],
+        );
+        let (mut scratch, image) = ready(&w);
+        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert!(matches!(
+            blocked.cause,
+            BlockCause::MissingReference {
+                target: "source_records",
+                ..
+            }
+        ));
+        assert_eq!(row_count(scratch.worker(), "source_records", record), 0);
     }
 }

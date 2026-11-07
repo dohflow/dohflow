@@ -323,6 +323,8 @@ pub struct Scratch<'a> {
     rebased: bool,
     /// The keys of the class-3 rows the base image itself carries: the only rows the overlay drops.
     inherited: overlay::Inherited,
+    /// The ids of the source batches and records the base image holds.
+    base_sources: BTreeSet<Vec<u8>>,
     /// Whether the class-3 overlay was carried onto this scratch vault.
     overlaid: bool,
     /// The commands the scratch vault applied from the server's tail, in seq order.
@@ -391,6 +393,14 @@ impl DbWorker {
                 return Err(error);
             }
         };
+        let base_sources = match overlay::base_source_ids(&worker) {
+            Ok(ids) => ids,
+            Err(error) => {
+                drop(worker);
+                let _ = fs::remove_file(scratch_path);
+                return Err(error);
+            }
+        };
         Ok(Scratch {
             live: self,
             worker,
@@ -402,6 +412,7 @@ impl DbWorker {
             cleared: BTreeSet::new(),
             rebased: false,
             inherited,
+            base_sources,
             overlaid: false,
             pulled_commands: Vec::new(),
             effects_applied: false,
