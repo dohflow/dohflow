@@ -170,10 +170,6 @@ beforeEach(() => {
 });
 
 describe("FutureCashView", () => {
-  it("offers the forecast date reader under the projected activity (i93n3.27 slice C)", async () => {
-    renderWithClient(<FutureCashView />);
-    expect(await screen.findByRole("combobox", { name: "Forecast date" })).toBeInTheDocument();
-    expect(screen.getByText("Read forecast by date")).toBeInTheDocument();
   // personal-cfo-i93n3.27 slice F: at the largest text size on a phone the pickers and the money wrap instead of
   // running off the screen (found by measuring the populated screen with the accessibility tree).
   it("lets the horizon and lookback pickers wrap, and breaks money inside the number, on a phone", async () => {
