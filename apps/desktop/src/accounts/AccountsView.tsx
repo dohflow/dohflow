@@ -255,7 +255,7 @@ export function AccountsView() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
+          <div className="grid gap-x-6 gap-y-5 md:grid-cols-2 compact:grid-cols-1">
             <BalanceColumn
               title="Assets"
               total={money(summary.assets)}

@@ -326,6 +326,8 @@ test("the Accounts list wraps its summary, section header, rows and toolbar on a
   // The summary grid fits as many columns as the text size allows (one at the largest).
   const stat = screen.getByText("Net worth").closest("div.grid")!;
   expect(stat.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))]");
+  // The groups are one column no wider than the window (an implicit grid column grows to its widest content).
+  expect(screen.getByText("Assets").closest("div.grid")!.className).toContain("compact:grid-cols-1");
   // A row: the name takes its own line, the balance and actions wrap below it, and the text wraps.
   const row = name.closest("li")!;
   expect(row.firstElementChild).toHaveClass("compact:flex-wrap");
