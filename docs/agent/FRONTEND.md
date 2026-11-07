@@ -572,7 +572,7 @@ on a desktop window, and a test proves each.
   `personal-cfo-i93n3.27`, not this.
 
 - **Session view state** (personal-cfo-i93n3.27, slice D). The view settings that should survive a visit to another
-  destination live in `SessionViewStateProvider` (`src/lib/sessionViewState.tsx`), provided once inside `UnlockedHome`, and
+  destination live in `SessionViewStateProvider` (`src/lib/SessionViewStateProvider.tsx`; the hook and keys are in `sessionViewState.ts`), provided once inside `UnlockedHome`, and
   views read them with `useSessionState(key, initial)`, which is `useState` with a closed set of keys
   (`SessionViewStateKey`). Today: the Cash Flow horizon, lookback and scenario stack, and the projected-activity search
   text, type filter, page, account columns and open event. The store is a `Map` in a ref: **memory only**, no module-level
