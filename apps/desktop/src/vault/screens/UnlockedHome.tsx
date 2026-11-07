@@ -31,6 +31,7 @@ import { GlobalSearch } from "@/search/GlobalSearch";
 import { useCompactLayout } from "@/lib/compact";
 import { SAFE_AREA_PADDING } from "@/lib/safeArea";
 import { cn } from "@/lib/utils";
+import { SessionViewStateProvider } from "@/lib/SessionViewStateProvider";
 import { CompactNavBar } from "./CompactNav";
 import { Sidebar, type Tab } from "./Sidebar";
 
@@ -118,6 +119,9 @@ export function UnlockedHome() {
     // (h-dvh + overflow-hidden), so the sidebar stays full-height and its
     // bottom-pinned items never get pushed below a tall content pane (personal-cfo-4d8.9).
     <NoticeProvider>
+    {/* The view settings that survive a visit to another destination live exactly as long as this shell
+        (personal-cfo-i93n3.27 slice D): the router unmounts it on every lock and on a vault switch. */}
+    <SessionViewStateProvider>
     <div
       className={cn(
         "flex h-dvh overflow-hidden bg-background",
@@ -210,6 +214,7 @@ export function UnlockedHome() {
       <UpdateAvailableNotice onGoToSettings={() => setTab("settings")} />
       {searching && <GlobalSearch onClose={() => setSearching(false)} />}
     </div>
+    </SessionViewStateProvider>
     </NoticeProvider>
   );
 }

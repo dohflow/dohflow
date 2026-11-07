@@ -33,6 +33,7 @@ import { useCashFlowHistory } from "@/accounts/useCashFlowHistory";
 import { useComfortBand } from "@/dashboard/useComfortBand";
 import { LoanDoubleCountWarning } from "@/accounts/LoanDoubleCountWarning";
 import { LinkedBillNotices } from "@/bills/LinkedBillNotices";
+import { useSessionState } from "@/lib/sessionViewState";
 import { ScenarioBar } from "./ScenarioBar";
 import { ScenarioLayers } from "./ScenarioLayers";
 import { ScenarioStack } from "./ScenarioStack";
@@ -72,8 +73,12 @@ export function FutureCashView({
   scenarioId?: string | null;
   onScenarioChange?: (id: string | null) => void;
 } = {}) {
-  const [horizon, setHorizon] = useState<number>(DEFAULT_FUTURE_CASH_HORIZON);
-  const [lookback, setLookback] = useState<number>(DEFAULT_HISTORY_LOOKBACK);
+  // The view settings survive a visit to another destination, for the unlocked session only
+  // (personal-cfo-i93n3.27 slice D). A restored value that is no longer one of the options falls back to the default.
+  const [storedHorizon, setHorizon] = useSessionState<number>("futureCash.horizon", DEFAULT_FUTURE_CASH_HORIZON);
+  const horizon = FUTURE_CASH_HORIZONS.some((o) => o.days === storedHorizon) ? storedHorizon : DEFAULT_FUTURE_CASH_HORIZON;
+  const [storedLookback, setLookback] = useSessionState<number>("futureCash.lookback", DEFAULT_HISTORY_LOOKBACK);
+  const lookback = HISTORY_LOOKBACKS.some((o) => o.days === storedLookback) ? storedLookback : DEFAULT_HISTORY_LOOKBACK;
   const [localScenarioId, setLocalScenarioId] = useState<string | null>(null);
   const scenarioId = controlledScenarioId ?? localScenarioId;
   const setScenarioId = onScenarioChange ?? setLocalScenarioId;
@@ -81,7 +86,7 @@ export function FutureCashView({
   // The selected scenario stays the one being EDITED (ScenarioBar + ScenarioEvents act on
   // it); these compose over it. Order is the precedence (ADR 0059 §1), and a later entry
   // wins a conflict — which is why the stack is rendered in order rather than as a set.
-  const [stackedIds, setStackedIds] = useState<string[]>([]);
+  const [stackedIds, setStackedIds] = useSessionState<string[]>("futureCash.stackedIds", []);
   // The stack the forecast actually includes. A stacked scenario archived, deleted or
   // expired since it was picked is dropped by the backend (ADR 0051), so it is dropped here
   // too: otherwise the readout would list a change the forecast does not have. Pruned in the
@@ -103,7 +108,7 @@ export function FutureCashView({
         });
   useEffect(() => {
     if (liveStacked.length !== stackedIds.length) setStackedIds(liveStacked);
-  }, [liveStacked, stackedIds.length]);
+  }, [liveStacked, stackedIds.length, setStackedIds]);
   const selection = scenarioId === null ? [] : [scenarioId, ...liveStacked];
   // Always load the base; load the scenario when one is selected (same key as
   // base when `null`, so TanStack dedups). The compare delta reads both. The

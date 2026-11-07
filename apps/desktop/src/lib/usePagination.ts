@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 
+import { useSessionState, type SessionViewStateKey } from "@/lib/sessionViewState";
+
 /// The selectable page sizes; the first is the default (the feedback's "last 10").
 export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 export type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
@@ -41,11 +43,19 @@ export type Pagination<T> = {
 /// scale, so we slice it here; a windowed offset/limit read path is deferred until a
 /// dataset is large enough to need it. `storageKey` namespaces the sticky size per
 /// surface (e.g. the transactions list vs the projected-activity table).
-export function usePagination<T>(items: T[], storageKey: string): Pagination<T> {
+///
+/// `pageKey` lifts the current page into the unlocked session's view state (personal-cfo-i93n3.27), so it
+/// survives a visit to another destination; the page is clamped on read, so a restored page beyond the end
+/// of a shorter list shows the last page. The page SIZE keeps its own sticky localStorage preference.
+export function usePagination<T>(
+  items: T[],
+  storageKey: string,
+  pageKey: SessionViewStateKey | null = null,
+): Pagination<T> {
   const [pageSize, setPageSizeState] = useState<PageSize>(() =>
     readStoredPageSize(storageKey),
   );
-  const [requestedPage, setPage] = useState(0);
+  const [requestedPage, setPage] = useSessionState<number>(pageKey, 0);
 
   const total = items.length;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
