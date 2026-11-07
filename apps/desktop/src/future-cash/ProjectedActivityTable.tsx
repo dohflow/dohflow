@@ -230,7 +230,8 @@ export function ProjectedActivityTable({
   return (
     <div className="flex flex-col gap-3">
       {activities.length > 0 && (
-        <div className="flex items-center gap-2">
+        // On a phone the three controls stack at full width (the filter had shrunk to a stub beside the other two).
+        <div className="flex items-center gap-2 compact:flex-col compact:items-stretch compact:px-4">
           <div className="relative flex-1">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -241,7 +242,7 @@ export function ProjectedActivityTable({
               role="searchbox"
               aria-label="Filter projected activity"
               placeholder="Filter by activity name…"
-              className="pl-9"
+              className="pl-9 compact:min-w-0 compact:w-full"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -250,7 +251,7 @@ export function ProjectedActivityTable({
             aria-label="Filter by activity type"
             value={kind}
             onChange={(e) => setKind(e.target.value)}
-            className="w-40 shrink-0"
+            className="w-40 shrink-0 compact:w-full"
           >
             <option value="">All types</option>
             {kindOptions.map((option) => (
@@ -271,6 +272,7 @@ export function ProjectedActivityTable({
         rows={visibleRows}
         rowKey={(row) => row.key}
         label="Projected activity"
+        phoneLayout="stacked"
         minWidth="min-w-[640px]"
         className="flex flex-col gap-3"
         rowProps={(row) => ({
