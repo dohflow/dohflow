@@ -79,11 +79,10 @@ export function DateReader({ projection }: { projection: MultiSeriesForecastDto 
             <ChevronLeft aria-hidden />
             Previous day
           </Button>
-          <label htmlFor={`${id}-date`} className="sr-only">
-            Forecast date
-          </label>
+          {/* Named by `aria-label`, not a separate (screen-reader-only) label element. */}
           <NativeSelect
             id={`${id}-date`}
+            aria-label="Forecast date"
             value={date}
             onChange={(event) => setSelected(event.target.value)}
             // On a phone the date control takes its own full-width row above the two buttons (squeezed between them it
