@@ -380,6 +380,82 @@ fn a_genesis_whose_snapshot_the_service_holds_is_terminal_across_a_restart() {
     );
 }
 
+fn record_mark(worker: &DbWorker, mark: u64) -> Result<(), GenesisStoreError> {
+    worker.write_sync_state(|tx| sync_genesis::record_export_mark(tx, mark, NOW))
+}
+
+#[test]
+fn the_export_mark_is_recorded_replaced_by_a_later_export_and_frozen_once_the_genesis_ends() {
+    use GenesisState::{GenesisResumeLost, Installed, Published, VaultKnown};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.db");
+    {
+        let worker = open(&path);
+        assert_eq!(
+            record_mark(&worker, 3),
+            Err(GenesisStoreError::NotPersisted)
+        );
+        persist(&worker, &genesis_records()).unwrap();
+        assert_eq!(
+            load(&worker).unwrap().export_high_water,
+            None,
+            "no export yet"
+        );
+        record_mark(&worker, 7).unwrap();
+        assert_eq!(load(&worker).unwrap().export_high_water, Some(7));
+        // An earlier export that was never sealed is replaced by a later one.
+        record_mark(&worker, 9).unwrap();
+        advance(&worker, Installed).unwrap();
+        record_mark(&worker, 12).unwrap();
+        assert_eq!(load(&worker).unwrap().export_high_water, Some(12));
+    }
+    // It survives a restart, and an empty log is a mark of 0, not an absent one.
+    let worker = open(&path);
+    assert_eq!(load(&worker).unwrap().export_high_water, Some(12));
+    record_mark(&worker, 0).unwrap();
+    assert_eq!(load(&worker).unwrap().export_high_water, Some(0));
+    record_mark(&worker, 5).unwrap();
+
+    // Published, refused or lost: the mark is frozen.
+    for terminal in [Published, VaultKnown, GenesisResumeLost] {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = open(&dir.path().join("v.db"));
+        persist(&worker, &genesis_records()).unwrap();
+        record_mark(&worker, 4).unwrap();
+        if terminal == Published {
+            advance(&worker, Installed).unwrap();
+        }
+        advance(&worker, terminal).unwrap();
+        assert!(
+            matches!(
+                record_mark(&worker, 99),
+                Err(GenesisStoreError::BadTransition { .. })
+            ),
+            "{terminal:?}"
+        );
+        assert_eq!(load(&worker).unwrap().export_high_water, Some(4));
+    }
+}
+
+#[test]
+fn the_genesis_table_refuses_a_negative_export_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.db"));
+    let records = genesis_records();
+    let conn = worker.read_connection().unwrap();
+    let insert = |mark: i64| {
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_genesis
+                 (singleton, vault_id, membership_record, epoch_record, state, export_high_water,
+                  persisted_at, updated_at)
+             VALUES (1, ?1, ?2, ?3, 'Persisted', ?4, 't', 't')",
+            rusqlite::params![VAULT, records.membership, records.epoch, mark],
+        )
+    };
+    assert!(insert(-1).is_err());
+    assert!(insert(0).is_ok());
+}
+
 #[test]
 fn the_genesis_table_refuses_anything_but_a_singleton_of_a_known_state() {
     let dir = tempfile::tempdir().unwrap();

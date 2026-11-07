@@ -2363,7 +2363,12 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     //   Published); VaultKnown is the terminal state of a genesis the service refused because the
     //   vault already exists, which is never published or re-minted; GenesisResumeLost is the
     //   terminal state of a genesis whose snapshot the service holds but whose saved container is
-    //   gone (persisted so that a restart never retries and burns a counter).
+    //   gone (persisted so that a restart never retries and burns a counter). `export_high_water`
+    //   is the `operation_log` high-water mark (the largest `op_seq`, 0 for an empty log) read in
+    //   the transaction that exported the genesis snapshot: NULL until an export is made, and
+    //   replaced by a later export only while nothing has been sealed. After the genesis is
+    //   published, a log that has grown past the mark holds local commands the genesis does not
+    //   carry and no envelope has sequenced.
     Migration {
         version: 68,
         name: "sync_register_and_genesis",
@@ -2396,6 +2401,8 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                  state             TEXT NOT NULL
                                    CHECK (state IN ('Persisted', 'Installed', 'Published', 'VaultKnown',
                                                     'GenesisResumeLost')),
+                 export_high_water INTEGER
+                                   CHECK (export_high_water IS NULL OR export_high_water >= 0),
                  persisted_at      TEXT NOT NULL,
                  updated_at        TEXT NOT NULL
              );",
