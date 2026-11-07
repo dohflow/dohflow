@@ -89,7 +89,7 @@ export function RestoreFromBackup({
   }
 
   return (
-    <div className="flex flex-col gap-3 border-t pt-4">
+    <div className="@container flex flex-col gap-3 border-t pt-4">
       <p className="text-sm text-muted-foreground">{caption}</p>
       {mode === "newNamed" && (
         <p className="text-sm text-muted-foreground">
@@ -101,7 +101,7 @@ export function RestoreFromBackup({
           <Button
             ref={pickerButton}
             variant="outline"
-            className="h-auto min-h-10 max-w-full self-start whitespace-normal py-2 [overflow-wrap:anywhere] compact:hyphens-auto"
+            className="h-auto min-h-10 max-w-full self-start whitespace-normal py-2 [overflow-wrap:anywhere] compact:@max-[15rem]:px-1"
             onClick={() => void onPick()}
             disabled={picking}
           >

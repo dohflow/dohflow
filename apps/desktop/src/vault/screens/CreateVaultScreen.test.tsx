@@ -92,7 +92,16 @@ describe("create-vault fields at the largest text size", () => {
     renderWithClient(<CreateVaultScreen />);
     await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
     const button = screen.getByRole("button", { name: "Create vault" });
-    expect(button).toHaveClass("h-auto", "min-h-10", "whitespace-normal", "[overflow-wrap:anywhere]");
+    expect(button).toHaveClass(
+      "h-auto",
+      "min-h-10",
+      "whitespace-normal",
+      "[overflow-wrap:anywhere]",
+      "compact:@max-[15rem]:px-1",
+    );
+    // A label this short is not hyphenated ("Cre-ate"); the button gives up padding instead.
+    expect(button).not.toHaveClass("compact:hyphens-auto");
+    expect(button.closest("form")).toHaveClass("@container");
     expect(button).not.toHaveClass("h-10");
     expect(button).not.toHaveClass("whitespace-nowrap");
   });

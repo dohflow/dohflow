@@ -68,7 +68,7 @@ export function CreateVaultScreen() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={onSubmit} className="flex flex-col gap-4">
+          <form onSubmit={onSubmit} className="@container flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="password">Master password</Label>
               <Input
@@ -136,7 +136,7 @@ export function CreateVaultScreen() {
             <Button
               type="submit"
               disabled={!canSubmit}
-              className="h-auto min-h-10 whitespace-normal py-2 [overflow-wrap:anywhere] compact:hyphens-auto"
+              className="h-auto min-h-10 whitespace-normal py-2 [overflow-wrap:anywhere] compact:@max-[15rem]:px-1"
             >
               {submitting ? "Creating…" : "Create vault"}
             </Button>

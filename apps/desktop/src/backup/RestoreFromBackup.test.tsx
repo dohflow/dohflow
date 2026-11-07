@@ -139,7 +139,10 @@ describe("RestoreFromBackup", () => {
       "max-w-full",
       "whitespace-normal",
       "[overflow-wrap:anywhere]",
+      "compact:@max-[15rem]:px-1",
     );
+    // A label this short is not hyphenated ("Cre-ate"); the button gives up padding instead.
+    expect(button).not.toHaveClass("compact:hyphens-auto");
     expect(button).not.toHaveClass("h-10");
     expect(button).not.toHaveClass("whitespace-nowrap");
   });
