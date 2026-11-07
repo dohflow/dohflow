@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, type LucideIcon } from "lucide-react";
 
 import {
@@ -329,6 +329,7 @@ function StackedRows<T>({
   className?: string;
   label?: string;
 }) {
+  const sortId = useId();
   const sortable = columns.filter((column) => column.sortable && typeof column.header === "string");
   const [title, ...rest] = columns;
 
@@ -336,11 +337,11 @@ function StackedRows<T>({
     <div className={className}>
       {onSortChange && sortable.length > 0 && (
         <div className="flex items-center gap-2 px-4 pb-2">
-          <label className="sr-only" htmlFor="stacked-sort-by">
+          <label className="sr-only" htmlFor={sortId}>
             Sort by
           </label>
           <NativeSelect
-            id="stacked-sort-by"
+            id={sortId}
             size="sm"
             className="min-w-0 flex-1"
             value={sort?.key ?? ""}
@@ -416,7 +417,7 @@ function StackedRows<T>({
                         {typeof column.header === "string" && column.header !== "" ? (
                           <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{column.header}</dt>
                         ) : (
-                          <dt className="sr-only">{column.key}</dt>
+                          <dt className="sr-only" aria-hidden>{column.key}</dt>
                         )}
                         <dd className={cn("min-w-0 text-right tabular-nums [overflow-wrap:anywhere]", column.className)}>
                           {column.cell(row)}
