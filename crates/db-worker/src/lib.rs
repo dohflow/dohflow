@@ -97,6 +97,7 @@ mod staged_import;
 pub mod sync_artifacts;
 pub mod sync_enable;
 pub mod sync_genesis;
+pub mod sync_materialize;
 pub mod sync_register;
 pub mod sync_state;
 

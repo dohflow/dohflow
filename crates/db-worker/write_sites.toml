@@ -232,3 +232,30 @@ statements = 1
 status = "pending"
 bead = "personal-cfo-5ymg8.6"
 note = "Re-wraps attachment key material during a vault key rotation; decide with .6 whether rotation is a vault-level operation outside the log or a command."
+
+[[site]]
+module = "sync_materialize.rs"
+table = "parser_runs"
+class = "1b"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-0g528"
+note = "receiver materialization (C.9): the rows of a source batch fetched from the service, written outside any command and before the envelope that references them applies; the batch is immutable by its artifact ids, so every column is a pure function of the artifact and a replay is idempotent (an equal row is left, a differing row is refused). Reached only from the receiver path after stage 9(b) has accepted the batch."
+
+[[site]]
+module = "sync_materialize.rs"
+table = "source_batches"
+class = "1b"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-0g528"
+note = "receiver materialization (C.9): the rows of a source batch fetched from the service, written outside any command and before the envelope that references them applies; the batch is immutable by its artifact ids, so every column is a pure function of the artifact and a replay is idempotent (an equal row is left, a differing row is refused). Reached only from the receiver path after stage 9(b) has accepted the batch."
+
+[[site]]
+module = "sync_materialize.rs"
+table = "source_records"
+class = "1b"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-0g528"
+note = "receiver materialization (C.9): the rows of a source batch fetched from the service, written outside any command and before the envelope that references them applies; the batch is immutable by its artifact ids, so every column is a pure function of the artifact and a replay is idempotent (an equal row is left, a differing row is refused). Reached only from the receiver path after stage 9(b) has accepted the batch."
