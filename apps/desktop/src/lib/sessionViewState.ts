@@ -13,7 +13,8 @@ export type SessionViewStateKey =
   | "activity.kind" // string: the projected-activity type filter
   | "activity.page" // number: the zero-based page of projected activity
   | "activity.accountColumns" // string[]: the account ids added as balance columns
-  | "activity.openKey"; // string | null: the expanded event row
+  | "activity.openKey" // string | null: the expanded event row
+  | "forecast.selectedDate"; // string | null: the date the forecast date reader is on
 
 export type SessionViewStateStore = {
   values: Map<SessionViewStateKey, unknown>;

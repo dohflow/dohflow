@@ -587,6 +587,19 @@ on a desktop window, and a test proves each.
   collapse keep their own sticky localStorage preferences. **This also applies on desktop**: a tab switch now keeps these
   view settings for the session (accepted by planning and called out in the PR).
 
+- **Read forecast by date** (personal-cfo-i93n3.27, slice C; `future-cash/DateReader.tsx`, under Projected activity on every
+  window). The forecast read one date at a time from the SAME data the chart plots, reachable without a chart gesture: a
+  labeled native `Forecast date` control plus Previous day and Next day walk the spine of dates the data has (nothing is
+  interpolated; the ends disable). It shows the date, the opening balance per group (the previous date's closing; the first
+  date has none and says "The forecast starts here."), each activity in source order with its signed amount and account,
+  the explicit "No activity on this date." when there is none, and the closing balance per group and account with P10 and
+  P90 only where the data has a range (never summed). The selected date is session view state (`forecast.selectedDate`); a
+  restored date the data no longer offers becomes the nearest one and is announced (a polite live region). **The
+  missing-event rule**: when the open event in Projected activity no longer resolves (restored, deleted, or removed by a
+  scenario or horizon change) the table closes it and `onMissingEvent` moves focus to the section heading. The event
+  explanation stays the in-place disclosure with `aria-expanded` and `aria-controls` (it already restores the invoking
+  row); a pushed full-screen detail layer with Back is NOT built here (open question on the bead).
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks

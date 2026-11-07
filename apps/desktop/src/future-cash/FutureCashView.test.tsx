@@ -170,6 +170,12 @@ beforeEach(() => {
 });
 
 describe("FutureCashView", () => {
+  it("offers the forecast date reader under the projected activity (i93n3.27 slice C)", async () => {
+    renderWithClient(<FutureCashView />);
+    expect(await screen.findByRole("combobox", { name: "Forecast date" })).toBeInTheDocument();
+    expect(screen.getByText("Read forecast by date")).toBeInTheDocument();
+  });
+
   it("shows a loading state until the forecast resolves", () => {
     mocks.futureCashForecast.mockReturnValue(new Promise(() => {}));
     renderWithClient(<FutureCashView />);

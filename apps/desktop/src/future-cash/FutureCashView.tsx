@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,7 @@ import { useComfortBand } from "@/dashboard/useComfortBand";
 import { LoanDoubleCountWarning } from "@/accounts/LoanDoubleCountWarning";
 import { LinkedBillNotices } from "@/bills/LinkedBillNotices";
 import { useSessionState } from "@/lib/sessionViewState";
+import { DateReader } from "./DateReader";
 import { ScenarioBar } from "./ScenarioBar";
 import { ScenarioLayers } from "./ScenarioLayers";
 import { ScenarioStack } from "./ScenarioStack";
@@ -75,6 +76,8 @@ export function FutureCashView({
 } = {}) {
   // The view settings survive a visit to another destination, for the unlocked session only
   // (personal-cfo-i93n3.27 slice D). A restored value that is no longer one of the options falls back to the default.
+  const activityHeading = useRef<HTMLDivElement>(null);
+  const focusActivityHeading = useCallback(() => activityHeading.current?.focus(), []);
   const [storedHorizon, setHorizon] = useSessionState<number>("futureCash.horizon", DEFAULT_FUTURE_CASH_HORIZON);
   const horizon = FUTURE_CASH_HORIZONS.some((o) => o.days === storedHorizon) ? storedHorizon : DEFAULT_FUTURE_CASH_HORIZON;
   const [storedLookback, setLookback] = useSessionState<number>("futureCash.lookback", DEFAULT_HISTORY_LOOKBACK);
@@ -357,7 +360,9 @@ export function FutureCashView({
 
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Projected activity</CardTitle>
+            <CardTitle ref={activityHeading} tabIndex={-1} className="text-sm focus-visible:outline-none">
+              Projected activity
+            </CardTitle>
             <CardDescription>
               Today, then each projected activity, with the running balance per
               account and group. Select a row to see why it is projected.
@@ -370,7 +375,7 @@ export function FutureCashView({
                   <NotEnoughToProject state={cashFlowState} compact />
                 </div>
               ) : (
-                <ProjectedActivityTable projection={projection} />
+                <ProjectedActivityTable projection={projection} onMissingEvent={focusActivityHeading} />
               )
             ) : projectionError ? (
               <ProjectionFailed reason={projectionError} compact />
@@ -379,6 +384,9 @@ export function FutureCashView({
             )}
           </CardContent>
         </Card>
+
+        {/* Read the same forecast one date at a time (personal-cfo-i93n3.27 slice C). */}
+        {projection && cashFlowState === "ready" && <DateReader projection={projection} />}
       </div>
     </>
   );

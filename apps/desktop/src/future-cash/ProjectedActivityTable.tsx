@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ChevronRight, Columns3, Search } from "lucide-react";
 
 import type { ForecastEventDto, MultiSeriesForecastDto } from "@/bindings";
@@ -104,8 +104,12 @@ function filterActivityRows(rows: Row[], query: string, kind: string): Row[] {
 /// to the typed explanation (personal-cfo-vkge).
 export function ProjectedActivityTable({
   projection: raw,
+  onMissingEvent,
 }: {
   projection: MultiSeriesForecastDto;
+  /// Called when the open event no longer exists (deleted, or gone with a changed scenario or horizon): the
+  /// table closes it and this moves focus to the section's heading instead of leaving it on nothing.
+  onMissingEvent?: () => void;
 }) {
   // Every account is named with `accountLabel`, so two accounts called "Savings" read
   // differently in the picker, the column headers, "from/to" and the overdraft warning —
@@ -143,6 +147,14 @@ export function ProjectedActivityTable({
   // page still shows correct absolute balances.
   const today = rows[0];
   const activities = rows.slice(1);
+  // An open event that no longer resolves (a restored one, a deleted one, one a scenario change removed) is closed,
+  // and focus goes to the section heading rather than to nothing (personal-cfo-i93n3.27: the missing-event rule).
+  useEffect(() => {
+    if (openKey !== null && !rows.some((row) => row.key === openKey)) {
+      setOpenKey(null);
+      onMissingEvent?.();
+    }
+  }, [openKey, rows, setOpenKey, onMissingEvent]);
   // The kind options come from the rows actually present, so the picker never offers
   // a dead filter. Filtering happens AFTER buildRows: balances stay computed over the
   // full series, so a hidden row never distorts a visible row's running balance.
