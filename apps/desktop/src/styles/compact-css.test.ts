@@ -187,6 +187,30 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       expect(block).toMatch(/input:not\(\[type="hidden"\],\s*\[type="checkbox"\],\s*\[type="radio"\],\s*\[type="range"\]\)/);
     });
 
+    it("the Cash Flow and Dashboard phone layout utilities exist only inside the compact query (i93n3.27)", async () => {
+      const utilities = [
+        "compact:flex-col", "compact:items-stretch", "compact:gap-3", "compact:gap-2", "compact:justify-start",
+        "compact:w-full", "compact:basis-full", "compact:overflow-visible", "compact:whitespace-normal", "compact:text-clip",
+      ];
+      const css = await compiled(utilities);
+      for (const name of utilities) {
+        // The variant emits `.compact\\:x { @media <compact query> { ... } }`: the rule's only content is the
+        // compact media block, so the utility does nothing outside the compact query.
+        const selector = `.${name.replace(":", "\\:")} {`;
+        const start = css.indexOf(selector);
+        expect(start, name).toBeGreaterThan(-1);
+        let depth = 0;
+        let end = start + selector.length - 1;
+        for (; end < css.length; end += 1) {
+          if (css[end] === "{") depth += 1;
+          if (css[end] === "}" && --depth === 0) break;
+        }
+        const body = css.slice(start + selector.length, end).trim();
+        expect(body.startsWith(`@media ${COMPACT_QUERY} {`), name).toBe(true);
+        expect(splitCompactBlocks(body).rest.trim(), name).toBe("");
+      }
+    });
+
     it("a native select takes an explicit height, because iOS WebKit ignores its min-height", async () => {
       const css = await compiled(["p-4"]);
       const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";

@@ -97,6 +97,15 @@ beforeEach(() => {
 });
 
 describe("DashboardView", () => {
+  it("stacks the chart card's header on a compact screen and lets stat labels wrap (i93n3.27)", async () => {
+    renderWithClient(<DashboardView />);
+    const title = await screen.findByText(/Cash Flow · next/);
+    const header = title.parentElement!.parentElement!;
+    expect(header).toHaveClass("compact:flex-col", "compact:items-stretch");
+    const label = (await screen.findAllByText(/in 30 days|lowest projected|liquid cash today/i))[0]!;
+    expect(label).toHaveClass("truncate", "compact:whitespace-normal", "compact:overflow-visible");
+  });
+
   it("shows a loading state until the forecast resolves", () => {
     mocks.futureCashForecast.mockReturnValue(new Promise(() => {}));
     renderWithClient(<DashboardView />);

@@ -82,8 +82,12 @@ function Readiness({
         <span className="text-sm font-normal text-muted-foreground">/100</span>
         <span className={cn("ml-2 text-sm font-medium", text)}>{label}</span>
       </span>
-      {/* The next action sits inline and truncates — the full copy is in the dialog. */}
-      <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground" title={headline}>
+      {/* The next action sits inline and truncates — the full copy is in the dialog. On a phone it takes its
+          own full-width line and wraps instead of being cut off ("Add a ca…"; personal-cfo-i93n3.27). */}
+      <p
+        className="min-w-0 flex-1 truncate text-sm text-muted-foreground compact:basis-full compact:overflow-visible compact:whitespace-normal compact:text-clip"
+        title={headline}
+      >
         {headline}
       </p>
       <button
