@@ -294,12 +294,12 @@ function CategoryNode({
                 {TYPE_LABEL[node.category_type] ?? node.category_type}
               </span>
               {node.is_system && (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">
                   Default
                 </span>
               )}
               {node.archived && (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">
                   Archived
                 </span>
               )}

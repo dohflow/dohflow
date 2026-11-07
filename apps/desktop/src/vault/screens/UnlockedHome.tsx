@@ -28,6 +28,7 @@ import { ConnectionAttentionNotice } from "@/settings/connections/ConnectionAtte
 import { useAccounts } from "@/accounts/useAccounts";
 import { useVault } from "@/vault/useVault";
 import { GlobalSearch } from "@/search/GlobalSearch";
+import { SAFE_AREA_PADDING } from "@/lib/safeArea";
 import { Sidebar, type Tab } from "./Sidebar";
 
 /// The unlocked app shell: a collapsible left sidebar (personal-cfo-sbm3) over the
@@ -88,7 +89,7 @@ export function UnlockedHome() {
   // flashes the dashboard before the wizard takes over.
   if (wizard === null) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
+      <div className="flex min-h-dvh items-center justify-center bg-background">
         <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
       </div>
     );
@@ -108,10 +109,10 @@ export function UnlockedHome() {
 
   return (
     // The shell is exactly viewport height with the main pane scrolling internally
-    // (h-screen + overflow-hidden), so the sidebar stays full-height and its
+    // (h-dvh + overflow-hidden), so the sidebar stays full-height and its
     // bottom-pinned items never get pushed below a tall content pane (personal-cfo-4d8.9).
     <NoticeProvider>
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className={`flex h-dvh overflow-hidden bg-background ${SAFE_AREA_PADDING}`}>
       <Sidebar
         tab={tab}
         onSelect={setTab}

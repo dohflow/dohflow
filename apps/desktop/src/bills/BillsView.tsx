@@ -537,7 +537,7 @@ function BillRow({
           <div className="flex items-center gap-2">
             <span className="font-medium">{bill.name}</span>
             {bill.autopay_enabled && (
-              <Badge variant="gain" className="text-[10px] uppercase tracking-wide">
+              <Badge variant="gain" className="text-[0.625rem] uppercase tracking-wide">
                 Autopay
               </Badge>
             )}

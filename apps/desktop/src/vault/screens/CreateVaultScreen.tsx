@@ -20,6 +20,11 @@ import { Screen } from "./Screen";
 
 const MIN_LENGTH = 8;
 
+const BASE_CURRENCIES = [
+  { value: "USD", label: "US Dollar (USD)" },
+  { value: "EUR", label: "Euro (EUR)" },
+];
+
 export function CreateVaultScreen() {
   const { createVault } = useVault();
   // Set only by a host whose system backups include the encrypted vault (personal-cfo-i93n3.9).
@@ -68,13 +73,14 @@ export function CreateVaultScreen() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={onSubmit} className="flex flex-col gap-4">
+          <form onSubmit={onSubmit} className="@container flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="password">Master password</Label>
               <Input
                 id="password"
                 type="password"
                 autoComplete="new-password"
+                className="h-auto min-h-10"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 aria-invalid={tooShort}
@@ -95,6 +101,7 @@ export function CreateVaultScreen() {
                 id="confirm"
                 type="password"
                 autoComplete="new-password"
+                className="h-auto min-h-10"
                 value={confirm}
                 onChange={(event) => setConfirm(event.target.value)}
                 aria-invalid={mismatch}
@@ -108,13 +115,26 @@ export function CreateVaultScreen() {
               <Label htmlFor="base-currency">Base currency</Label>
               <select
                 id="base-currency"
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="flex min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 value={baseCurrency}
                 onChange={(event) => setBaseCurrency(event.target.value)}
               >
-                <option value="USD">US Dollar (USD)</option>
-                <option value="EUR">Euro (EUR)</option>
+                {BASE_CURRENCIES.map((currency) => (
+                  <option key={currency.value} value={currency.value}>
+                    {currency.label}
+                  </option>
+                ))}
               </select>
+              {/* A native select cannot wrap, so at the largest text size its closed value is cut off
+                  sideways. On a narrow card the full label is also shown as text. The select already
+                  announces its own value, so this copy is for the eyes only. */}
+              <p
+                aria-hidden="true"
+                data-testid="base-currency-value"
+                className="hidden text-sm font-medium [overflow-wrap:anywhere] compact:@max-[15rem]:block"
+              >
+                {BASE_CURRENCIES.find((currency) => currency.value === baseCurrency)?.label}
+              </p>
               <p className="text-xs text-muted-foreground">
                 New accounts default to this. You can change it later in Settings.
               </p>
@@ -131,7 +151,11 @@ export function CreateVaultScreen() {
               </p>
             )}
 
-            <Button type="submit" disabled={!canSubmit}>
+            <Button
+              type="submit"
+              disabled={!canSubmit}
+              className="h-auto min-h-10 whitespace-normal py-2 [overflow-wrap:anywhere] compact:@max-[15rem]:px-1"
+            >
               {submitting ? "Creating…" : "Create vault"}
             </Button>
           </form>
