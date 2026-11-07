@@ -507,7 +507,9 @@ on a desktop window, and a test proves each.
   anything that holds text (a form field's `h-10` becomes `min-h-10`, which is the same 40px on a desktop
   window). A text child of a flex row takes `min-w-0`, and copy that can hold a word wider than the
   column (`unrecoverable`) takes `[overflow-wrap:anywhere]`, or the page grows sideways and the edge
-  clips it.
+  clips it. Where the column beside an icon gets too narrow to read at that size, the row stacks on a
+  container query (`compact:@max-[15rem]:flex-col` inside an `@container`), and prose takes
+  `compact:hyphens-auto` so words break at syllables instead of mid-syllable.
 - **Touch targets (44 pt hit regions) and sheets** are specified with their slice; until then the
   existing sizes apply.
 

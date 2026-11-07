@@ -1,4 +1,5 @@
 import { fireEvent, screen } from "@testing-library/react";
+import { compile } from "tailwindcss";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -61,7 +62,35 @@ describe("NoResetWarning", () => {
     for (const element of [warning, acknowledgement]) {
       expect(element).toHaveClass("[overflow-wrap:anywhere]");
     }
+    // At that size the column beside the icon is too narrow to read, so the icon moves above the text
+    // when the card is narrow, and the words break at syllables rather than mid-syllable.
+    expect(warning.closest(".\\@container")).not.toBeNull();
+    expect(warning.parentElement).toHaveClass("compact:@max-[15rem]:flex-col");
+    for (const element of [warning, acknowledgement]) {
+      expect(element).toHaveClass("compact:hyphens-auto");
+    }
     // The copy is untouched.
     expect(warning.textContent).toBe(CANONICAL);
+  });
+
+  // A class that Tailwind does not know emits nothing and no DOM assertion notices, so the classes
+  // that carry the fix are compiled and the rules they must produce are checked.
+  it("compiles the narrow-card stack and the hyphenation to the rules they stand for", async () => {
+    const css = (
+      await compile(
+        "@custom-variant compact (@media (max-width: 639px) and (pointer: coarse));\n@tailwind utilities;",
+      )
+    ).build([
+      "@container",
+      "compact:@max-[15rem]:flex-col",
+      "compact:hyphens-auto",
+      "[overflow-wrap:anywhere]",
+    ]);
+    expect(css).toContain("container-type: inline-size");
+    expect(css).toMatch(/@container \(width < 15rem\)/);
+    expect(css).toMatch(/flex-direction: column/);
+    expect(css).toMatch(/@media \(max-width: 639px\) and \(pointer: coarse\)/);
+    expect(css).toContain("hyphens: auto");
+    expect(css).toContain("overflow-wrap: anywhere");
   });
 });

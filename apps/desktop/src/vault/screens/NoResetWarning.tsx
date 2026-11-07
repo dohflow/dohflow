@@ -24,13 +24,13 @@ export function NoResetWarning({
   });
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3">
-      <div className="flex gap-2">
+    <div className="@container flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3">
+      <div className="flex gap-2 compact:@max-[15rem]:flex-col">
         <TriangleAlert className="size-4 shrink-0 text-warning" aria-hidden />
         {warning && (
           <p
             data-testid="no-reset-warning"
-            className="min-w-0 text-xs text-foreground [overflow-wrap:anywhere]"
+            className="min-w-0 text-xs text-foreground [overflow-wrap:anywhere] compact:hyphens-auto"
           >
             {warning}
           </p>
@@ -43,7 +43,7 @@ export function NoResetWarning({
           onChange={(event) => onAcknowledgedChange(event.target.checked)}
           className="mt-0.5 size-3.5 shrink-0"
         />
-        <span className="min-w-0 [overflow-wrap:anywhere]">
+        <span className="min-w-0 [overflow-wrap:anywhere] compact:hyphens-auto">
           I understand and have saved my password somewhere safe.
         </span>
       </label>
