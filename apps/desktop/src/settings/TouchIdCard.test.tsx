@@ -5,6 +5,10 @@ import { renderWithClient } from "@/test/renderWithClient";
 
 import { TouchIdCard } from "./TouchIdCard";
 
+// v0.4.1 ships with the Touch ID controls off (`vault/touchIdEnabled.ts`); these cases are about the controls themselves, so
+// they run with the flag on. `touchIdHidden.test.tsx` pins the shipped value.
+vi.mock("@/vault/touchIdEnabled", () => ({ TOUCH_ID_ENABLED: true }));
+
 const mocks = vi.hoisted(() => ({
   touchIdStatus: vi.fn(),
   touchIdEnable: vi.fn(),

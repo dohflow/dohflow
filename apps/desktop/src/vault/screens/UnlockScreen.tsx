@@ -13,6 +13,7 @@ import {
 import { RestoreFromBackup } from "@/backup/RestoreFromBackup";
 import { describeIpcError, useVault } from "@/vault/useVault";
 import { TOUCH_ID_UNLOCK_UNKNOWN, touchIdReasonCopy } from "@/vault/touchIdCopy";
+import { TOUCH_ID_ENABLED } from "@/vault/touchIdEnabled";
 import { useTouchIdStatus } from "@/vault/useTouchIdStatus";
 import { Screen } from "./Screen";
 
@@ -32,7 +33,7 @@ export function UnlockScreen() {
   // The Touch ID call threw instead of answering: the outcome is not known (xuu repair round).
   const [touchUnknown, setTouchUnknown] = useState(false);
 
-  const touchOn = touchId.status?.state === "on";
+  const touchOn = TOUCH_ID_ENABLED && touchId.status?.state === "on";
   const touchOffered = touchOn && touchId.status?.offered === true;
   // A rule that requires the password (a restart, three misses, 30 days, ...) is explained, not hidden.
   const touchRule =
@@ -136,7 +137,7 @@ export function UnlockScreen() {
             </Button>
           </form>
 
-          {touchOffered && (
+          {TOUCH_ID_ENABLED && touchOffered && (
             <Button
               type="button"
               variant="outline"
