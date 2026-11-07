@@ -404,3 +404,11 @@ describe("the picker never shows Base for a selection it cannot judge yet (5ie.1
     );
   });
 });
+
+test("on a compact screen the label sits over a full-width select and the new-scenario button is full width", async () => {
+  renderWithClient(<ScenarioBar selectedId={null} onSelect={vi.fn()} />);
+  const select = await screen.findByLabelText("Scenario");
+  expect(select).toHaveClass("compact:w-full");
+  expect(select.parentElement).toHaveClass("compact:flex-col", "compact:items-stretch");
+  expect(screen.getByRole("button", { name: /new scenario/i })).toHaveClass("compact:w-full");
+});

@@ -129,7 +129,7 @@ export function DashboardView({
       </div>
 
       <Card>
-        <CardHeader className="flex flex-row items-start justify-between space-y-0">
+        <CardHeader className="flex flex-row items-start justify-between space-y-0 compact:flex-col compact:items-stretch compact:gap-2">
           <div className="flex flex-col gap-1.5">
             <CardTitle>Cash Flow · next {DASHBOARD_HORIZON_DAYS} days</CardTitle>
             <CardDescription>
@@ -187,7 +187,7 @@ function StatCard({
   return (
     <Card>
       <CardContent className="flex flex-col gap-1.5 p-6">
-        <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground compact:overflow-visible compact:whitespace-normal compact:text-clip">
           {label}
         </span>
         <span

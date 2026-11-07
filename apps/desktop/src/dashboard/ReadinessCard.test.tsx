@@ -37,6 +37,23 @@ beforeEach(() => {
 });
 
 describe("ReadinessCard", () => {
+  // personal-cfo-i93n3.27: on a phone the next action took the leftover width of the row and was cut off
+  // ("Add a ca..."). It keeps its desktop truncation, and on a compact screen takes its own line and wraps.
+  it("lets the next action wrap on its own line on a compact screen instead of truncating", async () => {
+    mocks.forecastReadiness.mockResolvedValue(ok(readiness()));
+    renderWithClient(<ReadinessCard />);
+    const action = await screen.findByText(/record transactions to explain the balance/i);
+    expect(action).toHaveClass("truncate"); // desktop unchanged
+    for (const name of [
+      "compact:basis-full",
+      "compact:overflow-visible",
+      "compact:whitespace-normal",
+      "compact:text-clip",
+    ]) {
+      expect(action).toHaveClass(name);
+    }
+  });
+
   it("shows the score, band, and the weakest factor's next action", async () => {
     mocks.forecastReadiness.mockResolvedValue(ok(readiness()));
     renderWithClient(<ReadinessCard />);
