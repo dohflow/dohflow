@@ -88,7 +88,7 @@ export function DateReader({ projection }: { projection: MultiSeriesForecastDto 
             onChange={(event) => setSelected(event.target.value)}
             // On a phone the date control takes its own full-width row above the two buttons (squeezed between them it
             // showed one letter, "N").
-            className="min-w-0 flex-1 compact:order-first compact:basis-full"
+            className="min-w-0 flex-1 compact:order-first compact:w-full compact:max-w-full compact:basis-full compact:[&>select]:min-w-0"
           >
             {spine.map((d) => (
               <option key={d} value={d}>
