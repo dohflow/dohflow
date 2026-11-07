@@ -31,7 +31,7 @@ new surfaces land (import, documents, agents).
 - **TB3 — the app ↔ the outside world.** Four sanctioned egress paths exist
   (added since R1; see [Revision history](#revision-history)). Three of the
   four fire **automatically on every vault unlock** once in use, not only when
-  asked (the LunchFlow path is enabled in v0.4.0 — item 4);
+  asked (the LunchFlow path is enabled in v0.4.1 — item 4);
   none carries telemetry or any identifier beyond what the transport
   inherently exposes, and none is reachable from the WebView as a
   general-purpose network capability:
@@ -60,7 +60,7 @@ new surfaces land (import, documents, agents).
      `x-api-key` header; no project credential, no relay. The HTTPS fetch runs
      Rust-side (`ureq` in `crates/connectors/lunchflow-adapter`, no redirects,
      HTTPS only), never through a WebView-reachable capability. **Enabled in
-     v0.4.0** (`personal-cfo-p3f7r`, ADR 0076 decision 3): the registry flag is
+     v0.4.1** (`personal-cfo-p3f7r`, ADR 0076 decision 3): the registry flag is
      on, so `connector_link` accepts it, and a user who has not linked LunchFlow
      makes no request on this path. Before the release the entry was registered
      disabled and `connector_link` refused it.
@@ -115,7 +115,7 @@ new surfaces land (import, documents, agents).
   TB3 and the threat row above; this is not an app-managed upload. The only
   network egress by the app is the four narrow, pinned-endpoint paths in TB3
   (SimpleFIN sync, the `dohflow.app`-scoped opener, the pinned updater
-  endpoint, and LunchFlow refresh — the last enabled in v0.4.0), each with its
+  endpoint, and LunchFlow refresh — the last enabled in v0.4.1), each with its
   own mitigations in the threats table above. This is
   **not** "no background network activity": SimpleFIN sync and the updater's
   version check — and LunchFlow refresh, once a connection is linked — fire automatically on
