@@ -323,6 +323,64 @@ fn a_genesis_the_service_refused_is_terminal() {
 }
 
 #[test]
+fn a_genesis_whose_snapshot_the_service_holds_is_terminal_across_a_restart() {
+    use GenesisState::{GenesisResumeLost, Installed, Persisted, Published, VaultKnown};
+    // Entered from Persisted or Installed, and from nowhere else.
+    for before in [Persisted, Installed] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v.db");
+        let records = genesis_records();
+        {
+            let worker = open(&path);
+            persist(&worker, &records).unwrap();
+            if before == Installed {
+                advance(&worker, Installed).unwrap();
+            }
+            assert_eq!(advance(&worker, GenesisResumeLost), Ok(GenesisResumeLost));
+            assert_eq!(advance(&worker, GenesisResumeLost), Ok(GenesisResumeLost));
+        }
+        // After a restart it is still there, the same records persist to it, and nothing leaves it.
+        let worker = open(&path);
+        assert_eq!(load(&worker).unwrap().state, GenesisResumeLost);
+        assert_eq!(persist(&worker, &records), Ok(GenesisResumeLost));
+        for to in [Persisted, Installed, Published, VaultKnown] {
+            assert_eq!(
+                advance(&worker, to),
+                Err(GenesisStoreError::BadTransition {
+                    from: GenesisResumeLost,
+                    to
+                })
+            );
+        }
+    }
+
+    // A published genesis never becomes ResumeLost, and a VaultKnown one does not either.
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.db"));
+    persist(&worker, &genesis_records()).unwrap();
+    advance(&worker, Installed).unwrap();
+    advance(&worker, Published).unwrap();
+    assert_eq!(
+        advance(&worker, GenesisResumeLost),
+        Err(GenesisStoreError::BadTransition {
+            from: Published,
+            to: GenesisResumeLost
+        })
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.db"));
+    persist(&worker, &genesis_records()).unwrap();
+    advance(&worker, VaultKnown).unwrap();
+    assert_eq!(
+        advance(&worker, GenesisResumeLost),
+        Err(GenesisStoreError::BadTransition {
+            from: VaultKnown,
+            to: GenesisResumeLost
+        })
+    );
+}
+
+#[test]
 fn the_genesis_table_refuses_anything_but_a_singleton_of_a_known_state() {
     let dir = tempfile::tempdir().unwrap();
     let worker = open(&dir.path().join("v.db"));
@@ -338,7 +396,10 @@ fn the_genesis_table_refuses_anything_but_a_singleton_of_a_known_state() {
     };
     assert!(insert(2, "Persisted").is_err(), "one row only");
     assert!(insert(1, "Done").is_err(), "a known state only");
-    assert!(insert(1, "Persisted").is_ok());
+    assert!(
+        insert(1, "GenesisResumeLost").is_ok(),
+        "the terminal state is storable"
+    );
 }
 
 // ---- the verified state's freshness ------------------------------------------------------------

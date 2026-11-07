@@ -11,12 +11,21 @@
 //! ```text
 //! Persisted -> Installed -> Published
 //!     \            \
-//!      +------------+--> VaultKnown   (terminal: the service already knows the vault)
+//!      +------------+--> VaultKnown          (terminal: the service already knows the vault)
+//!      +------------+--> GenesisResumeLost   (terminal: the service holds a genesis snapshot
+//!                                             this device can no longer send)
 //! ```
 //!
 //! `VaultKnown` records that the service refused this genesis because the vault already exists
 //! (R39). Such a genesis is never published, retried or re-minted, and nothing in the vault is
 //! discarded: the device bootstraps from the service's snapshot instead.
+//!
+//! `GenesisResumeLost` records that an earlier attempt of **this** genesis reached the service (it
+//! staged the snapshot, or the genesis is installed) and the saved container that was sent is gone,
+//! so a fresh export would differ from what the service holds. Nothing is published, minted or
+//! discarded, and the state is persisted so that a restart never retries: every retry would seal
+//! again and burn a counter. The device shows it in Sync status with the support path; it does not
+//! bootstrap on its own, because the vault holds changes the service's snapshot lacks.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use sync_core::membership::verify_chain;
@@ -38,6 +47,9 @@ pub enum GenesisState {
     Published,
     /// The service refused it because the vault already exists. Terminal.
     VaultKnown,
+    /// An earlier attempt of this genesis reached the service and the container it sent is gone, so
+    /// a fresh export would not be what the service holds. Terminal.
+    GenesisResumeLost,
 }
 
 impl GenesisState {
@@ -47,6 +59,7 @@ impl GenesisState {
             Self::Installed => "Installed",
             Self::Published => "Published",
             Self::VaultKnown => "VaultKnown",
+            Self::GenesisResumeLost => "GenesisResumeLost",
         }
     }
 
@@ -56,6 +69,7 @@ impl GenesisState {
             "Installed" => Some(Self::Installed),
             "Published" => Some(Self::Published),
             "VaultKnown" => Some(Self::VaultKnown),
+            "GenesisResumeLost" => Some(Self::GenesisResumeLost),
             _ => None,
         }
     }
@@ -68,7 +82,11 @@ impl GenesisState {
                 | (Self::Installed, Self::Installed | Self::Published)
                 | (Self::Published, Self::Published)
                 | (Self::VaultKnown, Self::VaultKnown)
-                | (Self::Persisted | Self::Installed, Self::VaultKnown)
+                | (Self::GenesisResumeLost, Self::GenesisResumeLost)
+                | (
+                    Self::Persisted | Self::Installed,
+                    Self::VaultKnown | Self::GenesisResumeLost
+                )
         )
     }
 }
