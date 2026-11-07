@@ -32,6 +32,7 @@
 //! **Rolling back reaches the base and no further.** [`DbWorker::rollback_to`] accepts only the
 //! recorded `base_seq`; any other target is a typed error, never a partial rollback.
 
+mod closure;
 mod effects;
 mod execute;
 mod overlay;
@@ -211,6 +212,11 @@ pub enum RebaseError {
     /// The pulled class-3 effects were already run on this scratch vault.
     #[error("the pulled class-3 effects were already run on this scratch vault")]
     EffectsAlreadyApplied,
+    /// A class-1b reference of the rebuilt vault names an object that neither the vault nor the
+    /// retained closure or confirmed pin holds. The live vault is untouched and the scratch vault is
+    /// kept as the evidence; the way out is a pull-first re-bootstrap.
+    #[error("{}", .0.describe())]
+    ArtifactRebootstrapRequired(Box<ArtifactRebootstrapRequired>),
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -273,6 +279,10 @@ pub struct PulledEnvelope<'a> {
     pub checked: CheckedEnvelope<'a>,
 }
 
+pub use closure::{
+    ArtifactRebootstrapRequired, ClassOneBObject, ClosureReport, ClosureView, MissingObjects,
+    NoRetainedClosure,
+};
 pub use effects::EffectsReport;
 #[cfg(test)]
 pub(crate) use effects::{effect_of, Class3Effect, CLASS3_APPLY_SITES};

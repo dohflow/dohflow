@@ -3421,4 +3421,164 @@ mod overlay {
             "an apply arm writes a class-3 table the registry does not cover (or the list is stale)"
         );
     }
+
+    struct Covers(Vec<crate::rebase::ClassOneBObject>);
+
+    impl crate::rebase::ClosureView for Covers {
+        fn covers(&self, object: &crate::rebase::ClassOneBObject) -> bool {
+            self.0.contains(object)
+        }
+    }
+
+    fn link_provenance(worker: &DbWorker, entity_type: &str, entity: Uuid, record: Uuid) {
+        exec(
+            worker,
+            "INSERT INTO source_provenance_links
+                (id, entity_type, entity_id, source_record_id, relationship, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'created_from', 't')",
+            params![Uuid::now_v7(), entity_type, entity, record],
+        );
+    }
+
+    fn rebuilt(w: &World) -> Scratch<'_> {
+        let (mut scratch, image) = ready(w);
+        scratch.overlay_class3(&image).unwrap();
+        scratch.apply_pulled_class3_effects().unwrap();
+        scratch
+    }
+
+    #[test]
+    fn a_rebuilt_vault_whose_class_1b_references_all_resolve_passes_the_closure_check() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        let account = w.account.as_uuid();
+        link_provenance(scratch.worker(), "account", account, w.record);
+        let report = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap();
+        assert_eq!(report.covered_by_view, 0);
+    }
+
+    #[test]
+    fn a_reference_to_a_source_record_the_vault_lacks_needs_a_rebootstrap_unless_the_closure_covers_it(
+    ) {
+        let w = world();
+        let scratch = rebuilt(&w);
+        link_provenance(scratch.worker(), "account", w.account.as_uuid(), w.record);
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        exec(
+            scratch.worker(),
+            "DELETE FROM source_records WHERE id = ?1",
+            params![w.record],
+        );
+        let live_before = w.live.snapshot_bytes().unwrap();
+
+        let error = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(!text.contains(&w.record.to_string()), "{text}");
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = error else {
+            panic!("expected a rebootstrap, got {error:?}");
+        };
+        assert_eq!(evidence.missing.len(), 1);
+        assert_eq!(
+            (evidence.missing[0].kind, evidence.missing[0].rows.count),
+            ("source_record", 1)
+        );
+        assert!(evidence.scratch.exists(), "the evidence is kept");
+        assert_eq!(w.live.snapshot_bytes().unwrap(), live_before);
+
+        // The retained closure or the confirmed pin covers it: the check passes.
+        let covered = Covers(vec![crate::rebase::ClassOneBObject::SourceRecord(w.record)]);
+        let report = scratch.check_class_1b_closure(&covered).unwrap();
+        assert_eq!(report.covered_by_view, 1);
+    }
+
+    #[test]
+    fn a_provenance_link_to_an_entity_the_vault_lacks_is_a_missing_reference_too() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        let absent = Uuid::now_v7();
+        link_provenance(scratch.worker(), "ledger_transaction", absent, w.record);
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err()
+        else {
+            panic!("expected a rebootstrap");
+        };
+        assert_eq!(evidence.missing[0].kind, "ledger_transaction");
+        assert!(evidence.describe().contains("re-bootstrap"));
+    }
+
+    #[test]
+    fn a_source_record_or_parser_run_whose_batch_is_gone_is_a_missing_batch() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        exec(
+            scratch.worker(),
+            "DELETE FROM source_batches WHERE id = ?1",
+            params![w.batch],
+        );
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err()
+        else {
+            panic!("expected a rebootstrap");
+        };
+        assert_eq!(evidence.missing[0].kind, "source_batch");
+        assert_eq!(evidence.missing[0].rows.count, 1);
+    }
+
+    #[test]
+    fn a_parser_run_whose_batch_is_gone_is_a_missing_batch_on_its_own() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        let batch = Uuid::now_v7();
+        exec(
+            scratch.worker(),
+            "INSERT INTO source_batches (id, source_type, source_name, status, created_at, updated_at)
+             VALUES (?1, 'other', 'run only', 'staged', 't', 't')",
+            params![batch],
+        );
+        exec(
+            scratch.worker(),
+            "INSERT INTO parser_runs
+                (id, source_batch_id, parser_name, parser_version, status, started_at)
+             VALUES (?1, ?2, 'p', '1', 'ok', 't')",
+            params![Uuid::now_v7(), batch],
+        );
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        exec(
+            scratch.worker(),
+            "DELETE FROM source_batches WHERE id = ?1",
+            params![batch],
+        );
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err()
+        else {
+            panic!("expected a rebootstrap");
+        };
+        assert_eq!(
+            (evidence.missing[0].kind, evidence.missing[0].rows.count),
+            ("source_batch", 1)
+        );
+    }
 }

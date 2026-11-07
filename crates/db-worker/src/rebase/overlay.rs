@@ -306,7 +306,7 @@ pub struct Offending {
 }
 
 impl Offending {
-    fn from_keys(keys: &[Vec<u8>]) -> Self {
+    pub(super) fn from_keys(keys: &[Vec<u8>]) -> Self {
         Self {
             count: keys.len(),
             sample: keys.iter().take(5).map(|key| tag(key)).collect(),
