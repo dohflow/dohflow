@@ -390,6 +390,10 @@ pub fn encode_container(ciphertext: &[u8]) -> Vec<u8> {
 
 /// The ciphertext of a container.
 ///
+/// There is **one** frame reader, [`read_frame`]: this function is that reader over an input that is
+/// the whole object, and [`peek_container`] is the same reader over a prefix, so the two agree on every
+/// error (the artifact counterpart of `header::peek_container`).
+///
 /// # Errors
 /// [`ArtifactError::ContainerTooLarge`] above `max_len` (checked before anything is parsed),
 /// [`WireError::BadMagic`], [`WireError::UnsupportedContainer`], [`WireError::Truncated`],
@@ -399,28 +403,120 @@ pub fn parse_container(bytes: &[u8], max_len: usize) -> Result<&[u8], ArtifactEr
     if bytes.len() > max_len {
         return Err(ArtifactError::ContainerTooLarge);
     }
-    if bytes.len() < 4 {
-        return Err(WireError::Truncated.into());
+    match read_frame(bytes, bytes.len() as u64) {
+        Ok(_) => Ok(&bytes[CONTAINER_FRAME_LEN..]),
+        Err(PeekError::Refused(error)) => Err(error),
+        // `read_frame` reports a shortage as `Truncated` when it holds the whole object.
+        Err(PeekError::PrefixTooShort { .. }) => Err(WireError::Truncated.into()),
     }
-    if &bytes[..4] != CONTAINER_MAGIC {
-        return Err(WireError::BadMagic.into());
+}
+
+/// The fixed frame of a container: `magic "DFSA" ‖ u16 container_version ‖ u64 ciphertext_len`.
+pub const CONTAINER_FRAME_LEN: usize = 4 + 2 + 8;
+
+/// What [`peek_container`] reads from the front of a container: the ciphertext's length, proven to be
+/// exactly what the container's total length leaves after the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerPeek {
+    /// The ciphertext's length in bytes.
+    pub ciphertext_len: u64,
+}
+
+/// Why [`peek_container`] has no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeekError {
+    /// The prefix ends before the frame does. `needed` is the least prefix length that lets the next
+    /// step run: [`CONTAINER_FRAME_LEN`], or less when the container itself is shorter.
+    PrefixTooShort {
+        /// Bytes of prefix required to continue.
+        needed: u64,
+    },
+    /// The container is malformed; the error is the one [`parse_container`] gives for the whole object.
+    Refused(ArtifactError),
+}
+
+/// Read a container's frame from its first bytes, given the container's total length and the largest
+/// container the service stores.
+///
+/// A transport knows the length of a request body before it reads it, so the 14-byte frame and the
+/// length decide whether the container is well formed without reading one ciphertext byte: the
+/// ciphertext length must equal `total_len - 14`, with every difference checked, so a length near
+/// `u64::MAX` is an error and not an overflow. `total_len` above `max_len` is
+/// [`ArtifactError::ContainerTooLarge`] before anything is parsed. A `prefix` longer than `total_len`
+/// is [`WireError::LengthExceedsInput`]; bytes past the frame are never read.
+///
+/// # Errors
+/// [`PeekError::PrefixTooShort`] when the prefix ends before the answer is decidable, and
+/// [`PeekError::Refused`] with the error [`parse_container`] would give.
+pub fn peek_container(
+    prefix: &[u8],
+    total_len: u64,
+    max_len: usize,
+) -> Result<ContainerPeek, PeekError> {
+    if total_len > max_len as u64 {
+        return Err(PeekError::Refused(ArtifactError::ContainerTooLarge));
     }
-    let mut r = Reader::new(&bytes[4..]);
-    if r.u16()? != CONTAINER_VERSION {
-        return Err(WireError::UnsupportedContainer.into());
+    read_frame(prefix, total_len).map(|ciphertext_len| ContainerPeek { ciphertext_len })
+}
+
+/// The one reader of a container's frame. `avail` is the bytes in hand and `total_len` the container's
+/// length; `avail.len() == total_len` is the whole object, where a shortage is [`WireError::Truncated`],
+/// and anything shorter reports [`PeekError::PrefixTooShort`]. Returns the ciphertext length.
+fn read_frame(avail: &[u8], total_len: u64) -> Result<u64, PeekError> {
+    let have = avail.len() as u64;
+    let refuse = |error: WireError| PeekError::Refused(error.into());
+    if have > total_len {
+        return Err(refuse(WireError::LengthExceedsInput));
     }
-    let length = usize::try_from(r.u64()?).map_err(|_| WireError::LengthExceedsInput)?;
-    if length > r.remaining() {
-        return Err(WireError::LengthExceedsInput.into());
+    let whole = have == total_len;
+    let lack = |needed: u64| {
+        if whole {
+            refuse(WireError::Truncated)
+        } else {
+            PeekError::PrefixTooShort {
+                needed: needed.min(total_len),
+            }
+        }
+    };
+    let frame = CONTAINER_FRAME_LEN as u64;
+    // The magic and the version are judged as soon as their bytes are in hand.
+    let magic_len = CONTAINER_MAGIC.len();
+    if avail.len() < magic_len {
+        if avail != &CONTAINER_MAGIC[..avail.len()] {
+            return Err(refuse(WireError::BadMagic));
+        }
+        return Err(lack(frame));
     }
-    if length < r.remaining() {
-        return Err(WireError::TrailingBytes.into());
+    if &avail[..magic_len] != CONTAINER_MAGIC {
+        return Err(refuse(WireError::BadMagic));
     }
-    if length < MIN_CIPHERTEXT_LEN {
-        return Err(WireError::CiphertextTooShort.into());
+    if avail.len() < magic_len + 2 {
+        return Err(lack(frame));
     }
-    let start = bytes.len() - length;
-    Ok(&bytes[start..])
+    if u16::from_be_bytes([avail[4], avail[5]]) != CONTAINER_VERSION {
+        return Err(refuse(WireError::UnsupportedContainer));
+    }
+    // A container shorter than its own frame can never be well formed, whatever the prefix.
+    if total_len < frame {
+        return Err(refuse(WireError::Truncated));
+    }
+    if have < frame {
+        return Err(lack(frame));
+    }
+    let mut field = [0_u8; 8];
+    field.copy_from_slice(&avail[6..CONTAINER_FRAME_LEN]);
+    let ciphertext_len = u64::from_be_bytes(field);
+    let remaining = total_len - frame;
+    if ciphertext_len > remaining {
+        return Err(refuse(WireError::LengthExceedsInput));
+    }
+    if ciphertext_len < remaining {
+        return Err(refuse(WireError::TrailingBytes));
+    }
+    if ciphertext_len < MIN_CIPHERTEXT_LEN as u64 {
+        return Err(refuse(WireError::CiphertextTooShort));
+    }
+    Ok(ciphertext_len)
 }
 
 /// `ArtifactReceiptV1` (C.9): `label ‖ uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id ‖

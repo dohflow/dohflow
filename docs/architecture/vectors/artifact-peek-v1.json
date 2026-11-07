@@ -1,0 +1,231 @@
+{
+  "cases": [
+    {
+      "description": "The 14-byte frame and the container's length: the ciphertext length is proven.",
+      "expect": {
+        "ok": {
+          "ciphertext_len": "64"
+        }
+      },
+      "name": "the_exact_frame",
+      "prefix": "4446534100010000000000000040",
+      "total_len": "78"
+    },
+    {
+      "description": "A prefix that is the whole container gives the same answer.",
+      "expect": {
+        "ok": {
+          "ciphertext_len": "64"
+        }
+      },
+      "name": "the_whole_container_as_the_prefix",
+      "prefix": "4446534100010000000000000040abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+      "total_len": "78"
+    },
+    {
+      "description": "Bytes past the frame are never read: 20 bytes of a 78-byte container give the same answer.",
+      "expect": {
+        "ok": {
+          "ciphertext_len": "64"
+        }
+      },
+      "name": "a_prefix_longer_than_the_frame",
+      "prefix": "4446534100010000000000000040abababababab",
+      "total_len": "78"
+    },
+    {
+      "description": "The container is one byte shorter than its ciphertext length says.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "total_len_one_short",
+      "prefix": "4446534100010000000000000040",
+      "total_len": "77"
+    },
+    {
+      "description": "One byte follows the ciphertext.",
+      "expect": {
+        "error": "TrailingBytes"
+      },
+      "name": "total_len_one_long",
+      "prefix": "4446534100010000000000000040",
+      "total_len": "79"
+    },
+    {
+      "description": "A ciphertext of 15 bytes cannot hold a 16-byte authentication tag.",
+      "expect": {
+        "error": "CiphertextTooShort"
+      },
+      "name": "ciphertext_len_under_a_tag",
+      "prefix": "444653410001000000000000000f",
+      "total_len": "29"
+    },
+    {
+      "description": "A frame of an empty ciphertext is under a tag.",
+      "expect": {
+        "error": "CiphertextTooShort"
+      },
+      "name": "ciphertext_len_zero",
+      "prefix": "4446534100010000000000000000",
+      "total_len": "14"
+    },
+    {
+      "description": "ciphertext_len is 2^64 - 1: an error, never an overflow.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "ciphertext_len_u64_max",
+      "prefix": "444653410001ffffffffffffffff",
+      "total_len": "78"
+    },
+    {
+      "description": "A container claiming to be 2^64 - 1 bytes is over the largest the service stores, whatever its frame says.",
+      "expect": {
+        "error": "ContainerTooLarge"
+      },
+      "name": "total_len_u64_max",
+      "prefix": "4446534100010000000000000040",
+      "total_len": "18446744073709551615"
+    },
+    {
+      "description": "A container of exactly 67,108,864 bytes (max_artifact_bytes) is within the limit.",
+      "expect": {
+        "ok": {
+          "ciphertext_len": "67108850"
+        }
+      },
+      "name": "the_largest_container",
+      "prefix": "4446534100010000000003fffff2",
+      "total_len": "67108864"
+    },
+    {
+      "description": "67,108,865 bytes is over the limit, refused before anything is parsed, even with an empty prefix.",
+      "expect": {
+        "error": "ContainerTooLarge"
+      },
+      "name": "one_byte_over_the_largest",
+      "prefix": "",
+      "total_len": "67108865"
+    },
+    {
+      "description": "The first four bytes are not DFSA.",
+      "expect": {
+        "error": "BadMagic"
+      },
+      "name": "bad_magic",
+      "prefix": "5846534100010000000000000040",
+      "total_len": "78"
+    },
+    {
+      "description": "A wrong magic is refused as soon as a wrong byte is in hand.",
+      "expect": {
+        "error": "BadMagic"
+      },
+      "name": "bad_magic_in_a_two_byte_prefix",
+      "prefix": "4458",
+      "total_len": "78"
+    },
+    {
+      "description": "Container version 2.",
+      "expect": {
+        "error": "UnsupportedContainer"
+      },
+      "name": "unsupported_container_version",
+      "prefix": "4446534100020000000000000040",
+      "total_len": "78"
+    },
+    {
+      "description": "The version is judged as soon as its bytes are in hand.",
+      "expect": {
+        "error": "UnsupportedContainer"
+      },
+      "name": "unsupported_version_in_a_six_byte_prefix",
+      "prefix": "444653410002",
+      "total_len": "78"
+    },
+    {
+      "description": "Nothing yet: fourteen bytes are needed to read the frame.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "14"
+        }
+      },
+      "name": "an_empty_prefix",
+      "prefix": "",
+      "total_len": "78"
+    },
+    {
+      "description": "The magic so far matches; the frame is not complete.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "14"
+        }
+      },
+      "name": "a_good_magic_prefix",
+      "prefix": "444653",
+      "total_len": "78"
+    },
+    {
+      "description": "A prefix never asks for more than the container holds: three bytes of a 10-byte container need ten.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "10"
+        }
+      },
+      "name": "a_good_magic_prefix_of_a_short_container",
+      "prefix": "444653",
+      "total_len": "10"
+    },
+    {
+      "description": "One byte short of the frame.",
+      "expect": {
+        "prefix_too_short": {
+          "needed": "14"
+        }
+      },
+      "name": "a_thirteen_byte_prefix",
+      "prefix": "44465341000100000000000000",
+      "total_len": "78"
+    },
+    {
+      "description": "A container of 10 bytes cannot hold a 14-byte frame.",
+      "expect": {
+        "error": "Truncated"
+      },
+      "name": "total_len_shorter_than_the_frame",
+      "prefix": "44465341000100000000",
+      "total_len": "10"
+    },
+    {
+      "description": "The same 10-byte container seen through a six-byte prefix is already decided.",
+      "expect": {
+        "error": "Truncated"
+      },
+      "name": "a_short_container_seen_through_a_short_prefix",
+      "prefix": "444653410001",
+      "total_len": "10"
+    },
+    {
+      "description": "A container of no bytes is truncated, not a request for more.",
+      "expect": {
+        "error": "Truncated"
+      },
+      "name": "an_empty_container",
+      "prefix": "",
+      "total_len": "0"
+    },
+    {
+      "description": "More bytes in hand than the container has.",
+      "expect": {
+        "error": "LengthExceedsInput"
+      },
+      "name": "a_prefix_longer_than_the_total",
+      "prefix": "4446534100010000000000000040",
+      "total_len": "10"
+    }
+  ],
+  "how_to_read": "A case gives the first bytes of a DFSA artifact container ('prefix', hex) and the container's total length in bytes ('total_len', a decimal string), the way a service knows a request body's length before it reads the body; the largest container the service stores is 67,108,864 bytes (max_artifact_bytes). 'expect' is one of: {ok: {ciphertext_len}}, the ciphertext length, proven equal to total_len - 14; {error: <name>}, the error that parsing the whole container would give (BadMagic, UnsupportedContainer, Truncated, LengthExceedsInput, TrailingBytes, CiphertextTooShort, or ContainerTooLarge for a total_len over the maximum, which is judged before anything else); or {prefix_too_short: {needed}}, meaning the prefix ends before the answer can be decided and 'needed' bytes of prefix are enough to continue. The frame is magic 'DFSA', u16 container_version (1), u64 ciphertext_len, all big-endian, then the ciphertext; 14 + ciphertext_len must equal total_len, and the ciphertext is at least 16 bytes (a GCM tag). The checks come in this order: total_len over the maximum; a prefix longer than total_len; the magic and the version as soon as their bytes are in hand; a total_len under 14; the prefix being under 14 bytes; the ciphertext length against what remains (LengthExceedsInput, then TrailingBytes); the tag minimum. The error names are those of the reference implementation's wire errors; an implementation must agree that the container is malformed and that no ciphertext byte is read, but the specific name is informative except where the case says otherwise.",
+  "spec": "docs/architecture/vault-format.md C.9 (the DFSA container); personal-cfo-v98vd AC35",
+  "synthetic": "Every container is built from synthetic public values. No key, secret or real value is in this file.",
+  "vectors_version": 1
+}
