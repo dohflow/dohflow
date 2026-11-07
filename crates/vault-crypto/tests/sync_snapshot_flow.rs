@@ -553,6 +553,42 @@ fn a_snapshot_after_the_genesis_is_never_read_from_the_live_vault() {
 }
 
 #[test]
+fn a_re_snapshot_built_from_another_position_than_it_declares_is_refused_locally() {
+    let rig = Rig::genesis("source-head");
+    let service = service_with_genesis(&rig);
+    service.advance_head_to(5);
+    let calls = service.calls().len();
+    let commits = rig.store.commits();
+    let plaintext = pt("state at three");
+
+    // The state at 3 declared as built on 5, and the state at 7 declared as built on 5.
+    for head in [3, 7] {
+        let mut request = re_snapshot(0x02, 5, &plaintext);
+        request.source = SnapshotSource::StateAtHead { head };
+        assert_eq!(
+            rig.publish(&service, &HEALTHY, &request),
+            Err(PublishError::SourceHeadMismatch {
+                source_head: head,
+                base_seq: 5
+            }),
+            "source head {head}"
+        );
+    }
+    assert_eq!(
+        service.calls().len(),
+        calls,
+        "the service recorded zero calls"
+    );
+    assert_eq!(rig.store.commits(), commits, "no counter was reserved");
+    assert!(!rig.saved_file_exists(0x02), "no container was saved");
+
+    // The matching head publishes.
+    let matched = re_snapshot(0x02, 5, &plaintext);
+    assert_eq!(matched.source, SnapshotSource::StateAtHead { head: 5 });
+    assert!(rig.publish(&service, &HEALTHY, &matched).is_ok());
+}
+
+#[test]
 fn a_restored_register_stops_the_publish_before_anything_is_sent() {
     let rig = Rig::genesis("restore");
     let service = FakeSnapshotService::new(Credential::Account);

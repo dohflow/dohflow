@@ -35,6 +35,7 @@ pub mod released;
 pub mod secret;
 pub mod sync;
 pub mod sync_artifact;
+pub mod sync_artifact_flow;
 pub mod sync_counter;
 pub mod sync_custody;
 pub mod sync_envelope;
