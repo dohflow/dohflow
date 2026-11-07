@@ -168,4 +168,12 @@ describe("Read forecast by date (personal-cfo-i93n3.27 slice C)", () => {
     );
     expect([...select().options].map((o) => o.value)).toEqual(["2027-02-02", "2027-02-03", "2027-02-04", "2027-02-05"]);
   });
+
+  it("gives the date control its own full-width row on a phone, above Previous day and Next day", () => {
+    renderReader();
+    const control = select().parentElement!;
+    expect(control).toHaveClass("compact:order-first", "compact:basis-full");
+    expect(screen.getByRole("button", { name: "Previous day" })).toHaveClass("compact:flex-1");
+    expect(screen.getByRole("button", { name: "Next day" })).toHaveClass("compact:flex-1");
+  });
 });
