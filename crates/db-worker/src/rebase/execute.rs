@@ -29,10 +29,45 @@ use crate::payload::decode_payload;
 use crate::sync_state::{decode_row_keys, outbox_issued_at, OutboxIssuedAtError};
 use crate::{ActorType, CommandMeta, DbError, DbWorker, WriteCommand};
 
+/// Where an outbox entry stands with the service, as the outbox records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboxEntryState {
+    /// Never approved for upload: no sealed envelope exists, so the service cannot know it.
+    Pending,
+    /// Sealed and approved for upload, and not yet seen accepted. The service may or may not have
+    /// accepted it (a lost response): only evidence says which.
+    Approved {
+        /// The retained sealed container, byte for byte.
+        sealed: Vec<u8>,
+    },
+    /// Accepted by the service at `seq` with `result_ref`.
+    Bound {
+        /// The retained sealed container.
+        sealed: Vec<u8>,
+        /// The sequence number the service assigned.
+        seq: u64,
+        /// The service's result reference.
+        result_ref: Option<Vec<u8>>,
+    },
+}
+
+impl OutboxEntryState {
+    /// The retained sealed container, once there is one.
+    #[must_use]
+    pub fn sealed(&self) -> Option<&[u8]> {
+        match self {
+            Self::Pending => None,
+            Self::Approved { sealed } | Self::Bound { sealed, .. } => Some(sealed),
+        }
+    }
+}
+
 /// An unpushed local command with everything needed to re-apply or queue it: the ids and write
 /// set the plan reads, its complete original metadata, and the payload exactly as it was recorded.
 #[derive(Debug, Clone)]
 pub struct LocalCommand {
+    /// Where the entry stands with the service.
+    pub entry: OutboxEntryState,
     /// The plan's view: ids and recorded write-set row keys.
     pub command: OutboxCommand,
     /// The complete original metadata, `issued_at` included.
@@ -84,6 +119,19 @@ impl Scratch<'_> {
     pub fn rebase_local(&mut self, local: &[LocalCommand]) -> Result<Executed, RebaseError> {
         if self.rebased {
             return Err(RebaseError::AlreadyRebased);
+        }
+        // Only a command the service cannot have accepted is replayed: a `Pending` one by
+        // construction, an `Approved` one once its evidence said so (`Scratch::apply_reconciled`).
+        for command in local {
+            let id = command.meta.command_id;
+            let replayable = match command.entry {
+                OutboxEntryState::Pending => true,
+                OutboxEntryState::Approved { .. } => self.cleared.contains(&id),
+                OutboxEntryState::Bound { .. } => false,
+            };
+            if !replayable {
+                return Err(RebaseError::NotReconciled { command_id: id });
+            }
         }
         // A consistent copy of the scratch vault as it stands after the pulled envelopes.
         self.worker.checkpoint_truncate()?;
@@ -305,9 +353,9 @@ impl DbWorker {
     /// rebase needs: the complete original metadata (the issue time from the outbox row, the rest
     /// from the operation log), the payload as recorded, and the recorded write-set row keys.
     ///
-    /// Only entries that are still this device's to send are returned (`Pending` and `Approved`).
-    /// A `Bound` entry was accepted by the server and comes back in the pulled tail, where it is
-    /// reconciled rather than replayed (personal-cfo-bxsbz.5).
+    /// Entries in every state are returned, each with its [`OutboxEntryState`]: a `Bound` entry was
+    /// accepted by the server and is reconciled, not replayed (`reconcile`), and an `Approved` one
+    /// is replayed only after its evidence says the service does not know it.
     ///
     /// # Errors
     /// [`RebaseError::MissingIssuedAt`] for an entry with no recorded issue time,
@@ -319,9 +367,9 @@ impl DbWorker {
         let mut stmt = conn.prepare(
             "SELECT l.op_seq, l.command_id, l.correlation_id, l.causation_id, l.actor_type,
                     l.actor_id, l.idempotency_key, l.payload, l.payload_schema_version,
-                    l.write_set_hash, o.write_set_keys
+                    l.write_set_hash, o.write_set_keys, o.state, o.sealed_container,
+                    o.bound_seq, o.result_ref
                FROM sync_outbox o JOIN operation_log l ON l.command_id = o.command_id
-              WHERE o.state IN ('Pending', 'Approved')
               ORDER BY l.op_seq",
         )?;
         let rows = stmt
@@ -338,6 +386,10 @@ impl DbWorker {
                     r.get::<_, Option<u32>>(8)?,
                     r.get::<_, Option<Vec<u8>>>(9)?,
                     r.get::<_, Vec<u8>>(10)?,
+                    r.get::<_, String>(11)?,
+                    r.get::<_, Option<Vec<u8>>>(12)?,
+                    r.get::<_, Option<i64>>(13)?,
+                    r.get::<_, Option<Vec<u8>>>(14)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -354,6 +406,10 @@ impl DbWorker {
             version,
             hash,
             keys,
+            state,
+            sealed,
+            bound_seq,
+            result_ref,
         ) in rows
         {
             let unreadable = || RebaseError::UnreadableLocalCommand { command_id };
@@ -376,7 +432,18 @@ impl DbWorker {
                 "agent" => ActorType::Agent,
                 _ => return Err(unreadable()),
             };
+            let entry = match (state.as_str(), sealed, bound_seq) {
+                ("Pending", None, None) => OutboxEntryState::Pending,
+                ("Approved", Some(sealed), None) => OutboxEntryState::Approved { sealed },
+                ("Bound", Some(sealed), Some(seq)) => OutboxEntryState::Bound {
+                    sealed,
+                    seq: u64::try_from(seq).map_err(|_| unreadable())?,
+                    result_ref,
+                },
+                _ => return Err(unreadable()),
+            };
             out.push(LocalCommand {
+                entry,
                 command: OutboxCommand {
                     command_id,
                     correlation_id,

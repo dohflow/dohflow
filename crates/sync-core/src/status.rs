@@ -97,6 +97,22 @@ pub enum HaltEvidence {
         /// The conflicting, otherwise valid record.
         conflicting: [u8; 32],
     },
+    /// One command identity (a `command_id`, or the idempotency-key tag it carries) is bound to
+    /// two different envelopes: the C.10 `ProtocolFork`. The client found it reconciling its
+    /// unpushed command against the log or the accepted-envelope index. Like a membership fork it
+    /// is not recoverable by a snapshot: the two envelopes are kept and the vault stops.
+    ProtocolFork {
+        /// The command whose identity is claimed twice.
+        command_id: [u8; 16],
+        /// The `canonical_envelope_digest` of this device's retained envelope for it. `None` when
+        /// the device never sealed one (a `Pending` entry): the halt then means the device never
+        /// sealed this command and the log holds an envelope for its identity anyway, not that two
+        /// digests differ.
+        local_digest: Option<[u8; 32]>,
+        /// The digest of the other envelope. `None` when the service refused this device's exact
+        /// bytes as a fork and did not say which envelope holds the identity.
+        other_digest: Option<[u8; 32]>,
+    },
 }
 
 /// An authenticated envelope that failed the receiver checks, and where.
@@ -632,6 +648,27 @@ impl SyncStatus {
             seq,
             expected,
             computed,
+        };
+        *self = Self::Halted(evidence);
+        Some(SyncEvent::Halted(evidence))
+    }
+
+    /// Halt on a command identity bound to two different envelopes (C.10 `ProtocolFork`), found
+    /// while reconciling the device's unpushed commands. A status that is already `Halted`
+    /// absorbs it. Persisting the halt is the engine's, under the anti-rollback witness.
+    pub fn observe_protocol_fork(
+        &mut self,
+        command_id: [u8; 16],
+        local_digest: Option<[u8; 32]>,
+        other_digest: Option<[u8; 32]>,
+    ) -> Option<SyncEvent> {
+        if matches!(self, Self::Halted(_)) {
+            return None;
+        }
+        let evidence = HaltEvidence::ProtocolFork {
+            command_id,
+            local_digest,
+            other_digest,
         };
         *self = Self::Halted(evidence);
         Some(SyncEvent::Halted(evidence))
