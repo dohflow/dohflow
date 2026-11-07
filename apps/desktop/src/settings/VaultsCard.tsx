@@ -7,62 +7,160 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { describeIpcError, useVault } from "@/vault/useVault";
 
+import { useAttemptCount, useReannounced } from "./attemptKey";
+import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
+
+/// What failed, so the section's persistent slot can show the error with the one action that
+/// recovers from it: Switch (for that vault), Save (the rename in progress) or Create vault.
+type Failure =
+  | { action: "switch"; id: string; message: string }
+  | { action: "rename"; id: string; message: string }
+  | { action: "create"; message: string };
+
 /// The multi-vault management card (personal-cfo-j0cg.6, ADR 0042): list the known vaults, switch
 /// between them (which locks the current one and routes to the unlock screen), rename them, and
 /// create a new one. Only shown in multi-vault mode (an unlocked real vault always has ≥1 entry).
 export function VaultsCard() {
-  const { vaults, createNamedVault, switchVault, renameVault } = useVault();
+  const { vaults, vaultsError, reloadVaults, createNamedVault, switchVault, renameVault } =
+    useVault();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  // Each recovery action is rendered once: in the persistent slot while its error shows, else in
+  // the body. Moving it must not strand focus.
+  const retry = useKeepFocusAcrossMove({ settled: !busy });
+  const switchFocus = useKeepFocusAcrossMove({ settled: !busy });
+  // Every non-active vault has its own Switch, but one hand-over serves them all: its ref goes on
+  // the Switch of the vault last pressed, wherever that button is rendered.
+  const [switchPressed, setSwitchPressed] = useState<string | null>(null);
+  const saveFocus = useKeepFocusAcrossMove({ settled: !busy });
+  const createFocus = useKeepFocusAcrossMove({ settled: !busy });
 
-  if (vaults.length === 0) return null;
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [failureAttempt, nextFailureAttempt] = useAttemptCount();
+  const [loadAttempt, nextLoadAttempt] = useAttemptCount();
+  const failureAlert = useReannounced(failure?.message ?? null, failureAttempt);
+  const loadAlert = useReannounced(vaultsError, loadAttempt);
+  function fail(next: Failure) {
+    setFailure(next);
+    nextFailureAttempt();
+  }
+
+  if (vaults.length === 0 && !vaultsError) return null;
 
   async function onSwitch(id: string) {
     setBusy(true);
-    setError(null);
-    const failure = await switchVault(id);
+    // An earlier error stays, with its Switch, until this try settles.
+    const result = await switchVault(id);
     setBusy(false);
-    if (failure) setError(describeIpcError(failure));
+    if (result) fail({ action: "switch", id, message: describeIpcError(result) });
+    else setFailure(null);
     // On success the status flips to Locked and the vault gate shows the unlock screen.
   }
 
   async function saveRename(id: string) {
     if (!renameValue.trim()) return;
+    saveFocus.remember();
     setBusy(true);
-    setError(null);
-    const failure = await renameVault(id, renameValue.trim());
+    const result = await renameVault(id, renameValue.trim());
     setBusy(false);
-    if (failure) setError(describeIpcError(failure));
-    else setRenamingId(null);
+    if (result) {
+      fail({ action: "rename", id, message: describeIpcError(result) });
+    } else {
+      setFailure(null);
+      setRenamingId(null);
+    }
   }
 
   async function onCreate() {
+    createFocus.remember();
     if (!newName.trim()) {
-      setError("Name the vault.");
+      fail({ action: "create", message: "Name the vault." });
       return;
     }
     if (!newPassword) {
-      setError("Choose a password.");
+      fail({ action: "create", message: "Choose a password." });
       return;
     }
     setBusy(true);
-    setError(null);
-    const failure = await createNamedVault(newName.trim(), newPassword);
+    const result = await createNamedVault(newName.trim(), newPassword);
     setBusy(false);
-    if (failure) {
-      setError(describeIpcError(failure));
+    if (result) {
+      fail({ action: "create", message: describeIpcError(result) });
     } else {
+      setFailure(null);
       setCreating(false);
       setNewName("");
       setNewPassword("");
     }
     // On success the new (empty) vault is unlocked and active — the app stays open in it.
   }
+
+  // An error, its full message and its one recovery action stay in the section's persistent slot,
+  // open or closed. A failed list read recovers with Retry; a failed switch with Switch (shown
+  // beside the vault it is for), a failed rename with Save, a failed create with Create vault.
+  const switchInSlot = failure?.action === "switch" ? failure.id : null;
+  const renameInSlot = failure?.action === "rename" ? failure.id : null;
+  const createInSlot = failure?.action === "create";
+  const retryButton = (
+    <Button
+      ref={retry.ref}
+      size="sm"
+      variant="outline"
+      disabled={busy}
+      onClick={() => {
+        retry.remember();
+        void reloadVaults().then(nextLoadAttempt);
+      }}
+    >
+      Retry
+    </Button>
+  );
+  const loadNotice = vaultsError ? (
+    <div className="flex flex-col gap-2">
+      <p role="alert" className="text-sm text-loss">
+        {loadAlert}
+      </p>
+      <div>{retryButton}</div>
+    </div>
+  ) : null;
+
+  if (vaults.length === 0) return <PersistentNotice>{loadNotice}</PersistentNotice>;
+
+  const switchTarget = vaults.find((v) => v.id === switchInSlot);
+  const switchButton = (id: string) => (
+    <Button
+      ref={switchPressed === id ? switchFocus.ref : undefined}
+      size="sm"
+      variant="outline"
+      className="shrink-0"
+      disabled={busy}
+      onClick={(event) => {
+        switchFocus.remember(event.currentTarget);
+        setSwitchPressed(id);
+        void onSwitch(id);
+      }}
+    >
+      Switch
+    </Button>
+  );
+  const saveButton = (id: string) => (
+    <Button ref={saveFocus.ref} size="sm" disabled={busy} onClick={() => void saveRename(id)}>
+      Save
+    </Button>
+  );
+  const createButton = (
+    <Button ref={createFocus.ref} size="sm" disabled={busy} onClick={() => void onCreate()}>
+      {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+      Create vault
+    </Button>
+  );
 
   return (
     <Card>
@@ -87,14 +185,15 @@ export function VaultsCard() {
                     value={renameValue}
                     onChange={(e) => setRenameValue(e.target.value)}
                   />
-                  <Button size="sm" disabled={busy} onClick={() => void saveRename(v.id)}>
-                    Save
-                  </Button>
+                  {renameInSlot !== v.id && saveButton(v.id)}
                   <Button
                     size="sm"
                     variant="ghost"
                     disabled={busy}
-                    onClick={() => setRenamingId(null)}
+                    onClick={() => {
+                      setRenamingId(null);
+                      setFailure(null);
+                    }}
                   >
                     Cancel
                   </Button>
@@ -114,20 +213,14 @@ export function VaultsCard() {
                     onClick={() => {
                       setRenamingId(v.id);
                       setRenameValue(v.name);
+                      setFailure(null);
                     }}
+                    // The visible label stays "Rename"; the name says which vault.
+                    aria-label={`Rename ${v.name}`}
                   >
                     Rename
                   </Button>
-                  {!v.is_active && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => void onSwitch(v.id)}
-                    >
-                      Switch
-                    </Button>
-                  )}
+                  {!v.is_active && switchInSlot !== v.id && switchButton(v.id)}
                 </>
               )}
             </li>
@@ -159,17 +252,14 @@ export function VaultsCard() {
               />
             </div>
             <div className="flex gap-2">
-              <Button size="sm" disabled={busy} onClick={() => void onCreate()}>
-                {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
-                Create vault
-              </Button>
+              {!createInSlot && createButton}
               <Button
                 size="sm"
                 variant="ghost"
                 disabled={busy}
                 onClick={() => {
                   setCreating(false);
-                  setError(null);
+                  setFailure(null);
                 }}
               >
                 Cancel
@@ -188,11 +278,28 @@ export function VaultsCard() {
           </Button>
         )}
 
-        {error && (
-          <p role="alert" className="text-sm text-loss">
-            {error}
-          </p>
-        )}
+        <PersistentNotice>
+          {loadNotice}
+          {failure && (
+            <div className="flex flex-col gap-2">
+              <p role="alert" className="text-sm text-loss">
+                {failureAlert}
+              </p>
+              <div className="flex items-start gap-2">
+                {failure.action === "switch" && switchTarget && (
+                  // The full name wraps (a long name keeps its distinguishing suffix), beside a
+                  // Switch that does not shrink.
+                  <span className="min-w-0 flex-1 break-words text-sm font-medium">
+                    {switchTarget.name}
+                  </span>
+                )}
+                {failure.action === "switch" && switchButton(failure.id)}
+                {failure.action === "rename" && saveButton(failure.id)}
+                {failure.action === "create" && createButton}
+              </div>
+            </div>
+          )}
+        </PersistentNotice>
       </CardContent>
     </Card>
   );
