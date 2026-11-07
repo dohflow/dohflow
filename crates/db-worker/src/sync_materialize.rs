@@ -17,6 +17,7 @@
 //!   of every part.
 
 use rusqlite::{params, OptionalExtension};
+use sync_core::artifact_closure::{LiveClosure, LogicalRef};
 use sync_core::source_batch::SourceBatch;
 use thiserror::Error;
 use vault_crypto::sync_artifact::OpenedArtifact;
@@ -48,6 +49,11 @@ pub enum MaterializeError {
     /// Local encryption failed.
     #[error("local encryption failed")]
     Crypto(flow::MaterializeError),
+    /// A replicated row (a provenance link) names a record of the batch being replaced, so the batch
+    /// is live by definition; replacing it would orphan that row. An invariant: the live closure
+    /// passed in should hold the batch.
+    #[error("a live row names a record of the batch being replaced")]
+    LiveReference,
     /// Rows for this id are already in the vault and are not the rows being materialized.
     #[error("rows already in the vault differ from the batch being materialized")]
     RowsDiffer,
@@ -192,16 +198,30 @@ impl DbWorker {
     /// Materialize a decoded source batch: its `source_batches`, `parser_runs` and `source_records`
     /// rows, with the device-local columns of a received batch (`status` `committed`, counts `0`,
     /// `updated_at` equal to `created_at`), and the mapping of every part, in one transaction.
-    /// Idempotent: rows already in the vault that equal the batch's are left; a row that differs is
-    /// [`MaterializeError::RowsDiffer`] and nothing is written.
+    ///
+    /// The rows are judged against `live`, the closure at the preceding log position, **never against
+    /// which rows are present** (C.9): the batch rows a replica holds are a cache of artifacts that
+    /// were once live, which a tailing replica keeps and a bootstrapped one never had.
+    /// * A batch **in** `live` is never touched: equal rows are left, absent rows are written, and a
+    ///   row that differs is [`MaterializeError::RowsDiffer`] (an invariant: stage 9(b) already
+    ///   checked the delta against the live closure).
+    /// * A batch **not** in `live` is replaced: its rows and part mappings are removed and written
+    ///   again from the artifact, and so is a record of another batch that holds one of its record ids
+    ///   (also not live). Both kinds of replica end with the same class-1 state.
+    ///
+    /// A record that a replicated row names (a provenance link) is part of the live closure by
+    /// definition; replacing it would orphan that row, so it is [`MaterializeError::LiveReference`]
+    /// and nothing is written. Device-local staging rows (class 3) that name a replaced record are
+    /// left as they are: their commit finds no source record and fails with `ReferenceMissing`.
     ///
     /// # Errors
-    /// [`MaterializeError`].
+    /// [`MaterializeError`]; on any error nothing is written.
     pub fn materialize_batch(
         &self,
         key_epoch: u64,
         parts: &[BatchPartRef],
         batch: &SourceBatch,
+        live: &LiveClosure,
     ) -> Result<(), MaterializeError> {
         let mut guard = self.lock();
         if guard.state != WorkerState::Healthy {
@@ -209,132 +229,18 @@ impl DbWorker {
         }
         let tx = guard.conn.transaction()?;
         let b = &batch.batch;
-        let batch_changed = tx.execute(
-            "INSERT INTO source_batches
-                 (id, source_type, source_name, file_fingerprint, parser_version, status,
-                  staged_count, committed_count, skipped_count, summary_json, imported_at,
-                  created_at, updated_at, connector_connection_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'committed', 0, 0, 0, ?6, ?7, ?8, ?8, ?9)
-             ON CONFLICT (id) DO NOTHING",
-            params![
-                b.id.as_slice(),
-                b.source_type,
-                b.source_name,
-                b.file_fingerprint,
-                b.parser_version,
-                b.summary_json,
-                b.imported_at,
-                b.created_at,
-                b.connector_connection_id.as_ref().map(<[u8; 16]>::as_slice),
-            ],
-        )?;
-        if batch_changed == 0 {
-            let same: bool = tx.query_row(
-                "SELECT source_type IS ?2 AND source_name IS ?3 AND file_fingerprint IS ?4
-                            AND parser_version IS ?5 AND summary_json IS ?6 AND imported_at IS ?7
-                            AND created_at IS ?8 AND connector_connection_id IS ?9
-                       FROM source_batches WHERE id = ?1",
+        if live.get(&LogicalRef::Batch(b.id)).is_none() {
+            remove_replaced_rows(&tx, batch, live)?;
+            // The old parts' addresses no longer name this batch's artifacts.
+            tx.execute(
+                "DELETE FROM sync_artifacts WHERE kind = 2 AND logical_id = ?1 AND key_epoch = ?2",
                 params![
                     b.id.as_slice(),
-                    b.source_type,
-                    b.source_name,
-                    b.file_fingerprint,
-                    b.parser_version,
-                    b.summary_json,
-                    b.imported_at,
-                    b.created_at,
-                    b.connector_connection_id.as_ref().map(<[u8; 16]>::as_slice),
-                ],
-                |r| r.get(0),
-            )?;
-            if !same {
-                return Err(MaterializeError::RowsDiffer);
-            }
-        }
-        for run in &batch.runs {
-            let changed = tx.execute(
-                "INSERT INTO parser_runs
-                     (id, source_batch_id, parser_name, parser_version, bytes_in, records_out,
-                      status, limit_hit, started_at, finished_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                 ON CONFLICT (id) DO NOTHING",
-                params![
-                    run.id.as_slice(),
-                    run.source_batch_id.as_slice(),
-                    run.parser_name,
-                    run.parser_version,
-                    run.bytes_in,
-                    run.records_out,
-                    run.status,
-                    run.limit_hit,
-                    run.started_at,
-                    run.finished_at,
+                    i64::try_from(key_epoch).map_err(|_| MappingError::Corrupt)?
                 ],
             )?;
-            if changed == 0 {
-                let same: bool = tx.query_row(
-                    "SELECT source_batch_id IS ?2 AND parser_name IS ?3 AND parser_version IS ?4
-                            AND bytes_in IS ?5 AND records_out IS ?6 AND status IS ?7
-                            AND limit_hit IS ?8 AND started_at IS ?9 AND finished_at IS ?10
-                       FROM parser_runs WHERE id = ?1",
-                    params![
-                        run.id.as_slice(),
-                        run.source_batch_id.as_slice(),
-                        run.parser_name,
-                        run.parser_version,
-                        run.bytes_in,
-                        run.records_out,
-                        run.status,
-                        run.limit_hit,
-                        run.started_at,
-                        run.finished_at,
-                    ],
-                    |r| r.get(0),
-                )?;
-                if !same {
-                    return Err(MaterializeError::RowsDiffer);
-                }
-            }
         }
-        for rec in &batch.records {
-            let changed = tx.execute(
-                "INSERT INTO source_records
-                     (id, source_batch_id, external_id, source_hash, normalized_json,
-                      parse_confidence_bps, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT (id) DO NOTHING",
-                params![
-                    rec.id.as_slice(),
-                    rec.source_batch_id.as_slice(),
-                    rec.external_id,
-                    rec.source_hash,
-                    rec.normalized_json,
-                    rec.parse_confidence_bps,
-                    rec.created_at,
-                ],
-            )?;
-            if changed == 0 {
-                let same: bool = tx.query_row(
-                    "SELECT source_batch_id IS ?2 AND external_id IS ?3 AND source_hash IS ?4
-                            AND normalized_json IS ?5 AND parse_confidence_bps IS ?6
-                            AND created_at IS ?7
-                       FROM source_records WHERE id = ?1",
-                    params![
-                        rec.id.as_slice(),
-                        rec.source_batch_id.as_slice(),
-                        rec.external_id,
-                        rec.source_hash,
-                        rec.normalized_json,
-                        rec.parse_confidence_bps,
-                        rec.created_at,
-                    ],
-                    |r| r.get(0),
-                )?;
-                if !same {
-                    return Err(MaterializeError::RowsDiffer);
-                }
-            }
-        }
+        write_rows(&tx, batch)?;
         for part in parts {
             record(
                 &tx,
@@ -354,4 +260,207 @@ impl DbWorker {
         tx.commit()?;
         Ok(())
     }
+}
+
+/// Remove what materializing `batch` replaces, when `batch` is not live: the batch's own rows, and
+/// the record rows of other (not live) batches that hold one of its record ids.
+fn remove_replaced_rows(
+    tx: &rusqlite::Transaction<'_>,
+    batch: &SourceBatch,
+    live: &LiveClosure,
+) -> Result<(), MaterializeError> {
+    let b = &batch.batch;
+    let mut removed: Vec<[u8; 16]> = {
+        let mut stmt = tx.prepare("SELECT id FROM source_records WHERE source_batch_id = ?1")?;
+        let rows = stmt.query_map(params![b.id.as_slice()], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut ids = Vec::new();
+        for id in rows {
+            ids.push(<[u8; 16]>::try_from(id?).map_err(|_| MappingError::Corrupt)?);
+        }
+        ids
+    };
+    let mut colliding: Vec<[u8; 16]> = Vec::new();
+    for record in &batch.records {
+        let holder: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT source_batch_id FROM source_records WHERE id = ?1",
+                params![record.id.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(holder) = holder else { continue };
+        if holder == b.id {
+            continue;
+        }
+        let holder = <[u8; 16]>::try_from(holder).map_err(|_| MappingError::Corrupt)?;
+        // A different live batch holding the id is a T2 violation that stage 9(b) rejects first.
+        if live.get(&LogicalRef::Batch(holder)).is_some() {
+            return Err(MaterializeError::RowsDiffer);
+        }
+        colliding.push(record.id);
+    }
+    removed.extend(&colliding);
+    for id in &removed {
+        let named: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM source_provenance_links WHERE source_record_id = ?1 LIMIT 1",
+                params![id.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if named.is_some() {
+            return Err(MaterializeError::LiveReference);
+        }
+    }
+    tx.execute(
+        "DELETE FROM parser_runs WHERE source_batch_id = ?1",
+        params![b.id.as_slice()],
+    )?;
+    tx.execute(
+        "DELETE FROM source_records WHERE source_batch_id = ?1",
+        params![b.id.as_slice()],
+    )?;
+    for id in &colliding {
+        tx.execute(
+            "DELETE FROM source_records WHERE id = ?1",
+            params![id.as_slice()],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM source_batches WHERE id = ?1",
+        params![b.id.as_slice()],
+    )?;
+    Ok(())
+}
+
+/// Write the rows of `batch`; a row already present must equal the one being written.
+fn write_rows(tx: &rusqlite::Transaction<'_>, batch: &SourceBatch) -> Result<(), MaterializeError> {
+    let b = &batch.batch;
+    let batch_changed = tx.execute(
+        "INSERT INTO source_batches
+             (id, source_type, source_name, file_fingerprint, parser_version, status,
+              staged_count, committed_count, skipped_count, summary_json, imported_at,
+              created_at, updated_at, connector_connection_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'committed', 0, 0, 0, ?6, ?7, ?8, ?8, ?9)
+         ON CONFLICT (id) DO NOTHING",
+        params![
+            b.id.as_slice(),
+            b.source_type,
+            b.source_name,
+            b.file_fingerprint,
+            b.parser_version,
+            b.summary_json,
+            b.imported_at,
+            b.created_at,
+            b.connector_connection_id.as_ref().map(<[u8; 16]>::as_slice),
+        ],
+    )?;
+    if batch_changed == 0 {
+        let same: bool = tx.query_row(
+            "SELECT source_type IS ?2 AND source_name IS ?3 AND file_fingerprint IS ?4
+                        AND parser_version IS ?5 AND summary_json IS ?6 AND imported_at IS ?7
+                        AND created_at IS ?8 AND connector_connection_id IS ?9
+                   FROM source_batches WHERE id = ?1",
+            params![
+                b.id.as_slice(),
+                b.source_type,
+                b.source_name,
+                b.file_fingerprint,
+                b.parser_version,
+                b.summary_json,
+                b.imported_at,
+                b.created_at,
+                b.connector_connection_id.as_ref().map(<[u8; 16]>::as_slice),
+            ],
+            |r| r.get(0),
+        )?;
+        if !same {
+            return Err(MaterializeError::RowsDiffer);
+        }
+    }
+    for run in &batch.runs {
+        let changed = tx.execute(
+            "INSERT INTO parser_runs
+                 (id, source_batch_id, parser_name, parser_version, bytes_in, records_out,
+                  status, limit_hit, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (id) DO NOTHING",
+            params![
+                run.id.as_slice(),
+                run.source_batch_id.as_slice(),
+                run.parser_name,
+                run.parser_version,
+                run.bytes_in,
+                run.records_out,
+                run.status,
+                run.limit_hit,
+                run.started_at,
+                run.finished_at,
+            ],
+        )?;
+        if changed == 0 {
+            let same: bool = tx.query_row(
+                "SELECT source_batch_id IS ?2 AND parser_name IS ?3 AND parser_version IS ?4
+                        AND bytes_in IS ?5 AND records_out IS ?6 AND status IS ?7
+                        AND limit_hit IS ?8 AND started_at IS ?9 AND finished_at IS ?10
+                   FROM parser_runs WHERE id = ?1",
+                params![
+                    run.id.as_slice(),
+                    run.source_batch_id.as_slice(),
+                    run.parser_name,
+                    run.parser_version,
+                    run.bytes_in,
+                    run.records_out,
+                    run.status,
+                    run.limit_hit,
+                    run.started_at,
+                    run.finished_at,
+                ],
+                |r| r.get(0),
+            )?;
+            if !same {
+                return Err(MaterializeError::RowsDiffer);
+            }
+        }
+    }
+    for rec in &batch.records {
+        let changed = tx.execute(
+            "INSERT INTO source_records
+                 (id, source_batch_id, external_id, source_hash, normalized_json,
+                  parse_confidence_bps, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (id) DO NOTHING",
+            params![
+                rec.id.as_slice(),
+                rec.source_batch_id.as_slice(),
+                rec.external_id,
+                rec.source_hash,
+                rec.normalized_json,
+                rec.parse_confidence_bps,
+                rec.created_at,
+            ],
+        )?;
+        if changed == 0 {
+            let same: bool = tx.query_row(
+                "SELECT source_batch_id IS ?2 AND external_id IS ?3 AND source_hash IS ?4
+                        AND normalized_json IS ?5 AND parse_confidence_bps IS ?6
+                        AND created_at IS ?7
+                   FROM source_records WHERE id = ?1",
+                params![
+                    rec.id.as_slice(),
+                    rec.source_batch_id.as_slice(),
+                    rec.external_id,
+                    rec.source_hash,
+                    rec.normalized_json,
+                    rec.parse_confidence_bps,
+                    rec.created_at,
+                ],
+                |r| r.get(0),
+            )?;
+            if !same {
+                return Err(MaterializeError::RowsDiffer);
+            }
+        }
+    }
+    Ok(())
 }

@@ -219,6 +219,9 @@ impl Kernel {
             }
             None => DbWorker::open_existing_with_raw_key(db_path, dek)?,
         };
+        // Rotation recovery has run (it precedes classification), so a blob nothing names is the
+        // ciphertext of a key that was never committed. Best effort: it never blocks an unlock.
+        let _ = worker.sweep_orphan_blobs();
         Ok(Self::with_worker(worker))
     }
 
@@ -353,6 +356,7 @@ impl Kernel {
         match DbWorker::open_existing_with_raw_key(db_path, material.dek) {
             Ok(worker) => {
                 if still_matches()? {
+                    let _ = worker.sweep_orphan_blobs();
                     Ok(Self::with_worker(worker))
                 } else {
                     // Dropping the worker releases the lock and scrubs the key.

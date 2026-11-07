@@ -111,6 +111,45 @@ pub(crate) fn remove_blob(dir: &Path, storage_id: &str) -> Result<(), DbError> {
     }
 }
 
+/// Remove every file in `dir` that no `attachments` row and no staged mapping names (D7,
+/// `personal-cfo-0g528.2`): the ciphertext of a blob whose key was never committed, or a stale
+/// `.tmp`. The caller holds the writer lock, so no import or materialization is between writing its
+/// blob and recording its row. Returns how many files were removed.
+pub(crate) fn sweep_orphans(dir: &Path, conn: &Connection) -> Result<usize, DbError> {
+    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT storage_id FROM attachments
+             UNION SELECT staged_storage_id FROM sync_artifacts WHERE staged_storage_id IS NOT NULL",
+        )?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for name in names {
+            referenced.insert(name?);
+        }
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(DbError::Io(e)),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if referenced.contains(&name) {
+            continue;
+        }
+        remove_blob(dir, &name)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 /// Whether an `attachments` row with `id` exists.
 pub(crate) fn row_exists(conn: &Connection, id: AttachmentId) -> Result<bool, DbError> {
     Ok(conn

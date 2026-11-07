@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use db_worker::sync_artifacts::{create_attachment_from_staged, lookup, ArtifactKind};
 use db_worker::sync_materialize::{BatchPartRef, MaterializeError};
 use db_worker::DbWorker;
+use sync_core::artifact_closure::{LiveClosure, LogicalRef};
 use sync_core::source_batch::{BatchRow, RecordRow, RunRow, SourceBatch};
 use vault_crypto::{derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek, Dek, Profile};
 
@@ -351,7 +352,7 @@ fn a_batch_is_written_with_the_local_columns_of_a_received_batch_and_its_parts_a
     let vault = Vault::new();
     vault
         .worker
-        .materialize_batch(1, &parts(), &batch())
+        .materialize_batch(1, &parts(), &batch(), &LiveClosure::new())
         .unwrap();
 
     let conn = vault.worker.read_connection().unwrap();
@@ -406,11 +407,11 @@ fn materializing_a_batch_twice_changes_nothing() {
     let vault = Vault::new();
     vault
         .worker
-        .materialize_batch(1, &parts(), &batch())
+        .materialize_batch(1, &parts(), &batch(), &LiveClosure::new())
         .unwrap();
     vault
         .worker
-        .materialize_batch(1, &parts(), &batch())
+        .materialize_batch(1, &parts(), &batch(), &LiveClosure::new())
         .unwrap();
     assert_eq!(vault.count("source_batches"), 1);
     assert_eq!(vault.count("parser_runs"), 1);
@@ -418,53 +419,507 @@ fn materializing_a_batch_twice_changes_nothing() {
     assert_eq!(vault.count("sync_artifacts"), 2);
 }
 
-#[test]
-fn a_row_that_differs_from_the_one_in_the_vault_is_refused_and_the_whole_batch_is_rolled_back() {
-    let vault = Vault::new();
-    // A record with the same id but other content is already in the vault.
-    let mut existing = batch();
-    existing.records[1].normalized_json = "{\"n\":99}".to_owned();
-    existing.records.truncate(2);
-    let mut one = batch();
-    one.batch.id = [0xb2; 16];
-    one.runs.clear();
-    one.records = vec![RecordRow {
-        id: [2; 16],
-        source_batch_id: [0xb2; 16],
-        ..existing.records[1].clone()
-    }];
-    vault.worker.materialize_batch(1, &[], &one).unwrap();
+// ---- T4: the batch rows are judged against the live closure, not against which rows are here --------
 
-    // Materializing the batch that carries a different row under that id writes nothing at all,
-    // not even the rows before the conflict.
-    let rows_before = (
-        vault.count("source_batches"),
-        vault.count("parser_runs"),
-        vault.count("source_records"),
-        vault.count("sync_artifacts"),
+const TABLES_OF_CLASS_1: &str = include_str!("../table_classes.toml");
+
+/// Every row of every class-1 and class-1b table, as sorted strings: what "equal class-1 state"
+/// means between two replicas.
+fn class_one_state(conn: &rusqlite::Connection) -> Vec<(String, Vec<String>)> {
+    let mut tables: Vec<String> = Vec::new();
+    for block in TABLES_OF_CLASS_1.split("[[table]]").skip(1) {
+        let field = |name: &str| {
+            block
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{name} = \"")))
+                .and_then(|rest| rest.strip_suffix('"'))
+                .map(str::to_owned)
+        };
+        if matches!(field("class").as_deref(), Some("1" | "1b")) {
+            let table = field("table").unwrap();
+            // The manifest also lists things that are not SQLite tables (the blob directory).
+            let is_table: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [&table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if is_table {
+                tables.push(table);
+            }
+        }
+    }
+    tables.sort();
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
+            let columns = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |r| {
+                    Ok((0..columns)
+                        .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                        .collect::<Vec<_>>()
+                        .join("|"))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            rows.sort();
+            (table, rows)
+        })
+        .collect()
+}
+
+/// What materializing a batch may change: the three batch tables.
+const BATCH_TABLES: [&str; 3] = ["source_batches", "source_records", "parser_runs"];
+
+type State = Vec<(String, Vec<String>)>;
+
+/// Two replicas end with equal class-1 state: the batch tables are equal between them, and nothing
+/// else in any class-1 or class-1b table changed in either (the seeded rows of two fresh vaults
+/// differ in timestamps, which is why the rest is compared with each replica's own past).
+fn assert_equal_class_one_state(tailing: (&State, &State), bootstrapped: (&State, &State)) {
+    for (index, (table, tailing_rows)) in tailing.1.iter().enumerate() {
+        let (_, bootstrapped_rows) = &bootstrapped.1[index];
+        if BATCH_TABLES.contains(&table.as_str()) {
+            assert_eq!(tailing_rows, bootstrapped_rows, "{table}");
+        } else {
+            assert_eq!(
+                tailing_rows, &tailing.0[index].1,
+                "{table} changed on the tailing replica"
+            );
+            assert_eq!(
+                bootstrapped_rows, &bootstrapped.0[index].1,
+                "{table} changed on the bootstrapped replica"
+            );
+        }
+    }
+}
+
+/// The mappings of the parts of the logical batch `id`: address and verified hash.
+fn part_mappings(vault: &Vault, id: [u8; 16]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let conn = vault.worker.read_connection().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT sync_artifact_id, ciphertext_sha256 FROM sync_artifacts
+              WHERE kind = 2 AND logical_id = ?1 ORDER BY sync_artifact_id",
+        )
+        .unwrap();
+    stmt.query_map([id.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+const ART3: [u8; 32] = [0x53; 32];
+const ART4: [u8; 32] = [0x54; 32];
+
+fn parts_v2() -> [BatchPartRef; 2] {
+    [
+        BatchPartRef {
+            artifact_id: ART3,
+            ciphertext_sha256: [0x63; 32],
+            index: 0,
+            count: 2,
+        },
+        BatchPartRef {
+            artifact_id: ART4,
+            ciphertext_sha256: [0x64; 32],
+            index: 1,
+            count: 2,
+        },
+    ]
+}
+
+/// The same logical batch published again with other rows: record 1 changed, record 2 gone, record 3
+/// new, another summary.
+fn batch_v2() -> SourceBatch {
+    let mut next = batch();
+    next.batch.summary_json = Some("{\"republished\":true}".to_owned());
+    next.records[0].normalized_json = "{\"n\":100}".to_owned();
+    next.records.remove(1);
+    next.records.push(RecordRow {
+        id: [3; 16],
+        normalized_json: "{\"n\":3}".to_owned(),
+        external_id: Some("ext-3".to_owned()),
+        source_hash: "hash-3".to_owned(),
+        ..next.records[0].clone()
+    });
+    next
+}
+
+#[test]
+fn a_republished_batch_that_is_not_live_ends_equal_on_a_tailing_and_a_bootstrapped_replica() {
+    let none = LiveClosure::new();
+    // The tailing replica materialized the first publication when it was live, and kept its rows.
+    let tailing = Vault::new();
+    tailing
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    // The bootstrapped replica never had them.
+    let bootstrapped = Vault::new();
+    let state = |vault: &Vault| class_one_state(&vault.worker.read_connection().unwrap());
+    let (tailing_before, bootstrapped_before) = (state(&tailing), state(&bootstrapped));
+
+    for vault in [&tailing, &bootstrapped] {
+        vault
+            .worker
+            .materialize_batch(1, &parts_v2(), &batch_v2(), &none)
+            .unwrap();
+    }
+    assert_equal_class_one_state(
+        (&tailing_before, &state(&tailing)),
+        (&bootstrapped_before, &state(&bootstrapped)),
     );
+    // The batch is the second publication: the old record is gone, the new one is there.
+    assert_eq!(tailing.count("source_records"), 2);
+    // And the old parts' addresses no longer name this batch.
+    assert_eq!(
+        part_mappings(&tailing, [0xb1; 16]),
+        part_mappings(&bootstrapped, [0xb1; 16])
+    );
+    assert_eq!(part_mappings(&tailing, [0xb1; 16]).len(), 2);
+    assert!(part_mappings(&tailing, [0xb1; 16])
+        .iter()
+        .all(|(id, _)| id.as_slice() == ART3 || id.as_slice() == ART4));
+}
+
+#[test]
+fn a_record_id_reused_by_a_batch_that_is_not_live_ends_the_same_on_both_replicas() {
+    let none = LiveClosure::new();
+    let tailing = Vault::new();
+    tailing
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &none)
+        .unwrap();
+    let bootstrapped = Vault::new();
+
+    // Another batch carries record 1 again (a different batch, different content).
+    let mut other = batch();
+    other.batch.id = [0xb2; 16];
+    other.runs.clear();
+    other.records = vec![RecordRow {
+        source_batch_id: [0xb2; 16],
+        normalized_json: "{\"n\":\"again\"}".to_owned(),
+        ..batch().records[0].clone()
+    }];
+    let other_parts = [BatchPartRef {
+        artifact_id: ART3,
+        ciphertext_sha256: [0x63; 32],
+        index: 0,
+        count: 1,
+    }];
+    let state = |vault: &Vault| class_one_state(&vault.worker.read_connection().unwrap());
+    let (tailing_before, bootstrapped_before) = (state(&tailing), state(&bootstrapped));
+    for vault in [&tailing, &bootstrapped] {
+        vault
+            .worker
+            .materialize_batch(1, &other_parts, &other, &none)
+            .unwrap();
+    }
+    // No other class-1 or class-1b table changed on either replica.
+    for (before, after) in [
+        (&tailing_before, state(&tailing)),
+        (&bootstrapped_before, state(&bootstrapped)),
+    ] {
+        for (index, (table, rows)) in after.iter().enumerate() {
+            if !BATCH_TABLES.contains(&table.as_str()) {
+                assert_eq!(rows, &before[index].1, "{table}");
+            }
+        }
+    }
+    // Record 1 belongs to the new batch on both; the old batch's other rows are a cache the
+    // tailing replica keeps.
+    let owner = |vault: &Vault| -> Vec<u8> {
+        vault
+            .worker
+            .read_connection()
+            .unwrap()
+            .query_row(
+                "SELECT source_batch_id FROM source_records WHERE id = ?1",
+                [[1_u8; 16].as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(owner(&tailing), [0xb2; 16]);
+    assert_eq!(owner(&bootstrapped), [0xb2; 16]);
+    assert_eq!(
+        tailing.count("source_records"),
+        2,
+        "record 2 stays as a cache"
+    );
+    assert_eq!(bootstrapped.count("source_records"), 1);
+    let rows_of = |vault: &Vault, batch: [u8; 16]| -> Vec<String> {
+        let conn = vault.worker.read_connection().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, external_id, source_hash, normalized_json FROM source_records WHERE source_batch_id = ?1")
+            .unwrap();
+        stmt.query_map([batch.as_slice()], |r| {
+            Ok(format!(
+                "{:?}|{:?}|{:?}|{:?}",
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    };
+    assert_eq!(
+        rows_of(&tailing, [0xb2; 16]),
+        rows_of(&bootstrapped, [0xb2; 16])
+    );
+}
+
+fn live_with_batch() -> LiveClosure {
+    let mut live = LiveClosure::new();
+    live.insert(
+        LogicalRef::Batch([0xb1; 16]),
+        sync_core::artifact::ArtifactId::from_derived(ART),
+        HASH,
+    );
+    live
+}
+
+#[test]
+fn the_rows_of_a_live_batch_are_never_touched() {
+    let live = live_with_batch();
+    let vault = Vault::new();
+    // Absent rows are written (a replica that lost them).
+    vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &live)
+        .unwrap();
+    let before = class_one_state(&vault.worker.read_connection().unwrap());
+    // Equal rows are left as they are.
+    vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &live)
+        .unwrap();
+    assert_eq!(
+        class_one_state(&vault.worker.read_connection().unwrap()),
+        before
+    );
+    // A row that differs is an invariant violation: nothing is written, not even the new record.
     assert!(matches!(
-        vault.worker.materialize_batch(1, &parts(), &batch()),
+        vault
+            .worker
+            .materialize_batch(1, &parts_v2(), &batch_v2(), &live),
         Err(MaterializeError::RowsDiffer)
     ));
     assert_eq!(
-        rows_before,
-        (
-            vault.count("source_batches"),
-            vault.count("parser_runs"),
-            vault.count("source_records"),
-            vault.count("sync_artifacts"),
-        )
+        class_one_state(&vault.worker.read_connection().unwrap()),
+        before
     );
+    assert_eq!(part_mappings(&vault, [0xb1; 16]).len(), 2);
+    assert!(part_mappings(&vault, [0xb1; 16])
+        .iter()
+        .all(|(id, _)| id.as_slice() == ART || id.as_slice() == ART2));
+}
 
-    // A batch id already present with other carried columns is refused the same way.
-    let mut changed = batch();
-    changed.batch.id = [0xb2; 16];
-    changed.batch.source_name = Some("another.csv".to_owned());
-    changed.runs.clear();
-    changed.records.clear();
+#[test]
+fn a_record_held_by_a_live_batch_is_never_taken_over() {
+    // The T2 case that stage 9(b) rejects first: reaching the materializer is an invariant violation.
+    let vault = Vault::new();
+    vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &LiveClosure::new())
+        .unwrap();
+    let before = class_one_state(&vault.worker.read_connection().unwrap());
+    let mut other = batch();
+    other.batch.id = [0xb2; 16];
+    other.runs.clear();
+    other.records = vec![RecordRow {
+        source_batch_id: [0xb2; 16],
+        ..batch().records[0].clone()
+    }];
     assert!(matches!(
-        vault.worker.materialize_batch(1, &[], &changed),
+        vault
+            .worker
+            .materialize_batch(1, &[], &other, &live_with_batch()),
         Err(MaterializeError::RowsDiffer)
     ));
+    assert_eq!(
+        class_one_state(&vault.worker.read_connection().unwrap()),
+        before
+    );
+}
+
+#[test]
+fn a_record_that_a_replicated_row_names_is_never_replaced() {
+    let vault = Vault::new();
+    vault
+        .worker
+        .materialize_batch(1, &parts(), &batch(), &LiveClosure::new())
+        .unwrap();
+    // A provenance link (a replicated, class-1b row) names record 1: the batch is live by definition.
+    vault
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO source_provenance_links
+                 (id, entity_type, entity_id, source_record_id, relationship, created_at)
+             VALUES (zeroblob(16), 'ledger_transaction', zeroblob(16), ?1, 'created_from', 't')",
+            [[1_u8; 16].as_slice()],
+        )
+        .unwrap();
+    let before = class_one_state(&vault.worker.read_connection().unwrap());
+
+    // Replacing the batch itself would orphan the link.
+    assert!(matches!(
+        vault
+            .worker
+            .materialize_batch(1, &parts_v2(), &batch_v2(), &LiveClosure::new()),
+        Err(MaterializeError::LiveReference)
+    ));
+    // So would taking over the record from another batch.
+    let mut other = batch();
+    other.batch.id = [0xb2; 16];
+    other.runs.clear();
+    other.records = vec![RecordRow {
+        source_batch_id: [0xb2; 16],
+        ..batch().records[0].clone()
+    }];
+    assert!(matches!(
+        vault
+            .worker
+            .materialize_batch(1, &[], &other, &LiveClosure::new()),
+        Err(MaterializeError::LiveReference)
+    ));
+    assert_eq!(
+        class_one_state(&vault.worker.read_connection().unwrap()),
+        before
+    );
+    assert_eq!(
+        part_mappings(&vault, [0xb1; 16]).len(),
+        2,
+        "and the mappings are untouched"
+    );
+}
+
+// ---- a staged row whose blob is gone ---------------------------------------------------------------
+
+#[test]
+fn a_staged_attachment_whose_blob_is_gone_is_materialized_again() {
+    let vault = Vault::new();
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
+    vault
+        .worker
+        .materialize_attachment(1, &hash, &artifact)
+        .unwrap();
+    let first = lookup(&vault.worker.read_connection().unwrap(), 1, &id)
+        .unwrap()
+        .unwrap()
+        .staged
+        .unwrap();
+    // A restore returned the row without its blob (or the file was lost).
+    fs::remove_file(vault.blob_path(PDF)).unwrap();
+
+    vault
+        .worker
+        .materialize_attachment(1, &hash, &artifact)
+        .unwrap();
+    assert!(vault.blob_path(PDF).is_file(), "the blob is written again");
+    let again = lookup(&vault.worker.read_connection().unwrap(), 1, &id)
+        .unwrap()
+        .unwrap()
+        .staged
+        .unwrap();
+    assert_ne!(
+        again.wrapped_content_key, first.wrapped_content_key,
+        "under a fresh content key, because the old one opens nothing"
+    );
+    // And the staged key opens the new blob.
+    let conn = vault.worker.read_connection().unwrap();
+    let attachment = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(ATT));
+    create_attachment_from_staged(&conn, 1, &id, attachment, None, "t").unwrap();
+    assert_eq!(vault.worker.read_attachment_bytes(attachment).unwrap(), PDF);
+}
+
+// ---- the startup sweep of orphaned blobs (D7) --------------------------------------------------------
+
+#[test]
+fn the_sweep_removes_what_nothing_names_and_keeps_what_a_row_or_a_staging_names() {
+    let vault = Vault::new();
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    // A blob an attachments row names, and one a staged mapping names.
+    let imported = vault
+        .worker
+        .import_attachment(b"an imported attachment", None, None)
+        .unwrap();
+    let staged_bytes = b"%PDF-1.4\nstaged for the attach command\n%%EOF\n";
+    let (artifact, hash, _) = self::artifact(&service, &key, 0x51, ATT, staged_bytes);
+    vault
+        .worker
+        .materialize_attachment(1, &hash, &artifact)
+        .unwrap();
+    // Two orphans: a blob whose row was never recorded, and a stale temporary file.
+    fs::write(
+        vault.blobs().join("0".repeat(64)),
+        b"ciphertext whose key was never committed",
+    )
+    .unwrap();
+    fs::write(
+        vault.blobs().join(format!("{}.tmp", "1".repeat(64))),
+        b"half written",
+    )
+    .unwrap();
+
+    assert_eq!(vault.worker.sweep_orphan_blobs().unwrap(), 2);
+    assert!(!vault.blobs().join("0".repeat(64)).exists());
+    assert!(!vault
+        .blobs()
+        .join(format!("{}.tmp", "1".repeat(64)))
+        .exists());
+    assert_eq!(
+        vault.worker.read_attachment_bytes(imported).unwrap(),
+        b"an imported attachment"
+    );
+    assert!(
+        vault.blob_path(staged_bytes).is_file(),
+        "the staged blob is kept"
+    );
+    // A second sweep finds nothing.
+    assert_eq!(vault.worker.sweep_orphan_blobs().unwrap(), 0);
+}
+
+#[test]
+fn the_sweep_does_nothing_while_a_rotation_is_interrupted() {
+    let vault = Vault::new();
+    fs::create_dir_all(vault.blobs()).unwrap();
+    // A crashed rotation leaves new-name blobs that the database does not name yet, and its journal.
+    let new_name = vault.blobs().join("2".repeat(64));
+    fs::write(&new_name, b"a re-addressed blob linked before the swap").unwrap();
+    let journal = vault.dir.path().join("vault.db.rekey");
+    fs::write(&journal, b"{}").unwrap();
+
+    assert_eq!(vault.worker.sweep_orphan_blobs().unwrap(), 0);
+    assert!(new_name.is_file(), "the new-name blob survives the sweep");
+
+    // Once recovery has cleaned the rotation up, the same blob is an orphan like any other.
+    fs::remove_file(&journal).unwrap();
+    assert_eq!(vault.worker.sweep_orphan_blobs().unwrap(), 1);
+    assert!(!new_name.exists());
+    // Each artifact of an interrupted rotation counts, not only the journal.
+    for artifact in [
+        "vault.db.rekey.tmp",
+        "vault.db.rekey-new",
+        "vault.db.envelope.rekey-new",
+        "vault.db.rekey-old",
+    ] {
+        let path = vault.dir.path().join(artifact);
+        fs::write(&path, b"x").unwrap();
+        fs::write(&new_name, b"orphan").unwrap();
+        assert_eq!(vault.worker.sweep_orphan_blobs().unwrap(), 0, "{artifact}");
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&new_name).unwrap();
+    }
 }

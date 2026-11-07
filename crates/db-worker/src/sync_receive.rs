@@ -153,7 +153,7 @@ pub fn receive_delta(
         let batch = join(batch_id, &blobs)
             .map_err(|_| ReceiveError::Mismatch(Mismatch::BatchNotCanonical(*batch_id)))?;
         let refs: Vec<BatchPartRef> = parts.iter().map(|(part, _)| *part).collect();
-        worker.materialize_batch(key.key_epoch(), &refs, &batch)?;
+        worker.materialize_batch(key.key_epoch(), &refs, &batch, live)?;
         received.batches += 1;
     }
     Ok(received)
