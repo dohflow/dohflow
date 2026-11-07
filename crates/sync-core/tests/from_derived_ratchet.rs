@@ -27,6 +27,9 @@ const ALLOWED: &[&str] = &[
     // have just verified (strictly ascending, hex of 32 bytes) and wrap them as service addresses
     // for the closure sidecar (personal-cfo-1cltt.4, personal-cfo-0g528.2).
     "crates/vault-crypto/src/sync_snapshot.rs",
+    // Receiving a delta wraps the ids of the envelope's verified delta manifest as service addresses
+    // to fetch (personal-cfo-0g528.2).
+    "crates/db-worker/src/sync_receive.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];

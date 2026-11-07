@@ -19,6 +19,8 @@
 use rusqlite::{params, OptionalExtension};
 use sync_core::source_batch::SourceBatch;
 use thiserror::Error;
+use vault_crypto::sync_artifact::OpenedArtifact;
+use vault_crypto::sync_artifact_flow as flow;
 
 use crate::sync_artifacts::{record, ArtifactKind, Mapping, MappingError, StagedAttachment};
 use crate::{attachments, DbError, DbWorker, WorkerState};
@@ -39,9 +41,31 @@ pub enum MaterializeError {
     /// carrying identical bytes in one vault are not representable.
     #[error("another attachment already stores a blob with these bytes")]
     BlobHeld,
+    /// The artifact is not a valid attachment (its metadata names no attachment id). A deterministic
+    /// defect that stage 9(b) rejects before materialization; reaching it is a caller error.
+    #[error("the artifact is not a valid attachment")]
+    NotAnAttachment,
+    /// Local encryption failed.
+    #[error("local encryption failed")]
+    Crypto(flow::MaterializeError),
     /// Rows for this id are already in the vault and are not the rows being materialized.
     #[error("rows already in the vault differ from the batch being materialized")]
     RowsDiffer,
+}
+
+impl From<flow::MaterializeError> for MaterializeError {
+    fn from(error: flow::MaterializeError) -> Self {
+        match error {
+            flow::MaterializeError::NotAnAttachment => Self::NotAnAttachment,
+            other => Self::Crypto(other),
+        }
+    }
+}
+
+/// The MIME type an attachment artifact's logical metadata names, if it names one.
+fn mime_type_of(logical_metadata: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(logical_metadata).ok()?;
+    value.get("mime_type")?.as_str().map(str::to_owned)
 }
 
 impl From<rusqlite::Error> for MaterializeError {
@@ -65,25 +89,30 @@ pub struct BatchPartRef {
 }
 
 impl DbWorker {
-    /// Materialize the attachment artifact `(key_epoch, artifact_id)` whose verified plaintext is
-    /// `bytes`: encrypt them under this device's DEK with a fresh content key, write the blob under
-    /// this device's storage id, and record the mapping with the crypto fields staged. Idempotent: an
-    /// artifact already materialized (its blob present and its mapping staged or consumed) is left as
-    /// it is. An existing blob with the same storage id is reused, never overwritten.
+    /// Materialize the verified attachment artifact `opened`: encrypt its bytes under this device's
+    /// DEK with a fresh content key (the pure step is `vault_crypto`'s `materialize_attachment`),
+    /// write the blob under this device's storage id, and record the mapping with the crypto fields
+    /// staged. The attachment id comes from the artifact's own metadata, never from the caller.
+    /// `ciphertext_sha256` is the hash the fetch verified for the artifact. Idempotent: an artifact
+    /// already materialized (its blob present and its mapping staged, or the apply consumed the
+    /// staging and the `attachments` row exists) is left as it is. A file with the name of the
+    /// blob that nothing references is an orphan of an earlier attempt and is replaced.
     ///
     /// # Errors
-    /// [`MaterializeError`]; the vault is unchanged and a blob this call created is removed.
+    /// [`MaterializeError`]; the vault is unchanged and a blob this call wrote is removed.
     pub fn materialize_attachment(
         &self,
         key_epoch: u64,
-        artifact_id: &[u8; 32],
         ciphertext_sha256: &[u8; 32],
-        attachment_id: [u8; 16],
-        bytes: &[u8],
-        mime_type: Option<&str>,
+        opened: &OpenedArtifact,
     ) -> Result<(), MaterializeError> {
+        let plaintext = opened.plaintext();
+        let artifact_id = *plaintext.artifact_id.as_bytes();
+        let mime_type = mime_type_of(plaintext.logical_metadata);
         let dek = self.dek()?;
-        let storage_id = vault_crypto::storage_id(dek, bytes);
+        let local = flow::materialize_attachment(dek, opened)?;
+        let storage_id = local.storage_id;
+        let attachment_id = local.attachment_id;
         let dir = attachments::blobs_dir(&self.path);
         let mut guard = self.lock();
         if guard.state != WorkerState::Healthy {
@@ -91,7 +120,7 @@ impl DbWorker {
         }
         let mapping = Mapping {
             key_epoch,
-            artifact_id: *artifact_id,
+            artifact_id,
             ciphertext_sha256: *ciphertext_sha256,
             kind: ArtifactKind::Attachment,
             logical_id: attachment_id,
@@ -99,7 +128,7 @@ impl DbWorker {
 
         // This artifact is already here: its blob is on disk and its mapping is staged, or the apply
         // consumed the staging and the attachments row exists. Only the verified hash is refreshed.
-        let existing = crate::sync_artifacts::lookup(&guard.conn, key_epoch, artifact_id)?;
+        let existing = crate::sync_artifacts::lookup(&guard.conn, key_epoch, &artifact_id)?;
         let staged_here = existing.as_ref().and_then(|m| m.staged.as_ref());
         let attachment_row = attachments::find_id_by_storage_id(&guard.conn, storage_id.as_str())?;
         let row_is_this_attachment =
@@ -133,21 +162,18 @@ impl DbWorker {
             return Err(MaterializeError::BlobHeld);
         }
 
-        let content_key = vault_crypto::generate_content_key().map_err(DbError::from)?;
-        let blob = vault_crypto::encrypt_blob(&content_key, bytes).map_err(DbError::from)?;
-        let wrapped = vault_crypto::wrap_content_key(dek, &content_key).map_err(DbError::from)?;
         // Nothing references a blob under this name (an attachments row and another artifact's
         // staging were refused above, and this artifact's own was handled), so a file here is an
         // orphan of an attempt that died before its mapping was recorded: it is replaced.
-        attachments::write_blob(&dir, &storage_id, &blob.ciphertext)?;
+        attachments::write_blob(&dir, &storage_id, &local.blob.ciphertext)?;
         let staged = StagedAttachment {
             storage_id: storage_id.as_str().to_owned(),
-            wrapped_content_key: wrapped.ciphertext.clone(),
-            content_key_nonce: wrapped.nonce.to_vec(),
-            content_nonce: blob.nonce.to_vec(),
+            wrapped_content_key: local.wrapped_key.ciphertext.clone(),
+            content_key_nonce: local.wrapped_key.nonce.to_vec(),
+            content_nonce: local.blob.nonce.to_vec(),
             content_alg: attachments::CONTENT_ALG.to_owned(),
-            plaintext_size: bytes.len() as u64,
-            mime_type: mime_type.map(str::to_owned),
+            plaintext_size: plaintext.blob.len() as u64,
+            mime_type,
         };
         let recorded = (|| -> Result<(), MaterializeError> {
             let tx = guard.conn.transaction()?;

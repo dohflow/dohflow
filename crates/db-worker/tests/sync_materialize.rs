@@ -3,7 +3,11 @@
 //! crypto fields staged for the attach command, and a source batch's rows written outside any
 //! command; idempotent, atomic, and failing only for device-local reasons.
 
+#[path = "support/artifacts.rs"]
+mod artifacts;
 mod common;
+
+use artifacts::{key_of, opened, publish_attachment, FakeService};
 
 use std::fs;
 use std::path::PathBuf;
@@ -67,26 +71,49 @@ impl Vault {
 
 // ---- attachments ---------------------------------------------------------------------------------
 
+/// A published attachment artifact opened as the receiver would, and the hash the service holds.
+fn artifact(
+    service: &FakeService,
+    key: &vault_crypto::sync_envelope::EpochKey,
+    address: u8,
+    attachment: [u8; 16],
+    bytes: &[u8],
+) -> (
+    vault_crypto::sync_artifact::OpenedArtifact,
+    [u8; 32],
+    [u8; 32],
+) {
+    let published = publish_attachment(service, key, address, attachment, bytes, "application/pdf");
+    (
+        opened(service, key, &published),
+        published.hash,
+        *published.id.as_bytes(),
+    )
+}
+
 #[test]
 fn an_attachment_is_reencrypted_under_this_device_and_staged_for_the_attach_command() {
     let vault = Vault::new();
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
     vault
         .worker
-        .materialize_attachment(1, &ART, &HASH, ATT, PDF, Some("application/pdf"))
+        .materialize_attachment(1, &hash, &artifact)
         .unwrap();
 
     // The blob is on disk under this device's name and is not the plaintext.
-    let path = vault.blob_path(PDF);
-    let on_disk = fs::read(&path).unwrap();
-    assert_ne!(on_disk, PDF);
+    let on_disk = fs::read(vault.blob_path(PDF)).unwrap();
     assert!(!on_disk.windows(PDF.len()).any(|w| w == PDF));
 
     // The mapping holds the verified hash and the staged fields; no attachments row exists yet.
     let conn = vault.worker.read_connection().unwrap();
-    let stored = lookup(&conn, 1, &ART).unwrap().unwrap();
-    assert_eq!(stored.mapping.ciphertext_sha256, HASH);
+    let stored = lookup(&conn, 1, &id).unwrap().unwrap();
+    assert_eq!(stored.mapping.ciphertext_sha256, hash);
     assert_eq!(stored.mapping.kind, ArtifactKind::Attachment);
-    assert_eq!(stored.mapping.logical_id, ATT);
+    assert_eq!(
+        stored.mapping.logical_id, ATT,
+        "the id comes from the artifact's own metadata"
+    );
     let staged = stored.staged.expect("staged for the attach command");
     assert_eq!(staged.plaintext_size, PDF.len() as u64);
     assert_eq!(staged.mime_type.as_deref(), Some("application/pdf"));
@@ -97,54 +124,63 @@ fn an_attachment_is_reencrypted_under_this_device_and_staged_for_the_attach_comm
     );
 
     // The attach command's apply turns the staging into the row, and the bytes read back.
-    let id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(ATT));
-    create_attachment_from_staged(&conn, 1, &ART, id, Some("one.pdf"), "2026-11-08T00:00:00Z")
-        .unwrap();
-    assert_eq!(vault.worker.read_attachment_bytes(id).unwrap(), PDF);
+    let attachment = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(ATT));
+    create_attachment_from_staged(
+        &conn,
+        1,
+        &id,
+        attachment,
+        Some("one.pdf"),
+        "2026-11-08T00:00:00Z",
+    )
+    .unwrap();
+    assert_eq!(vault.worker.read_attachment_bytes(attachment).unwrap(), PDF);
 }
 
 #[test]
 fn materializing_an_attachment_twice_changes_nothing() {
     let vault = Vault::new();
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
     vault
         .worker
-        .materialize_attachment(1, &ART, &HASH, ATT, PDF, None)
+        .materialize_attachment(1, &hash, &artifact)
         .unwrap();
     let conn = vault.worker.read_connection().unwrap();
     let blob = fs::read(vault.blob_path(PDF)).unwrap();
-    let staged = lookup(&conn, 1, &ART).unwrap().unwrap().staged.unwrap();
+    let staged = lookup(&conn, 1, &id).unwrap().unwrap().staged.unwrap();
 
     // A replay, with a newer verified hash: the blob and the staged key are the same.
     vault
         .worker
-        .materialize_attachment(1, &ART, &[0x62; 32], ATT, PDF, None)
+        .materialize_attachment(1, &[0x62; 32], &artifact)
         .unwrap();
     assert_eq!(fs::read(vault.blob_path(PDF)).unwrap(), blob);
-    let again = lookup(&conn, 1, &ART).unwrap().unwrap();
+    let again = lookup(&conn, 1, &id).unwrap().unwrap();
     assert_eq!(again.staged, Some(staged));
     assert_eq!(again.mapping.ciphertext_sha256, [0x62; 32]);
 
     // After the apply consumed the staging, a replay does not bring it back.
-    let id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(ATT));
-    create_attachment_from_staged(&conn, 1, &ART, id, None, "t").unwrap();
+    let attachment = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(ATT));
+    create_attachment_from_staged(&conn, 1, &id, attachment, None, "t").unwrap();
     vault
         .worker
-        .materialize_attachment(1, &ART, &HASH, ATT, PDF, None)
+        .materialize_attachment(1, &hash, &artifact)
         .unwrap();
-    assert_eq!(lookup(&conn, 1, &ART).unwrap().unwrap().staged, None);
-    assert_eq!(vault.worker.read_attachment_bytes(id).unwrap(), PDF);
+    assert_eq!(lookup(&conn, 1, &id).unwrap().unwrap().staged, None);
+    assert_eq!(vault.worker.read_attachment_bytes(attachment).unwrap(), PDF);
 }
 
 #[test]
 fn identical_bytes_under_another_attachment_are_refused_and_nothing_is_written() {
+    let (service, key) = (FakeService::default(), key_of(1, 0));
     let vault = Vault::new();
     // An attachment this device already stores.
     vault.worker.import_attachment(PDF, None, None).unwrap();
     let before = fs::read(vault.blob_path(PDF)).unwrap();
+    let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
     assert!(matches!(
-        vault
-            .worker
-            .materialize_attachment(1, &ART, &HASH, ATT, PDF, None),
+        vault.worker.materialize_attachment(1, &hash, &artifact),
         Err(MaterializeError::BlobHeld)
     ));
     assert_eq!(
@@ -153,31 +189,49 @@ fn identical_bytes_under_another_attachment_are_refused_and_nothing_is_written()
         "the blob is not overwritten"
     );
     assert_eq!(
-        lookup(&vault.worker.read_connection().unwrap(), 1, &ART).unwrap(),
+        lookup(&vault.worker.read_connection().unwrap(), 1, &id).unwrap(),
         None
     );
 
     // The same when another artifact has the bytes staged.
     let other = Vault::new();
+    let (first, first_hash, _) = artifact_pair(&service, &key, 0x71, ATT);
     other
         .worker
-        .materialize_attachment(1, &ART, &HASH, ATT, PDF, None)
+        .materialize_attachment(1, &first_hash, &first)
         .unwrap();
+    let (second, second_hash, second_id) = artifact_pair(&service, &key, 0x72, ATT2);
     assert!(matches!(
         other
             .worker
-            .materialize_attachment(1, &ART2, &HASH, ATT2, PDF, None),
+            .materialize_attachment(1, &second_hash, &second),
         Err(MaterializeError::BlobHeld)
     ));
     assert_eq!(
-        lookup(&other.worker.read_connection().unwrap(), 1, &ART2).unwrap(),
+        lookup(&other.worker.read_connection().unwrap(), 1, &second_id).unwrap(),
         None
     );
+}
+
+/// Two attachments with the same bytes published under two addresses.
+fn artifact_pair(
+    service: &FakeService,
+    key: &vault_crypto::sync_envelope::EpochKey,
+    address: u8,
+    attachment: [u8; 16],
+) -> (
+    vault_crypto::sync_artifact::OpenedArtifact,
+    [u8; 32],
+    [u8; 32],
+) {
+    artifact(service, key, address, attachment, PDF)
 }
 
 #[test]
 fn a_failed_record_removes_the_blob_it_wrote_and_leaves_no_mapping() {
     let vault = Vault::new();
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let (artifact, hash, _) = artifact(&service, &key, 0x51, ATT, PDF);
     vault
         .worker
         .read_connection()
@@ -187,9 +241,7 @@ fn a_failed_record_removes_the_blob_it_wrote_and_leaves_no_mapping() {
              BEGIN SELECT RAISE(ABORT, 'refused'); END;",
         )
         .unwrap();
-    let result = vault
-        .worker
-        .materialize_attachment(1, &ART, &HASH, ATT, PDF, None);
+    let result = vault.worker.materialize_attachment(1, &hash, &artifact);
     assert!(matches!(
         result,
         Err(MaterializeError::Mapping(_) | MaterializeError::Local(_))
@@ -209,7 +261,7 @@ fn a_failed_record_removes_the_blob_it_wrote_and_leaves_no_mapping() {
         .unwrap();
     vault
         .worker
-        .materialize_attachment(1, &ART, &HASH, ATT, PDF, None)
+        .materialize_attachment(1, &hash, &artifact)
         .unwrap();
     assert!(vault.blob_path(PDF).exists());
 }
@@ -217,17 +269,19 @@ fn a_failed_record_removes_the_blob_it_wrote_and_leaves_no_mapping() {
 #[test]
 fn an_orphan_blob_of_an_earlier_attempt_is_replaced() {
     let vault = Vault::new();
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
     fs::create_dir_all(vault.blobs()).unwrap();
     fs::write(vault.blob_path(PDF), b"left behind by an attempt that died").unwrap();
     vault
         .worker
-        .materialize_attachment(1, &ART, &HASH, ATT, PDF, None)
+        .materialize_attachment(1, &hash, &artifact)
         .unwrap();
     let conn = vault.worker.read_connection().unwrap();
-    let id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(ATT));
-    create_attachment_from_staged(&conn, 1, &ART, id, None, "t").unwrap();
+    let attachment = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(ATT));
+    create_attachment_from_staged(&conn, 1, &id, attachment, None, "t").unwrap();
     assert_eq!(
-        vault.worker.read_attachment_bytes(id).unwrap(),
+        vault.worker.read_attachment_bytes(attachment).unwrap(),
         PDF,
         "the staged key opens the replaced blob"
     );
