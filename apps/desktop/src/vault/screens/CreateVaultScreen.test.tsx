@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -104,5 +104,25 @@ describe("create-vault fields at the largest text size", () => {
     expect(button.closest("form")).toHaveClass("@container");
     expect(button).not.toHaveClass("h-10");
     expect(button).not.toHaveClass("whitespace-nowrap");
+  });
+
+  // A native select cannot wrap, so at the largest size the closed value is cut off sideways ("US I").
+  // The full label is shown as text under it on a narrow card; it is not announced a second time
+  // because the select already announces its value (personal-cfo-i93n3.25).
+  test("shows the selected currency's full label as text under the select on a narrow card", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo(null));
+    renderWithClient(<CreateVaultScreen />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    const select = screen.getByLabelText("Base currency");
+    const text = screen.getByTestId("base-currency-value");
+    expect(text).toHaveTextContent("US Dollar (USD)");
+    expect(text).toHaveAttribute("aria-hidden", "true");
+    expect(text).toHaveClass("hidden", "compact:@max-[15rem]:block");
+    expect(text.closest("form")).toHaveClass("@container");
+    fireEvent.change(select, { target: { value: "EUR" } });
+    expect(text).toHaveTextContent("Euro (EUR)");
+    // Both options are still offered, with the same labels as before.
+    expect(screen.getByRole("option", { name: "US Dollar (USD)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Euro (EUR)" })).toBeInTheDocument();
   });
 });

@@ -514,7 +514,10 @@ on a desktop window, and a test proves each.
   The shared `Button` is `h-10 whitespace-nowrap`, so a button whose label can outgrow the column at that
   size takes `h-auto min-h-10 whitespace-normal [overflow-wrap:anywhere]` at its call site (`cn()` drops the
   primitive's `h-10` and `whitespace-nowrap`), with `compact:@max-[15rem]:px-1` inside an `@container` so a
-  short label like "Create" keeps its room instead of hyphenating; the primitive itself changes with the touch-target slice.
+  short label like "Create" keeps its room instead of hyphenating. A native `<select>` cannot wrap, so its
+  closed value is cut off sideways at that size ("US I"): on a narrow card show the selected label as
+  plain text under it (`hidden compact:@max-[15rem]:block`, `aria-hidden`, because the select already
+  announces its own value) and keep the native control for choosing; the primitive itself changes with the touch-target slice.
 - **Touch targets (44 pt hit regions) and sheets** are specified with their slice; until then the
   existing sizes apply.
 

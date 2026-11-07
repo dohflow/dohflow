@@ -20,6 +20,11 @@ import { Screen } from "./Screen";
 
 const MIN_LENGTH = 8;
 
+const BASE_CURRENCIES = [
+  { value: "USD", label: "US Dollar (USD)" },
+  { value: "EUR", label: "Euro (EUR)" },
+];
+
 export function CreateVaultScreen() {
   const { createVault } = useVault();
   // Set only by a host whose system backups include the encrypted vault (personal-cfo-i93n3.9).
@@ -114,9 +119,22 @@ export function CreateVaultScreen() {
                 value={baseCurrency}
                 onChange={(event) => setBaseCurrency(event.target.value)}
               >
-                <option value="USD">US Dollar (USD)</option>
-                <option value="EUR">Euro (EUR)</option>
+                {BASE_CURRENCIES.map((currency) => (
+                  <option key={currency.value} value={currency.value}>
+                    {currency.label}
+                  </option>
+                ))}
               </select>
+              {/* A native select cannot wrap, so at the largest text size its closed value is cut off
+                  sideways. On a narrow card the full label is also shown as text. The select already
+                  announces its own value, so this copy is for the eyes only. */}
+              <p
+                aria-hidden="true"
+                data-testid="base-currency-value"
+                className="hidden text-sm font-medium [overflow-wrap:anywhere] compact:@max-[15rem]:block"
+              >
+                {BASE_CURRENCIES.find((currency) => currency.value === baseCurrency)?.label}
+              </p>
               <p className="text-xs text-muted-foreground">
                 New accounts default to this. You can change it later in Settings.
               </p>
