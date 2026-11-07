@@ -60,7 +60,9 @@ fn simplefin_copy_in_the_registry_is_the_shipped_panel_text() {
 fn the_frontend_registry_fixture_is_every_provider_the_registry_emits() {
     let listing = connector_adapters_impl(connector_core::all_registrations());
     // Completeness, stated on its own: every registration is in the listing,
-    // disabled ones included — the copy scan must never miss a provider.
+    // whatever its enabled flag — the copy scan must never miss a provider. (Since
+    // v0.4.0 both shipped providers are enabled; a disabled entry in the listing is
+    // exercised by `connector_ipc.rs`, with mock registrations.)
     let mut listed: Vec<&str> = listing.iter().map(|a| a.adapter_id.as_str()).collect();
     let mut registered: Vec<&str> = connector_core::all_registrations()
         .map(|r| r.adapter.id())
@@ -68,10 +70,6 @@ fn the_frontend_registry_fixture_is_every_provider_the_registry_emits() {
     listed.sort_unstable();
     registered.sort_unstable();
     assert_eq!(listed, registered);
-    assert!(
-        listing.iter().any(|a| !a.enabled),
-        "a disabled provider is covered too"
-    );
 
     let emitted = serde_json::to_string_pretty(&listing).unwrap() + "\n";
     if std::env::var_os("REGENERATE_FIXTURES").is_some() {
