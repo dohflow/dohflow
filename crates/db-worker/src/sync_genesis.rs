@@ -102,6 +102,10 @@ pub struct PersistedGenesis {
     pub epoch_record: Vec<u8>,
     /// How far enabling got.
     pub state: GenesisState,
+    /// The `operation_log` high-water mark read in the transaction that exported the genesis
+    /// snapshot (`None` until an export is made). A log that has grown past it once the genesis is
+    /// published holds local commands the genesis does not carry.
+    pub export_high_water: Option<u64>,
 }
 
 impl core::fmt::Debug for PersistedGenesis {
@@ -156,7 +160,7 @@ fn unavailable(_: rusqlite::Error) -> GenesisStoreError {
 }
 
 /// `vault_id`, `membership_record`, `epoch_record` and `state` as the table stores them.
-type GenesisRow = (Vec<u8>, Vec<u8>, Vec<u8>, String);
+type GenesisRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, Option<i64>);
 
 /// The persisted genesis, if any.
 ///
@@ -165,23 +169,28 @@ type GenesisRow = (Vec<u8>, Vec<u8>, Vec<u8>, String);
 pub fn load(conn: &Connection) -> Result<Option<PersistedGenesis>, GenesisStoreError> {
     let row: Option<GenesisRow> = conn
         .query_row(
-            "SELECT vault_id, membership_record, epoch_record, state
+            "SELECT vault_id, membership_record, epoch_record, state, export_high_water
              FROM sync_genesis WHERE singleton = 1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(unavailable)?;
-    row.map(|(vault_id, membership_record, epoch_record, state)| {
-        Ok(PersistedGenesis {
-            vault_id: vault_id
-                .try_into()
-                .map_err(|_| GenesisStoreError::Corrupt)?,
-            membership_record,
-            epoch_record,
-            state: GenesisState::parse(&state).ok_or(GenesisStoreError::Corrupt)?,
-        })
-    })
+    row.map(
+        |(vault_id, membership_record, epoch_record, state, high_water)| {
+            Ok(PersistedGenesis {
+                vault_id: vault_id
+                    .try_into()
+                    .map_err(|_| GenesisStoreError::Corrupt)?,
+                membership_record,
+                epoch_record,
+                state: GenesisState::parse(&state).ok_or(GenesisStoreError::Corrupt)?,
+                export_high_water: high_water
+                    .map(|mark| u64::try_from(mark).map_err(|_| GenesisStoreError::Corrupt))
+                    .transpose()?,
+            })
+        },
+    )
     .transpose()
 }
 
@@ -226,6 +235,38 @@ pub fn persist(
     )
     .map_err(unavailable)?;
     Ok(GenesisState::Persisted)
+}
+
+/// Record the `operation_log` high-water mark of the transaction that exported the genesis
+/// snapshot. A later export replaces an earlier mark (the earlier one was never sealed, or the
+/// caller would have resumed its saved container instead); a mark cannot be recorded for a genesis
+/// that has been published or refused.
+///
+/// # Errors
+/// [`GenesisStoreError::NotPersisted`], or [`GenesisStoreError::BadTransition`] for a genesis that
+/// is already in a terminal state or `Published`.
+pub fn record_export_mark(
+    conn: &Connection,
+    high_water: u64,
+    now: &str,
+) -> Result<(), GenesisStoreError> {
+    let held = load(conn)?.ok_or(GenesisStoreError::NotPersisted)?;
+    if !matches!(
+        held.state,
+        GenesisState::Persisted | GenesisState::Installed
+    ) {
+        return Err(GenesisStoreError::BadTransition {
+            from: held.state,
+            to: held.state,
+        });
+    }
+    let mark = i64::try_from(high_water).map_err(|_| GenesisStoreError::Corrupt)?;
+    conn.execute(
+        "UPDATE sync_genesis SET export_high_water = ?1, updated_at = ?2 WHERE singleton = 1",
+        params![mark, now],
+    )
+    .map_err(unavailable)?;
+    Ok(())
 }
 
 /// Move the persisted genesis forward to `to`. Moving to the state it is already in is a no-op, so
