@@ -526,8 +526,10 @@ on a desktop window, and a test proves each.
   `summary`, `select`, `textarea` and every text-like `input`, and `min-width: 44px` on the pressable
   ones. It is in **px, never spacing utilities** (the iOS `--spacing` is below 4px at the smaller system
   text sizes), and being unlayered it also wins over a call site's `h-8`, `min-h-0` or `min-h-10`, so a
-  new control is compliant without its author remembering; the floor is the rule, not a default. A
-  checkbox or radio is drawn as a 44px hit region holding a 20px box (`appearance: none`, the box is the
+  new control is compliant without its author remembering; the floor is the rule, not a default. WebKit's native `select` (appearance auto) keeps its own
+  `min-height: 30px` and ignores ours, so on compact a `select` also takes an explicit
+  `height: max(44px, calc(1lh + 20px))` (the floor, or one line plus padding, so a large text size grows it
+  instead of clipping). A checkbox or radio is drawn as a 44px hit region holding a 20px box (`appearance: none`, the box is the
   padding box inside a transparent 12px border, the mark is a `::before`), in the same tokens. Do not
   shrink a control below the floor on compact, and do not give an icon-only control an extra wrapper to
   reach it. A control that must sit inside a field (an absolutely positioned clear or reveal button)

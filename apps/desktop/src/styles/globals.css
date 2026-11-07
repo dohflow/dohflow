@@ -282,6 +282,14 @@
     min-width: 44px;
   }
 
+  /* iOS WebKit gives a native select (appearance auto) its own `min-height: 30px` and ignores ours
+     (measured on a simulator: a `min-h-10` select laid out at 41pt), so a native select takes an
+     explicit height. It still grows with the text: the larger of 44px and one line of text plus the
+     usual 18px of padding and border, so at a large system text size nothing is clipped. */
+  select {
+    height: max(44px, calc(1lh + 20px));
+  }
+
   /* A checkbox or radio is a 16px native box, far under the floor, and padding does not grow it. On
      a touch screen it is drawn instead as a 44px hit region holding a 20px box: the box is the
      padding box inside a transparent 12px border (its rounded corner is the border radius minus

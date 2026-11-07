@@ -180,6 +180,16 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       expect(block).toMatch(/input:not\(\[type="hidden"\],\s*\[type="checkbox"\],\s*\[type="radio"\],\s*\[type="range"\]\)/);
     });
 
+    it("a native select takes an explicit height, because iOS WebKit ignores its min-height", async () => {
+      const css = await compiled(["p-4"]);
+      const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";
+      // WebKit's menulist keeps its own `min-height: 30px` (a `min-h-10` select laid out at 41pt on a
+      // simulator), but honors `height`. The height is the larger of the floor and one line of text
+      // plus padding, so a large system text size grows the control instead of clipping it.
+      expect(block).toMatch(/select\s*\{[^}]*height:\s*max\(44px,\s*calc\(1lh \+ 20px\)\)/);
+      expect(block).not.toMatch(/select\s*\{[^}]*height:\s*44px/);
+    });
+
     it("a checkbox and a radio are drawn as a 44px hit region holding a smaller box", async () => {
       const css = await compiled(["p-4"]);
       const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";
