@@ -617,6 +617,18 @@ on a desktop window, and a test proves each.
   nothing to roll back, so Close, Escape and an outside tap all keep the choice, and focus returns to the trigger
   (`restoreFocusTo`). The Series trigger carries `aria-expanded` but, on a phone, never `aria-haspopup` (iOS exposes it
   as a pop-up button, the Compact navigation rule). Long account names wrap. Desktop keeps its popovers.
+- **Tables on a phone** (personal-cfo-i93n3.27, slice F; `components/ui/data-table.tsx`). `DataTable` has an opt-in
+  `phoneLayout="stacked"`: on a compact screen it is a **different element tree** (`useCompactLayout()`), not a restyled table.
+  Each row is a card in a list (`ul role="list"`, `aria-label` from the table's `label`): the first column is the row's title
+  (its label is read by VoiceOver but not drawn) and every other column is a labeled pair in a real description list
+  (`dt` then `dd`), **in column order**, so the reading order is label then value. Values wrap (`break-words`) and money
+  stays complete: nothing is clipped, truncated or scrolled sideways. `expandedContent` renders under its card, `rowProps`
+  (`data-state`, classes) apply to the card, and the loading, error, empty and trailing states are kept. When a column is
+  `sortable` the headers are gone, so a native "Sort by" control and a direction button above the list keep sorting reachable;
+  a table with no sortable column (running balances must never be re-sorted) shows none. Filters stay the caller's: put them
+  in a toolbar that stacks at full width on a phone (`compact:flex-col compact:items-stretch compact:px-4`). A table that
+  does not opt in stays the horizontal table on every screen; a table with a `leadingRow` (raw table cells) keeps the table
+  layout. Projected activity is the first user; `.28`'s Accounts and Activity are next.
 
 ## 8. Testing
 

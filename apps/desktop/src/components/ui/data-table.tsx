@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useCompactLayout } from "@/lib/compact";
+import { NativeSelect } from "@/components/ui/native-select";
 import { cn } from "@/lib/utils";
 
 /// One column of a [`DataTable`].
@@ -72,6 +74,7 @@ export function DataTable<T>({
   footer,
   className,
   label,
+  phoneLayout,
 }: {
   columns: DataTableColumn<T>[];
   rows: T[];
@@ -110,8 +113,36 @@ export function DataTable<T>({
   className?: string;
   /// Accessible name for the table.
   label?: string;
+  /// How the table reads on a phone (personal-cfo-i93n3.27 slice F). Omitted: it stays the horizontal
+  /// table everywhere, as before (a table opts in; `.28`'s Accounts and Activity will). `"stacked"`: on a
+  /// compact screen (`useCompactLayout()`: a different element tree, not a restyled table) each row is a
+  /// card of labeled values in column order, with nothing clipped and no horizontal scroll. A table with a
+  /// `leadingRow` (raw table cells) keeps the table layout.
+  phoneLayout?: "stacked";
 }) {
   const span = columns.length;
+  const compact = useCompactLayout();
+  if (phoneLayout === "stacked" && compact && leadingRow === undefined) {
+    return (
+      <StackedRows
+        columns={columns}
+        rows={rows}
+        rowKey={rowKey}
+        status={status}
+        error={error}
+        errorAction={errorAction}
+        empty={empty}
+        expandedContent={expandedContent}
+        rowProps={rowProps}
+        trailingRow={trailingRow}
+        sort={sort}
+        onSortChange={onSortChange}
+        footer={footer}
+        className={className}
+        label={label}
+      />
+    );
+  }
 
   function headerCell(column: DataTableColumn<T>) {
     const alignment = column.align === "right" ? "text-right" : undefined;
@@ -253,6 +284,153 @@ export function DataTable<T>({
           ) : null}
         </TableBody>
       </Table>
+      {footer}
+    </div>
+  );
+}
+
+/// The phone presentation of a [`DataTable`] (`phoneLayout="stacked"`): a list of rows, each a card.
+///
+/// Reading order is label then value, in column order, as a real description list (`dl`), so VoiceOver reads
+/// "Date, Nov 17, 2026" rather than a bare cell. The first column is the row's title (its label is read but not
+/// drawn); a column with an empty header (a control column) has no label. Values wrap, never clip, and money
+/// stays complete. When a column is `sortable` the headers are gone, so a "Sort by" control and a direction
+/// button above the list keep sorting reachable.
+function StackedRows<T>({
+  columns,
+  rows,
+  rowKey,
+  status,
+  error,
+  errorAction,
+  empty,
+  expandedContent,
+  rowProps,
+  trailingRow,
+  sort,
+  onSortChange,
+  footer,
+  className,
+  label,
+}: {
+  columns: DataTableColumn<T>[];
+  rows: T[];
+  rowKey: (row: T) => string;
+  status: "loading" | "error" | "ready";
+  error?: string | null;
+  errorAction?: ReactNode;
+  empty?: { icon: LucideIcon; title: string; description?: string; action?: ReactNode };
+  expandedContent?: (row: T) => ReactNode | null;
+  rowProps?: (row: T) => { className?: string; "data-state"?: string };
+  trailingRow?: ReactNode;
+  sort?: DataTableSort;
+  onSortChange?: (sort: DataTableSort) => void;
+  footer?: ReactNode;
+  className?: string;
+  label?: string;
+}) {
+  const sortable = columns.filter((column) => column.sortable && typeof column.header === "string");
+  const [title, ...rest] = columns;
+
+  return (
+    <div className={className}>
+      {onSortChange && sortable.length > 0 && (
+        <div className="flex items-center gap-2 px-4 pb-2">
+          <label className="sr-only" htmlFor="stacked-sort-by">
+            Sort by
+          </label>
+          <NativeSelect
+            id="stacked-sort-by"
+            size="sm"
+            className="min-w-0 flex-1"
+            value={sort?.key ?? ""}
+            onChange={(event) =>
+              onSortChange({ key: event.target.value, direction: sort?.direction ?? "asc" })
+            }
+          >
+            {sort === undefined && <option value="">Sort by…</option>}
+            {sortable.map((column) => (
+              <option key={column.key} value={column.key}>
+                {column.header as string}
+              </option>
+            ))}
+          </NativeSelect>
+          <button
+            type="button"
+            disabled={sort === undefined}
+            aria-label={sort?.direction === "desc" ? "Sorted descending; sort ascending" : "Sorted ascending; sort descending"}
+            onClick={() => sort && onSortChange({ key: sort.key, direction: sort.direction === "asc" ? "desc" : "asc" })}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border px-3 text-sm text-muted-foreground"
+          >
+            {sort?.direction === "desc" ? <ArrowDown aria-hidden className="size-4" /> : <ArrowUp aria-hidden className="size-4" />}
+          </button>
+        </div>
+      )}
+      <ul role="list" aria-label={label} className="flex flex-col">
+        {status === "loading" &&
+          Array.from({ length: 3 }, (_, index) => (
+            <li key={`skeleton-${index}`} className="border-b px-4 py-3">
+              <Skeleton className="mb-2 h-4 w-2/3" />
+              <Skeleton className="h-4 w-full" />
+            </li>
+          ))}
+        {status === "error" && (
+          <li className="px-4">
+            <div className="flex flex-col items-center gap-3 py-6">
+              <p role="alert" className="text-center text-sm text-loss">
+                {error ?? "Something went wrong loading this."}
+              </p>
+              {errorAction}
+            </div>
+          </li>
+        )}
+        {status === "ready" && rows.length === 0 && (
+          <li className="px-4">
+            {empty ? (
+              <EmptyState {...empty} />
+            ) : (
+              <p className="py-6 text-center text-sm text-muted-foreground">Nothing to show.</p>
+            )}
+          </li>
+        )}
+        {status === "ready" &&
+          rows.map((row) => {
+            const extra = rowProps?.(row);
+            const detail = expandedContent?.(row) ?? null;
+            return (
+              <li
+                key={rowKey(row)}
+                data-state={extra?.["data-state"]}
+                className={cn("flex flex-col border-b", extra?.className)}
+              >
+                <div className="flex flex-col gap-1.5 px-4 py-3">
+                  {title && (
+                    <div className="min-w-0 break-words font-medium">
+                      {typeof title.header === "string" && <span className="sr-only">{title.header}: </span>}
+                      {title.cell(row)}
+                    </div>
+                  )}
+                  <dl className="flex flex-col gap-1 text-sm">
+                    {rest.map((column) => (
+                      <div key={column.key} className="flex items-baseline justify-between gap-4">
+                        {typeof column.header === "string" && column.header !== "" ? (
+                          <dt className="min-w-0 break-words text-muted-foreground">{column.header}</dt>
+                        ) : (
+                          <dt className="sr-only">{column.key}</dt>
+                        )}
+                        <dd className={cn("min-w-0 break-words text-right tabular-nums", column.className)}>
+                          {column.cell(row)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+                {detail}
+              </li>
+            );
+          })}
+        {trailingRow ? <li className="px-4 py-3">{trailingRow}</li> : null}
+      </ul>
       {footer}
     </div>
   );

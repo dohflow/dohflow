@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { fireEvent, screen, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
@@ -8,8 +7,7 @@ import type {
   ForecastEventDto,
   MultiSeriesForecastDto,
 } from "@/bindings";
-import { SessionViewStateProvider } from "@/lib/SessionViewStateProvider";
-import { useSessionState, type SessionViewStateKey } from "@/lib/sessionViewState";
+import { COMPACT_QUERY } from "@/lib/compact";
 import { ProjectedActivityTable } from "./ProjectedActivityTable";
 
 // A bill row's expand panel renders the mark-paid control, which reads accounts + bills. Mock
@@ -415,107 +413,56 @@ describe("ProjectedActivityTable", () => {
   });
 });
 
-/// Seeds the session store before the table first renders, as a previous visit to this destination would have.
-function Seed({ values }: { values: Partial<Record<SessionViewStateKey, unknown>> }) {
-  for (const [key, value] of Object.entries(values)) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- a fixed list per test, called in a fixed order
-    useSessionState(key as SessionViewStateKey, value)[1](value);
+describe("the projected activity table on a phone (personal-cfo-i93n3.27 slice F)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function stub(compact: boolean) {
+    vi.stubGlobal("matchMedia", ((query: string) => ({
+      matches: compact && query === COMPACT_QUERY,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia);
   }
-  return null;
-}
 
-function withSession(ui: React.ReactElement, values: Partial<Record<SessionViewStateKey, unknown>> = {}) {
-  return renderWithClient(
-    <SessionViewStateProvider>
-      <Seed values={values} />
-      {ui}
-    </SessionViewStateProvider>,
-  );
-}
-
-describe("the activity table's view state across a visit elsewhere (personal-cfo-i93n3.27 slice D)", () => {
-  it("restores the search text, the type filter and the page it was left on", () => {
-    withSession(<ProjectedActivityTable projection={manyProjection()} />, {
-      "activity.query": "paycheck 1",
-      "activity.page": 0,
-    });
-    expect(screen.getByRole("searchbox")).toHaveValue("paycheck 1");
+  it("shows each activity as a card of labeled values with every balance column, and no table", () => {
+    stub(true);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    expect(screen.queryByRole("table")).toBeNull();
+    const list = screen.getByRole("list", { name: "Projected activity" });
+    const items = within(list).getAllByRole("listitem");
+    // TODAY first, then each activity.
+    expect(items[0]).toHaveTextContent("Today");
+    const acme = items.find((i) => /Acme Corp/.test(i.textContent ?? ""))!;
+    const labels = [...acme.querySelectorAll("dt")].map((t) => t.textContent);
+    expect(labels).toEqual(expect.arrayContaining(["Date", "Amount", "Spendable", "Net cash"]));
+    // Label before value, in column order: Date, Amount, then the balance columns.
+    expect(labels.indexOf("Date")).toBeLessThan(labels.indexOf("Amount"));
+    expect(labels.indexOf("Amount")).toBeLessThan(labels.indexOf("Spendable"));
+    expect(labels.indexOf("Spendable")).toBeLessThan(labels.indexOf("Net cash"));
   });
 
-  it("clamps a restored page past the end to the last page", () => {
-    withSession(<ProjectedActivityTable projection={manyProjection()} />, { "activity.page": 9 });
-    // 12 activities at 10 a page: page 9 clamps to the second (last) page, which shows Paycheck 11 and 12.
-    expect(screen.getByText("Paycheck 12")).toBeInTheDocument();
-    expect(screen.queryByText("Paycheck 1")).toBeNull();
+  it("keeps the row disclosure: the explanation opens under the card and the trigger reports expanded", () => {
+    stub(true);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    const trigger = screen.getAllByRole("button", { expanded: false }).find((b) => /Acme Corp/.test(b.textContent ?? ""))!;
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const card = trigger.closest("li")!;
+    expect(within(card).getByText(/Basis/)).toBeInTheDocument();
   });
 
-  it("drops a restored account column for an account that no longer exists, and does not count it", () => {
-    withSession(<ProjectedActivityTable projection={projection()} />, {
-      "activity.accountColumns": ["acc-1", "acc-gone"],
-    });
-    const trigger = screen.getAllByRole("button", { name: /accounts/i })[0]!;
-    expect(trigger).toHaveTextContent("1");
-    expect(trigger).not.toHaveTextContent("2");
-    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toContain("Checking");
+  it("stacks its filter, type and accounts controls at full width on a phone", () => {
+    stub(true);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    const toolbar = screen.getByRole("searchbox").parentElement!.parentElement!;
+    expect(toolbar).toHaveClass("compact:flex-col", "compact:items-stretch", "compact:px-4");
+    expect(screen.getByRole("combobox", { name: "Filter by activity type" }).parentElement).toHaveClass("compact:w-full");
   });
 
-  it("drops a restored type filter that no row has any more, so it cannot hide everything", () => {
-    withSession(<ProjectedActivityTable projection={projection()} />, { "activity.kind": "recurring_transfer_gone" });
-    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
-    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("");
-  });
-
-  it("opens nothing for a restored open event that no longer resolves, closes it and says so once (the missing-event rule)", () => {
-    const onMissingEvent = vi.fn();
-    withSession(<ProjectedActivityTable projection={projection()} onMissingEvent={onMissingEvent} />, { "activity.openKey": "evt-gone" });
-    expect(screen.queryByTestId("row-explanation")).toBeNull();
-    expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
-    expect(onMissingEvent).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not call the missing-event rule for an event that is there, or when none is open", () => {
-    const onMissingEvent = vi.fn();
-    const { unmount } = withSession(<ProjectedActivityTable projection={projection()} onMissingEvent={onMissingEvent} />);
-    fireEvent.click(screen.getAllByRole("button", { expanded: false }).find((b) => /Acme Corp/.test(b.textContent ?? ""))!);
-    expect(document.querySelector('[aria-expanded="true"]')).not.toBeNull();
-    expect(onMissingEvent).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it("closes an open event that a changed projection removed, and calls the rule", () => {
-    const onMissingEvent = vi.fn();
-    function Host() {
-      const [other, setOther] = useState(false);
-      return (
-        <SessionViewStateProvider>
-          <button type="button" onClick={() => setOther(true)}>
-            change projection
-          </button>
-          <button type="button" onClick={() => setOther(false)}>
-            change back
-          </button>
-          <ProjectedActivityTable projection={other ? sameDayProjection() : projection()} onMissingEvent={onMissingEvent} />
-        </SessionViewStateProvider>
-      );
-    }
-    renderWithClient(<Host />);
-    fireEvent.click(screen.getAllByRole("button", { expanded: false }).find((b) => /Acme Corp/.test(b.textContent ?? ""))!);
-    expect(document.querySelector('[aria-expanded="true"]')).not.toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "change projection" }));
-    expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
-    expect(onMissingEvent).toHaveBeenCalledTimes(1);
-    // It was closed, not just hidden: bringing the event back does not reopen it.
-    fireEvent.click(screen.getByRole("button", { name: "change back" }));
-    expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
-  });
-
-  it("never logs the search text", () => {
-    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
-    withSession(<ProjectedActivityTable projection={manyProjection()} />);
-    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "secret-merchant-name" } });
-    for (const spy of spies) {
-      expect(JSON.stringify(spy.mock.calls)).not.toContain("secret-merchant-name");
-      spy.mockRestore();
-    }
+  it("stays the horizontal table on a desktop window", () => {
+    stub(false);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    expect(screen.getByRole("table", { name: "Projected activity" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Projected activity" })).toBeNull();
   });
 });
