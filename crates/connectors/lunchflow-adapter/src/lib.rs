@@ -93,9 +93,13 @@ static LUNCHFLOW: LunchFlowAdapter = LunchFlowAdapter::new(UreqTransport::new(),
 /// monthly option ($5.49/month, 4 included, $1.00/month per extra,
 /// owner-verified 2026-09-18, same doc) is recorded here only. The cost was
 /// checked against the live page on 2026-11-06 (it renders client-side).
-/// Terms: read in full by the owner on 2026-09-18 (§b); the terms page was
-/// last updated by LunchFlow on 2026-10-23, so the terms date moves only when
-/// the owner has read that version.
+/// Terms: read in full by the owner on 2026-09-18 (§b). LunchFlow updated the
+/// terms, acceptable-use and privacy pages on 2026-10-23, and the owner
+/// delegated the re-read: on 2026-11-06 the current text was read in full (the
+/// decisions session, personal-cfo-p3f7r's note "TERMS REVIEW 2026-11-06,
+/// DELEGATED BY THE OWNER") and the four disclosure points were found to hold.
+/// The affiliate-program terms (D15) are still unread (they need the owner's
+/// login), which the in-app referral wording does not depend on.
 ///
 /// Regions: the countries LunchFlow's coverage docs name individually for
 /// bank accounts (lunchflow.app/docs/guides/connections, read 2026-09-27).
@@ -126,7 +130,7 @@ pub const LUNCHFLOW_METADATA: ConnectorMetadata = ConnectorMetadata {
         extra_connection_period: Some(BillingPeriod::Annual),
         cost_reviewed_at: review_date(2026, 11, 6),
         terms_url: Some("https://www.lunchflow.app/terms"),
-        terms_reviewed_at: review_date(2026, 9, 18),
+        terms_reviewed_at: review_date(2026, 11, 6),
         history_depth_expectation: "Varies by bank and by LunchFlow's own data provider.",
     },
     disclosure: DisclosureText {
