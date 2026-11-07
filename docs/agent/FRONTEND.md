@@ -520,8 +520,33 @@ on a desktop window, and a test proves each.
   closed value is cut off sideways at that size ("US I"): on a narrow card show the selected label as
   plain text under it (`hidden compact:@max-[15rem]:block`, `aria-hidden`, because the select already
   announces its own value) and keep the native control for choosing; the primitive itself changes with the touch-target slice.
-- **Touch targets (44 pt hit regions) and sheets** are specified with their slice; until then the
-  existing sizes apply.
+- **Touch targets: a fixed 44 pt floor.** On a compact screen every control a finger can press is at
+  least 44 by 44 points. The floor lives in one place, `globals.css`, in the compact media query and
+  OUTSIDE every cascade layer: `min-height: 44px` on `button`, `[role="button"]`, `[role="menuitem"]`,
+  `summary`, `select`, `textarea` and every text-like `input`, and `min-width: 44px` on the pressable
+  ones. It is in **px, never spacing utilities** (the iOS `--spacing` is below 4px at the smaller system
+  text sizes), and being unlayered it also wins over a call site's `h-8`, `min-h-0` or `min-h-10`, so a
+  new control is compliant without its author remembering; the floor is the rule, not a default. A
+  checkbox or radio is drawn as a 44px hit region holding a 20px box (`appearance: none`, the box is the
+  padding box inside a transparent 12px border, the mark is a `::before`), in the same tokens. Do not
+  shrink a control below the floor on compact, and do not give an icon-only control an extra wrapper to
+  reach it. A control that must sit inside a field (an absolutely positioned clear or reveal button)
+  takes the floor too, so the field pads that edge. The desktop window and any mouse are unchanged; a
+  test compiles the stylesheet and proves every rule is inside the compact query. The 44 pt result on a
+  real screen is checked by an automated accessibility-tree test in the native shell, at the default,
+  the smallest and the largest system text size.
+- **Sheets.** On a compact screen the shared `Dialog` is a **bottom sheet**: anchored to the bottom
+  edge, full width, as tall as its content up to the visible height (so a tall form fills the screen
+  and a short confirmation stays short), top corners rounded, its top clear of the device chrome
+  (`max-h` is `100dvh` minus the top inset) and its bottom padding the larger of the home indicator and
+  the keyboard (`COMPACT_SHEET` in `src/lib/sheet.ts`, all behind `compact:`). It is the same Radix
+  dialog, so the focus trap, focus restore (`restoreFocusTo`, `fallbackFocusTo`), the destructive-guard
+  pinning, `aria-hidden` outside and Escape are exactly the desktop contract, and a test pins that the
+  desktop card classes are still there. The hand-rolled side drawers (transaction detail, bill detail,
+  account editor) are already full height and full width on a phone; they add the chrome clearance
+  (`COMPACT_DRAWER_PADDED_6`, `COMPACT_DRAWER_CLEARS_CHROME`). The remaining hand-rolled centered modals
+  are migrated to the shared `Dialog` under the design-system adoption work, not here; until then they
+  stay centered cards that still get the 44 pt floor.
 
 ## 8. Testing
 

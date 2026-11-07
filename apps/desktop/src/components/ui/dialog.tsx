@@ -2,6 +2,7 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { cn } from "@/lib/utils";
+import { COMPACT_SHEET } from "@/lib/sheet";
 
 /// The shared modal dialog (personal-cfo-4d8.6.1; docs/design-system/recipes.md section 3).
 ///
@@ -9,6 +10,13 @@ import { cn } from "@/lib/utils";
 /// supplies what a hand-rolled overlay does not: Tab and Shift+Tab stay inside, everything outside
 /// is `aria-hidden` and the page does not scroll behind it, Escape closes, and the title and
 /// description name the dialog for assistive technology.
+///
+/// On a compact screen (a narrow touch screen, `compact:`) the dialog is a **bottom sheet** instead of
+/// a centered card (personal-cfo-i93n3.25 slice B): anchored to the bottom edge, full width, as tall
+/// as its content up to the visible height, with its top clear of the device chrome and its bottom
+/// above the home indicator and the on-screen keyboard (`COMPACT_SHEET`, `src/lib/sheet.ts`). Nothing
+/// else about it changes: it is the same Radix dialog, so the focus trap, the focus restore, the
+/// `aria-hidden` outside, the scroll lock and Escape are exactly the ones below.
 ///
 /// What this layer adds, because a confirmation about real money has to be reachable and readable:
 ///
@@ -111,6 +119,7 @@ const DialogContent = React.forwardRef<
           }}
           className={cn(
             "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-3rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg focus-visible:outline-none",
+            COMPACT_SHEET,
             className,
           )}
           {...props}

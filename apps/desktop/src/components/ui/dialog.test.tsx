@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { Button } from "@/components/ui/button";
+import { COMPACT_SHEET } from "@/lib/sheet";
 import {
   Dialog,
   DialogBody,
@@ -277,4 +278,19 @@ describe("the shared Dialog (personal-cfo-4d8.6.1)", () => {
     openDialog();
     expect(screen.getByTestId("body")).not.toHaveAttribute("tabindex");
   });
+  it("is a bottom sheet on a compact screen and the centered card everywhere else (slice B)", () => {
+    render(<Harness />);
+    openDialog();
+    const content = screen.getByRole("dialog");
+    // The desktop presentation is untouched ...
+    for (const name of ["left-1/2", "top-1/2", "-translate-x-1/2", "-translate-y-1/2", "max-w-md", "rounded-lg"]) {
+      expect(content).toHaveClass(name);
+    }
+    // ... and the sheet is added only behind `compact:` (every sheet class is compact-gated).
+    for (const name of COMPACT_SHEET.split(" ")) expect(content).toHaveClass(name);
+    expect(content.className.split(" ").filter((n) => /bottom-0|inset-x-0|rounded-t/.test(n)).every((n) => n.startsWith("compact:"))).toBe(true);
+    // Still the same dialog: named, modal, and containing the focus trap's content.
+    expect(content).toHaveAccessibleName("Undo “Maternity leave”?");
+  });
+
 });

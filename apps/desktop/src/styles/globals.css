@@ -250,11 +250,100 @@
 
   /* iOS WebKit zooms the page in when a field with text smaller than 16px takes focus, and the zoom
      stays until the person pinches back out (the layout viewport narrows and the page pans sideways).
-     Most fields are `text-sm`, so this wins over the utility on purpose; at the system text size 1rem
-     is already 16px or more, so it only ever raises a field. */
+     Most fields are `text-sm`, so this wins over the utility on purpose. `max(1rem, 16px)` only ever raises
+     a field: at the smaller system text sizes 1rem is under 16px, and the 16px keeps the zoom away. */
   input,
   select,
   textarea {
     font-size: max(1rem, 16px) !important;
+  }
+}
+
+/* Touch targets (personal-cfo-i93n3.25 slice B): every control a finger can press is at least 44 by 44
+   points on a compact screen. A FIXED floor in px, never spacing utilities, because the iOS block
+   above makes `--spacing` smaller than 4px at the smaller system text sizes. Plain CSS, outside every
+   cascade layer, so it also wins over a `min-h-0`, `min-h-10` or `h-8` a call site sets: the floor is
+   the rule, not a default. The query is `COMPACT_QUERY` (src/lib/compact.ts); a test keeps it equal,
+   and that nothing here applies to a desktop window or a mouse. */
+@media (max-width: 639px) and (pointer: coarse) {
+  :where(
+      button,
+      [role="button"],
+      [role="menuitem"],
+      summary,
+      select,
+      textarea,
+      input:not([type="hidden"], [type="checkbox"], [type="radio"], [type="range"])
+    ) {
+    min-height: 44px;
+  }
+
+  :where(button, [role="button"], [role="menuitem"], summary, select) {
+    min-width: 44px;
+  }
+
+  /* A checkbox or radio is a 16px native box, far under the floor, and padding does not grow it. On
+     a touch screen it is drawn instead as a 44px hit region holding a 20px box: the box is the
+     padding box inside a transparent 12px border (its rounded corner is the border radius minus
+     the border width), outlined with an inset shadow at that edge. The mark is a pseudo-element, so
+     no image is needed. Same tokens as every other control, so both themes follow. */
+  input[type="checkbox"],
+  input[type="radio"] {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    position: relative;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    border: 12px solid transparent;
+    border-radius: 18px;
+    background: var(--card) padding-box;
+    box-shadow: inset 0 0 0 1.5px var(--input);
+  }
+
+  input[type="radio"] {
+    border-radius: 50%;
+  }
+
+  input[type="checkbox"]:checked,
+  input[type="radio"]:checked {
+    background: var(--primary) padding-box;
+    box-shadow: inset 0 0 0 1.5px var(--primary);
+  }
+
+  input[type="checkbox"]:checked::before {
+    content: "";
+    display: block;
+    width: 6px;
+    height: 11px;
+    margin: 1px auto 0;
+    border: solid var(--primary-foreground);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
+  input[type="radio"]:checked::before {
+    content: "";
+    display: block;
+    width: 8px;
+    height: 8px;
+    margin: 4px auto 0;
+    border-radius: 50%;
+    background: var(--primary-foreground);
+  }
+
+  input[type="checkbox"]:disabled,
+  input[type="radio"]:disabled {
+    opacity: 0.5;
+  }
+
+  input[type="checkbox"]:focus-visible,
+  input[type="radio"]:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -4px;
   }
 }
