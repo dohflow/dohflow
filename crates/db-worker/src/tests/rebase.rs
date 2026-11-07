@@ -1568,6 +1568,17 @@ mod accepted {
             0
         );
         assert_eq!(log_len(&live), live_log, "the live vault is untouched");
+
+        // 04b F1: the rebuilt vault reads back, so the NEXT rebase can start. The bound entry keeps
+        // the command's original issue time and its complete metadata.
+        let rebuilt = scratch.worker().read_local_commands().unwrap();
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(rebuilt[0].meta.command_id, c.command_id);
+        assert_eq!(rebuilt[0].meta.issued_at, c.issued_at);
+        assert!(matches!(
+            rebuilt[0].entry,
+            OutboxEntryState::Bound { seq: 6, .. }
+        ));
     }
 
     #[test]
@@ -1735,6 +1746,44 @@ mod accepted {
             }
         );
         drop(scratch_path);
+    }
+
+    #[test]
+    fn a_pending_entry_whose_command_id_is_in_the_log_under_another_key_is_a_fork() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let mine = meta();
+        // The log holds the same command id, issued under another idempotency key.
+        let mut theirs_meta = mine.clone();
+        theirs_meta.idempotency_key = Uuid::new_v4().to_string();
+        let theirs = seal(origin.worker(), &theirs_meta, &rename(account, "Theirs"));
+        live.dispatch(mine.clone(), rename(account, "Mine"))
+            .unwrap();
+        let local = live.read_local_commands().unwrap();
+        assert_eq!(local[0].entry, OutboxEntryState::Pending);
+
+        let bytes = theirs.container();
+        let pulled = [theirs.entry(&bytes, 6, None)];
+        let fork = as_fork(reconcile(&pulled, &local, &AcceptedEvidence::new()).unwrap_err());
+        assert!(fork.local.is_none(), "it was never sealed");
+        assert_eq!(fork.other.as_ref().unwrap().seq, Some(6));
+    }
+
+    #[test]
+    fn an_approved_entry_whose_sealed_container_is_another_commands_is_unreadable() {
+        let (dir, live, account, _scratch) = live_with_base();
+        let origin = other_device(&live, &dir);
+        let (a, b) = (meta(), meta());
+        live.dispatch(a.clone(), rename(account, "A")).unwrap();
+        let other = seal(origin.worker(), &b, &rename(account, "B"));
+        // A's entry holds B's container: its object id is not A's command id.
+        approve(&live, a.command_id, &other.container());
+        let local = live.read_local_commands().unwrap();
+        let error = reconcile(&[], &local, &AcceptedEvidence::new()).unwrap_err();
+        assert!(
+            matches!(error, RebaseError::UnreadableSealed { command_id } if command_id == a.command_id),
+            "{error:?}"
+        );
     }
 
     #[test]
