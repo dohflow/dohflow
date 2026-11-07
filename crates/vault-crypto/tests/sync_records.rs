@@ -523,6 +523,17 @@ fn no_debug_output_of_an_accepted_walk_shows_key_bytes() {
     let accepted = accept_all(&c, &c.a.keys).unwrap();
     let shown = format!("{accepted:?}");
     assert!(shown.contains("EpochKey"), "{shown}");
-    assert!(!shown.contains("41, 41"), "{shown}");
-    assert!(!shown.contains(&"41".repeat(8)), "{shown}");
+    // The walk's real secrets: K_1, K_2 and K_3 (`epoch ^ 0x40` repeated) and the tag secret S
+    // (`0x77` repeated). Neither their full 32-element array form nor their full hex form may
+    // appear. A pattern this long cannot be hit by the random ids the same output prints.
+    for byte in [0x41_u8, 0x42, 0x43, 0x77] {
+        assert!(
+            !shown.contains(&format!("{:?}", [byte; 32])),
+            "key bytes {byte:#04x} in array form: {shown}"
+        );
+        assert!(
+            !shown.contains(&format!("{byte:02x}").repeat(32)),
+            "key bytes {byte:#04x} in hex form: {shown}"
+        );
+    }
 }
